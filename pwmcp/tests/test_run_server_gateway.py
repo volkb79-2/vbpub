@@ -100,8 +100,22 @@ def _start_gateway(allowed_hosts: str, upstream_port: int) -> tuple[subprocess.P
                 return process, public_port
         except OSError:
             time.sleep(0.02)
-    process.terminate()
+    _stop_gateway(process)
     raise AssertionError("gateway did not listen within five seconds")
+
+
+def _stop_gateway(process: subprocess.Popen[str]) -> None:
+    """Terminate, reap and close the stderr pipe so no zombie or open file outlives the test."""
+
+    process.terminate()
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3)
+    finally:
+        if process.stderr:
+            process.stderr.close()
 
 
 def _upgrade(public_port: int, host: str, origin: str) -> bytes:
@@ -142,8 +156,7 @@ def test_run_server_gateway_rejects_unknown_hosts_before_upstream() -> None:
         with pytest.raises(queue.Empty):
             upstream.requests.get(timeout=0.25)
     finally:
-        process.terminate()
-        process.wait(timeout=3)
+        _stop_gateway(process)
         upstream.close()
 
 
@@ -165,8 +178,7 @@ def test_run_server_gateway_allows_known_hosts_and_rewrites_upstream_headers() -
             assert headers["origin"] == f"http://127.0.0.1:{upstream.port}"
             assert headers["x-pwmcp-session-label"] == "gateway-test"
     finally:
-        process.terminate()
-        process.wait(timeout=3)
+        _stop_gateway(process)
         upstream.close()
 
 

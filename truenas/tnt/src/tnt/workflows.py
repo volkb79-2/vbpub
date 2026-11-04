@@ -8,7 +8,7 @@ import re
 import struct
 import threading
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 from .actions import Action, Kind, RpcCall
@@ -18,6 +18,7 @@ from .profile import Secret
 from .transport import GuardedRpc
 
 
+_UNSET: Any = object()
 _USER_BASIC_UPDATE_FIELDS = frozenset({"full_name", "shell", "home"})
 _USER_ACCESS_UPDATE_FIELDS = frozenset({"group", "groups", "password_disabled", "locked", "ssh_password_enabled"})
 _USER_ACCESS_BOOL_FIELDS = frozenset({"password_disabled", "locked", "ssh_password_enabled"})
@@ -1082,6 +1083,130 @@ class Workflows:
                       (RpcCall("vm.delete", (row["id"], {"zvols": delete_zvols, "force": False})),),
                       (RpcCall("vm.query", ([["name", "=", name]], {})),), name)
 
+    # -- VM devices (TNT-60) -----------------------------------------------------------------------------
+    def vm_devices(self, name: str) -> list[dict[str, Any]]:
+        row = self._named("vm.query", name, "VM")
+        return _rows(self.rpc.call("vm.device.query", [["vm", "=", row["id"]]], {}), "vm.device.query")
+
+    def _vm_device(self, vm_id: Any, device_id: Any) -> dict[str, Any]:
+        if isinstance(device_id, bool) or not isinstance(device_id, int) or device_id < 1:
+            raise Refused("vm-device", "the device ID must be a positive integer")
+        rows = _rows(self.rpc.call("vm.device.query", [["id", "=", device_id]], {}), "vm.device.query")
+        matches = [row for row in rows if row.get("id") == device_id]
+        if len(matches) != 1:
+            raise Refused("vm-device", f"expected exactly one VM device with ID {device_id}; found {len(matches)}")
+        if matches[0].get("vm") != vm_id:
+            raise Refused("vm-device", f"device {device_id} does not belong to this VM")
+        return dict(matches[0])
+
+    def vm_device_update_action(self, name: str, device_id: int, *, order: Any = _UNSET,
+                                attributes: Mapping[str, Any] | None = None, title: str | None = None,
+                                action_id: str = "TNT-60") -> Action:
+        row = self._named("vm.query", name, "VM")
+        device = self._vm_device(row["id"], device_id)
+        payload: dict[str, Any] = {}
+        if order is not _UNSET:
+            payload["order"] = order
+        if attributes:
+            payload["attributes"] = dict(attributes)
+        _validate_device_update_payload(payload, device)
+        self._refuse_boot_pool("vm.device.update", (device_id, payload))
+        return Action(action_id, Kind.MUTATE, title or f"Update device {device_id} of VM {name}",
+                      (RpcCall("vm.device.update", (device_id, payload)),), _device_probes(name, device_id))
+
+    def vm_device_delete_action(self, name: str, device_id: int, *, delete_zvol: bool = False,
+                                delete_raw_file: bool = False, force: bool = False) -> Action:
+        row = self._named("vm.query", name, "VM")
+        device = self._vm_device(row["id"], device_id)
+        backing = _device_backing(device, delete_zvol=delete_zvol, delete_raw_file=delete_raw_file)
+        if backing is not None:
+            self._refuse_boot_pool("vm.device.delete", (backing,))
+        options = {"force": force, "raw_file": delete_raw_file, "zvol": delete_zvol}
+        return Action("TNT-60", Kind.DESTRUCTIVE, f"Delete device {device_id} of VM {name}"
+                      + (f" and its {'zvol' if delete_zvol else 'raw file'} {backing}" if backing else " (backing data is kept)"),
+                      (RpcCall("vm.device.delete", (device_id, options)),), _device_probes(name, device_id),
+                      f"{name}#{device_id}", confirm_second=backing)
+
+    # -- VM disk-image import (TNT-61) -------------------------------------------------------------------
+    def require_vm_disk_import(self) -> None:
+        """Hide the feature with a clear message when the host does not list the import methods (TNT-35 pattern)."""
+        missing = [method for method in ("vm.device.virtual_size", "vm.device.convert") if not self.rpc.supports(method)]
+        if missing:
+            raise Refused("unsupported-feature", "this host does not list " + " and ".join(missing)
+                          + "; disk-image import is available only where these methods exist (not on vanilla v27)")
+
+    def vm_disk_image_size(self, source: str) -> dict[str, Any]:
+        path = validated_image_path(source)
+        if not self.rpc.supports("vm.device.virtual_size"):
+            raise Refused("unsupported-feature", "this host does not list vm.device.virtual_size; "
+                                                 "image sizes are available only where it exists (not on vanilla v27)")
+        size = self.rpc.call("vm.device.virtual_size", {"path": path})
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise Refused("vm-disk-import", "vm.device.virtual_size returned an invalid size")
+        return {"path": path, "virtual_size_bytes": size}
+
+    def vm_disk_import_plan(self, name: str, source: str, zvol: str, size: Any, *, disk_type: str = "VIRTIO",
+                            order: int = 1) -> "DiskImportPlan":
+        """Validate an import request and return the three reviewed steps (create, convert, boot order)."""
+        self.require_vm_disk_import()
+        path = validated_image_path(source)
+        zvol_name = validated_zvol_name(zvol)
+        if disk_type not in ("AHCI", "VIRTIO"):
+            raise Refused("vm-disk-import", "the virtual disk controller must be AHCI or VIRTIO")
+        if isinstance(order, bool) or not isinstance(order, int) or order < 1:
+            raise Refused("vm-disk-import", "the boot order must be a positive integer")
+        self._refuse_boot_pool("vm.device.create", (path, zvol_name))
+        virtual_size = self.vm_disk_image_size(path)["virtual_size_bytes"]
+        if size == "auto":
+            capacity = virtual_size
+        elif isinstance(size, int) and not isinstance(size, bool) and size > 0:
+            capacity = size
+        else:
+            raise Refused("vm-disk-import", "the final zvol size must be 'auto' or a positive number of bytes")
+        if capacity < virtual_size:
+            raise Refused("vm-disk-import", f"the zvol capacity {capacity} is smaller than the image's {virtual_size}-byte "
+                                            "virtual size; choose at least the virtual size")
+        row = self._named("vm.query", name, "VM")
+        _require_vm_stopped(row, f"VM {name}")
+        exists = self.rpc.call("pool.dataset.query", [["id", "=", zvol_name]], {"select": ["id"]})
+        if not isinstance(exists, list):
+            raise Refused("vm-disk-import", "the zvol-name check returned an unexpected result")
+        if exists:
+            raise Refused("vm-disk-import", f"ZFS dataset {zvol_name!r} already exists; tnt imports only into a new, "
+                                            "unused zvol name. Nothing was changed")
+        create = Action("TNT-61", Kind.MUTATE, f"Create new zvol {zvol_name} ({capacity} bytes) as a disk of stopped VM {name}",
+                        (RpcCall("vm.device.create", ({
+                            "vm": row["id"], "order": None,
+                            "attributes": {"dtype": "DISK", "path": None, "type": disk_type, "create_zvol": True,
+                                           "zvol_name": zvol_name, "zvol_volsize": capacity}},)),),
+                        (RpcCall("vm.query", ([["name", "=", name]], {})),
+                         RpcCall("pool.dataset.query", ([["id", "=", zvol_name]], {"select": ["id"]})),
+                         RpcCall("vm.device.virtual_size", ({"path": path},))))
+        return DiskImportPlan(self, name, path, zvol_name, virtual_size, capacity, order, create)
+
+    def vm_disk_convert_action(self, name: str, device_id: int, source: str, zvol_name: str) -> Action:
+        row = self._named("vm.query", name, "VM")
+        return Action("TNT-61", Kind.MUTATE,
+                      f"Convert {source} into zvol {zvol_name} of stopped VM {name}; keep the VM stopped until it succeeds",
+                      (RpcCall("vm.device.convert", ({"source": source, "destination": f"/dev/zvol/{zvol_name}"},), job=True),),
+                      (RpcCall("vm.query", ([["name", "=", name]], {})),
+                       RpcCall("vm.device.query", ([["id", "=", device_id]], {})),
+                       RpcCall("pool.dataset.query", ([["id", "=", zvol_name]], {"select": ["id", "type"]}))))
+
+    # -- uploads from downloads/ (TNT-61 stage 1) --------------------------------------------------------
+    def files_put_action(self, download: Any, directory: str) -> Action:
+        from .uploads import UPLOAD_MODE, validate_destination_dir
+        folder = validate_destination_dir(directory)
+        if not self.rpc.supports("filesystem.put"):
+            raise Refused("unsupported-feature", "this host does not list filesystem.put; API upload is unavailable here")
+        destination = f"{folder}/{PurePosixPath(download.name).name}"
+        self._refuse_boot_pool("filesystem.put", (destination,))
+        return Action("TNT-61", Kind.MUTATE,
+                      f"Upload downloads/{download.name} ({download.size} bytes, sha256 {download.sha256[:12]}...) to {destination}",
+                      (RpcCall("filesystem.put", (destination, {"mode": UPLOAD_MODE})),),
+                      (RpcCall("filesystem.stat", (folder,)),
+                       RpcCall("filesystem.listdir", (folder, [["name", "=", PurePosixPath(destination).name]], {"limit": 1}))))
+
     def _named(self, method: str, name: str, kind: str) -> dict[str, Any]:
         if not isinstance(name, str) or not name.strip():
             raise Refused("workflow-input", f"{kind} name is required")
@@ -1387,6 +1512,252 @@ def _rows(value: Any, method: str) -> list[dict[str, Any]]:
     if not isinstance(value, list) or any(not isinstance(row, Mapping) for row in value):
         raise Refused("unexpected-response", f"{method} returned an invalid row collection")
     return [dict(row) for row in value]
+
+
+# -- VM devices and disk-image import helpers (TNT-60, TNT-61) ----------------------------------------------------
+_IMAGE_SUFFIXES = (".qcow2", ".qed", ".raw", ".vdi", ".vhdx", ".vmdk")
+_ZFS_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
+_DISK_DTYPES = frozenset({"DISK", "RAW"})
+_DEVICE_ACTION_METHODS = frozenset({"vm.device.update", "vm.device.delete", "vm.device.convert", "filesystem.put"})
+
+
+def validated_image_path(value: Any) -> str:
+    """A NAS image path: absolute under /mnt/, no '..', never boot-pool, supported lowercase suffix."""
+    path = PurePosixPath(value) if isinstance(value, str) else None
+    if (path is None or not path.is_absolute() or not str(path).startswith("/mnt/") or ".." in path.parts
+            or path.suffix not in _IMAGE_SUFFIXES or str(path) != value):
+        raise Refused("vm-disk-import", "the disk image must be a normalised absolute NAS path under /mnt/ with a supported "
+                                        "lowercase suffix (.qcow2, .qed, .raw, .vdi, .vhdx, .vmdk)")
+    if _names_boot_pool(str(path)):
+        raise Refused("refusal-list", "boot-pool and its datasets are never read or changed from here")
+    return str(path)
+
+
+def validated_zvol_name(value: Any) -> str:
+    """A new relative ``pool/dataset/volume`` name; boot-pool is refused."""
+    parts = value.split("/") if isinstance(value, str) else []
+    if (not isinstance(value, str) or value.startswith("/") or len(parts) < 2
+            or any(part in ("", ".", "..") or not _ZFS_COMPONENT.fullmatch(part) for part in parts)):
+        raise Refused("vm-disk-import", "the zvol must be a relative pool/dataset/volume name using letters, digits, "
+                                        "dot, underscore or hyphen")
+    if _names_boot_pool(value):
+        raise Refused("refusal-list", "boot-pool and its datasets are never changed from here")
+    return value
+
+
+def _require_vm_stopped(row: Mapping[str, Any], label: str, *, autostart_off: bool = True) -> None:
+    status = row.get("status")
+    state = status.get("state") if isinstance(status, Mapping) else None
+    problems = []
+    if state != "STOPPED":
+        problems.append(f"status.state is {state!r}, not 'STOPPED'")
+    if autostart_off and row.get("autostart") is not False:
+        problems.append("autostart is enabled" if row.get("autostart") is True
+                        else f"autostart has unrecognized value {row.get('autostart')!r}")
+    if problems:
+        raise Refused("vm-not-stopped", f"{label} is not ready: {'; '.join(problems)}. Stop it"
+                                        + (" and disable autostart" if autostart_off else "") + ", then retry")
+
+
+def _device_probes(name: str, device_id: int) -> tuple[RpcCall, ...]:
+    return (RpcCall("vm.query", ([["name", "=", name]], {})), RpcCall("vm.device.query", ([["id", "=", device_id]], {})))
+
+
+def _validate_device_update_payload(payload: Mapping[str, Any], device: Mapping[str, Any]) -> None:
+    if not payload or set(payload) - {"order", "attributes"}:
+        raise Refused("vm-device", "provide --order and/or attribute changes; only order and attributes can be updated")
+    order = payload.get("order", 0)
+    if "order" in payload and (isinstance(order, bool) or not isinstance(order, int) or order < 0):
+        raise Refused("vm-device", "the boot order must be a non-negative integer")
+    if "attributes" in payload:
+        attributes = payload["attributes"]
+        current = device.get("attributes") if isinstance(device.get("attributes"), Mapping) else {}
+        if not isinstance(attributes, Mapping) or not attributes:
+            raise Refused("vm-device", "attribute changes must be a non-empty object")
+        if attributes.get("dtype", current.get("dtype")) != current.get("dtype"):
+            raise Refused("vm-device", "a device type cannot change; delete the device and add a new one")
+        if attributes.get("create_zvol") is True:
+            raise Refused("vm-device", "creating a zvol is part of device creation, not of an update")
+        if current.get("dtype") == "CDROM" and "path" in attributes and (
+                not isinstance(attributes["path"], str) or not attributes["path"].startswith("/mnt/")):
+            raise Refused("vm-device", "a v27 installer ISO path must start with /mnt/")
+
+
+def _device_backing(device: Mapping[str, Any], *, delete_zvol: bool, delete_raw_file: bool) -> str | None:
+    """The data a device delete would destroy (a zvol name or raw file path), or None when the data is kept."""
+    if delete_zvol and delete_raw_file:
+        raise Refused("vm-device", "choose either --zvol or --raw-file, not both")
+    attributes = device.get("attributes") if isinstance(device.get("attributes"), Mapping) else {}
+    path = attributes.get("path")
+    if delete_zvol:
+        if attributes.get("dtype") != "DISK":
+            raise Refused("vm-device", "only a DISK device can have a zvol")
+        zvol = path.removeprefix("/dev/zvol/") if isinstance(path, str) and path.startswith("/dev/zvol/") else None
+        if not zvol or ".." in zvol.split("/"):
+            raise Refused("vm-device", "this disk is not backed by a zvol under /dev/zvol/; its data cannot be deleted here")
+        return zvol
+    if delete_raw_file:
+        if attributes.get("dtype") != "RAW" or not isinstance(path, str) or not path.startswith("/mnt/"):
+            raise Refused("vm-device", "only a RAW device with a /mnt/ path has a raw backing file")
+        return path
+    return None
+
+
+class DiskImportPlan:
+    """The reviewed steps of one disk-image import: create the disk and zvol, convert the image, set the boot order."""
+
+    def __init__(self, workflows: "Workflows", vm_name: str, source: str, zvol: str, virtual_size: int,
+                 capacity: int, order: int, create: Action):
+        self.workflows, self.vm_name, self.source, self.zvol = workflows, vm_name, source, zvol
+        self.virtual_size, self.capacity, self.order, self.create = virtual_size, capacity, order, create
+
+    def convert_action(self, device_id: int) -> Action:
+        return self.workflows.vm_disk_convert_action(self.vm_name, device_id, self.source, self.zvol)
+
+    def order_action(self, device_id: int) -> Action:
+        return self.workflows.vm_device_update_action(
+            self.vm_name, device_id, order=self.order, action_id="TNT-61",
+            title=f"Set boot order {self.order} on imported disk {device_id} of VM {self.vm_name}")
+
+    def summary(self) -> dict[str, Any]:
+        return {"vm": self.vm_name, "source": self.source, "virtual_size_bytes": self.virtual_size,
+                "zvol": self.zvol, "zvol_size_bytes": self.capacity, "target": "new zvol", "boot_order": self.order}
+
+
+def _single_row(results: Any, index: int, label: str) -> dict[str, Any]:
+    rows = results[index] if isinstance(results, (list, tuple)) and len(results) > index else None
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], Mapping):
+        raise Refused("device-probe", f"expected exactly one current {label}")
+    return dict(rows[0])
+
+
+def _probe_vm(action: Action, results: Any) -> tuple[str, dict[str, Any]]:
+    probe = action.probe[0] if action.probe else None
+    filters = probe.params[0] if probe is not None and probe.method == "vm.query" and len(probe.params) == 2 else None
+    if (probe is None or probe.params[1] != {} or not isinstance(filters, list) or len(filters) != 1
+            or not isinstance(filters[0], list) or len(filters[0]) != 3 or filters[0][:2] != ["name", "="]
+            or not isinstance(filters[0][2], str) or not filters[0][2]):
+        raise Refused("device-probe", "VM device actions need an exact VM name probe")
+    name = filters[0][2]
+    row = _single_row(results, 0, f"VM named {name!r}")
+    if row.get("name") != name or row.get("id") is None:
+        raise Refused("device-probe", f"expected exactly one current VM named {name!r}")
+    return name, row
+
+
+def _probe_device(action: Action, results: Any, vm_row: Mapping[str, Any], device_id: int) -> dict[str, Any]:
+    if (len(action.probe) < 2 or action.probe[1].method != "vm.device.query"
+            or action.probe[1].params != ([["id", "=", device_id]], {})):
+        raise Refused("device-probe", "VM device actions need an exact device ID probe")
+    device = _single_row(results, 1, f"VM device {device_id}")
+    if device.get("id") != device_id or device.get("vm") != vm_row.get("id"):
+        raise Refused("device-probe", f"device {device_id} does not belong to the current VM")
+    return device
+
+
+def _device_id(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise Refused("device-probe", "the device ID must be a positive integer")
+    return value
+
+
+def _validate_vm_device_action(action: Action, results: Any) -> None:
+    """Strict shape and state checks for the TNT-60 / TNT-61 device, import and upload actions."""
+    if len(action.calls) != 1 or not isinstance(results, (list, tuple)) or len(results) != len(action.probe):
+        raise Refused("device-action", f"{action.id} must contain exactly one call and its matching probes")
+    call = action.calls[0]
+    params = call.params
+    if call.method == "filesystem.put":
+        directory = params[0].rpartition("/")[0] if params and isinstance(params[0], str) else ""
+        base = params[0].rpartition("/")[2] if params and isinstance(params[0], str) else ""
+        if (action.kind is not Kind.MUTATE or len(params) != 2 or call.job or len(action.probe) != 2
+                or action.probe[0] != RpcCall("filesystem.stat", (directory,))
+                or action.probe[1] != RpcCall("filesystem.listdir", (directory, [["name", "=", base]], {"limit": 1}))):
+            raise Refused("upload-probe", "an upload needs a directory probe and a destination-name probe")
+        stat_result, existing = results
+        if (not isinstance(stat_result, Mapping) or stat_result.get("realpath") != directory
+                or stat_result.get("type") != "DIRECTORY"):
+            raise Refused("upload-destination", "the destination directory is missing or resolves elsewhere")
+        if not isinstance(existing, list):
+            raise Refused("upload-probe", "the destination-name probe returned an unexpected result")
+        if existing:
+            raise Refused("already-exists", f"{params[0]!r} already exists; tnt never overwrites an uploaded file")
+        return
+    name, vm_row = _probe_vm(action, results)
+    if call.method == "vm.device.update":
+        device_id = _device_id(params[0] if params else None)
+        device = _probe_device(action, results, vm_row, device_id)
+        payload = params[1] if len(params) == 2 else None
+        if action.kind is not Kind.MUTATE or call.job or not isinstance(payload, Mapping) or len(action.probe) != 2:
+            raise Refused("device-action", "a device update is one non-job MUTATE call with a VM and device probe")
+        _validate_device_update_payload(payload, device)
+        attrs = device.get("attributes") if isinstance(device.get("attributes"), Mapping) else {}
+        if "attributes" in payload and attrs.get("dtype") in _DISK_DTYPES:
+            _require_vm_stopped(vm_row, f"VM {name} (disk changes need a stopped VM)", autostart_off=False)
+        return
+    if call.method == "vm.device.delete":
+        device_id = _device_id(params[0] if params else None)
+        device = _probe_device(action, results, vm_row, device_id)
+        options = params[1] if len(params) == 2 else None
+        if (action.kind is not Kind.DESTRUCTIVE or call.job or not isinstance(options, Mapping) or len(action.probe) != 2
+                or action.confirm_target != f"{name}#{device_id}"):
+            raise Refused("device-action", "a device delete is one DESTRUCTIVE call confirmed by VM name and device ID")
+        backing = _device_backing(device, delete_zvol=options.get("zvol") is True, delete_raw_file=options.get("raw_file") is True)
+        if action.confirm_second != backing:
+            raise Refused("device-action", "the second confirmation must name exactly the backing data being deleted")
+        attrs = device.get("attributes") if isinstance(device.get("attributes"), Mapping) else {}
+        if attrs.get("dtype") in _DISK_DTYPES:
+            _require_vm_stopped(vm_row, f"VM {name} (disk changes need a stopped VM)", autostart_off=False)
+        return
+    if call.method == "vm.device.create":
+        payload = params[0] if len(params) == 1 else None
+        attributes = payload.get("attributes") if isinstance(payload, Mapping) else None
+        zvol = attributes.get("zvol_name") if isinstance(attributes, Mapping) else None
+        source = action.probe[2].params[0].get("path") if (
+            len(action.probe) == 3 and action.probe[2].method == "vm.device.virtual_size" and len(action.probe[2].params) == 1
+            and isinstance(action.probe[2].params[0], Mapping)) else None
+        if (action.kind is not Kind.MUTATE or call.job or not isinstance(attributes, Mapping)
+                or set(payload) != {"vm", "order", "attributes"} or payload["order"] is not None
+                or payload["vm"] != vm_row.get("id")
+                or set(attributes) != {"dtype", "path", "type", "create_zvol", "zvol_name", "zvol_volsize"}
+                or attributes["dtype"] != "DISK" or attributes["path"] is not None or attributes["create_zvol"] is not True
+                or attributes["type"] not in ("AHCI", "VIRTIO") or not isinstance(zvol, str)
+                or not isinstance(attributes["zvol_volsize"], int) or isinstance(attributes["zvol_volsize"], bool)
+                or action.probe[1] != RpcCall("pool.dataset.query", ([["id", "=", zvol]], {"select": ["id"]}))
+                or not isinstance(source, str)):
+            raise Refused("device-action", "a disk import create step has an unexpected shape")
+        validated_zvol_name(zvol)
+        _require_vm_stopped(vm_row, f"VM {name}")
+        if results[1] != []:
+            raise Refused("already-exists", f"ZFS dataset {zvol!r} already exists; choose a new unused zvol name")
+        size = results[2]
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise Refused("vm-disk-import", "vm.device.virtual_size returned an invalid size")
+        if attributes["zvol_volsize"] < size:
+            raise Refused("vm-disk-import", "the zvol capacity is smaller than the image's virtual size")
+        return
+    if call.method == "vm.device.convert":
+        data = params[0] if len(params) == 1 else None
+        destination = data.get("destination") if isinstance(data, Mapping) else None
+        zvol = destination.removeprefix("/dev/zvol/") if isinstance(destination, str) else ""
+        if (action.kind is not Kind.MUTATE or not call.job or not isinstance(data, Mapping) or len(action.probe) != 3
+                or set(data) != {"source", "destination"} or action.probe[1].method != "vm.device.query"
+                or action.probe[2] != RpcCall("pool.dataset.query", ([["id", "=", zvol]], {"select": ["id", "type"]}))):
+            raise Refused("device-action", "a disk import convert step has an unexpected shape")
+        validated_image_path(data["source"])
+        validated_zvol_name(zvol)
+        probe_params = action.probe[1].params
+        device_id = _device_id(probe_params[0][0][2] if probe_params and probe_params[0] and probe_params[0][0] else None)
+        device = _probe_device(action, results, vm_row, device_id)
+        attrs = device.get("attributes") if isinstance(device.get("attributes"), Mapping) else {}
+        if attrs.get("dtype") != "DISK" or attrs.get("path") != destination:
+            raise Refused("device-action", "the device is not the new disk backed by the destination zvol")
+        _require_vm_stopped(vm_row, f"VM {name}")
+        volume = _single_row(results, 2, f"zvol {zvol!r}")
+        if volume.get("id") != zvol or volume.get("type") != "VOLUME":
+            raise Refused("device-action", f"{zvol!r} is not an existing zvol")
+        return
+    raise Refused("device-action", f"{action.id} does not accept the call {call.method}")
 
 
 def _system_preflight_calls() -> tuple[RpcCall, ...]:
@@ -1709,6 +2080,11 @@ def _validate_config_export_probe(action: Action, probe_results: Any) -> None:
 def validate_plan_preconditions(action: Action, probe_results: Any) -> None:
     """Enforce data-use checks on both plan creation and apply, after fresh probe reads."""
     _validate_system_preflight(action, probe_results)
+    if action.id in ("TNT-60", "TNT-61"):
+        _validate_vm_device_action(action, probe_results)
+        return
+    if any(call.method in _DEVICE_ACTION_METHODS for call in action.calls):
+        raise Refused("device-action", "device update/delete, image convert and file upload belong to their own reviewed actions")
     if any(call.method == "core.download" for call in action.calls):
         _validate_config_export_probe(action, probe_results)
     deletions = [call for call in action.calls if call.method == "pool.dataset.delete"]

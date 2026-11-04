@@ -50,7 +50,9 @@ real run (netcup test host, controller-driven) is still to happen. Open:
 (a) writing `io.cost.model`/`io.cost.qos` and enabling io.cost from the
 result (deliberately separate, "Not yet"); (b) Case B (hook already wrote
 swap) only benchmarks if tail free space remains, which is rarely the case;
-(c) `HostActions.run` has no timeout, so a hung `fio` would hang stage 2.
+(c) was "`HostActions.run` has no timeout": closed, `HostActions.run(timeout=)`
+exists (`actions.py:174-180`) and `_run_io_benchmark` passes timeouts for sync,
+umount, mkfs, dd and the tool (`installer.py:3138-3310`).
 
 ## Feature request: a zswap fill-watermark governor
 
@@ -113,7 +115,7 @@ Operator asked (2026-09-08, netcup live-test session) whether the scp-api/
 debian-install-v2 tooling could adopt nyxloom's Telegram/Mattermost
 notification adapter (`nyxloom/src/nyxloom/notify.py`) instead of
 maintaining its own separate Telegram-only sender, since nyxloom now has a
-running Mattermost stack on main (`mattermost-server/`).
+running Mattermost stack on main (`voice-screen-share/mattermost-server/`).
 
 **Investigated. Findings:**
 
@@ -180,3 +182,20 @@ installs the hook and rebuilds initramfs images. An unplanned reboot during
 `update-initramfs -k all` therefore has the guards already in place. The
 recorded dry-run test asserts both guard writes precede the hook write and
 initramfs rebuild; refused and uncapped paths remain covered.
+
+## OPEN (operator decision 2026-11-04): the TrueNAS part of the seed-ISO recipe becomes a pointer to tnt
+
+debian-install-v2 stays the seed-ISO builder only; no TrueNAS API code goes into it. The TrueNAS/Proxmox mention in
+`docs/CONSUMERS.md` ("Build a private VM seed ISO", the paragraph naming TrueNAS SCALE, and the VM attach step) does not
+say how the cloud image reaches the NAS. Change it so that the TrueNAS steps are a pointer to tnt (TNT-61 imports the cloud image
+into a zvol, TNT-60 manages the devices), as:
+
+1. Put the Debian cloud image and the seed ISO (and their `.sha256` files) in the repo-level `downloads/`.
+2. `tnt files put <name> <dataset-dir>` (API upload from `downloads/` only, verified against the sha256; TNT-61 stage 1).
+3. `tnt vm disk import <dataset-path> --zvol <pool/zvol>` (TNT-61 stage 2, with its capability probe).
+4. `tnt vm create --iso <seed>`.
+5. `tnt vm device add` (and `tnt vm device list/update/delete`, TNT-60, to inspect or fix the devices).
+
+The Proxmox and Hyper-V mentions stay as they are. Acceptance: the section links tnt's CONSUMERS and names no TrueNAS API method; a
+docs test (if the file has one) still passes; the existing recipe is kept as the manual fallback until tnt TNT-61 ships. Depends on tnt
+TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).

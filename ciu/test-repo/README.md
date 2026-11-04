@@ -59,10 +59,10 @@ ciu up --profile workers
 ciu secrets list -d applications/app-config
 
 # 5. Tear down (containers, volumes, rendered artifacts).
-ciu clean -y
+ciu clean --yes
 #    Reset a single stack incl. its [state] and (optionally) secret files:
-#    ciu up --dir infra/vault --reset -y
-#    ciu secrets reset -d infra/vault -y       # also delete its secret files
+#    ciu up --dir infra/vault --reset --yes
+#    ciu secrets reset --dir infra/vault --yes # also delete its secret files
 ```
 
 `ciu render --profile all` renders every stack's `ciu.toml`

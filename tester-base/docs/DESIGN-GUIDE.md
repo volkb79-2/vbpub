@@ -23,6 +23,11 @@ liability, not just a size problem:
   (version = what the MDT image shipped when the base was cut). `--no-install-recommends` keeps
   buildx and compose out. Consumer images add their own userland on top; that does not change this
   base or its `contract` lane (see "Consumer additions" below).
+- **Source hash scope.** `org.vbpub.tester-base.source-hash` is the sha256 of `tester-base/Dockerfile`
+  alone, valid because the Dockerfile is the build's only input; `tests/test_source_hash.py` fails when a
+  `COPY`, `ADD`, `--mount`, `--build-context` or bake `contexts` entry appears, until the hash is widened.
+  The hash is *source*-stale detection only: content fetched at build time and not pinned (the apt
+  `minisign` package, the apt indexes) is not captured, so two builds of the same hash can differ in it.
 - **T3 bootstrap from the repository alone.** The build needs only public upstream inputs: no
   estate artifact, no cmru. The consumers' base ARGs (`TESTER_UNIFIED_BASE_IMAGE` in tester-unified, `WHEEL_BUILDER_BASE_IMAGE` in
   wheel-builder) and run-gate's `[environments.host].image` are `tester-base:local` until the first CMRU

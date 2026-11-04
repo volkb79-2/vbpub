@@ -4746,7 +4746,7 @@ def test_run_gate_fetcher_turns_a_truncated_download_into_a_clean_refusal(tmp_pa
         def __exit__(self, *exc):
             return False
 
-        def read(self):
+        def read(self, _limit=None):
             raise http.client.IncompleteRead(b"partial", 100)
 
     class Opener:
@@ -4923,15 +4923,29 @@ def test_the_age_window_never_applies_to_a_first_party_package(tmp_path):
     # A global age setting (pip reads PIP_UPLOADED_PRIOR_TO, or a pip.conf key, for EVERY invocation,
     # including the ones inside `python -m build`'s isolated environment and any later first-party
     # install into the venv) would apply the window to first-party packages invisibly to the
-    # per-command checks below. None of the three images may set one. TB-08 proposes exactly such an
-    # ENV for wheel-builder's run-time backend installs: adopting it means revisiting this guard
-    # (e.g. asserting the env is unset for any first-party install), not deleting it.
+    # per-command checks below. tester-unified and tester-base may not set one. TB-08 (operator decision D3,
+    # 2026-11-04) adopts exactly one such ENV, in wheel-builder only, so the build backends `python -m
+    # build` resolves at run time obey the window; that is safe for first-party packages only while no
+    # `[build-system].requires` names one and the image installs nothing first-party from an index
+    # (both asserted below).
     for dockerfile in (DOCKERFILE, WHEEL_BUILDER, tester_base):
         code = "\n".join(
             line for line in dockerfile.read_text("utf-8").splitlines() if not line.lstrip().startswith("#")
         )
-        assert "PIP_UPLOADED_PRIOR_TO" not in code, dockerfile.name
+        if dockerfile == WHEEL_BUILDER:
+            assert re.findall(r"PIP_UPLOADED_PRIOR_TO\S*", code) == ["PIP_UPLOADED_PRIOR_TO=${PIP_MIN_RELEASE_AGE}"]
+            assert re.search(r"(?m)^ENV PIP_UPLOADED_PRIOR_TO=\$\{PIP_MIN_RELEASE_AGE\}$", code)
+        else:
+            assert "PIP_UPLOADED_PRIOR_TO" not in code, dockerfile.name
         assert not re.search(r"pip\.conf|PIP_CONFIG_FILE|uploaded[-_]prior[-_]to\s*=", code), dockerfile.name
+    first_party_names = gen.derive_internal(REPO_ROOT) | gen.ESTATE_INTERNAL
+    named = {}
+    for pyproject in [*REPO_ROOT.glob("*/pyproject.toml"), *REPO_ROOT.glob("libraries/*/pyproject.toml")]:
+        requires = tomllib.loads(pyproject.read_text("utf-8")).get("build-system", {}).get("requires", [])
+        hit = [r for r in requires if gen.requirement_name(r) in first_party_names]
+        if hit:
+            named[str(pyproject.relative_to(REPO_ROOT))] = hit
+    assert named == {}, f"a first-party package in [build-system].requires would meet the wheel-builder age window: {named}"
 
     aged, first_party = [], []
     for dockerfile in (DOCKERFILE, WHEEL_BUILDER):
@@ -4967,3 +4981,275 @@ def test_wheel_builder_ages_its_pip_installs_and_pins_nothing():
     assert len(installs) == 2
     for line in installs:
         assert '--uploaded-prior-to "${PIP_MIN_RELEASE_AGE}"' in line and "==" not in line
+
+
+# --- TB-07 / TB-10 / TB-11 / TB-12 (fix-tb-1-20261104) -------------------------------------------------
+
+def test_consumer_images_reset_the_inherited_tester_base_identity_labels():
+    """TB-11: OCI labels are inherited from the base, so tester-unified and wheel-builder would otherwise
+    carry kind=tester-base (passing the bootstrap's kind check) and the base's source-hash. Both reset
+    them to empty."""
+    for dockerfile in (DOCKERFILE, WHEEL_BUILDER):
+        text = re.sub(r"\s*\\\n\s*", " ", dockerfile.read_text("utf-8"))
+        assert re.search(r'(?m)^LABEL org\.vbpub\.tester-base\.kind="" org\.vbpub\.tester-base\.source-hash=""$', text), dockerfile
+    script = (REPO_ROOT / "cmru" / "build-initial-standalone.sh").read_text("utf-8")
+    assert 'org.vbpub.tester-unified.base-image' in script and "is a tester-unified image" in script
+
+
+def _stub_docker_tree(tmp_path, *, present=(), pull_ok=True):
+    """A scratch repo root holding build-image.sh plus stub docker/cmru/python helpers; returns (script, env, log).
+    `present` names the references `docker image inspect` finds; buildx stops the script with exit 42."""
+    root = tmp_path / "repo"
+    (root / "tester-unified").mkdir(parents=True)
+    (root / "wings-patchstack").mkdir()
+    (root / "wings-patchstack" / "stack.conf").write_text(
+        (REPO_ROOT / "wings-patchstack" / "stack.conf").read_text("utf-8"), encoding="utf-8")
+    source = GENERATOR.parent
+    for name in ("build-image.sh", "Dockerfile"):
+        (root / "tester-unified" / name).write_text((source / name).read_text("utf-8"), encoding="utf-8")
+    wheel = tmp_path / "wheels" / "run_gate-1.0.0-py3-none-any.whl"
+    wheel.parent.mkdir(parents=True)
+    wheel.write_bytes(b"rg")
+    digest = hashlib.sha256(b"rg").hexdigest()
+    (root / "tester-unified" / "run-gate-wheel-version.py").write_text(
+        "import json\n"
+        f"print(json.dumps({{'version': '1.0.0', 'sha256': '{digest}', 'filename': '{wheel.name}'}}))\n",
+        encoding="utf-8")
+    log = tmp_path / "docker.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "cmru").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (bin_dir / "docker").write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{log}"\n'
+        'case "$*" in\n'
+        '  "image inspect --format {{.Architecture}} "*) echo amd64; exit 0;;\n'
+        '  "image inspect --format {{.Id}} "*)\n'
+        '    ref="${*##* }"\n'
+        f'    case " {" ".join(present)} " in *" $ref "*) echo sha256:{"a" * 64}; exit 0;; esac\n'
+        f'    if [ -f "{tmp_path}/pulled" ]; then echo sha256:{"a" * 64}; exit 0; fi\n'
+        '    exit 1;;\n'
+        f'  pull*) touch "{tmp_path}/pulled"; exit {0 if pull_ok else 1};;\n'
+        '  buildx*) exit 42;;\n'
+        'esac\n'
+        'exit 0\n', encoding="utf-8")
+    for tool in (bin_dir / "cmru", bin_dir / "docker"):
+        tool.chmod(0o755)
+    scratch = tmp_path / "tmp"
+    scratch.mkdir(parents=True)
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "TMPDIR": str(scratch)}
+    return root / "tester-unified" / "build-image.sh", env, log, wheel.parent
+
+
+def _run_stub_build(tmp_path, base, *extra, present=(), pull_ok=True):
+    script, env, log, wheel_dir = _stub_docker_tree(tmp_path, present=present, pull_ok=pull_ok)
+    result = subprocess.run(
+        ["bash", str(script), "--wheel-dir", str(wheel_dir), "--cgroup-parent", "dev-gates.slice",
+         "--base-image", base, *extra],
+        capture_output=True, text=True, check=False, env=env,
+    )
+    return result, log.read_text("utf-8") if log.exists() else ""
+
+
+@pytest.mark.parametrize("base", ["ghcr.io/volkb79-2/tester-base:1.0.0", "localhost:5000/tester-base:x", "registry.example:5000/a/b:1"])
+def test_build_image_pulls_an_absent_base_that_names_a_registry_host(tmp_path, base):
+    result, log = _run_stub_build(tmp_path, base)
+    assert f"pull {base}" in log and result.returncode == 42, result.stderr
+
+
+@pytest.mark.parametrize("base", ["python:3.14-trixie", "myorg/base:local", "tester-base:local"])
+def test_build_image_does_not_pull_a_base_without_a_registry_host_unless_told(tmp_path, base):
+    """TB-07: a slash no longer means a registry. `myorg/base:local` is not silently pulled from Docker Hub,
+    and the Hub library reference `python:3.14-trixie` is refused with the way out instead of dying obscurely."""
+    result, log = _run_stub_build(tmp_path, base)
+    assert result.returncode == 2 and "has no registry to pull from" in result.stderr and "--pull-base" in result.stderr
+    assert "pull " not in log.replace("--pull-base", "")
+    result, log = _run_stub_build(tmp_path / "again", base, "--pull-base")
+    assert f"pull {base}" in log and result.returncode == 42, result.stderr
+
+
+def test_build_image_never_pulls_a_base_that_is_present_locally(tmp_path):
+    result, log = _run_stub_build(tmp_path, "myorg/base:local", present=("myorg/base:local",))
+    assert result.returncode == 42 and not any(line.startswith("pull ") for line in log.splitlines())
+
+
+def _fetch_fixture(tmp_path, version="24.1.0", wheel=b"rg-wheel"):
+    return _fake_run_gate_release(version, wheel=wheel)
+
+
+def test_run_gate_fetcher_leaves_the_verified_digest_beside_the_wheel(tmp_path):
+    fetcher, fetch, digest, name = _fake_run_gate_release()
+    wheel = fetcher.fetch_wheel(None, tmp_path / "s", fetch)
+    assert (wheel.parent / (name + ".sha256")).read_text("utf-8") == f"{digest}  {name}\n"
+    assert sorted(p.name for p in wheel.parent.iterdir()) == [name, name + ".sha256"]
+
+
+def test_run_gate_fetcher_retries_a_transient_failure_a_bounded_number_of_times(tmp_path):
+    fetcher, fetch, _, name = _fake_run_gate_release()
+    failures = {"left": 2}
+    sleeps = []
+
+    def flaky(url):
+        if url.endswith(".whl") and failures["left"]:
+            failures["left"] -= 1
+            raise OSError("reset")
+        return fetch(url)
+
+    assert fetcher.fetch_wheel(None, tmp_path / "a", flaky, sleep=sleeps.append).name == name
+    assert sleeps == [1.0, 2.0]
+    failures["left"] = 99
+    calls = []
+
+    def always(url):
+        calls.append(url)
+        raise OSError("down")
+
+    with pytest.raises(SystemExit, match="cannot read the release pointer"):
+        fetcher.fetch_wheel(None, tmp_path / "b", always, sleep=lambda _s: None)
+    assert len(calls) == 3
+    assert not (tmp_path / "b").exists()
+
+
+def test_run_gate_fetcher_does_not_retry_an_oversized_body_or_an_http_4xx(tmp_path):
+    import urllib.error
+
+    fetcher, fetch, _, _ = _fake_run_gate_release()
+    for error in (
+        fetcher._net.ResponseTooLarge("too big"),
+        urllib.error.HTTPError("https://x", 404, "not found", {}, None),
+    ):
+        calls = []
+
+        def refuse(url, error=error):
+            calls.append(url)
+            raise error
+
+        with pytest.raises(SystemExit):
+            fetcher.fetch_wheel("24.1.0", tmp_path / type(error).__name__, refuse, sleep=lambda _s: pytest.fail("slept"))
+        assert len(calls) == 1, (error, calls)
+
+
+def test_the_shared_transport_caps_a_response_body(monkeypatch):
+    fetcher = _load_run_gate_fetcher()
+    net = fetcher._net
+
+    class Response:
+        def __init__(self, size):
+            self.size = size
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def read(self, limit):
+            return b"x" * min(limit, self.size)
+
+    class Opener:
+        def __init__(self, size):
+            self.size = size
+
+        def open(self, url, timeout):
+            return Response(self.size)
+
+    assert net.MAX_RESPONSE_BYTES == 64 * 1024 * 1024
+    monkeypatch.setattr(net, "_opener", lambda url: Opener(10))
+    assert net._urlopen_bytes("https://github.com/x", max_bytes=10) == b"x" * 10
+    monkeypatch.setattr(net, "_opener", lambda url: Opener(11))
+    with pytest.raises(net.ResponseTooLarge, match="more than 10 bytes"):
+        net._urlopen_bytes("https://github.com/x", max_bytes=10)
+
+
+def _published_build(tmp_path, sidecar_text):
+    """build-image.sh --run-gate-published against a stub fetcher that stages a wheel and, optionally, a sidecar."""
+    script, env, log, _wheel_dir = _stub_docker_tree(tmp_path)
+    fetcher = script.with_name("fetch-run-gate-wheel.py")
+    sidecar = "" if sidecar_text is None else (
+        f"(dest / 'run_gate-1.0.0-py3-none-any.whl.sha256').write_text({sidecar_text!r})\n")
+    fetcher.write_text(
+        "import sys\nfrom pathlib import Path\n"
+        "dest = Path(sys.argv[sys.argv.index('--dest') + 1])\n"
+        "(dest / 'run_gate-1.0.0-py3-none-any.whl').write_bytes(b'rg')\n" + sidecar,
+        encoding="utf-8")
+    result = subprocess.run(
+        ["bash", str(script), "--run-gate-published", "1.0.0", "--cgroup-parent", "dev-gates.slice",
+         "--base-image", "ghcr.io/x/y:1"],
+        capture_output=True, text=True, check=False, env=env,
+    )
+    return result
+
+
+def test_build_image_requires_the_fetchers_digest_to_equal_its_own_hash(tmp_path):
+    good = hashlib.sha256(b"rg").hexdigest()
+    assert _published_build(tmp_path / "ok", f"{good}  run_gate-1.0.0-py3-none-any.whl\n").returncode == 42
+    result = _published_build(tmp_path / "bad", "0" * 64 + "  run_gate-1.0.0-py3-none-any.whl\n")
+    assert result.returncode == 2 and "does not match the digest the fetcher verified" in result.stderr
+    result = _published_build(tmp_path / "none", None)
+    assert result.returncode == 2 and "left no run_gate-1.0.0-py3-none-any.whl.sha256" in result.stderr
+
+
+def _promote(tmp_path, *args, present=None, tag_log=None):
+    """Run promote-image.sh against a stub docker. `present` maps a reference to its image id."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    log = tmp_path / "docker.log"
+    table = "".join(f'    "{ref}") echo {image_id};;\n' for ref, image_id in (present or {}).items())
+    (bin_dir / "docker").write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{log}"\n'
+        'if [ "$1 $2" = "image inspect" ]; then\n'
+        '  ref="${*##* }"\n'
+        '  case "$ref" in\n' + table + '    *) exit 1;;\n  esac\n  exit 0\nfi\n'
+        'exit 0\n', encoding="utf-8")
+    (bin_dir / "docker").chmod(0o755)
+    result = subprocess.run(
+        ["bash", str(REPO_ROOT / "tester-unified" / "promote-image.sh"), "--record-dir", str(tmp_path / "rec"), *args],
+        capture_output=True, text=True, check=False,
+        env={"PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )
+    return result, log.read_text("utf-8") if log.exists() else ""
+
+
+def test_promote_keeps_the_replaced_image_and_promotes_the_candidate_by_id(tmp_path):
+    old, new = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+    result, log = _promote(
+        tmp_path, "--image", "tester-unified", "--candidate", "tester-unified:wave-1", "--date", "20261104",
+        present={"tester-unified:wave-1": new, "tester-unified:local": old},
+    )
+    assert result.returncode == 0, result.stderr
+    commands = log.splitlines()
+    assert f"tag {old} tester-unified:prev-20261104" in commands
+    assert f"tag {new} tester-unified:local" in commands
+    assert commands.index(f"tag {old} tester-unified:prev-20261104") < commands.index(f"tag {new} tester-unified:local")
+    record = json.loads((tmp_path / "rec" / "tester-unified-20261104.json").read_text("utf-8"))
+    assert record["replaced_id"] == old and record["promoted_id"] == new and record["prev_tag"] == "tester-unified:prev-20261104"
+
+
+def test_promote_refuses_to_overwrite_an_existing_rollback_tag(tmp_path):
+    old, new = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+    result, log = _promote(
+        tmp_path, "--image", "wheel-builder", "--candidate", "wheel-builder:wave-1", "--date", "20261104",
+        present={"wheel-builder:wave-1": new, "wheel-builder:local": old, "wheel-builder:prev-20261104": "sha256:" + "3" * 64},
+    )
+    assert result.returncode == 2 and "refusing to overwrite a rollback tag" in result.stderr
+    assert not any(line.startswith("tag ") for line in log.splitlines())
+    assert not (tmp_path / "rec").exists()
+
+
+def test_promote_refuses_an_unknown_candidate_and_bad_arguments(tmp_path):
+    result, log = _promote(tmp_path, "--image", "tester-unified", "--candidate", "nope", "--date", "20261104")
+    assert result.returncode == 2 and "does not exist" in result.stderr
+    for args in (["--image", "other", "--candidate", "x"], ["--image", "wheel-builder"],
+                 ["--image", "wheel-builder", "--candidate", "x", "--date", "tomorrow"]):
+        assert _promote(tmp_path / "b", *args)[0].returncode == 2, args
+
+
+def test_promote_without_a_current_local_image_keeps_no_rollback_and_never_reuses_a_record(tmp_path):
+    new = "sha256:" + "2" * 64
+    args = ("--image", "wheel-builder", "--candidate", "wheel-builder:wave-1", "--date", "20261104-a")
+    result, log = _promote(tmp_path, *args, present={"wheel-builder:wave-1": new})
+    assert result.returncode == 0 and "nothing to keep as a rollback" in result.stderr
+    assert [line for line in log.splitlines() if line.startswith("tag ")] == [f"tag {new} wheel-builder:local"]
+    again, _ = _promote(tmp_path, *args, present={"wheel-builder:wave-1": new})
+    assert again.returncode == 2 and "promotion record" in again.stderr

@@ -1,0 +1,60 @@
+# ─── Example 2 (pattern E): web UI + a TCP/UDP media port (Calls-like) ────────
+#
+# Use case: a service with an HTTPS UI AND a raw media port (WebRTC, as in
+# Mattermost Calls).  HTTPS goes through the host-name router on :443; the media
+# traffic is NOT HTTP, so it uses a TCP router and a UDP router on the edge's
+# two extra entrypoints:
+#
+#   https://rtc.<TLS_EDGE_DOMAIN>        -> websecure (:443)            -> app:8080
+#   <public-ip>:8443/udp (preferred)     -> mattermost-calls-udp        -> app:8443/udp
+#   <public-ip>:8443/tcp (fallback)      -> mattermost-calls-tcp        -> app:8443/tcp
+#
+# The entrypoints exist when the edge has [tls_edge.calls] enabled = true (the
+# default).  Their names are fixed by the edge: mattermost-calls-tcp and
+# mattermost-calls-udp.  There is ONE media pair per edge: only one consumer
+# may attach to it (a second would share the public port).
+#
+# Rules of the transports:
+#   - TCP router: rule HostSNI(`*`) (no TLS termination here: media is opaque).
+#   - UDP router: NO rule (UDP has no host name), only entrypoints + service.
+#   - The app advertises <public host>:8443 to its clients (ICE host override);
+#     the host/provider firewall must allow 8443/tcp and 8443/udp inbound.
+#   - The app publishes no host port; the backend is reached on ingress_public.
+#
+# Run:  docker compose --env-file ../.env.example up -d   (edit the domain first)
+
+services:
+
+  app:
+    image: your-image:tag          # replace with the real image
+    restart: unless-stopped
+    expose:
+      - "8080"
+      - "8443/tcp"
+      - "8443/udp"
+    networks:
+      - ingress_public
+    labels:
+      - traefik.enable=true
+      # Tell Traefik which network to use when the container has several.
+      - traefik.docker.network=ingress_public
+
+      # (1) HTTPS UI: host-name router, certificate issued for this host.
+      - traefik.http.routers.pattern-e-app.rule=Host(`rtc.${TLS_EDGE_DOMAIN:?set TLS_EDGE_DOMAIN}`)
+      - traefik.http.routers.pattern-e-app.entrypoints=websecure
+      - traefik.http.services.pattern-e-app.loadbalancer.server.port=8080
+
+      # (2) TCP media fallback.
+      - traefik.tcp.routers.pattern-e-media-tcp.rule=HostSNI(`*`)
+      - traefik.tcp.routers.pattern-e-media-tcp.entrypoints=mattermost-calls-tcp
+      - traefik.tcp.routers.pattern-e-media-tcp.service=pattern-e-media-tcp
+      - traefik.tcp.services.pattern-e-media-tcp.loadbalancer.server.port=8443
+
+      # (3) UDP media (preferred).  No rule: UDP has no host name.
+      - traefik.udp.routers.pattern-e-media-udp.entrypoints=mattermost-calls-udp
+      - traefik.udp.routers.pattern-e-media-udp.service=pattern-e-media-udp
+      - traefik.udp.services.pattern-e-media-udp.loadbalancer.server.port=8443
+
+networks:
+  ingress_public:
+    external: true

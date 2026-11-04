@@ -725,12 +725,14 @@ def test_eval_of_env_print_populates_a_real_shell(monkeypatch, tmp_path):
     assert probe == "it's a $(nasty) value"
 
 
-def test_env_print_help_is_reachable_and_names_eval(capsys):
-    assert cli._wants_verb_help("env", ["print", "--help"]) is False
+def test_env_print_help_is_reachable_and_names_eval(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["ciu", "env", "print", "--help"])
     with pytest.raises(SystemExit) as exc:
-        cli._env_print(["--help"])
+        cli.main()
     assert exc.value.code == 0
-    assert "--root-folder" in capsys.readouterr().out
+    out = " ".join(capsys.readouterr().out.split())
+    assert "--root-folder" in out
+    assert 'eval "$(ciu env print)"' in out
 
 
 def test_ciu_env_print_is_reachable_from_the_public_dispatcher(
@@ -748,9 +750,17 @@ def test_ciu_env_print_is_reachable_from_the_public_dispatcher(
     assert "export REPO_ROOT=" in capsys.readouterr().out
 
 
-def test_env_verb_help_text_names_print_and_is_honest_about_eval():
-    text = cli._VERB_HELP["env"]
-    assert "ciu env print" in text
+def test_env_verb_help_text_names_print_and_is_honest_about_eval(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["ciu", "env", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
+    assert "print" in text and "generate" in text
+    monkeypatch.setattr(sys, "argv", ["ciu", "env", "print", "--help"])
+    with pytest.raises(SystemExit):
+        cli.main()
+    text = " ".join(capsys.readouterr().out.split())
     assert 'eval "$(ciu env print)"' in text
     # O5's negative: never documented as applying/sourcing into this shell.
     assert "ciu env apply" not in text

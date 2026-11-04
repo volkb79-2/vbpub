@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-31
 title: "Daemon socket absence makes profiling warn in lanes; classify the causes and keep a missing socket distinct from a refusing daemon"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "daemon"
@@ -49,3 +49,5 @@ so the 1.1.0 daemon passes its own guard here. Consumers cannot tell "socket not
 ## Oracles
 
 Fixture per cause produces a distinct, actionable message; no cause is reported as "absent" when the socket exists.
+
+FIXED 2026-11-04 (05ea66bda). Daemon side: the accept loop verifies every `SOCKET_CHECK_INTERVAL_SECONDS` (5 s) that the control path is a socket with the inode this process bound, rebinds when it is missing or replaced, and when it cannot rebind sets the loss flag so `serve_forever` returns `EXIT_SOCKET_LOST` (3) and `cgprofile serve` exits 3 (restart policy recreates it). Client side: `ctl` connect failures end in `[cause: socket-not-mounted | socket-missing | daemon-refusing | socket-permission]` (`_ctl_unreachable_cause`), classified from errno and the socket directory only; the three causes and the daemon behaviour are in `docs/CONSUMERS.md`. The crash-loop-on-slice-guard cause appears as `daemon-refusing` (node present, nothing listening), as the entry's third cause allows when only the carrier's view is available; the run-gate warning text itself is run-gate's and carries the `ctl` line verbatim. Tests: `test_cp31_*` in `tests/test_serve.py`, `TestCtlUnreachableCause` and `test_a_lost_control_socket_exits_with_the_servers_non_zero_status` in `tests/test_cgprofile.py`.

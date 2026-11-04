@@ -12,3 +12,11 @@ remote-logs/
 
 # Local env files (secrets)
 .env
+# Local runtime and Python build artifacts
+.state/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Runner host values (host-specific; copy runner/runner.env.example)
+runner/runner.env

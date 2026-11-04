@@ -1,7 +1,7 @@
 # ntfy — nyxloom notification channel
 
 > **RETIRED as the active channel (2026-09-08, backlog NL-17 / nyxloom-P106),
-> kept intact and selectable.** [mattermost-server/](../../mattermost-server/) is the live
+> kept intact and selectable.** [voice-screen-share/mattermost-server/](../../voice-screen-share/mattermost-server/) is the live
 > channel now; the `nyxloom-ntfy` container was STOPPED (not removed) and this
 > stack moved out of the root's default `ciu up` profile into
 > `[deploy.profiles.legacy]`. `notify.py` still carries a full ntfy backend,
@@ -26,13 +26,16 @@ no signup, no attachments, bounded cache, conservative visitor limits — see
 ## Deploy (ciu-managed — primary since 2026-07-15)
 
 ```bash
-cd /workspaces/vbpub && ciu up --dir nyxloom/ntfy -y
+cd /workspaces/vbpub && ciu up --dir nyxloom/ntfy --yes
 ```
 
 Standalone-root ciu stack (own `ciu.global.defaults.toml.j2` + stack-local
 `ciu.env`; server.yml arrives via the S5 configfile overlay — a raw relative
 volume bind would resolve to the LOGICAL devcontainer path and the host
-daemon would create an empty directory). Container: `nyxloom-1dd3d1-ntfy`.
+daemon would create an empty directory). Container: `nyxloom-<instance_id>-ntfy`
+(the instance id is per checkout and can be regenerated; read the live name with
+`ciu resolve --dir nyxloom/ntfy --profile default --json`, field `container_name`,
+and use it for `$NTFY` below).
 Data volume `nyxloom-ntfy_ntfy-data` is external — survives `ciu --reset`.
 
 Fallback (plain compose, pre-rendered with absolute physical binds):
@@ -42,14 +45,15 @@ Fallback (plain compose, pre-rendered with absolute physical binds):
 ## Provisioning (once, after first start)
 
 ```bash
+NTFY=nyxloom-<instance_id>-ntfy   # the container_name from `ciu resolve` above
 # admin (interactive password prompt — or NTFY_PASSWORD env for scripted):
-docker exec -it nyxloom-1dd3d1-ntfy ntfy user add --role=admin admin
+docker exec -it "$NTFY" ntfy user add --role=admin admin
 # nyxloom publisher: restricted user + access token, write-only on its topics
-docker exec -it nyxloom-1dd3d1-ntfy ntfy user add nyxloom
-docker exec nyxloom-1dd3d1-ntfy ntfy access nyxloom "nyxloom-*" write-only
-docker exec nyxloom-1dd3d1-ntfy ntfy token add nyxloom   # -> tk_... for notify config
+docker exec -it "$NTFY" ntfy user add nyxloom
+docker exec "$NTFY" ntfy access nyxloom "nyxloom-*" write-only
+docker exec "$NTFY" ntfy token add nyxloom   # -> tk_... for notify config
 # your phone/browser subscriber (read access):
-docker exec nyxloom-1dd3d1-ntfy ntfy access admin "nyxloom-*" read-write
+docker exec "$NTFY" ntfy access admin "nyxloom-*" read-write
 ```
 
 Auth state lives in the `ntfy-data` volume (`auth.db`) — never in files here.

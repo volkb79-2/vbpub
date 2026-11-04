@@ -288,17 +288,35 @@ def build_report(
     own_requirements: dict[str, list[tuple[str, str]]] = {}
     for consumer, project in projects.items():
         project_root = getattr(project, "project_root", None)
-        pyproject = Path(project_root) / "pyproject.toml" if project_root is not None else None
-        if pyproject is None or not pyproject.is_file():
+        if project_root is None:
             continue
-        try:
-            dist_name, requirements = _pyproject_requirements(pyproject)
-        except (OSError, ValueError) as exc:
-            errors.append(f"{consumer!r}: cannot read {pyproject}: {exc}")
-            continue
-        if dist_name:
-            aliases.setdefault(_normalise(dist_name), consumer)
-        own_requirements[consumer] = requirements
+        pyproject = Path(project_root) / "pyproject.toml"
+        if pyproject.is_file():
+            try:
+                dist_name, requirements = _pyproject_requirements(pyproject)
+            except (OSError, ValueError) as exc:
+                errors.append(f"{consumer!r}: cannot read {pyproject}: {exc}")
+            else:
+                if dist_name:
+                    aliases.setdefault(_normalise(dist_name), consumer)
+                own_requirements[consumer] = requirements
+        # A wheel living below the project root (KI-83) declares its own
+        # pyproject.toml; every declared one is held to the same rule.
+        for relative in getattr(project, "wheel_pyprojects", ()) or ():
+            nested = Path(project_root) / relative
+            if not nested.is_file():
+                errors.append(
+                    f"{consumer!r}: declared wheel pyproject {relative!r} does not exist"
+                )
+                continue
+            try:
+                _, requirements = _pyproject_requirements(nested)
+            except (OSError, ValueError) as exc:
+                errors.append(f"{consumer!r}: cannot read {nested}: {exc}")
+                continue
+            own_requirements.setdefault(consumer, []).extend(
+                (required, f"{where} (nested {relative})") for required, where in requirements
+            )
     for consumer, requirements in own_requirements.items():
         for required, where in requirements:
             provider = aliases.get(_normalise(required))

@@ -7,6 +7,7 @@ import sys
 from array import array
 from pathlib import Path
 
+import topos
 from conftest import fixture_frame, fixture_root, systemctl_fixture_runner
 from topos.collect.collector import Collector
 from topos.config import ToposConfig
@@ -375,6 +376,6 @@ def test_cli_version_reports_package_version() -> None:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    assert proc.stdout.strip() == "topos 0.1.0"
-    assert proc.stdout == "topos 0.1.0\n"
+    assert proc.stdout.strip() == f"topos {topos.__version__}"
+    assert proc.stdout == f"topos {topos.__version__}\n"
     assert proc.stderr == ""

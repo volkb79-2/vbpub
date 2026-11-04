@@ -272,8 +272,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (`run-gate: config: <path>`), revision, lane name, environment source,
   resolved slice + its source (on exec lanes this is naming-only disclosure
   — `docker exec` can neither place nor cap work), and (container AND exec
-  lanes) the fully assembled docker argv with forwarded values redacted
-  (RG-19). Mechanics are visible, never buried.
+  lanes) the fully assembled docker argv; forwarded values are never on it
+  (`-e KEY`, the value rides in the docker client's environment, RG-117a). Mechanics are visible, never buried.
 
 ## 3. Config schema (both files; `schema_version` must equal 1)
 
@@ -1471,7 +1471,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `tools/coverage_gate.py` (vendored from `topos/tools/`, the estate's
   thinnest copy — MIGRATION PENDING per its header, do not fork further;
   its own `--source` default is scoped to `run_gate.py` alone, not the
-  whole project, so a bare invocation can't silently reproduce the
+  whole project (the lane repeats `--source` for `run_gate_admission.py`
+  too), so a bare invocation can't silently reproduce the
   scoping bug this floor was built to prevent). Because TOTAL line+branch
   coverage measured ~47% at adoption time, the floor enforced is DIFF
   coverage at 100% (topos/nyxloom legacy-code pattern: every changed
@@ -2567,8 +2568,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `peak_at_floor` (RW-46b) is read the SAME way, one field over
     (`memory.peak_at_floor` of that same most-recent-profiled entry) and
     disclosed downstream ONLY when it is `true` — see `R-43i`.
+    `io_sync` (RG-136) names the single I/O mode the entry was distilled
+    from: the lane's policy mode, or for a sequence the mode of the most
+    recent profiled run. Only history entries of that mode feed `runs`,
+    `completed_runs` and every series, and the live footprint line and
+    `doctor`'s drift check compare against the SAME mode's history. An
+    entry without `io_sync` (a manifest written before this field) is
+    treated as `strict`, and `doctor` names the migration (re-run
+    `footprint --write`).
     `last_commit`/`last_at` name the single most recent
-    completed run overall, pass or fail. The five numeric series
+    completed run of that mode, pass or fail. The five numeric series
     (`duration_s`, `memory_peak_bytes`, `memory_peak_over_baseline_bytes`,
     `hot_set_bytes` as `p90_median`/`p90_max`, `cpu_cores` as
     `avg_median`/`max`, `memory_full_stall_s`) reuse `R-36j`'s own

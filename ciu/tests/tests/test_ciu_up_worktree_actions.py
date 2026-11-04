@@ -12,33 +12,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import cli, deploy, engine, worktree  # noqa: E402
 
 
-def test_up_help_actions_match_both_actual_parsers():
-    text = cli._VERB_HELP["up"]
-    shared = {"--deploy", "--healthcheck"}
-    profile_only = {"--check"}
+def test_up_registered_actions_match_both_actual_parsers():
+    """The registered `up` surface only offers flags the implementation parsers accept."""
+    from ciu.cli_registry import build_cli
 
-    action_help = text.split("Actions (S10.2)", 1)[1].split(
-        "Profile/multi-stack mode:", 1
-    )[0]
-    profile_help = text.split("Profile/multi-stack mode:", 1)[1].split(
-        "Layout mode", 1
-    )[0]
-    single_help = text.split("Single-stack mode", 1)[1].split(
-        "Remote (SPEC", 1
-    )[0]
+    up = {v.name: v for v in build_cli().registered_verbs}["up"]
+    registered = {flag for option in up.options for flag in option.flags}
+    shared = {"--deploy", "--healthcheck"}
 
     profile_parser = deploy.build_argument_parser()
     single_parser = engine.build_argument_parser()
     profile_options = set(profile_parser._option_string_actions)
     single_options = set(single_parser._option_string_actions)
 
-    assert all(flag in action_help for flag in shared)
-    assert all(flag in single_help for flag in shared)
-    assert all(flag in profile_help for flag in profile_only)
+    assert shared <= registered
     assert shared <= profile_options
     assert shared <= single_options
-    assert profile_only <= profile_options
-    assert not (profile_only & single_options)
+    # `up --check` was removed from the public surface (use `ciu check`); the
+    # profile parser keeps it internally, the single-stack parser never had it.
+    assert "--check" not in registered
+    assert "--check" in profile_options and "--check" not in single_options
+    # Every registered single-stack flag is accepted by the engine parser.
+    single_flags = {"--render-toml", "--print-context", "--reset", "--skip-hostdir-check",
+                    "--skip-hooks", "--skip-secrets", "--shipped"}
+    assert single_flags <= registered and single_flags <= single_options
 
 
 def test_single_stack_parser_accepts_deploy_and_healthcheck():
@@ -168,7 +165,7 @@ def test_profiles_listing_renders_without_persisting(monkeypatch, tmp_path):
     monkeypatch.setattr(deploy, "bootstrap_workspace_env", lambda **_kwargs: None)
     monkeypatch.setattr(deploy, "enforce_standalone_root", lambda *_args: None)
     monkeypatch.setattr(deploy, "resolve_repo_root", lambda *_args: tmp_path)
-    monkeypatch.setattr(deploy, "action_list_profiles", lambda _config: 0)
+    monkeypatch.setattr(deploy, "action_list_profiles", lambda _config, **_kw: 0)
 
     def render_global_chain(*_args, **kwargs):
         observed["write_rendered"] = kwargs.get("write_rendered")

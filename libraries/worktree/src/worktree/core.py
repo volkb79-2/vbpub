@@ -1227,8 +1227,13 @@ def _finish_permission_recovery(
     admin_snapshot: tuple[Path, tuple[int, int], str],
     checkout_identity: tuple[int, int],
     residual_checkout_guard: Callable[[Path], None] | None = None,
+    mountinfo_reader: Callable[[], str] | None = None,
 ) -> None:
-    """Finish an already-authorized, permission-specific checkout retry."""
+    """Finish an already-authorized, permission-specific checkout retry.
+
+    The mount table is read again before each deletion (WT-OW-01): a mount that
+    appeared after the first check refuses the retry.
+    """
     admin, identity, reverse_link = admin_snapshot
     _verify_workspace_admin_snapshot(current, admin, identity, reverse_link)
     target = current.worktree_path
@@ -1256,6 +1261,7 @@ def _finish_permission_recovery(
                         f"residual checkout guard refused {target}: {exc}",
                         category="cleanup-refusal",
                     ) from exc
+        _refuse_if_mounts_under(target, mountinfo_reader)
         retry = subprocess.run(
             ["git", "worktree", "remove", "--force", str(target)],
             cwd=current.source_git_root, text=True, capture_output=True, check=False,
@@ -1288,6 +1294,7 @@ def _finish_permission_recovery(
                         f"residual checkout guard refused {target}: {exc}",
                         category="cleanup-refusal",
                     ) from exc
+            _refuse_if_mounts_under(target, mountinfo_reader)
             shutil.rmtree(target)
         except WorkspaceError:
             raise
@@ -1321,6 +1328,85 @@ def _finish_permission_recovery(
         )
 
 
+_MOUNTINFO_PATH = "/proc/self/mountinfo"
+_OCTAL_ESCAPE_RE = re.compile(r"\\([0-7]{3})")
+
+
+def _read_mountinfo() -> str:
+    with open(_MOUNTINFO_PATH, encoding="utf-8", errors="surrogateescape") as handle:
+        return handle.read()
+
+
+def _unescape_mountinfo(field_text: str) -> str:
+    """Decode the kernel's octal escapes (space, tab, newline, backslash)."""
+
+    raw = _OCTAL_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 8)), field_text)
+    return raw
+
+
+def mounts_under(
+    path: Path | str,
+    *,
+    mountinfo_reader: Callable[[], str] | None = None,
+) -> list[Path]:
+    """Return mount points at or below ``path`` in the CURRENT mount namespace.
+
+    The mount table is read from ``/proc/self/mountinfo`` (or the injected
+    reader).  Bind mounts, subvolume mounts and nested mounts are all plain
+    mount-table rows, so every one of them is reported.  ``path`` is resolved
+    through symlinks first because the kernel reports resolved mount points.
+    Mounts that exist only in OTHER mount namespaces are invisible here and out
+    of scope.  Unreadable or malformed tables raise ``WorkspaceError`` (fail
+    closed): removal must not proceed on an unknown mount state.
+    """
+
+    root = canonical_path(path)
+    try:
+        text = (mountinfo_reader or _read_mountinfo)()
+    except OSError as exc:
+        raise WorkspaceError(
+            f"could not read the mount table to check {root} for mounts: {exc}",
+            category="cleanup-refusal",
+        ) from exc
+    prefix = os.fspath(root).rstrip("/") + "/"
+    found: list[Path] = []
+    for line in text.splitlines():
+        fields = line.split(" ")
+        if len(fields) < 5:
+            raise WorkspaceError(
+                f"malformed mount table row while checking {root}: {line!r}",
+                category="cleanup-refusal",
+            )
+        mount_point = _unescape_mountinfo(fields[4])
+        if mount_point == os.fspath(root) or mount_point.startswith(prefix):
+            found.append(Path(mount_point))
+    return sorted(set(found))
+
+
+def _refuse_if_mounts_under(
+    path: Path,
+    mountinfo_reader: Callable[[], str] | None,
+) -> None:
+    """Refuse removal when any mount sits at or under ``path`` (WT-OW-01).
+
+    Never overridden by ``force`` and never unmounts anything: descending into
+    a mounted volume could delete data that does not belong to the checkout.
+    The table is read once per call: this is a time-of-check guard, not an
+    atomic one, so deletion paths call it again right before they delete.
+    """
+
+    mounts = mounts_under(path, mountinfo_reader=mountinfo_reader)
+    if not mounts:
+        return
+    listing = "; ".join(f"{mount} (detach it first)" for mount in mounts)
+    raise WorkspaceError(
+        f"refusing to remove {path}: {len(mounts)} mount(s) at or under the "
+        f"workspace: {listing}. Nothing was removed or unmounted; unmount them "
+        "manually and retry. --force does not override this check.",
+        category="cleanup-refusal",
+    )
+
+
 def remove_unrecorded_workspace(
     source_git_root: Path | str,
     target: Path | str,
@@ -1335,6 +1421,7 @@ def remove_unrecorded_workspace(
     ] | None = None,
     residual_checkout_guard: Callable[[Path], None] | None = None,
     on_phase: Callable[[str, str], None] | None = None,
+    mountinfo_reader: Callable[[], str] | None = None,
 ) -> None:
     """Remove a legacy linked checkout that predates a shared record.
 
@@ -1360,6 +1447,7 @@ def remove_unrecorded_workspace(
         checkout_recovery=checkout_recovery,
         residual_checkout_guard=residual_checkout_guard,
         on_phase=on_phase,
+        mountinfo_reader=mountinfo_reader,
     )
 
 
@@ -1375,12 +1463,14 @@ def remove_workspace(
     ] | None = None,
     residual_checkout_guard: Callable[[Path], None] | None = None,
     on_phase: Callable[[str, str], None] | None = None,
+    mountinfo_reader: Callable[[], str] | None = None,
 ) -> None:
     """Clean adapter resources, then remove the checkout and record.
 
     The callback runs before Git removal.  A callback failure leaves the
     checkout and record intact so an adapter can recover rather than losing its
-    only cleanup context.
+    only cleanup context.  A mount at or under the checkout refuses removal
+    before the callback runs (``force`` does not override it).
     """
 
     record = _coerce_record(record_or_path)
@@ -1412,6 +1502,7 @@ def remove_workspace(
                 f"workspace {current.workspace_id} has an active lease held by {current.lease.holder!r}",
                 category="cleanup-refusal",
             )
+        _refuse_if_mounts_under(current.worktree_path, mountinfo_reader)
         if cleanup is not None:
             cleanup(current.context())
         try:
@@ -1430,6 +1521,12 @@ def remove_workspace(
         admin_snapshot = _workspace_admin_snapshot(current)
         if on_phase is not None:
             on_phase("checkout_deletion", "running")
+        # Re-read the table right before the deletion when an adapter cleanup
+        # callback ran: it can take long enough for a mount to appear (narrows,
+        # does not close, the time-of-check window). Without a callback the
+        # first check is already immediately before the deletion.
+        if cleanup is not None:
+            _refuse_if_mounts_under(current.worktree_path, mountinfo_reader)
         result = subprocess.run(
             ["git", "worktree", "remove", "--force", str(current.worktree_path)],
             cwd=current.source_git_root, text=True, capture_output=True, check=False,
@@ -1450,7 +1547,7 @@ def remove_workspace(
                 try:
                     _finish_permission_recovery(
                         current, admin_snapshot, checkout_identity,
-                        residual_checkout_guard,
+                        residual_checkout_guard, mountinfo_reader,
                     )
                 except WorkspaceError as exc:
                     if on_phase is not None:
@@ -1726,6 +1823,7 @@ def remove_orphan_workspace(
     executor_git_root: Path | str,
     force: bool = False,
     delete_branch: bool = True,
+    mountinfo_reader: Callable[[], str] | None = None,
 ) -> None:
     """Remove a linked workspace whose recorded source checkout is gone.
 
@@ -1794,6 +1892,7 @@ def remove_orphan_workspace(
                 f"{current.lease.holder!r}",
                 category="cleanup-refusal",
             )
+        _refuse_if_mounts_under(current.worktree_path, mountinfo_reader)
         result = subprocess.run(
             ["git", "worktree", "remove", "--force", str(current.worktree_path)],
             cwd=executor, text=True, capture_output=True, check=False,

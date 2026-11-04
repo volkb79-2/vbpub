@@ -43,3 +43,10 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+- test(tester-base): a test fails when a build input appears that the source hash does not cover (TB-04).
+- fix(tester-unified,wheel-builder): reset the inherited `org.vbpub.tester-base.*` labels; the bootstrap refuses a tester-unified image tagged `tester-base:local` (TB-11).
+- fix(tester-unified): fetch responses capped at 64 MiB, bounded retry, digest handed from fetcher to builder and compared (TB-12).
+- fix(tester-unified): base references classified by registry host, `--pull-base` for Docker Hub references (TB-07).
+- fix(tester-unified): `promote-image.sh` keeps and never overwrites `prev-*` rollback tags and promotes by image id (TB-10).
+- fix(wheel-builder,cmru): the 14-day age window covers build backends via `PIP_UPLOADED_PRIOR_TO`; `CMRU_WHEEL_BUILD_AGE_OVERRIDE_REASON` lifts it for one logged build (TB-08).
+

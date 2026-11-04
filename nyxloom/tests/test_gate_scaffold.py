@@ -88,6 +88,20 @@ def test_scaffold_gate_writes_a_dockerfile_with_adjust_markers(tmp_path):
     assert any(gate_scaffold.ADJUST_MARKER in tok for tok in gate.argv)
 
 
+def test_scaffolded_dockerfile_names_no_retired_gate_verify_command(tmp_path):
+    """NL-13: the emitted Dockerfile must not point at `nyxloom gate verify`."""
+    project_root = tmp_path / "myproj"
+    project_root.mkdir()
+    onboarding.run_wizard(project_root, _answers())
+    offer = onboarding_gate.assess_gate(project_root)
+
+    result = gate_scaffold.scaffold_gate(project_root, offer)
+
+    text = result.dockerfile_path.read_text()
+    assert "gate verify" not in text
+    assert "run-gate" in text
+
+
 def test_scaffolded_gate_uses_the_detached_transport_safe_form():
     """The scaffolded argv must run the container DETACHED (docker run -d ->
     docker wait -> docker logs), never an attached `docker run --rm`. An

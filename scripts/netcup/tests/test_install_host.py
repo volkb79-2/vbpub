@@ -693,6 +693,42 @@ def test_client_post_without_body_sets_json_content_type(install_host_mod, monke
     assert requests[0].data is None
 
 
+def test_client_bodyless_post_retry_after_401_keeps_content_type_and_new_token(install_host_mod, monkeypatch):
+    """NC-01: the retried bodyless POST must still be JSON-typed, bodyless, and re-authenticated."""
+    requests = []
+
+    def fake_urlopen(req, timeout=30):
+        requests.append(req)
+        if len(requests) == 1:
+            raise urllib.error.HTTPError(req.full_url, 401, "unauthorized", None, io.BytesIO(b"{}"))
+        return FakeHTTPResponse(b"{}")
+
+    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(install_host_mod.netcup_scp_client, "get_access_token", lambda rt: "new-token")
+    client = install_host_mod.NetcupSCPClient("old-token", refresh_token="rt")
+    assert client.post("/api/v1/users/1/isos/restore.iso?multipart=true") == {}
+    assert len(requests) == 2
+    assert requests[0].get_header("Authorization") == "Bearer old-token"
+    assert requests[1].get_header("Authorization") == "Bearer new-token"
+    assert requests[1].get_header("Content-type") == "application/json"
+    assert requests[1].data is None
+
+
+def test_client_post_401_without_refresh_token_raises_without_retry(install_host_mod, monkeypatch):
+    """NC-01: with no refresh token a 401 is final: one request, the HTTP error surfaces."""
+    requests = []
+
+    def fake_urlopen(req, timeout=30):
+        requests.append(req)
+        raise urllib.error.HTTPError(req.full_url, 401, "unauthorized", None, io.BytesIO(b"{}"))
+
+    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
+    client = install_host_mod.NetcupSCPClient("old-token")
+    with pytest.raises(install_host_mod.netcup_scp_client.HTTPStatusError):
+        client.post("/api/v1/users/1/isos/restore.iso?multipart=true")
+    assert len(requests) == 1
+
+
 # --- install_from_payload: --dry-run must never mutate -------------------
 
 def test_install_from_payload_dry_run_never_posts(install_host_mod, tmp_path, fake_client, capsys):
@@ -730,7 +766,7 @@ def test_install_from_payload_refuses_protected_server_before_account_key_work(
     }
     payload_path = tmp_path / "target-host.jsonc"
     payload_path.write_text(json.dumps(payload))
-    monkeypatch.setenv("NETCUP_SCP_API_PROTECTED_SERVERS", "v2202503209318326780")
+    monkeypatch.setenv("NETCUP_PROTECTED_SERVERS", "v2202503209318326780")
     client = fake_client(
         get_responses=[{"id": 12345, "name": "v2202503209318326780"}],
         allow=("get",),

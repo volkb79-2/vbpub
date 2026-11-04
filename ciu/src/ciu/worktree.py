@@ -2123,7 +2123,7 @@ def _clean_in(worktree: Path, *, yes: bool, json_output: bool = False) -> int:
         env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
         argv = [
             sys.executable, "-m", "ciu.cli", "clean", "--identity",
-            outdated["instance_id"], "-y" if yes else "--yes",
+            outdated["instance_id"], "--yes",
         ]
         try:
             return _run_cleanup_child(
@@ -2159,7 +2159,7 @@ def _clean_in(worktree: Path, *, yes: bool, json_output: bool = False) -> int:
     env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
     env.update(identity)
 
-    argv = [sys.executable, "-m", "ciu.cli", "clean"] + (["-y"] if yes else [])
+    argv = [sys.executable, "-m", "ciu.cli", "clean"] + (["--yes"] if yes else [])
     try:
         return _run_cleanup_child(
             argv, cwd=worktree, env=env, json_output=json_output
@@ -2410,7 +2410,7 @@ CAPABILITIES_SCHEMA_VERSION = 1
 # recovery-required instance additionally carries a closed recovery_status
 # (WORKTREE_RECOVERY_STATUSES).
 WORKTREE_JSON_OPERATIONS = frozenset({
-    "adopt", "create", "ensure", "inspect", "lease", "list", "remove",
+    "adopt", "create", "ensure", "inspect", "lease", "list", "refork", "remove",
 })
 WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
 
@@ -2493,6 +2493,131 @@ def _current_git_facts(repo_root: Path, record: WorktreeInstanceRecord) -> dict[
     }
 
 
+def _refork_trunk(
+    repo_root: Path, record: WorktreeInstanceRecord, onto: str | None
+) -> str:
+    """CIU-142: the trunk ref a refork measures against (explicit, else the
+    record's own base branch, else the repo default, else ``main``)."""
+    trunk = onto or record.base_branch_ref or _default_branch(repo_root) or "main"
+    resolved = _git(
+        ["rev-parse", "--verify", "--quiet", "--end-of-options",
+         f"{trunk}^{{commit}}"],
+        repo_root,
+    )
+    sha = resolved.stdout.strip() if resolved.returncode == 0 else ""
+    if not _FULL_SHA_RE.fullmatch(sha):
+        raise WorktreeError(
+            f"[CIU-142] trunk ref {trunk!r} does not resolve to a commit in "
+            f"{repo_root}; name it with --onto"
+        )
+    return trunk
+
+
+def _fork_point_staleness(
+    repo_root: Path, record: WorktreeInstanceRecord
+) -> dict[str, Any]:
+    """CIU-142: compare the recorded fork point with merge-base(trunk, HEAD).
+
+    Read-only and best-effort: an unresolvable trunk or HEAD yields
+    ``status: "unknown"`` rather than failing `inspect`.
+    """
+    recorded = record.fork_point_sha
+    info: dict[str, Any] = {"recorded": recorded, "merge_base": None}
+    try:
+        trunk = _refork_trunk(repo_root, record, None)
+    except WorktreeError:
+        info.update(status="unknown", trunk=None)
+        return info
+    info["trunk"] = trunk
+    base = _git(["merge-base", trunk, "HEAD"], record.git_worktree_path)
+    merge_base = base.stdout.strip() if base.returncode == 0 else ""
+    if not _FULL_SHA_RE.fullmatch(merge_base):
+        info["status"] = "unknown"
+        return info
+    info["merge_base"] = merge_base
+    if recorded is None:
+        info["status"] = "unrecorded"
+    elif recorded == merge_base:
+        info["status"] = "current"
+    else:
+        info["status"] = "stale"
+        info["remedy"] = f"ciu worktree refork {record.logical_name}"
+    return info
+
+
+def refork_instance(
+    repo_root: Path,
+    logical_name: str,
+    *,
+    onto: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """`ciu worktree refork LOGICAL [--onto TRUNK]` (CIU-142).
+
+    Re-record ``fork_point_sha`` after a legitimate rebase so run-gate's
+    derived base (R-35a: merge-base must equal the recorded fork point) works
+    again. Refuses a dirty tree, and refuses unless the trunk is an ancestor of
+    HEAD (a diverged branch was not rebased). The record schema is unchanged,
+    so the previous value and the timestamp are reported in the returned
+    document, not persisted. Idempotent: an already-current record is left
+    byte-identical.
+    """
+    repo_root = Path(repo_root).resolve()
+    with _allocation_lock(repo_root):
+        record = find_instance_record(repo_root, logical_name)
+        if record is None:
+            raise WorktreeError(
+                f"[CIU-142] no managed worktree instance named {logical_name!r} "
+                f"under {repo_root}; `ciu worktree list` shows what exists."
+            )
+        if record.state != "ready":
+            raise WorktreeError(
+                f"[CIU-142] {logical_name!r} is in state {record.state!r}; "
+                f"run `ciu worktree ensure {logical_name}` before re-recording "
+                "its fork point"
+            )
+        checkout = record.git_worktree_path
+        trunk = _refork_trunk(repo_root, record, onto)
+        status = _git(["status", "--porcelain"], checkout)
+        if status.returncode != 0:
+            raise WorktreeError(
+                f"[CIU-142] could not read git status for {checkout}: "
+                f"{(status.stderr or status.stdout).strip()}"
+            )
+        if status.stdout.strip():
+            raise WorktreeError(
+                f"[CIU-142] {checkout} has uncommitted changes; commit or stash "
+                "them before re-recording the fork point"
+            )
+        ancestor = _git(["merge-base", "--is-ancestor", trunk, "HEAD"], checkout)
+        if ancestor.returncode != 0:
+            raise WorktreeError(
+                f"[CIU-142] trunk {trunk!r} is not an ancestor of HEAD in "
+                f"{checkout}: the branch diverged and was not rebased onto it. "
+                "Rebase onto the trunk first, then re-run refork"
+            )
+        base = _git(["merge-base", trunk, "HEAD"], checkout)
+        new_fork = base.stdout.strip() if base.returncode == 0 else ""
+        if not _FULL_SHA_RE.fullmatch(new_fork):
+            raise WorktreeError(
+                f"[CIU-142] could not compute merge-base({trunk}, HEAD) in {checkout}"
+            )
+        previous = record.fork_point_sha
+        changed = previous != new_fork
+        if changed:
+            record = replace(record, fork_point_sha=new_fork)
+            _write_instance_record(record)
+    doc = build_instance_document("refork", record)
+    doc["refork"] = {
+        "trunk": trunk,
+        "previous_fork_point_sha": previous,
+        "fork_point_sha": new_fork,
+        "changed": changed,
+        "at_utc": _utc_stamp(now or _utc_now()),
+    }
+    return doc
+
+
 def inspect_instance(repo_root: Path, logical_name: str) -> dict[str, Any]:
     """Build the ``ciu worktree inspect LOGICAL --json`` document (S16.4).
 
@@ -2506,9 +2631,12 @@ def inspect_instance(repo_root: Path, logical_name: str) -> dict[str, Any]:
             f"[S16] no managed worktree instance named {logical_name!r} under "
             f"{repo_root}; `ciu worktree list` shows what exists."
         )
-    return build_instance_document(
+    doc = build_instance_document(
         "inspect", record, _current_git_facts(repo_root, record)
     )
+    # CIU-142: name a spent fork point and its remedy; additive key.
+    doc["fork_point"] = _fork_point_staleness(repo_root, record)
+    return doc
 
 
 def list_instances(repo_root: Path) -> dict[str, Any]:
@@ -6646,6 +6774,44 @@ def _primary_ciu_root_for_record(
     return candidate
 
 
+def _cleaned_roots_text(entries: list[dict[str, Any]]) -> str:
+    cleaned = [item["root"] for item in entries if item["status"] == "cleaned"]
+    return ", ".join(cleaned) if cleaned else "none"
+
+
+def _sibling_committed_roots(checkout: Path, selected_root: Path) -> list[Path]:
+    """CIU-138: committed CIU roots at *checkout*'s own HEAD, minus the selected one.
+
+    Discovery uses ``git ls-tree`` at the exact target checkout's HEAD (never
+    the primary's), so an ignored overlay cannot invent a root. A discovery
+    failure is a refusal: guessing "no other roots" could strand resources.
+    """
+    from .workspace import CiuWorkspaceError, discover_committed_roots
+
+    try:
+        roots = discover_committed_roots(checkout, base="HEAD")
+    except CiuWorkspaceError as exc:
+        raise WorktreeError(
+            f"[CIU-138] cannot discover the committed CIU roots of {checkout}: {exc}"
+        ) from exc
+    selected = Path(selected_root).resolve()
+    inside = Path(checkout).resolve()
+    siblings: list[Path] = []
+    for root in roots:
+        resolved = root.resolve()
+        if resolved == selected:
+            continue
+        # A working-tree directory swapped for a symlink after the commit must
+        # not send `ciu clean` outside the checkout.
+        if resolved != inside and inside not in resolved.parents:
+            raise WorktreeError(
+                f"[CIU-138] committed CIU root {root} resolves outside the "
+                f"checkout {inside}; refusing to clean it"
+            )
+        siblings.append(root)
+    return siblings
+
+
 def _clean_with_primary_identity(
     primary_ciu_root: Path,
     instance_id: str,
@@ -6664,7 +6830,7 @@ def _clean_with_primary_identity(
         "--expected-checkout", str(expected_checkout),
     ]
     if yes:
-        argv.append("-y")
+        argv.append("--yes")
     try:
         return _run_cleanup_child(
             argv, cwd=primary_ciu_root, env=env, json_output=json_output
@@ -7787,6 +7953,20 @@ def remove(
     mark("ciu_record_removal", "not-run" if managed is not None else "skipped-no-record")
     report["phases"]["shared_record_removal"] = "not-run"
     path = wt.path
+    # WT-OW-01: refuse before `ciu clean` / any cleanup can touch content that
+    # lives on a mount under the checkout. The shared library repeats the check
+    # right before deletion; this one protects the adapter's earlier phases.
+    try:
+        mounted = _shared_worktree().mounts_under(wt.path)
+    except _shared_worktree().WorkspaceError as exc:
+        raise fail(str(exc), phase="lifecycle_preflight") from exc
+    if mounted:
+        raise fail(
+            f"refusing to remove {wt.path}: mount(s) at or under the checkout: "
+            + "; ".join(f"{item} (detach it first)" for item in mounted)
+            + ". Nothing was removed or unmounted; --force does not override this check.",
+            phase="lifecycle_preflight",
+        )
     try:
         ciu_root = (
             managed.ciu_root if managed is not None
@@ -7915,6 +8095,77 @@ def remove(
         key: value for key, value in branch.items() if key != "delete"
     }
 
+    # CIU-138: every OTHER committed CIU root in this checkout owns containers
+    # and host data under its own identity. Clean each of them before the
+    # selected root (so a sibling failure leaves the selected root's lease and
+    # all records untouched) and before any checkout deletion.
+    details["root_cleanups"] = []
+    # Refuse a checkout that gained uncommitted changes since the initial
+    # inventory BEFORE any sibling `ciu clean` tears resources down; the later
+    # recheck (after the selected root is cleaned) stays as the final guard.
+    try:
+        early_dirty_paths = _worktree_change_paths(wt.path, managed)
+    except WorktreeError as exc:
+        raise fail(
+            f"could not recheck uncommitted changes before sibling cleanup: {exc}"
+        ) from exc
+    early_new_dirty = sorted(set(early_dirty_paths) - set(dirty_paths))
+    if early_new_dirty:
+        mark("resource_cleanup", "skipped-dirty-changes")
+        raise fail(
+            "uncommitted changes changed since the initial inventory; review "
+            f"the newly changed paths ({_format_changed_paths(early_new_dirty)}) "
+            "and retry; no sibling root was cleaned"
+        )
+    try:
+        sibling_roots = _sibling_committed_roots(wt.path, ciu_root)
+    except WorktreeError as exc:
+        mark("resource_cleanup", "failed-root-discovery")
+        raise fail(str(exc)) from exc
+    sibling_failure: str | None = None
+    for sibling in sibling_roots:
+        entry: dict[str, Any] = {"root": str(sibling), "status": "failed"}
+        details["root_cleanups"].append(entry)
+        try:
+            if not _ciu_root_marker_present(sibling):
+                raise WorktreeError(
+                    f"[CIU-138] committed CIU root {sibling} has no marker in "
+                    "the checkout; refusing to guess its identity"
+                )
+            sibling_rc = _clean_in(
+                sibling, yes=yes,
+                **({"json_output": True} if _json_output else {}),
+            )
+        except WorktreeError as exc:
+            mark("resource_cleanup", "failed-sibling-root")
+            if not force:
+                raise fail(
+                    f"{exc}; NOT removing the checkout. Roots already cleaned: "
+                    f"{_cleaned_roots_text(details['root_cleanups'])}"
+                ) from exc
+            sibling_failure = str(exc)
+            continue
+        if sibling_rc != 0:
+            mark("resource_cleanup", "failed-sibling-root")
+            if not force:
+                raise fail(
+                    f"`ciu clean` failed (exit {sibling_rc}) in sibling CIU "
+                    f"root {sibling}; NOT removing the checkout. Roots already "
+                    f"cleaned: {_cleaned_roots_text(details['root_cleanups'])}",
+                    phase="resource_cleanup",
+                )
+            sibling_failure = f"exit {sibling_rc} in {sibling}"
+            continue
+        try:
+            release_own_lease(sibling)
+        except Exception as exc:
+            mark("lease_release", "failed")
+            raise fail(
+                f"could not release the lease of cleaned sibling root "
+                f"{sibling}: {exc}"
+            ) from exc
+        entry["status"] = "cleaned"
+
     if rootless_managed:
         rc = 0
         mark("resource_cleanup", "skipped-no-resources")
@@ -7964,7 +8215,7 @@ def remove(
             "when you explicitly accept that resources may be stranded",
             phase="resource_cleanup",
         )
-    if rc != 0:
+    if rc != 0 or sibling_failure is not None:
         mark("resource_cleanup", "failed-forced")
 
     if rc == 0 and not rootless_managed:

@@ -7,18 +7,44 @@ import argparse
 import sys
 
 
-def get_cli_version() -> str:
+CIU_DISTRIBUTION = "ciu"
+CIU_COMMAND = "ciu"
+CIU_LONG_NAME = "Container Infrastructure Utility"
+
+
+def _built_version() -> str | None:
+    """The version setuptools-scm wrote into a built source tree, else ``None``.
+
+    A probe for ``CliIdentity.resolve``: when both it and the installed metadata
+    exist they must agree (a stale editable install is a loud error, not a silent
+    preference). It is never a fallback.
+    """
     try:
-        from importlib.metadata import version as package_version
+        from ._version import version  # generated at build (gitignored)
+    except ImportError:
+        return None
+    return str(version)
 
-        return package_version("ciu")
-    except Exception:
-        try:
-            from . import __version__  # type: ignore
 
-            return __version__
-        except Exception:
-            return "unknown"
+def ciu_identity():
+    """CIU's one identity: installed metadata and/or the build-time version, no fallback.
+
+    Raises ``cli_extended.VersionLookupError`` when neither exists (a source checkout
+    that was never built or installed).
+    """
+    from cli_extended import CliIdentity
+
+    return CliIdentity.resolve(
+        name="CIU",
+        long_name=CIU_LONG_NAME,
+        command=CIU_COMMAND,
+        distribution=CIU_DISTRIBUTION,
+        version_probe=_built_version,
+    )
+
+
+def get_cli_version() -> str:
+    return ciu_identity().version
 
 
 def cli_headline() -> str:

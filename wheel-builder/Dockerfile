@@ -12,10 +12,10 @@
 # the build against the bind-mounted source), so this image only needs the build
 # frontend itself. The wheel bytes depend on each project's `[build-system].requires`,
 # which `python -m build`'s isolation installs fresh per invocation AT RUN TIME, from the
-# index and outside the age window below (it covers only the two installs baked here):
-# exact pins (cmru, ciu, run-gate-project, assay, cli-extended, topos, nyxloom) make that
+# index: exact pins (cmru, ciu, run-gate-project, assay, cli-extended, topos, nyxloom) make that
 # resolution reproducible; floors (pwmcp-client `setuptools>=77`, cgroup-profiler
-# `setuptools>=68`) do not. Aging the run-time installs too is tester-base backlog TB-08.
+# `setuptools>=68`) do not. The age window below covers the run-time installs too, through the
+# PIP_UPLOADED_PRIOR_TO environment variable (TB-08).
 #
 # Both ciu and cmru declare artifacts = ["wheel"] and fall through the same built-in
 # handler — this one image covers both, same as tester-unified covers every
@@ -37,6 +37,10 @@ ARG WHEEL_BUILDER_BASE_IMAGE=tester-base:local
 FROM ${WHEEL_BUILDER_BASE_IMAGE}
 
 LABEL org.vbpub.wheel-builder.kind="python-wheel-builder"
+# OCI labels are inherited from the base. This image is NOT a tester-base build: reset tester-base's
+# identity labels so it can never pass the bootstrap's tester-base kind check (TB-11).
+LABEL org.vbpub.tester-base.kind="" \
+      org.vbpub.tester-base.source-hash=""
 
 USER root
 
@@ -58,6 +62,14 @@ RUN apt-get update \
 # with --no-cache to pick up newer aged releases.
 ARG PIP_MIN_RELEASE_AGE=P14D
 LABEL org.vbpub.wheel-builder.min-release-age="${PIP_MIN_RELEASE_AGE}"
+# pip reads PIP_* for every invocation, including the one `python -m build` runs for its isolated
+# environment, so the build backends resolved at wheel-build run time obey the same window (TB-08,
+# operator decision D3 2026-11-04: the window applies to backends too). A backend pin younger than the
+# window FAILS the build until it ages; `cmru handler wheel-build` lifts it for one build only when
+# CMRU_WHEEL_BUILD_AGE_OVERRIDE_REASON names a reason (it passes -e PIP_UPLOADED_PRIOR_TO=P0D and logs it).
+# First-party names are never aged (operator decision 2026-10-27): no [build-system].requires names one
+# (tested), and nothing first-party is installed from an index inside this image.
+ENV PIP_UPLOADED_PRIOR_TO=${PIP_MIN_RELEASE_AGE}
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/wheel-builder-venv \
  && /opt/wheel-builder-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" --upgrade pip \
  && /opt/wheel-builder-venv/bin/pip install --no-cache-dir --uploaded-prior-to "${PIP_MIN_RELEASE_AGE}" build

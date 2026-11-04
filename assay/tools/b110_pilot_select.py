@@ -533,9 +533,17 @@ def _select(
         if not any(row_by_id[identity]["operator"] == operator for identity in selected)
     ]
     if len(files) + len(missing_operators) > size:
-        raise SelectionError(
-            f"size {size} is smaller than per-file ({len(files)}) plus missing-operator ({len(missing_operators)}) coverage"
-        )
+        # B194: a small pilot cannot hold one row per file. Fall back to a
+        # seeded fill that still covers every operator; only a size below the
+        # operator count is refused.
+        if size < len(operators):
+            raise SelectionError(
+                f"size {size} is smaller than the operator count ({len(operators)}); "
+                f"per-file ({len(files)}) coverage is waived for small pilots "
+                f"but every operator must be covered"
+            )
+        selected = {}
+        missing_operators = list(operators)
     for operator in missing_operators:
         candidates = [row for row in rows if row["operator"] == operator and row["id"] not in selected]
         if not candidates:

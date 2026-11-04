@@ -48,6 +48,8 @@ ALLOW_WRITE = _flag(("--allow-write",), "Allow applying the reviewed plan; every
 DRY_RUN = _flag(("--dry-run",), "Print the plan without applying it.", "SAFETY")
 CONFIRM = _value(("--confirm",), "Exact target name to confirm a destructive plan.", "TARGET", "SAFETY")
 SPEC_FILE = _value(("--file",), "JSON object with additional API fields.", "FILE", "WORKFLOW")
+CONFIRM_SECOND = _value(("--confirm-second",), "Second exact name (the zvol or raw file) when a device delete destroys data.",
+                        "NAME", "SAFETY")
 ACTION_OPTIONS = (ALLOW_WRITE, DRY_RUN, CONFIRM)
 
 
@@ -377,7 +379,8 @@ def _workflow_action(args: Any, runtime: CliRuntime, opener: SessionOpener, acti
         if not args.allow_write:
             raise CliFailure(f"plan was not applied; pass --allow-write to apply it\n{plan.render()}")
         try:
-            result = apply_plan(plan, session.rpc, allow_write=args.allow_write, typed_confirmation=args.confirm)
+            result = apply_plan(plan, session.rpc, allow_write=args.allow_write, typed_confirmation=args.confirm,
+                                typed_second_confirmation=getattr(args, "confirm_second", None))
         except PlanExecutionError as exc:
             from .workflows import _safe_value
             partial = exc.partial
@@ -1265,6 +1268,75 @@ def _container_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec
     ]
 
 
+def _vm_disk_import(args: Any, runtime: CliRuntime, opener: SessionOpener, size: Any) -> int:
+    """Create the disk and zvol, convert the image, then set the boot order: three separate reviewed plans.
+
+    Nothing is auto-removed. After a failed or interrupted conversion the device and zvol stay, and the operator is
+    told not to start the VM.
+    """
+    from .workflows import _safe_value
+
+    if not args.source or not args.zvol:
+        raise CliFailure("provide --source /mnt/POOL/image.qcow2 and --zvol POOL/NAME (a new, unused zvol name)")
+    session = _open(args, opener, allow_write=args.allow_write)
+    try:
+        import_plan = session.workflows.vm_disk_import_plan(args.name, args.source, args.zvol, size,
+                                                            disk_type=args.disk_type, order=args.order)
+        create_plan = make_plan(import_plan.create, session.rpc)
+        summary = import_plan.summary()
+        if args.dry_run:
+            later = ["vm.device.convert (job) on the new device", f"vm.device.update(<new device>, order={args.order})"]
+            _emit(runtime, {"plan": create_plan.render(), "import": summary, "later_steps": later, "applied": False},
+                  f"{create_plan.render()}\nThen, as separate reviewed plans: " + "; ".join(later))
+            return 0
+        if not args.allow_write:
+            raise CliFailure(f"plan was not applied; pass --allow-write to apply it\n{create_plan.render()}")
+        print(create_plan.render(), file=sys.stderr, flush=True)
+        created = apply_plan(create_plan, session.rpc, allow_write=True)
+        device = created[0] if created else None
+        device_id = device.get("id") if isinstance(device, dict) else None
+        if isinstance(device_id, bool) or not isinstance(device_id, int) or device_id < 1:
+            raise CliFailure(f"vm.device.create returned no valid device ID; a disk device and zvol {args.zvol} may exist. "
+                             f"Inspect `vm device list {args.name}` before retrying. Do not start VM {args.name}")
+        phase = "image conversion"
+        try:
+            convert_plan = make_plan(import_plan.convert_action(device_id), session.rpc)
+            print(convert_plan.render(), file=sys.stderr, flush=True)
+            apply_plan(convert_plan, session.rpc, allow_write=True)
+            phase = "boot-order update"
+            order_plan = make_plan(import_plan.order_action(device_id), session.rpc)
+            print(order_plan.render(), file=sys.stderr, flush=True)
+            apply_plan(order_plan, session.rpc, allow_write=True)
+        except (TntError, KeyboardInterrupt) as exc:
+            reason = "interrupted" if isinstance(exc, KeyboardInterrupt) else session.credential.scrub(str(exc))
+            raise CliFailure(
+                f"{phase} did not complete ({reason}). Device {device_id} and zvol {args.zvol} are kept and nothing was "
+                f"removed. Do not start VM {args.name}. Retry only after the job is terminal and device {device_id} and "
+                f"the disposable zvol are explicitly deleted (`vm device delete {args.name} {device_id} --zvol`)") from None
+    finally:
+        session.close()
+    payload = {"import": _safe_value(summary), "device_id": device_id, "conversion": "complete", "boot_order": args.order}
+    _emit(runtime, payload, f"{create_plan.render()}\nImported {args.source} into new zvol {args.zvol} as device {device_id} "
+                            f"of VM {args.name} (boot order {args.order}).")
+    return 0
+
+
+def _files_put(args: Any, runtime: CliRuntime, opener: SessionOpener) -> int:
+    """Upload one verified file from the repository downloads/ folder to a NAS dataset directory through the API."""
+    from .uploads import make_sender, verify_download
+
+    download = verify_download(args.name)
+
+    def factory(session: Any):
+        action = session.workflows.files_put_action(download, args.directory)
+        destination = action.calls[0].params[0]
+        session.rpc.register_upload(destination, make_sender(session.profile, session.credential, session.insecure_tls,
+                                                             download, destination))
+        return action
+
+    return _workflow_action(args, runtime, opener, factory)
+
+
 def _vm_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
     def reads(*extra: OptionSpec) -> tuple[OptionSpec, ...]:
         return HOST_OPTIONS + extra
@@ -1375,7 +1447,71 @@ def _vm_verbs(ident: CliIdentity, opener: SessionOpener) -> list[VerbSpec]:
                                       handler=lambda args, runtime: _workflow_action(args, runtime, opener,
                                                                                      lambda session: device_action(args, session))))
 
+    def device_update_action(args: Any, session: Any):
+        attributes = _read_json_object(args.file) if args.file else None
+        if args.order is None and not attributes:
+            raise CliFailure("provide --order N and/or --file attributes.json with the attribute changes")
+        order = {} if args.order is None else {"order": args.order}
+        return session.workflows.vm_device_update_action(args.name, args.device_id, attributes=attributes, **order)
+
+    device_registry.register(VerbSpec(
+        "list", None, "List a VM's devices (disks, ISOs, NICs, displays).", group=VerbGroup.EXPLORATION.value,
+        arguments=(ArgumentSpec("name", "VM name.", metavar="NAME"),), options=reads(),
+        handler=lambda args, runtime: _workflow_read(args, runtime, opener, lambda session: session.workflows.vm_devices(args.name))))
+    device_registry.register(VerbSpec(
+        "update", None, "Change a VM device's boot order or attributes through a reviewed plan (disks need a stopped VM).",
+        group=VerbGroup.MODIFICATION.value,
+        arguments=(ArgumentSpec("name", "VM name.", metavar="NAME"),
+                   ArgumentSpec("device_id", "Device ID from `vm device list`.", metavar="DEVICE_ID", parser_kwargs={"type": int})),
+        options=writes(_value(("--order",), "Boot order (lower boots first).", "N", "WORKFLOW", type=int),
+                       _value(("--file",), "JSON object with the attribute changes.", "FILE", "WORKFLOW")),
+        handler=lambda args, runtime: _workflow_action(args, runtime, opener, lambda session: device_update_action(args, session))))
+    device_registry.register(VerbSpec(
+        "delete", None, "Delete a VM device; the backing zvol or raw file is kept unless a flag and a second confirmation say otherwise.",
+        group=VerbGroup.MODIFICATION.value,
+        arguments=(ArgumentSpec("name", "VM name.", metavar="NAME"),
+                   ArgumentSpec("device_id", "Device ID from `vm device list`; confirm with NAME#DEVICE_ID.",
+                                metavar="DEVICE_ID", parser_kwargs={"type": int})),
+        options=writes(CONFIRM_SECOND,
+                       _flag(("--zvol",), "Also delete the backing zvol (needs --confirm-second ZVOL).", "WORKFLOW"),
+                       _flag(("--raw-file",), "Also delete the raw backing file (needs --confirm-second PATH).", "WORKFLOW"),
+                       _flag(("--force",), "Pass force=true to vm.device.delete.", "WORKFLOW")),
+        handler=lambda args, runtime: _workflow_action(
+            args, runtime, opener, lambda session: session.workflows.vm_device_delete_action(
+                args.name, args.device_id, delete_zvol=args.zvol, delete_raw_file=args.raw_file, force=args.force))))
+
+    def disk_size(args: Any, session: Any):
+        return session.workflows.vm_disk_image_size(args.path)
+
+    def parse_size(value: str) -> Any:
+        if value == "auto":
+            return "auto"
+        try:
+            return int(value)
+        except ValueError:
+            raise CliFailure("--size must be 'auto' or a number of bytes") from None
+
+    def disk_import(args: Any, runtime: CliRuntime):
+        return _vm_disk_import(args, runtime, opener, parse_size(args.size))
+
     return [
+        VerbSpec("disk-image-size", None, "Read the virtual size of a disk image on the NAS (where the host supports it).",
+                 group=VerbGroup.EXPLORATION.value,
+                 arguments=(ArgumentSpec("path", "Image path under /mnt/POOL/ (.qcow2, .qed, .raw, .vdi, .vhdx, .vmdk).", metavar="PATH"),),
+                 options=reads(),
+                 handler=lambda args, runtime: _workflow_read(args, runtime, opener, lambda session: disk_size(args, session))),
+        VerbSpec("disk-import", None, "Import a NAS disk image into a new zvol disk of a stopped VM (where the host supports it).",
+                 group=VerbGroup.MODIFICATION.value,
+                 arguments=(ArgumentSpec("name", "VM name (stopped, autostart off).", metavar="NAME"),),
+                 options=writes(_value(("--source",), "Image path under /mnt/POOL/.", "PATH", "WORKFLOW"),
+                                _value(("--zvol",), "NEW zvol full name, such as tank/vm/debian-root.", "NAME", "WORKFLOW"),
+                                _value(("--size",), "Final zvol bytes or 'auto' (the image's virtual size).", "BYTES|auto",
+                                       "WORKFLOW", default="auto"),
+                                _value(("--disk-type",), "Virtual disk controller.", "TYPE", "WORKFLOW",
+                                       choices=("AHCI", "VIRTIO"), default="VIRTIO"),
+                                _value(("--order",), "Boot order set after a successful conversion.", "N", "WORKFLOW",
+                                       type=int, default=1)),
+                 handler=disk_import),
         VerbSpec("list", None, "List virtual machines and their state.", group=VerbGroup.EXPLORATION.value, options=reads(),
                  handler=lambda args, runtime: _workflow_read(args, runtime, opener, lambda session: session.workflows.vms())),
         VerbSpec("show", None, "Show one v27 virtual machine record.", group=VerbGroup.EXPLORATION.value,
@@ -1550,6 +1686,15 @@ def build_cli(cli_identity: CliIdentity | None = None, opener: SessionOpener = o
     _workflow_group(registry, ident, "user", "Manage local users and SSH public keys.", _user_verbs(ident, opener))
     _workflow_group(registry, ident, "container", "Manage TrueNAS containers.", _container_verbs(ident, opener))
     _workflow_group(registry, ident, "vm", "Manage virtual machines and their devices.", _vm_verbs(ident, opener))
+    _workflow_group(registry, ident, "files", "Upload verified files from the repository downloads/ folder.", [
+        VerbSpec("put", None, "Upload downloads/NAME to a NAS dataset directory through the API (sha256-verified, never overwrites).",
+                 group=VerbGroup.MODIFICATION.value,
+                 arguments=(ArgumentSpec("name", "File inside the repository downloads/ folder (its .sha256 must sit beside it).",
+                                         metavar="NAME"),
+                            ArgumentSpec("directory", "Existing NAS directory, such as /mnt/tank/images.", metavar="DATASET_DIR")),
+                 options=HOST_OPTIONS + ACTION_OPTIONS,
+                 handler=lambda args, runtime: _files_put(args, runtime, opener)),
+    ])
     _workflow_group(registry, ident, "share", "Manage SMB and NFS shares.", _share_verbs(ident, opener))
     _workflow_group(registry, ident, "task", "Inspect and operate data-protection tasks.", _task_verbs(ident, opener))
     _workflow_group(registry, ident, "app", "Inspect and operate installed TrueNAS Apps.", _app_verbs(ident, opener))

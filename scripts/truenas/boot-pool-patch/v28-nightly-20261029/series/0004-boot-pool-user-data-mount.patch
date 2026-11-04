@@ -1,0 +1,49 @@
+From e80d28ba4b3b3e31886c455dcbbafc923c03d3cd Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Mount opted-in boot-pool user-data datasets
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Discover and mount opted-in boot-pool user-data datasets with the exact build’s import hook.
+
+Change-Id: boot-pool-user-data-mount
+Capability: boot-pool-mount
+Role: plumbing
+Risk: high
+Requires: path-a-dataset-api
+Forwarded: not-needed
+---
+ middlewared/plugins/pool_/import_pool.py | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/middlewared/plugins/pool_/import_pool.py b/middlewared/plugins/pool_/import_pool.py
+index 0c04ae4b559b3af8df9f16a730257c3033605db5..3e6086690ad3b669ac31a234d430cf9ebf0c4bb3 100644
+--- a/middlewared/plugins/pool_/import_pool.py
++++ b/middlewared/plugins/pool_/import_pool.py
+@@ -23,6 +23,7 @@ from middlewared.service import CallError, InstanceNotFound, Service, Validation
+ from middlewared.utils.filesystem import attrs as fs_attrs
+ from middlewared.utils.zfs import query_imported_fast_impl
+ 
++from .boot_pool_mount import mount_boot_pool_user_data
+ from .utils import ZPOOL_CACHE_FILE
+ 
+ 
+@@ -660,6 +661,13 @@ class PoolService(Service):
+ 
+         # TODO: we need to fix this. There is 0 reason to do all this stuff
+         # and block the entire boot-up process.
++        # boot-pool is not registered in storage.volume, so mount its opted-in
++        # user-data namespace explicitly after normal data-pool imports.
++        try:
++            mount_boot_pool_user_data(self)
++        except Exception:
++            self.logger.error('Unexpected error mounting boot-pool user-data datasets', exc_info=True)
++
+         self.logger.debug('Calling pool.post_import')
+         self.middleware.call_hook_sync('pool.post_import', None)
+         self.logger.debug('Finished calling pool.post_import')
+-- 
+2.55.0
+

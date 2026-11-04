@@ -128,9 +128,43 @@ def _read_output_tail(stream) -> str:
     return stream.read().decode("utf-8", errors="replace")
 
 
+def candidate_timeout_seconds(configured: float, control_seconds: float) -> float:
+    """Return the per-candidate timeout scaled from the measured control duration.
+
+    A surviving mutant runs the whole suite, so the same host contention that
+    stretched the control stretches it too; a fixed cap would then time out a
+    candidate the control proves can finish (KI-106). The configured value stays
+    the floor.
+    """
+    return max(configured, 2.0 * control_seconds)
+
+
+def _copy_full_output(output, log) -> None:
+    """Copy the child's complete output into ``log`` (an open binary file)."""
+    output.seek(0)
+    shutil.copyfileobj(output, log)
+    log.flush()
+
+
+def _stream_control_output(control_log) -> None:
+    """Write the failed known-good control's complete output to stderr (KI-87).
+
+    The retained lane log is the only copy that outlives a disposable gate
+    container, so the full output goes there rather than to a file beside the
+    evidence.
+    """
+    control_log.seek(0)
+    sys.stderr.write("--- known-good mutation control: complete output ---\n")
+    sys.stderr.flush()
+    shutil.copyfileobj(control_log, sys.stderr.buffer)
+    sys.stderr.buffer.flush()
+    sys.stderr.write("\n--- end of known-good mutation control output ---\n")
+    sys.stderr.flush()
+
+
 def _run(
     argv: Sequence[str], *, cwd: Path, timeout_seconds: float,
-    output_dir: Path | None = None,
+    output_dir: Path | None = None, full_output_log=None,
 ) -> CommandRun:
     """Run one command and prove its descendants are gone before returning."""
     try:
@@ -169,6 +203,8 @@ def _run(
                         returncode = process.wait(timeout=timeout_seconds)
                     except subprocess.TimeoutExpired as exc:
                         evidence = window.finish(timed_out=True, force=True)
+                        if full_output_log is not None:
+                            _copy_full_output(output, full_output_log)
                         timeout_error = subprocess.TimeoutExpired(
                             command,
                             timeout_seconds,
@@ -181,6 +217,8 @@ def _run(
                         window.finish(force=True)
                         raise
                     evidence = window.finish()
+                    if full_output_log is not None:
+                        _copy_full_output(output, full_output_log)
                     stdout = _read_output_tail(output)
                     return CommandRun(
                         returncode=returncode,
@@ -1064,6 +1102,8 @@ def _run_campaign(
         raise RuntimeError("campaign or Assay HEAD changed while creating the frozen test fixture")
 
     started = time.monotonic()
+    control_log = tempfile.TemporaryFile(mode="w+b")
+    control_seconds = 0.0
     try:
         with tempfile.TemporaryDirectory(prefix="cmru-mutation-baseline-") as temporary:
             baseline_root = _copy_frozen_fixture(
@@ -1075,18 +1115,25 @@ def _run_campaign(
             # observer access are unavailable. A mutation result without this
             # evidence cannot support a kill claim.
             baseline_resource_before = _read_resource_limit_counters()
-            baseline = _run(
-                test_argv, cwd=baseline_root,
-                timeout_seconds=args.timeout_seconds,
-                output_dir=Path(temporary),
-            )
+            control_started = time.monotonic()
+            try:
+                baseline = _run(
+                    test_argv, cwd=baseline_root,
+                    timeout_seconds=args.timeout_seconds,
+                    output_dir=Path(temporary),
+                    full_output_log=control_log,
+                )
+            finally:
+                control_seconds = time.monotonic() - control_started
             baseline_resource_after = _read_resource_limit_counters()
             baseline_resource_evidence = _resource_limit_evidence(
                 baseline_resource_before, baseline_resource_after
             )
     except subprocess.TimeoutExpired as exc:
+        _stream_control_output(control_log)
         raise RuntimeError(
-            f"the known-good mutation control exceeded {args.timeout_seconds:g} seconds"
+            f"the known-good mutation control exceeded {args.timeout_seconds:g} seconds; "
+            "its complete output is above in the lane log"
         ) from exc
     except CandidateIsolationError as exc:
         raise RuntimeError(
@@ -1106,10 +1153,14 @@ def _run_campaign(
             "refusing to start the mutation campaign"
         )
     if baseline.returncode != 0:
+        _stream_control_output(control_log)
         raise RuntimeError(
-            f"the known-good mutation control failed with exit {baseline.returncode}: "
+            f"the known-good mutation control failed with exit {baseline.returncode}; "
+            "its complete output is above in the lane log: "
             f"{project_fixture.failure_excerpt(baseline.stdout, 1000)}"
         )
+    control_log.close()
+    candidate_timeout = candidate_timeout_seconds(args.timeout_seconds, control_seconds)
     if _campaign_tree_status(repo_root, project_prefix):
         raise RuntimeError("mutation campaign inputs changed while the known-good control ran")
     if _assay_source_tree_status(assay_source):
@@ -1137,6 +1188,8 @@ def _run_campaign(
         "project_prefix": project_prefix.as_posix() or ".",
         "max_mutants": args.max_mutants,
         "timeout_seconds": args.timeout_seconds,
+        "control_seconds": round(control_seconds, 3),
+        "candidate_timeout_seconds": round(candidate_timeout, 3),
         "operators": list(OPERATORS),
         "test_argv": test_argv,
         "test_manifest": test_manifest,
@@ -1245,7 +1298,7 @@ def _run_campaign(
             try:
                 completed = _run(
                     test_argv, cwd=candidate_root,
-                    timeout_seconds=args.timeout_seconds,
+                    timeout_seconds=candidate_timeout,
                     output_dir=Path(temporary),
                 )
             except subprocess.TimeoutExpired as exc:

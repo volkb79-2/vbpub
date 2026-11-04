@@ -37,5 +37,5 @@ def missing_methods(backend: Backend, available: Mapping[str, Any] | set[str] | 
     """Feature -> methods the manifest requires but the host does not list. Empty means the manifest holds."""
     have = set(available)
     out = {feature: sorted(m for m, spec in methods.items() if spec.supported and m not in have)
-           for feature, methods in backend.manifest.items()}
+           for feature, methods in backend.manifest.items() if feature not in backend.optional_features}
     return {feature: miss for feature, miss in out.items() if miss}

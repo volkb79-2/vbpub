@@ -623,3 +623,253 @@ def test_identity_collision_names_both_paths(repository: Path, tmp_path: Path, m
     assert "one" in str(raised.value)
     assert "two" in str(raised.value)
     remove_workspace(first)
+
+
+# --- WT-OW-01: refuse removal when a mount sits at or under the checkout ---
+
+
+def _mountinfo_row(mount_point: str, mount_id: int = 100) -> str:
+    return (
+        f"{mount_id} 29 0:{mount_id} / {mount_point} rw,relatime shared:1 - "
+        "btrfs /dev/vda1 rw,subvol=/vm-lab"
+    )
+
+
+def _mountinfo(*points: str) -> str:
+    rows = ["22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw"]
+    rows.extend(_mountinfo_row(point, 100 + index) for index, point in enumerate(points))
+    return "\n".join(rows) + "\n"
+
+
+def _linked(repository: Path, tmp_path: Path, name: str = "linked"):
+    return create_workspace(
+        repository, tmp_path / name, branch=f"mounts/{name}", base="HEAD",
+        purpose="test-mounts",
+    )
+
+
+def test_mounts_under_reports_nested_and_exact_mounts_only(tmp_path: Path) -> None:
+    root = tmp_path / "checkout"
+    (root / "artifacts" / "vm-lab").mkdir(parents=True)
+    sibling = tmp_path / "checkout-sibling"
+    table = _mountinfo(
+        str(root / "artifacts" / "vm-lab"),
+        str(root),
+        str(sibling),  # shares a string prefix but is NOT under root
+        str(tmp_path),  # parent mount: not under root
+    )
+    assert core.mounts_under(root, mountinfo_reader=lambda: table) == [
+        root, root / "artifacts" / "vm-lab",
+    ]
+    assert core.mounts_under(root, mountinfo_reader=lambda: _mountinfo()) == []
+
+
+def test_mounts_under_decodes_octal_escapes_in_mount_points(tmp_path: Path) -> None:
+    root = tmp_path / "checkout"
+    root.mkdir()
+    spaced = root / "dir with space" / "tab\there" / "back\\slash"
+    escaped = (
+        str(root) + "/dir\\040with\\040space/tab\\011here/back\\134slash"
+    )
+    table = _mountinfo(escaped)
+    assert core.mounts_under(root, mountinfo_reader=lambda: table) == [spaced]
+
+
+def test_mounts_under_resolves_symlinked_worktree_path(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    (real / "sub").mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    table = _mountinfo(str(real / "sub"))
+    assert core.mounts_under(link, mountinfo_reader=lambda: table) == [real / "sub"]
+
+
+def test_mounts_under_fails_closed_on_unreadable_or_malformed_table(tmp_path: Path) -> None:
+    def unreadable() -> str:
+        raise PermissionError("denied")
+
+    with pytest.raises(core.WorkspaceError, match="could not read the mount table"):
+        core.mounts_under(tmp_path, mountinfo_reader=unreadable)
+    with pytest.raises(core.WorkspaceError, match="malformed mount table row"):
+        core.mounts_under(tmp_path, mountinfo_reader=lambda: "1 2 3\n")
+
+
+def test_mounts_under_accepts_a_row_with_exactly_the_five_leading_fields(tmp_path: Path) -> None:
+    """Boundary: mount point is field five; a row ending there is still a row."""
+    root = tmp_path / "checkout"
+    table = f"1 2 3:4 / {root}/inner\n"
+    assert core.mounts_under(root, mountinfo_reader=lambda: table) == [root / "inner"]
+    with pytest.raises(core.WorkspaceError, match="malformed mount table row"):
+        core.mounts_under(root, mountinfo_reader=lambda: "1 2 3:4 /\n")
+
+
+def test_mounts_under_reads_the_real_mount_table_by_default(tmp_path: Path) -> None:
+    assert core.mounts_under(tmp_path / "definitely-not-a-mount") == []
+    # The real table always has "/" and never reports it as under a subpath.
+    assert Path("/") not in core.mounts_under(tmp_path)
+
+
+def test_remove_workspace_refuses_mount_before_cleanup_even_with_force(
+    repository: Path, tmp_path: Path,
+) -> None:
+    context = _linked(repository, tmp_path)
+    mount = context.worktree_path / "artifacts" / "vm-lab"
+    mount.mkdir(parents=True)
+    (mount / "disk.img").write_text("precious", encoding="utf-8")
+    table = _mountinfo(str(mount))
+    cleaned: list[object] = []
+    phases: list[tuple[str, str]] = []
+
+    for force in (False, True):
+        with pytest.raises(core.WorkspaceError, match="detach it first") as caught:
+            remove_workspace(
+                context, force=force, cleanup=cleaned.append,
+                on_phase=lambda phase, status: phases.append((phase, status)),
+                mountinfo_reader=lambda: table,
+            )
+        assert caught.value.category == "cleanup-refusal"
+        assert str(mount) in str(caught.value)
+
+    assert cleaned == [] and phases == []  # nothing ran, no phase event
+    assert (mount / "disk.img").read_text(encoding="utf-8") == "precious"
+    assert context.record_path.exists()
+    assert context.worktree_path.is_dir()
+
+
+def test_remove_workspace_names_every_mount(repository: Path, tmp_path: Path) -> None:
+    context = _linked(repository, tmp_path)
+    first = context.worktree_path / "a"
+    second = context.worktree_path / "sub" / "b"
+    table = _mountinfo(str(first), str(second))
+    with pytest.raises(core.WorkspaceError) as caught:
+        remove_workspace(context, mountinfo_reader=lambda: table)
+    assert str(first) in str(caught.value) and str(second) in str(caught.value)
+    assert "2 mount(s)" in str(caught.value)
+
+
+def test_remove_workspace_passes_when_mounts_are_elsewhere(
+    repository: Path, tmp_path: Path,
+) -> None:
+    context = _linked(repository, tmp_path)
+    table = _mountinfo(str(tmp_path / "elsewhere"), str(tmp_path))
+    remove_workspace(context, mountinfo_reader=lambda: table)
+    assert not context.worktree_path.exists()
+    assert not context.record_path.exists()
+
+
+def test_remove_unrecorded_workspace_forwards_the_mount_refusal(
+    repository: Path, tmp_path: Path,
+) -> None:
+    target = tmp_path / "legacy"
+    _git(repository, "worktree", "add", "--quiet", "-b", "legacy-mounts", str(target), "HEAD")
+    table = _mountinfo(str(target / "vol"))
+    with pytest.raises(core.WorkspaceError, match="detach it first"):
+        core.remove_unrecorded_workspace(
+            repository, target, force=True, mountinfo_reader=lambda: table,
+        )
+    assert target.is_dir()
+
+
+def test_remove_orphan_workspace_refuses_mount_even_with_force(
+    repository: Path, tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-worktree"
+    _git(repository, "worktree", "add", "--quiet", "-b", "mnt-source", str(source), "HEAD")
+    target = tmp_path / "orphan-target"
+    context = create_workspace(
+        source, target, branch="workspace/mnt-orphan", purpose="test-orphan-cleanup",
+    )
+    record = read_record(context.record_path)
+    _git(repository, "worktree", "remove", "--force", str(source))
+    table = _mountinfo(str(target / "mnt"))
+    with pytest.raises(core.WorkspaceError, match="detach it first"):
+        remove_orphan_workspace(
+            record, executor_git_root=repository, force=True,
+            mountinfo_reader=lambda: table,
+        )
+    assert target.is_dir() and context.record_path.exists()
+    remove_orphan_workspace(record, executor_git_root=repository)
+    assert not target.exists()
+
+
+def _late_mount_reader(mount: Path, armed: list[bool]):
+    """Mount table that shows ``mount`` only once ``armed`` is truthy."""
+
+    def reader() -> str:
+        return _mountinfo(str(mount)) if armed else _mountinfo()
+
+    return reader
+
+
+def test_remove_workspace_rechecks_mounts_right_before_the_git_deletion(
+    repository: Path, tmp_path: Path,
+) -> None:
+    context = _linked(repository, tmp_path, "late")
+    mount = context.worktree_path / "vol"
+    mount.mkdir()
+    armed: list[bool] = []
+    reader = _late_mount_reader(mount, armed)
+    # The mount appears while the adapter cleanup callback runs.
+    with pytest.raises(core.WorkspaceError, match="detach it first"):
+        remove_workspace(
+            context, cleanup=lambda _ctx: armed.append(True), mountinfo_reader=reader,
+        )
+    assert armed == [True]
+    assert context.worktree_path.is_dir() and context.record_path.exists()
+
+
+def test_permission_retry_rechecks_mounts_before_git_retry(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _linked(repository, tmp_path, "retry")
+    mount = context.worktree_path / "vol"
+    mount.mkdir()
+    armed: list[bool] = []
+    original = core.subprocess.run
+    removes: list[list[str]] = []
+
+    def deny_remove(argv, *args, **kwargs):
+        if argv[:3] == ["git", "worktree", "remove"]:
+            removes.append(argv)
+            return subprocess.CompletedProcess(argv, 1, "", "Permission denied")
+        return original(argv, *args, **kwargs)
+
+    monkeypatch.setattr(core.subprocess, "run", deny_remove)
+    with pytest.raises(core.WorkspaceError, match="detach it first"):
+        remove_workspace(
+            context,
+            checkout_recovery=lambda *_args: armed.append(True) or True,
+            mountinfo_reader=_late_mount_reader(mount, armed),
+        )
+    assert len(removes) == 1  # the retry never ran
+    assert context.worktree_path.is_dir() and context.record_path.exists()
+
+
+def test_residual_rmtree_rechecks_mounts_before_deleting(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _linked(repository, tmp_path, "residual")
+    record = read_record(context.record_path)
+    admin = core._workspace_admin_snapshot(record)[0]
+    mount = context.worktree_path / "vol"
+    mount.mkdir()
+    (mount / "disk.img").write_text("precious", encoding="utf-8")
+    armed: list[bool] = []
+    original = core.subprocess.run
+    calls: list[list[str]] = []
+
+    def unregister_and_fail(argv, *args, **kwargs):
+        if argv[:3] == ["git", "worktree", "remove"] and not calls:
+            calls.append(argv)
+            shutil.rmtree(admin)
+            return subprocess.CompletedProcess(argv, 1, "", "Permission denied")
+        return original(argv, *args, **kwargs)
+
+    monkeypatch.setattr(core.subprocess, "run", unregister_and_fail)
+    with pytest.raises(core.WorkspaceError, match="detach it first"):
+        remove_workspace(
+            context,
+            checkout_recovery=lambda *_args: armed.append(True) or True,
+            mountinfo_reader=_late_mount_reader(mount, armed),
+        )
+    assert (mount / "disk.img").read_text(encoding="utf-8") == "precious"

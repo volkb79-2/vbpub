@@ -327,3 +327,47 @@ def test_image_recipes_use_one_working_directory_and_build_before_ciu_up():
     assert "local development image" in start_daemon
     assert "no `[cgprofile.image]` release override" in start_daemon
     assert "`ciu up` selects the pinned GHCR image instead" in start_daemon
+
+
+def _dist_name(requirement: str) -> str:
+    """The normalised distribution name of one PEP 508 requirement string."""
+    import re
+
+    match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", requirement)
+    assert match, requirement
+    return re.sub(r"[-_.]+", "-", match.group(1)).lower()
+
+
+def _missing_from_lock(requirements: list, lock_text: str) -> list:
+    """Top-level distributions in ``requirements`` with no ``name==`` lock line.
+    The project's own extras self-reference (``cgroup-profiler[report]``) is not
+    a third-party distribution and is skipped."""
+    locked = {
+        _dist_name(line.split("==", 1)[0])
+        for line in lock_text.splitlines()
+        if "==" in line and not line.lstrip().startswith("#")
+    }
+    wanted = {_dist_name(r) for r in requirements}
+    wanted.discard("cgroup-profiler")
+    return sorted(wanted - locked)
+
+
+def test_report_lock_pins_every_distribution_the_test_and_report_extras_name():
+    """CP-32: the lock is generated from ``.[test]``; it once lacked coverage,
+    so `setup.sh --check` vouched for a venv that could not run the coverage
+    gate. Every top-level distribution of the extras must be pinned."""
+    extras = tomllib.loads(
+        (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["optional-dependencies"]
+    requirements = list(extras["test"]) + list(extras["report"])
+    assert "coverage[toml]>=7.6" in requirements  # the case this test exists for
+    lock_text = (PROJECT_ROOT / "requirements-report.txt").read_text(encoding="utf-8")
+    assert _missing_from_lock(requirements, lock_text) == []
+
+
+def test_lock_drift_check_goes_red_when_coverage_is_removed_from_the_lock():
+    lock_text = (PROJECT_ROOT / "requirements-report.txt").read_text(encoding="utf-8")
+    drifted = "\n".join(
+        line for line in lock_text.splitlines() if not line.startswith("coverage==")
+    )
+    assert _missing_from_lock(["coverage[toml]>=7.6", "pytest>=8"], drifted) == ["coverage"]

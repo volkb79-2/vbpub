@@ -3,7 +3,7 @@
 For adopters and reviewers who want the reasoning behind the machine-readable
 surface, not just how to use it. The authoritative normative contract is
 [SPEC.md](SPEC.md) (§S16.4, §S16.5); the adoption walkthrough is
-[CONSUMERS.md](CONSUMERS.md); the capability list is `ciu capabilities`.
+[CONSUMERS.md](CONSUMERS.md); the capability list is `ciu schema capabilities`.
 
 ## Workspace and root identity
 
@@ -246,7 +246,7 @@ replaces them with two explicit contracts:
 1. **Structured JSON documents** (`schema_version: 1`) with a closed
    `operation` and closed `status` vocabulary. A consumer can validate the
    shape against the shipped vocabulary instead of string-matching.
-2. **A versioned capability allowlist** (`ciu capabilities --json`). A consumer
+2. **A versioned capability allowlist** (`ciu schema capabilities --json`). A consumer
    allowlists the identifiers of the contracts it actually depends on; a CIU
    that does not advertise an identifier cannot be silently trusted to provide
    the feature, and a CIU that does is pinned to the code path that shipped
@@ -832,7 +832,7 @@ pipeline; `--check` remains a profile-mode action.
 
 ## Why reporting and dry-run paths do not run live hooks
 
-`ciu profiles` reports the declared profiles, so it renders the shared config
+`ciu show profiles` reports the declared profiles, so it renders the shared config
 in memory and never writes `ciu.global.toml`. `--dry-run` is not a general
 read-only mode: it still runs the pre-deploy preparation steps and pre-hooks.
 The live `post_compose` hook is different because it can provision accounts or

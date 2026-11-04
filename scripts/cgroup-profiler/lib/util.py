@@ -85,6 +85,21 @@ _SUFFIXES_BINARY = {
 _SIZE_RE = re.compile(r"^\s*([0-9]*\.?[0-9]+)\s*([a-zA-Z]*)\s*$")
 
 
+_KERNEL_INT_RE = re.compile(r"-?[0-9]+", re.ASCII)
+_KERNEL_UINT_RE = re.compile(r"[0-9]+", re.ASCII)
+
+
+def _kernel_int(text: str, signed: bool = True) -> Optional[int]:
+    """Parse the kernel's decimal grammar: ASCII digits, an optional leading
+    ``-`` only when ``signed``. Python's ``int()`` also takes ``1_000``,
+    ``+5``, surrounding whitespace and Unicode digits, none of which the
+    kernel writes; those are ``None`` here (CP-37)."""
+    pattern = _KERNEL_INT_RE if signed else _KERNEL_UINT_RE
+    if not pattern.fullmatch(text):
+        return None
+    return int(text)
+
+
 def read_text(path: str) -> Optional[str]:
     """Return file contents stripped of the trailing newline, or None."""
     try:
@@ -109,10 +124,7 @@ def read_int(path: str) -> Optional[int]:
     text = text.strip()
     if text == MAX or text == "":
         return None
-    try:
-        return int(text)
-    except ValueError:
-        return None
+    return _kernel_int(text)
 
 
 def read_kv(path: str) -> Dict[str, int]:
@@ -129,10 +141,9 @@ def read_kv(path: str) -> Dict[str, int]:
         parts = line.split()
         if len(parts) < 2:
             continue
-        try:
-            out[parts[0]] = int(parts[1])
-        except ValueError:
-            continue
+        value = _kernel_int(parts[1])
+        if value is not None:
+            out[parts[0]] = value
     return out
 
 
@@ -152,16 +163,25 @@ def read_flat_keyed(path: str) -> Dict[str, Dict[str, int]]:
         if not parts:
             continue
         fields: Dict[str, int] = {}
+        seen: set = set()
+        repeated = False
         for kv in parts[1:]:
             if "=" not in kv:
                 continue
             key, _, val = kv.partition("=")
+            if key in seen:
+                # The kernel never repeats a key on one line: a parse error
+                # for the whole line, not last-wins (CP-37).
+                repeated = True
+                break
+            seen.add(key)
             if val == MAX:
                 continue
-            try:
-                fields[key] = int(val)
-            except ValueError:
-                continue
+            number = _kernel_int(val, signed=False)
+            if number is not None:
+                fields[key] = number
+        if repeated:
+            continue
         out[parts[0]] = fields
     return out
 

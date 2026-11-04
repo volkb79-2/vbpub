@@ -11,8 +11,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - B203, B205: every native state record stores its `worker_count`; every native killed candidate records `first_failing_test` (progress, state and verdict; null when unknown).
 - `assay lanes --json` capabilities `r2-resource-profile` and `verdict-v18`.
 
+### Fixed
+- B085: the R3 canary target's test-path veto honours `judge.allow_test_path_targets` (a test FILENAME is still refused) and its refusal names the flag.
+- B187: R0 result classification maps the observation status through `contention.observation_input` instead of a hand-written copy.
+- B194: `tools/b110_pilot_select.py --size` below the per-file plus missing-operator minimum falls back to a seeded operator-covering fill; only a size below the operator count is refused.
+- B184: synthetic 10.0.1-shape `crashed` and `budget_exceeded` state fixtures prove the resume rejection for every bucket.
+- B196: the copy-on-write adapter no longer imports `cowtree` when `MDT_COW_ROOT` is unset (and `COWTREE_MODE` is `auto` or `off`), so a missing sibling package cannot become an import error before any verdict.
+- B197: a run now collects dead copy-on-write runs (killed by SIGKILL or a container kill) through `cowtree.gc` before opening its own run; collection failure is an advisory.
+- B199: a copy-on-write workspace that fails to close after the measurement finished is reported as `assay: advisory:` and the verdict stands; a leaked snapshot state still refuses.
+- B200: the CoW-versus-plain snapshot parity test now compares `git status`, the index entries and the index tree against HEAD's tree. The real-btrfs CI run of it remains open.
+
 ### Changed
 - **Verdict schema v18 (B208), a hard cut from v17** (assay 12.0.0; requires run-gate 24.4.0, which reads both shapes). `judgment.r2` gains `worker_counts` (candidates per worker count; `jobs` is now the campaign maximum), `profile` (counts of profile statuses and reason codes, with the observer identity) and `schedule` (policy, thresholds, budget, prediction-source counts, error summary), and every native killed mutant carries `first_failing_test`. No per-candidate resource number enters the verdict. `assay verify` refuses v17; `assay analyze campaign` still reads an archived v17 verdict (shape-checked, read-only) and writes analysis schema 3, where a candidate carries `profile` instead of `peak_rss_bytes` and `cpu_seconds`. The judge identity label is `assay-judge-identity/14`, so assay 11 state records are cache misses on resume.
+- Extend the provisional-release R2 postponement (B169) to assay versions below 12.1.0 (operator decision D1, 2026-11-04) so 12.0.0 ships under it; R2 runs later with `--jobs` on the scratch host. The window is one constant in `tools/self-qualification-gate.sh` and the full `self-qualification` lane is unchanged.
 - Native R2 progress and state now drain by dispatch position instead of canonical index when scheduling is active (`--jobs` above 1); a serial run is unchanged. `assay analyze campaign` accepts a progress stream whose finished candidates are a contiguous prefix of dispatch order rather than of canonical index.
 - Documented the supported `--jobs` range and the limits that bind at high worker counts (consumer guide, "Candidate scheduling and the admission budget").
 

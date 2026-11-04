@@ -753,3 +753,19 @@ def test_survey_skips_non_directory_entries_and_absent_runs(tmp_path, monkeypatc
     }
     monkeypatch.setattr(gc_module.os.path, "isdir", lambda _path: False)
     assert survey(area)["runs"] == []
+
+
+def test_truncated_owner_manifest_is_untrusted_and_never_collected(tmp_path):
+    run = open_run("truncated-manifest", estimate=SpaceEstimate(0, 0, 0), environ={}, plain_dir=tmp_path)
+    path = Path(run.path)
+    _abandon(run)
+    manifest_path = path / "owner.json"
+    payload = manifest_path.read_bytes()
+    assert _manifest(str(path)) is not None
+    for cut in (0, 1, len(payload) // 2, len(payload) - 2):
+        manifest_path.write_bytes(payload[:cut])
+        assert _manifest(str(path)) is None
+        assert dead_flock_runs(tmp_path) == []
+        result = gc(tmp_path)
+        assert [(item.name, item.status) for item in result] == [(path.name, "manifestless-or-invalid")]
+        assert path.exists()

@@ -351,6 +351,23 @@ def test_rgba_transparency_is_composited_onto_white() -> None:
 
 
 @needs_pil
+def test_rgb_and_gray_colour_key_transparency_is_composited_onto_white() -> None:
+    """PWMCP-18: a tRNS colour key leaves mode RGB/L; keyed pixels must still become white."""
+
+    rgb = Image.new("RGB", (4, 4), (10, 20, 30))  # the keyed colour, stored as dark
+    rgb.putpixel((0, 0), (255, 0, 0))
+    result = _engine_input(_png_of(rgb, transparency=(10, 20, 30)))
+    assert result.getpixel((1, 1)) == (255, 255, 255)  # keyed -> white, not the stored (10, 20, 30)
+    assert result.getpixel((0, 0)) == (255, 0, 0)  # unkeyed pixels untouched
+
+    gray = Image.new("L", (4, 4), 0)
+    gray.putpixel((0, 0), 90)
+    result = _engine_input(_png_of(gray, transparency=0))
+    assert result.convert("RGB").getpixel((1, 1)) == (255, 255, 255)
+    assert result.convert("RGB").getpixel((0, 0)) == (90, 90, 90)
+
+
+@needs_pil
 def test_palette_with_transparency_and_la_are_composited_onto_white() -> None:
     palette = Image.new("P", (4, 4), 0)
     palette.putpalette([0, 0, 0] * 256)

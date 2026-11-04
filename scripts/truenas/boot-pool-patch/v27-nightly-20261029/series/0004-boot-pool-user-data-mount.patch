@@ -1,0 +1,231 @@
+From fffcfc55661916d3278b53f42cfcc83606f7857f Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Mount opted-in boot-pool user-data datasets
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Discover and mount opted-in boot-pool user-data datasets with the exact build’s import hook.
+
+Change-Id: boot-pool-user-data-mount
+Capability: boot-pool-mount
+Role: plumbing
+Risk: high
+Requires: path-a-dataset-api
+Forwarded: not-needed
+---
+ middlewared/plugins/pool_/import_pool.py | 181 +++++++++++++++++++++++
+ 1 file changed, 181 insertions(+)
+
+diff --git a/middlewared/plugins/pool_/import_pool.py b/middlewared/plugins/pool_/import_pool.py
+index 5cc387fd8eb3d583c4bad40bd354b7928c5c5a1d..2dc810bfc35f5e4192f15806140f143a0d9f2590 100644
+--- a/middlewared/plugins/pool_/import_pool.py
++++ b/middlewared/plugins/pool_/import_pool.py
+@@ -9,8 +9,14 @@ from middlewared.api.current import (
+     PoolReimportArgs, PoolReimportResult,
+     ZFSResourceQuery,
+ )
++from middlewared.plugins.boot_pool_user_data import (
++    USER_DATASET_COMPONENT, is_user_data_namespace_path,
++    user_data_mountpoint_is_within_root, user_data_root_mount_config_is_valid,
++    user_data_namespace_root,
++)
+ from middlewared.plugins.pool_.utils import UpdateImplArgs
+ from middlewared.service import CallError, InstanceNotFound, Service, ValidationError, job, private
++from middlewared.utils import BOOT_POOL_NAME_VALID
+ from middlewared.utils.filesystem import attrs as fs_attrs
+ from middlewared.utils.zfs import query_imported_fast_impl
+ from .utils import ZPOOL_CACHE_FILE
+@@ -574,6 +580,174 @@ class PoolService(Service):
+                 except OSError as e:
+                     self.logger.error('Unable to set immutable flag at %r: %s', pool_mount, e)
+ 
++    @private
++    def mount_boot_pool_user_data(self):
++        # Use the release's internal-name list as well as the shared namespace
++        # policy. The container manager's own hidden subtree is the one
++        # exception: it is stored below user-data and must be mounted at boot.
++        from middlewared.plugins.pool_.dataset_query_utils import INTERNAL_DATASETS
++
++        for boot_pool in BOOT_POOL_NAME_VALID:
++            root = f'{boot_pool}/{USER_DATASET_COMPONENT}'
++            root_mountpoint = f'/mnt/{root}'
++            try:
++                roots = self.call_sync2(
++                    self.s.zfs.resource.query_impl,
++                    ZFSResourceQuery(paths=[root], properties=['quota', 'mountpoint', 'canmount']),
++                )
++            except Exception:
++                self.logger.warning('Failed querying boot-pool user-data root %r', root, exc_info=True)
++                continue
++
++            if not roots:
++                continue
++            root_properties = roots[0].get('properties') or {}
++            if not user_data_root_mount_config_is_valid(root, root_properties, BOOT_POOL_NAME_VALID):
++                self.logger.warning('Skipping boot-pool user-data root %r with unsafe properties', root)
++                continue
++
++            # Never let a ZFS mount follow a symlink out of the fixed mount path.
++            if os.path.realpath(root_mountpoint) != root_mountpoint:
++                self.logger.error('Skipping boot-pool user-data root %r: mountpoint resolves through a symlink', root)
++                continue
++
++            try:
++                mounted = self.middleware.call_sync('filesystem.statfs', root_mountpoint)
++            except CallError as e:
++                if e.errno == errno.ENOENT:
++                    mounted = None
++                else:
++                    self.logger.warning('Failed checking boot-pool user-data mount %r', root_mountpoint, exc_info=True)
++                    continue
++            except Exception:
++                self.logger.warning('Failed checking boot-pool user-data mount %r', root_mountpoint, exc_info=True)
++                continue
++
++            root_is_mounted = bool(
++                mounted and mounted.get('source') == root and mounted.get('dest') == root_mountpoint
++            )
++            if not root_is_mounted:
++                if mounted:
++                    parent_source = mounted.get('source') or ''
++                    parent_is_expected = (
++                        mounted.get('dest') == '/mnt'
++                        and parent_source.startswith(f'{boot_pool}/ROOT/')
++                        and parent_source.endswith('/mnt')
++                    )
++                else:
++                    try:
++                        parent = self.middleware.call_sync('filesystem.statfs', '/mnt')
++                    except Exception:
++                        self.logger.warning('Cannot verify /mnt before mounting %r', root, exc_info=True)
++                        continue
++                    parent_source = parent.get('source') or ''
++                    parent_is_expected = (
++                        parent.get('dest') == '/mnt'
++                        and parent_source.startswith(f'{boot_pool}/ROOT/')
++                        and parent_source.endswith('/mnt')
++                    )
++                if not parent_is_expected:
++                    self.logger.error(
++                        'Skipping boot-pool user-data root %r: expected the boot root filesystem at /mnt, got %r',
++                        root, mounted,
++                    )
++                    continue
++                try:
++                    self.call_sync2(self.s.zfs.resource.mount, root)
++                except Exception:
++                    self.logger.warning('Failed mounting boot-pool user-data root %r', root, exc_info=True)
++                    continue
++
++                try:
++                    mounted = self.middleware.call_sync('filesystem.statfs', root_mountpoint)
++                except Exception:
++                    self.logger.warning('Could not verify boot-pool user-data mount %r', root_mountpoint, exc_info=True)
++                    continue
++                if mounted.get('source') != root or mounted.get('dest') != root_mountpoint:
++                    self.logger.error('Boot-pool user-data root %r did not mount at its configured path', root)
++                    continue
++                self.logger.info('Mounted boot-pool user-data root %r', root)
++
++            try:
++                descendants = self.call_sync2(
++                    self.s.zfs.resource.query_impl,
++                    ZFSResourceQuery(
++                        paths=[root], properties=['mountpoint', 'canmount'], get_children=True,
++                    ),
++                )
++            except Exception:
++                self.logger.warning('Failed querying descendants of boot-pool user-data root %r', root, exc_info=True)
++                continue
++
++            container_root = f'{root}/.truenas_containers'
++            for dataset in sorted(descendants, key=lambda row: (row.get('name', '').count('/'), row.get('name', ''))):
++                name = dataset.get('name')
++                if not name or name == root or dataset.get('type') != 'FILESYSTEM':
++                    continue
++                is_managed_container_dataset = name == container_root or name.startswith(f'{container_root}/')
++                if not is_managed_container_dataset and not is_user_data_namespace_path(
++                    name, BOOT_POOL_NAME_VALID, INTERNAL_DATASETS
++                ):
++                    continue
++
++                properties = dataset.get('properties') or {}
++                canmount = (properties.get('canmount') or {}).get('value')
++                mountpoint = (properties.get('mountpoint') or {}).get('value')
++                if canmount != 'on' or not user_data_mountpoint_is_within_root(mountpoint, root):
++                    continue
++                if mountpoint in ('none', 'legacy'):
++                    continue
++
++                mountpoint = os.path.normpath(mountpoint)
++                try:
++                    resolved_mountpoint = os.path.realpath(mountpoint)
++                    if os.path.commonpath((resolved_mountpoint, root_mountpoint)) != root_mountpoint:
++                        self.logger.error('Skipping %r: mountpoint %r escapes its user-data root', name, mountpoint)
++                        continue
++                except (OSError, ValueError):
++                    self.logger.warning('Skipping %r: cannot resolve mountpoint %r', name, mountpoint, exc_info=True)
++                    continue
++
++                try:
++                    current = self.middleware.call_sync('filesystem.statfs', mountpoint)
++                except CallError as e:
++                    if e.errno == errno.ENOENT:
++                        current = None
++                    else:
++                        self.logger.warning('Failed checking mountpoint %r for %r', mountpoint, name, exc_info=True)
++                        continue
++                except Exception:
++                    self.logger.warning('Failed checking mountpoint %r for %r', mountpoint, name, exc_info=True)
++                    continue
++
++                if current and current.get('source') == name and current.get('dest') == mountpoint:
++                    continue
++                if current:
++                    current_source = current.get('source') or ''
++                    current_dest = current.get('dest') or ''
++                    try:
++                        current_is_user_data_parent = (
++                            user_data_namespace_root(current_source, BOOT_POOL_NAME_VALID) == root
++                            and os.path.commonpath((current_dest, root_mountpoint)) == root_mountpoint
++                            and (name.startswith(f'{current_source}/') or current_source == root)
++                        )
++                    except ValueError:
++                        current_is_user_data_parent = False
++                    if not current_is_user_data_parent:
++                        self.logger.error('Skipping %r: mountpoint %r is occupied by %r', name, mountpoint, current)
++                        continue
++
++                try:
++                    self.call_sync2(self.s.zfs.resource.mount, name)
++                    mounted = self.middleware.call_sync('filesystem.statfs', mountpoint)
++                except Exception:
++                    self.logger.warning('Failed mounting boot-pool user-data dataset %r', name, exc_info=True)
++                    continue
++                if mounted.get('source') == name and mounted.get('dest') == mountpoint:
++                    self.logger.info('Mounted boot-pool user-data dataset %r', name)
++                else:
++                    self.logger.error('Boot-pool user-data dataset %r did not mount at %r', name, mountpoint)
++
+     @private
+     @job()
+     def import_on_boot(self, job):
+@@ -647,6 +821,13 @@ class PoolService(Service):
+ 
+             self.unlock_on_boot_impl(name)
+ 
++        # boot-pool is not registered in storage.volume, so mount its opted-in
++        # user-data namespace explicitly after normal data-pool imports.
++        try:
++            self.mount_boot_pool_user_data()
++        except Exception:
++            self.logger.error('Unexpected failure mounting boot-pool user-data datasets', exc_info=True)
++
+         # TODO: we need to fix this. There is 0 reason to do all this stuff
+         # and block the entire boot-up process.
+         self.logger.debug('Calling pool.post_import')
+-- 
+2.55.0
+

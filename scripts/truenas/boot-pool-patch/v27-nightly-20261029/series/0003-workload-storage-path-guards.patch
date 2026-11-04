@@ -1,0 +1,171 @@
+From 79b2f7e2f900789d6c5e8c9e3d4bb5dbe59f8e09 Mon Sep 17 00:00:00 2001
+From: TrueNAS Patch Series <patchseries@vbpub.invalid>
+Date: Fri, 30 Oct 2026 00:00:00 +0000
+Subject: [PATCH] Guard workload paths within boot-pool user data
+
+Apply the user-data namespace boundary to VM devices, libvirt storage paths, and ZFS internal-path checks.
+
+Change-Id: workload-storage-path-guards
+Capability: storage-boundary
+Role: guard
+Risk: high
+Requires: path-a-dataset-api
+Forwarded: not-needed
+---
+ middlewared/plugins/vm/vm_devices.py         | 16 +++++--
+ middlewared/plugins/zfs/utils.py             | 11 ++++-
+ middlewared/utils/libvirt/storage_devices.py | 48 ++++++++++++--------
+ 3 files changed, 52 insertions(+), 23 deletions(-)
+
+diff --git a/middlewared/plugins/vm/vm_devices.py b/middlewared/plugins/vm/vm_devices.py
+index 5671af7c72ca7821a598d261908985392059b92b..83e8d3d6283101a5e53849e9d079f90126972d95 100644
+--- a/middlewared/plugins/vm/vm_devices.py
++++ b/middlewared/plugins/vm/vm_devices.py
+@@ -29,9 +29,11 @@ from middlewared.api.current import (
+     VMDeviceVirtualSizeResult,
+     ZFSResourceQuery,
+ )
+-from middlewared.plugins.zfs.utils import has_internal_path
++from middlewared.plugins.boot_pool_user_data import is_user_data_namespace_path
++from middlewared.plugins.zfs.utils import INTERNAL_PATHS, has_internal_path
+ from middlewared.service import CallError, CRUDService, job, private
+ from middlewared.service_exception import InstanceNotFound, ValidationError
++from middlewared.utils import BOOT_POOL_NAME_VALID
+ from middlewared.utils.libvirt.device_factory import DeviceFactory
+ from middlewared.utils.libvirt.mixin import DeviceMixin
+ from middlewared.utils.libvirt.utils import ACTIVE_STATES
+@@ -141,7 +143,9 @@ class VMDeviceService(CRUDService, DeviceMixin):
+                     raise ValidationError(schema, f'{dip!r} is not a file', errno.EINVAL)
+ 
+                 vfs = self.middleware.call_sync('filesystem.statfs', dip)
+-                if has_internal_path(vfs['source']):
++                if has_internal_path(vfs['source']) and not is_user_data_namespace_path(
++                    vfs['source'], BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++                ):
+                     raise ValidationError(
+                         schema,
+                         f'{dip!r} is in a protected system path ({vfs["source"]})',
+@@ -171,7 +175,9 @@ class VMDeviceService(CRUDService, DeviceMixin):
+                     raise ValidationError(schema, f'{sp!r} is not a directory', errno.EINVAL)
+ 
+                 vfs = self.middleware.call_sync('filesystem.statfs', dst['realpath'])
+-                if has_internal_path(vfs['source']):
++                if has_internal_path(vfs['source']) and not is_user_data_namespace_path(
++                    vfs['source'], BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++                ):
+                     raise ValidationError(
+                         schema,
+                         f'{sp!r} is in a protected system path ({vfs["source"]})',
+@@ -196,7 +202,9 @@ class VMDeviceService(CRUDService, DeviceMixin):
+             raise ValidationError(schema, f'{ptn!r} does not exist', errno.ENOENT)
+         elif zv[0]['type'] != 'VOLUME':
+             raise ValidationError(schema, f'{ptn!r} is not a volume', errno.EINVAL)
+-        elif has_internal_path(ptn):
++        elif has_internal_path(ptn) and not is_user_data_namespace_path(
++            ptn, BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++        ):
+             raise ValidationError(schema, f'{ptn!r} is in a protected system path', errno.EACCES)
+         elif not os.path.exists(ntp):
+             raise ValidationError(schema, f'{ntp!r} does not exist', errno.ENOENT)
+diff --git a/middlewared/plugins/zfs/utils.py b/middlewared/plugins/zfs/utils.py
+index fe4d3823c83f89730476c9316fb1f127ad0f47fc..59567ed8869fa1340108d2e1e96d1cae84b671ab 100644
+--- a/middlewared/plugins/zfs/utils.py
++++ b/middlewared/plugins/zfs/utils.py
+@@ -71,7 +71,16 @@ def has_internal_path(path: str) -> bool:
+     """
+     components = path.split("/")
+     if components[0] in BOOT_POOL_NAME_VALID:
+-        return True
++        # Keep the plugin helper out of zfs.utils' early import path.
++        from middlewared.plugins.boot_pool_user_data import (
++            is_user_data_namespace_path, is_user_data_namespace_root,
++        )
++        return (
++            is_user_data_namespace_root(path, BOOT_POOL_NAME_VALID)
++            or not is_user_data_namespace_path(
++                path, BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++            )
++        )
+     return len(components) > 1 and components[1] in INTERNAL_PATHS
+ 
+ 
+diff --git a/middlewared/utils/libvirt/storage_devices.py b/middlewared/utils/libvirt/storage_devices.py
+index f2531a8e45f62cc6ed3ffcf9f5371aa948673b56..b2d5d254cffbcb2891b47427e68904b7e5ba1d2d 100644
+--- a/middlewared/utils/libvirt/storage_devices.py
++++ b/middlewared/utils/libvirt/storage_devices.py
+@@ -3,7 +3,9 @@ import os
+ from typing import Any
+ 
+ from middlewared.api.current import ZFSResourceQuery
+-from middlewared.plugins.zfs.utils import has_internal_path
++from middlewared.plugins.boot_pool_user_data import is_user_data_namespace_path
++from middlewared.plugins.zfs.utils import INTERNAL_PATHS, has_internal_path
++from middlewared.utils import BOOT_POOL_NAME_VALID
+ from middlewared.plugins.zfs.zvol_utils import zvol_name_to_path, zvol_path_to_name
+ from middlewared.plugins.zfs_.validation_utils import check_zvol_in_boot_pool_using_path
+ from middlewared.service_exception import ValidationErrors
+@@ -86,7 +88,9 @@ class DiskDelegate(StorageDelegate):
+             if device['attributes'].get('path'):
+                 verrors.add('attributes.path', 'The "path" attribute must not be specified when creating a zvol.')
+ 
+-            if has_internal_path(device['attributes']['zvol_name']):
++            if has_internal_path(device['attributes']['zvol_name']) and not is_user_data_namespace_path(
++                device['attributes']['zvol_name'], BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++            ):
+                 # before doing anything, let's make sure the zvol
+                 # being created isn't within an internal path
+                 verrors.add(
+@@ -125,26 +129,34 @@ class DiskDelegate(StorageDelegate):
+                 verrors.add('attributes.path', 'Disk path is required.')
+             elif not path.startswith('/dev/zvol/'):
+                 verrors.add('attributes.path', 'Disk path must start with "/dev/zvol/".')
+-            elif check_zvol_in_boot_pool_using_path(path):
+-                verrors.add('attributes.path', 'Disk residing in boot pool cannot be consumed and is not supported.')
+             else:
+                 zvol_name = zvol_path_to_name(path)
+-                zvol = self.middleware.call_sync2(
+-                    self.middleware.services.zfs.resource.query_impl,
+-                    ZFSResourceQuery(paths=[zvol_name], properties=None),
+-                )
+-                if not zvol:
++                if (
++                    check_zvol_in_boot_pool_using_path(path)
++                    and not is_user_data_namespace_path(zvol_name, BOOT_POOL_NAME_VALID, INTERNAL_PATHS)
++                ):
+                     verrors.add(
+                         'attributes.path',
+-                        f'Zvol ({zvol_name}) path ({path}) does not exist.',
+-                        errno.ENOENT
++                        'Disk residing in boot pool cannot be consumed and is not supported.'
+                     )
+-                elif zvol[0]['type'] != 'VOLUME':
+-                    verrors.add('attributes.path', f'Path {path!r} ({zvol_name}) is not a volume.')
+-                elif has_internal_path(zvol_name):
+-                    verrors.add(
+-                        'attributes.path',
+-                        'Disk resides in an invalid location and is not supported.'
++                else:
++                    zvol = self.middleware.call_sync2(
++                        self.middleware.services.zfs.resource.query_impl,
++                        ZFSResourceQuery(paths=[zvol_name], properties=None),
+                     )
+-
++                    if not zvol:
++                        verrors.add(
++                            'attributes.path',
++                            f'Zvol ({zvol_name}) path ({path}) does not exist.',
++                            errno.ENOENT
++                        )
++                    elif zvol[0]['type'] != 'VOLUME':
++                        verrors.add('attributes.path', f'Path {path!r} ({zvol_name}) is not a volume.')
++                    elif has_internal_path(zvol_name) and not is_user_data_namespace_path(
++                        zvol_name, BOOT_POOL_NAME_VALID, INTERNAL_PATHS
++                    ):
++                        verrors.add(
++                            'attributes.path',
++                            'Disk resides in an invalid location and is not supported.'
++                        )
+         super().validate_middleware(device, verrors, old, instance, update)
+-- 
+2.55.0
+

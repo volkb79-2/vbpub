@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-25
 title: "gate assert vocabulary lacks a truthful coverage-floor value for whole-project gates"
-status: open
+status: fixed
 type: "bugfix"
 severity: "medium"
 provenance: "vbpub RG-55 P6 doc-lint finding, 2026-09-30"
 priority: 2
 filed_date: "2026-09-30"
+closed_date: "2026-11-03"
+closed_reason: "FIXED 2026-11-04 (4b4be42ba)"
 ---
 
 ## Observed mechanism and reproduction

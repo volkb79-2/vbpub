@@ -17,6 +17,9 @@ import os
 import tarfile
 import threading
 import time
+from email import policy as email_policy
+from email.parser import BytesParser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -114,6 +117,18 @@ class FakeServer:
         self.requests: list[dict[str, Any]] = []
         self.logins = 0
         self.datasets: dict[str, dict[str, Any]] = {"tank": self._make_dataset("tank", type_="FILESYSTEM")}
+        # VM disk-image import (TNT-61): image paths with their virtual sizes, files received by the HTTP upload
+        # endpoint, converted images, and failure injection for the convert job and the upload.
+        self.upload_dirs = {"/mnt/tank/images"}
+        self.image_sizes: dict[str, int] = {}
+        self.files: dict[str, bytes] = {}
+        self.upload_requests: list[dict[str, Any]] = []
+        self.upload_jobs: list[dict[str, Any]] = []
+        self.upload_status = 200
+        self.upload_job_state = "SUCCESS"
+        self.converted: list[dict[str, Any]] = []
+        self.job_failures: dict[str, str] = {}
+        self._http: Any = None
         self.snapshots: dict[str, dict[str, Any]] = {}
         self.snapshot_tasks: dict[int, dict[str, Any]] = {}
         self.scrub_tasks: dict[int, dict[str, Any]] = {}
@@ -204,11 +219,65 @@ class FakeServer:
         self._server = serve(self._handle, "127.0.0.1", 0, process_request=self._process_request)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
+        # The WebSocket server accepts only GET, so the multipart POST /_upload endpoint is a second loopback listener.
+        self._http = ThreadingHTTPServer(("127.0.0.1", 0), self._upload_handler())
+        threading.Thread(target=self._http.serve_forever, daemon=True).start()
         return self
 
     def stop(self) -> None:
+        self._http.shutdown()
+        self._http.server_close()
         self._server.shutdown()
         self._thread.join(timeout=5)
+
+    @property
+    def http_port(self) -> int:
+        return self._http.server_address[1]
+
+    def _upload_handler(self) -> type:
+        server = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args: Any) -> None:
+                return None
+
+            def do_POST(self) -> None:  # noqa: N802 (http.server API)
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length)
+                authorization = self.headers.get("Authorization", "")
+                expected = {f"Bearer {server.api_key}", "Basic " + base64.b64encode(
+                    f"{server.username}:{server.password}".encode()).decode()}
+                status, reply = server._receive_upload(self.path, authorization in expected,
+                                                       self.headers.get("Content-Type", ""), body)
+                payload = json.dumps(reply).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        return Handler
+
+    def _receive_upload(self, path: str, authorized: bool, content_type: str, body: bytes) -> tuple[int, dict[str, Any]]:
+        message = BytesParser(policy=email_policy.HTTP).parsebytes(
+            b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + body)
+        parts = {part.get_param("name", header="content-disposition"): part for part in message.iter_parts()}
+        record: dict[str, Any] = {"path": path, "authorized": authorized, "length": len(body)}
+        self.upload_requests.append(record)
+        if path != "/_upload" or not authorized or self.upload_status != 200 or {"data", "file"} - set(parts):
+            return (self.upload_status if self.upload_status != 200 else 401 if not authorized else 400), {}
+        request = json.loads(parts["data"].get_content())
+        destination, options = request["params"]
+        content = parts["file"].get_payload(decode=True)
+        record.update(method=request["method"], destination=destination, mode=options["mode"], size=len(content))
+        job_id = self._next_job_id
+        self._next_job_id += 1
+        state = self.upload_job_state
+        if state == "SUCCESS":
+            self.files[destination] = content
+        self.upload_jobs.append({"id": job_id, "method": "filesystem.put", "state": state,
+                                 "error": None if state == "SUCCESS" else "synthetic upload failure"})
+        return 200, {"job_id": job_id}
 
     def __enter__(self) -> "FakeServer":
         return self.start()
@@ -260,7 +329,7 @@ class FakeServer:
                 else:
                     result = self._dispatch(method, params)
                     if method in {"container.create", "container.stop", "container.delete", "vm.stop", "vm.restart",
-                                  "replication.run", "cloudsync.sync", "zpool.scrub.run",
+                                  "replication.run", "cloudsync.sync", "zpool.scrub.run", "vm.device.convert",
                                   "app.start", "app.stop", "app.delete", "system.reboot", "system.shutdown",
                                   "update.run", "update.download"}:
                         self._send_job(ws, msg["id"], result)
@@ -299,6 +368,14 @@ class FakeServer:
                            "progress": {"percent": percent, "description": "Working"}, "message_ids": []},
             }}))
             time.sleep(0.01)
+        if method in self.job_failures:
+            ws.send(json.dumps({"jsonrpc": "2.0", "method": "collection_update", "params": {
+                "collection": "core.get_jobs", "msg": "changed", "id": job_id,
+                "fields": {"id": job_id, "method": method, "state": "FAILED", "error": self.job_failures[method],
+                           "exception": self.job_failures[method], "progress": {"percent": 75, "description": "Failed"},
+                           "message_ids": []},
+            }}))
+            return
         ws.send(json.dumps({"jsonrpc": "2.0", "method": "collection_update", "params": {
             "collection": "core.get_jobs", "msg": "changed", "id": job_id,
             "fields": {"id": job_id, "method": method, "state": "SUCCESS", "result": result,
@@ -505,6 +582,9 @@ class FakeServer:
             "group.query": lambda p: self._query(self.groups, p),
             "user.shell_choices": lambda p: {"/usr/bin/zsh": "/usr/bin/zsh", "/usr/sbin/nologin": "/usr/sbin/nologin"},
             "filesystem.stat": self._filesystem_stat,
+            "filesystem.listdir": self._filesystem_listdir,
+            "vm.device.virtual_size": self._vm_device_virtual_size,
+            "vm.device.convert": self._vm_device_convert,
             "sharing.smb.query": lambda p: self._query(self.smb_shares, p),
             "sharing.smb.get_instance": lambda p: self._get(self.smb_shares, p[0], "SMB share"),
             "sharing.smb.getacl": self._smb_getacl,
@@ -679,7 +759,7 @@ class FakeServer:
         return True
 
     def _get_jobs(self, params: list[Any]) -> list[dict[str, Any]]:
-        return self._query({row.get("id"): row for row in self.active_jobs}, params)
+        return self._query({row.get("id"): row for row in [*self.active_jobs, *self.upload_jobs]}, params)
 
     def _reporting_get_data(self, params: list[Any]) -> list[dict[str, Any]]:
         graphs = params[0] if params and isinstance(params[0], list) else []
@@ -798,12 +878,20 @@ class FakeServer:
 
     def _filesystem_stat(self, params: list[Any]) -> dict[str, Any]:
         path = params[0] if params else ""
-        if path not in self.share_paths:
+        if path not in self.share_paths and path not in self.upload_dirs:
             raise _RpcError(CALL_ERROR, f"No such file or directory: {path}")
         return {"realpath": path, "type": "DIRECTORY", "size": 4096, "allocation_size": 4096, "mode": 16877,
                 "mount_id": 1, "uid": 0, "gid": 0, "atime": 0.0, "mtime": 0.0, "ctime": 0.0, "btime": 0.0,
                 "dev": 1, "inode": 2, "nlink": 2, "acl": True, "is_mountpoint": False, "is_ctldir": False,
                 "attributes": [], "user": "root", "group": "wheel"}
+
+    def _filesystem_listdir(self, params: list[Any]) -> list[dict[str, Any]]:
+        directory = params[0] if params else ""
+        if directory not in self.upload_dirs:
+            raise _RpcError(CALL_ERROR, f"No such file or directory: {directory}")
+        rows = [{"path": path, "name": path.rsplit("/", 1)[1], "type": "FILE", "size": len(content)}
+                for path, content in sorted(self.files.items()) if path.rsplit("/", 1)[0] == directory]
+        return [row for row in rows if self._matches(row, params[1] if len(params) > 1 else [])]
 
     def _smb_getacl(self, params: list[Any]) -> dict[str, Any]:
         share_name = params[0].get("share_name") if params and isinstance(params[0], dict) else None
@@ -908,7 +996,21 @@ class FakeServer:
         return True
 
     def _zpool_scrub_run(self, params: list[Any]) -> None:
-        self.scrubs_started.append(params[0]["pool_name"])
+        """Validate the v27 payload strictly so payload drift fails offline (TNT-56)."""
+        if len(params) != 1 or not isinstance(params[0], dict):
+            raise _RpcError(CALL_ERROR, "zpool.scrub.run takes exactly one data object")
+        data = params[0]
+        if set(data) != {"pool_name", "scan_type", "action", "threshold"}:
+            raise _RpcError(CALL_ERROR, "zpool.scrub.run data must contain exactly pool_name, scan_type, action, threshold")
+        if not isinstance(data["pool_name"], str) or not data["pool_name"]:
+            raise _RpcError(CALL_ERROR, "zpool.scrub.run pool_name must be a non-empty string")
+        if data["scan_type"] not in ("SCRUB", "ERRORSCRUB"):
+            raise _RpcError(CALL_ERROR, "zpool.scrub.run scan_type must be SCRUB or ERRORSCRUB")
+        if data["action"] not in ("START", "PAUSE", "CANCEL"):
+            raise _RpcError(CALL_ERROR, "zpool.scrub.run action must be START, PAUSE or CANCEL")
+        if not isinstance(data["threshold"], int) or isinstance(data["threshold"], bool):
+            raise _RpcError(CALL_ERROR, "zpool.scrub.run threshold must be an integer")
+        self.scrubs_started.append(data["pool_name"])
         return None
 
     def _replication_update(self, params: list[Any]) -> dict[str, Any]:
@@ -1062,23 +1164,83 @@ class FakeServer:
 
     def _vm_device_create(self, params: list[Any]) -> dict[str, Any]:
         data = dict(params[0])
+        attributes = dict(data["attributes"])
+        zvol = attributes.get("zvol_name") if attributes.get("create_zvol") is True else None
+        if zvol is not None:
+            if zvol in self.datasets:
+                raise _RpcError(CALL_ERROR, f"zvol {zvol!r} already exists")
+            self.datasets[zvol] = self._make_dataset(zvol, type_="VOLUME", volsize={"value": attributes.get("zvol_volsize")})
+            # TrueNAS stores the resulting block device path, not the creation request.
+            attributes = {key: value for key, value in attributes.items()
+                          if key not in {"create_zvol", "zvol_name", "zvol_volsize"}}
+            attributes["path"] = f"/dev/zvol/{zvol}"
         row = {"id": self._next_device_id, "vm": data["vm"], "order": data.get("order", self._next_device_id),
-               "attributes": dict(data["attributes"])}
+               "attributes": attributes}
+        self._get(self.vms, row["vm"], "VM")
         self.vm_devices[row["id"]] = row
         self._next_device_id += 1
-        vm = self._get(self.vms, row["vm"], "VM")
-        vm["devices"] = [*vm.get("devices", []), row]
-        vm["display_available"] = any(device["attributes"].get("dtype") == "DISPLAY" for device in vm["devices"])
+        self._sync_vm_devices()
         return row
+
+    def _sync_vm_devices(self) -> None:
+        """Keep each VM record's ``devices`` list and display flag consistent with the device table."""
+        for vm in self.vms.values():
+            vm["devices"] = [device for device in self.vm_devices.values() if device["vm"] == vm["id"]]
+            vm["display_available"] = any(device["attributes"].get("dtype") == "DISPLAY" for device in vm["devices"])
 
     def _vm_device_update(self, params: list[Any]) -> dict[str, Any]:
         row = self._get(self.vm_devices, params[0], "VM device")
-        row.update(dict(params[1]))
+        payload = dict(params[1])
+        if not payload or set(payload) - {"vm", "order", "attributes"}:
+            raise _RpcError(CALL_ERROR, "vm.device.update accepts only vm, order and attributes")
+        if "vm" in payload:
+            self._get(self.vms, payload["vm"], "VM")
+            row["vm"] = payload["vm"]
+        if "order" in payload:
+            if payload["order"] is not None and (not isinstance(payload["order"], int) or isinstance(payload["order"], bool)):
+                raise _RpcError(CALL_ERROR, "order must be an integer or null")
+            row["order"] = payload["order"]
+        if "attributes" in payload:
+            attributes = dict(payload["attributes"])
+            if attributes.get("dtype", row["attributes"].get("dtype")) != row["attributes"].get("dtype"):
+                raise _RpcError(CALL_ERROR, "the device type cannot change")
+            row["attributes"] = {**row["attributes"], **attributes}
+        self._sync_vm_devices()
         return row
 
     def _vm_device_delete(self, params: list[Any]) -> bool:
-        self.vm_devices.pop(int(params[0]), None)
+        row = self._get(self.vm_devices, params[0], "VM device")
+        options = dict(params[1]) if len(params) > 1 else {}
+        if set(options) - {"force", "raw_file", "zvol"}:
+            raise _RpcError(CALL_ERROR, "vm.device.delete options are force, raw_file and zvol")
+        vm = self.vms.get(row["vm"])
+        if vm is not None and vm["status"]["state"] != "STOPPED" and not options.get("force"):
+            raise _RpcError(CALL_ERROR, "the VM must be stopped to delete a device")
+        path = row["attributes"].get("path") or ""
+        if options.get("zvol") and path.startswith("/dev/zvol/"):
+            self.datasets.pop(path.removeprefix("/dev/zvol/"), None)
+        self.vm_devices.pop(row["id"])
+        self._sync_vm_devices()
         return True
+
+    def _vm_device_virtual_size(self, params: list[Any]) -> int:
+        data = params[0] if params and isinstance(params[0], dict) else {}
+        if set(data) != {"path"} or data["path"] not in self.image_sizes:
+            raise _RpcError(CALL_ERROR, f"No such file or directory: {data.get('path')}")
+        return self.image_sizes[data["path"]]
+
+    def _vm_device_convert(self, params: list[Any]) -> None:
+        data = params[0] if params and isinstance(params[0], dict) else {}
+        if set(data) != {"source", "destination"}:
+            raise _RpcError(CALL_ERROR, "vm.device.convert takes exactly source and destination")
+        if data["source"] not in self.image_sizes:
+            raise _RpcError(CALL_ERROR, f"No such file or directory: {data['source']}")
+        zvol = str(data["destination"]).removeprefix("/dev/zvol/")
+        if zvol not in self.datasets or self.datasets[zvol].get("type") != "VOLUME":
+            raise _RpcError(CALL_ERROR, f"destination {data['destination']!r} is not an existing zvol")
+        if "vm.device.convert" not in self.job_failures:
+            self.converted.append({"source": data["source"], "zvol": zvol})
+        return None
 
     def _vm_get_console(self, params: list[Any]) -> str:
         vm_id = int(params[0])

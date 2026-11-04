@@ -8,7 +8,7 @@
 #
 # But CR-16 shipped only ONE invoker: the container healthcheck. Docker does
 # not run healthchecks on a stopped container, so the exact incident the
-# package exists to prevent -- nyxloom-prod-nyxloomd sitting Exited(143) for
+# package exists to prevent -- the nyxloomd container sitting Exited(143) for
 # ten days -- would still have been silent. An alarm that only runs while the
 # thing it watches is alive is not an alarm.
 #

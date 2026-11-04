@@ -1051,8 +1051,15 @@ FIRST_RELEASE_POSTPONE_REASON = (
 #: also without prior R2" -- to every 6.2.x) and, by the 2026-10-23 operator decision, the 7.0
 #: line (the 7.0.0 release carrying the mandatory `[github] token_source`) and, by the 2026-10-27
 #: operator decision (R2 waived for every release of the current release wave), the 7.1 line.
+#: 2026-11-04, operator decision: R2 mutation campaigns stay waived for releases and run later with
+#: `--jobs` on the scratch host (decision standing since 2026-10-27), so cmru 7.2.0 (a minor release
+#: refused by the gate, KI-109) may defer R2 too: the 7.2 line. It closes with one full R2 run
+#: (`--jobs auto` on r1002) over the 7.2 content.
 #: Every other version still refuses; moving a window needs a new operator decision and a reviewed change here.
-POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)), ((7, 1, 0), (7, 2, 0)))}
+#: `cmru release --dry-run` (release_preconditions.py) reads this same table via the gate's validator.
+POSTPONEMENT_RELEASE_VERSIONS = {
+    "KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)), ((7, 1, 0), (7, 2, 0)), ((7, 2, 0), (7, 3, 0)))
+}
 
 
 def _version_tuple(version: str) -> tuple[int, int, int]:

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "target_host": "v1001.vxxu.de",
+  "version": "27.0.0-RC.1",
+  "profile": "path-a",
+  "install_record": "absent",
+  "provenance_note": "Read-only fingerprints collected after the current v27 installer refused 14 of 15 source checksums. The custom files match this worktree, but the installed patch bundle is unknown; this manifest supports exploratory UI behavior checks only.",
+  "files": {
+    "middlewared/plugins/vm/info.py": "ac91d9a40792a5844221addb41afcfaa82e171c9fb0e37b0b2ecbecb90c013ba",
+    "middlewared/async_validators.py": "a1286a76dc03d2da8f59c57a4bc8ffe1cb93cde1160e6c864a5deeccf5cd3e2f",
+    "middlewared/plugins/pool_/dataset_query_utils.py": "3a9146d2f13f0d3fdffa4b160993d78061d5618cee9cabe8b15db6285c3e3214",
+    "middlewared/plugins/pool_/dataset.py": "585f80e69657e5d8fe73b479e43f122b6413f5636b30f67d3a7052f09f027cca",
+    "middlewared/plugins/pool_/dataset_info.py": "437ee090a00fb877c8a030d60646b0e17ed1958b9817d6dcba9a046e95670720",
+    "middlewared/plugins/container/container.py": "08d05351a24f118970a02eb331d11bbb5c2438af1c2daa66654f74fd3675b6fd",
+    "middlewared/plugins/container/dataset.py": "7f72007f4f5499a230882413093eff60ca6a516faa058800fb1a66048a7c5f54",
+    "middlewared/plugins/container/utils.py": "6fe96889929d9dbf26657f2c4ba13b96fbefc4111d8ce30ad119ba758e5520fd",
+    "middlewared/plugins/container/image.py": "052df0ed8d9e93cb6efc63aa6dce73019c8d96eba4b0905e7ef3bc6adfd23dd2",
+    "middlewared/plugins/container/lifecycle.py": "f2026cd8e3a1e91b73db4d7ceb3f1fe2747e53ed21e41cd81485551787d3cb5f",
+    "middlewared/plugins/vm/vm_devices.py": "becdb52c1c14c4dba5647b49b8b841c68ee63b9f204e2c7272197a12b625568c",
+    "middlewared/utils/libvirt/storage_devices.py": "05647ba057a20e7fbab1dffc9948c51b356126ee21c7916a39da1d90c9a27aea",
+    "truenas_pylibvirt/domain/vm/xml.py": "5ace9475d945f53bfe9e35ed4f918ef7969cdfc860d8860ffc37ab3ae8b008f9",
+    "middlewared/plugins/pool_/import_pool.py": "512bc0cf551bf83f9b4fde4bdf92c72e4b22872391816ee3feebbde79d6a4ab4",
+    "middlewared/plugins/zfs/utils.py": "4b08985aa4fca1d1fc22f146d904a04a91cd863947b8ad20df1579fb92e5205a",
+    "middlewared/plugins/boot_pool_user_data.py": "28235cfb01cca0c111d86e38ce450d7b607fccdaa499d748b16ea403b4a15498",
+    "middlewared/plugins/vm/virtualization_support.py": "45b9dd10cc10761f2e7422fd43be2cb86c3b978b1948d53088bce596b9d29e5d"
+  }
+}

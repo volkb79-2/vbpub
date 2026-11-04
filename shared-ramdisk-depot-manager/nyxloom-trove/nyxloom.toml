@@ -109,10 +109,9 @@ environment = "srdm-gate"
 # the cgroup carrying its class policy, whether a declared floor reached the
 # kernel at all, and whether any ancestor slice caps it back to zero.
 #
-# Filled by P02 (which closed D-004), P03 and P04. The one skip that is
-# legitimate lives in tools/gate.sh, at the outer level where it is visible:
-# a Docker daemon that refuses privileged containers cannot run this harness,
-# which is a property of the host and not a failing change.
+# Filled by P02 (which closed D-004), P03 and P04. A Docker daemon that refuses
+# privileged containers is infrastructure failure (exit 3), not a green skip:
+# this gate is required evidence and must be run on a host that supports it.
 [gates.privileged-e2e]
 argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/shared-ramdisk-depot-manager && SRDM_CGROUP_PARENT=\"${SRDM_CGROUP_PARENT:-}\" exec tools/gate.sh {worktree} e2e"]
 phase = "pre-merge"

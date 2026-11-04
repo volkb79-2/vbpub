@@ -1610,13 +1610,19 @@
         "option:route:entrypoint:cmru/handler/tarball-publish/--prefix",
         "option:route:entrypoint:cmru/handler/tarball-publish/--cwd",
         "option:route:entrypoint:cmru/handler/tarball-publish/--glob",
+        "option:route:entrypoint:cmru/handler/tarball-publish/--variant",
+        "option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix",
+        "option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset",
         "option:route:entrypoint:cmru/handler/tarball-publish/--version-file",
         "option:route:entrypoint:cmru/handler/tarball-publish/--version-env"
       ],
       "route_id": "route:entrypoint:cmru/handler/tarball-publish",
       "shape": {
         "defaulted_options": [
-          "option:route:entrypoint:cmru/handler/tarball-publish/--log-prefix-time-short"
+          "option:route:entrypoint:cmru/handler/tarball-publish/--log-prefix-time-short",
+          "option:route:entrypoint:cmru/handler/tarball-publish/--variant",
+          "option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix",
+          "option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset"
         ],
         "required_argument_values": {},
         "required_arguments": [],
@@ -1632,7 +1638,20 @@
           "option:route:entrypoint:cmru/handler/tarball-publish/--glob"
         ]
       },
-      "signature": "sha256:4d11053914c6cebb18ee0ad9b27325799d6b0d06a4a4b9b99e6ba7d1d7e4c9d5"
+      "signature": "sha256:be5a8af7980a8444b9e3ec4fffffd85fde2d4006f0a2fb1c8fa7249a2baded08"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix/--asset-suffix",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/tarball-publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix",
+        "spelling": "--asset-suffix"
+      },
+      "signature": "sha256:4e38a31bedf3aa0d9bf077163f8cc0063d1bc03ee655e64515f8e009945530a0"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--cwd/--cwd",
@@ -1672,6 +1691,19 @@
         "spelling": "--dry-run"
       },
       "signature": "sha256:b2b04455bdcbbfeb5852a1b54eea6fe3104bd1633e682be7e170de7f47ab1d17"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset/--extra-asset",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/tarball-publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset",
+        "spelling": "--extra-asset"
+      },
+      "signature": "sha256:d3562ae0696a849c20a121ada61fd21baa3d729c115559ea51f88b5d6699ba5c"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--glob/--glob",
@@ -1724,6 +1756,19 @@
         "spelling": "--prefix"
       },
       "signature": "sha256:dac45f6471ffd3f563ca06fa0891814af382e0ca7818a3159ac903a9d2684c50"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--variant/--variant",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/tarball-publish/--variant"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/tarball-publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/tarball-publish/--variant",
+        "spelling": "--variant"
+      },
+      "signature": "sha256:1ad0d013787ecafc0a26626bdc61933d56faebebbfaf7a80d6716101fe73d124"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--version-env/--version-env",
@@ -2430,6 +2475,264 @@
         "spelling": "--yes"
       },
       "signature": "sha256:3f16e484dbffa08ac138b2c915d5459e5267bcdba96e78ac30c4d757727c04f3"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/check/argument-shape/argument:route:entrypoint:cmru/installer/check/target",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cmru/installer/check/target"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/check",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cmru/installer/check/target"
+      },
+      "signature": "sha256:44fd433e498da7d8653dc0f5fc3ada6c77a11bcb11dab6cd4539d26d743a5485"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/check/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cmru/installer/check/--log-prefix-time-short",
+        "option:route:entrypoint:cmru/installer/check/--installer"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/check",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cmru/installer/check/--log-prefix-time-short"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:cmru/installer/check/--installer"
+        ]
+      },
+      "signature": "sha256:a504b18a9b1a7ba2a42722e62331437b1add916451269fe544f5270df946ccdc"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/check/option-spelling/option:route:entrypoint:cmru/installer/check/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/installer/check/--config"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/installer/check/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:a0eb4a24168c40be52a7762c39ffa862bc9c68835148cb6cf373fdc454820ee3"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/check/option-spelling/option:route:entrypoint:cmru/installer/check/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/installer/check/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/installer/check/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:b0b807a4efccd25e5b7a230ee23868530e65047c9b6047baf3484fe376144ab9"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/check/option-spelling/option:route:entrypoint:cmru/installer/check/--installer/--installer",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/installer/check/--installer"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/installer/check/--installer",
+        "spelling": "--installer"
+      },
+      "signature": "sha256:281753425e110b1b3760c0b908db991764d7fac883f1d61f304c20a1baab676b"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/check/option-spelling/option:route:entrypoint:cmru/installer/check/--log-prefix-time-short/--log-prefix-time-short",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/installer/check/--log-prefix-time-short"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/installer/check/--log-prefix-time-short",
+        "spelling": "--log-prefix-time-short"
+      },
+      "signature": "sha256:ebf2adb2ab26ec86997200ebc7c0a3d0f201f7e35756589cf24f1027d199c085"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/argument-shape/argument:route:entrypoint:cmru/installer/render/target",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cmru/installer/render/target"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cmru/installer/render/target"
+      },
+      "signature": "sha256:b5dd967941a260a420f0b5bdef7127b4f4a08934f46b8e7a66022acbf9308337"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/constraint-requires/1",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--dry-run",
+        "option:route:entrypoint:cmru/installer/render/--output",
+        "option:route:entrypoint:cmru/installer/render/--output-dir"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "any_of": [
+          "--output",
+          "--output-dir"
+        ],
+        "kind": "requires",
+        "option": "--dry-run",
+        "reason": "stdout mode writes nothing, so there is nothing to preview"
+      },
+      "signature": "sha256:047cba01d6702798717d4f31ffdb765b0225e78186de2122769ade082b474981"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/exclusive-conflict/destination/option:route:entrypoint:cmru/installer/render/--output/option:route:entrypoint:cmru/installer/render/--output-dir",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--output",
+        "option:route:entrypoint:cmru/installer/render/--output-dir"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "group_id": "destination",
+        "options": [
+          "option:route:entrypoint:cmru/installer/render/--output",
+          "option:route:entrypoint:cmru/installer/render/--output-dir"
+        ]
+      },
+      "signature": "sha256:479918d8c961b1f1fafd86ca5fc51b0bf9873e474ad4a7c139fb8edacd90c6a2"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/exclusive-member/destination/option:route:entrypoint:cmru/installer/render/--output",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--output"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "group_id": "destination",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cmru/installer/render/--output"
+      },
+      "signature": "sha256:c45ea514f2e859f98636a515d01bdfd940748f8bce0792c9a7b04169989d6612"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/exclusive-member/destination/option:route:entrypoint:cmru/installer/render/--output-dir",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--output-dir"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "group_id": "destination",
+        "required": false,
+        "selected_option": "option:route:entrypoint:cmru/installer/render/--output-dir"
+      },
+      "signature": "sha256:9e4f560b832df3016e60a2a5799b88aba34928eef8911a1776b25c7ea7a346f2"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--log-prefix-time-short"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cmru/installer/render/--log-prefix-time-short"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:899725379a2e24cbc1fd5916284e87b8a8855c02771d045c361c879a4f6b1c9c"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--config"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/installer/render/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:e78ae52e13e199c3cee171ec0a4e6cff159f95f6f8f6128838d39c4fe80e7783"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/installer/render/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:e89a12a979dd319871637334302a6b79d38cfffef7a4736b434ed6229323ad56"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--dry-run"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/installer/render/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:ae65e213992b36ee90697c2f04643e17034b75dd2ef767cb9c8fc1ca14aed961"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--log-prefix-time-short/--log-prefix-time-short",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--log-prefix-time-short"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/installer/render/--log-prefix-time-short",
+        "spelling": "--log-prefix-time-short"
+      },
+      "signature": "sha256:d0487b2328bc099af40f997fef08ef06eecd0b74b75356dec08e6aae83f7fb49"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--output-dir/--output-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--output-dir"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/installer/render/--output-dir",
+        "spelling": "--output-dir"
+      },
+      "signature": "sha256:6af18b4e3de2411c1d9bcceed96d261e433c720a554f2913cb3f3d9dd719e1d3"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--output/--output",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/installer/render/--output"
+      ],
+      "route_id": "route:entrypoint:cmru/installer/render",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/installer/render/--output",
+        "spelling": "--output"
+      },
+      "signature": "sha256:d22061d8e50bc52a7c5d0354e6a93b652f46b4238087c95f87e2fa672e92e25e"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/argument-shape/argument:route:entrypoint:cmru/publish/target",
@@ -7355,15 +7658,15 @@
             "dry-run"
           ],
           "confirmation": false,
-          "description": "Render the configured standalone installer for one or more projects. Without --output/--output-dir it prints one project's installer to stdout and writes nothing.",
+          "description": "DEPRECATED alias of 'cmru installer render' (removal in a later major release). Renders the configured standalone installer for one or more projects; without --output/--output-dir it prints one project's installer to stdout.",
           "group": "MODIFICATION",
           "id": null,
           "name": "get-py",
-          "summary": "Render the configured standalone installer for one or more projects. Without --output/--output-dir it prints one project's installer to stdout and writes nothing. [mutating; dry-run]",
+          "summary": "DEPRECATED alias of 'cmru installer render' (removal in a later major release). Renders the configured standalone installer for one or more projects; without --output/--output-dir it prints one project's installer to stdout. [mutating; dry-run]",
           "synopsis": null
         }
       ],
-      "description": "Emit the standalone Python installer.",
+      "description": "DEPRECATED alias of 'installer render' (removal in a later major release).",
       "group": "MODIFICATION",
       "id": "route:entrypoint:cmru/get-py",
       "kind": "invocation",
@@ -7407,7 +7710,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Emit the standalone Python installer. [mutating]",
+      "summary": "DEPRECATED alias of 'installer render' (removal in a later major release). [mutating]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -8825,6 +9128,126 @@
           "parser_kwargs": {
             "default": null,
             "dest": "notes_env"
+          },
+          "parser_path": [
+            "handler",
+            "tarball-publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--variant",
+          "choices": null,
+          "const": null,
+          "default": [],
+          "default_present": true,
+          "description": "publish one per-interpreter variant asset NAME[=LABEL]; repeatable, all-or-nothing",
+          "dest": "variant",
+          "effective_default": [],
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--variant"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/tarball-publish/--variant",
+          "kind": "option",
+          "metavar": "NAME[=LABEL]",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": []
+          },
+          "parser_path": [
+            "handler",
+            "tarball-publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--asset-suffix",
+          "choices": null,
+          "const": null,
+          "default": ".tar.xz",
+          "default_present": true,
+          "description": "variant asset file extension (default .tar.xz)",
+          "dest": "asset_suffix",
+          "effective_default": ".tar.xz",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--asset-suffix"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix",
+          "kind": "option",
+          "metavar": "SUFFIX",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": ".tar.xz",
+            "dest": "asset_suffix"
+          },
+          "parser_path": [
+            "handler",
+            "tarball-publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--extra-asset",
+          "choices": null,
+          "const": null,
+          "default": [],
+          "default_present": true,
+          "description": "release-level companion file or glob (with --variant); repeatable",
+          "dest": "extra_asset",
+          "effective_default": [],
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--extra-asset"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": []
           },
           "parser_path": [
             "handler",
@@ -10518,6 +10941,619 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "Adopt a project with the guided scaffolding wizard. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Render or check a project's generated standalone installer (get.py).",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cmru/installer",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "installer"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:cmru/installer/render",
+        "route:entrypoint:cmru/installer/check"
+      ],
+      "summary": "Render or check a project's generated standalone installer (get.py). [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "cmru.cli_support._ShortTimePrefixAction",
+          "before_nested_subcommand": false,
+          "canonical": "--log-prefix-time-short",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "prefix severity lines with local HH:MM:SS timestamps",
+          "dest": "log_prefix_time_short",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--log-prefix-time-short"
+          ],
+          "help_group": "OUTPUT CONTROL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/installer/check/--log-prefix-time-short",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "cmru.cli_support._ShortTimePrefixAction"
+            },
+            "default": false,
+            "nargs": 0
+          },
+          "parser_path": [
+            "installer",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "project target; omitted: the current project, or every orchestrated project at the estate root",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cmru/installer/check/target",
+          "kind": "argument",
+          "metavar": "[all|PROJECT[,PROJECT...]]",
+          "minimum_values": 0,
+          "name": "target",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?",
+            "type": {
+              "all_token": "all",
+              "callable": "cli_extended.SelectorList",
+              "choices": null,
+              "separator": ","
+            }
+          },
+          "parser_path": [
+            "installer",
+            "check"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "all_token": "all",
+            "callable": "cli_extended.SelectorList",
+            "choices": null,
+            "separator": ","
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "path to cmru.toml or cmru.orchestration.toml",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/installer/check/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "installer",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--installer",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "the committed installer file to compare",
+          "dest": "installer",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--installer"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/installer/check/--installer",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "installer",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [
+            "mutating"
+          ],
+          "confirmation": true,
+          "description": "Render or check a project's generated standalone installer (get.py).",
+          "group": "MODIFICATION",
+          "id": null,
+          "name": "installer",
+          "summary": "Render or check a project's generated standalone installer (get.py). [mutating]",
+          "synopsis": null
+        }
+      ],
+      "description": "Render one project's installer in memory and compare it byte-for-byte with the committed --installer file; exit 0 if identical, 1 if not.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cmru/installer/check",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:cmru/installer/check/--log-prefix-time-short.action"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "installer"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "installer",
+            "check"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "installer",
+        "check"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Render one project's installer in memory and compare it byte-for-byte with the committed --installer file; exit 0 if identical, 1 if not.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "cmru.cli_support._ShortTimePrefixAction",
+          "before_nested_subcommand": false,
+          "canonical": "--log-prefix-time-short",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "prefix severity lines with local HH:MM:SS timestamps",
+          "dest": "log_prefix_time_short",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--log-prefix-time-short"
+          ],
+          "help_group": "OUTPUT CONTROL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/installer/render/--log-prefix-time-short",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "cmru.cli_support._ShortTimePrefixAction"
+            },
+            "default": false,
+            "nargs": 0
+          },
+          "parser_path": [
+            "installer",
+            "render"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "project target; omitted: the current project, or every orchestrated project at the estate root",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cmru/installer/render/target",
+          "kind": "argument",
+          "metavar": "[all|PROJECT[,PROJECT...]]",
+          "minimum_values": 0,
+          "name": "target",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?",
+            "type": {
+              "all_token": "all",
+              "callable": "cli_extended.SelectorList",
+              "choices": null,
+              "separator": ","
+            }
+          },
+          "parser_path": [
+            "installer",
+            "render"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": {
+            "all_token": "all",
+            "callable": "cli_extended.SelectorList",
+            "choices": null,
+            "separator": ","
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "path to cmru.toml or cmru.orchestration.toml",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/installer/render/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "installer",
+            "render"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--output",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "write one selected installer to this file",
+          "dest": "output",
+          "effective_default": null,
+          "exclusive_group": "destination",
+          "exclusive_required": false,
+          "flags": [
+            "--output"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/installer/render/--output",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "installer",
+            "render"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--output-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "write one named installer per selected project",
+          "dest": "output_dir",
+          "effective_default": null,
+          "exclusive_group": "destination",
+          "exclusive_required": false,
+          "flags": [
+            "--output-dir"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/installer/render/--output-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "installer",
+            "render"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [
+        {
+          "any_of": [
+            "--output",
+            "--output-dir"
+          ],
+          "kind": "requires",
+          "option": "--dry-run",
+          "reason": "stdout mode writes nothing, so there is nothing to preview"
+        }
+      ],
+      "delegated_metadata": [
+        {
+          "behavior": [
+            "mutating"
+          ],
+          "confirmation": true,
+          "description": "Render or check a project's generated standalone installer (get.py).",
+          "group": "MODIFICATION",
+          "id": null,
+          "name": "installer",
+          "summary": "Render or check a project's generated standalone installer (get.py). [mutating]",
+          "synopsis": null
+        }
+      ],
+      "description": "Render the configured standalone installer for one or more projects. Without --output/--output-dir it prints one project's installer to stdout and writes nothing.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cmru/installer/render",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:cmru/installer/render/--log-prefix-time-short.action"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "installer"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "installer",
+            "render"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "installer",
+        "render"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Render the configured standalone installer for one or more projects. Without --output/--output-dir it prints one project's installer to stdout and writes nothing. [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

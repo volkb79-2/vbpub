@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-19
 title: "Origin scope can disappear when placement moves its last process"
-status: open
+status: fixed
 type: "bugfix"
 severity: "high"
 component: "placement lifecycle"
@@ -79,3 +79,7 @@ worker PID's host cgroup was identical before and after stop, and was observed
 inside the expected profiler leaf during placement. Final exact-tip registered
 gates and independent review remain pending. Evidence:
 `reports/cgprofile-CP18-CP19-LIVE-ACCEPTANCE-20261015.md`.
+
+## Resolution
+
+FIXED 2026-11-04 (fix-cgp-2-20261104, hygiene; stale entry). `lib/placement.py:512` defines `REFUSED_ORIGIN_SCOPE_WOULD_EMPTY` and `:1750` applies it before any move; covered by `tests/test_serve_placement.py:1766` and `:1871`.

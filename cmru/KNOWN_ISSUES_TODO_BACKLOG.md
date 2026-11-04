@@ -1656,7 +1656,9 @@ complete KI-51.
 
 **Oracle:** the test passes; a controlled wrong implementation that lets the `RuntimeError` escape fails it; the `coverage` lane on main is green.
 
-### KI-55 — The durable candidate backup branch is not re-pushed after a merge-promote (REL-04 follow-up) — *open, severity: minor*
+### KI-55 — The durable candidate backup branch is not re-pushed after a merge-promote (REL-04 follow-up) — *FIXED 2026-11-04 (3e8b4712f), severity: minor*
+
+**FIXED 2026-11-04 (3e8b4712f):** `promote_workspace` calls `push_backup_branch` after each successful merge, before the retry push. Test: `tests/test_release_end_to_end_real_git.py::test_ki55_backup_branch_follows_the_candidate_through_merge_retries` (fails on the old code: the origin branch lacks the merge).
 
 **Observed:** `transaction.promote_workspace` now merges `origin/main` into the candidate when main advanced (`_merge_origin_main_into_candidate`), then pushes `HEAD` to `main`. The origin backup branch `cmru-release-...` (refreshed by `push_backup_branch` before the gate and after each tag commit) still points at the pre-merge tip until the transaction is cleaned up. If promotion then stops (a later retry fails, or the process dies between merge and push), the durable copy on origin lacks the merge commit that exists only in the local retained worktree.
 
@@ -1664,7 +1666,9 @@ complete KI-51.
 
 **Oracle:** an end-to-end case where main advances twice and the second promotion attempt fails: the origin candidate branch equals the local worktree tip. Fails on the current code.
 
-### KI-56 — Nothing prevents a publishing step inside the REL-05 tag-rollback window (`build_step = "push"`) — *open, severity: minor*
+### KI-56 — Nothing prevents a publishing step inside the REL-05 tag-rollback window (`build_step = "push"`) — *FIXED 2026-11-04 (3e8b4712f), severity: minor*
+
+**FIXED 2026-11-04 (3e8b4712f):** `config.py` refuses `project.release.build_step = "push"` at load (exit 2, message names the tag-rollback guarantee). Only the `push` step name is refused: it is the one publishing phase cmru defines. Test: `tests/test_cli_config_100_adversarial.py::test_project_document_rejects_invalid_contracts` (new `push` case).
 
 **Observed:** the REL-05 rollback treats the `build_step` phase as non-publishing and deletes the freshly pushed tag when it fails. A project that sets `build_step = "push"` (or whose build step publishes) would have already published when the rollback runs, so the rollback could delete a tag whose artifacts are public. Config validation accepts it today.
 
@@ -1672,7 +1676,11 @@ complete KI-51.
 
 **Oracle:** a config with `build_step = "push"` is rejected at load; a normal `build` step is accepted.
 
-### KI-57 — No multi-project or nested-project end-to-end case for merge-promote (REL-15 follow-up) — *open, severity: minor*
+### KI-57 — No multi-project or nested-project end-to-end case for merge-promote (REL-15 follow-up) — *FIXED 2026-11-04 (3633db417), severity: minor*
+
+`test_ki57_promote_checks_every_released_project_path_including_nested_ones` drives real-git `promote_workspace` with two
+projects and a project nested two levels deep (siblings, parent, name-prefix directory allowed; own subtree refused). The
+per-project promotion order and checkpointing of a multi-project transaction through the CLI remain unexercised.
 
 **Observed:** `tests/test_release_end_to_end_real_git.py` drives a single project under `demo/`. Merge-promote's project-path check (`project_paths`), the per-project promotion order and the checkpointing are never exercised with two projects in one transaction or a project nested more than one level deep.
 
@@ -1756,7 +1764,9 @@ complete KI-51.
 
 **Oracle:** `tests/test_packaging_cli_extended.py::test_wheel_build_cleanup_keeps_a_preexisting_build_dir_and_removes_its_own_egg_info` and `::test_wheel_build_cleanup_removes_the_build_dir_and_egg_info_it_created` (both parametrised over a raising and a succeeding build via a monkeypatched `_run`). Planted mutation (cleanup ignoring `preexisting`) fails the first.
 
-### KI-67 — bound launcher puts `cmru/src` first on `sys.path`, so a stale `cmru/src/cmru.egg-info` shadows the installed metadata and the refusal hides the cause — *partially fixed 2026-10-07 (`cmru-post6`): message only; the sys.path change is open, severity: minor*
+### KI-67 — bound launcher puts `cmru/src` first on `sys.path`, so a stale `cmru/src/cmru.egg-info` shadows the installed metadata and the refusal hides the cause — *FIXED 2026-11-04 (3e8b4712f) for the launcher sys.path ordering (message part fixed 2026-10-07 `cmru-post6`); the out-of-tree `wheel-build` / lane-ignores-egg-info ask of the second instance remains open, severity: minor*
+
+**FIXED 2026-11-04 (3e8b4712f):** `_bound_launcher_program` appends an import root that carries a `*.egg-info` instead of prepending it, so installed metadata wins the identity lookup (a genuinely different copy is still refused). Tests: `tests/test_cmru1_bugfixes.py::test_ki67_*` (planted prepend control resolves the stale metadata). Still open: the second-instance ask (`wheel-build` building out of tree or cleaning its own `build/` and `*.egg-info`; lanes ignoring package metadata in the judged tree).
 
 **Observed:** `_create_bound_cmru_launcher` (`src/cmru/cli.py`) prepends the source root to `sys.path`. A stale, git-ignored `cmru/src/cmru.egg-info` (a September dev build reporting 5.3.2.dev36) then shadowed the installed 6.0.0 metadata, and the identity check refused every project command ("expected 'cmru 6.0.0', got 'cmru 5.3.2.dev36...'"). Failing closed is right, but nothing in the message pointed at the cause.
 
@@ -1926,11 +1936,11 @@ one-command UX without shell-specific pipe-status traps.
 
 **Chosen behavior:** the 6.2.x release step invokes `gate-provisional`. It runs every lane in the full `gate` conjunction except `mutation`, including ref-probe, installed-wheel/live, Assay R0/R1/R3, coverage, and canary. `tools/run_release_gate.py --postpone-mutation KI-79` writes a timestamped marker bound to the candidate commit under `.assay/mutation-postponed-cmru.json` and emits a WARN; that marker is deferral evidence, not an R2 pass. The full `gate` remains available for the exact tagged source after release.
 
-**Extension to the whole 6.2 line (operator decisions 2026-10-21):** first "extend the mutation postponement to 6.2.1" (the cmru 6.2.1 release refused in its gate: `mutation postponement KI-79 is authorized only for CMRU 6.2.0; prepared changelog identifies 6.2.1`), then, the same day, "release more cmru also without prior R2; revisit R2 when we are confident we have a release worth testing". `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py` now binds KI-79 to the window `>= 6.2.0` and `< 6.3.0`; versions outside the windows (6.3.x through 6.9.x, 7.2.0 and later; 7.0.x was added by the 2026-10-23 decision and 7.1.x by the 2026-10-27 one) refuse before a lane runs (`tests/test_release_gate_provisional.py`: 6.2.0, 6.2.1, 6.2.9 and 6.2.10 allowed; 6.3.0, 7.2.0 and below-6.2 refused; 7.0.x was added on 2026-10-23). Every 6.2.x release shipped this way is a provisional release without an R2 pass (6.2.1 is the second). **R2 obligation:** one full-`gate` R2 run (a branch at the chosen release tag, the same prerequisites) before the first release judged worth R2, and at the latest before 6.3.0 or 7.2.0 (whichever is first), which the guard refuses to defer; it judges the accumulated 6.2.x source, not each patch. **7.1 line (operator decision 2026-10-27):** the R2 mutation campaign is waived for EVERY release in the current release wave (`cmru release cmru --set-version 7.1.0` refused with `authorized only for CMRU >= 6.2.0 and < 6.3.0 ... or >= 7.0.0 and < 7.1.0 ...; prepared changelog identifies 7.1.0`). The constant now also lists `>= 7.1.0`, `< 7.2.0` (bounded, explicit; 7.2.0 and later refuse; `tests/test_release_gate_provisional.py`: 7.1.0, 7.1.1, 7.1.9 allowed, 7.2.0, 7.2.1 refused). Only `mutation` is waived; every other lane stays mandatory and `--skip-gates` is not used. **The R2 debt is deferred, not closed:** the full-`gate` run owed above now falls due before 7.2.0 (or the first release judged worth R2). A wider window needs a new operator decision and a reviewed change to that constant.
+**Extension to the whole 6.2 line (operator decisions 2026-10-21):** first "extend the mutation postponement to 6.2.1" (the cmru 6.2.1 release refused in its gate: `mutation postponement KI-79 is authorized only for CMRU 6.2.0; prepared changelog identifies 6.2.1`), then, the same day, "release more cmru also without prior R2; revisit R2 when we are confident we have a release worth testing". `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py` now binds KI-79 to the window `>= 6.2.0` and `< 6.3.0`; versions outside the windows (6.3.x through 6.9.x, 7.2.0 and later; 7.0.x was added by the 2026-10-23 decision and 7.1.x by the 2026-10-27 one) refuse before a lane runs (`tests/test_release_gate_provisional.py`: 6.2.0, 6.2.1, 6.2.9 and 6.2.10 allowed; 6.3.0, 7.2.0 and below-6.2 refused; 7.0.x was added on 2026-10-23). Every 6.2.x release shipped this way is a provisional release without an R2 pass (6.2.1 is the second). **R2 obligation:** one full-`gate` R2 run (a branch at the chosen release tag, the same prerequisites) before the first release judged worth R2, and at the latest before 6.3.0 or 7.2.0 (whichever is first), which the guard refuses to defer; it judges the accumulated 6.2.x source, not each patch. **7.1 line (operator decision 2026-10-27):** the R2 mutation campaign is waived for EVERY release in the current release wave (`cmru release cmru --set-version 7.1.0` refused with `authorized only for CMRU >= 6.2.0 and < 6.3.0 ... or >= 7.0.0 and < 7.1.0 ...; prepared changelog identifies 7.1.0`). The constant now also lists `>= 7.1.0`, `< 7.2.0` (bounded, explicit; 7.2.0 and later refuse; `tests/test_release_gate_provisional.py`: 7.1.0, 7.1.1, 7.1.9 allowed, 7.2.0, 7.2.1 refused). Only `mutation` is waived; every other lane stays mandatory and `--skip-gates` is not used. **The R2 debt is deferred, not closed:** the full-`gate` run owed above now falls due before 7.2.0 (or the first release judged worth R2). **7.2 line (operator decision 2026-11-04):** the constant now also lists `>= 7.2.0`, `< 7.3.0` (7.3.0 and later refuse); the R2 debt falls due as one full R2 (`--jobs auto` on r1002) over the 7.2 content, at the latest before 7.3.0. A wider window needs a new operator decision and a reviewed change to that constant.
 
 **Provisional representation (2026-10-15 hardening):** a deferred gate still exits 0, but its retained snapshot manifest (`cmru/.assay/release-gate-snapshot.json`, schema 4) records `state: "provisional"` (never `"passed"`) and a `deferred_lanes` entry `{lane: "mutation", tracking_id, reason, follow_up_lane, follow_up_prerequisites}`; the marker carries `result: "provisional"`. Both are written only after every required non-mutation lane and the final canary succeeded, a gate start deletes any earlier marker, a failed lane or canary leaves no success-shaped record, and a full `gate` records `state: "passed"` with `deferred_lanes: []`. The report line is `WARN: PROVISIONAL PASS ... NOT an R2 pass`. Follow-up hardening (2026-10-15, review `release-hardening-followup-claude-opus-high-2026-10-15.md` M-1/L-1/L-2): success is decided only after snapshot cleanup, so a canary-removal or snapshot-close failure after all lanes passed exits non-zero, removes the marker and records `state: "failed"` with empty `deferred_lanes`; the recorded `follow_up_lane` is `gate` (the standalone `mutation` lane needs gate-prepared baseline facts), or `assay-first-release-r2` for a first release; input validation runs before any evidence is touched so a refused invocation preserves the previous run's evidence, and a valid new gate clears stale success-shaped state before its first lane (`tests/test_release_gate_provisional.py`). No survivor or mutation-quality claim is made until that campaign completes and survivors are triaged.
 
-**Release command:** a 6.2.x release is an ordinary patch release (`cmru release cmru`). `--minor` or `--major` that computes a version in the gap `>= 6.3.0`, `< 7.0.0`, or `>= 7.2.0`, is refused by the gate AFTER the candidate has been prepared and backed up, because KI-79 covers only `>= 6.2.0`, `< 6.3.0`; `>= 7.0.0`, `< 7.1.0`; and `>= 7.1.0`, `< 7.2.0`; for that release the step returns to full `gate`.
+**Release command:** a 6.2.x release is an ordinary patch release (`cmru release cmru`). `--minor` or `--major` that computes a version in the gap `>= 6.3.0`, `< 7.0.0`, or `>= 7.3.0`, is refused by the gate AFTER the candidate has been prepared and backed up, because KI-79 covers only `>= 6.2.0`, `< 6.3.0`; `>= 7.0.0`, `< 7.1.0`; `>= 7.1.0`, `< 7.2.0`; and `>= 7.2.0`, `< 7.3.0`; for that release the step returns to full `gate`.
 
 **Follow-up prerequisites (exact):** (1) judge the current complete `cmru/src/` tree through 7.1.2 with the declared whole-source lane, not the 7.1.0 diff-scoped `r2-debt` run; (2) deploy and reach the CGProfile host observer through the declared CIU workflow (the follow-up lane declares `resource_observer = "cgprofile"`); (3) provide the D-4 capacity evidence the Run-Gate follow-up lane requires for a multi-hour R2 run. Item 3's artifact is defined by the Run-Gate RG-55 program, not by CMRU (see the work-log note in `nyxloom-trove/reports/`); CMRU records it as a named prerequisite and never fabricates it.
 
@@ -2140,7 +2150,9 @@ entry.
 
 ### KI-83 — dependency preflight misses first-party requirements in nested wheel projects
 
-**Status:** open; severity: minor. Transferred from PWMCP-02's CMRU note; that branch used
+**Status:** FIXED 2026-11-04 (4906ed249): `[project] wheel_pyprojects = ["client/pyproject.toml"]` (SPEC S2.5a); `cmru dependencies`
+runs the same first-party requirement check over each declared file and names consumer, provider and nested file. pwmcp's own
+`cmru.toml` does not yet declare `client/pyproject.toml`; that is a pwmcp-side follow-up. Severity: minor. Transferred from PWMCP-02's CMRU note; that branch used
 KI-70, which is already assigned to the mutation-campaign issue in this candidate.
 
 **Observed:** `cmru/src/cmru/dependencies.py` checks first-party requirements only in the
@@ -2257,7 +2269,9 @@ or unreadable". Split the single error message so it names which comparison fail
 
 ### KI-87 — the mutation campaign's known-good control keeps no log and only a bounded output tail
 
-**Status:** open; severity: minor. Filed 2026-10-20 from review CMRU-FIX-01 (F-03).
+**Status:** FIXED 2026-11-04 (60eb2bc13): `_run(full_output_log=...)` keeps the complete control output and a red or timed-out
+control streams all of it to stderr (the retained lane log, as KI-110 chose for the canary) instead of a file beside the
+evidence; the error names it. Filed 2026-10-20 from review CMRU-FIX-01 (F-03); severity: minor.
 
 **Observed:** `mutation_campaign.py` reads the control's output through `_read_output_tail` (the last 1 MiB), so for a very
 large output the FAILURES section may already be cut off, and `failure_excerpt` then returns a labelled tail. Unlike the
@@ -2269,7 +2283,9 @@ the file in the error message; stream to the file instead of keeping only the ta
 
 ### KI-88 — the fixture-closure scan test only sees literal `REPO_ROOT / "..."` reads and exempts whole modules
 
-**Status:** open; severity: minor. Filed 2026-10-20 from review CMRU-FIX-01 (F-05).
+**Status:** FIXED 2026-11-04 (1c679ba40): `tests/_repo_root_scan.py` resolves aliases, `parents[N]`, `.parent`, `joinpath` and
+flags non-literal tails; exemptions are per function (skipif) or declared per module with a verified guard; the pathspec
+function and tracked-ness are used (KI-107 had already shared the pathspec). F-06 read counts not pinned. Filed 2026-10-20 from review CMRU-FIX-01 (F-05); severity: minor.
 
 **Observed:** `test_fixture_carries_every_repo_root_file_the_suite_reads` (tests/test_project_fixture.py) matches only the
 identifier `REPO_ROOT` followed by string literals. Reads spelled `REPO / ...`, `Path(__file__).resolve().parents[N] / ...`,
@@ -2561,7 +2577,7 @@ README.md ("cleanup"), docs/RELEASE-TRANSACTIONS.md ("Failure and retained candi
 
 ### KI-102 - a `--dry-run --resume` commits prepared external-version inputs into the retained candidate it then calls "retained unchanged"
 
-**Status:** OPEN; severity: minor. Filed 2026-10-27 from reading `_release_child` / `_prepare_dry_run_external_versions`.
+**Status:** FIXED 2026-11-04 (3e8b4712f): the production call of `_release_child` runs inside `_resumed_dry_run_leaves_candidate_tip_unchanged`, which restores the candidate tip (`git reset --hard` to the pre-run HEAD, on every exit path) after a `--dry-run --resume`; tests `tests/test_cmru1_bugfixes.py::test_ki102_*`. Filed 2026-10-27 from reading `_release_child` / `_prepare_dry_run_external_versions`; severity: minor.
 A dry run of a project with an `external:` version strategy runs its `prepare` step and `_commit_prepared_generated` in the transaction
 worktree. For a new candidate that worktree is disposable (and since KI-91 it is discarded on failure too), but with `--resume` it is the
 retained candidate, whose tip then moves; the launcher afterwards prints `[DRY RUN] Existing release candidate ... was retained unchanged`.
@@ -2571,7 +2587,7 @@ A later real `--resume` replays that commit (the prepare output is deterministic
 
 ### KI-103 - the rest of the post-push GHCR visibility sync still hard-fails the release
 
-**Status:** OPEN; severity: minor, follow-up of KI-97. `GitHubPackages.repo_visibility()` (`_fail` on any HTTP >= 400, or a missing field)
+**Status:** FIXED 2026-11-04 (3e8b4712f): in `missing="warn"` mode (the default) every API failure inside `mirror_package_visibility` (repository lookup, unsupported `owner_type`, 5xx package lookup, mismatching sync response) is caught as the new `GhcrApiError` and degraded to the KI-97 `[WARN]` plus UI remediation, returning `None`; `missing="fail"` and the direct accessors keep the hard failure. Tests: `tests/test_ghcr.py` (5xx, repo lookup, owner type). Original text: severity: minor, follow-up of KI-97. `GitHubPackages.repo_visibility()` (`_fail` on any HTTP >= 400, or a missing field)
 and `_package_url` (unsupported `owner_type`) exit 1 from the same post-push position KI-97 fixed, and `mirror_package_visibility` still
 fails on a 5xx lookup. Degrade `repo_visibility` failures to the same warning (the push succeeded; visibility can be set once in the UI),
 or move the repository lookup BEFORE the push so a credential/config problem stops the step while nothing has happened.
@@ -2595,7 +2611,10 @@ with no Release) have no publication time and are still deleted by `--policy` re
 
 ### KI-106 - the fixed 600 s mutation candidate timeout can record a false kill under host load
 
-**Status:** OPEN; severity: minor, correctness under contention. The mutation lane gives the known-good control and every candidate
+**Status:** FIXED 2026-11-04 (60eb2bc13): candidates run under `max(configured, 2 x measured control seconds)`
+(`candidate_timeout_seconds`, recorded in the evidence). The "false kill" half was already stale: a timed-out candidate is
+`crashed`/`timeout` (`_candidate_result`), never `killed`, pinned by `test_timeout_is_inconclusive_and_cannot_count_as_a_kill`.
+Original report: severity: minor, correctness under contention. The mutation lane gives the known-good control and every candidate
 the same fixed `--timeout-seconds 600`. A slow control fails loudly, but a SURVIVING mutant runs the whole suite and, if host
 contention stretches it past the cap, is recorded as a killed mutant: a false kill. **Fix:** derive each candidate's timeout from the
 control duration measured in the same run (for example `max(600, 2 x control)`), and record a candidate timeout that coincides with
@@ -2631,6 +2650,8 @@ refusal now points only to the complete output above in the lane log. The focuse
 with a minor bump (cmru proposed 7.2.0 from the commit types) is refused in `gate-provisional`. 7.1.3 was released as a patch instead.
 `cmru release --dry-run` now calls the gate's own KI-79 validator for the planned version before creating a candidate worktree and exits 4 with a remedy if the gate would refuse it, but only when `cmru.toml`'s run-tests step runs `gate-provisional`; with the full `gate` configured the row is `SKIPPED`. The KI-79 window is unchanged: run the full `gate` lane for a version outside it, or widen the window only through a recorded operator decision.
 
+**2026-11-04 operator decision (window widened for 7.2.x):** R2 mutation campaigns stay waived for releases and run later with `--jobs` on the scratch host (standing since 2026-10-27; extended to assay by decision D1 on 2026-11-04). cmru 7.2.0 (minor, from the `feat` KI-108 content) could not pass `gate-provisional`, so `POSTPONEMENT_RELEASE_VERSIONS["KI-79"]` gained `>= 7.2.0`, `< 7.3.0`; 7.3.0, 8.0.0 and everything else still refuse (tests in `tests/test_release_gate_provisional.py`). The dry-run precondition reads the same table through the gate's validator; `tests/test_release_gate_preconditions.py` fails if the two diverge. **Closes when:** one full R2 (`--jobs auto` on r1002) over the 7.2 content is done and survivors triaged; at the latest before 7.3.0.
+
 ## KI-110 — the canary leaves an unnamed temporary copy of a red control log
 
 **Status:** FIXED 2026-11-03 (filed during KI-108 review; severity P3). `tools/coverage_canary.py` no longer writes a temporary copy of the
@@ -2646,3 +2667,101 @@ published Run-Gate release sidecar and wheel from GitHub to compare digests, so 
 `SKIPPED`, a GitHub outage is a `FAIL` with a restore-access remedy), and compares the bootstrap guide with the latest stable Run-Gate
 changelog version. The bootstrap check shares its parser with the zero-release sequence test. Any failed check prints a remedy and exits 4
 without creating a workspace; widening the waiver window remains an operator decision, not part of this fix.
+
+## KI-112 — installer features for pinned-wheel stacks: `installer render|check`, `stable_dir`, `stub_launchers`, installer self-copy, wizard questions (CMRU-INST62)
+
+**Status:** FIXED on branch `finish-cmru-1-20261104` (rebased from `cmru-inst62`, 2026-10-07 work; PENDING merge and release; a `feat`, so it needs a minor release and therefore the full `gate`, not `gate-provisional`: the KI-79 R2 waiver covers patch lines below 7.2.0 only, see KI-109).
+The first stack consumer of the generated `get.py` (a pinned-ciu wheel stack) needs what the generic installer lacked: (1) a verb named `installer` with a drift check (`get-py` stays as a deprecated alias that prints one `[WARN]`); (2) a stable stack folder, because ciu derives INSTANCE_ID from the physical path and a `releases/<ver>/` folder would orphan data and secrets on every update (`[project.installer] stable_dir`, synced from the active release's manifest after every install/update/rollback with a local-modification guard and full undo); (3) `stub_launchers`; (4) installer self-copy to `<root>/bin/<project>-installer`; (5) `[[project.installer.questions]]` prompts with `--unattended [--answers FILE]`. Contract: SPEC S6.18-S6.21; oracle `tests/test_installer_inst62.py`; per-feature plants in `nyxloom-trove/reports/CMRU-INST62-REPORT.md`. (This entry replaces the original draft's KI-69 id, which main later assigned to the release-identity fix.)
+<!-- Id note (2026-11-04): KI-112 exists on branch finish-cmru-1-20261104 (not on main). The ids below start at KI-113. -->
+
+## KI-113 — build handler option `build_contexts`: named OCI-layout or digest-pinned image contexts for local bases
+
+**Status:** OPEN. Filed 2026-11-04. Fix-level change, can ride a patch release.
+
+**Problem.** `cmru/build-initial-standalone.sh:312,320` builds tester-base and wheel-builder through the docker driver, bypassing the governed
+`mdt-managed` builder, because a remote builder cannot see dockerd's image store and a local base is a mutable tag (mdt-cockpit MDT-056,
+tester-base TB-11/TB-14).
+
+**Decision record (operator, 2026-11-04).** `mdt-managed` is the only builder; local bases are passed as OCI-layout build contexts pinned by
+digest. The bypass stays only for the fresh-host bootstrap, written as `--builder default`, never selected by an environment variable.
+
+**Design.** An optional `build_contexts` table in a build step of `cmru.toml`/orchestration: `name = "oci-layout://<repo-relative-dir>@sha256:<digest>"`
+or `"docker-image://<registry>@sha256:<digest>"`. Nothing else is accepted (no tags, no absolute paths, no `..`; the digest is mandatory). The
+build handler emits `--build-context <name>=<value>` after resolving the layout directory relative to the project root and verifying that its
+index digest equals the pinned one before the build starts. The digest enters the build identity recorded for the step. The bootstrap script keeps its
+documented bypass, spelled `--builder default`.
+
+**Acceptance criteria.**
+
+- Handler tests: accepted forms produce the exact flags; a tag, an absolute path, `..` or a missing digest is refused with a message naming the
+  field; a layout whose digest differs is refused before any build.
+- The release dry-run shows the contexts in the plan; the recorded identity includes the digests.
+- **Non-mdt path (operator criterion, 2026-11-04).** The option works with any buildx builder accepting named contexts and with no mdt tooling;
+  a test checks the argument construction without `mdt-managed`.
+
+**Test plan.** Unit tests of the handler; a dry-run test; one live build on the tester chain through MDT-056's pilot.
+
+**Dependencies and order.** Package 4 of MDT-056 (after tester-chain pilot TB-14, wheel-builder and srdm).
+
+## KI-114 — tester-gate launches the lane as the checkout owner with a generated passwd/group overlay (lane-uid phase 3)
+
+**Status:** OPEN. Filed 2026-11-04.
+
+**Problem.** `tester_gate.py` relies on the uid baked into tester-unified (uid 1003; `tester_gate.py:855-859` and the launch verification), so
+a cmru tester gate on a host whose checkout owner is another uid hits the RG-150 failure class (git "dubious ownership", `.run-gate/`
+permission denied, cowtree owner check).
+
+**Decision record (operator, 2026-11-04, binding).** Lanes run as the checkout owner with a generated read-only passwd/group overlay, a per-lane HOME and
+a read-only tester venv; the baked uid 1003 rule retires. This is phase 3; phase 1 is run-gate RG-151, phase 2 tester-base TB-13.
+
+**Design.** `tester-gate` resolves uid:gid by `stat` of the worktree root, refuses uid 0, writes the same overlay as run-gate RG-151 (the
+contract is documented once in `tester-unified/docs/CONSUMERS.md`; cmru carries its own small helper, not an import of run-gate internals),
+passes `--user` and a per-lane HOME/XDG, and keeps its other launch guards (cgroup parent, digest-pinned image). Docker lanes derive the socket gid
+by `stat` of the mounted socket.
+
+**Acceptance criteria.**
+
+- Helper and command-construction tests with a fake `stat`; the launch-verification no longer expects 1003 but the resolved owner.
+- Live on a scratch host with a non-1003 owner: the cmru release gate's tester-gate steps pass.
+- **Non-mdt path.** On a plain host or non-mdt devcontainer the uid is the user's own, the docker gid comes from the mounted socket, and no mdt group
+  or path is required (test with fakes).
+
+## KI-115 — `tarball-publish` cannot publish a multi-variant release; `publish_versioned_variants` has no handler
+
+**Status:** FIXED 2026-11-04 on branch `fix-cmruki115-20261104c` (pending merge and cmru 7.2.0). Filed 2026-11-04 (found packaging tls-edge with per-interpreter wheels).
+
+**Implemented.** `cmru handler tarball-publish --variant NAME[=LABEL]` (repeatable; `--asset-suffix`, default `.tar.xz`; release-level `--extra-asset`).
+`--glob` selects the candidate pool (retained record or `<cwd>/dist`); every declared variant must be exactly one file named
+`<prefix>-v<version>-<NAME><suffix>` and no other match is allowed, so a missing, stale (another version), undeclared or duplicate file refuses the
+whole publish before any upload. `publish_versioned_variants` gained `extra_assets`, the retained-record guards of `publish_versioned`
+(`require_existing_targets`, `latest_pointer_recreate`, `expected_tag_commit`), up-front refusal of duplicate/missing/colliding inputs, and
+`verify_assets` (the versioned release's assets are re-read before `<prefix>-latest` moves). GitHub cannot write a release atomically; a failed
+upload leaves an incomplete versioned release but never a moved pointer, and the idempotent re-run completes it. tls-edge now publishes through
+the handler (`scripts/publish-variants.py` removed; `dist/get.py` is a release asset). Tests: `tests/test_tarball_variants_publish.py` (handler with
+a fake GitHub client, keystone guards, and a real-git `cmru release` end to end), tls-edge `tests/test_release_config.py`.
+
+**Problem.** `[[project.variants]]` (S-REL.6) and `publish_versioned_variants` exist, `get.py --variant` selects an asset, but
+`cmd_tarball_publish` accepts exactly one retained tarball and no handler calls the variants keystone. A project with platform wheels in its
+bundle (tls-edge: MarkupSafe and PyYAML for cp313 and cp314) has to carry a project script that calls the keystone directly, and that script
+cannot honour a retained build-output record (`CMRU_BUILD_OUTPUT_ROOT`).
+
+**Design.** `cmru handler tarball-publish --variants` (glob per variant resolved by `find_artifact(..., variant=...)`): validates every
+variant file against the retained build-output record exactly as the single-asset path does, stages copies, and calls
+`publish_versioned_variants` with the curated release notes.
+
+**Acceptance criteria.**
+
+- End-to-end test with a fake GitHub host: two variants publish under one tag with sidecars and a `latest.json` listing both; a missing
+  variant file or one outside the retained record is refused before any upload.
+- tls-edge replaces `scripts/publish-variants.py` with the handler and its retained-output path works.
+- **Non-mdt path.** Pure fakes, no devcontainer.
+
+**Dependencies and order.** After RG-151 and TB-13; parallel with assay B211. Then run-gate RG-153.
+
+## KI-116 - the release log tee scope's unguarded `sys.stdout.flush()` could skip the descriptor restore and mask the in-flight exception
+
+**Status:** FIXED 2026-11-04 (3e8b4712f); severity: minor. (The bug-fix program called this "KI-112"; that id is the installer-features entry, so it is filed as KI-115.)
+`_native_release_logging_scope` flushed `sys.stdout`/`sys.stderr` before `os.dup2` restored fd 1/2. A `BrokenPipeError` from the flush skipped the
+restore (leaving the tee attached) and replaced the exception already in flight. The flush is now guarded: both descriptors are always restored,
+the flush failure is attached as a note to the in-flight exception, or raised after the restore when nothing else is in flight.
+Tests: `tests/test_cmru1_bugfixes.py::test_tee_flush_broken_pipe_*` (subprocess with a stdout whose flush raises `BrokenPipeError`).

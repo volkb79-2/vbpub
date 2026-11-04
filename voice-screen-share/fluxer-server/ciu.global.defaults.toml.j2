@@ -1,0 +1,34 @@
+# ==========================================================================
+# fluxer-server — CIU ROOT global (standalone tryout, single stack)
+# ==========================================================================
+# Own ciu root (root marker = this file). The instance id is derived from the
+# physical path of THIS folder, so every container, network, volume and
+# compose project name differs from the sibling roots (mattermost-server,
+# mattermore). Values copied from
+# voice-screen-share/mattermore/ciu.global.defaults.toml.j2 (ciu v7 roots are
+# islands: nothing inherits between roots).
+[deploy]
+project_name = "fluxer"
+environment_tag = "$INSTANCE_ID"
+network_name = "$DOCKER_NETWORK_INTERNAL"
+log_level = "INFO"
+
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+# The estate convention: dev/tryout stacks live under the dev-background
+# slice (host overcommit is by design; the slice keeps them off the prod game
+# server's budget). Every service is capped in [fluxer.limits] on top.
+[governance]
+enabled = true
+cgroup_parent = "dev-background.slice"
+mem_limit = "6g"
+device = "/dev/vda"
+
+[ciu]
+standalone_root = true
+require_certs = false
+require_fqdn = false
+auto_connect_network = false

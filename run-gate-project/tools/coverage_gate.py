@@ -51,6 +51,7 @@ OPT-IN via `--refuse-empty-diff`; `--allow-empty-diff` no longer exists.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -60,7 +61,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 # New-side hunk header: `@@ -a,b +c,d @@`.
-_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 class CoverageGateError(Exception):
@@ -77,7 +78,32 @@ def parse_added_lines(diff_text: str) -> dict[str, set[int]]:
     added: dict[str, set[int]] = {}
     current: str | None = None
     new_lineno = 0
+    # RG-116 item 4: a hunk body is delimited by the line counts of its own
+    # header, so a content line that merely reads `++ x` (an added `+++ x`
+    # after the leading `+`) or `-- x` is never mistaken for a file header.
+    # Headers are recognised only once both counts are exhausted.
+    old_left = 0
+    new_left = 0
     for line in diff_text.splitlines():
+        # `\ No newline at end of file` is a marker, not a line of either
+        # side. Counted as context it advanced the new-side number once per
+        # marker, so every `+` line after an old side that lacked a trailing
+        # newline was attributed one line too far, and a changed last line
+        # left the denominator (RG-116 item 1).
+        if line.startswith("\\"):
+            continue
+        if old_left > 0 or new_left > 0:
+            if line.startswith("+"):
+                added.setdefault(current, set()).add(new_lineno)
+                new_lineno += 1
+                new_left -= 1
+            elif line.startswith("-"):
+                old_left -= 1
+            else:
+                new_lineno += 1  # context line (only with -U>0)
+                old_left -= 1
+                new_left -= 1
+            continue
         if line.startswith("+++ "):
             target = line[4:].strip()
             if target == "/dev/null":
@@ -85,28 +111,11 @@ def parse_added_lines(diff_text: str) -> dict[str, set[int]]:
             else:
                 current = target[2:] if target.startswith("b/") else target
             continue
-        if line.startswith("--- "):
-            continue
         m = _HUNK_RE.match(line)
         if m:
-            new_lineno = int(m.group(1))
-            continue
-        if current is None:
-            continue
-        if line.startswith("+"):
-            added.setdefault(current, set()).add(new_lineno)
-            new_lineno += 1
-        elif line.startswith("-"):
-            continue
-        elif line.startswith("\\"):
-            # `\ No newline at end of file` is a marker, not a line of either
-            # side. Counted as context it advanced the new-side number once
-            # per marker, so every `+` line after an old side that lacked a
-            # trailing newline was attributed one line too far — and a
-            # changed last line left the denominator (RG-116 item 1).
-            continue
-        else:
-            new_lineno += 1  # context line (only with -U>0)
+            old_left = int(m.group(1)) if m.group(1) is not None else 1
+            new_lineno = int(m.group(2))
+            new_left = int(m.group(3)) if m.group(3) is not None else 1
     return added
 
 
@@ -257,11 +266,60 @@ def _branch_maps(cov: dict) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
     return missing_by_line, all_by_line
 
 
+_BODY_FIELDS = ("body", "orelse", "finalbody", "handlers", "cases")
+
+
+def statement_heads(source: str) -> dict[int, int]:
+    """Map every continuation line of a statement to the statement's first line.
+
+    coverage.py lists only the FIRST line of a statement as executable, so a
+    change confined to the second line of a wrapped call or signature never
+    met the denominator (RG-116 item 6). Simple statements span
+    `lineno..end_lineno`; a compound statement contributes only its header
+    (up to the last header expression), never its body, so blank and comment
+    lines between body statements are not attributed to the `def`/`if` above
+    them. A statement's own first line is not in the map.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise CoverageGateError(f"cannot parse source to judge continuation lines: {exc}") from exc
+    heads: dict[int, int] = {}
+    lines = source.splitlines()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.stmt):
+            continue
+        end = node.end_lineno
+        if any(hasattr(node, name) for name in _BODY_FIELDS):
+            # Header only: the last line of any non-body child (test, iter,
+            # args, returns, with-items, ...).
+            end = node.lineno
+            for name, value in ast.iter_fields(node):
+                if name in _BODY_FIELDS:
+                    continue
+                for child in value if isinstance(value, list) else [value]:
+                    if isinstance(child, ast.AST):
+                        for sub in ast.walk(child):
+                            end = max(end, getattr(sub, "end_lineno", end))
+            # The closing `):` / `:` line of a wrapped header belongs to no
+            # child node: take code lines up to the first body statement.
+            body = getattr(node, "body", None)
+            if isinstance(body, list):
+                for ln in range(end + 1, body[0].lineno):
+                    text = lines[ln - 1].strip()
+                    if text and not text.startswith("#"):
+                        end = ln
+        for ln in range(node.lineno + 1, end + 1):
+            heads.setdefault(ln, node.lineno)
+    return heads
+
+
 def evaluate(
     added: dict[str, set[int]],
     coverage_files: dict[str, dict],
-    source_prefix: str = "run-gate-project",
+    source_prefix: str | list[str] = "run-gate-project",
     fail_under: float = 100.0,
+    read_source=None,
 ) -> Verdict:
     """Pure heart: intersect changed lines with coverage classification.
 
@@ -270,15 +328,18 @@ def evaluate(
     (this directory IS the source tree) are ignored. Non-Python files under the
     source prefix are also ignored (coverage.py measures only .py modules).
 
+    `source_prefix` may be a list (RG-116 item 3): a path is judged against
+    the first prefix that contains it, and counted once. `read_source(path)`,
+    when given, returns the file's current text so a changed continuation
+    line of a multi-line statement is judged as that statement's first line
+    (RG-116 item 6); without it only first lines can be judged.
+
     Each coverage record is validated: missing_lines and executed_lines must
     be lists of ints. A record with wrong types (e.g. strings, None) is
     treated as a CoverageGateError to prevent silent green verdicts from
     malformed data.
     """
-    prefix = os.path.normpath(source_prefix).replace(os.sep, "/")
-    cov_by_norm: dict[str, dict] = {
-        _rel_to_source(k, prefix): v for k, v in coverage_files.items()
-    }
+    prefixes = [source_prefix] if isinstance(source_prefix, str) else list(source_prefix)
     total_changed_exec = 0
     total_covered = 0
     branches_total = 0
@@ -286,49 +347,35 @@ def evaluate(
     uncovered: dict[str, set[int]] = {}
     branch_partial_lines: dict[str, set[int]] = {}
     files_missing: list[str] = []
-    for path, lines in added.items():
-        npath = _rel_to_source(path, prefix)
-        if not (npath == prefix or npath.startswith(prefix + "/")):
-            continue
-        if not npath.endswith(".py"):
-            continue
-        cov = cov_by_norm.get(npath)
-        if cov is None:
-            if lines:
-                uncovered[npath] = set(lines)
-                total_changed_exec += len(lines)
-                files_missing.append(npath)
-            continue
-        # Validate coverage record shape: executed_lines and missing_lines
-        # must be lists of ints (and, if present, the branch-arc keys must be
-        # int pairs). This prevents malformed data from silently yielding a
-        # green verdict.
-        _validate_cov_record(npath, cov)
-        missing = set(cov.get("missing_lines", []))
-        executed = set(cov.get("executed_lines", []))
-        executable = missing | executed
-        changed_exec = lines & executable
-        missing_by_line, all_by_line = _branch_maps(cov)
-        # RG-53: a changed line that DID execute but left an arm untaken
-        # (present in `missing_by_line`, absent from the never-executed
-        # `missing` set) counts as uncovered too — the whole point of
-        # `--cov-branch` for the diff judge.
-        line_never_ran = changed_exec & missing
-        branch_partial = {
-            ln for ln in (changed_exec - missing) if missing_by_line.get(ln)
+    judged: set[str] = set()
+    for raw_prefix in prefixes:
+        prefix = os.path.normpath(raw_prefix).replace(os.sep, "/")
+        cov_by_norm: dict[str, dict] = {
+            _rel_to_source(k, prefix): v for k, v in coverage_files.items()
         }
-        unc = line_never_ran | branch_partial
-        total_changed_exec += len(changed_exec)
-        total_covered += len(changed_exec) - len(unc)
-        if unc:
-            uncovered[npath] = unc
-        if branch_partial:
-            branch_partial_lines[npath] = branch_partial
-        for ln in changed_exec:
-            arms = all_by_line.get(ln)
-            if arms:
-                branches_total += len(arms)
-                branches_missed += len(missing_by_line.get(ln, ()))
+        for path, lines in added.items():
+            npath = _rel_to_source(path, prefix)
+            if not (npath == prefix or npath.startswith(prefix + "/")):
+                continue
+            if not npath.endswith(".py") or path in judged:
+                continue
+            judged.add(path)
+            cov = cov_by_norm.get(npath)
+            if cov is None:
+                if lines:
+                    uncovered[npath] = set(lines)
+                    total_changed_exec += len(lines)
+                    files_missing.append(npath)
+                continue
+            counts = _judge_file(path, npath, lines, cov, read_source)
+            total_changed_exec += counts[0]
+            total_covered += counts[1]
+            branches_total += counts[2]
+            branches_missed += counts[3]
+            if counts[4]:
+                uncovered[npath] = counts[4]
+            if counts[5]:
+                branch_partial_lines[npath] = counts[5]
     pct = 100.0 if total_changed_exec == 0 else 100.0 * total_covered / total_changed_exec
     return Verdict(
         uncovered=uncovered,
@@ -342,6 +389,47 @@ def evaluate(
         branch_partial_lines=branch_partial_lines,
         skipped=total_changed_exec == 0,
     )
+
+
+def _judge_file(path, npath, lines, cov, read_source):
+    """Judge one measured file: (changed_exec, covered, branches_total,
+    branches_missed, uncovered_lines, branch_partial_lines)."""
+    # Validate coverage record shape: executed_lines and missing_lines
+    # must be lists of ints (and, if present, the branch-arc keys must be
+    # int pairs). This prevents malformed data from silently yielding a
+    # green verdict.
+    _validate_cov_record(npath, cov)
+    missing = set(cov.get("missing_lines", []))
+    executed = set(cov.get("executed_lines", []))
+    executable = missing | executed
+    changed_exec = lines & executable
+    if read_source is not None:
+        # RG-116 item 6: a changed continuation line stands for its
+        # statement's first line, the only one coverage.py lists.
+        heads = statement_heads(read_source(path))
+        changed_exec |= {
+            heads[ln] for ln in lines - executable
+            if ln in heads and heads[ln] in executable
+        }
+    missing_by_line, all_by_line = _branch_maps(cov)
+    # RG-53: a changed line that DID execute but left an arm untaken
+    # (present in `missing_by_line`, absent from the never-executed
+    # `missing` set) counts as uncovered too — the whole point of
+    # `--cov-branch` for the diff judge.
+    line_never_ran = changed_exec & missing
+    branch_partial = {
+        ln for ln in (changed_exec - missing) if missing_by_line.get(ln)
+    }
+    unc = line_never_ran | branch_partial
+    b_total = 0
+    b_missed = 0
+    for ln in changed_exec:
+        arms = all_by_line.get(ln)
+        if arms:
+            b_total += len(arms)
+            b_missed += len(missing_by_line.get(ln, ()))
+    return (len(changed_exec), len(changed_exec) - len(unc),
+            b_total, b_missed, unc, branch_partial)
 
 
 # --------------------------------------------------------------------------- #
@@ -431,6 +519,18 @@ def _git_added_lines(repo: str, base_rev: str) -> dict[str, set[int]]:
          "--break-rewrites=50%", "--unified=0", base_rev],
     )
     return parse_added_lines(out)
+
+
+def _source_reader(repo: str):
+    """`read_source` for `evaluate`: the working-tree text of a path the diff
+    reported (relative to `repo`, like `git diff --relative`)."""
+    def read(path: str) -> str:
+        try:
+            with open(os.path.join(repo, path), encoding="utf-8") as fh:
+                return fh.read()
+        except OSError as exc:
+            raise CoverageGateError(f"cannot read source {path}: {exc}") from exc
+    return read
 
 
 def _load_coverage(path: str) -> dict[str, dict]:
@@ -540,8 +640,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                     help="ref the change is measured against; use latest-release-tag to anchor a release gate to the newest reachable stable run-gate-vX.Y.Z tag (default: main)")
     p.add_argument("--allow-first-release", action="store_true", default=False,
                    help="when --base=latest-release-tag and no stable Run-Gate tag exists, report the diff check as SKIPPED (first release has no released source baseline)")
-    p.add_argument("--source", default="run-gate-project/run_gate.py",
-                   help="source path prefix (default: run-gate-project/run_gate.py)")
+    p.add_argument("--source", action="append", default=None,
+                   help="source path prefix; repeat to judge several modules "
+                        "(default: run-gate-project/run_gate.py)")
     p.add_argument("--fail-under", type=float, default=100.0,
                    help="minimum %% of changed executable lines (default: 100)")
     p.add_argument("--repo", default=".",
@@ -557,6 +658,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
+    sources = args.source or ["run-gate-project/run_gate.py"]
     if args.allow_first_release and args.base != "latest-release-tag":
         parser.error("--allow-first-release requires --base latest-release-tag")
     try:
@@ -577,7 +679,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        v = evaluate(added, coverage_files, args.source, args.fail_under)
+        v = evaluate(added, coverage_files, sources, args.fail_under,
+                     read_source=_source_reader(args.repo))
     except CoverageGateError as exc:
         print(f"diff-coverage ERROR: {exc}", file=sys.stderr)
         return 2
@@ -589,7 +692,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"diff-coverage ERROR: {exc}", file=sys.stderr)
             return 2
         kind, message = _empty_diff_notice(
-            base_rev, args.source, relation, args.refuse_empty_diff
+            base_rev, ", ".join(sources), relation, args.refuse_empty_diff
         )
         print(message, file=sys.stderr if kind == "error" else sys.stdout)
         return 2 if kind == "error" else 0

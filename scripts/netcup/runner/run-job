@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Description: Run one named command detached, with a private log and EXIT marker.
+set -Eeuo pipefail
+umask 077
+usage() { echo 'usage: run-job <name> -- <cmd> [args...]' >&2; exit 2; }
+[[ $# -ge 3 ]] || usage
+name=$1
+shift
+[[ $1 == -- ]] || usage
+shift
+[[ $# -ge 1 ]] || usage
+[[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $name != . && $name != .. ]] || { echo 'invalid job name' >&2; exit 2; }
+job_dir="$HOME/jobs/$name"
+[[ ! -e $job_dir ]] || { echo "job already exists: $job_dir" >&2; exit 3; }
+mkdir -m 0700 -- "$job_dir"
+nohup /bin/bash -c '
+  job_dir=$1
+  shift
+  "$@"
+  rc=$?
+  printf "%s\n" "$rc" > "$job_dir/EXIT.tmp"
+  mv -- "$job_dir/EXIT.tmp" "$job_dir/EXIT"
+  exit "$rc"
+' runner-run-job "$job_dir" "$@" > "$job_dir/job.log" 2>&1 < /dev/null &
+pid=$!
+printf '%s\n' "$pid" > "$job_dir/pid"
+printf 'JOB=%s PID=%s LOG=%s EXIT=%s\n' "$name" "$pid" "$job_dir/job.log" "$job_dir/EXIT"

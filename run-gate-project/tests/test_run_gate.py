@@ -2898,8 +2898,10 @@ class TestCentralDefaults:
                             lambda p, **k: Path("/phys"))
         proc = run_tool(proj, "suite")
         assert proc.returncode == 0, proc.stderr
-        assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in \
-            docker_runs(log)[0]
+        lane_run = docker_runs(log)[0]       # RG-117a: name only on argv
+        assert lane_run[lane_run.index("CGROUP_PARENT_DEV_BACKGROUND") - 1] \
+            == "-e"
+        assert "dev-background.slice" not in "\n".join(lane_run)
 
     def test_project_shadows_central_by_name(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -4092,6 +4094,158 @@ exit 64
         assert done.returncode == 0, done.stderr
         assert calls == ["run", "analyze", "analyze"]
 
+    # -- RG-139: the declared coverage artifact reaches the analyzer --------
+
+    _COV = ".assay/coverage-unit.json"
+
+    def _cov_lane(self, fake, declared=_COV):
+        lane = {"assay_lane": "unit", "assay_command": [str(fake)],
+                "pins": {}}
+        if declared is not None:
+            lane["_assay_inventory"] = {"entry": {"coverage": {
+                "format": "coverage-py-json", "artifact": declared}},
+                "assay_version": "12.0.0"}
+        return lane
+
+    def _run_cov(self, tmp_path, *, knows_coverage=True, artifact=True,
+                 declared=_COV):
+        """Run the real inner script against a recording fake judge. The
+        fake writes the verdict on `run`, answers `analyze campaign --help`
+        like a judge that does or does not know `--coverage`, and records
+        every analyze call's full argv."""
+        project = tmp_path / "proj"
+        (project / ".assay").mkdir(parents=True)
+        (tmp_path / ".run-gate").mkdir()
+        if artifact:
+            (project / ".assay" / "coverage-unit.json").write_text("{}")
+        log = tmp_path / "calls.log"
+        help_text = "--coverage PATH" if knows_coverage else "--progress P"
+        fake = tmp_path / "fake-assay"
+        fake.write_text(
+            "#!/bin/sh\n"
+            f'if [ "$1" = run ]; then echo run >> {log}; '
+            ": > .assay/verdict-unit.json; exit 0; fi\n"
+            f'for a in "$@"; do [ "$a" = --help ] && '
+            f"{{ echo '{help_text}'; exit 0; }}; done\n"
+            f'echo "$*" >> {log}\nexit 0\n')
+        fake.chmod(0o755)
+        inner = run_gate.build_assay_inner(
+            self._cov_lane(fake, declared), project, tmp_path,
+            closeout_commit=self._COMMIT)
+        done = subprocess.run(["bash", "-c", inner], cwd=project,
+                              capture_output=True, text=True, timeout=60)
+        assert done.returncode == 0, done.stderr
+        return [line for line in log.read_text().splitlines()
+                if line.startswith("analyze")]
+
+    def test_the_closeout_forwards_the_declared_coverage_artifact(
+            self, tmp_path):
+        calls = self._run_cov(tmp_path)
+        assert len(calls) == 2
+        for call in calls:
+            assert f"--coverage {self._COV}" in call
+            assert "--verdict .assay/verdict-unit.json" in call
+
+    def test_a_judge_without_coverage_support_gets_the_old_closeout(
+            self, tmp_path):
+        calls = self._run_cov(tmp_path, knows_coverage=False)
+        assert len(calls) == 2 and all("--coverage" not in c for c in calls)
+
+    def test_a_missing_coverage_artifact_is_not_forwarded(self, tmp_path):
+        calls = self._run_cov(tmp_path, artifact=False)
+        assert len(calls) == 2 and all("--coverage" not in c for c in calls)
+
+    def test_a_lane_declaring_no_coverage_forwards_none(self, tmp_path):
+        calls = self._run_cov(tmp_path, declared=None)
+        assert len(calls) == 2 and all("--coverage" not in c for c in calls)
+
+    @pytest.mark.parametrize("bad", ["/abs/cov.json", "../up/cov.json", ""])
+    def test_only_a_plain_relative_declared_artifact_is_forwarded(self, bad):
+        lane = self._cov_lane("x", bad)
+        assert run_gate.assay_closeout_coverage_artifact(lane) is None
+
+    def test_a_reverified_coverage_artifact_is_retained_as_evidence(
+            self, tmp_path, monkeypatch):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        (verdict.parent / "coverage-unit.json").write_text('{"files": {}}')
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.collect_assay_closeout(
+            self._cov_lane("x"), "unit", "run1", self._COMMIT, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert closeout["coverage_status"] == "parsed_and_reverified_r1"
+        retained = Path(closeout["coverage_path"])
+        assert retained.name == "run1.coverage.json"
+        assert retained.read_bytes() == b'{"files": {}}'
+        assert retained.stat().st_mode & 0o777 == 0o600
+
+    def test_a_retained_coverage_artifact_is_named_in_the_disclosure(
+            self, tmp_path, monkeypatch, capsys):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        (verdict.parent / "coverage-unit.json").write_text("{}")
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.finish_assay_closeout(
+            self._cov_lane("x"), "unit", {"run_id": "r"}, self._COMMIT,
+            verdict, run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"),
+            None)
+        out = capsys.readouterr().out
+        assert "coverage artifact parsed_and_reverified_r1" in out
+        assert f"(retained {closeout['coverage_path']})" in out
+
+    @pytest.mark.parametrize("shape", ["absent", "unreadable"])
+    def test_a_coverage_artifact_that_cannot_be_read_is_not_retained(
+            self, tmp_path, monkeypatch, shape):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "parsed_and_reverified_r1"}))
+        if shape == "unreadable":
+            (verdict.parent / "coverage-unit.json").mkdir()
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        closeout = run_gate.collect_assay_closeout(
+            self._cov_lane("x"), "unit", "run1", self._COMMIT, verdict,
+            run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL"), None)
+        assert closeout["coverage_path"] is None
+        assert closeout["status"] == "incomplete"
+        if shape == "unreadable":
+            assert "not retained" in closeout["coverage_status"]
+
+    def test_an_unsupplied_coverage_artifact_is_named_in_the_disclosure(
+            self, tmp_path, monkeypatch, capsys):
+        verdict = self._seed(tmp_path, self._doc(coverage={
+            "artifact_status": "not_supplied"}))
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            self._cov_lane("x"), "unit", {"run_id": "r"}, self._COMMIT,
+            verdict, result, None)
+        assert closeout["coverage_status"] == "not_supplied"
+        assert closeout["coverage_path"] is None
+        assert "coverage artifact not_supplied" in capsys.readouterr().out
+
+    # -- RG-115: a follower does not collect the closeout --------------------
+
+    def test_a_disowned_follower_record_skips_the_closeout(
+            self, tmp_path, monkeypatch, capsys):
+        verdict = self._seed(tmp_path)
+        monkeypatch.setenv(run_gate.EVIDENCE_DIR_ENV_VAR,
+                           str(tmp_path / "evidence"))
+        record = {"run_id": "r"}
+        run_gate.disown_run_record(record)
+        result = run_gate.LaneResult("FAIL", 1, assay_outcome="FAIL")
+        closeout = run_gate.finish_assay_closeout(
+            {"assay_lane": "unit"}, "unit", record, self._COMMIT, verdict,
+            result, None)
+        out = capsys.readouterr()
+        assert closeout["status"] == "not_applicable"
+        assert "the owning client records it" in out.out
+        assert out.err == ""
+        assert "closeout" not in record
+        assert not (tmp_path / "evidence").exists()
+
     # -- the host collector (no shell) --------------------------------------
 
     def _doc(self, **over):
@@ -4851,7 +5005,8 @@ class TestExecDisclosure:
         assert ("slice dev-gates.slice "
                 "($CGROUP_PARENT_DEV_GATES, naming-only)") in proc.stdout
         assert "docker argv:" in proc.stdout
-        assert "SECRET_TOKEN=<redacted>" in proc.stdout
+        # RG-117a: the argv names the key only; the value is never on it.
+        assert "-e SECRET_TOKEN " in proc.stdout
         assert "hunter2" not in proc.stdout + proc.stderr
 
     def test_dry_run_prints_same_argv_and_execs_nothing(
@@ -4866,7 +5021,7 @@ class TestExecDisclosure:
         proc = run_tool(proj, "suite", "--worktree", str(repo), "--dry-run")
         assert proc.returncode == 0, proc.stderr
         assert "docker argv:" in proc.stdout
-        assert "SECRET_TOKEN=<redacted>" in proc.stdout
+        assert "-e SECRET_TOKEN " in proc.stdout
         assert "hunter2" not in proc.stdout + proc.stderr
         assert "DRY RUN — the argv above is what a live run would exec" \
             in proc.stdout
@@ -6312,8 +6467,10 @@ def test_exec_lane_forwards_declared_environment_values(tmp_path, monkeypatch):
     proc = run_tool(proj, "suite", "--worktree", str(repo))
     assert proc.returncode == 0, proc.stderr
     call = docker_execs(log)[0]
-    assert "SCHEMA_GATE_DSN=postgresql://example/db" in call
-    assert "MOCK_MODE=true" in call
+    # RG-117a: names on argv, values in the docker client's environment.
+    assert call[call.index("SCHEMA_GATE_DSN") - 1] == "-e"
+    assert call[call.index("MOCK_MODE") - 1] == "-e"
+    assert "postgresql://example/db" not in "\n".join(call)
 
 
 def test_environment_rejects_invalid_forward_env_name(tmp_path):
@@ -7917,8 +8074,9 @@ class TestExecModeMutex:
             raise RuntimeError("evidence collection exploded")
         monkeypatch.setattr(run_gate, "print_lane_artifacts", _boom)
 
-        with pytest.raises(RuntimeError):
-            run_gate.main(["suite"])
+        # RG-117d: the escaped exception is an ERROR (exit 2), not a traceback
+        # exit 1; the lock is released all the same.
+        assert run_gate.main(["suite"]) == 2
 
         probe = os.open(self._lock_path(), os.O_CREAT | os.O_RDWR, 0o666)
         try:
@@ -13826,13 +13984,14 @@ SUMMARY_V1 = json.loads(
 def record_profiled_run(proj: Path, repo: Path, resources: dict | None, *,
                         lane: str = "suite", exit_code: int | None = 0,
                         seconds: float = 1.0, keep: int = 10,
-                        profile_error: str | None = None) -> dict:
+                        profile_error: str | None = None,
+                        io_sync: str = "strict") -> dict:
     """`record_run`'s exact recipe (real git repo, real ignore check, real
     lock, real atomic write; only the clock substituted), PLUS the three
     profiling fields `run_container_lane`/`run_exec_lane` actually set on a
     real record -- `record_run` never touches them (schema-1-shaped, the
     'never profiled' baseline these tests need a contrasting fixture to)."""
-    rec = run_gate.start_run_record(lane, repo, repo)
+    rec = run_gate.start_run_record(lane, repo, repo, io_sync=io_sync)
     rec["_started_monotonic"] = time.monotonic() - seconds
     run_gate.finish_run_record(rec, exit_code=exit_code)
     rec["resources"] = resources
@@ -13923,6 +14082,7 @@ class TestFootprintManifestBuild:
             "from_commit": "deadbeef", "keep": 10,
             "lanes": {"suite": {
                 "runs": 1, "completed_runs": 1,
+                "io_sync": "strict",
                 "scope": "container-shared", "method": "daemon",
                 "source": "sampled-max",
                 # RW-46b: a daemon-path Summary (SUMMARY_V1) carries no
@@ -14031,6 +14191,185 @@ FOOTPRINT_LANE = """\
 
 def read_footprint(proj: Path) -> dict:
     return json.loads((proj / run_gate.FOOTPRINT_FILE_NAME).read_text())
+
+
+def _peak_summary(peak_mib: int) -> dict:
+    """SUMMARY_V1 with only the memory peak replaced."""
+    out = json.loads(json.dumps(SUMMARY_V1))
+    out["memory"]["peak_bytes"] = peak_mib * MIB
+    return out
+
+
+class TestFootprintIoModeSeparation:
+    """RG-136: display, `doctor` and the manifest read ONE I/O mode's
+    statistics, never the strict+relaxed mixture."""
+
+    STRICT_MIB, RELAXED_MIB = 700, 100
+
+    def _mixed(self, tmp_path, config=FOOTPRINT_LANE):
+        repo, proj = make_history_repo(tmp_path, config=config)
+        record_profiled_run(proj, repo, _peak_summary(self.STRICT_MIB),
+                            io_sync="strict")
+        record_profiled_run(proj, repo, _peak_summary(self.RELAXED_MIB),
+                            io_sync="relaxed")
+        return repo, proj
+
+    def _entries(self):
+        def entry(mode, mib):
+            return {"commit": "a", "outcome": "pass", "duration_seconds": 1.0,
+                    "history_eligible": True, "io_sync": mode,
+                    "started_at": "2026-01-01T00:00:00Z",
+                    "resources": _peak_summary(mib)}
+        return [entry("strict", self.STRICT_MIB),
+                entry("relaxed", self.RELAXED_MIB)]
+
+    def test_manifest_policy_mode_selects_only_that_modes_statistics(self):
+        store = {"schema": 2, "lanes": {"suite": {
+            "latest": None, "history": self._entries()}}}
+        for mode, mib in (("strict", self.STRICT_MIB),
+                          ("relaxed", self.RELAXED_MIB)):
+            lane = run_gate.build_footprint_manifest(
+                store, {"suite": {}}, 10, "H",
+                io_modes={"suite": mode})["lanes"]["suite"]
+            assert lane["io_sync"] == mode
+            assert lane["runs"] == 1
+            assert lane["completed_runs"] == 1
+            assert lane["memory_peak_bytes"]["median"] == mib * MIB
+
+    def test_manifest_without_policy_mode_uses_latest_profiled_mode(self):
+        store = {"schema": 2, "lanes": {"suite": {
+            "latest": None, "history": self._entries()}}}
+        lane = run_gate.build_footprint_manifest(
+            store, {"suite": {}}, 10, "H")["lanes"]["suite"]
+        assert lane["io_sync"] == "relaxed"
+        assert lane["memory_peak_bytes"]["median"] == self.RELAXED_MIB * MIB
+
+    def test_footprint_verb_writes_the_lane_policy_mode(
+            self, tmp_path, monkeypatch, capsys):
+        # The lane policy says relaxed even though strict ran last.
+        repo, proj = make_history_repo(
+            tmp_path,
+            config=FOOTPRINT_LANE + '\n    [lanes.suite.resources]\n'
+                                    '    io_sync = "relaxed"\n')
+        record_profiled_run(proj, repo, _peak_summary(self.RELAXED_MIB),
+                            io_sync="relaxed")
+        record_profiled_run(proj, repo, _peak_summary(self.STRICT_MIB),
+                            io_sync="strict")
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        assert run_gate.main(["footprint", "--write"]) == 0, \
+            capsys.readouterr().err
+        lane = read_footprint(proj)["lanes"]["suite"]
+        assert lane["io_sync"] == "relaxed"
+        assert lane["memory_peak_bytes"]["median"] == self.RELAXED_MIB * MIB
+
+    def test_footprint_verb_falls_back_when_the_lane_settings_do_not_resolve(
+            self, tmp_path, monkeypatch, capsys):
+        # relaxed requires an ephemeral environment: resolution refuses, so
+        # the verb uses the latest profiled run's mode instead of failing.
+        config = """\
+            schema_version = 1
+
+            [environments.bare-host]
+            mode = "host"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+
+            [lanes.suite.resources]
+            io_sync = "relaxed"
+            """
+        repo, proj = make_history_repo(tmp_path, config=config)
+        record_profiled_run(proj, repo, _peak_summary(self.STRICT_MIB),
+                            io_sync="strict")
+        record_profiled_run(proj, repo, _peak_summary(self.RELAXED_MIB),
+                            io_sync="relaxed")
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        assert run_gate.main(["footprint", "--json"]) == 0, \
+            capsys.readouterr().err
+        out = json.loads(capsys.readouterr().out)
+        assert out["lanes"]["suite"]["io_sync"] == "relaxed"
+        assert out["lanes"]["suite"]["memory_peak_bytes"]["median"] \
+            == self.RELAXED_MIB * MIB
+
+    def test_footprint_line_compares_with_the_runs_own_mode(
+            self, tmp_path, capsys):
+        _, proj = self._mixed(tmp_path)
+        run_gate.print_footprint_line("suite", proj,
+                                      _peak_summary(self.STRICT_MIB))
+        strict_out = capsys.readouterr().out
+        assert "history median peak 700 MiB (1 runs)" in strict_out
+        run_gate.print_footprint_line("suite", proj,
+                                      _peak_summary(self.RELAXED_MIB),
+                                      "relaxed")
+        relaxed_out = capsys.readouterr().out
+        assert "history median peak 100 MiB (1 runs, io_sync=relaxed)" \
+            in relaxed_out
+
+    def test_footprint_line_refuses_a_manifest_of_another_mode(
+            self, tmp_path, capsys):
+        _, proj = self._mixed(tmp_path)
+        manifest = {"schema": 1, "lanes": {"suite": {
+            "io_sync": "strict",
+            "memory_peak_bytes": {"median": 700 * MIB, "max": 700 * MIB}}}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        run_gate.print_footprint_line("suite", proj,
+                                      _peak_summary(self.RELAXED_MIB),
+                                      "relaxed")
+        out = capsys.readouterr().out
+        assert "| manifest not comparable (distilled under io_sync=strict)" \
+            in out
+        assert "| manifest 700 MiB" not in out
+
+    def _doctor(self, tmp_path, monkeypatch, capsys, manifest_lane):
+        _, proj = self._mixed(tmp_path)
+        manifest = {"schema": 1,
+                    "distilled_at": run_gate._iso_utc(time.time()),
+                    "lanes": {"suite": manifest_lane}}
+        (proj / run_gate.FOOTPRINT_FILE_NAME).write_text(json.dumps(manifest))
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ['run-gate'])
+        code = run_gate.main(["doctor"])
+        return code, capsys.readouterr().out
+
+    def test_doctor_drift_uses_the_manifest_entrys_mode(
+            self, tmp_path, monkeypatch, capsys):
+        # The combined median of 700 and 100 MiB is 400 MiB: it would drift
+        # from BOTH single-mode manifests; per-mode reading does not.
+        for mode, mib in (("strict", 700), ("relaxed", 100)):
+            (tmp_path / mode).mkdir()
+            code, out = self._doctor(
+                tmp_path / mode, monkeypatch, capsys,
+                {"io_sync": mode,
+                 "memory_peak_bytes": {"median": mib * MIB, "max": mib * MIB}})
+            assert "[OK] footprint drift" in out, out
+            assert "footprint drift 'suite'" not in out
+            assert "footprint manifest io_sync" not in out
+            assert code == 0
+
+    def test_doctor_flags_drift_against_the_manifest_mode_only(
+            self, tmp_path, monkeypatch, capsys):
+        code, out = self._doctor(
+            tmp_path, monkeypatch, capsys,
+            {"io_sync": "relaxed",
+             "memory_peak_bytes": {"median": 700 * MIB, "max": 700 * MIB}})
+        assert "[WARN] footprint drift 'suite'" in out
+        assert "live history median peak 100 MiB" in out
+
+    def test_doctor_treats_a_legacy_manifest_as_strict_and_names_migration(
+            self, tmp_path, monkeypatch, capsys):
+        code, out = self._doctor(
+            tmp_path, monkeypatch, capsys,
+            {"memory_peak_bytes": {"median": 700 * MIB, "max": 700 * MIB}})
+        assert "[OK] footprint drift" in out
+        assert "[INFO] footprint manifest io_sync" in out
+        assert "treated as strict" in out
+        assert "footprint --write" in out
 
 
 class TestFootprintVerbCLI:
@@ -27381,7 +27720,8 @@ class TestProfilerClientDegradesOnMalformedResponses:
         assert reason is not None
 
 
-PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV + "="
+# RG-117a: the token's VALUE is no longer on argv; `-e NAME` is what shows.
+PROFILE_TOKEN_ENV_NEEDLE = run_gate.PROFILE_TOKEN_ENV
 RG55_PLACEMENT_TOKEN = "profile-token"
 RG55_PLACEMENT_HOST = {"host": {"gates_slice": {
     "present": True, "cgroup": "/dev.slice/dev-gates.slice"}}}
@@ -35031,13 +35371,14 @@ class TestRunGateR1DirectCoverage:
         argv = next(line for line in output.splitlines()
                     if "run-gate: docker argv:" in line)
         assert "--user 1000:1000" in argv
-        assert "FORWARDED=<redacted>" in argv and "secret-value" not in argv
+        assert "-e FORWARDED " in argv and "secret-value" not in argv
         assert "EMPTY_FORWARD" not in argv and "ABSENT_FORWARD" not in argv
         assert "--memory-swap 2g" in argv
         assert ("type=bind,source=/mnt/cow/fixture,target=/mnt/cow/fixture"
                 in argv)
-        assert "COWTREE_MODE=<redacted>" in argv
-        assert "MDT_COW_ROOT=<redacted>" in argv
+        # Resource facts ride the docker client's environment: names only.
+        assert "-e COWTREE_MODE " in argv and "COWTREE_MODE=" not in argv
+        assert "-e MDT_COW_ROOT " in argv and "MDT_COW_ROOT=" not in argv
 
     @pytest.mark.parametrize("failure", ["missing-docker", "docker-ps"])
     def test_exec_lane_refuses_missing_docker_or_failed_ps(
@@ -36699,7 +37040,8 @@ argv = ["true"]
         argv = next(line for line in output.splitlines()
                     if "run-gate: docker argv:" in line)
         assert "target=/etc/ld.so.preload,readonly" in argv
-        assert "RUN_GATE_IO_SYNC=<redacted>" in argv
+        assert "-e RUN_GATE_IO_SYNC " in argv
+        assert "RUN_GATE_IO_SYNC=" not in argv
         assert list((tmp_path / ".run-gate").glob("ld.so.preload.*")) == []
 
     def test_relaxed_preload_file_closes_when_docker_run_fails(
@@ -36770,8 +37112,9 @@ argv = ["true"]
         output = capsys.readouterr().out
         argv = next(line for line in output.splitlines()
                     if "run-gate: docker argv:" in line)
-        assert "RUN_GATE_IO_SYNC=<redacted>" in argv
-        assert "COWTREE_MODE=<redacted>" in argv
+        assert "-e RUN_GATE_IO_SYNC " in argv
+        assert "-e COWTREE_MODE " in argv
+        assert "=<redacted>" not in argv and "COWTREE_MODE=" not in argv
 
     def test_host_lane_passes_resource_environment_to_child(
             self, tmp_path, monkeypatch):
@@ -36915,7 +37258,9 @@ argv = ["true"]
         assert run_gate.slice_cgroupfs_dir("dev-gates.slice") == Path(
             "dev.slice/dev-gates.slice")
         assert run_gate.slice_cgroupfs_dir("dev-test-gates.slice") == Path(
-            "dev.slice/test.slice/dev-test-gates.slice")
+            "dev.slice/dev-test.slice/dev-test-gates.slice")
+        assert run_gate.slice_cgroupfs_dir("a-b-c-d.slice") == Path(
+            "a.slice/a-b.slice/a-b-c.slice/a-b-c-d.slice")
         assert run_gate.slice_cgroupfs_dir("gates.slice") == Path("gates.slice")
 
     def test_slice_memory_admission_warns_refuses_and_admits_from_cgroup_files(

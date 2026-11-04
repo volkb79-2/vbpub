@@ -1,0 +1,5421 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:vmscreen/mark/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:vmscreen/mark/--serial-log"
+      ],
+      "route_id": "route:entrypoint:vmscreen/mark",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:vmscreen/mark/--serial-log"
+        ]
+      },
+      "signature": "sha256:1eb76ee2e820ca509e2c0610e95ee0c181c732bfa05dfaa87995f40802f4105c"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/mark/option-spelling/option:route:entrypoint:vmscreen/mark/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/mark/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/mark",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/mark/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:a1d3c74d65f5d9c726ebac99f8990488e9afe22bedd2fee10545b0c04b72c409"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/mark/option-spelling/option:route:entrypoint:vmscreen/mark/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/mark/--json"
+      ],
+      "route_id": "route:entrypoint:vmscreen/mark",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/mark/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:24ad7b08d96530d098ea60af170ad3c1aa712c64eb76b0d8c52cef1bb897fe57"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/mark/option-spelling/option:route:entrypoint:vmscreen/mark/--serial-log/--serial-log",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/mark/--serial-log"
+      ],
+      "route_id": "route:entrypoint:vmscreen/mark",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/mark/--serial-log",
+        "spelling": "--serial-log"
+      },
+      "signature": "sha256:da25f65a62a63bf3e43badb05c541c6ff26b80388b364c31aa7a6ec06b3538f2"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--qmp-timeout",
+        "option:route:entrypoint:vmscreen/ocr-pair/--out",
+        "option:route:entrypoint:vmscreen/ocr-pair/--no-blink-mode",
+        "option:route:entrypoint:vmscreen/ocr-pair/--no-pause",
+        "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact",
+        "option:route:entrypoint:vmscreen/ocr-pair/--accept-partial",
+        "option:route:entrypoint:vmscreen/ocr-pair/--force"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:vmscreen/ocr-pair/--qmp-timeout",
+          "option:route:entrypoint:vmscreen/ocr-pair/--no-blink-mode",
+          "option:route:entrypoint:vmscreen/ocr-pair/--no-pause",
+          "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact",
+          "option:route:entrypoint:vmscreen/ocr-pair/--accept-partial",
+          "option:route:entrypoint:vmscreen/ocr-pair/--force"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:vmscreen/ocr-pair/--out"
+        ]
+      },
+      "signature": "sha256:a78fb1df772d0a7d4b01e0b23632dac2a999c29225e0d454d064d682dc2368eb"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--accept-partial/--accept-partial",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--accept-partial"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--accept-partial",
+        "spelling": "--accept-partial"
+      },
+      "signature": "sha256:d73eae3340d24da0318d4b9f7d4debc7bb563e8ab17b4674fb6409c5fe00eb9e"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact/--allow-inexact",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact",
+        "spelling": "--allow-inexact"
+      },
+      "signature": "sha256:26573babe9fd60638fddefeb33e00f91c28ecd384103ee54c92d31ca56b4c181"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:4bc3db2f6fbed25a4abc6d5aa34a4468f3fe2fa07ef65c2c3cc61e89dbee77cc"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--dump-dir/--dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--dump-dir",
+        "spelling": "--dump-dir"
+      },
+      "signature": "sha256:8abfd8d6c235e4888096f54bc96e91f616bf8d7ac33e8e9920fe091a85203ab6"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--force/--force",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--force"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--force",
+        "spelling": "--force"
+      },
+      "signature": "sha256:9ffe98c783b7346b86c16b33859755a66c7e27ec095090705a5e4079ff2e4515"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--json"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:4a96da282827ee17d432e09273b2df260fff0e046bf482782a4db6155037f365"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--no-blink-mode/--no-blink-mode",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--no-blink-mode"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--no-blink-mode",
+        "spelling": "--no-blink-mode"
+      },
+      "signature": "sha256:a167dc5b77c0471b87ccea26c6ae04b95b01096e51611ecefce4d7452ee7907d"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--no-pause/--no-pause",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--no-pause"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--no-pause",
+        "spelling": "--no-pause"
+      },
+      "signature": "sha256:3fe4f5abc93930fd6f560af8daf65d90e79aaa39efeb4a91b784d679a8879829"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--out/--out",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--out"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--out",
+        "spelling": "--out"
+      },
+      "signature": "sha256:4e05f5dc7ba0a82cf89782ef11da79034fae89fd7d383327804295f64072e221"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--qmp-timeout/--qmp-timeout",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--qmp-timeout"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--qmp-timeout",
+        "spelling": "--qmp-timeout"
+      },
+      "signature": "sha256:1dbf5cf6de849a34e7798d7ecba5dae72aec1df4027829778c4a3b4794f5e942"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--qmp/--qmp",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--qmp"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--qmp",
+        "spelling": "--qmp"
+      },
+      "signature": "sha256:20812e1aa27fcbce60aeb8e8cf5c595091fbf189c6e1f987b2661854402eb2c8"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--qmp-timeout",
+        "option:route:entrypoint:vmscreen/probe/--source",
+        "option:route:entrypoint:vmscreen/probe/--no-blink-mode"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:vmscreen/probe/--qmp-timeout",
+          "option:route:entrypoint:vmscreen/probe/--source",
+          "option:route:entrypoint:vmscreen/probe/--no-blink-mode"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:bbf5850ef95f7dd67ae37bc2fc3214e01708feb7291d512569743c76e6de6770"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-choice/option:route:entrypoint:vmscreen/probe/--source/529ad75351",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "choice": "vga",
+        "option_id": "option:route:entrypoint:vmscreen/probe/--source"
+      },
+      "signature": "sha256:3d8a2de9bb0099750e6d21a2600401336210ddfeeed918967803a359156a081e"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-choice/option:route:entrypoint:vmscreen/probe/--source/634635a216",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "choice": "auto",
+        "option_id": "option:route:entrypoint:vmscreen/probe/--source"
+      },
+      "signature": "sha256:85bc66267f4b0c8f8144556ca4c8a3280823701d2665a6b725ca5d2fd47c2b49"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-choice/option:route:entrypoint:vmscreen/probe/--source/96770d724d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "choice": "serial",
+        "option_id": "option:route:entrypoint:vmscreen/probe/--source"
+      },
+      "signature": "sha256:6b68cc85830fbadfdf9b1986802e4e277c0db32c56d2b6efe7058889ae24ffab"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:ccfd30057175e9e334dcc78791b5221d034e47c95bc23a123c8757ea456dcd90"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--dump-dir/--dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--dump-dir",
+        "spelling": "--dump-dir"
+      },
+      "signature": "sha256:8573969d529a2d12957d3380366df947ec5b1ef858b79630e90a5fbbef66cc1e"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--from-offset/--from-offset",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--from-offset"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--from-offset",
+        "spelling": "--from-offset"
+      },
+      "signature": "sha256:dd88d5909f161488b7e99b88c3e21adb386e5a7250e453a93286caa54638061c"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--json"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:5ae5c654161fffd180b655ef8675555e1746c3fd416b1102d33a01e069ab1de2"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--mark/--mark",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--mark"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--mark",
+        "spelling": "--mark"
+      },
+      "signature": "sha256:34c5980ccc7a9f40bd62238903f4d1032777391c34730e044dcd2705ce01ea7e"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--no-blink-mode/--no-blink-mode",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--no-blink-mode"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--no-blink-mode",
+        "spelling": "--no-blink-mode"
+      },
+      "signature": "sha256:2d4ae507da5955da5ba260dc441a89c5a304385ab579355377084c6da935f1f2"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--qmp-timeout/--qmp-timeout",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--qmp-timeout"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--qmp-timeout",
+        "spelling": "--qmp-timeout"
+      },
+      "signature": "sha256:3fd2cb3495f0ff4a456903938c0edccab2498089b960938a5e140ce01c38a069"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--qmp/--qmp",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--qmp"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--qmp",
+        "spelling": "--qmp"
+      },
+      "signature": "sha256:4b034ceaf759f85f222689a4a7ffdd9e222f5c6c8e8dfc9d30bc0c94706450bf"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--serial-log/--serial-log",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--serial-log"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--serial-log",
+        "spelling": "--serial-log"
+      },
+      "signature": "sha256:2023d89fc841cb473f43cd92b3822f014cc6bf0202561670bae20617ba19acd2"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--source/--source",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--source",
+        "spelling": "--source"
+      },
+      "signature": "sha256:44676b096e09791d97a575babc332901b0ff544f41ad3d5a65e63684e8da92a5"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/screen/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:vmscreen/screen/--qmp-timeout",
+        "option:route:entrypoint:vmscreen/screen/--out"
+      ],
+      "route_id": "route:entrypoint:vmscreen/screen",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:vmscreen/screen/--qmp-timeout"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:vmscreen/screen/--out"
+        ]
+      },
+      "signature": "sha256:eb4d4707135049c7f4c4e140f2fc6c26b8c052f1230093fd846727fd75a9978c"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/screen/option-spelling/option:route:entrypoint:vmscreen/screen/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/screen/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/screen",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/screen/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:27f3dba89d4e5b16f7016ac2eb00b422ab158d11e3f898cb3d16fec6c0b42e2a"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/screen/option-spelling/option:route:entrypoint:vmscreen/screen/--dump-dir/--dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/screen/--dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/screen",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/screen/--dump-dir",
+        "spelling": "--dump-dir"
+      },
+      "signature": "sha256:2f8655bb2989c4da153ad1e759020133e79f72ecf6563b2c03aa478a0b9cfb45"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/screen/option-spelling/option:route:entrypoint:vmscreen/screen/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/screen/--json"
+      ],
+      "route_id": "route:entrypoint:vmscreen/screen",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/screen/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:d21e7d8a9572b5d6f5b2ab0fe28eb96b4670017e5500fd494bbdfaceefbc18b8"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/screen/option-spelling/option:route:entrypoint:vmscreen/screen/--out/--out",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/screen/--out"
+      ],
+      "route_id": "route:entrypoint:vmscreen/screen",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/screen/--out",
+        "spelling": "--out"
+      },
+      "signature": "sha256:243c89a4a8b232cf90188ce205969fe40bcc4cf5992577f358b2e548f79e2a0f"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/screen/option-spelling/option:route:entrypoint:vmscreen/screen/--qmp-timeout/--qmp-timeout",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/screen/--qmp-timeout"
+      ],
+      "route_id": "route:entrypoint:vmscreen/screen",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/screen/--qmp-timeout",
+        "spelling": "--qmp-timeout"
+      },
+      "signature": "sha256:4280077686350a4a12d4d775c26ced9d7cacaf99ab5c97e3c77c1c1673439aad"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/screen/option-spelling/option:route:entrypoint:vmscreen/screen/--qmp/--qmp",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/screen/--qmp"
+      ],
+      "route_id": "route:entrypoint:vmscreen/screen",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/screen/--qmp",
+        "spelling": "--qmp"
+      },
+      "signature": "sha256:ccf56b0b08669a10ae585816a895376a82da64970d1771142081b35637a3b545"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--qmp-timeout",
+        "option:route:entrypoint:vmscreen/send/--delay",
+        "option:route:entrypoint:vmscreen/send/--allow-unknown-keys"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:vmscreen/send/--qmp-timeout",
+          "option:route:entrypoint:vmscreen/send/--delay",
+          "option:route:entrypoint:vmscreen/send/--allow-unknown-keys"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:1271094dc27fc94ce6211295c6dd00ac6c38ac2d5a148842832ba61832575676"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--allow-unknown-keys/--allow-unknown-keys",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--allow-unknown-keys"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--allow-unknown-keys",
+        "spelling": "--allow-unknown-keys"
+      },
+      "signature": "sha256:269c741308585871b7bdfee28dddf3569e3abc4bce0c4ee132a5d88fb769df9a"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:30339dba2100cba7545c76db6dceab80eee85b44f46d5e841384282f329ea4d4"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--delay/--delay",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--delay"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--delay",
+        "spelling": "--delay"
+      },
+      "signature": "sha256:36d637a7090ca87ecd25a57f8a75fdca8a26af0f444ca72ba9493970d808386b"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--dump-dir/--dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--dump-dir",
+        "spelling": "--dump-dir"
+      },
+      "signature": "sha256:27e950c1e657caa8d6851080b61b5e05c4ccccfd1ae0107a4a0264a57c2dc56f"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--hold-ms/--hold-ms",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--hold-ms"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--hold-ms",
+        "spelling": "--hold-ms"
+      },
+      "signature": "sha256:35de8b0e594a07ef48db40798d6f446f0ee1a38d2d9c68a66bdc882f78283668"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--json"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:34fec065b876fc2cd6beaa268024995dff5d78b63749f67dad112cb8e9308412"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--keys/--keys",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--keys"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--keys",
+        "spelling": "--keys"
+      },
+      "signature": "sha256:0c7c40cf4d6ee3c3797179ee9b09f15af2fcd86898c58a62d2ceb6f61967f993"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--qmp-timeout/--qmp-timeout",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--qmp-timeout"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--qmp-timeout",
+        "spelling": "--qmp-timeout"
+      },
+      "signature": "sha256:dd473c178608ecd41360a40b3c31f34a5755b556e70a10313ab62ba85c3b6d0b"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--qmp/--qmp",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--qmp"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--qmp",
+        "spelling": "--qmp"
+      },
+      "signature": "sha256:7933bd6d2663e17fab84bd26f58fe83e998b0a2caf185168bdca1ac679ec8dc6"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--type-file/--type-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--type-file"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--type-file",
+        "spelling": "--type-file"
+      },
+      "signature": "sha256:1090ff7977ccb08578d7cd2fbbb8cfc91b5da57ce96e741b5ee018e488bc3061"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--type/--type",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--type"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--type",
+        "spelling": "--type"
+      },
+      "signature": "sha256:c6a4d68a67e26b93ba3b5da5b593918c1ede71f13c53bd441b876d2bc7b5ac6a"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/exclusive-conflict/target/option:route:entrypoint:vmscreen/skills/check/--dest/option:route:entrypoint:vmscreen/skills/check/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/check/--dest",
+        "option:route:entrypoint:vmscreen/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:vmscreen/skills/check/--dest",
+          "option:route:entrypoint:vmscreen/skills/check/--harness"
+        ]
+      },
+      "signature": "sha256:c3036ce42410d94185063c0a23aa48e70b2f0e59a6b85a6c516f64fd7498f081"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/exclusive-member/target/option:route:entrypoint:vmscreen/skills/check/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/check/--dest"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:vmscreen/skills/check/--dest"
+      },
+      "signature": "sha256:cddfdcd7704e81f1c1d24089fc4931b106d054946edc17d8df9589d0a13ba258"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/exclusive-member/target/option:route:entrypoint:vmscreen/skills/check/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:vmscreen/skills/check/--harness"
+      },
+      "signature": "sha256:5406dadf803f0623470af90761d9887f8a58460b45752ea10f58a68c38f670b3"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:3a550ce0dc3ee7a07ac015679d32111d89df08bd14f70e45588ac1c10dc780ed"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/option-choice/option:route:entrypoint:vmscreen/skills/check/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:vmscreen/skills/check/--harness"
+      },
+      "signature": "sha256:c18153759a07cb0b1c511b0c6e8013828b0c282d3d8de00eefa073bd697d9d81"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/option-choice/option:route:entrypoint:vmscreen/skills/check/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:vmscreen/skills/check/--harness"
+      },
+      "signature": "sha256:5c275126b3458af3ba12b905709df3e2e4e974b63faf150c9d104afce751486a"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/option-choice/option:route:entrypoint:vmscreen/skills/check/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:vmscreen/skills/check/--harness"
+      },
+      "signature": "sha256:312af47287c8293fe5c639a2ec96427ff2a04d5be7c5efc8bc4c0b3aee81e872"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/option-spelling/option:route:entrypoint:vmscreen/skills/check/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/check/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/check/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:f0a6fe0883309639e8c4e47400ca9b59d46d7b1764a264d1cf22c57cfc49bc1d"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/option-spelling/option:route:entrypoint:vmscreen/skills/check/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/check/--dest"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/check/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:03a6acc019a2b68595b80813a4ba34f6835d53e4145a8dde5a755281fbbad7c4"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/option-spelling/option:route:entrypoint:vmscreen/skills/check/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/check/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:0f9a63dcab41bd8ac1f0a558e7da2511b6bfcdbee533baea1e44b2084e34c636"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/check/option-spelling/option:route:entrypoint:vmscreen/skills/check/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/check/--json"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/check/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:134949ba41bbf50ed37236a37c41c00af48a654e7cc837ee56658f44a34c9f33"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/exclusive-conflict/target/option:route:entrypoint:vmscreen/skills/install/--dest/option:route:entrypoint:vmscreen/skills/install/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--dest",
+        "option:route:entrypoint:vmscreen/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:vmscreen/skills/install/--dest",
+          "option:route:entrypoint:vmscreen/skills/install/--harness"
+        ]
+      },
+      "signature": "sha256:98bb729407dd1483d5e7d0c5f9777a96eb88356483b36f5be1b466d21a971c55"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/exclusive-member/target/option:route:entrypoint:vmscreen/skills/install/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--dest"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:vmscreen/skills/install/--dest"
+      },
+      "signature": "sha256:71298f8014358f8f9f5c75aa92846fa7afb06dcedcd8b81eade974aaa3dece05"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/exclusive-member/target/option:route:entrypoint:vmscreen/skills/install/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:vmscreen/skills/install/--harness"
+      },
+      "signature": "sha256:4520888097a501b48f5f9c65f4753185d6a4207ccd2e6f25d25e4c463471bd79"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:vmscreen/skills/install/--overwrite-modified"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:f3effbd11546bc94049e30501c4863e8fbbfdc2089d581365f1f345a3ee5bc23"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/option-choice/option:route:entrypoint:vmscreen/skills/install/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:vmscreen/skills/install/--harness"
+      },
+      "signature": "sha256:cef4ae16480b93e46f8bad1c8defd962039fb765bad14995b6b1331cab0677fa"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/option-choice/option:route:entrypoint:vmscreen/skills/install/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:vmscreen/skills/install/--harness"
+      },
+      "signature": "sha256:f737455810051a60d3ee731845f79716e1ae7e020f9653ce07c0fbc59517fc1d"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/option-choice/option:route:entrypoint:vmscreen/skills/install/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:vmscreen/skills/install/--harness"
+      },
+      "signature": "sha256:856fca36a4524afbd4d0f75856bb967015492bc212814e079b0d831765a1a1e0"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/option-spelling/option:route:entrypoint:vmscreen/skills/install/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/install/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:03bf7da012b94003e9dce62166ce7b8497a76739a04e1d8c05b1a42daba84e8b"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/option-spelling/option:route:entrypoint:vmscreen/skills/install/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--dest"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/install/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:544750c373bf9b34f1e944c55f063ae10d23e1c502ea9f32aaa3ce63927cfc36"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/option-spelling/option:route:entrypoint:vmscreen/skills/install/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--dry-run"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/install/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:daa1ddd606f9caea5b38062f78c99b5c96a6126d35a91e403e4d1fbd34b7b534"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/option-spelling/option:route:entrypoint:vmscreen/skills/install/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/install/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:fced046773f92e72d54ac4482251573a298576b63b1c44a352ed6636bc4d3e5e"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/install/option-spelling/option:route:entrypoint:vmscreen/skills/install/--overwrite-modified/--overwrite-modified",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/install/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/install/--overwrite-modified",
+        "spelling": "--overwrite-modified"
+      },
+      "signature": "sha256:38c1d2bb21a0f61c997d1e22f9d306d8235f75f1c6206e6d6e5df0c44c4829af"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/exclusive-conflict/target/option:route:entrypoint:vmscreen/skills/list/--dest/option:route:entrypoint:vmscreen/skills/list/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/list/--dest",
+        "option:route:entrypoint:vmscreen/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:vmscreen/skills/list/--dest",
+          "option:route:entrypoint:vmscreen/skills/list/--harness"
+        ]
+      },
+      "signature": "sha256:1649d7cd9884a7d2017232e90f8071dd33c0292f90919d8a22dcd3f8c007bf3e"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/exclusive-member/target/option:route:entrypoint:vmscreen/skills/list/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/list/--dest"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:vmscreen/skills/list/--dest"
+      },
+      "signature": "sha256:eaacd4fbd359bcdc5fdb11ce88c23b0ea4346bf329b62a0eb5c9e2defa4b72e5"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/exclusive-member/target/option:route:entrypoint:vmscreen/skills/list/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:vmscreen/skills/list/--harness"
+      },
+      "signature": "sha256:2043a49686eef2237c7343c60f0f347cc2bd9d71d5968c0c5bb933f4506336ea"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:d5ef91e02dd58ff745811281bc8be8d757d5831b47d637c6cb9203e1f02704b1"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/option-choice/option:route:entrypoint:vmscreen/skills/list/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:vmscreen/skills/list/--harness"
+      },
+      "signature": "sha256:57ccd9e1f80ee321a5aaaef4f949eacac791f56b97d5576c0cb2ea8cdaff56f7"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/option-choice/option:route:entrypoint:vmscreen/skills/list/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:vmscreen/skills/list/--harness"
+      },
+      "signature": "sha256:5b59d10b4394d514a2955bd632e902688f2fb426c9af22ae5c1e1f0cc69e4930"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/option-choice/option:route:entrypoint:vmscreen/skills/list/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:vmscreen/skills/list/--harness"
+      },
+      "signature": "sha256:915c6f4f45732a12c1e77aeab13590367c8f808766c3c97d7b3b0a592183d717"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/option-spelling/option:route:entrypoint:vmscreen/skills/list/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/list/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/list/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:7d550b94de426c9fb9578641dd486dfbe6bc4eb1321b9a5c00f83e624a298c30"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/option-spelling/option:route:entrypoint:vmscreen/skills/list/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/list/--dest"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/list/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:336033ffed2de5467b760a61bf1b2431e5710e09ff5208b2552b1ee7cce65236"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/option-spelling/option:route:entrypoint:vmscreen/skills/list/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/list/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:c96bccaf66fad69f116f216244d9fc2e14d4ed598fac137cdb86d81b2453cbc4"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/list/option-spelling/option:route:entrypoint:vmscreen/skills/list/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/list/--json"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/list/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:ff4f71ee6818054d3b26b68285eaa73093cf2334af1c3a42b83803700ff6adaf"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/exclusive-conflict/target/option:route:entrypoint:vmscreen/skills/uninstall/--dest/option:route:entrypoint:vmscreen/skills/uninstall/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--dest",
+        "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:vmscreen/skills/uninstall/--dest",
+          "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+        ]
+      },
+      "signature": "sha256:3e6f8f1930f37c2e5e9ecd2c5f8c9284b57eb9e54cc91796937bb4cfb584f563"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/exclusive-member/target/option:route:entrypoint:vmscreen/skills/uninstall/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--dest"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:vmscreen/skills/uninstall/--dest"
+      },
+      "signature": "sha256:1c67c81a72cd7eeef976b47a3ff15976e81316c38ed5f84569a489d6675d48de"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/exclusive-member/target/option:route:entrypoint:vmscreen/skills/uninstall/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+      },
+      "signature": "sha256:ac13c273dfccdfc07b09f3eb39f8da7e84de2a424e45884865b05b8f60fcfb61"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:vmscreen/skills/uninstall/--overwrite-modified"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:293282056d92cf4e56af8e9aa70d9b884821effcd6b465a3ad5156a7315a314a"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/option-choice/option:route:entrypoint:vmscreen/skills/uninstall/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+      },
+      "signature": "sha256:3669863fafe9f5a1c85dc3dc7e2f2caddd50d4bb3ca2834d9b2ee8895b669490"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/option-choice/option:route:entrypoint:vmscreen/skills/uninstall/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+      },
+      "signature": "sha256:071351b10b6086a5b2ea90899895b40726a1b153ac81b4bd8cef18157ec28f63"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/option-choice/option:route:entrypoint:vmscreen/skills/uninstall/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+      },
+      "signature": "sha256:3634a3e56abe0c0f02a40e613b94daf95ed46512136136619498a23a396927fc"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/option-spelling/option:route:entrypoint:vmscreen/skills/uninstall/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/uninstall/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:024d8cc47aead9bed24eb7f8a600cbb4e7deb07973dbf71f4440eab367d21d84"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/option-spelling/option:route:entrypoint:vmscreen/skills/uninstall/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--dest"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/uninstall/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:ca098ce953b1404d43a3df4d2efd3711c242f5de57580bcc865a5c6664424b61"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/option-spelling/option:route:entrypoint:vmscreen/skills/uninstall/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--dry-run"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/uninstall/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:63afe9d3d7858fb0d319d31faecdd9d5e25f65d325553058db580884f59cc6c1"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/option-spelling/option:route:entrypoint:vmscreen/skills/uninstall/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/uninstall/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:96e535dd3ad178b240f1c4023ccf21eb8f44d15fde8d833a849d81917b1adc36"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/skills/uninstall/option-spelling/option:route:entrypoint:vmscreen/skills/uninstall/--overwrite-modified/--overwrite-modified",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/skills/uninstall/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:vmscreen/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/skills/uninstall/--overwrite-modified",
+        "spelling": "--overwrite-modified"
+      },
+      "signature": "sha256:82fe56a3b3a295f2861359038d78216a02f749fb6cf45a7004699a3118333e48"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--qmp-timeout",
+        "option:route:entrypoint:vmscreen/text/--source",
+        "option:route:entrypoint:vmscreen/text/--no-blink-mode",
+        "option:route:entrypoint:vmscreen/text/--cells"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:vmscreen/text/--qmp-timeout",
+          "option:route:entrypoint:vmscreen/text/--source",
+          "option:route:entrypoint:vmscreen/text/--no-blink-mode",
+          "option:route:entrypoint:vmscreen/text/--cells"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:5089c8aaa3896e6971cc731330173a859c2f3017e06c4ec803289572894ba392"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-choice/option:route:entrypoint:vmscreen/text/--source/529ad75351",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "choice": "vga",
+        "option_id": "option:route:entrypoint:vmscreen/text/--source"
+      },
+      "signature": "sha256:d60730d419d20ef9aeac5443c768b91bd9150cf7bf481855e422240f032907e5"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-choice/option:route:entrypoint:vmscreen/text/--source/634635a216",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "choice": "auto",
+        "option_id": "option:route:entrypoint:vmscreen/text/--source"
+      },
+      "signature": "sha256:11cea6e66511a2be14476293a7198214eb3b2b65a35b3e04a9c150abf7f2efbc"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-choice/option:route:entrypoint:vmscreen/text/--source/96770d724d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "choice": "serial",
+        "option_id": "option:route:entrypoint:vmscreen/text/--source"
+      },
+      "signature": "sha256:5de636689c07110c0390ef4e0e5744e2d0fc3f9ded06c7f86e4d668466293346"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--cells/--cells",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--cells"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--cells",
+        "spelling": "--cells"
+      },
+      "signature": "sha256:3005b3f4d0691db346934f5d0419a3452b929a8f6b6694c26cee38bc8d26f4df"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:c6cb2ccf428b39ebc09d5eb96f6b1074bc77b648ce8a9c95332ff838d9ec026c"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--dump-dir/--dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--dump-dir",
+        "spelling": "--dump-dir"
+      },
+      "signature": "sha256:c6a987e19a083d9d6de716a3bf45ce529d73774b7f6f71afe0b051a06af5bfe7"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--from-offset/--from-offset",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--from-offset"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--from-offset",
+        "spelling": "--from-offset"
+      },
+      "signature": "sha256:a717eeffac9d24ffcfdc71497fac8ace0ea7a7a23491123082622fb6c502acd7"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--json"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:b23047afb83d5d91a255c12446bfca0acf9a8d6b1f87da02f1bb65e23aa8624e"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--mark/--mark",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--mark"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--mark",
+        "spelling": "--mark"
+      },
+      "signature": "sha256:75e19b778cec1f03271fc45a4af0df966cb3b5966ea00ec1c390bcd065e91ae9"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--no-blink-mode/--no-blink-mode",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--no-blink-mode"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--no-blink-mode",
+        "spelling": "--no-blink-mode"
+      },
+      "signature": "sha256:0ed0ef94b0cb9529c7845acb1b639a6f56c88cb2e10cef90f0d5b56a33dbb4e9"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--qmp-timeout/--qmp-timeout",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--qmp-timeout"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--qmp-timeout",
+        "spelling": "--qmp-timeout"
+      },
+      "signature": "sha256:273854e5db70d613f22c2a5470530c24f970527ce1ce97d98e825897e4cb42f4"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--qmp/--qmp",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--qmp"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--qmp",
+        "spelling": "--qmp"
+      },
+      "signature": "sha256:60fadd8b06a5ad7480add7390c430090436ff857f1658940476fc3bb209e2fd5"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--serial-log/--serial-log",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--serial-log"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--serial-log",
+        "spelling": "--serial-log"
+      },
+      "signature": "sha256:c620a9ffba851b67308c07528c4f296e2bde405f2cb229e7b0a5ec45dc9288c3"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--source/--source",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--source",
+        "spelling": "--source"
+      },
+      "signature": "sha256:30e1dcd09846497a763cbeafa35c690fb9371c3cf003598a100542e89ac86ba9"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--tail/--tail",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--tail"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--tail",
+        "spelling": "--tail"
+      },
+      "signature": "sha256:5c37ccf335985471af8dbb1d74027ed364fdc4209ea356025baaa35e809420f5"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/argument-shape/argument:route:entrypoint:vmscreen/wait-text/pattern",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:vmscreen/wait-text/pattern"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:vmscreen/wait-text/pattern"
+      },
+      "signature": "sha256:147b971ded5970578171b6e7a643fff95b87c6ca1a50abc36c44029aae631cfe"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:vmscreen/wait-text/pattern",
+        "option:route:entrypoint:vmscreen/wait-text/--qmp-timeout",
+        "option:route:entrypoint:vmscreen/wait-text/--source",
+        "option:route:entrypoint:vmscreen/wait-text/--no-blink-mode",
+        "option:route:entrypoint:vmscreen/wait-text/--timeout",
+        "option:route:entrypoint:vmscreen/wait-text/--interval",
+        "option:route:entrypoint:vmscreen/wait-text/--literal",
+        "option:route:entrypoint:vmscreen/wait-text/--since-mark",
+        "option:route:entrypoint:vmscreen/wait-text/--accept-unverified",
+        "option:route:entrypoint:vmscreen/wait-text/--accept-partial"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:vmscreen/wait-text/--qmp-timeout",
+          "option:route:entrypoint:vmscreen/wait-text/--source",
+          "option:route:entrypoint:vmscreen/wait-text/--no-blink-mode",
+          "option:route:entrypoint:vmscreen/wait-text/--timeout",
+          "option:route:entrypoint:vmscreen/wait-text/--interval",
+          "option:route:entrypoint:vmscreen/wait-text/--literal",
+          "option:route:entrypoint:vmscreen/wait-text/--since-mark",
+          "option:route:entrypoint:vmscreen/wait-text/--accept-unverified",
+          "option:route:entrypoint:vmscreen/wait-text/--accept-partial"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:vmscreen/wait-text/pattern": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:vmscreen/wait-text/pattern"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:911cc980b6624fb6a75af7f59f63aa3ad1c32741beb4948fe977e511f504252f"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-choice/option:route:entrypoint:vmscreen/wait-text/--source/529ad75351",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "choice": "vga",
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--source"
+      },
+      "signature": "sha256:1d9852f48733fd25899d7ef4e07ddff400bf9675f2dbc2ac36cadf8ced173704"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-choice/option:route:entrypoint:vmscreen/wait-text/--source/634635a216",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "choice": "auto",
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--source"
+      },
+      "signature": "sha256:f79537670c74f90d1322df1037a5ef11d54cae15925d457f79e72d407e2bf2b8"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-choice/option:route:entrypoint:vmscreen/wait-text/--source/96770d724d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "choice": "serial",
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--source"
+      },
+      "signature": "sha256:293639c93de9935afeaafb076275c49c2066e7da0b61d9f1ee328b77c2e5a7f3"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--accept-partial/--accept-partial",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--accept-partial"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--accept-partial",
+        "spelling": "--accept-partial"
+      },
+      "signature": "sha256:7b751d43687a220c5124a358368cee257fe60156eb4c1612884e81de2b92d996"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--accept-unverified/--accept-unverified",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--accept-unverified"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--accept-unverified",
+        "spelling": "--accept-unverified"
+      },
+      "signature": "sha256:2a6aba3bd4e397c48423b33b1eee1ff9b41d846bb114f1b7ce653daebbeb2e17"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:a2032808e6ad441357003efa325256a3996af0e6c1fa28ff998661c07d68942d"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--dump-dir/--dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--dump-dir",
+        "spelling": "--dump-dir"
+      },
+      "signature": "sha256:dc1cab833b5366c9fe7a7276c713042eea0c620da7c1a50a2c2be0dbb06edbf7"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--from-offset/--from-offset",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--from-offset"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--from-offset",
+        "spelling": "--from-offset"
+      },
+      "signature": "sha256:19fd6e1af5d03c7dfb9d77e36887a27bb3552a68aa3faaf556119f986274a038"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--interval/--interval",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--interval"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--interval",
+        "spelling": "--interval"
+      },
+      "signature": "sha256:b4e3392341ebd17fc181e139e30a53c6fb83a7b6d9e9189e971ab0b2a7dd8625"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--json"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:a60327305f10b71614d21e92ef615d7790ae62e2de2d038be963fcfe72552c7a"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--literal/--literal",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--literal"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--literal",
+        "spelling": "--literal"
+      },
+      "signature": "sha256:a2d6f15a06711685ade17ddc5bad2eeacb1e34e9a687a288a13a772c49fe846e"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--mark/--mark",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--mark"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--mark",
+        "spelling": "--mark"
+      },
+      "signature": "sha256:8d56a8323d6698c28cf69fa511da82f75336b82f95e2a4b29771872e14b1ffed"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--no-blink-mode/--no-blink-mode",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--no-blink-mode"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--no-blink-mode",
+        "spelling": "--no-blink-mode"
+      },
+      "signature": "sha256:6bb15c406868bdf4d612c59024b4acef032ca6b488c9de856ed2ca6b37964cd0"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--qmp-timeout/--qmp-timeout",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--qmp-timeout"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--qmp-timeout",
+        "spelling": "--qmp-timeout"
+      },
+      "signature": "sha256:a8c3baa9ef8d562daf84cb25921669922a94942d5f352027f3158a30ec644e3f"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--qmp/--qmp",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--qmp"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--qmp",
+        "spelling": "--qmp"
+      },
+      "signature": "sha256:7776e94c92b4701d9798383af9a93d20bb348c2a3c6f2ce9bb309e59655a6a13"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--serial-log/--serial-log",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--serial-log"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--serial-log",
+        "spelling": "--serial-log"
+      },
+      "signature": "sha256:299a733f2f76d00e2c77633bda9c2d6485adbc0f2e4e0aec013e71bbf304df34"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--since-mark/--since-mark",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--since-mark"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--since-mark",
+        "spelling": "--since-mark"
+      },
+      "signature": "sha256:66fbaabd80cf83a8e56295022dc62418a546b51262816eab9589ee82d6af8b3b"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--source/--source",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--source"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--source",
+        "spelling": "--source"
+      },
+      "signature": "sha256:4de2542223048792e3fb0555bed7ce74fb1c5f8cde39f97061f0bb6b3de2924b"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--timeout/--timeout",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--timeout"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--timeout",
+        "spelling": "--timeout"
+      },
+      "signature": "sha256:c81ed532f66096f1839b60aead7c49ede2f77b21bf3d6468f5654891a30ab121"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "vmscreen",
+    "display_name": "vmscreen",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:vmscreen",
+    "long_name": "exact console text of local QEMU guests",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "vmscreen",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--serial-log",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The serial log file.",
+          "dest": "serial_log",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--serial-log"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/mark/--serial-log",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "required": true
+          },
+          "parser_path": [
+            "mark"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH.TAILLEN.TAILHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:vmscreen/mark",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "mark"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "mark"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Print a mark of a serial log (OFFSET.INODE.HEADLEN.HEADHASH.TAILLEN.TAILHASH): --mark TOKEN skips everything written so far and rejects a log replaced since.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "QMP unix socket of the guest (default: $VMSCREEN_QMP). The QEMU command line needs -qmp unix:SOCK,server=on,wait=off. QMP serves ONE client: stop other pollers first.",
+          "dest": "qmp",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--qmp",
+          "kind": "option",
+          "metavar": "SOCK",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp-timeout",
+          "choices": null,
+          "const": null,
+          "default": 10.0,
+          "default_present": true,
+          "description": "Timeout in seconds for every QMP connect/read.",
+          "dest": "qmp_timeout",
+          "effective_default": 10.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp-timeout"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--qmp-timeout",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 10.0,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "A directory BOTH vmscreen and QEMU can read and write (QEMU writes screendump/pmemsave files there). Default: the system temp dir, which is only right when QEMU runs in the same container.",
+          "dest": "dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--out",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Output prefix; .png and .json are appended.",
+          "dest": "out",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--out"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--out",
+          "kind": "option",
+          "metavar": "PREFIX",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "required": true
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-blink-mode",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Decode attribute bit 7 as a bright background instead of blink. QMP cannot read the attribute-controller mode bit, so this is a declared assumption (recorded in the output), not a detection.",
+          "dest": "no_blink_mode",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-blink-mode"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--no-blink-mode",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-pause",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Do not pause the guest (pair may straddle a redraw).",
+          "dest": "no_pause",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-pause"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--no-pause",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-inexact",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "On a graphical or UNVERIFIED screen write PNG + sidecar with the exact flag/reason instead of exit 4.",
+          "dest": "allow_inexact",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-inexact"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--allow-inexact",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--accept-partial",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Accept a screen whose cells are all verified except cursor-shaped uncertain cells (listed in the sidecar).",
+          "dest": "accept_partial",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--accept-partial"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--accept-partial",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--force",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Overwrite an existing PREFIX.png / PREFIX.json.",
+          "dest": "force",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--force"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--force",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Write OUT.png and OUT.json (exact-text sidecar) captured at the same instant, for OCR corpus building: the guest is paused (QMP stop) while both are read, then resumed; only the VGA text buffer counts as exact for a pair (exit 4 on a graphical screen unless --allow-inexact).",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:vmscreen/ocr-pair",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "ocr-pair"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Write OUT.png and OUT.json (exact-text sidecar) captured at the same instant, for OCR corpus building: the guest is paused (QMP stop) while both are read, then resumed; only the VGA text buffer counts as exact for a pair (exit 4 on a graphical screen unless --allow-inexact). [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "QMP unix socket of the guest (default: $VMSCREEN_QMP). The QEMU command line needs -qmp unix:SOCK,server=on,wait=off. QMP serves ONE client: stop other pollers first.",
+          "dest": "qmp",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--qmp",
+          "kind": "option",
+          "metavar": "SOCK",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp-timeout",
+          "choices": null,
+          "const": null,
+          "default": 10.0,
+          "default_present": true,
+          "description": "Timeout in seconds for every QMP connect/read.",
+          "dest": "qmp_timeout",
+          "effective_default": 10.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp-timeout"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--qmp-timeout",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 10.0,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "A directory BOTH vmscreen and QEMU can read and write (QEMU writes screendump/pmemsave files there). Default: the system temp dir, which is only right when QEMU runs in the same container.",
+          "dest": "dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--serial-log",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The guest's serial log file (QEMU -serial file:PATH); enables the serial source.",
+          "dest": "serial_log",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--serial-log"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--serial-log",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--source",
+          "choices": [
+            "auto",
+            "vga",
+            "serial"
+          ],
+          "const": null,
+          "default": "auto",
+          "default_present": true,
+          "description": "Exact-text source: auto tries vga then serial.",
+          "dest": "source",
+          "effective_default": "auto",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--source"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--source",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "auto",
+              "vga",
+              "serial"
+            ],
+            "default": "auto"
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-blink-mode",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Decode attribute bit 7 as a bright background instead of blink. QMP cannot read the attribute-controller mode bit, so this is a declared assumption (recorded in the output), not a detection.",
+          "dest": "no_blink_mode",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-blink-mode"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--no-blink-mode",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--from-offset",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).",
+          "dest": "from_offset",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--from-offset"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--from-offset",
+          "kind": "option",
+          "metavar": "BYTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--mark",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Serial source: a token from `vmscreen mark`; like --from-offset, and additionally refuses a log that was truncated or replaced since (inode and first bytes are checked).",
+          "dest": "mark",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--mark"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--mark",
+          "kind": "option",
+          "metavar": "TOKEN",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Report which exact-text sources apply right now and why the others do not.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:vmscreen/probe",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "probe"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "probe"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Report which exact-text sources apply right now and why the others do not.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "QMP unix socket of the guest (default: $VMSCREEN_QMP). The QEMU command line needs -qmp unix:SOCK,server=on,wait=off. QMP serves ONE client: stop other pollers first.",
+          "dest": "qmp",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/screen/--qmp",
+          "kind": "option",
+          "metavar": "SOCK",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "screen"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp-timeout",
+          "choices": null,
+          "const": null,
+          "default": 10.0,
+          "default_present": true,
+          "description": "Timeout in seconds for every QMP connect/read.",
+          "dest": "qmp_timeout",
+          "effective_default": 10.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp-timeout"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/screen/--qmp-timeout",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 10.0,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "screen"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "A directory BOTH vmscreen and QEMU can read and write (QEMU writes screendump/pmemsave files there). Default: the system temp dir, which is only right when QEMU runs in the same container.",
+          "dest": "dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/screen/--dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "screen"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--out",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "PNG output file.",
+          "dest": "out",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--out"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/screen/--out",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "required": true
+          },
+          "parser_path": [
+            "screen"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Write a PNG of the guest display (QMP screendump).",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:vmscreen/screen",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "screen"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "screen"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Write a PNG of the guest display (QMP screendump).",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "QMP unix socket of the guest (default: $VMSCREEN_QMP). The QEMU command line needs -qmp unix:SOCK,server=on,wait=off. QMP serves ONE client: stop other pollers first.",
+          "dest": "qmp",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--qmp",
+          "kind": "option",
+          "metavar": "SOCK",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp-timeout",
+          "choices": null,
+          "const": null,
+          "default": 10.0,
+          "default_present": true,
+          "description": "Timeout in seconds for every QMP connect/read.",
+          "dest": "qmp_timeout",
+          "effective_default": 10.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp-timeout"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--qmp-timeout",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 10.0,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "A directory BOTH vmscreen and QEMU can read and write (QEMU writes screendump/pmemsave files there). Default: the system temp dir, which is only right when QEMU runs in the same container.",
+          "dest": "dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--keys",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "ret | down,down,ret | ctrl+alt+f2 (comma = successive, plus = chord; QMP qcodes).",
+          "dest": "keys",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--keys"
+          ],
+          "help_group": "KEYS",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--keys",
+          "kind": "option",
+          "metavar": "KEYS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--type",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Type this text (US-layout ASCII; validated before anything is sent).",
+          "dest": "type",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--type"
+          ],
+          "help_group": "KEYS",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--type",
+          "kind": "option",
+          "metavar": "TEXT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--type-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Type the contents of FILE (keeps secrets out of argv).",
+          "dest": "type_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--type-file"
+          ],
+          "help_group": "KEYS",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--type-file",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--delay",
+          "choices": null,
+          "const": null,
+          "default": 0.05,
+          "default_present": true,
+          "description": "Seconds between successive chords.",
+          "dest": "delay",
+          "effective_default": 0.05,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--delay"
+          ],
+          "help_group": "KEYS",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--delay",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 0.05,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--hold-ms",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Key hold time in milliseconds.",
+          "dest": "hold_ms",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--hold-ms"
+          ],
+          "help_group": "KEYS",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--hold-ms",
+          "kind": "option",
+          "metavar": "MS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-unknown-keys",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Do not validate --keys names against the known QEMU qcodes.",
+          "dest": "allow_unknown_keys",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-unknown-keys"
+          ],
+          "help_group": "KEYS",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--allow-unknown-keys",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Send keys (QMP send-key) or type a string into the guest.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:vmscreen/send",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "send"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "send"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Send keys (QMP send-key) or type a string into the guest. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "install, check, or remove this tool's packaged agent skills",
+      "group": "MAINTENANCE",
+      "id": "route:entrypoint:vmscreen/skills",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:vmscreen/skills/install",
+        "route:entrypoint:vmscreen/skills/uninstall",
+        "route:entrypoint:vmscreen/skills/check",
+        "route:entrypoint:vmscreen/skills/list"
+      ],
+      "summary": "install, check, or remove this tool's packaged agent skills",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/skills/check/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/skills/check/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "exit 1 unless every packaged skill is current",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:vmscreen/skills/check",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "check"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "exit 1 unless every packaged skill is current",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/skills/install/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/skills/install/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--overwrite-modified",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "replace skills you modified locally",
+          "dest": "overwrite_modified",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--overwrite-modified"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/skills/install/--overwrite-modified",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "install or update the packaged skills, removing orphans",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:vmscreen/skills/install",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "install"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "install or update the packaged skills, removing orphans [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/skills/list/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/skills/list/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "list packaged skills and their installed state",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:vmscreen/skills/list",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "list"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list packaged skills and their installed state",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/skills/uninstall/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/skills/uninstall/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--overwrite-modified",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "replace skills you modified locally",
+          "dest": "overwrite_modified",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--overwrite-modified"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/skills/uninstall/--overwrite-modified",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "remove the skills this tool installed",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:vmscreen/skills/uninstall",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "uninstall"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "remove the skills this tool installed [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "QMP unix socket of the guest (default: $VMSCREEN_QMP). The QEMU command line needs -qmp unix:SOCK,server=on,wait=off. QMP serves ONE client: stop other pollers first.",
+          "dest": "qmp",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--qmp",
+          "kind": "option",
+          "metavar": "SOCK",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp-timeout",
+          "choices": null,
+          "const": null,
+          "default": 10.0,
+          "default_present": true,
+          "description": "Timeout in seconds for every QMP connect/read.",
+          "dest": "qmp_timeout",
+          "effective_default": 10.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp-timeout"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--qmp-timeout",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 10.0,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "A directory BOTH vmscreen and QEMU can read and write (QEMU writes screendump/pmemsave files there). Default: the system temp dir, which is only right when QEMU runs in the same container.",
+          "dest": "dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--serial-log",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The guest's serial log file (QEMU -serial file:PATH); enables the serial source.",
+          "dest": "serial_log",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--serial-log"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--serial-log",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--source",
+          "choices": [
+            "auto",
+            "vga",
+            "serial"
+          ],
+          "const": null,
+          "default": "auto",
+          "default_present": true,
+          "description": "Exact-text source: auto tries vga then serial.",
+          "dest": "source",
+          "effective_default": "auto",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--source"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--source",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "auto",
+              "vga",
+              "serial"
+            ],
+            "default": "auto"
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-blink-mode",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Decode attribute bit 7 as a bright background instead of blink. QMP cannot read the attribute-controller mode bit, so this is a declared assumption (recorded in the output), not a detection.",
+          "dest": "no_blink_mode",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-blink-mode"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--no-blink-mode",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--from-offset",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).",
+          "dest": "from_offset",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--from-offset"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--from-offset",
+          "kind": "option",
+          "metavar": "BYTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--mark",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Serial source: a token from `vmscreen mark`; like --from-offset, and additionally refuses a log that was truncated or replaced since (inode and first bytes are checked).",
+          "dest": "mark",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--mark"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--mark",
+          "kind": "option",
+          "metavar": "TOKEN",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--tail",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Only the last N lines.",
+          "dest": "tail",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--tail"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--tail",
+          "kind": "option",
+          "metavar": "N",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--cells",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "With --json: per-cell fg/bg/blink (vga-text only).",
+          "dest": "cells",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--cells"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--cells",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Print the console as exact text from the first applicable source (reported); exit 4 when none applies.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:vmscreen/text",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "text"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "text"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Print the console as exact text from the first applicable source (reported); exit 4 when none applies.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Regular expression searched in the whole text (multi-line).",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:vmscreen/wait-text/pattern",
+          "kind": "argument",
+          "metavar": "PATTERN",
+          "minimum_values": 1,
+          "name": "pattern",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "wait-text"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "QMP unix socket of the guest (default: $VMSCREEN_QMP). The QEMU command line needs -qmp unix:SOCK,server=on,wait=off. QMP serves ONE client: stop other pollers first.",
+          "dest": "qmp",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--qmp",
+          "kind": "option",
+          "metavar": "SOCK",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qmp-timeout",
+          "choices": null,
+          "const": null,
+          "default": 10.0,
+          "default_present": true,
+          "description": "Timeout in seconds for every QMP connect/read.",
+          "dest": "qmp_timeout",
+          "effective_default": 10.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qmp-timeout"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--qmp-timeout",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 10.0,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "A directory BOTH vmscreen and QEMU can read and write (QEMU writes screendump/pmemsave files there). Default: the system temp dir, which is only right when QEMU runs in the same container.",
+          "dest": "dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--serial-log",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The guest's serial log file (QEMU -serial file:PATH); enables the serial source.",
+          "dest": "serial_log",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--serial-log"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--serial-log",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--source",
+          "choices": [
+            "auto",
+            "vga",
+            "serial"
+          ],
+          "const": null,
+          "default": "auto",
+          "default_present": true,
+          "description": "Exact-text source: auto tries vga then serial.",
+          "dest": "source",
+          "effective_default": "auto",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--source"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--source",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "auto",
+              "vga",
+              "serial"
+            ],
+            "default": "auto"
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-blink-mode",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Decode attribute bit 7 as a bright background instead of blink. QMP cannot read the attribute-controller mode bit, so this is a declared assumption (recorded in the output), not a detection.",
+          "dest": "no_blink_mode",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--no-blink-mode"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--no-blink-mode",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--from-offset",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).",
+          "dest": "from_offset",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--from-offset"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--from-offset",
+          "kind": "option",
+          "metavar": "BYTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--mark",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Serial source: a token from `vmscreen mark`; like --from-offset, and additionally refuses a log that was truncated or replaced since (inode and first bytes are checked).",
+          "dest": "mark",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--mark"
+          ],
+          "help_group": "SOURCES",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--mark",
+          "kind": "option",
+          "metavar": "TOKEN",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--timeout",
+          "choices": null,
+          "const": null,
+          "default": 60.0,
+          "default_present": true,
+          "description": "Give up after this many seconds.",
+          "dest": "timeout",
+          "effective_default": 60.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--timeout"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--timeout",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 60.0,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--interval",
+          "choices": null,
+          "const": null,
+          "default": 0.5,
+          "default_present": true,
+          "description": "Seconds between polls.",
+          "dest": "interval",
+          "effective_default": 0.5,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--interval"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--interval",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 0.5,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--literal",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Treat PATTERN as a literal string.",
+          "dest": "literal",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--literal"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--literal",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--since-mark",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Serial source: only output written after this command started can match (a previous boot's 'login:' cannot satisfy the wait).",
+          "dest": "since_mark",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--since-mark"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--since-mark",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--accept-unverified",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Also match VGA text whose cross-check against the screendump failed.",
+          "dest": "accept_unverified",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--accept-unverified"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--accept-unverified",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--accept-partial",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Also match VGA text with uncertain cells (shown as U+FFFD).",
+          "dest": "accept_partial",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--accept-partial"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--accept-partial",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Poll until PATTERN (regex) appears in the exact text; exit 3 on timeout.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:vmscreen/wait-text",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "wait-text"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "wait-text"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Poll until PATTERN (regex) appears in the exact text; exit 3 on timeout.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

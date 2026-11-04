@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-34
 title: "_bind unlinks whatever sits at the socket path and silently steals a live daemon's listener; refuse a non-socket and a still-answering peer"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "daemon"
@@ -43,3 +43,5 @@ socket predates it.
 
 A regular file at the socket path refuses with exit 2; a live listener at the path refuses and the original listener
 is still connectable afterwards; a dead socket node is removed and the daemon starts.
+
+FIXED 2026-11-04 (05ea66bda). `SessionServer._clear_control_socket_path` lstat-checks the path (non-socket: `ControlSocketError`, type named, node untouched), makes one bounded `connect()` (a peer that answers: refuse; ECONNREFUSED: remove with a log line; anything else: refuse), and re-checks the inode before the unlink. `cgprofile serve` turns `ControlSocketError` into exit 2. Shutdown unlinks only the node whose (dev, inode) this process bound. Tests (`tests/test_serve.py`): `test_cp34_*` (file, directory, symlink, fifo refused; live daemon not stolen from and still connectable; dead node removed; successor's node left alone; unprovable and swapped nodes refused), `tests/test_cgprofile.py::test_a_socket_path_the_daemon_may_not_bind_refuses_to_start_with_exit_2`.

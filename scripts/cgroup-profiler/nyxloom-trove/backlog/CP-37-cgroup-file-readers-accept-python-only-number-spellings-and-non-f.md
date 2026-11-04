@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-37
 title: "cgroup file readers accept Python-only number spellings (1_000, +5) and non-finite values outside read_pressure; pin the readers to the kernel's decimal grammar"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "metrics"
@@ -35,3 +35,7 @@ similarly accepts `1.5GiB` with a locale-free `float()`, which is intended.
 
 `read_int` of `1_000\n` is `None`; `read_kv` of `high +5` has no `high`; a duplicated key line in `io.stat` is
 dropped while the other device lines are kept.
+
+## Resolution
+
+FIXED 2026-11-04 (2d639675d). `util._kernel_int` pins the three readers to ASCII `[0-9]+` (signed only for `read_int`/`read_kv`); `read_flat_keyed` drops a line with a repeated key. Tests: `tests/test_util.py` (`test_read_int_pins_the_kernel_decimal_grammar`, `test_read_kv_rejects_python_only_spellings_but_keeps_other_keys`, `test_flat_keyed_rejects_python_only_spellings_per_field`, `test_flat_keyed_drops_a_line_with_a_repeated_key`).

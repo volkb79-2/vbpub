@@ -654,6 +654,11 @@ INFLIGHT_SCHEMA = 2
 OWNER_RACE_REPOLLS = 3            # total reads of the record, first included
 OWNER_RACE_PAUSE_SECONDS = 0.5    # -> ~1.0 s across the two extra reads
 
+# RG-117e: the host-PSI pause of an auto-bounded stall clock credits at most
+# this much silence in total, so a budgetless lane under sustained pressure
+# still stalls out instead of waiting forever.
+PRESSURE_PAUSE_MAX_SECONDS = 1800.0
+
 # RG-36: how often the container loop looks at the lane's progress file.
 # 30 s judges a 15-minute stall_timeout to within 3%. What one poll COSTS is
 # a stat(), a full read_text() and a json.loads() of every line — the file is
@@ -2441,6 +2446,11 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
         if name == HOST_ENV and os.environ.get(HOST_IMAGE_ENV_VAR):
             resolved["image"] = os.environ[HOST_IMAGE_ENV_VAR]
             resolved.setdefault("user", f"{os.getuid()}:{os.getgid()}")
+            if "_image_selection" in resolved:
+                # RG-117e: the recorded effective image must be the one the
+                # lane runs, after this override too.
+                resolved["_image_selection"]["effective_image"] = \
+                    resolved["image"]
         return resolved, source
     # Review fix: name the file ACTUALLY searched, never a generic claim —
     # when no root config exists at all, say which root-specific filename the
@@ -4398,8 +4408,16 @@ def _fmt_stall_seconds(value: object) -> str:
         and not isinstance(value, bool) else "-"
 
 
+def record_io_sync(run_record: dict | None) -> str:
+    """RG-136: the I/O mode this invocation's run record carries (strict
+    for a missing record, as legacy history entries were)."""
+    mode = (run_record or {}).get("io_sync")
+    return mode if isinstance(mode, str) else "strict"
+
+
 def print_footprint_line(lane_name: str, project_dir: Path,
-                         resources: dict | None) -> None:
+                         resources: dict | None,
+                         io_sync: str = "strict") -> None:
     """Contract Sec 4.6, line 3 (RG-55/C5). A no-op when THIS invocation
     recorded no resources at all — disabled, or a profile error the
     WARNING line already named; there is nothing to distill a footprint
@@ -4428,13 +4446,23 @@ def print_footprint_line(lane_name: str, project_dir: Path,
     hot_seg = f", hot-set p90 {_fmt_mib(hot)}" \
         if isinstance(hot, (int, float)) and not isinstance(hot, bool) else ""
     store = load_history_store(history_store_path(project_dir))
-    hist_peak = lane_history_report(store, lane_name)["stats"]["passes"][
-        "memory_peak_bytes"]
-    manifest_peak = footprint_manifest_lane_peak_median(
-        load_footprint_manifest(project_dir), lane_name)
-    manifest_seg = f" | manifest {_fmt_mib(manifest_peak)}" \
-        if isinstance(manifest_peak, (int, float)) \
-        and not isinstance(manifest_peak, bool) else ""
+    # RG-136: compare only against runs measured under THIS run's I/O mode.
+    hist_peak = lane_mode_stats(lane_history_report(store, lane_name),
+                                io_sync)["memory_peak_bytes"]
+    manifest = load_footprint_manifest(project_dir)
+    manifest_peak = footprint_manifest_lane_peak_median(manifest, lane_name)
+    manifest_lane = (manifest or {}).get("lanes", {}).get(lane_name)
+    manifest_mode = footprint_manifest_lane_io_sync(manifest_lane) \
+        if isinstance(manifest_lane, dict) else io_sync
+    if manifest_mode != io_sync:
+        manifest_seg = (f" | manifest not comparable (distilled under "
+                        f"io_sync={manifest_mode})"
+                        if manifest_peak is not None else "")
+    else:
+        manifest_seg = f" | manifest {_fmt_mib(manifest_peak)}" \
+            if isinstance(manifest_peak, (int, float)) \
+            and not isinstance(manifest_peak, bool) else ""
+    mode_seg = f", io_sync={io_sync}" if io_sync != "strict" else ""
     # S1 + RW-46b: the SAME two caveats `_fmt_footprint_row`/`doctor`
     # already print, here on the LIVE per-run line — read far more often
     # than `footprint --write`'s own table (round-1 review S1).
@@ -4460,8 +4488,8 @@ def print_footprint_line(lane_name: str, project_dir: Path,
          f"{over_seg}, p90 {_fmt_mib(mem.get('p90_bytes'))}, "
          f"{_fmt_cores(cpu.get('cores_avg'))} cores avg, "
          f"{stall_seg}{hot_seg}; history median peak "
-         f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs)"
-         f"{manifest_seg}{source_note}{floor_note}", flush=True)
+         f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs"
+         f"{mode_seg}){manifest_seg}{source_note}{floor_note}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -4808,7 +4836,10 @@ def slice_cgroupfs_dir(slice_name: str) -> Path:
     parts = stem.split("-")
     if len(parts) == 1:
         return Path(f"{stem}.slice")
-    return Path("/".join(p + ".slice" for p in parts[:-1])) / slice_name
+    # RG-117c: every ancestor is the cumulative dash prefix (the parent of
+    # `a-b-c.slice` is `a-b.slice`, not `b.slice`).
+    ancestors = ["-".join(parts[:n]) + ".slice" for n in range(1, len(parts))]
+    return Path("/".join(ancestors)) / slice_name
 
 
 def check_slice_memory_admission(lane: dict, lane_name: str,
@@ -4840,7 +4871,9 @@ def check_slice_memory_admission(lane: dict, lane_name: str,
 
     max_raw = _read("memory.max")
     cur_raw = _read("memory.current")
-    if max_raw is None or max_raw == "max":
+    # RG-117e: anything but ASCII digits (`max`, an empty or garbled file) is
+    # "no derivable ceiling"; a bare int() on it raised ValueError.
+    if max_raw is None or not (max_raw.isascii() and max_raw.isdigit()):
         # RG-55/C7: name WHY when the reason is a private cgroup namespace
         # (this devcontainer's own default) rather than leave a reader to
         # guess between "wrong path" and "structurally unreachable from
@@ -4855,11 +4888,11 @@ def check_slice_memory_admission(lane: dict, lane_name: str,
                    f"doctor's own 'profiler' check, RG-55/C7)")
         print(f"run-gate: admission WARNING: no derivable memory ceiling for "
               f"slice {slice_name} ({sl_dir}/memory.max "
-              f"{'absent' if max_raw is None else '= max'}; export "
+              f"{'absent' if max_raw is None else '= ' + (max_raw or 'empty')}; export "
               f"${CGROUPFS_ROOT_ENV_VAR} if the host cgroupfs hides here)"
               f"{why} — admission by shared-infra rules only", flush=True)
         return
-    if cur_raw is None or not cur_raw.isdigit():
+    if cur_raw is None or not (cur_raw.isascii() and cur_raw.isdigit()):
         print(f"run-gate: admission WARNING: slice {slice_name} current usage "
               f"unreadable ({sl_dir}/memory.current) — admission by shared-infra "
               f"rules only", flush=True)
@@ -7159,13 +7192,33 @@ def _lane_stats(entries: list[dict]) -> dict:
     return stats
 
 
+def history_io_sync(entry: dict) -> str:
+    """RG-136: the I/O mode a history entry was measured under. Legacy
+    entries without the key were strict; a non-string value is `unknown`."""
+    mode = entry.get("io_sync", "strict")
+    return mode if isinstance(mode, str) else "unknown"
+
+
+def lane_mode_stats(report: dict, io_sync: str,
+                    kind: str = "passes") -> dict:
+    """RG-136: statistics of ONE I/O mode (`passes` or `completed`) from a
+    `lane_history_report`; empty statistics when that mode has no entries.
+    Policy consumers read this, never the combined `stats.passes`."""
+    by_mode = report["stats"].get("by_io_sync", {})
+    return (by_mode.get(io_sync) or {}).get(kind) or _lane_stats([])
+
+
+def footprint_manifest_lane_io_sync(lane_entry: dict) -> str:
+    """RG-136: the mode a manifest lane entry was distilled under. An entry
+    without a mode predates this field and is treated as strict."""
+    mode = lane_entry.get("io_sync")
+    return mode if isinstance(mode, str) else "strict"
+
+
 def lane_history_report(store: dict, lane_name: str) -> dict:
     slot = store.get("lanes", {}).get(lane_name) or {}
     hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
     passes = [e for e in hist if e.get("outcome") == "pass"]
-    def history_io_sync(entry: dict) -> str:
-        mode = entry.get("io_sync", "strict")
-        return mode if isinstance(mode, str) else "unknown"
 
     by_io_sync = {}
     for io_sync in sorted({history_io_sync(e) for e in hist}):
@@ -7386,17 +7439,27 @@ def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
 
 def build_footprint_manifest(store: dict, lanes: dict, keep: int,
                              from_commit: str | None, *,
-                             include_failed: bool = False) -> dict:
+                             include_failed: bool = False,
+                             io_modes: dict | None = None) -> dict:
     """Distill completed profiled runs, with FAIL added only on opt-in.
 
     A failed measurement must have completed, be history-eligible, and carry
     a resource profile. Budget stops, aborts, infrastructure errors, dirty
     runs and unprofiled failures never become measurements.
+
+    RG-136: each lane is distilled from ONE I/O mode only and records it as
+    `io_sync`. `io_modes` maps lane -> the mode its policy selects; a lane
+    not named there uses the mode of its most recent profiled measurement.
     """
     lanes_out: dict = {}
     for name in sorted(lanes):
         slot = store.get("lanes", {}).get(name) or {}
-        hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+        all_hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+        mode = (io_modes or {}).get(name)
+        if mode is None:
+            profiled = [e for e in all_hist if e.get("resources") is not None]
+            mode = history_io_sync(profiled[-1]) if profiled else "strict"
+        hist = [e for e in all_hist if history_io_sync(e) == mode]
         eligible = [e for e in hist
                     if e.get("history_eligible", True) is True]
         passes = [e for e in eligible if e.get("outcome") == "pass"]
@@ -7422,6 +7485,7 @@ def build_footprint_manifest(store: dict, lanes: dict, keep: int,
         lane_out = {
             "runs": len(passes) + (len(failures) if include_failed else 0),
             "completed_runs": len(hist),
+            "io_sync": mode,
             "scope": scope,
             "method": method,
             "source": source,
@@ -7542,8 +7606,26 @@ def cmd_footprint(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
     store = load_history_store(store_path)
     selected_names = merge_lanes or ([lane_name] if lane_name else sorted(lanes))
     selected = {name: lanes[name] for name in selected_names}
+    # RG-136: the mode each lane's policy selects (no command-line override
+    # exists on this verb). A sequence aggregate has no policy of its own and
+    # a lane whose settings do not resolve is left to the history fallback.
+    io_modes: dict = {}
+    for name, lane in selected.items():
+        if lane.get("kind") == "sequence" or "environment" not in lane:
+            continue
+        try:
+            env, _src = resolve_environment(
+                lane, name, cfg, central, cfg_path, central_path)
+            env_declaration = declared_environment(lane, cfg, central)
+            settings, _sources = resolve_resource_settings(
+                lane, cfg, central, env_declaration,
+                mode=env.get("mode", env_declaration.get("mode", "host")))
+        except GateError:
+            continue
+        io_modes[name] = settings["io_sync"]
     manifest = build_footprint_manifest(
-        store, selected, keep, from_commit, include_failed=include_failed)
+        store, selected, keep, from_commit, include_failed=include_failed,
+        io_modes=io_modes)
     manifest_path = footprint_manifest_path(project_dir)
     if write and merge_lanes:
         existing = load_footprint_manifest(project_dir)
@@ -7608,6 +7690,16 @@ def lane_command_argv(lane: dict, worktree: Path,
         declared = [item.replace(WORKERS_TOKEN, str(selection["workers"]))
                     for item in declared]
     return [*declared, *lane.get("_request_args", [])]
+
+
+def env_flags_by_name(values: dict[str, str],
+                      carrier: dict[str, str]) -> list[str]:
+    """RG-117a: `-e KEY` flags whose VALUES travel in the docker client's own
+    environment, never on its argv (`/proc/<pid>/cmdline` is world-readable
+    for the life of `docker run`/`docker exec`). The values are recorded in
+    `carrier`; callers hand `{**os.environ, **carrier}` to the subprocess."""
+    carrier.update(values)
+    return [arg for key in values for arg in ("-e", key)]
 
 
 def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
@@ -8093,12 +8185,30 @@ def save_container_logs(docker: str, name: str,
         combined = grabbed.stdout + grabbed.stderr
         if grabbed.returncode != 0 and not combined.strip():
             return None
+        own_dir = target is None
         target = target or evidence_dir() / f"{name}.log"
-        target.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # Review fix: container logs may echo credential material the suite
-        # exercised — owner-only, never world-readable.
-        target.write_text(combined)
-        target.chmod(0o600)
+        # exercised — owner-only, never world-readable. RG-117b: the mode is
+        # set AT creation (no world-readable window), a symlink planted at the
+        # predictable leaf is refused (O_NOFOLLOW), and a file or directory
+        # owned by someone else is refused rather than written into.
+        if target.parent.stat().st_uid != os.geteuid():
+            return None
+        if own_dir:
+            # mkdir(mode=) does not tighten an already-existing directory.
+            os.chmod(target.parent, 0o700)
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            if os.fstat(fd).st_uid != os.geteuid():
+                return None
+            os.ftruncate(fd, 0)
+            os.fchmod(fd, 0o600)
+            view = memoryview(combined.encode("utf-8", errors="replace"))
+            while view:  # os.write may be partial on a large log
+                view = view[os.write(fd, view):]
+        finally:
+            os.close(fd)
         return target
     except OSError:
         return None
@@ -10666,8 +10776,12 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             man_median = (man_lane.get("memory_peak_bytes") or {}).get("median")
             if not isinstance(man_median, (int, float)) or man_median <= 0:
                 continue
-            live_median = lane_history_report(fp_store, name)["stats"][
-                "passes"]["memory_peak_bytes"]["median"]
+            # RG-136: compare against live history of the MANIFEST ENTRY's
+            # own I/O mode (a legacy entry without one is strict).
+            live_median = lane_mode_stats(
+                lane_history_report(fp_store, name),
+                footprint_manifest_lane_io_sync(man_lane)
+            )["memory_peak_bytes"]["median"]
             if not isinstance(live_median, (int, float)):
                 continue
             drift_pct = abs(live_median - man_median) / man_median * 100
@@ -10678,6 +10792,16 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                        f"vs manifest {_fmt_mib(man_median)} "
                        f"({drift_pct:.0f}% > {tol_pct}% tolerance) — re-run "
                        f"'{PROG} footprint --write'")
+        legacy_mode_lanes = [
+            name for name in sorted(manifest.get("lanes", {}))
+            if isinstance(manifest["lanes"][name], dict)
+            and "io_sync" not in manifest["lanes"][name]]
+        if legacy_mode_lanes:
+            record("INFO", "footprint manifest io_sync",
+                   f"{', '.join(legacy_mode_lanes)}: no io_sync recorded "
+                   f"(written before per-mode manifests) — treated as "
+                   f"strict; migrate by re-running '{PROG} footprint "
+                   f"--write'")
         if manifest.get("lanes") and not drifted:
             record("OK", "footprint drift",
                    f"{len(manifest['lanes'])} lane(s) within {tol_pct}% of "
@@ -11740,10 +11864,9 @@ def junit_outcomes(path: Path) -> dict[str, str] | None:
 
 
 def workers_entry_is_clean(entry: dict) -> bool:
-    """SEAM for RG-144: the contamination rule owns this decision. Until it
-    lands, an entry is clean unless it already carries a flagged
-    `contamination` object. Every workers sizing basis reads entries only
-    through this function."""
+    """RG-144: an entry is clean unless it carries a flagged `contamination`
+    object (written by `classify_contamination`). Every workers sizing basis
+    reads entries only through this function."""
     contamination = entry.get("contamination")
     return not (isinstance(contamination, dict)
                 and contamination.get("flagged"))
@@ -12000,6 +12123,12 @@ def prepare_workers_run(lane: dict, record: dict, project_dir: Path,
     directory = (history_dir(project_dir) / WORKERS_PROFILE_SUBDIR
                  / record["run_id"])
     directory.mkdir(parents=True, exist_ok=True)
+    try:
+        # The lane user inside the container can differ from the invoking
+        # uid (RG-150/151/153); the profile directory must stay writable.
+        os.chmod(directory, 0o777)
+    except OSError:
+        pass
     extra = [os.environ.get("PYTEST_ADDOPTS", "")]
     junit = directory / "junit.xml" if options.get("junit") else None
     if junit is not None:
@@ -12115,7 +12244,7 @@ def strip_cli_options(arguments: list[str]) -> list[str]:
 
 
 def record_contaminated(record: dict | None) -> bool:
-    """SEAM for RG-144: whether a step's measurement is contaminated."""
+    """Whether a step's measurement is contaminated (RG-144)."""
     return bool(record) and not workers_entry_is_clean(record)
 
 
@@ -12259,6 +12388,9 @@ def run_workers_measurement(args: argparse.Namespace, lane: dict,
         return LaneResult("FAIL", None, XDIST_ISOLATION_REASON,
                           _lane_name=args.lane)
     if any(row["contaminated"] for row in rows):
+        print("run-gate: INCONCLUSIVE/scaling-contaminated: a step ran under "
+              "contention; the numbers are not a measurement (exit 1 is the "
+              "closed table's FAIL, the reason says inconclusive)", flush=True)
         return LaneResult("FAIL", None, "scaling-contaminated",
                           _lane_name=args.lane)
     if not args.scaling:
@@ -12266,6 +12398,7 @@ def run_workers_measurement(args: argparse.Namespace, lane: dict,
             print("run-gate: no per-test junit outcomes were produced (does "
                   "the lane run pytest?) or N=1 was the only step; no parity "
                   "proof stored", flush=True)
+            print("run-gate: INCONCLUSIVE/no-parity-evidence", flush=True)
             return LaneResult("FAIL", None, "no-parity-evidence",
                               _lane_name=args.lane)
         path = store_xdist_parity(
@@ -12439,7 +12572,8 @@ def _closeout_record(status: str, reason: str | None = None, **fields) -> dict:
         raise ValueError(f"unknown closeout status {status!r}")
     record = {"status": status, "reason": reason, "analysis_status": None,
               "analysis_exit": None, "json_path": None, "text_path": None,
-              "json_sha256": None, "text_sha256": None}
+              "json_sha256": None, "text_sha256": None,
+              "coverage_status": None, "coverage_path": None}
     record.update(fields)
     return record
 
@@ -12669,6 +12803,29 @@ def collect_assay_closeout(lane: dict, lane_name: str, run_id: str,
             retained[suffix] = str(target)
         fields["json_path"] = retained["json"]
         fields["text_path"] = retained["txt"]
+        # RG-139: the analysis says whether it re-verified the lane's coverage
+        # artifact; when it did, keep that exact artifact as run evidence.
+        cov_doc = (document or {}).get("coverage")
+        cov_status = (cov_doc.get("artifact_status")
+                      if isinstance(cov_doc, dict) else None)
+        fields["coverage_status"] = cov_status if isinstance(
+            cov_status, str) else None
+        declared = assay_closeout_coverage_artifact(lane)
+        if cov_status == "parsed_and_reverified_r1" and declared:
+            content, cov_problem = _read_closeout_artifact(
+                verdict_path.parent.parent / declared,
+                ASSAY_CLOSEOUT_MAX_BYTES)
+            if content:
+                target = directory_out / f"{run_id}.coverage.json"
+                out_fd = os.open(
+                    target,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                    0o600)
+                with os.fdopen(out_fd, "wb") as stream:
+                    stream.write(content)
+                fields["coverage_path"] = str(target)
+            elif cov_problem is not None:
+                fields["coverage_status"] = f"{cov_status} (not retained: {cov_problem})"
     except OSError as exc:
         return _closeout_record(
             "retention_error",
@@ -12689,9 +12846,15 @@ def report_assay_closeout(closeout: dict, result: "LaneResult") -> None:
     lane_part = (f"lane verdict {result.verdict} (exit {result.exit_code}) "
                  f"is unchanged")
     if status in ("complete", "incomplete"):
+        # RG-139: say what happened to the coverage artifact instead of
+        # leaving `coverage_not_reverified` unexplained.
+        cov = closeout.get("coverage_status")
+        cov_part = f"; coverage artifact {cov}" if cov else ""
+        if closeout.get("coverage_path"):
+            cov_part += f" (retained {closeout['coverage_path']})"
         print(f"{PROG}: assay closeout: campaign {status} (analysis only; "
               f"{lane_part}); json {closeout['json_path']}, "
-              f"text {closeout['text_path']}", flush=True)
+              f"text {closeout['text_path']}{cov_part}", flush=True)
         return
     where = (f"; retained json {closeout['json_path']}, "
              f"text {closeout['text_path']}" if closeout["json_path"] else "")
@@ -12705,8 +12868,17 @@ def finish_assay_closeout(lane: dict, lane_name: str, record: dict | None,
                           verdict_document: dict | None) -> dict:
     """Collect, record and disclose the closeout. NEVER raises and NEVER
     returns anything that could replace `result`: the caller keeps its own
-    LaneResult and this only attaches the closeout to the run record."""
-    run_id = (record.get("run_id") if record else None) or secrets.token_hex(16)
+    LaneResult and this only attaches the closeout to the run record.
+
+    RG-115: a follower's record is disowned (`_flushed`); the OWNING client
+    collects and records the closeout, so a follower neither reads the
+    owner's `.assay/campaign-*` files nor retains a second copy."""
+    if record is not None and record.get("_flushed"):
+        print(f"{PROG}: assay closeout: the owning client records it",
+              flush=True)
+        return _closeout_record("not_applicable",
+                                "the owning client records the closeout")
+    run_id =(record.get("run_id") if record else None) or secrets.token_hex(16)
     try:
         closeout = collect_assay_closeout(
             lane, lane_name, run_id, commit, verdict_path, result,
@@ -13549,7 +13721,8 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     if closeout_commit:
         parts.append(assay_closeout_group(
             lane, run_text, command, closeout_commit, progress,
-            verdict, state_dir, request_base))
+            verdict, state_dir, request_base,
+            assay_closeout_coverage_artifact(lane)))
     else:
         parts.append(run_text)
     return " && ".join(parts)
@@ -13560,9 +13733,27 @@ def assay_closeout_rel(assay_lane: str, suffix: str) -> str:
     return f".assay/campaign-{assay_lane}.{suffix}"
 
 
+def assay_closeout_coverage_artifact(lane: dict) -> str | None:
+    """RG-139: the lane-declared R1 coverage artifact (project-relative), read
+    from the Assay inventory entry -- never guessed. `assay analyze campaign
+    --coverage` refuses any path but the declared one, so only the declared
+    text is ever forwarded; anything not a plain relative path is dropped."""
+    inventory = lane.get("_assay_inventory")
+    entry = inventory.get("entry") if isinstance(inventory, dict) else None
+    coverage = entry.get("coverage") if isinstance(entry, dict) else None
+    artifact = coverage.get("artifact") if isinstance(coverage, dict) else None
+    if not isinstance(artifact, str) or not artifact:
+        return None
+    path = PurePosixPath(artifact)
+    if path.is_absolute() or ".." in path.parts or "\n" in artifact:
+        return None
+    return artifact
+
+
 def assay_closeout_group(lane: dict, run_text: str, command: str,
                          commit: str, progress: str, verdict: str,
-                         state_dir: Path, request_base: str | None) -> str:
+                         state_dir: Path, request_base: str | None,
+                         coverage_artifact: str | None = None) -> str:
     """The last element of an assay inner when a closeout is requested.
 
     One brace group so an earlier setup failure short-circuits the whole
@@ -13584,6 +13775,22 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
     rel = {s: shlex.quote(assay_closeout_rel(lane_name, s))
            for s in ASSAY_CLOSEOUT_SUFFIXES}
     q = shlex.quote
+    # RG-139: forward the lane's declared coverage artifact so the analyzer can
+    # re-verify R1 (without it: `coverage_not_reverified`, never `complete`).
+    # Only when the verdict exists (the analyzer refuses --coverage without
+    # one), the artifact file exists, and the judge's `analyze campaign`
+    # knows `--coverage` (feature-detected from its help, so an older judge
+    # keeps the pre-RG-139 closeout instead of an argparse refusal). Every
+    # other case leaves the argument out and the analysis reports
+    # `coverage.artifact_status` itself, which the host discloses.
+    coverage_step = ""
+    if coverage_artifact:
+        cov = q(coverage_artifact)
+        coverage_step = (
+            f"if [ -f {q(verdict)} ] && [ -f {cov} ]; then "
+            f"__rg_co_h=$({command} analyze campaign --help 2>&1); "
+            'case "$__rg_co_h" in *--coverage*) '
+            f"__rg_co_a+=(--coverage {cov});; esac; fi; ")
     base_args = ["analyze", "campaign", lane_name, "--file", "assay.toml",
                  "--expected-commit", commit, "--progress", progress,
                  "--state-dir", str(state_dir)]
@@ -13628,6 +13835,7 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
         + left + gate_open +
         "__rg_co_t=(); if command -v timeout >/dev/null 2>&1; then "
         f"__rg_co_t=(timeout {cap}); fi; "
+        + coverage_step +
         f"{run_one} json >{rel['json']} 2>{rel['err']}; __rg_co_j=$?; "
         f"if [ \"$__rg_co_j\" -eq 124 ]; then __rg_co_x=124; "
         f"printf 'closeout analysis timed out after %s s; text rendering "
@@ -13636,6 +13844,17 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
         f"printf '%s %s\\n' \"$__rg_co_j\" \"$__rg_co_x\" >{rel['exit']}; "
         + gate_close +
         'exit "$rc"; }')
+
+
+def passwd_entry_guard() -> str:
+    """RG-118 (RG-106 oracle 5): the shell prefix of a lane that runs as an
+    explicit `user`. A uid with no passwd entry makes git and pip fail with
+    `unable to look up current user`; name the real cause and refuse with exit
+    2 instead. Skipped (not failed) when the image has no `getent` at all."""
+    return ('{ command -v getent >/dev/null 2>&1 && ! getent passwd '
+            '"$(id -u)" >/dev/null && { echo "run-gate: uid $(id -u) has no '
+            'passwd entry in the image; git and pip fail obscurely without '
+            'one" >&2; exit 2; }; true; }')
 
 
 def build_command_inner(lane: dict, worktree: Path,
@@ -14254,6 +14473,7 @@ class ProgressWatch:
         paused = self._paused_total
         if self._pause_started is not None:
             paused += max(0.0, now - self._pause_started)
+        paused = min(paused, PRESSURE_PAUSE_MAX_SECONDS)
         return max(0.0, now - self._token_at - paused)
 
     def _update_pressure_pause(self, now: float) -> None:
@@ -15059,7 +15279,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     stalled = terminal_daemon_kill(profile_result["resources"])
                 print_profile_warning(profiler)
                 print_footprint_line(lane_name, project_dir,
-                                     profile_result["resources"])
+                                     profile_result["resources"],
+                                     record_io_sync(run_record))
                 if run_record is not None:
                     run_record["resources"] = profile_result["resources"]
                     run_record["profile_error"] = profile_result["profile_error"]
@@ -15661,6 +15882,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                               closeout_commit=head_commit(worktree)) \
         if lane["kind"] == "assay" \
         else build_command_inner(lane, worktree, request_base)
+    if env.get("user"):
+        inner = passwd_entry_guard() + " && " + inner
     name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
     argv = [docker, "run", "-d", "--name", name, "--init",
             "--cgroup-parent", slice_name,
@@ -15679,18 +15902,21 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # container writes into a bind-mounted, already-host-owned path
         # (__pycache__, coverage.json, ...) a permission-denied write.
         argv += ["--user", env["user"]]
-    for key in env.get("forward_env", []):
-        value = os.environ.get(key)
-        if value:  # empty string counts as ABSENT — matches log_forwarded_env
-            argv += ["-e", f"{key}={value}"]
-    for key, value in resource_env.items():
-        argv += ["-e", f"{key}={value}"]
+    # RG-117a: values ride in the docker client's environment, not its argv.
+    docker_env_values: dict[str, str] = {}
+    forwarded_values = {key: os.environ[key] for key in env.get("forward_env", [])
+                        if os.environ.get(key)}  # empty counts as ABSENT
+    argv += env_flags_by_name(forwarded_values, docker_env_values)
+    # run-gate facts are not secrets, but PYTEST_ADDOPTS is operator free
+    # text: names on argv, values in the client environment (RG-117a).
+    argv += env_flags_by_name(resource_env, docker_env_values)
     # RG-55/contract Sec 4.1: the token is appended in the SAME position as
     # `forward_env` values, immediately after that loop — `enabled = false`
     # (or the test-only kill switch) means no token at all, not an empty one.
     profiling = bool(profile_plan and profile_plan["enabled"])
     if profiling:
-        argv += ["-e", f"{PROFILE_TOKEN_ENV}={profile_plan['token']}"]
+        argv += env_flags_by_name(
+            {PROFILE_TOKEN_ENV: profile_plan["token"]}, docker_env_values)
     mem_cap = lane.get("resources", {}).get("memory") or lane.get("memory")
     if mem_cap:
         argv += ["--memory", mem_cap]
@@ -15757,7 +15983,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         lane, lane_name, project_dir, worktree, docker, profile_plan,
         "container") if profiling else None)
     try:
-        started = subprocess.run(argv, capture_output=True, text=True)
+        started = subprocess.run(argv, capture_output=True, text=True,
+                                 env={**os.environ, **docker_env_values})
     finally:
         if preload_file is not None:
             preload_file.close()
@@ -16033,18 +16260,21 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     argv = [docker, "exec", "--workdir", str(repo)]
     # Infrastructure variables are implicit; project data inputs must be
     # declared on the environment so every consumer gets the same contract.
-    for key in (CGROUP_ENV_VAR, *env.get("forward_env", [])):
-        value = os.environ.get(key)
-        if value:
-            argv += ["-e", f"{key}={value}"]
+    # RG-117a: values ride in the docker client's environment, not its argv.
+    docker_env_values: dict[str, str] = {}
+    if os.environ.get(CGROUP_ENV_VAR):
+        argv += ["-e", f"{CGROUP_ENV_VAR}={os.environ[CGROUP_ENV_VAR]}"]
+    argv += env_flags_by_name(
+        {key: os.environ[key] for key in env.get("forward_env", [])
+         if os.environ.get(key)}, docker_env_values)
     resource_env = {**resource_forwarded_env(resource_settings or {}, "exec"),
                     **lane_workers_env(lane)}
-    for key, value in resource_env.items():
-        argv += ["-e", f"{key}={value}"]
+    argv += env_flags_by_name(resource_env, docker_env_values)
     # RG-55/contract Sec 4.1: same position, same rule as the ephemeral path.
     profiling = bool(profile_plan and profile_plan["enabled"])
     if profiling:
-        argv += ["-e", f"{PROFILE_TOKEN_ENV}={profile_plan['token']}"]
+        argv += env_flags_by_name(
+            {PROFILE_TOKEN_ENV: profile_plan["token"]}, docker_env_values)
     if lane.get("budget"):
         # `docker exec` disconnecting does not reliably stop the in-container
         # child, so the bound must be enforced inside the persistent runner.
@@ -16159,7 +16389,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 placement_barrier_shell_argv(
                     argv[exec_command_index:], barrier_nonce))
             barrier_argv.insert(2, "-i")
-            proc = spawn_placement_barrier(barrier_argv, barrier_nonce)
+            proc = spawn_placement_barrier(
+                barrier_argv, barrier_nonce,
+                env={**os.environ, **docker_env_values})
         try:
             profiler_state = start_lane_profiling(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
@@ -16316,7 +16548,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 fallback_watch is not None else None)
         if proc is None:
             proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, bufsize=0)
+                                    stderr=subprocess.STDOUT, bufsize=0,
+                                    env={**os.environ, **docker_env_values})
         else:
             # This process exists only when the placement path already set
             # its nonce and held the wrapper at the ready barrier.
@@ -16430,6 +16663,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                         f"profiling tick failed unexpectedly: {exc}"
         output_tee.join()
     finally:
+      # RG-114: like await_container's finally (RG-109), a second SIGTERM
+      # while the profiling stop runs is deferred until the record is cleared.
+      with deferred_sigterm():
         if stdin_forwarder is not None:
             stdin_forwarder.close()
         if daemon_watch is not None:
@@ -16446,7 +16682,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             if stalled is None:
                 stalled = terminal_daemon_kill(profile_result["resources"])
             print_profile_warning(profiler_state)
-            print_footprint_line(lane_name, project_dir, profile_result["resources"])
+            print_footprint_line(lane_name, project_dir, profile_result["resources"],
+                                 record_io_sync(run_record))
             if run_record is not None:
                 run_record["resources"] = profile_result["resources"]
                 run_record["profile_error"] = profile_result["profile_error"]
@@ -16916,7 +17153,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             if stalled is None:
                 stalled = terminal_daemon_kill(profile_result["resources"])
             print_profile_warning(profiler_state)
-            print_footprint_line(lane_name, project_dir, profile_result["resources"])
+            print_footprint_line(lane_name, project_dir, profile_result["resources"],
+                                 record_io_sync(run_record))
             if run_record is not None:
                 run_record["resources"] = profile_result["resources"]
                 run_record["profile_error"] = profile_result["profile_error"]
@@ -18819,6 +19057,17 @@ def main(argv: list[str] | None = None) -> int:
                   file=sys.stderr, flush=True)
             result = LaneResult(
                 "ERROR", reason="interrupted-before-a-closed-result")
+        except Exception as exc:
+            # RG-117d: an uncaught bug is an infrastructure ERROR (exit 2),
+            # never Python's traceback status 1, which is the lane FAIL code.
+            import traceback
+            traceback.print_exc()
+            print(f"{PROG}: unexpected {type(exc).__name__}: {exc}; "
+                  "verdict ERROR, exit 2", file=sys.stderr, flush=True)
+            result = LaneResult(
+                "ERROR",
+                reason=f"unexpected-exception: {type(exc).__name__}: {exc}",
+                _json="--json" in option_argv)
         return finish(result)
     finally:
         if previous_sigterm is not None:

@@ -532,7 +532,7 @@ def test_human_branch_prune_reports_ignored_errors_and_dispositions(
 
 class TestCapabilitiesDispatch:
     def test_capabilities_json_dispatch(self, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "argv", ["ciu", "capabilities", "--json"])
+        monkeypatch.setattr(sys, "argv", ["ciu", "schema", "capabilities", "--json"])
         with pytest.raises(SystemExit) as exc:
             cli.main()
         assert exc.value.code == 0
@@ -554,7 +554,7 @@ class TestCapabilitiesDispatch:
         ]
 
     def test_capabilities_prose_dispatch(self, monkeypatch, capsys):
-        monkeypatch.setattr(sys, "argv", ["ciu", "capabilities"])
+        monkeypatch.setattr(sys, "argv", ["ciu", "schema", "capabilities"])
         with pytest.raises(SystemExit) as exc:
             cli.main()
         assert exc.value.code == 0

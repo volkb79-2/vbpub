@@ -157,6 +157,25 @@ grep -qF 'buildkitd.toml.in' "$INSTALL_SH" \
   || fail "install.sh never renders buildkitd.toml.in"
 pass "managed BuildKit TOML renders its configured solver parallelism"
 
+# The Docker API socket is a child of a directory bind-mounted by devcontainers.
+# Socket restarts may replace that child, but must not replace its parent inode.
+DOCKER_API_SOCKET_UNIT="$HERE/units/docker-api-socket.conf"
+grep -qxF 'ExecStartPre=/bin/mkdir -p /run/docker-api' "$DOCKER_API_SOCKET_UNIT" \
+  || fail "Docker API socket unit does not idempotently ensure its directory"
+grep -qxF 'ExecStartPre=/bin/chown root:docker /run/docker-api' "$DOCKER_API_SOCKET_UNIT" \
+  || fail "Docker API socket unit does not repair directory ownership in place"
+grep -qxF 'ExecStartPre=/bin/chmod 0750 /run/docker-api' "$DOCKER_API_SOCKET_UNIT" \
+  || fail "Docker API socket unit does not repair directory mode in place"
+DOCKER_API_DIRECTORY_REMOVAL='(^|[=;/[:space:]])(/bin/)?(rm|rmdir)([[:space:]]+-[^[:space:]]+)*[[:space:]]+/run/docker-api([[:space:];]|$)'
+if grep -Eq "$DOCKER_API_DIRECTORY_REMOVAL" "$DOCKER_API_SOCKET_UNIT"; then
+  fail "Docker API socket unit removes the directory that devcontainers bind-mount"
+fi
+grep -qF 'umount -l /run/docker-api/docker.sock' "$DOCKER_API_SOCKET_UNIT" \
+  || fail "Docker API socket unit does not confine stale-mount cleanup to the socket entry"
+grep -qF '"source=/run/docker-api,target=/run/docker-api,type=bind"' "$HERE/../templates/devcontainer.json" \
+  || fail "MDT devcontainer no longer bind-mounts the stable Docker API directory"
+pass "Docker API socket restart preserves the directory bind mount and replaces only its socket entry"
+
 # Rootless BuildKit creates its socket with the mapped user's gid, so the
 # directory's group alone is not authoritative. Keep the parent writable only
 # while BuildKit binds, then seal it before root changes socket permissions.

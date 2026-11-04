@@ -131,15 +131,15 @@ SPEC §9.
 | RG-111 | the 24.1.0 release gate runs with the R2 mutation campaign waived (operator) | Medium | OPEN (the waiver is the item) |
 | RG-112 | `git gc` inside a narrow lane container fails: reflog expiry locks sibling worktrees' read-only admin dirs | Low | BY DESIGN, DOCUMENTED 2026-10-27 |
 | RG-113 | the B108 closeout cap was half of the remaining budget per call, and there are two calls | Medium | FIXED IN CANDIDATE 2026-10-27 (`81a7d3ee5`) |
-| RG-114 | the exec-lane cleanup has no SIGTERM deferral | Low | OPEN 2026-10-27 |
-| RG-115 | a follower still collects the Assay closeout (duplicate evidence, spurious `unavailable` WARNING) | Low | OPEN 2026-10-27 |
-| RG-116 | diff-coverage gate candidates from the 2026-10-27 audit (no-newline marker, `--allow-first-release` in the lane, single `--source`, `+++` content line, git colour/ext-diff, continuation lines) | High | items 1 and 5 FIXED IN CANDIDATE 2026-10-28; 2, 3, 4, 6 OPEN |
-| RG-117 | admission / runtime candidates from the 2026-10-27 audit (inspect race, secret values on argv, `save_container_logs` symlink window, slice nesting, uncaught exceptions exit 1, ticket resume by name) | Medium | OPEN, unverified candidates |
-| RG-118 | RG-106 oracle 5: refuse an image with no passwd entry for the resolved `user` uid | Low | OPEN 2026-10-27 (design in entry) |
+| RG-114 | the exec-lane cleanup has no SIGTERM deferral | Low | FIXED 2026-11-04 (4568a5340) |
+| RG-115 | a follower still collects the Assay closeout (duplicate evidence, spurious `unavailable` WARNING) | Low | FIXED 2026-11-04 (1b5ecf768) |
+| RG-116 | diff-coverage gate candidates from the 2026-10-27 audit (no-newline marker, `--allow-first-release` in the lane, single `--source`, `+++` content line, git colour/ext-diff, continuation lines) | High | FIXED 2026-11-04 (3fea77a5b; items 1, 2 and 5 earlier, in 24.3.0) |
+| RG-117 | admission / runtime candidates from the 2026-10-27 audit (inspect race, secret values on argv, `save_container_logs` symlink window, slice nesting, uncaught exceptions exit 1, ticket resume by name) | Medium | FIXED 2026-11-04 (4568a5340, bdc80a4d2); relative `RUN_GATE_EXTRA_MOUNTS` hypothesis closed as not reproducible |
+| RG-118 | RG-106 oracle 5: refuse an image with no passwd entry for the resolved `user` uid | Low | FIXED 2026-11-04 (4568a5340) |
 | RG-119 | docs-vs-code drift remainder from the 2026-10-28 audit (anchors, LANE-AUTHORING TODO table, history example, host paths, versions, `--lock-wait`, `exit_map`, `members`, `load_config`) | Low | OPEN 2026-10-28 |
 | RG-120 | the a245908 R2 follow-up remains nonqualifying: one current-source candidate crashed during process-tree cleanup; two survivors have new oracles but no post-oracle mutation verdict | Medium | OPEN 2026-10-29; current-source pilot and candidate IDs in `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
 | RG-121 | one a245908 R2 candidate exceeded the configured 900 s per-candidate budget without a final judgment | Medium | CLOSED 2026-10-29; current-source equivalent `377c0f5a5777` was killed with a clean process tree; see `docs/R2-MUTATION-TRIAGE-2026-10-29.md` |
-| RG-122 | `pytest-cov --cov-fail-under` can exit successfully while printing a raw coverage result below the floor because its exit check rounds to configured precision; a `kind = "command"` Run-Gate lane trusts that exit status | Medium | OPEN (filed 2026-10-29 from tnt TNT-53; consumer precision-2 workaround documented there) |
+| RG-122 | `pytest-cov --cov-fail-under` can exit successfully while printing a raw coverage result below the floor because its exit check rounds to configured precision; a `kind = "command"` Run-Gate lane trusts that exit status | Medium | FIXED 2026-11-04 (3fea77a5b; project config `precision = 2` plus a pytest-cov boundary test; other consumers follow CONSUMERS.md) |
 | RG-123 | Assay's merged-baseline parallel-safety regression lane has a stale red-first premise after merge; consolidate the load-verdict docs and retire the lane | Low | OPEN; Assay B177 WP5 follow-up after WP2–WP4 |
 | RG-124 | `RUN_GATE_EXTRA_MOUNTS` used `-v`, which can create a missing bind source as an empty host directory | Minor | FIXED IN THIS BRANCH (CW4); see `extra_mount_flags()` and `TestExtraMounts::test_extra_mount_flags_use_mount_form_for_missing_source_refusal` |
 | RG-125 | host-mode resource resolution rejects mount delimiters in `MDT_COW_ROOT` although no bind is built | Minor | FIXED IN THIS BRANCH (RG-241); `test_host_cow_root_pass_through_does_not_apply_docker_delimiters` |
@@ -4547,6 +4547,16 @@ telemetry.
   reserving.
 - Keep all capacity refusals distinct from lane and mutation verdicts.
 
+### Archive note (2026-11-04)
+
+The earlier design and implementation branches were removed in the worktree
+close-out (operator Q6: RG-56 stays archived; run-gate has since been rewritten
+and RG-80 shipped a different, count-based admission). Their tips are preserved
+as the git tags `archive/rg56-admission` (design handoff, review, repair
+reports) and `archive/rg56-admission-implementation` (pure admission
+arithmetic and manifest validation in the old `run-gate.py`; it does not apply
+to the current `run_gate.py`). Memory-reservation admission is still open here.
+
 ### Status — OPEN (RW-283; future dependency-gated admission wave)
 
 P5 delivers only the non-reserving R-45 behavior specified in `SPEC.md`.
@@ -6511,7 +6521,7 @@ command names it).
 
 ## RG-114 — the exec-lane cleanup has no SIGTERM deferral
 
-**Status:** OPEN 2026-10-27 (remainder of RG-109). Severity Low. (First filed as "an interrupted run leaves no history entry" — wrong: `_dispatch`'s own `except BaseException` calls `flush_run_record(record, error=exc)` before re-raising, so an interrupted run IS recorded as `aborted` once its record exists (SPEC R-36e); only `finish` prints nothing for the lane-less result, which RG-109's `interrupted before a closed result` line now covers. Corrected 2026-10-28 after the docs audit.)
+**Status:** FIXED 2026-11-04 (4568a5340): the exec `finally` in `run_exec_lane` runs under `deferred_sigterm()`; oracle `tests/test_run_gate_rg2.py::TestSecondSigtermDuringExecCleanup` (a SIGTERM raised inside the profiling stop does not skip `clear_inflight_record`; the deferred signal is re-raised afterwards, exit 2). Earlier status: OPEN 2026-10-27 (remainder of RG-109). Severity Low. (First filed as "an interrupted run leaves no history entry" — wrong: `_dispatch`'s own `except BaseException` calls `flush_run_record(record, error=exc)` before re-raising, so an interrupted run IS recorded as `aborted` once its record exists (SPEC R-36e); only `finish` prints nothing for the lane-less result, which RG-109's `interrupted before a closed result` line now covers. Corrected 2026-10-28 after the docs audit.)
 
 **Observed.** `run_exec_lane`'s `finally` (profiling stop, up to 30 s) runs without `deferred_sigterm()`; a second SIGTERM there skips the profiling stop. No container of run-gate's own can be orphaned on that path (the in-container process is bounded by its `timeout` wrapper), so the stakes are lower than the ephemeral path's.
 
@@ -6519,7 +6529,7 @@ command names it).
 
 ## RG-115 — a follower (disowned record) still collects the Assay closeout and can print an "unavailable" WARNING or retain duplicate evidence
 
-**Status:** OPEN 2026-10-27 (round-2 review minor, not fixed in the wave). Severity Low.
+**Status:** FIXED 2026-11-04 (1b5ecf768): `finish_assay_closeout` skips a record carrying `_flushed` (prints `assay closeout: the owning client records it`); a `None` record still collects, as before (existing behaviour with history off). Test `test_a_disowned_follower_record_skips_the_closeout`. Severity Low.
 
 **Observed.** `_dispatch` runs `finish_assay_closeout` for every non-dry-run assay lane. A follower's record is disowned (`disown_run_record` sets `_flushed`) and writes no history, yet the closeout reads the OWNER's `.assay/campaign-*` files, retains a second copy under its own random run id and, when the owner has not finished writing them, warns `assay closeout unavailable`.
 
@@ -6527,7 +6537,7 @@ command names it).
 
 ## RG-116 — diff-coverage gate (`tools/coverage_gate.py`) candidates from the 2026-10-27 read-only audit
 
-**Status:** items 1, 2 and 5 FIXED IN CANDIDATE 2026-10-28 (fable-run-gate-20261027: the `\` marker is skipped, verified by reading the parser; the diff is requested with `-c color.diff=false --no-color --no-ext-diff --no-textconv`; `--allow-first-release` dropped from the selftest lane, pinned by `test_testdeps_policy.py`; tests in `tests/test_coverage_gate.py`). Items 3, 4 and 6 OPEN for 24.1.1, audit findings (Sonnet, read-only; items marked PROBE were reproduced by the auditor with a `python3 -c` probe, not re-verified by the wave). Severity High for the honesty of the selftest gate; none changes a lane verdict.
+**Status:** FIXED 2026-11-04 (3fea77a5b): items 3 (repeatable `--source`, lane judges `run_gate_admission.py`), 4 (hunk-count parsing) and 6 (AST statement heads for continuation lines) landed with tests in `tests/test_coverage_gate.py`; item 2 re-checked against `run-gate.toml` (no `--allow-first-release` in the selftest argv, pinned by `test_testdeps_policy.py`). Earlier status, kept for the record: items 1, 2 and 5 FIXED IN CANDIDATE 2026-10-28 (fable-run-gate-20261027: the `\` marker is skipped, verified by reading the parser; the diff is requested with `-c color.diff=false --no-color --no-ext-diff --no-textconv`; `--allow-first-release` dropped from the selftest lane, pinned by `test_testdeps_policy.py`; tests in `tests/test_coverage_gate.py`). Items 3, 4 and 6 OPEN for 24.1.1, audit findings (Sonnet, read-only; items marked PROBE were reproduced by the auditor with a `python3 -c` probe, not re-verified by the wave). Severity High for the honesty of the selftest gate; none changes a lane verdict.
 
 1. (PROBE) `tools/coverage_gate.py:99-102`: a `\ No newline at end of file` marker line is counted as a context line, mis-numbering the added lines after it (`{11,12}` for true `{10,11}`); a changed last line escapes the denominator. Fix: `elif line.startswith("\\"): continue`, or drive line numbers from the hunk header counts.
 2. `run-gate.toml` selftest lane passes `--allow-first-release` permanently; with 19 stable `run-gate-v*` tags that mode is no longer legitimate, and a tagless checkout (`--no-tags` clone) makes the diff check SKIPPED with exit 0. Fix: drop it from the lane; only `release_candidate` passes it after its origin check.
@@ -6538,7 +6548,7 @@ command names it).
 
 ## RG-117 — admission / runtime candidates from the 2026-10-27 read-only audit
 
-**Status:** the `_containers` inspect race FIXED IN CANDIDATE 2026-10-28 (`check=False`; survivors kept when stderr says only `No such object`/`No such container`; tests in `tests/test_run_gate_admission.py`). The rest OPEN for 24.1.1, audit findings (same audit as RG-116; PROBE = auditor-reproduced, not re-verified by the wave).
+**Status:** FIXED 2026-11-04 (4568a5340, bdc80a4d2), every item verified against the code first. (a) secret values off argv: `forward_env` and the profile token are `-e KEY` with the value in the docker client env (`env_flags_by_name`); resource facts stay `-e K=V` (not secrets). (b) `save_container_logs`: `O_NOFOLLOW`, mode 0600 at creation, dir 0700, foreign owner refused. (c) `slice_cgroupfs_dir` cumulative prefixes, test corrected. (d) `main()` catches `Exception` into ERROR exit 2. (e) hypotheses: ticket resume by name CONFIRMED and fixed (owner JSON persisted in the admission result and compared on resume; a record without one re-acquires); malformed EXITED ticket counted live CONFIRMED and fixed (tombstone, as `status_snapshot`); bare "conflict" as name collision CONFIRMED and fixed; bare `int()` on empty `memory.max` CONFIRMED and fixed; `effective_image` before the `RUN_GATE_HOST_IMAGE` override CONFIRMED and fixed; unbounded pressure pause CONFIRMED and fixed (`PRESSURE_PAUSE_MAX_SECONDS` = 1800); `isdecimal()` accepting non-ASCII digits and leading zeros CONFIRMED for `pid_ns`, fixed (deadline stays lenient on leading zeros: the shared grammar says only "decimal integer"); relative `RUN_GATE_EXTRA_MOUNTS` source NOT REPRODUCED: the lane uses `--mount type=bind`, and docker answers `invalid mount path: 'data' mount path must be absolute` (checked with `docker create`). Earlier status: the `_containers` inspect race FIXED IN CANDIDATE 2026-10-28 (`check=False`; survivors kept when stderr says only `No such object`/`No such container`; tests in `tests/test_run_gate_admission.py`). The rest was OPEN for 24.1.1, audit findings (same audit as RG-116; PROBE = auditor-reproduced, not re-verified by the wave).
 
 - (PROBE, Medium, FIXED) `run_gate_admission.py` `_containers`: `docker ps -aq` then `inspect <ids>` with `check=True`; a concurrent gate removing a tombstone in between made `inspect` exit 1 ("No such object") and the healthy lane ended ERROR.
 - (Medium) `run_gate.py` `docker run`/`docker exec` argv carry forwarded secret VALUES (`-e KEY=value`), readable in `/proc/<pid>/cmdline` for the life of `docker exec`; only the printed copy is redacted. Fix: `-e KEY` and pass the value through the subprocess `env`.
@@ -6552,7 +6562,7 @@ command names it).
 
 ## RG-118 — RG-106 oracle 5: refuse an image with no passwd entry for the resolved `user` uid (design)
 
-**Status:** OPEN 2026-10-27 (RG-106 remainder). Severity Low.
+**Status:** FIXED 2026-11-04 (4568a5340): `passwd_entry_guard()` prefixes the lane's inner script when the environment has a `user`; skipped when the image has no `getent`; oracles `tests/test_run_gate_rg2.py::TestPasswdEntryGuard` (real bash run against a failing/succeeding/absent `getent`). RG-151's overlay (open) supersedes it for `user = "owner"`. Earlier status: OPEN 2026-10-27 (RG-106 remainder). Severity Low.
 
 **Design.** No extra container start: only when `env["user"]` is set, prefix the inner script with `getent passwd "$(id -u)" >/dev/null || { echo "run-gate: uid $(id -u) has no passwd entry in the image; git and pip fail obscurely without one" >&2; exit 2; }`. The lane then fails with a named line instead of `fatal: unable to look up current user in the passwd file`. Oracle: a fake image whose `getent` stub fails for the uid; the lane log carries the line and the verdict is FAIL with exit 2.
 
@@ -6675,8 +6685,7 @@ was run in this change.
 
 ## RG-122 — pytest-cov can exit green below the displayed coverage floor in a command lane
 
-**Status:** OPEN (filed 2026-10-29 from tnt TNT-53). Severity: medium. The consumer workaround is
-`[tool.coverage.report] precision = 2`, applied in `truenas/tnt/pyproject.toml`.
+**Status:** FIXED 2026-11-04 (3fea77a5b) by consumer configuration, as the entry preferred: `run-gate-project/pyproject.toml` sets `[tool.coverage.report] precision = 2`, `tests/test_coverage_precision.py` runs real pytest-cov (96.97% against `--cov-fail-under=97` must exit nonzero; a precision-0 control documents the upstream behaviour), and CONSUMERS.md tells command-lane consumers to do the same. Run-Gate does not parse tool output. A tester-image-wide default (`--cov-precision`) was not added: that is a tester-unified change. Severity: medium. Earlier consumer workaround: `truenas/tnt/pyproject.toml`.
 
 **Observed.** A tnt `r0-r1` log recorded by TNT-53 showed 96.937% coverage and printed a two-digit failure message
 (`96.94%` against a 97% floor), while pytest-cov exited 0. The lane is `kind = "command"`, so Run-Gate maps that
@@ -6897,7 +6906,15 @@ exclusion reason.
 
 ## RG-136 — footprint policy mixes statistics from different I/O modes
 
-**Status:** OPEN. Severity: medium. Filed 2026-10-31 during RG-241 review.
+**Status:** FIXED 2026-11-04 (270a15d83). Severity: medium. Filed 2026-10-31 during RG-241 review.
+
+**Fix.** Manifest lane entries carry `io_sync` (policy mode via `footprint`,
+history-latest for sequences); `build_footprint_manifest`, `print_footprint_line`
+and `doctor` read one mode's statistics through `lane_mode_stats`; a manifest
+without a mode is strict and `doctor` names the migration. Oracles:
+`TestFootprintIoModeSeparation`. Not changed: `footprint_manifest_lane_expected`
+(daemon `--meta`, placement) still reads the entry regardless of mode; the
+combined `stats.passes` stays for `history` output.
 
 **Finding.** `lane_history_report()` now exposes statistics grouped by
 `io_sync`, but it also retains combined `stats.passes` and `stats.completed`.
@@ -6948,6 +6965,8 @@ test_cow_refuses_bad_root_value` now includes both `//` and `//..`; the
 oracle was run red before the guard change.
 
 ## RG-139 — R2 campaign closeout never passes the coverage artifact to the analyzer
+
+**Status:** FIXED 2026-11-04 (1b5ecf768), run-gate side. The closeout forwards the inventory-declared `judge.coverage.artifact` as `--coverage` (feature-detected from `analyze campaign --help`, so a judge without the flag keeps the old closeout), retains it as `<run-id>.coverage.json` when the analysis reports `parsed_and_reverified_r1`, and prints `coverage artifact <status>` in the closeout line. `assay analyze campaign --coverage` already exists in the assay source tree (`assay/analysis/src/assay_analysis/campaign.py`, parser `--coverage`); whether the assay release installed in a lane has it is detected at run time. Live confirmation that a campaign now closes `complete` needs a real R2 lane run on an assay with the flag (not done here).
 
 The automatic closeout that follows an `r2` lane invokes `assay analyze
 campaign` with the lane file, progress, state directory, verdict and observed
@@ -7120,8 +7139,10 @@ these records, and the tables T2/T3 are produced from them.
 `NO_MEASUREMENT` and `auto` stays at 1. (2) The io term of the formula is never active: no lane key declares an io
 write cap. (3) The inconclusive result is verdict `FAIL` with reason `XDIST_ISOLATION` (history outcome
 `inconclusive`), because the verdict table is closed; a fifth verdict is a contract change. (4) Raw per-worker profiles
-are folded into the history entry only; the bounded sidecar is RG-145. (5) The contamination flag is read through the
-seam `workers_entry_is_clean` until RG-144 lands. (6) Live runs (design §9 M3) are not done. (7) The plugin is not yet
+are folded into the history entry only; the bounded sidecar is RG-145. (5) The contamination flag (RG-144, landed) is read
+through `workers_entry_is_clean`. Delta-review 2026-11-04 fixes (unreleased): plugin write failures degrade to
+`NO_MEASUREMENT` (H1), selftest diff-judges `run_gate_profile.py` (H2), inconclusive reasons print
+`INCONCLUSIVE/<reason>` (H3), resource env rides the client environment (M1). (6) Live runs (design §9 M3) are not done. (7) The plugin is not yet
 in the release-candidate wheel verification (`tools/release_candidate.py` checks `run_gate` and `run_gate_admission`).
 Severity: feature. Filed 2026-11-03. Design §6.2, §6.3.
 
@@ -7333,3 +7354,188 @@ pre-flip strict entries plus new relaxed entries. One tester-lane run showing `/
 
 **Order.** In 24.4.0 or later, after RG-146 (workers), so the worker-count work and the fsync flip are measured
 separately. Ships with the `durable` declarations in the same release.
+
+## RG-150 — lane user, checkout owner and cockpit user must be one uid; a mismatch surfaces as three unrelated errors
+
+**Status:** OPEN (recipe documented in CONSUMERS.md "Runner uid: one owner for checkout, cockpit and lane"; preflight
+open). Severity: usability. Filed 2026-11-04 from the r1002 reinstall (six failed `worktree` lane attempts).
+
+**Observed.** The `tester-unified` lane user is uid 1003 (image `USER`, `/opt/tester-venv` and `/home/tester` owned by
+it). On r1002 the runner account and the cockpit `vscode` user were uid 1000, so a checkout had to belong to one of two
+uids and each choice failed somewhere else:
+
+- Checkout owned by 1000 (cockpit user): the lane container (1003) reaches Git through setuptools-scm during
+  `pip install --editable assay` (and through Assay's own Git, which runs with `GIT_CONFIG_NOSYSTEM=1` and
+  `GIT_CONFIG_GLOBAL=/dev/null`) and Git reports `dubious ownership`. Run-Gate printed only
+  `run-gate: editable assay install failed`; the Git line is buried in pip's build log. RG-99's
+  `safe.directory=*` environment injection cannot help: `vcs_versioning` removes every `GIT_*` variable except a short
+  keep list from its Git environment (verified: a throwaway `XDG_CONFIG_HOME` global config does reach it, so the
+  install step alone could be made to pass, but Assay's own run-time check still refuses by design: "Run assay as the
+  repository owner or fix the tree's ownership/uid mapping").
+- Checkout owned by 1003: the cockpit's `run-gate` host-side Git (`git_out`, hardened with `GIT_CONFIG_NOSYSTEM=1` and
+  `GIT_CONFIG_GLOBAL=/dev/null`) ignores any `safe.directory` in the system or global config. Only a `GIT_CONFIG_COUNT`
+  entry from the process environment survives (`host_git_environment` appends to it). The cockpit user also cannot
+  create `<project>/.run-gate` or `.assay` in a 1003-owned tree, and the Assay CoW root must be owned by the lane uid
+  (`MDT_COW_ROOT must be owned by the non-root caller uid 1003`), which a runner-owned `/srv/cow/mdt-cow` (0700) is not.
+
+**Root cause.** A uid mismatch between the account that owns checkouts and the CoW root and the fixed lane uid. The estate
+convention is that the host dev user is uid 1003 (the devcontainer's `updateRemoteUserUID` step maps `vscode` onto the
+workspace owner); r1002 provisioned `runner` as 1000 and its docker-run cockpit has no such step.
+
+**Fix applied on r1002 (no Run-Gate code change).** `runner` and the cockpit `vscode` user are uid/gid 1003; home, checkouts
+and the CoW root are owned by it; the lane then passes with no `safe.directory`, ACLs or world-writable directories
+(`worktree` lane PASS, see the r1002 report). Provisioning now sets the runner uid from `RUNNER_UID` (default 1003) and the
+cockpit start script remaps `vscode` to the runner uid.
+
+**Expected (open part).** A preflight in `run-gate` that compares the owner uid of the judged tree (and of the
+`MDT_COW_ROOT`) with the lane user's uid (`environments.*.user`, else the image user) and refuses with one actionable line
+("checkout owned by uid 1000, lane runs as 1003: see CONSUMERS.md runner uid recipe") before the editable install, instead of
+`editable assay install failed`. Optional: surface the Git error line when the editable install fails.
+
+<!-- Id note (2026-11-04): RG-150 (lane user, checkout owner and cockpit user must be one uid) exists only on branch
+     fix-r1002-gate-ownership-20261104. The ids below start at RG-151; the controller resolves ordering on merge. -->
+
+## RG-151 — lanes run as the checkout owner: `user = "owner"`, generated passwd/group overlay, per-lane HOME (lane-uid phase 1)
+
+**Status:** OPEN. Filed 2026-11-04. Supersedes RG-118 (RG-106 oracle 5). Keeps the RG-150 preflight as the safety net.
+
+**Problem.** `tester-unified` bakes `tester:1003` and the tester environment runs as that uid. Every host must therefore use exactly uid
+1003 for the checkout, the CoW root and the cockpit user, or lanes fail with an obscure git "dubious ownership" error (RG-150, assay
+"editable install failed", NC-04, MDT-052). RG-106 added `user = "invoker" | "uid[:gid]"`, but "invoker" inside a cockpit is `vscode`,
+which equals the owner only after a remap; the real requirement is "owner". cowtree also requires the CoW root owner to equal the caller
+(`libraries/cowtree/src/cowtree/paths.py:89-90`), and assay replaces git's config and setuptools-scm strips `GIT_*`, so `safe.directory`
+(RG-99) cannot help.
+
+**Decision record (operator, 2026-11-04, binding).** Lanes run as the checkout owner with a generated read-only passwd/group overlay, a per-lane
+HOME and a read-only tester venv. Four-phase rollout (this entry is phase 1; phases 2 to 4 are TB-13, B211/KI-114 and RG-153). RG-150's owner
+preflight stays as a safety net. The baked uid 1003 rule retires at phase 4.
+
+**Design (phase 1).**
+
+- New `[environments.<n>] user = "owner"`: resolve the uid:gid by `stat` of the judged worktree root (the checkout root, not `.run-gate/`), pass it
+  as `--user uid:gid`, and refuse uid 0 and a gid/uid that cannot be a lane user. "owner" is also the new documented value for
+  `tester` once phase 4 flips the default (RG-153).
+- Generated overlay: read the image's `/etc/passwd` and `/etc/group` once per image id (cached under the lane-independent run-gate state
+  directory), append one line for the resolved uid (`lane:x:<uid>:<gid>::/home/lane:/bin/bash`, group `lane`) unless the image already has
+  that uid, write both files read-only to the lane directory and bind-mount them `:ro` over `/etc/passwd` and `/etc/group`.
+  No nss_wrapper and no LD_PRELOAD (static and Go binaries would escape it).
+- Per-lane HOME: a writable directory in the lane scratch area, plus `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `TMPDIR` under it;
+  `HOME=/home/lane` inside. It is removed with the lane directory (the lane's CoW clones, if any, are the user's responsibility as today).
+- Fold RG-118 in: refuse a resolved uid with no passwd entry when no overlay applies (so "invoker"/"uid" environments keep the old guard).
+- RG-150 owner preflight: before the lane starts, refuse with ONE line naming the three owners when the worktree owner, the CoW root owner
+  and the effective lane uid differ, so the old failure class never surfaces as three unrelated errors.
+- `RUN_GATE_*` lane environment gains `RUN_GATE_LANE_UID/GID/HOME` so gate scripts and assay can use them (documented once in
+  `tester-unified/docs/CONSUMERS.md`, TB-13).
+- Docker-using lanes still add the socket gid, derived by `stat` of the socket the lane mounts (RG-152), never a configured number.
+
+**Acceptance criteria.**
+
+- `user = "owner"` resolves uid:gid from a temp checkout owned by a non-1003 uid; passes `--user`; refuses root.
+- The overlay contains exactly the image's entries plus one line; `getpwuid`, `getpass.getuser`, `git`, `ssh` and `whoami` work inside a
+  lane whose uid is absent from the image (live tester lane).
+- Mount flags are `ro`; the lane cannot modify `/etc/passwd`.
+- The RG-150 preflight reproduces its single-line refusal when the CoW root owner differs.
+- **Non-mdt path (operator criterion, 2026-11-04).** A test shows that on a plain Debian host or a non-mdt devcontainer, where the user's uid is
+  whatever the OS gave (for example 1000) and there is no cockpit remap, `user = "owner"` runs the lane with that uid and nothing consults
+  or requires `mdt-docker`, `/etc/mdt` or any mdt group; docker-socket lanes use the gid of the socket actually mounted.
+
+**Test plan.** Resolver and overlay unit tests with fake `stat` and a fixture passwd; command-construction tests (`--user`, ro binds, HOME);
+one tester-lane smoke on the real image; regression tests for RG-106's `invoker` and `uid:gid` forms and RG-118's refusal.
+
+**Dependencies and order.** First package of the lane-uid rollout (RG-151, then TB-13, then B211 and KI-114 in parallel, then RG-153).
+Independent of RG-152. After branch fix-r1002-gate-ownership merges (RG-150).
+
+## RG-152 — docker and observer gids are derived by `stat` of the sockets actually used; the negative assertion covers both docker-class gids
+
+**Status:** OPEN. Filed 2026-11-04.
+
+**Problem.** `run_gate.py:8700-8712` asserts the observer gid differs from the docker gid, derived by `stat` (correct), and `ctl.sock` is reached
+through the cockpit's inherited `docker` gid. With the fixed `mdt-docker` group (mdt-cockpit MDT-053, gid 2751) there are two docker-class gids on
+an mdt host (`mdt-docker` and the host `docker` group), and on a non-mdt host there is only one, possibly under a different name.
+
+**Decision record (operator, 2026-11-04).** Every consumer derives gids by `stat` on the socket it mounts or connects to; nothing reads a
+configured docker gid and nothing requires the mdt group. Requirement: repo tools must keep working when the user does NOT use the mdt cockpit.
+
+**Design.**
+
+- Replace any docker-gid lookup (including the fallbacks that read `DOCKER_GID` or `getgrnam("docker")`) with `os.stat()` on the
+  resolved docker socket (`DOCKER_HOST` when `unix://`, else the default) and on the `/run/cgprofile` and `/run/cgprofile/observer` directories.
+- The observer assertion becomes: observer gid differs from the docker-socket gid AND from the `/run/cgprofile` directory gid
+  (which is `mdt-docker` on an mdt host, per CP-43). On a host without cgprofile the existing infrastructure refusal stays.
+- ctl access: try `ctl.sock`; on `EACCES` fall back to the existing `docker exec` carrier (`run_gate.py:688,711`) while the container deployment
+  exists, then report a clear "add yourself to the directory's group or CGPROFILE_ALLOW_UIDS" message naming the gid read by `stat`.
+- Forwarding to lanes: only the observer gid is added as a supplementary group, never the socket group (unchanged).
+
+**Acceptance criteria.**
+
+- Table tests over (docker gid, mdt-docker dir gid, observer gid) cases: equal observer gid is refused; distinct passes.
+- No reference to `DOCKER_GID`, `getgrnam("docker")` or the name `mdt-docker` in `run_gate.py` outside docs/tests.
+- **Non-mdt path.** A test with a fake docker socket of an arbitrary gid and no `/run/cgprofile` shows: docker use works, the cgprofile
+  features report "observer unavailable" cleanly (no mdt hint required), and no code path needs the mdt group.
+
+**Test plan.** Unit tests with temp sockets and directories chowned to test gids where permitted, otherwise injected `stat` results.
+
+**Dependencies and order.** After CP-43 (the model) and with or after MDT-053. Assay B212 mirrors this in its launchers.
+
+## RG-153 — `owner` becomes the default lane user for the tester environment; retire the baked uid 1003 rule (lane-uid phase 4)
+
+**Status:** BLOCKED on RG-151, TB-13 and B211/KI-114. Filed 2026-11-04.
+
+**Decision record (operator, 2026-11-04).** After phases 1 to 3 the default flips and the "everything is uid 1003" host rule retires.
+
+**Design.** The shipped `tester` environment default (`run-gate.root.toml`, project templates, docs) becomes `user = "owner"`;
+the `== 1003` assertions in `tester-unified/run:259,305` and `assay/tools/self-qualification-container.sh:601` become `== owner`
+(owned by TB-13 and B211); NC-04 and MDT-052 are relaxed through MDT-059 ("any uid, as long as checkout, CoW root and cockpit share it").
+The RG-150 preflight stays. Docs: one CONSUMERS statement of the lane user contract.
+
+**Acceptance.** The registered gate of run-gate, assay, cmru and one third project passes with a non-1003 owner uid on a scratch host;
+a test pins that no committed default names 1003.
+
+**Dependencies and order.** Last package of the rollout; then MDT-059.
+
+<!-- Id note (2026-11-04, ops-dstdns-r2 session): the ids below start at RG-154, one past the highest id on main (RG-153); other branches
+     carry RG-150 to RG-153 as well. The controller resolves ordering on merge. -->
+
+## RG-154 — `--jobs N>1` / `--jobs auto` are refused for every external consumer that pins an Assay zipapp: the R2 capacity probe imports `cowtree` from the lane interpreter, not from the pinned artifact
+
+**Status:** OPEN. Filed 2026-11-04. Severity: Major for external consumers (dstdns), none for vbpub's internal source-backed lanes. Found by the first dstdns native R2 pilot (`reports/DSTDNS-R2-PILOT-2026-11-04.md`).
+
+**Observed.** dstdns declares `command = ["python3", "tools/assay/assay-11.0.0.pyz"]` and runs lanes in its own `dstdns/test-runner` image on a host whose
+`/srv/cow/mdt-cow` is btrfs with `cheap_clone=True`. `run-gate inf_events_obs_r2 --jobs 3` ends with
+`--jobs 3 requires a cheap-clone workspace; Assay could not confirm the supported btrfs CoW backend`. The cause is `r2_capacity_probe`
+(`run_gate.py`, `_R2_CAPACITY_PROBE_CODE`): for an `assay_command` whose first token is a Python interpreter it runs `python3 -I -c '<probe>'`, and the
+probe starts with `import cowtree`. `-I` ignores `PYTHONPATH`, the pyz is not on `sys.path`, and the image has no `cowtree`, so the probe reports
+`cheap_clone_reason = cowtree-probe-ModuleNotFoundError` and `select_r2_jobs` fails. The same pyz bundles `cowtree/` (11 files), so the run itself would work;
+only the pre-flight cannot see it. (A first workaround attempt that copied the module into the image with mode 0600 gave `cowtree-probe-PermissionError`
+for the lane uid; the refusal text hides the probe's `cheap_clone_reason` in both cases.)
+
+**Workaround used.** A derived image `dstdns/test-runner` plus `COPY cowtree` (extracted from the pinned pyz) into site-packages, `chmod a+rX`.
+
+**Required.** (1) The probe must use the same artifact as the run: for a pyz `assay_command`, ask the pinned artifact (a small `assay` subcommand or
+`python3 pyz -c`-style entry) or insert the pyz on `sys.path` without `-I`. (2) The refusal message must include `cheap_clone_reason` (`cowtree-probe-<Exc>`,
+`cow-root-unset`, `cowtree-no-area`, `assay-requires-btrfs`) so the three causes are distinguishable. (3) CONSUMERS gets one paragraph: what an external image needs for
+`--jobs N>1`, and that `jobs_max` must be at least N in `assay.toml` (`jobs` is only an alias).
+
+**Oracles.** (a) A fake external pyz bundling a stub `cowtree` and an image without `cowtree` yields `cheap_clone=True` in the probe. (b) Each `cheap_clone_reason`
+value appears in the refusal text in a table test. (c) The dstdns pilot lane runs `--jobs 3` in the unmodified `dstdns/test-runner` image.
+
+## RG-155 — the lane header prints `budget 300m (hard limit)` while an Assay lane's own `budget` in `assay.toml` ends each attempt (LANE_TIMEOUT)
+
+**Status:** OPEN. Filed 2026-11-04. Severity: Minor.
+
+**Observed.** `inf_events_obs_r2` declares `budget = "3m"` in dstdns's `assay.toml` and its plan estimates 2880 s serial. Run-Gate printed
+`run-gate: budget 300m (hard limit; clock starts after admission and lock waits)` (its own wrapper limit) and the first attempt ended
+`BUDGET_EXCEEDED/LANE_TIMEOUT (exit 4)` after about 3 minutes with 7 of 32 candidates done; five or six resumed attempts were needed, each paying about 40 s for the
+baseline and snapshot again. Resuming is the designed path and the supervisor handled it, but nothing in the header, the dry run or `doctor` showed the effective bound.
+
+**Required.** Print the effective bound and its source (`assay.toml lane budget 3m` versus `run-gate.toml 300m`) in the header and in `--dry-run`, and WARN when the
+Assay lane `budget` is below the plan's estimated wall time (data from `assay plan --json`, see assay B213).
+
+**Oracle.** A dry run on a lane whose Assay budget is below the plan estimate prints the warning and both budgets.
+
+## RG-102 amendment (2026-11-04, evidence from the dstdns pilot)
+
+A pure-pytest native R2 lane (no PG/Redis) runs today on a raw `mode = "ephemeral"` environment built from the consumer's own test image, with
+`user = "invoker"`, `resource_observer = "cgprofile"`, `memory`/`pids` ceilings and the released Assay 11.0.0 zipapp: 32 of 32 candidates judged,
+identical buckets twice (v1001 and r1002). So `ciu run` (CIU-141) is required only for lanes that must attach to a CIU-rendered network, secrets or services;
+it is not on the critical path for the 80 dstdns R2 lanes whose tests use mocks (`MOCK_MODE=true`). Lanes that import `tests/pipeline` or live fixtures must be checked per lane.

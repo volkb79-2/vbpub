@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-20
 title: "Resource observer must expose local and hierarchical event counters for R2 attribution"
-status: carved
+status: fixed
 type: "bugfix"
 severity: "high"
 component: "resource-observer"
@@ -46,3 +46,7 @@ The API must remain explicit about its contract version. A consumer must not sil
 **2026-10-15** — An independent review found that `pids_localevents` cannot substitute for `pids.events.local` in native R2 attribution: its local fork-failure counter does not identify which ancestor's `pids.max` rejected the fork. The observer now refuses this mount mode; the exact-tip gates and live observer acceptance remain pending.
 
 **2026-10-21** — CGP-110: the bounded live probe `tools/observer-live-acceptance.py` and its procedure (`docs/CONSUMERS.md`, "Live observer acceptance") are shipped. The live run against the released daemon from a gated peer has NOT been performed; this entry stays `carved` until its four outputs are recorded.
+
+## Resolution
+
+FIXED 2026-11-04 (fix-cgp-2-20261104, hygiene). Contract 2 with local and hierarchical event counters shipped in 1.1.0 and the ancestor-local counters were extended by CP-40 (`lib/ancestor_events.py`, merged to main in `2d1f0a6cf`). Remaining live-acceptance evidence belongs to the release record, not this entry.

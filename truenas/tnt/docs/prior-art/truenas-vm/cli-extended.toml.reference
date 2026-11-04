@@ -1,0 +1,6 @@
+# Standalone cli-extended registration for the TrueNAS VM lifecycle client.
+schema_version = 1
+
+[[clis]]
+id = "truenas-vm"
+factory = "truenas-vm.py:build_cli"

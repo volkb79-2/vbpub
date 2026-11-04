@@ -1,0 +1,33 @@
+# ==========================================================================
+# jitsi-server — CIU ROOT global (standalone, single stack)
+# ==========================================================================
+# Own ciu root (root marker = this file). The instance id is derived from the
+# physical path of THIS folder, so every container, network, hostdir and
+# compose-project name differs from the live Mattermost root
+# (voice-screen-share/mattermost-server) and from the mattermore tryout.
+# Values copied from voice-screen-share/mattermost-server/ciu.global.defaults.toml.j2
+# (ciu v7 roots are islands).
+
+[deploy]
+project_name = "jitsi"
+environment_tag = "$INSTANCE_ID"
+network_name = "$DOCKER_NETWORK_INTERNAL"
+log_level = "INFO"
+
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+[governance]
+enabled = true
+cgroup_parent = "dev-background.slice"
+mem_limit = "3g"
+device = "/dev/vda"
+
+[ciu]
+standalone_root = true
+# Public TLS is terminated by the host-side tls-edge (ingress_public), not here.
+require_certs = false
+require_fqdn = false
+auto_connect_network = false

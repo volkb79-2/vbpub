@@ -629,15 +629,38 @@ def _is_test_file(path: Path, root: Path) -> bool:
     )
 
 
+_PIECEWISE_WINDOW = 400
+_SYS_PATH_MUTATION = re.compile(r"sys\.path\s*(?:\.\s*(?:insert|append|extend)\b|\+=|\[)")
+_LIBRARIES_PIECE = re.compile(r"""["']libraries["']""")
+_CLI_EXTENDED_PIECE = re.compile(r"""["']cli[-_]extended["']""")
+
+
+def _piecewise_path_hack(text: str) -> bool:
+    """CLI-EXT-32: a ``sys.path`` mutation that names the library by path pieces.
+
+    Looks at the text following each mutation for both a ``"libraries"`` and a
+    ``"cli-extended"`` string piece, so ``Path(...) / "libraries" / "cli-extended"``
+    is found although the joined needle never appears.
+    """
+
+    for match in _SYS_PATH_MUTATION.finditer(text):
+        window = text[match.start() : match.end() + _PIECEWISE_WINDOW]
+        if _LIBRARIES_PIECE.search(window) and _CLI_EXTENDED_PIECE.search(window):
+            return True
+    return False
+
+
 def _no_path_hacks(cli: CliConfig, _a: RegisteredCli, _p: ProjectConfig) -> AuditItem:
     files, unreadable = _scan(cli.root, SOURCE_SUFFIXES)
     hits = []
     for path, raw in files:
         text = _without_comments(path, _without_allowed_assertions(raw))
-        if (
-            path.name != GATE_FILE_NAME
-            and "libraries/cli-extended" in text
-            and ("sys.path" in text or "PYTHONPATH" in text)
+        if path.name != GATE_FILE_NAME and (
+            (
+                "libraries/cli-extended" in text
+                and ("sys.path" in text or "PYTHONPATH" in text)
+            )
+            or _piecewise_path_hack(text)
         ):
             hits.append(_relative(path, cli.root))
     if hits:

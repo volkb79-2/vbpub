@@ -129,8 +129,8 @@ command mode remain unsupported by the v27 contract.
 `tester-unified`; do not run its pytest command from the cockpit. Each run is one phase against a disposable host and
 uses tnt's paired host loader, credential handling, guarded WebSocket client, plan/apply path, job tracker, and reboot
 verification. It requires `FULL_ADMIN`, a non-boot data pool, an approved maintenance window, and an explicit
-`TNT_LIVE_ALLOW_SYSTEM=1` acknowledgement. Serialize every session to v1001, including the companion patch CLI
-steps, with `flock /home/vscode/vbpub-release-program-20261027/v1001.lock`.
+`TNT_LIVE_ALLOW_SYSTEM=1` acknowledgement. Serialize every session to the test host, including the companion patch CLI
+steps, with `flock "$TNT_LIVE_HOST_LOCK"` (an operator-chosen absolute lock-file path outside the repository).
 
 The phase values form a fixed sequence:
 
@@ -174,7 +174,7 @@ environment, and the same dataset/snapshot identity records. The canonical ident
 hash file contents.
 
 The optional patched-v27-to-v28 phase was not run. The companion v27 fresh-install lane requires a fresh target with
-no `boot-disk-data` pool, Path A user-data root, patch marker, container, or VM. The v1001 target has a
+no `boot-disk-data` pool, Path A user-data root, patch marker, container, or VM. The test target had a
 `boot-disk-data` pool, so it does not meet that precondition. The patch attempt returned failure; a subsequent
 read-only `live-inspect` passed. It confirmed the host remained on the v27 nightly, `/usr` was read-only, and no v27
 patch marker was present. No tnt update to v28 was submitted.

@@ -15,11 +15,12 @@ base_image=""
 cli_extended_resolve=""
 cli_extended_sha256=""
 no_cache=0
+pull_base=0
 run_gate_published=""
 pip_min_release_age=""
 
 usage() {
-  echo "usage: $0 [--wheel-dir DIR | --run-gate-published VERSION|latest] [--pip-min-release-age DURATION] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX (required for latest and local)] [--no-cache] [--cgroup-parent SLICE]" >&2
+  echo "usage: $0 [--wheel-dir DIR | --run-gate-published VERSION|latest] [--pip-min-release-age DURATION] [--tag IMAGE] [--base-image IMAGE] [--pull-base] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX (required for latest and local)] [--no-cache] [--cgroup-parent SLICE]" >&2
   exit 2
 }
 
@@ -33,9 +34,13 @@ while [[ $# -gt 0 ]]; do
     --cli-extended-resolve) cli_extended_resolve=${2:?}; shift 2 ;;
     --cli-extended-wheel-sha256) cli_extended_sha256=${2:?}; shift 2 ;;
     --no-cache) no_cache=1; shift ;;
+    --pull-base) pull_base=1; shift ;;
     --cgroup-parent) cgroup_parent=${2:?}; shift 2 ;;
     -h|--help)
-      echo "usage: $0 [--wheel-dir DIR | --run-gate-published VERSION|latest] [--pip-min-release-age DURATION] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX (required for latest and local)] [--no-cache] [--cgroup-parent SLICE]"
+      echo "usage: $0 [--wheel-dir DIR | --run-gate-published VERSION|latest] [--pip-min-release-age DURATION] [--tag IMAGE] [--base-image IMAGE] [--pull-base] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX (required for latest and local)] [--no-cache] [--cgroup-parent SLICE]"
+      echo "  --pull-base                pull the base image when it is absent locally even though its reference names no registry host"
+      echo "                             (a Docker Hub reference such as python:3.14-trixie); a reference whose first component is a host"
+      echo "                             (ghcr.io/..., localhost:5000/...) is always pulled when absent, and a bare local tag never is"
       echo "  --wheel-dir DIR            install the one run_gate-*.whl in DIR (default: run-gate-project/dist, a developer build)"
       echo "  --run-gate-published X.Y.Z|latest"
       echo "                             install the PUBLISHED Run-Gate wheel instead (run-gate-vX.Y.Z, or the run-gate-latest pointer),"
@@ -162,6 +167,23 @@ run_gate_version=${identity[0]}
 run_gate_sha256=${identity[1]}
 run_gate_filename=${identity[2]}
 
+if [[ -n "$run_gate_published" ]]; then
+  # The fetcher left the digest it verified (pointer, sidecar and bytes agreed) beside the wheel. The
+  # builder's own hash of the staged file must equal it: the 0700 staging directory is otherwise the only
+  # barrier between the two steps (TB-12).
+  fetched_digest_file="$wheel_dir/$run_gate_filename.sha256"
+  [[ -f "$fetched_digest_file" ]] || {
+    echo "the fetcher left no $run_gate_filename.sha256 beside the published Run-Gate wheel" >&2
+    exit 2
+  }
+  read -r fetched_digest _ < "$fetched_digest_file" || true
+  [[ "${fetched_digest:-}" == "$run_gate_sha256" ]] || {
+    echo "the staged Run-Gate wheel does not match the digest the fetcher verified" >&2
+    echo "fetcher: ${fetched_digest:-<none>}  builder: $run_gate_sha256" >&2
+    exit 2
+  }
+fi
+
 wheel_stage="$(mktemp -d "${TMPDIR:-/tmp}/tester-unified-run-gate-wheel.XXXXXX")"
 cp -- "$wheel_dir/$run_gate_filename" "$wheel_stage/$run_gate_filename"
 printf '%s  %s\n' "$run_gate_sha256" "$wheel_stage/$run_gate_filename" \
@@ -180,7 +202,17 @@ case "$base_ref" in
   *@sha256:*) expected_base_image_id="sha256:${base_ref##*@sha256:}" ;;
   *)
     if ! expected_base_image_id="$(docker image inspect --format '{{.Id}}' "$base_ref" 2>/dev/null)"; then
-      if [[ "$base_ref" == */* ]]; then
+      # Classify by a registry HOST component, never by the presence of a slash (TB-07): the first path
+      # component is a host when it contains a dot or a colon, or is `localhost`. `ghcr.io/x/y:1` and
+      # `localhost:5000/y` are registry references; `python:3.14-trixie` (Docker Hub library) and
+      # `myorg/base:local` (could be a Hub repository or a local-only tag) name no host, so they are
+      # pulled only when --pull-base says that is what the operator means.
+      first_component="${base_ref%%/*}"
+      has_registry_host=0
+      if [[ "$base_ref" == */* && ( "$first_component" == *.* || "$first_component" == *:* || "$first_component" == localhost ) ]]; then
+        has_registry_host=1
+      fi
+      if (( has_registry_host || pull_base )); then
         # A registry reference (the explicit zero-release --base-image, a published tester-base digest
         # tag): pull it explicitly, then identify what was pulled. The base is a named, explicit input,
         # so this is not a silent fallback, and buildx then uses exactly the image identified here.
@@ -194,8 +226,9 @@ case "$base_ref" in
           exit 2
         }
       else
-        # A registry-less tag (tester-base:local) exists only if someone built it; there is nothing to pull.
-        echo "base image $base_ref is not present locally and has no registry to pull from" >&2
+        # A reference with no registry host (tester-base:local) exists only if someone built it; there is
+        # nothing to pull unless --pull-base names a Docker Hub reference.
+        echo "base image $base_ref is not present locally and has no registry to pull from (pass --pull-base for a Docker Hub reference)" >&2
         echo "build it first (tester-base: docker buildx build --load -t tester-base:local tester-base/, or run cmru/build-initial-standalone.sh)" >&2
         exit 2
       fi

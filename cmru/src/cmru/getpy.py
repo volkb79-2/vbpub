@@ -1,6 +1,8 @@
 """get.py emitter — render templates/get.py.tmpl for a project.
 
-CLI: cmru get-py [all|project[,project...]] [--config <toml>] [--output <file>]
+CLI: cmru installer render [all|project[,project...]] [--config <toml>] [--output <file>]
+     cmru installer check  [project] --installer <file> [--config <toml>]
+     cmru get-py ...        (deprecated alias of ``installer render``; removal in a later major release)
 
 The emitted get.py is a self-contained Python 3 transactional installer that handles
 install, update, rollback, status, scope (system/user), bundled-wheel venv, SHA256 +
@@ -362,6 +364,30 @@ def _py_literal(value: object) -> str:
     raise RenderError(f"cannot render {type(value).__name__} into get.py")
 
 
+def _question_literal(question: Dict[str, object]) -> str:
+    """A Python dict literal for one validated wizard question (``installer_problems`` has
+    already fixed the grammar): strings go through ``json.dumps``, bool/int are literal."""
+    default = question.get("default")
+    if default is None:
+        default_lit = "None"
+    elif isinstance(default, bool):
+        default_lit = "True" if default else "False"
+    elif isinstance(default, int):
+        default_lit = str(default)
+    else:
+        default_lit = _py_literal(default)
+    return (
+        "{" + ", ".join((
+            f'"id": {_py_literal(question["id"])}',
+            f'"prompt": {_py_literal(question["prompt"])}',
+            f'"type": {_py_literal(question["type"])}',
+            f'"default": {default_lit}',
+            f'"choices": {_py_literal(list(question.get("choices") or []))}',
+            f'"required": {"True" if question.get("required", True) else "False"}',
+        )) + "}"
+    )
+
+
 def _plain(value: str, what: str) -> str:
     """A value that is substituted as TEXT (docstring / message position): a plain name."""
     if not isinstance(value, str) or not _PLAIN.fullmatch(value):
@@ -390,6 +416,9 @@ def render_get_py(
     extensions: Optional[List[Tuple[str, bytes]]] = None,
     manifest_pubkey: str = "",
     launchers: Optional[List[str]] = None,
+    stable_dir: str = "",
+    stub_launchers: Optional[List[str]] = None,
+    questions: Optional[List[Dict[str, object]]] = None,
 ) -> str:
     """Render the get.py template for a project.
 
@@ -399,7 +428,7 @@ def render_get_py(
     Every [[VARNAME]] placeholder is replaced in ONE pass: values that land in code are
     rendered through ``json.dumps``; values that land in docstring/message text must be
     plain names. Any bad value, or a placeholder left unreplaced, raises ``RenderError``
-    (exit 2 from ``cmru get-py``); the result is byte-deterministic.
+    (exit 2 from ``cmru installer render``); the result is byte-deterministic.
     """
     from cmru.config import installer_problems
 
@@ -415,6 +444,8 @@ def render_get_py(
         required_commands=required_commands or [], preserve=preserve_paths or [],
         wheels=list(wheel_specs or []), launchers=launcher_list,
         manifest_pubkey=manifest_pubkey,
+        stable_dir=stable_dir, stub_launchers=list(stub_launchers or []),
+        questions=list(questions or []),
     )
     for variant in variants or []:
         _plain(variant["name"], "variant name")
@@ -458,6 +489,10 @@ def render_get_py(
         "[[PRESERVE_PATHS_LIST]]":       _py_literal(preserve),
         "[[WHEEL_SPECS_LIST]]":          _py_literal([list(w) for w in wheels]),
         "[[LAUNCHERS_LIST]]":            _py_literal(launcher_list),
+        "[[STABLE_DIR]]":                _py_literal(stable_dir),
+        "[[STUB_LAUNCHERS_LIST]]":       _py_literal(list(stub_launchers or [])),
+        "[[QUESTIONS_LIST]]":            "[" + ", ".join(
+            _question_literal(q) for q in questions or []) + "]",
         "[[VARIANTS_LIST]]":             _py_literal(
             [{"name": v["name"], "label": v.get("label")} for v in variant_list]),
         "[[MANIFEST_NAME]]":             _py_literal(manifest_name),
@@ -503,7 +538,7 @@ def render_from_config(project_name: str, config_path: Path) -> str:
     if not proj.installer:
         raise RenderError(
             f"Project '{project_name}' has no [project.{project_name}.installer] section; "
-            f"add one to its cmru.toml (see `cmru get-py --help`) to render a standalone installer"
+            f"add one to its cmru.toml (see `cmru installer render --help`) to render a standalone installer"
         )
 
     ins = proj.installer
@@ -534,24 +569,34 @@ def render_from_config(project_name: str, config_path: Path) -> str:
         manifest_pubkey=ins.manifest_pubkey,
         launchers=ins.launchers or None,
         variants=variants or None,
+        stable_dir=ins.stable_dir,
+        stub_launchers=ins.stub_launchers or None,
+        questions=[
+            {"id": q.id, "prompt": q.prompt, "type": q.type, "default": q.default,
+             "choices": q.choices, "required": q.required}
+            for q in ins.questions
+        ] or None,
     )
 
 
-def getpy_cli():
-    """Build the registered grammar for ``cmru get-py``."""
-    registry = cmru_registry(
-        "cmru get-py",
-        "Emit standalone get.py installers for registered projects.",
-        single_command=True,
-        no_args_action=True,
+DEPRECATED_GET_PY_WARNING = (
+    "[WARN] 'cmru get-py' is deprecated; use 'cmru installer render' (removal in a later major release)"
+)
+
+
+def _config_option() -> OptionSpec:
+    return OptionSpec(
+        ("--config",),
+        f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
+        metavar="FILE", parser_kwargs={"default": None},
     )
-    registry.register(VerbSpec(
-        "get-py",
-        description=(
-            "Render the configured standalone installer for one or more projects. "
-            "Without --output/--output-dir it prints one project's installer to "
-            "stdout and writes nothing."
-        ),
+
+
+def _render_verb(name: str, description: str, handler) -> VerbSpec:
+    """The ``render`` verb, also registered (deprecated) as ``get-py``."""
+    return VerbSpec(
+        name,
+        description=description,
         group=VerbGroup.MODIFICATION.value,
         # Conditionally mutating (D4): only --output/--output-dir write, which
         # is also the only place --dry-run means anything.
@@ -566,11 +611,7 @@ def getpy_cli():
             ),
         ),
         options=(
-            OptionSpec(
-                ("--config",),
-                f"path to {PROJECT_CONFIG_FILENAME} or {ORCHESTRATION_CONFIG_FILENAME}",
-                metavar="FILE", parser_kwargs={"default": None},
-            ),
+            _config_option(),
             OptionSpec(
                 ("--output",), "write one selected installer to this file",
                 metavar="FILE", parser_kwargs={"default": None},
@@ -584,9 +625,114 @@ def getpy_cli():
         ),
         include_json=False,
         include_progress=False,
-        handler=_run_getpy,
+        handler=handler,
+    )
+
+
+def installer_cli():
+    """Build the registered grammar for ``cmru installer`` (``render`` and ``check``)."""
+    registry = cmru_registry(
+        "cmru installer",
+        "Render or check the generated standalone installer (get.py) of a project.",
+    )
+    registry.register(_render_verb(
+        "render",
+        "Render the configured standalone installer for one or more projects. "
+        "Without --output/--output-dir it prints one project's installer to "
+        "stdout and writes nothing.",
+        _run_getpy,
+    ))
+    registry.register(VerbSpec(
+        "check",
+        description=(
+            "Render one project's installer in memory and compare it byte-for-byte "
+            "with the committed --installer file; exit 0 if identical, 1 if not."
+        ),
+        group=VerbGroup.EXPLORATION.value,
+        arguments=(target_argument(),),
+        options=(
+            _config_option(),
+            OptionSpec(
+                ("--installer",), "the committed installer file to compare",
+                metavar="FILE", parser_kwargs={"required": True},
+            ),
+        ),
+        include_json=False,
+        include_progress=False,
+        handler=_run_installer_check,
     ))
     return registry.build()
+
+
+def getpy_cli():
+    """Build the registered grammar for the deprecated ``cmru get-py`` alias."""
+    registry = cmru_registry(
+        "cmru get-py",
+        "Deprecated alias of 'cmru installer render'.",
+        single_command=True,
+        no_args_action=True,
+    )
+    registry.register(_render_verb(
+        "get-py",
+        "DEPRECATED alias of 'cmru installer render' (removal in a later major release). Renders the "
+        "configured standalone installer for one or more projects; without "
+        "--output/--output-dir it prints one project's installer to stdout.",
+        _run_getpy_deprecated,
+    ))
+    return registry.build()
+
+
+DIFF_LINE_CAP = 40
+
+
+def _run_installer_check(args, _runtime) -> int:
+    """Exit 0 when the committed installer is byte-identical to a fresh render, else 1."""
+    import difflib
+
+    from cmru.cli import _resolve_config, load_config
+    from cmru.delegate_targets import resolve_target
+
+    cfg_path = _resolve_config(args.config)
+    loaded = load_config(cfg_path)
+    names = resolve_target(args.target, cfg_path, loaded[1], loaded[2])
+    if len(names) != 1:
+        raise CliFailure(
+            f"installer check compares one project's installer; {len(names)} selected "
+            f"({', '.join(names)})",
+            exit_code=2, show_help=True,
+        )
+    try:
+        rendered = render_from_config(names[0], cfg_path)
+    except RenderError as exc:
+        raise CliFailure(str(exc), exit_code=2) from exc
+    path = Path(args.installer)
+    try:
+        committed = path.read_bytes()
+    except OSError as exc:
+        print(f"[ERROR] cannot read installer {path}: {exc.strerror or exc}", file=sys.stderr)
+        return 1
+    if committed == rendered.encode("utf-8"):
+        print(f"[INFO] {path} is identical to the rendered installer of {names[0]}")
+        return 0
+    diff = list(difflib.unified_diff(
+        committed.decode("utf-8", errors="replace").splitlines(),
+        rendered.splitlines(),
+        fromfile=f"{path} (committed)", tofile=f"{names[0]} (rendered)", lineterm="",
+    ))
+    shown = diff[:DIFF_LINE_CAP]
+    truncated = (f"; first {DIFF_LINE_CAP} of {len(diff)} diff lines shown"
+                 if len(diff) > DIFF_LINE_CAP else "")
+    print(f"[ERROR] {path} differs from the installer rendered for {names[0]} "
+          f"({len(diff)} diff lines{truncated}); re-render it with "
+          f"'cmru installer render {names[0]} --output {path}'", file=sys.stderr)
+    for line in shown:
+        print(line, file=sys.stderr)
+    return 1
+
+
+def _run_getpy_deprecated(args, runtime) -> None:
+    print(DEPRECATED_GET_PY_WARNING, file=sys.stderr, flush=True)
+    return _run_getpy(args, runtime)
 
 
 def _run_getpy(args, _runtime) -> None:
@@ -642,5 +788,10 @@ def _run_getpy(args, _runtime) -> None:
 
 
 def getpy_main(argv: Optional[list] = None) -> int:
-    """Entry point for ``cmru get-py`` when called directly."""
+    """Entry point for the deprecated ``cmru get-py`` when called directly."""
     return getpy_cli().run(argv=argv)
+
+
+def installer_main(argv: Optional[list] = None) -> int:
+    """Entry point for ``cmru installer render|check`` when called directly."""
+    return installer_cli().run(argv=argv)

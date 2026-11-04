@@ -59,15 +59,16 @@ def _run(monkeypatch, argv):
 @pytest.mark.parametrize(
     ("verb", "args", "expected"),
     [
-        ("render", ["--host", "web", "--profile", "a b"], "ciu render --profile 'a b'"),
-        ("down", ["--host", "web", "--profile", "a b"], "ciu down --profile 'a b'"),
-        ("health", ["--host", "web", "--profile", "a b"], "ciu health --profile 'a b'"),
+        (["render"], ["--host", "web", "--profile", "a b"], "ciu render --profile 'a b'"),
+        (["down"], ["--host", "web", "--profile", "a b"], "ciu down --profile 'a b'"),
+        (["status", "--gate"], ["--host", "web", "--profile", "a b"],
+         "ciu status --gate --profile 'a b'"),
     ],
 )
 def test_remote_verbs_preserve_selection_as_one_shell_argument(remote, monkeypatch, verb, args, expected):
     """A selection value cannot terminate the remote command and inject another one."""
     seen, _ = remote
-    assert _run(monkeypatch, [verb, *args]) == 0
+    assert _run(monkeypatch, [*verb, *args]) == 0
     assert seen["exec"][0][1] == [expected]
 
 
@@ -80,11 +81,11 @@ def test_remote_verbs_preserve_selection_as_one_shell_argument(remote, monkeypat
 # remote host's own `ciu`, a LOCAL path re-parsed in a foreign context.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("verb", ["render", "down", "health"])
+@pytest.mark.parametrize("verb", [["render"], ["down"], ["status", "--gate"]])
 def test_remote_verbs_define_root_resolves_and_is_not_forwarded(remote, monkeypatch, verb, tmp_path):
     seen, _ = remote
     monkeypatch.delenv("REPO_ROOT", raising=False)
-    assert _run(monkeypatch, [verb, "--host", "web", "--root-folder", str(tmp_path)]) == 0
+    assert _run(monkeypatch, [*verb, "--host", "web", "--root-folder", str(tmp_path)]) == 0
     cfg, argv, config, repo_root, kwargs = seen["exec"][0]
     assert repo_root == tmp_path.resolve()
     assert not any("--root-folder" in a for a in argv)
@@ -220,7 +221,7 @@ def test_thin_health_passes_selection_to_activation_without_push(remote, monkeyp
     monkeypatch.setattr(activate, "run_activation",
                         lambda cfg, verb, *, config, repo_root, bundle_dir, remaining=None:
                         captured.append((cfg, verb, config, repo_root, bundle_dir, remaining)) or 0)
-    assert _run(monkeypatch, ["health", "--host", "web", "--thin", "--profile", "apps"]) == 0
+    assert _run(monkeypatch, ["status", "--gate", "--host", "web", "--thin", "--profile", "apps"]) == 0
     assert seen["sync"] == []
     assert len(captured) == 1
     cfg, verb, config, repo_root, bundle_dir, remaining = captured[0]
@@ -235,7 +236,7 @@ def test_thin_validation_rejects_conflicting_or_docker_only_flags_before_activat
     import ciu.activate as activate
     monkeypatch.setattr(activate, "run_thin_up", lambda *args, **kwargs: pytest.fail("must not activate"))
     assert _run(monkeypatch, ["up", "--host", "web", "--thin", "--bootstrap", "--rollback"]) == 2
-    assert "mutually exclusive" in capsys.readouterr().err
+    assert "not allowed with" in capsys.readouterr().err
     assert _run(monkeypatch, ["up", "--host", "web", "--bootstrap"]) == 2
-    assert "require --thin" in capsys.readouterr().err
+    assert "--bootstrap requires --thin" in capsys.readouterr().err
     assert seen["exec"] == [] and seen["sync"] == []

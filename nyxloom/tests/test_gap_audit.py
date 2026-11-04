@@ -79,7 +79,6 @@ def _inp(**overrides) -> ReconcileInput:
         pid_alive={},
         receipts={},
         days_since_test_health_carve=100.0,
-        days_since_gate_verify=100.0,
         changed_lines_since_gap_audit=None,
     )
     base.update(overrides)

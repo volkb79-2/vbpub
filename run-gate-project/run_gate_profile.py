@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -75,7 +76,7 @@ class ProcessProfile:
                 "thread_id": threading.get_native_id(), "root_pid": os.getpid(),
                 "mode": "process-tree", "interval_ms": WINDOW_INTERVAL_MS})
             self.window = reply["window"]
-        except (OSError, ValueError, KeyError, RuntimeError) as exc:
+        except Exception as exc:  # noqa: BLE001 - never fail the lane
             self.reason = f"window-open failed: {type(exc).__name__}: {exc}"
 
     def close(self) -> dict:
@@ -87,7 +88,7 @@ class ProcessProfile:
                 closed = observer_call(self.socket_path, "window-close", {
                     "thread_id": threading.get_native_id(),
                     "window": self.window})
-            except (OSError, ValueError, RuntimeError) as exc:
+            except Exception as exc:  # noqa: BLE001 - never fail the lane
                 self.reason = f"window-close failed: {type(exc).__name__}: {exc}"
         measured = bool(closed) and isinstance(closed.get("metrics"), dict)
         subject = {"tool": "run-gate", "kind": self.kind, "id": self.subject_id,
@@ -162,5 +163,13 @@ def pytest_runtest_logreport(report) -> None:
 def pytest_unconfigure(config) -> None:
     global _PROFILE
     profile, _PROFILE = _PROFILE, None
-    if profile is not None:
+    if profile is None:
+        return
+    # A profiling failure must never change the lane verdict: a missing
+    # number is NO_MEASUREMENT, not an error.
+    try:
         profile.write()
+    except Exception as exc:  # noqa: BLE001 - profiling is best-effort
+        print(f"run-gate profile: NO_MEASUREMENT, could not write "
+              f"{profile.subject_id}: {type(exc).__name__}: {exc}",
+              file=sys.stderr)

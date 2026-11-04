@@ -223,7 +223,7 @@ the per-entry evidence table, WIP-branch findings, and ID collisions.
 - B025 — attestation-timeout infrastructure forward — dedicated regression and registered gate complete
 
 **Later waves (open, not scheduled)**
-- B085 — third test-path veto (R3 canary) untouched by B074's opt-out — OPEN (JS/R3 wave)
+- B085 — third test-path veto (R3 canary) untouched by B074's opt-out — FIXED 2026-11-04 (a3aefbd49)
 - B087 — JavaScript/TypeScript canary (R3) — **SHIPPED in `assay-v9.0.0`**; the tag's generated changelog records merge `1b5f61a91`; both dstdns R3 canaries PASS with retained schema-v15 verdicts and verifier transcripts.
 - B078 — R0 trusts only the wrapped target's exit code — PARTIAL (checkpoints 2/3: pytest, go test)
 - B103 — execution-interruption boundary (reserved stub; ID collision with an unmerged branch's own B099/A-448 only) — OPEN (owned by the RG-55 continuation)
@@ -9414,7 +9414,7 @@ claim that the current release was "5.2" is wrong.
 
 ## B085 — a THIRD declared-target test-path veto (`judge.canary.target`, R3) is untouched by B074's opt-out and its refusal names neither a flag nor a remedy
 
-**Status: OPEN (filed 2026-09-09) — `canary.py`'s `is_test_path` veto (R3) still does not consult `allow_test_path_targets`, confirmed on main.**
+**Status: FIXED 2026-11-04 (a3aefbd49) — ruling: the flag asserts a layout claim, so it reaches R3 too; a test FILENAME is still refused and the refusal names the flag. Filed 2026-09-09; was OPEN, canary.py's veto did not consult the flag.**
 
 **Filed 2026-09-09** by B074+B077's round-2 fix-verification reviewer,
 while confirming the B074→R2 extension reached exactly the sites it
@@ -10679,6 +10679,11 @@ backlog prose).
 - Handoff: `assay/nyxloom-trove/handoffs/assay-P35-execution-interruption-boundary.md`
   on branches `assay-next-wave` (carved), `assay-b099-p35-repair` (repair
   attempt), and `review/assay-p35-execution-interruption-boundary` (review).
+- Archive (2026-11-04): the local branch `assay-b099-p35-repair` was removed
+  in the worktree close-out (operator Q6, B103 stays archived); its tip is
+  preserved as the git tag `archive/assay-b099-p35-repair` (siblings
+  `archive/assay-next-wave`, `archive/assay-p35-execution-interruption-review`).
+  Read the design with `git show archive/assay-b099-p35-repair:<path>`.
 - Branch commits of interest: `bcb70320` (carve interruption receipt
   boundary), `c132d598` (reserve next interruption package id), `40b2106e`
   (repair P35 interruption handoff), `6d34f0d7` (close P35 residual handoff
@@ -13152,11 +13157,22 @@ R2 pass is claimed. The CHANGES release notes say so.
 The provisional-release exception is bounded by the first dated release
 heading after `Unreleased`, which must match CMRU's protected transaction
 version, not only by tags that exist before the gate: B169 is valid for release
-versions `>=10.0.0,<11.1.0`; the operator extended the original waiver on
+versions `>=10.0.0,<12.1.0`; the operator extended the original waiver on
 2026-10-31 (10.2.0 extension: CW8/CW9/IO2 ship under it; 11.0.0 extension: verdict v17 and --jobs ship under it). The gate also requires at least one listable stable
-`assay-vX.Y.Z` tag and refuses if the latest visible tag is 11.1.0 or newer.
-Thus a prepared 11.1.0 release is refused before its tag is created, and
+`assay-vX.Y.Z` tag and refuses if the latest visible tag is 12.1.0 or newer.
+Thus a prepared 12.1.0 release is refused before its tag is created, and
 missing or unreadable tag state cannot authorize the waiver.
+
+**Decision record D1 (operator, 2026-11-04):** the window is extended to
+versions below 12.1.0 so assay 12.0.0 can pass `self-qualification-provisional`.
+Reason: the R2 campaign is to run later with `--jobs` on the scratch host
+(r1002) rather than serially on the shared host; same standing policy as for
+10.x and 11.0. The window is a single constant (`WINDOW` in
+`tools/self-qualification-gate.sh`); the marker text and refusal messages derive
+from it. Anything at or above 12.1.0 (prepared heading or an existing tag)
+stays refused and needs the full `self-qualification` lane. It closes with the
+R2 obligation below, or by the next window decision; it does not close by
+passing the provisional lane.
 
 **Close when:** one full `self-qualification` run and one `analysis-r2` run are
 completed against the exact `assay-v10.0.0` tag through the registered
@@ -13182,8 +13198,8 @@ qualification rigor runs. `self-qualification-provisional` (`assay.toml`,
 R0, R1 (whole-target 100% line and branch over `src/assay`) and the R3 canary.
 After the lane is verified it records `.assay/mutation-postponed-assay.json`
 (`result: provisional`, tracking id B169, valid only for a prepared release
-version `>= 10.0.0` and `< 11.1.0`; extended by operator on 2026-10-31; a
-newer `assay-v11.1.0` or later tag also refuses it). The full lane is unchanged
+version `>= 10.0.0` and `< 12.1.0`; extended by operator on 2026-10-31 and
+2026-11-04; a newer `assay-v12.1.0` or later tag also refuses it). The full lane is unchanged
 and deletes the marker; the marker
 cannot satisfy an R2 request.
 
@@ -13554,7 +13570,7 @@ environment cannot support them, or run them only in the tester image.
 
 ## B184 — synthetic 10.0.1-shape crashed and budget_exceeded resume fixtures
 
-**Status: OPEN.** `tests/fixtures/mutation-state-10.0.1/` holds real IOBench
+**Status: FIXED 2026-11-04 (a3aefbd49).** `tests/fixtures/mutation-state-10.0.1/` holds real IOBench
 `killed` and `survived` records only; PWMCP left no records. Add synthetic
 `crashed` and `budget_exceeded` 10.0.1-shape records so the resume validator's
 rejection (state recorded under another assay version is re-executed, never
@@ -13575,7 +13591,7 @@ revalidation. Treat these fields as a cache miss so the candidate is re-run.
 
 ## B187 — use the shared R0 observation mapping
 
-**Status: OPEN.** `_classify_r0_result` hand-maps observation status instead of
+**Status: FIXED 2026-11-04 (a3aefbd49).** `_classify_r0_result` hand-maps observation status instead of
 using `contention.observation_input`; route it through the shared mapping.
 
 ## B188 — key R2 coverage exclusions by stable source identity
@@ -13650,7 +13666,8 @@ mutation buckets, template seal order, and cleanup; the controller runs the
 
 ## B194 — pilot selector minimum size blocks small pilots
 
-**Status: OPEN (found by the CW9 btrfs pilot, 2026-11-01).**
+**Status: FIXED 2026-11-04 (a3aefbd49) for the size minimum; the second half (no scanner candidates in a small non-scanner plan) remains open.**
+Found by the CW9 btrfs pilot, 2026-11-01.
 `tools/b110_pilot_select.py --size 20` is refused because its minimum is the
 per-file coverage (59 for assay's own plan) plus missing-operator coverage, and
 it cannot select from a plan without scanner candidates (a small project's
@@ -13673,11 +13690,11 @@ survivor, and bisect against the pre-CW8 commit.
 
 ## B196 — cowtree is imported for every higher-rigor lane even when MDT_COW_ROOT is unset
 
-**Status: OPEN (filed at 10.2.0).** P2: same failure class as B191 (a missing sibling package turns into an import error before any verdict). Import cowtree lazily only when a CoW area is configured. Source: 10.2.0 pre-release review F1.
+**Status: FIXED 2026-11-04 (301d31d10).** `_cow_workspace.open_workspace` returns the plain path without importing cowtree when `MDT_COW_ROOT` is unset. Originally: P2: same failure class as B191 (a missing sibling package turns into an import error before any verdict). Import cowtree lazily only when a CoW area is configured. Source: 10.2.0 pre-release review F1.
 
 ## B197 — Dead CoW runs are not collected after SIGKILL or a container kill
 
-**Status: OPEN (filed at 10.2.0).** P2: the run directory stays under MDT_COW_ROOT/runs/ and nothing collects it; run `cowtree gc` for dead runs at the start of the next run. Source: review F2.
+**Status: FIXED 2026-11-04 (301d31d10).** The adapter runs `cowtree.gc` on the area's runs dir before `open_run`; a gc failure is an advisory. Originally: P2: the run directory stays under MDT_COW_ROOT/runs/ and nothing collects it; run `cowtree gc` for dead runs at the start of the next run. Source: review F2.
 
 ## B198 — The wheel ships a top-level cowtree package
 
@@ -13685,11 +13702,11 @@ survivor, and bisect against the pre-CW8 commit.
 
 ## B199 — Cleanup-only failures after a finished measurement are ERROR, not an advisory
 
-**Status: OPEN (filed at 10.2.0).** P3: a Run.close failure after the verdict inputs are complete (for example files a test wrote next to the snapshot) should be an advisory. Source: review F4.
+**Status: FIXED 2026-11-04 (301d31d10).** A workspace close failure after the body finished raises `WorkspaceCleanupError`, which `run_lane` prints as `assay: advisory:` and keeps the outcome; the leak RuntimeError and the LANE_TIMEOUT rule are unchanged. Originally: P3: a Run.close failure after the verdict inputs are complete (for example files a test wrote next to the snapshot) should be an advisory. Source: review F4.
 
 ## B200 — CoW parity test lacks git status/index and has never run on a real btrfs area in CI
 
-**Status: OPEN (filed at 10.2.0).** P3: add git status and the index to the plain-versus-clone parity test and run it once on a real btrfs area (a scratch VM pilot passed on 2026-11-01). Source: review F5.
+**Status: PARTIAL 2026-11-04 (43f38ef7c): git status and index assertions added; the real-btrfs CI run stays OPEN (needs a btrfs area).** Originally: P3: add git status and the index to the plain-versus-clone parity test and run it once on a real btrfs area (a scratch VM pilot passed on 2026-11-01). Source: review F5.
 
 ## B201 — Optional packed-object reflink path on XFS
 
@@ -14011,3 +14028,139 @@ Operator direction: mutation campaigns run without fsync by default.
 **Dependencies and order.** After RG-149 lands in run-gate (so the default exists), and with or after B207 (scheduling
 consumes the same profiles). Independent of the v18 verdict cut (B208), except that the mode recording lands in
 `judgment.r2.profile` if B208 is still open.
+
+## B210 — rename the assay dependency manifests to the `requirements-<use-case>.txt` convention
+
+The estate rule (root `AGENTS.md` Conventions: every dependency manifest carries a use-case suffix; never `<use-case>-requirements.txt`) says the `assay/` manifests change with assay's next release. Still suffix-form: `gate/distribution/build-requirements.txt`, `gate/distribution/lint-requirements.txt`, `nyxloom-trove/carve-assets/P24/build-requirements.txt`.
+
+**Scope (mechanical).** `git mv` the three to `requirements-build.txt`, `requirements-lint.txt` and `requirements-build.txt`; update every consumer: `gate/distribution/build_release.py`, `tools/tester-unified-gate.sh` (`-r "$distribution/..."` at the two install phases and the comment above the lint one), `tools/self-qualification-gate.sh`, `gate/tests/test_distribution_build_release.py`, `test_distribution_gate.py`, `test_self_lane.py`, the P24/P25 carve assets (README, `fixture-manifest.json`, `test_acceptance.py`, `build_release_fixture.py`), `docs/DESIGN-GUIDE.md`, and the path mentions in this file. `tester-unified/Dockerfile`'s `/tmp/internal-build-requirements.txt` is a scratch file in the image, not an assay manifest, and stays. The wheelhouse manifests (`*-wheelhouse-manifest.json`) are not renamed.
+
+**Acceptance.** A repo-wide grep for the three old paths is empty outside historical reports and handoffs; the distribution and self-lane tests plus the registered assay gate pass; the release build still reproduces the same `.pyz` bytes (B003).
+
+**Prior art.** Commit `1019655cc` on the former branch `requirements-prefix-20261014-fc11d47` did exactly this rename at an older base (its migration gate was blocked by an unrelated tester-unified socket check on 2026-10-14, never re-run); its debian-install-v2 part already landed on main as `fb071df80`. The patch is archived at `artifacts/worktree-archive-20261104/requirements-prefix-20261014/0001-refactor-prefix-specialized-requirements-files.patch` (gitignored artifacts folder of the main checkout).
+<!-- Id note (2026-11-04): B210 exists on branch finish-assay-1-20261104 (not on main). The ids below start at B211; the controller
+     resolves ordering on merge. -->
+
+## B211 — assay launchers run as the checkout owner with a generated passwd/group overlay; editable installs go to a lane prefix (lane-uid phase 3)
+
+**Status: OPEN (filed 2026-11-04).** Operator decision 2026-11-04 (binding): tester lanes run as the checkout owner with a generated read-only
+passwd/group overlay, a per-lane HOME and a read-only tester venv; the baked uid 1003 rule retires. Run-gate RG-151 is phase 1, tester-base
+TB-13 phase 2, this entry and cmru KI-114 phase 3, run-gate RG-153 the default flip.
+
+**Problem.**
+
+- `tools/*gate.sh` launch containers through the assay-owned path (`tools/tester-unified-gate.sh`, `tools/self-qualification-gate.sh`,
+  `tools/self-qualification-container.sh`) and verify identity against a hard-coded user: the B105 identity check at
+  `tools/self-qualification-container.sh:601` compares `.Config.User` with `1003`.
+- A different host owner uid reaches the same "dubious ownership" failure that RG-150 documents; assay replaces git's config and
+  setuptools-scm strips `GIT_*`, so `safe.directory` cannot help.
+- The editable assay install writes into `/opt/tester-venv`, owned by uid 1003 today.
+
+**Design.**
+
+- A small helper in `tools/` (one function, shared by the launchers, tested once) that: resolves uid:gid by `stat` of the checkout root, refuses
+  uid 0, writes a read-only `passwd` and `group` overlay (image's files read once per image id, plus one line for the owner uid with
+  `HOME=/home/lane`) into the lane directory and bind-mounts it `:ro`. Its contract matches run-gate RG-151 exactly (same overlay shape, same
+  lane HOME variables) and it is documented once in `tester-unified/docs/CONSUMERS.md`.
+- Every launcher passes `--user <owner uid:gid>`; the identity check compares against the resolved owner instead of `1003`.
+- Per-lane HOME and XDG directories; the editable install and any `pip install` target a per-lane prefix (`PYTHONUSERBASE`, or a lane
+  venv with `--system-site-packages`); the tester venv is read-only.
+- Audit assay's own gate scripts for writes under `/opt/tester-venv` and record the list.
+
+**Acceptance criteria.**
+
+- On a scratch host whose checkout owner uid is not 1003 the self-qualification and the tester-unified gate pass; the B105 identity check
+  accepts the owner uid and refuses any other.
+- The overlay is mounted read-only; the editable install lands in the lane prefix; a write into `/opt/tester-venv` is a test failure.
+- **Non-mdt path (operator criterion, 2026-11-04).** A test (fake docker, temp checkout) shows the launchers on a plain Debian host or a non-mdt
+  devcontainer: uid taken from the checkout owner, docker gid from `stat` of the socket actually mounted, and no step needs the mdt cockpit or any mdt
+  group.
+
+**Test plan.** Helper unit tests (fake `stat`, fixture passwd), launcher command-construction tests, one live tester run under a foreign uid.
+
+**Dependencies and order.** After RG-151 and TB-13; in parallel with KI-114. Then RG-153.
+
+## B212 — assay observer launchers: drop `ASSAY_GATE_HOST_DOCKER_GID`, derive gids by `stat`, assert against both docker-class gids
+
+**Status: OPEN (filed 2026-11-04).** Operator decision 2026-11-04: new fixed estate group `mdt-docker` (gid 2751) on the host relay socket and on
+`/run/cgprofile` (mdt-cockpit MDT-053, cgprofile CP-43); every consumer derives the gid by `stat` of the socket it mounts.
+
+**Problem.** `tools/resource-observer-gid.sh:56-75` (`assay_host_docker_gid`) accepts an environment override `ASSAY_GATE_HOST_DOCKER_GID`
+(passed in "from the host launcher", which is the stale host-number pattern) and otherwise reads `/run/cgprofile` and requires mode 770.
+The observer gid must differ from the docker gid. On an mdt host there are now two docker-class gids (`mdt-docker` on the cgprofile
+directory and the relay socket, and the host `docker` group); on a non-mdt host there is one and possibly no cgprofile at all.
+
+**Design.**
+
+- Remove the `ASSAY_GATE_HOST_DOCKER_GID` input entirely (no alias; a set variable is an error naming the replacement, so no stale launcher
+  silently relies on it).
+- Derive the docker-class gid by `stat` of the docker socket the launcher mounts (`DOCKER_HOST` when `unix://`, else the default) and, when
+  present, of `/run/cgprofile`.
+- Assert the observer socket gid differs from every derived docker-class gid (socket gid, `/run/cgprofile` directory gid); keep the
+  existing mode and ownership checks of the observer directory.
+- Messages name the paths read, never a group name.
+
+**Acceptance criteria.**
+
+- The helper's tests cover: observer gid equal to the socket gid refused; equal to the `/run/cgprofile` gid refused; distinct accepted; the old
+  variable set gives a clear error.
+- No `ASSAY_GATE_HOST_DOCKER_GID` remains in `assay/`, docs or tests except the refusal test.
+- **Non-mdt path.** With no `/run/cgprofile` and an arbitrary-gid docker socket the launchers work without the observer (or refuse the observer
+  feature with one clear infrastructure message when it is required) and require no mdt group.
+
+**Test plan.** `bash` helper tests with injected `stat` results, plus the existing launcher tests updated.
+
+**Dependencies and order.** After CP-43 and with MDT-053; pairs with run-gate RG-152.
+
+<!-- Id note (2026-11-04, ops-dstdns-r2 session): the ids below start at B213, one past the highest id on main (B212); B210 exists only on
+     branch finish-assay-1-20261104. The controller resolves ordering on merge. -->
+
+## B213 — `assay plan` and a budget-bound R2 run should say when the lane budget cannot cover the plan, and what each resumed attempt costs
+
+**Status: OPEN (filed 2026-11-04).** Found by the first dstdns native R2 pilot (`reports/DSTDNS-R2-PILOT-2026-11-04.md`), assay 11.0.0.
+
+**Problem.** dstdns's `inf_events_obs_r2` declares `budget = "3m"`. `assay plan inf_events_obs_r2 --json` reports `candidate_count 32`,
+`budget_per_candidate "90s"`, `estimated_wall_seconds 2880` and exits normally, with no hint that the lane budget (180 s) is 16 times smaller than the
+estimate. The run then ended every attempt with `BUDGET_EXCEEDED/LANE_TIMEOUT` (exit 4) after 6 to 8 candidates (4 to 6 attempts for 32 candidates, at jobs 1 and jobs 3),
+because each attempt re-pays the baseline pytest run (about 7 to 13 s) plus the snapshot and plan phases (the `plan` event reports `elapsed_s` 41 s at the start of a
+resumed attempt). Resuming works, but the operator cannot tell from the plan or the header that a 4-6 attempt campaign is coming, or that a larger budget would
+have been a single attempt. All 80 dstdns R2 lanes carry budgets chosen as "plan estimate x 1.5" without any R2 run to calibrate them.
+
+**Design.**
+
+- `assay plan --json` adds `budget_seconds`, `budget_fits_estimate` (bool) and, when false, `attempts_estimate` (ceil of estimated wall over `budget - fixed_overhead`) and
+  `fixed_overhead_seconds` (baseline plus snapshot, from the last progress file when present, else the declared lane argv timing is unknown and the field is null).
+- The text form prints one WARN line in that case, naming the lane `budget` key.
+- No change to verdict semantics or exit codes; an R2 lane whose budget is below one candidate plus overhead is already an error today and stays one.
+
+**Acceptance criteria.** Plan output for a lane with `budget` below the estimate carries `budget_fits_estimate=false` and the warning; a lane that fits carries true
+and no warning; both fields are covered by a schema test; run-gate RG-155 consumes the field in its header.
+
+## B214 — R2 candidate materialization dominates the per-candidate cost for small test selections; investigate per-file clone cost and the strict fsync setting
+
+**Status: OPEN (investigation, filed 2026-11-04).** Evidence: dstdns pilot lane `inf_events_obs_r2`, 32 candidates, tree of about 2.7k tracked files (6 MB), ext4/btrfs hosts,
+tester image without eatmydata.
+
+| Run | host | mean `materialize` | mean `command` | mean candidate elapsed |
+| --- | --- | ---: | ---: | ---: |
+| jobs 1 | v1001 (idle) | 11.1 s | 7.7 s | 19.1 s |
+| jobs 1 | r1002 (two other campaigns running) | 13.5 s | 7.0 s | 20.9 s |
+| jobs 3 (cheap clone on btrfs) | r1002 | 31.3 s | 10.4 s | 42.9 s |
+
+The pytest selection takes 7 s but 55 to 73 percent of each candidate is the materialize phase, and at three workers it grows 2.3 times while the command phase grows 1.5 times,
+so the 3-worker wall clock was only 1.35 times faster than the serial run on the same host (12m44s versus 17m12s). The run uses the default `io_sync = strict`.
+
+**Questions to answer first (no fix is assumed).** (1) Is the btrfs path a subvolume snapshot per worker, or a per-file reflink/copy of the tree? (2) How much of the
+phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durable`)? (3) Does materialization scale with file count (dstdns versus a 300-file project)?
+**Acceptance.** A measured breakdown of the phase for the three cases and, if per-file work dominates, a design note; the fix is a separate package. Pairs with run-gate RG-154 (pilot).
+## B213 — `assay plan <lane>` crashes with a TypeError on an ingested-mutation lane (`max_mutants` is None)
+
+**Status:** OPEN. Filed 2026-11-04 from dstdns (P220, `ui_apierror_r2`; assay 9.0.0). Severity: P3 (no verdict affected; blocks plan-based budgeting of ingested lanes).
+
+**Observed.** For a lane that ingests a Stryker report (`judge.mutation = {format = "mutation-report-json", artifact, fail_under}`; `max_mutants`, `jobs` and `operators` are refused for ingested lanes) `python3 assay-9.0.0.pyz plan ui_apierror_r2` ends in a traceback instead of a plan or a refusal: `assay/cli.py:3823 _discover_plan_jobs: limit=lane.judge.mutation.max_mutants + 1` -> `TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'`. The lane loads fine (`lanes`, `run-gate --dry-run`).
+
+**Design.** `plan` either refuses an ingested lane with one clear message ("candidates come from the ingested report, nothing to plan before the tool ran") or plans from the report artifact when one exists. It never raises a traceback.
+
+**Acceptance criteria.** Test: `plan` on a lane with an ingested `judge.mutation` exits with the refusal text and no traceback; the lane's declaration is unchanged.
+
+**Dependencies and order.** None. The dstdns consumer falls back to a written provisional budget (D-569 section 5) until this lands.

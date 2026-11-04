@@ -1,0 +1,1402 @@
+# Boot-pool patch design and evidence
+
+**Status: experimental. Exact-build adapters are registered for v27 RC.1, one
+v27 pre-RC.2 nightly, and one rolling v28 nightly. Do not treat an unregistered
+build as supported.**
+
+This work investigates using bounded unused boot-disk space for VM/container
+storage and user data while keeping TrueNAS boot environments and internal
+system datasets under stock control. The earlier 25.10.4 proposal is not a
+working implementation; its UI workflow failed and remains historical.
+
+## Support policy and update state
+
+The closed compatibility boundary is
+[`supported-builds.json`](../supported-builds.json). It currently contains
+`27.0.0-RC.1`, `27.0.0-MASTER+20261029-173417`, and
+`28.0.0-MASTER+20261029-175210`. v27 RC.1 remains the release base. We retain
+one latest v27 nightly as a pre-RC.2 bridge because the updater advertises it
+and its update/reapply path is needed for v27-to-v28 transitions; retire that
+entry when RC.2 is registered. v28 has one rolling base, the latest nightly
+only. A newer build replaces that row only after source capture, adapter
+review, exact-build checks, and live acceptance.
+
+An adapter binds one exact release string to its complete target list,
+preimage SHA-256 values, target-manifest digest, patch list, metadata, and
+install-bundle digest. Before changing `/usr`, its installer checks the exact
+source tree and runs every hunk through GNU `patch --dry-run --fuzz=0`. After
+apply it verifies compiled Python, API behavior, installed target/helper
+hashes, reverse zero-fuzz dry-runs, and `/usr` read-only state. Unknown builds
+are refused before mutation. The refusal names the registered target and the
+update/recheck workflow; it does not treat a version prefix as compatibility.
+
+The registered command is `acceptance/accept.py`; its public target actions include `install-after-update`, `reapply-after-update`, `uninstall-stale-record`, `repair-root-create`, `repair-root-parent-mountpoint`, and `repair-zvol-blocksize`. The external `live-boot` lane requires `TRUENAS_TEST_ALLOW_REBOOT=1`.
+
+Register a build by capturing the exact update metadata and installed
+middleware targets, saving the full target hashes, running
+`patch_drift.py diagnose`, adapting and reviewing each changed hunk, running
+registered API/UI and source-state update acceptance, and only then adding the
+new adapter and digests to the registry. `acceptance/accept.py matrix`
+regenerates the source-state/target index. A PASS in that index means the
+required plant/update/verify lanes passed; optional API and UI results remain
+separately visible.
+
+A TrueNAS update activates a new BE whose `/usr` comes from the stock update
+payload. The previous BE retains its own patched `/usr` and database for
+rollback. The Path A root and eligible descendants mounted at boot are limited to the
+managed user-data namespace. The v27 install record is stored in `/root` inside each BE. The
+updater copies that file to the new BE, but its previous version and bundle
+hash describe the old `/usr`; it is stale evidence. Path A data and Path B pool
+data survive outside the BE. Path A is unmounted after update until its
+matching adapter is reapplied. Path B stays on its reserved partition with the
+same pool identity and data. The active BE still needs the exact adapter for
+managed boot/import behavior.
+
+The v27 fresh `install` operation refuses an existing `boot-pool/user-data`
+root or `boot-disk-data` pool. It assumes there is no prior patch state. After
+update, the runner inspects the source record and selects digest-bound
+`reapply-after-update`; this is the correct operation when Path B already
+exists. It archives only a verified old record, checks the complete new source
+fingerprints, and then applies transactionally. If the record is missing or
+unrecognized, installation stops for explicit review instead of guessing.
+
+The v28 rolling policy refuses retired nightlies. The exact-build lane names
+the currently registered base and directs the operator to update through
+TrueNAS and verify the new reported build before attempting the patch. A v28
+adapter is not inferred from a close nightly, and a source manifest on Path A
+or Path B cannot certify the active BE's `/usr`.
+
+## Patch series and bundle identity
+
+Each registered adapter has an ordered `series/` directory with one Git patch
+per logical change. The required `Change-Id`, `Capability`, `Role`, `Risk`, and
+`Requires` trailers are parsed and dependency-checked by the shared
+`libraries/patchseries` library. The exact-build compatibility boundary still
+lives only in `supported-builds.json`; its `patches` list names the ordered
+series files. The generated [`PATCH-SERIES.md`](../PATCH-SERIES.md) is an
+inventory view of those headers and patch hunks.
+
+This makes ownership and dependency order visible where changes are reviewed,
+instead of assigning identity to an old grouped file that combines unrelated
+changes. The installer still applies every selected hunk with zero fuzz and
+checks the exact preimage target hashes before mutation. The archive layout
+uses `v27/series/` or `patch/series/` and updates the bundled adapter metadata;
+bundle digests therefore bind the changed archive bytes. The installed target
+files remain byte-identical to the former grouped-patch output, as recorded
+per file in [`series-equivalence-2026-10-30.json`](../reports/series-equivalence-2026-10-30.json).
+
+The proof distinguishes the complete fingerprint set from the patched set.
+Both v27 builds fingerprint 19 files and patch all 19. The v28 adapter also
+fingerprints 19 files but patches 18: `middlewared/plugins/zfs/encryption_info.py`
+is required for exact stock preimage validation, but neither the retained
+legacy patches nor the series changes it. The report names that target and
+records why it is unpatched. Proof rows must be non-empty and exactly equal the
+union of paths touched by the legacy and series patch lists.
+
+The legacy patch order was captured from the pre-series installer snapshot
+`fe4adad7185129506738f7bf280418739209a679`; its installer paths and loop lines
+are recorded in [`manifest/legacy-installer-order.json`](../manifest/legacy-installer-order.json).
+The contract test requires every `supported-builds.json` `legacy_patches` list
+to match that recorded installer sequence. Current installers read the
+adapter's ordered series list.
+
+The install-bundle digests changed because the deterministic tar archives now
+store series patch names and series-aware adapter metadata. The retired grouped
+patch members were replaced in the archive; the equivalence report confirms
+the resulting installed middleware bytes did not change.
+
+| Registered build | Before series migration | Current archive SHA-256 |
+|---|---|---|
+| `27.0.0-RC.1` | `50105fc127ab8a17e969d36eba5070efc76fbc0ef2a5dc52b27e2125d869e11c` | `9d96a3ae5603f33f470cf23929b5f3857a48b85d7055da76060a58bc0a6d0409` |
+| `27.0.0-MASTER+20261029-173417` | `60b3696c44768f9c6958791e8b46c2a205d5daede9c8ab29b23228c141b58e76` | `f3fa0be3d25ac3c9fc21a536028c10accf5e66978e5110eb096d443f1e23a702` |
+| `28.0.0-MASTER+20261029-175210` | `5366a8029f34162515e2b6c0935cf9b19abe3c41cc214886428af583d6db069b` | `4ff5f7e9ba90481e2d663588ffa2c98b121f7e937343abfd61081b2d9dff9935` |
+
+Recompute all three archive digests from the same bundle builders used by the
+installers with:
+
+```bash
+python3 scripts/truenas/boot-pool-patch/scripts/check_install_bundle_digests.py
+```
+
+The v27 nightly's `adapter.json` `reapply_from_bundle_sha256s` field includes
+`9d96a3ae…` because that is the registered RC.1 bundle digest it is allowed to
+recognize after the RC.1-to-nightly update. It is a prior-bundle allowlist
+entry, not the nightly's own digest; the nightly archive digest is
+`f3fa0be3…` in `supported-builds.json`.
+
+Grouped patches are retained under each registered adapter's `legacy/`
+directory only as proof inputs for already-gated builds. The generated
+[`manifest/hunk-map.json`](../manifest/hunk-map.json) crosswalks those legacy
+hunk hashes to the new `Change-Id` values; it is not a runtime registry and
+installers do not read it. The generated views are refreshed and checked with
+`python3 scripts/truenas/boot-pool-patch/scripts/generate_series_views.py` and
+`python3 scripts/truenas/boot-pool-patch/scripts/generate_series_views.py --check`.
+
+## Test gates
+
+The registered `unit-boot-pool-patch` lane runs the patch's policy, artifact,
+and live-gate contract tests in `tester-unified`, without starting a TrueNAS
+guest. Runtime acceptance stays in separate guarded lanes because it needs a
+disposable guest and may create storage, start VMs or containers, or reboot.
+Use the installed Run-Gate CLI for every verdict so the declared lane,
+resource limits, environment, and recorded result remain authoritative. The
+small `run-live-gate.py` helper only provisions the network-attached tester
+that the ordinary ephemeral environment cannot provide; it then delegates
+back to Run-Gate. This keeps quick source-contract feedback distinct from
+evidence that an adapter works against one exact TrueNAS build.
+
+External-host mode exists for a disposable physical or provider VM when local
+TCG admission is unavailable. It requires an explicit `--docker-network`, a
+verified custom bridge, pinned SSH host keys, and an HTTPS UI origin. It allows
+read-only inventory, exact-build v27/v28 patch lanes, guarded Path B
+partition/pool setup, the read-only `live-ui-auth` gate, the guarded
+`live-ui-prepare-ssh` lane, API probes, and UI acceptance. SSH preparation adds the supplied public key
+to TrueNAS's built-in root user, verifies that root password login and global
+SSH password authentication are disabled, then starts the service. It keeps
+other root authorized keys and preserves the automatic-start setting when
+already on. Following SSH lanes can then exercise the configured key-only
+account without enabling password logins.
+The registered live-boot gate and registered live-update gate are guarded,
+destructive acceptance flows. The external `live-boot` lane is allowed only with
+`TRUENAS_TEST_ALLOW_REBOOT=1`; it checks guest and pool state before reboot,
+then verifies the target version, Path A mount, and optional Path B reimport.
+The UI lanes accept `TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1` only when resuming
+an existing Path A root; `TRUENAS_TEST_RESUME_EXISTING_UI_DATASET` must name the
+exact existing UI-created dataset, and resume cannot be combined with root
+provisioning.
+The wrapper does not restore provider snapshots, so use it only when the
+external host is disposable and its reboot is planned. `live-update` and the
+wider workload and vdev lanes remain managed-guest only because the wrapper has
+no provider lifecycle or rollback contract. The networked tester is still
+resource-capped in the gates slice; those limits do not constrain the external
+host. The explicit `--allow-high-psi` flag is
+restricted to external targets and one invocation. It skips only `some/full`
+PSI thresholds; readable PSI, finite memory limits, current usage below every
+hard limit, CPU quota, and the 0.5 CPU / 512 MiB tester caps remain required.
+
+### Read-only storage profile checks
+
+`live-inspect` accepts `path-a`, `path-b`, and `both`. It derives Path A
+presence from the exact `boot-pool/user-data` dataset and Path B presence from
+the exact `boot-disk-data` pool reported by direct guest commands. It requires
+the observed pair to match the selected profile: Path A only, Path B only, or
+both. Middleware query counts are not used as proof of absence. This check
+lets acceptance inventory a combined start state before planting fixtures or
+changing the guest. The [consumer guide](CONSUMERS.md#inspect-and-prove-a-series)
+shows the profile setting, and the [README feature summary](../README.md#truenas-boot-pool-storage-patch)
+links this rationale from the feature surface.
+
+### Combined layout update routing
+
+An update to a new boot environment leaves the v27 Path A root unmounted until
+the v28 middleware adapter restores its boot mount integration. The v28
+adapter writes its backup and install record to one persistent root. For a
+combined Path A and Path B source, acceptance therefore selects Path A as the
+adapter location; Path B remains an independently mounted ZFS pool. A
+Path B-only source keeps its adapter backup on Path B. This routing is checked
+by the state-aware acceptance tests and by the A+B survival cell. The
+[consumer workflow](CONSUMERS.md#update-and-reapply-workflow) shows how the
+registered runner applies this policy.
+
+### Historical v1001 observed-source exploration (2026-10-21)
+
+The `live-ui-observed-v1001` lane was a narrow exception for UI exploration on
+v1001's already-customized v27 RC.1 installation. The normal `live-v27-patch`
+lane correctly refuses it because 14 of 15 current adapter targets do not
+match the release fingerprints, and no install manifest identifies the custom
+state. Rather than overwrite unknown code, the exploratory lane pins the exact
+hashes of all 15 adapter targets plus the two matching custom modules, checks
+that the patch-install marker is absent, and then runs the existing bounded
+PWMCP UI workflow. If the Path A root is absent, a second explicit guard lets
+the lane create only the empty `boot-pool/user-data` root with a 2 GiB quota,
+fixed mountpoint, and `canmount=on` through ZFS. It verifies the mount and
+empty tree before the UI workflow. This setup is required because the observed
+middleware refuses root creation through dataset CRUD; it means this lane does
+not test UI creation of the root. Any changed source hash stops the lane
+before storage mutations.
+This provides an evidence path when a disposable host is available but no
+local TCG guest can be admitted. It does not validate the adapter bundle,
+attribute the custom files to the golden image, or generalize beyond this
+specific v1001 fingerprint. On the 2026-10-21 live run, the root passed
+verification but the first child dataset create failed with
+`NameError: name 'mountpoint' is not defined` in middleware at
+`pool_/dataset.py:117`. No child dataset was created, and the remaining UI
+workflow did not run. This is a failed exploratory acceptance and a middleware
+defect to diagnose, not evidence for the release adapter. The pre-patch
+provider snapshot was restored afterward. This is an archived state; v1001 was
+later reinstalled from the operator's pristine v27 snapshot and re-tested as
+recorded in the current checkpoint below.
+
+## v28 rolling-nightly adapter design
+
+The current v28 base is `28.0.0-MASTER+20261029-175210`, with the exact
+adapter in [`v28-nightly-20261029/`](../v28-nightly-20261029/). It has 19
+fingerprinted middleware targets and one build-bound Path B partition shim.
+The Oct 29 source capture differs from the prior Oct 27 adapter in three
+fingerprints: `middlewared/plugins/container/crud.py`,
+`middlewared/plugins/container/lifecycle.py`, and
+`middlewared/plugins/vm/crud.py`. All six current series patches pass
+zero-fuzz dry-runs; the former grouped source had four files.
+The VM import hunk was narrowed to the changed `kvm_supported` import because
+Oct 29 reordered the API imports; the complete source preimage hash is checked
+before that one-line hunk can run. The old Oct 14 and Oct 27 adapter rows are
+retired from the support registry. The current deterministic bundle SHA-256 is
+`4ff5f7e9ba90481e2d663588ffa2c98b121f7e937343abfd61081b2d9dff9935`.
+
+Path A validates the mounted `boot-pool/user-data` root and permits an unused
+reserved partition elsewhere on the disk. Path B uses only the reserved free-
+tail partition labelled by PARTUUID and accepts a single Stripe data vdev. It
+refuses mixed or mirrored topologies, non-default create options, boot-pool
+attachment, and destructive export that could wipe the parent disk. The narrow
+partition topology keeps wipe behavior understandable: middleware otherwise
+sees the parent whole disk. The release-bound
+[`pool_create_schema_v28.json`](../v28-nightly-20261029/pool_create_schema_v28.json)
+records the exact `pool.create` fields and defaults from this build. Empty
+string encryption defaults normalize to `None`; only that observed default is
+accepted, while non-empty secrets and other non-default values remain
+refusals.
+
+The UI wizard exposes the reserved partition only for the Path B profile. Its
+erase-confirm checkbox is a hidden input beside a visible label; PWMCP clicks
+only the matching visible label and verifies the checkbox state before
+continuing. The API and UI lanes verify Path A/B dataset, zvol, container, and
+VM operations against direct ZFS backing. They do not prove guest OS boot,
+share-client connectivity, or second-disk behavior.
+
+A v28 install record binds exact build, storage profile, bundle digest, target
+preimages, patched target hashes, helper hashes, and the stock-source backup.
+Re-running the same build and bundle is a verified no-op. `replace` is for a
+same-build adapter replacement after verifying the currently installed patch;
+it is not a way to apply a retired nightly's adapter to another build. The
+current adapter registry refuses an older v28 nightly before connecting to a
+target and prints the supported base and update/recheck instructions.
+
+The Oct 29 adapter's complete live acceptance and the prior build's historical
+Path A/B acceptance are kept separate in the generated
+[acceptance index](../../docs/ACCEPTANCE-RESULTS.md). Do not use Oct 27 live
+results as evidence for the Oct 29 adapter.
+
+### v27 nightly update and reapply
+
+The registered v27 bridge nightly is `27.0.0-MASTER+20261029-173417`. Its
+full 19-target source fingerprint and six former grouped-patch dry-runs matched
+the captured build; the current nine-patch series also passes zero-fuzz checks.
+The Path A update/reapply survival and API lanes passed. The newer
+build's full UI lane has not passed after the Playwright pin was corrected;
+the Oct 27 Path A/B UI matrix is historical evidence for that earlier adapter,
+not a pass for the current nightly.
+
+The RC.1-to-nightly update created and activated a new BE with stock `/usr`.
+It copied `/root/v27-boot-pool-patch-install.json` into the new BE, where the
+RC.1 version and bundle digest were stale. Path A data survived outside the BE
+but `boot-pool/user-data` was unmounted until the new adapter was reapplied.
+Path B pool identity and data stay on the reserved partition. A record alone
+does not prove that the active BE has the patch.
+
+The post-update v27 recovery action validates the exact previous bundle
+digest, the complete current target fingerprint set, the selected root, and
+Path B's existing-pool state before modifying `/usr`. It archives only the
+verified stale record, applies transactionally, verifies middleware, restores
+`/usr` read-only, and mounts eligible Path A datasets. The older fresh `install`
+action refuses any pre-existing Path A root or `boot-disk-data` pool; that was
+the reason the previous Path B-to-v28 attempt stopped. The harness now uses
+`reapply-after-update` when the inspected source record identifies the patched
+v27 base, so the existing pool is handled through the supported operation.
+
+A separate guarded `uninstall-stale-record` action exists for retiring an
+exactly verified v27 record without applying a replacement; it does not infer
+that the current `/usr` is patched. The current matrix and each live result are
+in the [acceptance index](../../docs/ACCEPTANCE-RESULTS.md).
+
+`/usr` is a read-only ZFS dataset mounted from the active
+`boot-pool/ROOT/<BE>/usr`; it is not a live SquashFS mount. The ISO does carry a
+`rootfs.squashfs` update payload, which the updater verifies and extracts into
+the new BE. Each BE keeps its own `/usr`, `/root`, and `/data` datasets. The
+update snapshots/clones `/root` and `/data` into the new BE, then migrates the
+new `/data/freenas-v1.db`; rollback returns to the old BE's old database and
+patch. User pools such as Path A and Path B sit outside `boot-pool/ROOT`, so
+their datasets and bytes remain when a new BE is selected. Their boot-time
+mount behavior still depends on the active middleware adapter.
+
+Exact supported builds, pre/post-apply checks, upstream drift detection, and
+the minimal Path A/Path B patch sets are in the
+[update mechanics](../../docs/UPDATE-AND-DRIFT.md#update-mechanics-q1) and
+[survival acceptance](../../docs/UPDATE-AND-DRIFT.md#update-survival-acceptance-q4)
+record. The patch uses exact
+whole-file fingerprints before any patch hunk, then `--fuzz=0` dry-runs and
+post-apply reverse dry-runs. A new version is not accepted by a version prefix.
+
+### Update-survival runner boundary
+
+The three survival steps use `run-live-gate.py` for the external v1001 host,
+then delegate their verdicts to registered `run-gate` lanes. The wrapper
+starts one capped tester on a selected custom bridge and keeps the repository
+mount read-only. Each invocation receives a separate, mode-0700 state bind for
+the manifest, update job id, and report; that small directory is the only
+writable checkout content and carries state across the three short-lived
+runner containers. The update step alone receives explicit update and reboot
+guards. This keeps fixture state reviewable and resumable without making the
+test runner mutable over the source tree.
+
+The update step maps only registered v27/v28 RC and Nightly trains to their
+middleware update profiles (`EARLY_ADOPTER` and `DEVELOPER`, respectively). It
+checks `update.profile_choices`, reads the current `update.config`, applies the
+selected profile through middleware, and verifies it before reading the exact
+newest manifest. This keeps train discovery deterministic when the stock
+profile hides Nightlies and refuses an unregistered train before changing the
+host. The transition is printed in the evidence log.
+
+## Source comparison
+
+| Image/release | Middleware source used | Finding |
+|---|---|---|
+| 25.10.4 | `e36f4f8318` | Baseline for the retained patch. |
+| 25.10.7 | `8ede398839` | All seven files touched by the 25.10.4 patch match the 25.10.4 versions; the patch dry-run applies. |
+| 27.0.0-RC.1 | tag `TS-27.0.0-RC.1`, commit `d83c3bf89aa4226c8fd1ef25dd273bdf447eb777` | The old patch fails on changed Docker hunks, and `virt/global.py` no longer exists. v27 uses separate `vm.*` and `container.*` middleware. |
+| 27 nightly, `27.0.0-MASTER+20261029-173417` | No complete middleware Git commit is published in the update feed or image metadata; 19 installed targets are fingerprinted directly. | Current exact-build adapter and single pre-RC.2 bridge. Its acceptance is build-specific; see the [generated results index](../../docs/ACCEPTANCE-RESULTS.md). |
+| 28 nightly, `28.0.0-MASTER+20261029-175210` | No complete middleware Git commit is published in the update feed or image metadata; 19 installed targets are fingerprinted directly. | Current sole rolling v28 adapter. Exact-source and live outcomes are separated in the [results index](../../docs/ACCEPTANCE-RESULTS.md). |
+| 28 nightly, `28.0.0-MASTER+20261027-175229` | Retired build; saved acceptance is historical. | This is not the rolling base. Its old UI/API evidence does not certify the Oct 29 adapter. |
+| 28 nightly, `28.0.0-MASTER+20261014-230204` | Candidate middleware source commit `95807c2309548ec72fc09742f323aadec7f6532e` | Historical adapter only. The old patch fails. Several Docker modules changed substantially; `docker/update.py` and `virt/global.py` are absent. |
+
+The Oct 14 v28 ISO's SHA-256 is
+`9312f77d0a94f54dc0396050bd26bb31ea0e81d62b124e30a94075a006e7bc9a`. Its
+embedded `TrueNAS.update` manifest confirms the exact version, build time
+(`2026-10-15T06:04:44Z`), kernel (`6.18.55-production+truenas`), and rootfs
+checksum. Neither that manifest nor the ISO contains a middleware Git commit
+or `GITMANIFEST`. Therefore `95807c2…` is a candidate source snapshot, not a
+verified full ISO-to-source mapping. The Oct 29 v27 and v28 updater feeds also
+publish update identity and checksums without a middleware commit.
+`/etc/version`, package metadata, and inspected release metadata identify the
+build or package versions but do not supply a full source commit or manifest.
+Eight middleware modules extracted from the older v28 nightly rootfs were
+byte-identical to its candidate snapshot:
+`container/info.py`, `pool_/dataset.py`, `pool_/dataset_query_utils.py`,
+`vm/__init__.py`, `vm/crud.py`, `vm/info.py`, `zfs/utils.py`, and
+`zfs_/utils.py`. All three files targeted by the v28 TCG adapter match the ISO
+payload exactly, and the patch dry-run, application, and syntax check pass
+against those extracted files. This verifies the inspected code paths and
+patch targets, but does not identify the full middleware checkout or every
+packaged module. Continue to fingerprint patch targets and fail closed on an
+unknown source shape. The recurring `patch_drift.py upstream` comparison with
+GitHub `master` is advisory because master can advance independently of a
+released nightly. The authoritative check is the exact installed or extracted
+target SHA-256 set and zero-fuzz adapter verification; a master diff alone does
+not prove that a particular build changed.
+
+The patch dry-run was performed against source downloaded from the commits
+above, outside the repository. It passed for both 25.10.4 and 25.10.7. It
+failed for v27 and v28. Do not use the 25.10.4 patch on either release.
+
+## What v27+ protects
+
+The 27 RC source has several distinct protections, so permitting one API call
+does not make boot-pool storage generally usable:
+
+- `pool.dataset.query` excludes boot-pool and other internal datasets by
+  default. It has an `exclude_internal_datasets` query option, but turning that
+  off exposes system datasets too.
+- Dataset create/update validation treats boot-pool paths as internal.
+- `zfs.resource.create`, destroy, and snapshot creation use the
+  `has_internal_path` guard. Public clone validation also protects internal
+  destinations.
+- VM disk validation rejects zvols under an internal path.
+- `container.pool_choices` filters boot-pool out before container creation.
+- The v27 Web UI hides the VM page when `vm.virtualization_details` reports
+  virtualization unsupported.
+
+These checks are separate layers. Turning off the dataset query's internal
+filter would expose the boot pool's `ROOT`, `.system`, `grub`, and other
+service datasets. The shared component-aware policy permits ordinary user
+descendants below `boot-pool/user-data` while continuing to protect the root
+and internal paths such as `.truenas_containers`. It applies to both Path A
+and the separate Path B pool. Query visibility and container pool choices
+remain separate release-specific integrations around the same policy.
+
+The live regression creates a real middleware-managed container dataset,
+confirms its existence with direct ZFS inventory, calls public destroy and
+snapshot creation, checks that the dataset survived and no snapshot appeared,
+then separately verifies public clone refusal. The registered Path A and Path
+B storage gates pass this sequence on v27 and v28. The original v28 Path B
+failure is preserved as a failure artifact; its post-run read-only inventory
+alone could not distinguish the destroy call from the gate's `finally`
+cleanup as the cause of the missing test dataset. The later v28 Path B
+regression gate directly verified dataset survival after both destroy and
+snapshot attempts and verified that the attempted snapshot did not appear:
+[v28 Path B protection gate](../artifacts/live-storage-v28-path-b-existing-container-protection-pass-20261017.log).
+
+The v28 nightly retains these broad boot-pool protections. It also reorganizes
+the container service: `container.pool_choices` moved from
+`container/container.py` to `container/info.py`, while Docker's dataset
+configuration changed shape. The patch must be adapted to each release's
+current middleware and UI call paths, not applied by relaxing a single shared
+filter.
+
+## Candidate storage designs
+
+### A. Let users create data below boot-pool
+
+This requires a narrow, path-component-aware namespace such as
+`boot-pool/user-data/`. The query, dataset create/update/delete, zvol validation,
+VM disk validation, and UI pickers must allow that namespace while keeping
+`boot-pool/.system`, `boot-pool/ROOT`, `boot-pool/grub`, and service-managed
+datasets protected. In the v27 test guest, `boot-pool` has
+`mountpoint=none,canmount=off`; a directly created child also inherited
+`mountpoint=none`. The v27 dataset UI exposes a quota control but not a
+mountpoint control. Its patch adapter therefore accepts creation of the exact
+`boot-pool/user-data` filesystem root only when the UI supplies an explicit
+quota of at least 1 GiB, then pins `mountpoint=/mnt/boot-pool/user-data` and
+`canmount=on`. Root updates and direct `zfs.resource.create` remain refused;
+ordinary descendants are available only after the root is present and
+mounted with those properties. The v27 API acceptance passed dataset and zvol
+operations, VM disk selection and TCG VM process start, container lifecycle
+with persistent dataset storage, and share-record CRUD. PWMCP selected
+`boot-pool/user-data`, created and queried a dataset there, and confirmed
+protected system datasets remained hidden. Upgrade survival and guest OS boot
+remain untested. Broadly removing boot-pool filters remains unsafe and would
+not satisfy the user-data boundary.
+
+### B. Create a separate pool on a new partition
+
+A pool such as `boot-disk-data` would use the ordinary data-pool middleware and
+UI paths, avoiding most boot-pool exceptions. This currently needs a dedicated
+provisioning step: the v27 `pool.create` workflow formats selected whole disks,
+so it cannot create a pool from a new partition on the already-used boot disk.
+The candidate path is to validate and create a free GPT partition, create a ZFS
+pool on that partition, then register/import it with `pool.import_find` and
+`pool.import_pool`. A local 27.0.0-RC.1 QEMU test has now confirmed this path
+through middleware registration, filesystem dataset creation, sparse zvol
+creation, and the normal filesystem, volume, and container pool choice APIs.
+The test used a 20 GiB target whose boot-pool partition ended just below the
+16 GiB image boundary, leaving about 4 GiB unallocated; it created the new
+partition in that tail. It left the existing boot-pool partition extents
+unchanged. After a reboot, `boot-disk-data` came back ONLINE and a marker file
+remained present. This matches a golden image restored onto a larger disk
+without expanding partition 3. A stock install that already gave partition 3
+the whole disk has no such tail; Path B must reserve space during image or
+install preparation, or it must use the separate boot-pool namespace approach
+instead.
+The same guest used a test-only v27 TCG patch to create a VM definition, attach
+the zvol, and start a QEMU process. Filesystem dataset create/query/update/
+delete and sparse zvol create/query/grow/delete all passed through middleware.
+Container create/start/stop/delete also passed through middleware on this
+pool. A persistent user dataset mounted into an Alpine container at `/data`
+accepted a marker written inside the container and returned the same marker
+from the host dataset path. NFS and SMB share create/query/delete also passed
+through their APIs. These share checks did not mount the exports from a client
+or verify protocol access. In this historical run, where `boot-disk-data` had
+already been created outside the UI wizard, PWMCP selected its dataset tree,
+created and queried a user dataset, checked the container pool selector,
+opened the VM wizard through its CPU/memory step, and confirmed the SMB/NFS
+sections and Add actions. It did not submit the VM wizard or create a share
+through the UI. Upgrade survival and guest OS boot remain untested, so this is
+still a proof of concept rather than an install procedure.
+The manual experiment is now represented by
+[`provision_path_b.py`](../provision_path_b.py). It requires an exact disk and
+boot-pool partition, checks the whole-disk/GPT/ZFS-vdev relationship, accepts
+only partitions 1–3 with the boot pool on partition 3, and requires the largest
+aligned free extent to be a tail after partition 3. It backs up the GPT,
+creates only partition 4, verifies partitions 1–3 did not change, creates the
+pool without `zpool -f`, then uses `pool.import_find` and `pool.import_pool` to
+register it. A repeated successful run is a no-op. The registered destructive
+lane passed on v27 and v28 disposable guests with reserved disk tails. The
+v27 Path B provision and storage gates ran on the same COW guest after Path A;
+that evidence is not a fresh isolated Path B guest.
+
+The tool intentionally does not delete a new partition or destroy a pool when
+a later step fails. Those actions can destroy data if the observed state is
+not the state the tool created. It retains the GPT backup and reports the
+partial state for inspection. Partition 4 already present without one healthy,
+middleware-registered `boot-disk-data` pool is a refusal, not an automatic
+resume or cleanup.
+
+The separate-pool design currently looks less invasive for VM disks, container
+storage, and user datasets when unallocated disk space was reserved before
+partition 3 filled the disk. It does not let the same partition serve as both
+a data pool and a cache vdev.
+
+### Cache vdevs
+
+OpenZFS L2ARC is an optional read-cache vdev attached to one pool. It does not
+cache writes, may reduce performance on RAM-constrained systems, and is useful
+only for some read-heavy workloads. A partition assigned as a pool's data vdev
+cannot also be a separate cache vdev. A zvol stored in that pool is a distinct
+block device and can be used as a candidate cache vdev for another pool.
+
+The existing `live_storage.py` acceptance creates a sparse zvol under the
+selected Path A or Path B user-data pool, then uses `zpool add ... cache` to
+attach it to a temporary file-backed pool. It verifies the vdev appears in
+`zpool status` and removes it again. This passed on v27 and v28 for both
+paths. The
+lane also accepts `TRUENAS_TEST_CACHE_TARGET` to use a different already
+imported target pool, but that separate-disk case has not yet been run. The
+test currently uses the OpenZFS CLI directly; it does not verify TrueNAS UI or
+middleware management of cache vdevs.
+
+Still untested are a target pool backed by a second disk, cache and pool import
+ordering after reboot, behavior if the boot-disk pool that owns the zvol is not
+available, and whether L2ARC improves a representative workload. These matter
+because a cache zvol on the system disk depends on that pool being imported and
+the zvol device being present. L2ARC contents are a disposable read cache, not
+the target pool's user data.
+
+See the [OpenZFS caching guide](https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Pool%20Structure/Caching.html)
+and [zvol guide](https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Datasets/ZVOLs.html).
+The inference that a zvol can back another pool's cache device is consistent
+with the [OpenZFS Linux zvol implementation](https://github.com/openzfs/zfs/blob/master/module/os/linux/zfs/zvol_os.c),
+which includes locking for zvols used as vdevs by another pool. The exact
+TrueNAS UI/API flow and real disk import ordering are still untested.
+
+### Auxiliary vdevs on boot-disk storage
+
+The registered `live-vdev-topology` lane explores Path A zvols as the three
+auxiliary roles of a separate pool: L2ARC cache, ZIL/SLOG log, and the special
+metadata allocation class. OpenZFS defines a zvol as a block device that can
+be consumed by a separate pool ([zvol guide](https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Datasets/ZVOLs.html));
+that does not establish that TrueNAS middleware or its UI accepts a zvol as a
+pool-vdev input.
+
+The registered v27 Path A diagnostic used seven 128 MiB zvols created through
+PWMCP and two disposable target pools: a 4 GiB sparse single-disk pool and a
+three-disk RAIDZ1 pool with 1 GiB per disk. The RAIDZ1 special-vdev layout was
+specified as a mirror of two zvols to satisfy the logical redundancy policy.
+The UI showed Cache, Log, and Special wizard steps but did not list the
+boot-pool zvols. API `pool.update` requests to assign the three roles were
+refused for both target pools with `[EINVAL] ... disks were not found in
+system` for `/dev/zvol/...` paths. This refusal occurred before ZFS attachment.
+Direct `pool.query` and `zpool status -P` checks showed both targets ONLINE
+with empty auxiliary-role arrays and no errors. The registered diagnostic
+passed its safe-refusal and cleanup checks; it did not pass auxiliary-vdev
+feature acceptance. No SLOG-write or metadata-allocation probe ran. Evidence:
+the [topology run](../artifacts/live-vdev-topology-v27-path-a-r1-ui-role-steps-retry3-20261018.log)
+and [post-run inventory](../artifacts/live-inspect-v27-topology-a-r1-after-role-ui-cleanup-20261018.log).
+
+This evidence says TrueNAS 27's current disk inventory path rejects the tested
+zvol device paths. It does not prove OpenZFS itself rejects them. The UI wizard
+has the documented Cache, Log, and Metadata steps, but its selectors omitted
+the zvols; no UI role assignment was submitted, and the existing-pool VDEV
+expansion screen was not exercised. The inspected v27 `PoolService._process_topology()` sends every topology
+path to `disk.check_disks_availability()`, then pool create/update pass the
+returned disk map to `pool.format_disks()` before ZFS creates or extends the
+pool. A safe patch therefore needs a type-aware auxiliary-device path: verify
+an exact existing zvol in the managed user namespace, verify its source pool
+is not the target pool, preserve normal physical-disk availability checks, and
+exclude zvols from physical disk formatting. It must also expose those devices
+to a dedicated UI selector; synthesizing zvols as ordinary `disk.query` rows
+would misrepresent them to other disk consumers. See the release-pinned
+[pool service source](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/pool_/pool.py#L280-L335)
+and its [pool create call](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/pool_/pool.py#L526-L552). The [existing-pool update formatting path](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/pool_/pool.py#L711-L719) must also keep zvols out of physical disk formatting.
+Do not bypass that inventory/refusal guard by calling raw `zpool` commands.
+
+The test used distinct zvol block devices. It did not test reusing one
+identical zvol for cache, log, and special roles, nor API acceptance of each
+role independently. Multiple zvols or partitions on one source disk may be
+separate block devices, but they remain in one physical failure domain. Two
+special-vdev zvols on the same boot-pool disk do not protect against loss of
+that disk. OpenZFS requires special-vdev redundancy to be at least as strong
+as the data vdev; special storage holds critical pool data and its loss can
+make the pool inaccessible. A special vdev on a RAIDZ pool is not removable
+as a whole. Cache is optional read state; SLOG is for synchronous-write
+durability, not a general write cache. See the OpenZFS [special-vdev guide](https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Pool%20Structure/Special%20vdev.html)
+and [caching guide](https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Pool%20Structure/Caching.html).
+
+A zvol can only supply a separate target pool while its source pool is
+imported. Using a zvol as a vdev of the same pool that must supply its blocks
+would make the vdev depend on the pool it is modifying. A separate source pool
+on another disk, Path B `boot-disk-data`, partitions from the boot disk, and
+partitions from disks already used by the target pool all remain untested.
+Import order and behavior when the source pool is unavailable are also open.
+OpenZFS supports partition devices as vdev inputs in general, but TrueNAS UI
+and middleware eligibility for these specific layouts has not been established
+([VDEV guide](https://openzfs.github.io/openzfs-docs/Basic%20Concepts/Pool%20Structure/VDEVs.html)).
+
+Small sparse disks were sufficient to create the disposable target pools and
+exercise schema, UI visibility, API refusal, pool-health inspection, and
+cleanup. They do not establish accepted auxiliary topology, write behavior,
+device latency, endurance, power-loss protection, physical fault tolerance,
+cache effectiveness, or production capacity. A future accepted RAIDZ1 special
+vdev requires removal by destroying its disposable target pool.
+
+The 2026-10-18 Path B diagnostic remains a useful historical refusal: the
+wizard omitted `/dev/vda4` from `disk.query` and stopped before `pool.create`.
+On 2026-10-30, the exact v27 nightly adapter exposed the reserved partition to
+the wizard; the full Path A/B API/UI matrix passed, including `boot-disk-data`
+creation on that partition. The prior diagnostic is linked at the
+[UI run](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
+and [post-run inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
+The UI still does not create the partition itself: the guarded partition-only
+lane must reserve it before the wizard runs.
+
+## TCG VM path
+
+In both the v27 and v28 nightly sources, the Web UI hides the VM page based on
+`vm.virtualization_details.supported`; making that capability report software
+emulation available exposes the existing page, so a UI source change is not
+currently indicated just to make VMs selectable. The latest-v27 PWMCP matrix
+opened the VM wizard using a zvol from the selected path; the storage API probe
+separately started a QEMU TCG process. Neither run booted a guest OS, and
+`/dev/kvm` was absent. The middleware create gate differs by release: v27
+calls `vm.supports_virtualization`, while the inspected v28 nightly checks
+`kvm_supported()` directly in `vm/crud.py`. The exact-build adapters cover
+those different paths; actual KVM selection and guest OS boot remain open.
+
+The v28 ISO's packaged `truenas_pylibvirt` KVM-detection and VM-domain-type
+files are byte-identical to upstream commit
+`ebd20df3cc2ae15fe08e7943478f54175d172382`: KVM detection is based on
+`/dev/kvm`, and VM XML selects the `qemu` domain type when that device is
+absent. The same ISO rootfs contains `/usr/bin/qemu-system-x86_64` and
+`/usr/bin/qemu-system-aarch64`, so the helper's executable check can succeed
+for these architectures. The installed v27 RC has the same `/dev/kvm` KVM
+check, but its VM XML generator hardcodes `domain type="kvm"`; v27 therefore needs a backend XML
+change in addition to the middleware gates. The installed v27 QEMU binary is
+present. The exact v27 nightly adapter was applied to v1001. With
+`/dev/kvm` absent, middleware reported support, kept hardware CPU flags false,
+and accepted a VM backed by the new pool's zvol. The QEMU domain started and
+reported `RUNNING` with `-accel tcg`, then was shut down. `HOST-MODEL` and
+`CUSTOM` with `cpu_model: null` also reached `RUNNING` through API payloads,
+then were deleted. Filesystem dataset
+create/query/update/delete and sparse zvol create/query/grow/delete were
+verified through middleware. The 2026-10-30 latest-v27 API/UI matrix passed;
+the PWMCP run opened the VM wizard against the selected storage path. These
+checks prove backend process startup and storage API operations, not a guest
+OS boot or actual KVM selection. The 2026-10-14 v28 candidate is historical
+and superseded by the exact 19-target
+[`v28-nightly-20261027/`](../v28-nightly-20261027/) adapter, whose Path A/B
+API/UI matrix passed. The v27 API tests also covered container lifecycle and
+a user dataset mounted inside a container, plus NFS/SMB share-record CRUD.
+They did not verify NFS/SMB client access. Keep actual KVM selection when
+available, guest OS boot, protocol-level share access, and pre-existing
+workload content/record retention through update as open tests. TCG should be
+visibly marked as software emulated because it can be very slow.
+
+## PWMCP storage UI acceptance
+
+The registered browser lanes use the Playwright version declared by the
+deployed PWMCP contract. The browser protocol and client API are versioned
+together, so a stale tester pin must fail before the UI workflow runs rather
+than report a misleading browser failure. The consumer guide shows where the
+contract value is read and which requirements file must match it.
+
+The registered `live-ui` lane is built around fresh, unconfigured v27 guests
+after the relaxation patch is installed. On Path A, it opens the `boot-pool`
+Datasets page, creates `user-data`, and sets **Quota for this dataset and all
+children** to 2 GiB. TrueNAS exposes a similarly named **Quota for this
+dataset** field, but that UI control submits ZFS `refquota`; the namespace
+guard requires ZFS `quota`, which limits the root and its descendants. The
+script checks the UI's outgoing `pool.dataset.create` request for an explicit
+finite `quota` before it accepts the root. The adapter requires at least 1 GiB
+and assigns the root's fixed mountpoint and `canmount=on`, because this UI form
+has no mountpoint control. The gate verifies those properties and the live
+mount source. Root creation skips the descendant readiness check because that
+check queries an existing root; applying it to the root being created would
+make UI provisioning refuse itself. Descendant operations still require the
+existing root to pass the quota, mountpoint, and canmount checks. Path B has
+two explicit setup modes. `ui-wizard` reserves the free tail with the guarded
+partition-only lane and then asks the TrueNAS wizard to create
+`boot-disk-data`; this tests the full UI pool-creation route. `preprovisioned`
+uses the registered Path B provisioner to create and register the pool before
+the browser tests dataset, zvol, container, and VM operations. The latter
+isolates downstream UI coverage from the wizard's missing partition
+inventory; it does not prove UI pool creation. Both modes require an explicit
+`TRUENAS_PATH_B_SETUP` value and refuse selection of the whole boot disk. The
+preprovisioned path passed its registered unit gate on 2026-10-21 (170 tests
+and 45 subtests; see the
+[unit log](../artifacts/unit-boot-pool-patch-path-b-ui-preprovision-mode-20261021.log)).
+The browser observer rejects any `pool.create` request in preprovisioned mode,
+including a request for a pool other than `boot-disk-data`, and checks again
+after the remaining UI workflow. This separate preprovisioned mode has not had
+a fresh live run; the 2026-10-30 `ui-wizard` matrix passed against the latest
+v27 nightly.
+
+The fresh patched Path B attempt on 2026-10-18 did not meet that UI
+precondition. Kernel `lsblk` showed `/dev/vda4` as a 4 GiB ZFS partition, but
+middleware `disk.query` and the browser wizard's own `disk.query` response
+listed only `/dev/vda`, already assigned to `boot-pool`. The registered Disks
+screen showed no partition controls; the wizard displayed zero raw capacity
+and no available disks, and the gate stopped before pool creation. A
+post-attempt inventory passed and confirmed no test pool or probe data. See
+the [latest UI log](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
+and [read-only inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
+This was a safe refusal for the `ui-wizard` mode at that earlier checkpoint,
+not a test of downstream Path B storage forms. The 2026-10-30 v27 nightly
+matrix subsequently passed the wizard route after the registered partition
+reservation. The `preprovisioned` mode still has only its unit-gate evidence;
+it is not part of the current live matrix. Do not select the whole disk.
+
+On fresh patched r4, the registered UI created the root with its 2 GiB
+`quota`, pinned mountpoint, `canmount=on`, and live ZFS mount source. It also
+created a user filesystem, wrote 64 KiB, and observed increased ZFS allocation.
+The UI created 128 MiB `vm-disk` and `cache-device` zvols with 16K block size.
+The cache zvol passed add/status/remove/health/export checks as an L2ARC vdev
+on a temporary file-backed pool. The narrow root-create fixes exempt only the
+exact root from descendant readiness and skip only the parent's literal
+`mountpoint=none` stat. The quota/type checks, fixed mountpoint, `canmount=on`,
+root update refusal, and descendant readiness remain active. The separate
+16K recommendation hunk handles only exact `boot-pool` requests before v27's
+hidden `pool.query`; ordinary pool topology recommendations stay on the
+original path.
+The registered patch lane retains `repair-root-create` and
+`repair-root-parent-mountpoint` as one-time fixes for the earlier empty-root
+failures, plus the digest-bound `repair-zvol-blocksize` action for the r4 UI
+root. These actions are scoped recovery paths, not general update mechanisms.
+
+The registered PWMCP UI run passed: it wrote to a UI-created user filesystem,
+created the VM/cache zvols, selected `boot-pool` for a container, verified its
+direct ZFS backing, and submitted the VM wizard with the existing boot-pool
+zvol. The gate removed its per-run container, VM, and test tree. A later
+registered read-only inventory confirmed the UI filesystem and zvols, root
+quota, pinned mountpoint, `canmount=on`, and ONLINE `boot-pool`. The middleware
+Alpine image cache retains
+`boot-pool/user-data/.truenas_containers/images/alpine:3.24:amd64:default:20261016_13:00@image`;
+the resume guard admits only that image-cache snapshot. Evidence: the [passed UI run](../artifacts/live-ui-v27-path-a-r4-resume-existing-user-dataset-vm-nic-retry-20261018.log),
+[successful historical inventory](../artifacts/live-inspect-v27-path-a-r4-after-current-host-reboot-20261018.log)
+and earlier [interrupted run](../artifacts/live-ui-v27-path-a-r4-host-reboot-aborted-20261018.log).
+This records survival at that checkpoint; retention through update and
+automatic remount after update remain untested.
+
+An interrupted UI run may already have left test-owned storage below the
+otherwise valid root. `TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1` admits the
+verified Path A root after checking quota and mount policy. When the root also
+contains a previous UI test dataset, the operator must provide its exact
+generated path as `TRUENAS_TEST_RESUME_EXISTING_UI_DATASET`. The preflight
+allows only that filesystem and its `vm-disk` and `cache-device` zvols, checks
+their types, sizes, block size, mountpoint, and mount source, and rejects
+unlisted user datasets and writable container descendants. It also allows only
+the pinned middleware image-cache datasets and their exact `@image` snapshot;
+other snapshots are refused. These settings are valid only for Path A and do
+not create or delete storage. Path B setup is selected separately with
+`TRUENAS_PATH_B_SETUP=ui-wizard` or
+`TRUENAS_PATH_B_SETUP=preprovisioned`; the latter requires a pool already
+created and registered by the guarded provisioner.
+
+On the tested TrueNAS 27.0.0-RC.1 UI, open the signed-in account menu →
+**Preferences** to find **Session Timeout**. The live UI showed 300 seconds.
+The timer is per user and activity resets it. The official Preferences guide
+documents a 300-second default and a maximum of 2,147,482 seconds; the Advanced
+Settings guide also documents **System → Advanced Settings → Access →
+Configure**. See the official [Preferences guide](https://www.truenas.com/docs/scale/27/toptoolbar/settings/)
+and [Advanced Settings guide](https://www.truenas.com/docs/scale/27/systemsettings/advanced/advancedsettings/).
+
+The registered patch unit lane later passed 156 tests plus 45 subtests. The
+full unit lane last passed 362 tests plus 45 subtests before this UI-helper-only
+change and was not rerun. The clean registered Path A UI run passed dataset
+writes, zvol creation, container pool selection/creation, VM wizard submission
+with an existing boot-pool zvol, and found Session Timeout in Preferences. Its
+log is
+[`live-ui-v27-path-a-clean-20261019.log`](../artifacts/live-ui-v27-path-a-clean-20261019.log).
+A `pool.query` empty list is not evidence that `boot-pool` is absent: direct
+`zpool list` establishes pool health, while patched `container.pool_choices`
+and the UI form establish whether the pool can be selected.
+
+The separate fresh Path B guest `truenas-v27-ui-b-fresh-r1-20261018` passed the
+registered patch, read-only inventory, and partition-only gates. In the
+2026-10-18 PWMCP run, `lsblk` saw `/dev/vda4`, but middleware and browser
+`disk.query` returned only `/dev/vda`; the Disks screen had no partition
+controls, and the wizard stopped before `pool.create`. That checkpoint is
+historical. On 2026-10-30, the registered Oct 27 v27 nightly Path B API/UI matrix passed:
+the reserved partition was offered by the patched wizard, `boot-disk-data` was
+created on that partition, and downstream UI storage forms passed. The old
+[diagnostic](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
+and [inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log)
+remain useful as the pre-shim failure record. See the
+[consumer instructions](CONSUMERS.md#run-pwmcp-ui-storage-acceptance).
+
+### Preserving UI-created workloads for reboot and update checks
+
+The ordinary `live-ui` lane cleans up its objects even when they are useful as
+update fixtures. Migration acceptance opts into preservation and records a
+manifest containing the UI-created dataset, container and VM IDs, zvol paths,
+and hashes for data written to the filesystem and block devices. The
+networked tester mounts the checkout read-only, so the wrapper exports the
+manifest from tester temporary storage into the requested worktree artifact
+path before removing the tester. A separate `live-ui-workloads` lane uses the
+TrueNAS UI to submit container and VM Start/Stop actions, confirms their
+middleware state transitions, and rechecks the recorded data hashes. This
+separates workload creation evidence from lifecycle evidence and makes the
+same records available to controlled reboot and update gates. These checks
+establish record retention and service start/stop, not VM guest-OS boot.
+
+On 2026-10-19, a fresh patched v27 Path A guest passed UI creation and a
+separate workload cycle before and after a controlled v27 reboot. The second
+cycle observed the VM autostart, then completed UI Start/Stop for both records
+with the recorded filesystem and zvol hashes unchanged. This is the v27
+baseline only; the same manifest has not yet been carried through a v27-to-v28
+update and v28 patch reboot. The container has not yet been tested with the
+user probe filesystem mounted into it.
+
+After the October 21 host restart, the resumed guest passed two read-only
+inventories and another registered UI workload cycle; all recorded filesystem
+and zvol hashes remained unchanged. The UI returned the container and blank
+VM to STOPPED, using Power Off when the VM's graceful Stop did not complete.
+Serial output showed a second kernel-start sequence about nine minutes after
+the first, without an explicit shutdown reason. This is an unexplained boot
+observation, not evidence of a patch defect or provider action. The guest was
+cleanly stopped after the run. See the [second inventory](../artifacts/live-inspect-v27-golden-ui-migration-20261021-second-boot-pass.log),
+[UI cycle](../artifacts/live-ui-workloads-v27-golden-ui-migration-20261021-second-boot-pass.log),
+and [serial log](../artifacts/v27-golden-ui-migration-20261019/vm-state/serial.log).
+No v27-to-v28 update has run against this manifest yet.
+
+### Recover an interrupted live tester
+
+The live wrapper owns its fixed-name networked tester and normally removes it
+after a registered gate. A host restart can stop the wrapper before its cleanup
+runs, leaving an exited tester that blocks later lanes. Recovery stays in the
+registered wrapper so it can verify the object before removing it: the
+container must be exited, use the declared `tester-unified:local` image, and
+carry a valid run ownership label. Cleanup is pinned to the inspected container
+ID, so a replacement container under the same name is not the removal target.
+Running containers, foreign images or labels, malformed state, and Docker
+inspection failures all refuse recovery. The opt-in command is documented in
+the [consumer guide](CONSUMERS.md#recover-an-interrupted-live-tester).
+
+Remote SSH commands also have a bounded retry for classified transport
+failures that occur before the remote command starts, including
+`kex_exchange_identification` resets seen while middleware services are
+starting. Command-level failures are not retried, so a mutation cannot be
+silently issued twice.
+
+## Local VM resource boundary
+
+The v27/v28 QEMU guests were launched directly from the devcontainer. The
+operator's `docker stats` snapshot showed `dstdns-devcontainer-vb` at 525.15%
+CPU and 5.262 GiB / 12 GiB; Docker placed it in `dev-interactive.slice` with no
+per-container CPU quota. The operator stopped both guests after the load
+stalled VS Code. The first interrupted v27-to-v28 update transfer never
+reached `update.manual`; a later isolated attempt started job 65 and reached
+49% extraction before its QEMU container was stopped. Update survival remains
+untested.
+
+The host's live cgroup-v2 values were read through the host cgroup profiler:
+
+| cgroup | CPU ceiling | CPU weight | memory current | memory high / max |
+|---|---:|---:|---:|---:|
+| `dev-interactive.slice` | 500% | 200 | about 5.0 GiB | 5 / 8 GiB |
+| `dev-background.slice` | 500% | 20 | about 0.6 GiB | 5 / 8 GiB |
+| parent `dev.slice` | 700% | — | about 5.8 GiB | 11.5 / 15.5 GiB |
+
+A disposable probe container placed under
+`dev.slice/dev-background.slice` and confirmed Docker applied its child
+`cpu.max` and `memory.max`. At the time, starts were limited to one guest.
+The current runner permits up to three under `$CGROUP_PARENT_DEV_BACKGROUND`
+when each new start passes PSI-based memory admission, with a 200% CPU ceiling,
+3.5 GiB container memory and swap caps, and 3 GiB guest RAM per guest. The
+historical 5 CPU / 8 GiB slice limits and 7 CPU / 15.5 GiB parent limits were
+later changed by the operator. Current starts sample `memory.pressure` at each
+finite cgroup: admission refuses at `some avg10 >= 10%` or `full avg10 >= 1%`,
+and requires a finite hard `memory.max`. `memory.high` is advisory and nominal
+guest caps may overcommit while recent PSI remains low. Moving the runner
+changes accounting and scheduling priority but does not remove shared-parent
+or host contention. The v27-to-v28 transfer remains untested because no update
+was started.
+
+On 2026-10-16, the retained Path A v27 guest was running in its own container
+under `dev-background.slice` while the registered `live-boot` lane ran from a
+separate `tester-unified` container in `dev-gates.slice`. The guest stayed
+below about 2.4 GiB of its 3.5 GiB cap in sampled readings; the live tester was
+capped at 50% CPU and 512 MiB, attached to the guest's custom bridge, and
+removed after the gate. During those samples the interactive devcontainer
+reported roughly 34–100% CPU and 4.4–5.0 GiB of its 12 GiB cap. This is an
+observed run, not a host-isolation guarantee: both child slices still share
+the `dev.slice` and host. The former cap-projection admission rule treated a
+VM's entire 3.5 GiB limit as reserved at `memory.high`, which rejected
+intentional overcommit. It has been replaced with live PSI admission; the
+kernel's hard `memory.max` remains enforced and can still OOM-kill workloads.
+
+The three interrupted qcow2 overlays remain in `/tmp`:
+`truenas27-patha-full-overlay.qcow2`, `truenas27-pathb-overlay.qcow2`, and
+`truenas27-storagepatch-overlay.qcow2`. Read-only `qemu-img info` reports each
+as a 20 GiB virtual qcow2 with `corrupt` and `dirty` unset. This is metadata
+inspection, not a full cluster check. Any resumed guest must use a new CoW
+overlay so these originals remain intact.
+
+## Remaining validation
+
+The prior v27 nightly, `27.0.0-MASTER+20261027-173422`, passed its full Path
+A/B API/UI matrix; that result is historical and does not certify the current
+Oct 29 bridge. The current exact-build v27 adapter has Path A update/reapply,
+API, and boot passes; its latest UI result is shown separately in the
+[acceptance index](../../docs/ACCEPTANCE-RESULTS.md). The current v28 rolling
+adapter targets `28.0.0-MASTER+20261029-175210`. A Path A stock transition from
+the Oct 29 v27 nightly passed data checks; a separate RC.1-to-v28 patched run
+stopped before BE activation because the update reported 8.83 GiB available
+against a 9.36 GiB requirement. The v28 patch, API, and UI stages were not
+reached in that run. Older Oct 14 and Oct 27 v28 adapters are retired.
+
+The patch remains experimental because important boundaries still need direct
+evidence:
+
+1. Retention of pre-existing user data, container records, and VM records
+   across update needs before/after content and record comparison. The update
+   checks confirmed pool identity; Path A is unmounted after an update until
+   the matching adapter is applied or re-applied.
+2. `/dev/kvm` was absent on the disposable test system. API acceptance confirmed a QEMU TCG process
+   start, but actual KVM selection and guest OS boot were not available.
+3. PWMCP share forms and API share records passed, but an SMB/NFS client could
+   not connect from the devcontainer. Client protocol access remains open.
+4. The available Netcup controller exposes disk inspection without a disk
+   attach operation. No second disk was purchased or attached, so physical
+   second-disk cache and TrueNAS UI/middleware cache configuration remain open.
+5. Any build beyond the exact v27 and v28 adapter fingerprints needs a new
+   source capture and compatibility check before patching.
+
+Keep release-specific middleware hunks small, fail closed on unknown source
+revisions, and keep the supported adapter set bound to its recorded target
+hashes. The historical 25.10.4 report records a separate failed UI workflow
+and is not evidence for either v27 or v28. See the
+[post-update design](DESIGN-GUIDE.md#v27-nightly-update-and-reapply) and
+[consumer workflow](CONSUMERS.md#reapply-v27-after-an-update).
+
+
+## Single-disk storage patch status
+
+The ordinary VM installer targets data pools. Separate experimental patches
+test two ways to use free space on a TrueNAS system disk: a bounded
+`boot-pool/user-data` namespace (Path A), and a separate `boot-disk-data` pool
+on a reserved GPT tail (Path B). On 2026-10-30, the previous Oct 27 v27 nightly
+passed the full Path A/B API/UI matrix, and the previous Oct 27 v28 adapter had
+its own 19-target API/UI acceptance. Those results remain historical for their
+exact builds. The current registry contains the Oct 29 v27 bridge and Oct 29
+v28 rolling adapter; consult the [acceptance index](../../docs/ACCEPTANCE-RESULTS.md)
+for current-build results. The 25.10.4 proposal changes
+Docker and Virt middleware in ways that no longer apply cleanly to v27; v27
+also replaces the Virt middleware module with separate VM and container
+services. The v28 nightly changes those paths again, so each release needs
+small adapters around shared policy and exact source fingerprints.
+
+The selected v28 ISO identifies its build version and time but not the
+middleware Git commit. A patch therefore cannot safely rely on the ISO's
+version string alone: it must compare the exact target files or their
+fingerprints and refuse an unknown source shape. The current v28 adapter pins
+19 target files to this exact build and is separate from the earlier v28
+adapter and the v27 nightlies. The v28 `truenas_pylibvirt` code selects QEMU
+when `/dev/kvm` is absent. The v27 nightly adapter also changes its VM backend
+to select TCG on the tested host. `/dev/kvm` was absent on v1001, so these runs
+verified QEMU TCG process start, not actual KVM selection or guest OS boot.
+
+Path A also needs a boot-time remount. The v27 reboot gate showed that the
+generic ZFS mount service is disabled and the boot pool is not registered in
+`storage.volume`, which is what `pool.import_on_boot` iterates. Custom
+`boot-pool/user-data` descendants stayed unmounted until the adapter mounted
+them. The v28 `pool.import_on_boot` has the same control flow; its extracted
+rootfs contains `zfs-mount.service` but no enablement link under
+`/etc/systemd/system/zfs.target.wants`. Keep the mount hook as a
+release-specific adapter around the shared path policy, and mount only after
+validating the root quota, mountpoint, `canmount`, resolved paths, and current
+mount ownership. The 2026-10-30 v27 reapply run mounted the Path A root and
+eligible descendants after the RC.1-to-nightly update, and the v27 reboot gate
+passed remount and marker persistence. The v27-to-v28 update again left
+`boot-pool/user-data` unmounted until the exact v28 adapter was installed; the
+v28 reboot gate then passed root/child remount. Patch files still require an
+explicit post-update reapply or install step. Existing workload retention
+through update needs a direct data and record comparison.
+
+Path B uses a separately partitioned `boot-disk-data` pool because it follows
+normal data-pool API and UI paths. A local 27.0.0-RC.1 test created
+the pool from a new GPT partition and registered it through
+`pool.import_find`/`pool.import_pool`; middleware then created a normal
+filesystem dataset and sparse zvol, and returned the pool through dataset,
+volume, and container choice APIs. The test target was 20 GiB; its boot-pool
+partition ended just below the 16 GiB image boundary, leaving about 4 GiB
+unallocated for the new partition. This matches restoring a bounded golden
+image to a larger disk without expanding partition 3. A normal full-disk
+vanilla install has no such free tail, so Path B needs space reserved during
+image/install preparation. The existing boot-pool partition extents were
+unchanged. The pool auto-imported after reboot and a marker file
+survived. With a test-only v27 TCG patch, the same guest also created a VM
+definition, attached that zvol, and started a QEMU domain without `/dev/kvm`.
+The probe VM had no guest OS, so no guest boot was verified. Middleware
+dataset create/query/update/delete and sparse zvol create/query/grow/delete
+also passed on the separate pool. A second TCG VM used `HOST-MODEL`; a third
+used `CUSTOM` with `cpu_model: null`. Both started through the API. PWMCP
+acceptance also passed on both storage paths: it created a user dataset from
+the selected pool/tree, confirmed the container pool selection, loaded the VM
+wizard through CPU/memory fields, and showed the SMB and NFS sections and Add
+actions. It did not submit the VM wizard or create a share. Container
+create/start/stop/delete also passed through middleware. A user dataset mounted
+into an Alpine container accepted a marker written from inside the container
+and retained it at the host dataset path. NFS and SMB share-record
+create/query/delete succeeded, but client protocol access was not tested.
+The first v27-to-v28 update observation found the root unmounted until the
+matching v28 adapter was installed. The v27 post-update procedure now
+re-applies the matching adapter and mounts the eligible Path A tree; the
+subsequent v27 reboot/import proof passed. The v27-to-v28 update preserved
+boot-pool and Path B identity, and the v28 reboot/import proof passed after
+installing its exact adapter. Workload content and records still need a direct
+before/after comparison across an update. Path B setup was manual in the older
+acceptance; the registered provisioner and latest-v27 UI wizard now pass.
+
+### Path B pool-wizard safety
+
+The v27 adapter models a reserved partition as an available pool-create target
+only when it is an unused ZFS GPT partition labeled `boot-disk-data`, numbered
+4 or later, and its parent disk contains a `boot-pool` leaf. The create path
+accepts exactly one Stripe data vdev and opens the partition by PARTUUID. This
+keeps selection bound to the GPT identity that was inspected and limits the
+adapter to the topology it can prove safe. Mirror, mixed-disk, and auxiliary
+vdev requests receive a validation refusal.
+
+The shim also refuses every non-default create option it does not implement,
+including encryption, encryption parameters, deduplication, dedup-table quota,
+checksum, duplicate-serial allowance, SED mode, and forced topology. Returning
+before stock validation would silently discard those settings. An
+option-specific refusal makes that boundary visible to the wizard caller.
+
+### v27 Pool Create Schema
+
+On 2026-10-28, `core.get_methods` on the tested v27.0.0-RC.1 host returned
+these 11 top-level `pool.create` fields. The normalized schema is stored in
+[`pool_create_schema_v27.json`](../shared/pool_create_schema_v27.json) and is
+compared with the live method schema before the API probe performs storage
+mutations.
+
+| field | installed default or requirement | reserved-partition handling |
+|---|---|---|
+| `name` | required | accepted; stock name validation still applies |
+| `topology` | required; empty `cache`, `dedup`, `log`, `spares`, and `special` arrays are schema defaults | accepted only for one single-disk Stripe data vdev |
+| `all_sed` | `false` | default only |
+| `allow_duplicate_serials` | `false` | default only |
+| `checksum` | `null` | default only |
+| `dedup_table_quota` | `"AUTO"` | default only |
+| `dedup_table_quota_value` | `null` | default only |
+| `deduplication` | `null` | default only |
+| `encryption` | `false` | default only |
+| `encryption_options` | `{"generate_key":false,"key":null,"passphrase":null,"pbkdf2iters":1300000}` | default only |
+| `force_topology` | `false` | default only |
+
+The helper's explicit field classifications must exactly cover the recorded
+schema: only `name` and `topology` are acted on, and each other recorded field
+is accepted only when its value has the exact schema-default type and value.
+Any other key is refused by name. A new or changed installed field makes the
+live probe fail before it reaches pool creation; the unit test also fails if
+the recorded fields no longer match the allowlist and default-only set.
+
+Creation follows the installed v27 `pool.create` properties: ZFS options
+`feature@lz4_compress=enabled`, `altroot=/mnt`, the middleware cachefile,
+`failmode=continue`, `autoexpand=on`, and `ashift=12`; root filesystem options
+`atime=off`, `acltype=posix`, `aclinherit=discard`, `aclmode=discard`,
+`compression=lz4`, `xattr=sa`, and `mountpoint=/<pool>`. Keeping this property
+set avoids a fixed-sector-size mismatch and makes datasets inherit the same
+root properties as a stock pool.
+
+Destructive export needs a separate guard. Installed v27 `pool_/export.py`
+calls `pool.get_disks`, then invokes `disk.wipe(..., 'QUICK', False)` for the
+resolved devices. `pool.get_disks` returns whole disks; the installed
+`plugins/zpool/get_zpool_disks_impl.py` resolves a partition leaf to its parent
+device through `/sys/class/block/<partition>/partition`. The quick wipe writes
+the first and last 32 MiB of that parent, which includes the boot disk's GPT
+and boot area. The adapter refuses `pool.export` with `destroy=true` for a
+reserved-partition pool and leaves ordinary non-destructive export available.
+The live API probe checks the exact refusal, `boot-pool` GUID/health/status,
+the unchanged `lsblk`/`sgdisk` partition table, and the adopted pool's ONLINE
+state. It also exercises replace, offline/online, detach, and remove while
+checking the other partitions remain unchanged.
+
+`destroy=false` leaves the pool labels on the partition. Reserved-partition
+discovery then keeps it out of the wizard until labels are cleared. Export does
+not prove that the operator intends to erase the pool's identity, so reclaim
+is a separate, explicit operation. The v27 `shared/reclaim_path_b.py` helper
+requires the operator to supply the exact pool name, captured PARTUUID, and
+expected numeric pool GUID. It supports three states: middleware-managed and
+imported, exported after an interrupted run, and already clear. Each path
+rechecks the PARTUUID, GPT marker, parent disk containing `boot-pool`, mount
+state, and ZFS import scan; it clears labels through the PARTUUID device only
+when the exported scan identifies exactly the expected single-leaf pool, then
+uses `zpool labelclear -f` on `/dev/disk/by-partuuid/<PARTUUID>`. The
+already-clear path verifies `disk.details` and returns without another write.
+This keeps reruns useful after interruption while refusing to infer ownership
+from a pool name. The operator workflow is in the
+[consumer guide](CONSUMERS.md#reclaim-an-exported-path-b-pool).
+
+The live API probe has separate cleanup for its own disposable pool. Its
+`cleanup-partition-offered-again` check does not certify the consumer reclaim
+procedure; imported, interrupted-export, and repeated already-clear states of
+the helper have dedicated unit tests.
+
+After `zpool create`, adoption can fail at export, import discovery, or import.
+Rollback captures the new numeric pool GUID after a successful create and
+requires that GUID together with the exact reserved PARTUUID and sole leaf
+before `zpool destroy`. It re-reads the partition identity and boot-pool parent
+before label clearing, and refuses to clear a mounted partition. If create
+fails, times out, or no GUID can be captured, rollback stops and reports manual
+recovery rather than guessing which pool owns the name. If import leaves a
+partial middleware row, the helper removes it through middleware
+`pool.export` with `destroy=false` and preserves the captured pool exported
+for reconciliation; the test checks the row and ZFS pool state together.
+
+The Web UI gates the VM page on `vm.virtualization_details.supported`, so the
+middleware capability update exposes the existing page without a UI source
+change. The latest-v27 PWMCP matrix opened the VM wizard using a zvol from the
+selected path; the storage API probe separately started a QEMU TCG process.
+Neither run booted a guest OS, and `/dev/kvm` was absent. The create gate is
+release-specific: v27 uses `vm.supports_virtualization`, while the inspected
+v28 nightly checks `kvm_supported()` directly in `vm/crud.py`. The exact-build
+adapters cover those different paths; actual KVM selection and guest OS boot
+remain open.
+
+The adapters remain experimental rather than release-ready. Registered
+storage gates pass on v27 and v28 for both paths. Each proves that an existing
+middleware-managed container dataset survives refused public destroy and
+snapshot attempts, that no snapshot appears, and that public clone refusal
+remains active. The 2026-10-30 latest-v27 run passed the full Path A/B API/UI
+matrix, including Path B wizard pool creation. Path A/B reboot/import proofs
+passed on v27 nightly and on v28 build `28.0.0-MASTER+20261027-175229` after
+the exact v28 adapter was applied. Earlier storage results are:
+
+- [v27 Path A](../artifacts/live-storage-v27-path-a-existing-container-protection-pass-20261017.log)
+- [v27 Path B](../artifacts/live-storage-v27-path-b-existing-container-protection-pass-20261017.log)
+- [v28 Path A](../artifacts/live-storage-v28-path-a-existing-container-protection-pass-20261017.log)
+- [v28 Path B](../artifacts/live-storage-v28-path-b-existing-container-protection-pass-20261017.log)
+
+At the earlier checkpoint, the patch unit lane passed with 106 tests and 45
+subtests; see the
+[checkpoint log](../artifacts/unit-boot-pool-patch-v27-dns-retry-20261017.log).
+The v27 update selected a new BE whose `/usr` had stock middleware. Explicit
+recovery then reapplied the exact nightly adapter and verified the Path A root and eligible
+descendants mounted at boot. The v27-to-v28 update again left that root
+unmounted until the v28 adapter was installed; the v28 reboot/import lane then
+passed. The updater API now advertises an unregistered Oct 29 v28 nightly; its
+stock-BE survival result is in `docs/UPDATE-AND-DRIFT.md`. The original v28 Path B
+destroy-refusal failure remains preserved; a later registered gate directly
+verified that the middleware-managed dataset survived both destroy and
+snapshot attempts and that no attempted snapshot appeared. See the passing
+[v28 Path B protection gate](../artifacts/live-storage-v28-path-b-existing-container-protection-pass-20261017.log).
+
+The earlier registered patch unit lane passed with 121 tests and 45 subtests
+in [`unit-boot-pool-patch-root-parent-mountpoint-direct-engine-20261018.log`](../artifacts/unit-boot-pool-patch-root-parent-mountpoint-direct-engine-20261018.log);
+the full unit lane passed with 319 tests and 45 subtests in
+[`unit-truenas-root-parent-mountpoint-20261018.log`](../artifacts/unit-truenas-root-parent-mountpoint-20261018.log).
+The pre-repair r4 inventory at
+[`live-inspect-v27-path-a-r4-before-parent-mountpoint-repair-retry3-20261018.log`](../artifacts/live-inspect-v27-path-a-r4-before-parent-mountpoint-repair-retry3-20261018.log)
+is historical: it correctly found no root before the guarded repair and UI
+creation. A later successful registered inventory confirmed the UI-created
+root and prior user dataset/zvols after a host interruption:
+[`live-inspect-v27-path-a-r4-after-current-host-reboot-20261018.log`](../artifacts/live-inspect-v27-path-a-r4-after-current-host-reboot-20261018.log).
+The historical inventory is not a current-state check. The clean registered
+Path A `live-ui` run on 2026-10-19 resumed the verified UI-created root/cache,
+wrote to a UI-created filesystem, created zvols, selected `boot-pool` for a
+container, and submitted a VM wizard with an existing boot-pool zvol. It also
+found the per-user Session Timeout under the signed-in account menu →
+Preferences, with a value of 300 seconds. Its post-run inventory found no
+probe datasets, containers, or VM records. See the
+[UI run](../artifacts/live-ui-v27-path-a-clean-20261019.log) and
+[post-run inventory](../artifacts/live-inspect-v27-path-a-clean-20261019-post-ui.log).
+The registered `unit-boot-pool-patch` lane passed with 340 tests and 45
+subtests in round two. Its text log is stored outside the checkout at
+`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/unit-boot-pool-patch-final-round2.log`.
+The cache exercise used a temporary file-backed
+target pool on both Path A and Path B. This demonstrates cross-pool L2ARC
+attachment in that setup, not a separate disk-backed pool, import ordering, or
+TrueNAS UI/middleware cache-device configuration. The provider controller has
+no disk-attach operation, so no second physical target was added or purchased.
+The remaining live gaps are actual KVM selection (`/dev/kvm` was absent), guest
+OS boot, SMB/NFS client access, pre-existing workload content/record retention
+through update, and cache configuration through TrueNAS UI/middleware. A
+bounded planted-fixture comparison now passes for v27 RC.1→Oct 27 v27 Nightly,
+patched v27 Nightly→Oct 29 v28 Nightly, and patched RC.1→Oct 27 nightly with
+reapply; it does not claim retention of arbitrary pre-existing workloads. The
+updater advertises the Oct 29 v28 nightly, which has no registered patch
+adapter. See the [survival record](../../docs/UPDATE-AND-DRIFT.md#update-survival-acceptance-q4).
+Local QEMU tests use a dedicated Docker runner under `$CGROUP_PARENT_DEV_BACKGROUND`,
+with detached testers in `$CGROUP_PARENT_DEV_GATES`; see the
+[patch investigation and evidence](../README.md).
+
+The complete v27 patch set was re-applied to fresh `27.0.0-RC.1` COW guests on
+2026-10-16 after all 13 target fingerprints matched. `middlewared` was stopped
+during patching; modified modules compiled; it restarted successfully; and
+`/usr` was restored to read-only. Detached `tester-unified` live-storage runs
+passed on both Path A and Path B, including TCG VM startup, container dataset
+persistence, share-record CRUD, and cleanup. Path B used a 20 GiB guest disk
+with partition 3 unchanged and a 4 GiB `vda4` pool imported through middleware.
+The Path A run is logged at
+`../artifacts/live-storage-v27-path-a-20261016.log`; Path B is at
+`../artifacts/live-storage-v27-path-b-20261016.log`. These API runs
+do not prove guest OS boot, KVM selection, update survival, or share client
+access.
+
+Path A exposed a boot-time lifecycle gap that the API CRUD test could not
+catch. `zfs-mount.service` is disabled on TrueNAS, while `ix-zfs.service` calls
+`pool.import_on_boot`; that method imports only pools listed in
+`storage.volume`, and the boot pool is intentionally absent. The custom
+`boot-pool/user-data` root therefore appeared mounted before reboot but was
+not mounted afterward. The v27 `boot-mount.patch` calls a guarded mount helper
+after ordinary pool imports and before `pool.post_import`. It mounts only a
+recognized root with its exact `/mnt/boot-pool/user-data` mountpoint, positive
+quota, and `canmount=on`; verifies the expected boot filesystem at `/mnt`;
+then mounts eligible descendants one by one inside that namespace. It checks
+the resulting `filesystem.statfs` source and destination and skips unsafe,
+occupied, protected, or invalid paths without failing system boot. The
+registered live-boot gate passed twice, verifying the root and child mount
+across a reboot, marker contents, pool health, and API dataset operations. The
+latest log is
+[`live-boot-v27-path-a-20261016-r2.log`](../artifacts/live-boot-v27-path-a-20261016-r2.log).
+That historical update check mounted the saved data manually before reading
+the marker. The first v28 boot-mount hook also failed because it called
+`query_impl`, absent from the v28 service; the local fix uses `list_impl`.
+Later round-two runs verified the explicit update/reapply/install sequence and
+then passed the v27 and v28 reboot/import lanes. The first boot after an update
+still leaves Path A unmounted until the matching adapter is applied or
+re-applied; direct pre-existing workload content and record comparison through
+update remains open.
+
+The reboot gate now lists mounted filesystems in the user-data dataset tree
+and unmounts them one at a time, deepest first and without force, after writing
+its marker. This avoids relying on `zfs unmount -r`, which the TrueNAS guest's
+ZFS command does not support. The boot hook must mount the root and eligible
+descendants again after reboot. If a run begins with the root already
+unmounted, it performs one recovery reboot before writing any marker, then
+unmounts and reboots a second time to check persistence. This avoids writing
+into the boot environment's ordinary `/mnt` directory when the expected ZFS
+mount is absent.
+
+The first v28 `live-boot` attempt exposed the unsupported recursive-unmount
+option before it requested a reboot. Its `finally` cleanup removed the unique
+probe dataset, and read-only inspection confirmed the root stayed mounted.
+The gate now uses the explicit child-first unmount procedure. Its 2026-10-17
+rerun passed: the root and marker child remounted, the marker bytes matched,
+`container.pool_choices` included `boot-pool`, and the gate removed its
+temporary datasets. The v28 storage gate still needs to be rerun.
+
+Live storage and reboot gates use a temporary `tester-unified` exec target
+because run-gate's regular ephemeral containers intentionally have no network.
+The wrapper attaches that runner to the managed guest's custom bridge, mounts
+the checkout read-only, uses the private-key owner UID, places the runner in
+`$CGROUP_PARENT_DEV_GATES`, and verifies 0.5 CPU / 512 MiB limits before the
+registered lane starts. Each guest remains a separate QEMU container in
+`$CGROUP_PARENT_DEV_BACKGROUND`, capped at 200% CPU and 3.5 GiB. The local
+runner supports up to three guests when the per-start cgroup memory check
+admits them.
+
+### V28 adapter application
+
+Keep the shared policy helpers in separate files and limit release-specific
+patches to the upstream call sites that need to delegate into those helpers.
+This makes a new release adapter smaller to refresh when middleware moves,
+while exact source fingerprints and zero-fuzz application turn upstream drift
+into a refusal that names the unreviewed build. The current lane accepts only
+the selected v28 build and its 15 target hashes; it is not an automatic
+cross-version patcher.
+
+The live lane stages a closed, deterministic bundle, confirms the version,
+Path A layout, `/dev/kvm` absence, persistent backup mount, and stopped guest
+states, then archives every original target before changing `/usr`. A nullable
+VM query status is resolved with `vm.status`; an unresolved state refuses the
+middleware restart. The guest stops middleware, applies each patch with zero
+fuzz, installs the helpers, compiles the modified modules, restarts middleware,
+checks TCG and storage API results, and restores the ZFS dataset and mount to
+read-only. It records hashes in an atomic manifest only after those checks
+pass. On failure, the trap restores from the durable archive and verifies the
+original hashes, service state, and `/usr` protection; a failed rollback exits
+with a distinct failure and points to the backup. The registered artifact and
+live gates make the exact bundle and live outcome reproducible. The live lane
+passed on `28.0.0-MASTER+20261014-230204`: middleware restarted, the API
+advertised TCG, hardware flags stayed clear, `boot-pool` appeared in container
+pool choices, and `/usr` returned to read-only. The saved output is
+[`live-v28-patch-20261017.log`](../artifacts/live-v28-patch-20261017.log).
+
+Two live failures refined the adapter before that pass. Importing v28's
+`INTERNAL_PATHS` through `pool_.dataset_query_utils` re-entered the container
+plugin import and caused a circular import in `async_validators`; the adapter
+now imports the same release policy from the lightweight `zfs.utils` module.
+Internal v28 calls to `filesystem.statfs` return Pydantic models rather than
+mappings, so the shared helper reads both mapping and typed-model fields and
+the release call sites use that accessor. The import-cycle run was interrupted;
+recovery inspection verified the original hashes and absent helpers, then
+`/usr` was explicitly restored to read-only. The next failure exercised the
+rollback trap, which verified the original source hashes, middleware, and
+read-only protection.
+
+The live-storage attempts showed that v28's default `pool.dataset.query`
+walker pruned recursion at the internal `boot-pool` root and hid
+`boot-pool/user-data` and its descendants. The patch now treats only the exact
+boot-pool root as traversable. It continues to hide `.system`, `ROOT`, `grub`,
+and `.truenas_containers`, while mutation guards keep the pool and managed
+namespace roots non-editable. That change let the latest run pass dataset and
+zvol operations.
+
+After reboot, the v28 storage gate passed zvol cache add/remove on a temporary
+file-backed target and started a VM with TCG confirmed in the process. Its
+first container attempt found three missing internal-only `bypass=True`
+arguments in `container/query_pull_images.py`: orphan destroy, image snapshot
+creation, and exception-cleanup destroy. The local adapter restores those
+flags only at the private calls. Earlier public destroy and snapshot probes
+used synthetic paths that did not yet name an existing container dataset. The
+first Path B run against an existing dataset returned JSON `null` from
+`zfs.resource.destroy`. A later read-only inventory found no test-specific
+dataset, but the gate's `finally` cleanup also ran, so that inventory could not
+attribute the removal. Source tracing found `.truenas_containers` missing from
+v28's non-boot-pool internal path list. The shared path policy now protects it
+on both profiles and both releases. The corrected three-call
+bundle passed guarded replacement with SHA-256
+`6925688f93ba9af31afc3609cd8a93c47fb9fbd19c31866d85dc6ea44436ba25`;
+middleware is active, the API responds, and `/usr` is read-only. The replacement
+record is [`live-v28-patch-replacement-three-bypasses-20261017.log`](../artifacts/live-v28-patch-replacement-three-bypasses-20261017.log).
+
+That rerun then exposed a second container regression. v28 changed same-pool
+image cloning from v27's private `snapshot.clone_impl` call with
+`bypass=True` and explicit mount to the public `pool.snapshot.clone` route.
+That API correctly rejects the protected destination. The v28 adapter
+restores the private call and mount only at middleware-owned container
+cloning, and the live refusal probe confirms the public API remains guarded.
+The exact source hunk applied and compiled; the unit lane passed with 97 tests
+and 45 subtests. Guarded replacement migrated the prior 14-target adapter to
+15 targets and passed with bundle SHA-256
+`2a4fa86979d7234c5aa16f1b03e0f93225c35ae10ddc3a114d1bb9e7ac680a06`. Its log
+is [`live-v28-patch-replacement-container-clone-bypass-20261017.log`](../artifacts/live-v28-patch-replacement-container-clone-bypass-20261017.log).
+The unit log is
+[`unit-boot-pool-patch-v28-container-clone-20261017.log`](../artifacts/unit-boot-pool-patch-v28-container-clone-20261017.log).
+The complete Path A `live-storage` rerun passed; its log is
+[`live-storage-v28-path-a-container-clone-pass-20261017.log`](../artifacts/live-storage-v28-path-a-container-clone-pass-20261017.log).
+The earlier failed attempt remains at
+[`live-storage-v28-path-a-image-clone-failure-20261017.log`](../artifacts/live-storage-v28-path-a-image-clone-failure-20261017.log).
+
+The replacement transaction verified the installed 14-target adapter, kept a
+rollback snapshot including the previously unpatched `crud.py`, restored the
+stock files, and applied the 15-target bundle. On success it committed a new
+manifest and left `/usr` read-only. Registered live-storage gates now pass the
+existing-container destroy/snapshot survival checks on v28 Path A and Path B;
+v27 Path A and Path B also pass. The final v28 Path B result is recorded at
+[`live-storage-v28-path-b-existing-container-protection-pass-20261017.log`](../artifacts/live-storage-v28-path-b-existing-container-protection-pass-20261017.log).
+The round-two evidence closes the latest-v27 Path B reboot/import and UI
+pool-creation items. Remaining gaps are direct pre-existing workload content
+and record comparison across update, actual KVM selection, a real second-disk
+cache target, share-client access, and guest OS boot.
+
+## Read-only update media
+
+On 2026-10-30 the v27 updater listed
+`28.0.0-MASTER+20261027-175229`, and `update.run` installed it successfully
+through the API. `update.manual` can install the
+`TrueNAS.update` payload embedded in the official ISO. That manifest requires
+10,025,572,761 bytes free in the boot pool. The tested 16 GiB boot pool has
+11,348,213,760 bytes free before staging; copying the 2.3 GiB update member to
+that pool would reduce availability below the installer's strict size check.
+
+The registered live-update gate therefore keeps the full ISO on the host and
+exposes it to QEMU through a read-only bind mount as CD-ROM media. The guest
+mounts the ISO9660 filesystem and passes the update file directly to
+`update.manual` with cleanup disabled, so middleware does not try to unlink a
+file on read-only media. The runner fingerprints the media in its state
+manifest. Adding immutable media to an existing stopped state is allowed only
+when every prior runner identity field still matches; changing or removing
+media on later resume is refused. The guest and live tester keep their normal
+background and gates slice limits.
+
+The empty IDE CD-ROM QEMU creates by default is not hotpluggable on this
+`q35` machine. The ISO CD-ROM must be present when QEMU starts. The first
+attempt exposed the hybrid ISO as a virtio hard disk, so OVMF treated its EFI
+partition as a boot disk and opened the installer. The runner now attaches the
+ISO with `-cdrom`, while the VM's boot order remains the existing system disk;
+live verification confirmed that TrueNAS booted from the system disk and saw
+the ISO as read-only `/dev/sr0`. This keeps boot-pool usage out of the
+update-payload staging path, but still requires the update manifest's full
+boot-pool free-space requirement. The registered
+[`live-update` lane](CONSUMERS.md#run-live-update-acceptance) passed on a fresh
+COW clone: job 63 completed, the guest rebooted into v28, and both boot-pool
+health and the update-marker hash were verified. The marker bytes survived the
+update. The gate manually mounted the saved user-data datasets before hashing
+the marker because the v28 mount adapter was not installed, so automatic
+remount was not tested. Job 65 is a historical interrupted attempt at 49%
+extraction; its preserved COW state is not the successful job-63 state and
+must not be resumed as a new update. The gate retries only SSH startup errors
+known to occur before command dispatch and accepts an existing job ID plus
+proof-dataset hash for read-only polling without launching a second update.
+Ambiguous replies to mutating calls are never retried automatically.

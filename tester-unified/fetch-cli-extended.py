@@ -74,10 +74,23 @@ def _opener(url: str) -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(_HttpsOnlyRedirects(frozenset({host})))
 
 
-def _urlopen_bytes(url: str) -> bytes:
+#: A release wheel or pointer is a few MiB at most; a body past this is a misbehaving redirect target, refused
+#: before it is held in memory (TB-12). Shared by fetch-run-gate-wheel.py.
+MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+
+
+class ResponseTooLarge(OSError):
+    """The body exceeded the cap. An OSError so every caller's `except OSError` refuses it; retry loops
+    must not retry it (a larger body next time is no better)."""
+
+
+def _urlopen_bytes(url: str, max_bytes: int = MAX_RESPONSE_BYTES) -> bytes:
     try:
         with _opener(url).open(url, timeout=60) as response:  # noqa: S310 (https, prefix-checked)
-            return response.read()
+            body = response.read(max_bytes + 1)  # one byte past the cap proves the body is larger
+            if len(body) > max_bytes:
+                raise ResponseTooLarge(f"{url} sent more than {max_bytes} bytes")
+            return body
     except http.client.HTTPException as exc:
         # A body shorter than its Content-Length (IncompleteRead), a bad status line, ...: these are
         # not OSErrors, so the callers' `except OSError` would let them escape as tracebacks instead

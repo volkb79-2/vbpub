@@ -2260,6 +2260,9 @@ def test_the_worst_case_record_still_fits_the_readers_own_limit():
     [
         ("iobench-killed.json", "killed"),
         ("iobench-survived.json", "survived"),
+        # B184: synthetic 10.0.1-shape records (no real campaign left them).
+        ("synthetic-crashed.json", "crashed"),
+        ("synthetic-budget-exceeded.json", "budget_exceeded"),
     ],
 )
 def test_real_10_0_1_state_records_are_rejected_for_a_new_judge(
@@ -2290,6 +2293,9 @@ def test_real_10_0_1_state_records_are_rejected_for_a_new_judge(
         site=SimpleNamespace(
             operator=payload["operator"],
             replacement=b"fixture-replacement",
+            start_byte=payload["start_byte"],
+            end_byte=payload["end_byte"],
+            apply=lambda original: b"fixture-replacement",
         ),
         original_text="fixture-source",
     )

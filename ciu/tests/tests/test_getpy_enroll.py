@@ -182,7 +182,7 @@ class TestEnrollCLIShape:
         assert args.docker is False and args.no_install is False
 
     def test_get_py_cli_render_carries_enroll(self, tmp_path, monkeypatch):
-        """The `cmru get-py ciu` path renders a script whose enroll flags match.
+        """The `cmru installer render ciu` path renders a script whose enroll flags match.
 
         Needs a cmru that knows ``extensions`` (fails, not skips, against an older one).
         The orchestration config interpolates ``${CGROUP_PARENT_DEV_GATES}``; the render
@@ -193,18 +193,18 @@ class TestEnrollCLIShape:
         )
         try:
             from cmru.config import InstallerConfig
-            from cmru.getpy import getpy_main
+            from cmru.getpy import installer_main
         except ImportError as exc:  # a missing cmru must be RED, never a silent skip
             pytest.fail(
-                "cmru is not importable; put ../cmru/src (and ../libraries/cli-extended/src, "
-                f"../libraries/worktree/src) on PYTHONPATH: {exc}"
+                "cmru is not importable; put ../cmru/src (and ../libraries/worktree/src) on "
+                f"PYTHONPATH and install the released cli-extended wheel: {exc}"
             )
         assert "extensions" in InstallerConfig.__dataclass_fields__, (
             "the importable cmru predates `[project.installer] extensions`"
         )
         out_file = tmp_path / "rendered-get.py"
-        rc = getpy_main([
-            "ciu", "--config", str(CIU_ROOT.parent / "cmru.orchestration.toml"),
+        rc = installer_main([
+            "render", "ciu", "--config", str(CIU_ROOT.parent / "cmru.orchestration.toml"),
             "--output", str(out_file),
         ])
         assert rc == 0

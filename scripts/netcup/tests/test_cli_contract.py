@@ -45,7 +45,7 @@ def test_real_executable_obeys_cli_contract_without_reading_or_changing_local_st
     env_content = (
         "# untouched by discovery\n"
         "NETCUP_SCP_API_REFRESH_TOKEN=sentinel-secret\n"
-        "NETCUP_SCP_API_PROTECTED_SERVERS=not-a-vname\n"
+        "NETCUP_PROTECTED_SERVERS=not-a-vname\n"
     )
     env_file.write_text(env_content, encoding="utf-8")
     env_mode = env_file.stat().st_mode & 0o777

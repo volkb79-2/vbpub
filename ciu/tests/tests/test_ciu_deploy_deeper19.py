@@ -35,6 +35,8 @@ def test_graph_rejects_invalid_rendered_stack_before_publishing_topology(
         fmt="json",
     ) == 2
 
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
+    output = captured.err
+    assert captured.out == ""
     assert "[S3.5] Stack config has no non-reserved top-level key" in output
     assert "No stacks with requires/provides" not in output

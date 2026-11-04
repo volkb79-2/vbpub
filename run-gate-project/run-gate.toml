@@ -39,8 +39,10 @@
 # whole-project 100% floor; the broader line-and-branch `assay-r1` lane is a
 # separate, explicitly invoked judge.
 #
-# --source is scoped to run_gate.py ALONE (not the whole project directory),
-# mirroring topos's own `--source topos/src/topos`: the gate never measures
+# --source is repeated for the two shipped modules, run_gate.py and
+# run_gate_admission.py (RG-116 item 3: with run_gate.py alone the admission
+# module in the wheel was never diff-judged), and is NOT the whole project
+# directory, mirroring topos's own `--source topos/src/topos`: the gate never measures
 # itself (tools/coverage_gate.py is vendored infrastructure, outside the
 # scope it enforces, exactly like topos/tools/coverage_gate.py sits outside
 # topos/src/topos) or the test suite (a test's own "coverage" of itself is
@@ -57,7 +59,7 @@ schema_version = 1
 [lanes.selftest]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && if [[ -n \"${RUN_GATE_RELEASE_WHEEL_RECEIPT:-}\" ]]; then /opt/tester-venv/bin/python tools/release_candidate.py verify-running --receipt \"$RUN_GATE_RELEASE_WHEEL_RECEIPT\"; fi && RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && trap 'status=$?; if [ -n \"$RUN_GATE_TMP\" ]; then rm -rf \"$RUN_GATE_TMP\"; fi; exit \"$status\"' EXIT && RUN_GATE_ABS=\"$(realpath \"$RUN_GATE_TMP\")\" && GIT_CEILING_DIRECTORIES=\"$RUN_GATE_ABS\" /opt/tester-venv/bin/python -m pytest tests -q -rs --basetemp \"$RUN_GATE_ABS\" --cov=. --cov-branch --cov-report=json:coverage.json && /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base latest-release-tag --coverage-json coverage.json --source run_gate.py"]
+argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && if [[ -n \"${RUN_GATE_RELEASE_WHEEL_RECEIPT:-}\" ]]; then /opt/tester-venv/bin/python tools/release_candidate.py verify-running --receipt \"$RUN_GATE_RELEASE_WHEEL_RECEIPT\"; fi && RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && trap 'status=$?; if [ -n \"$RUN_GATE_TMP\" ]; then rm -rf \"$RUN_GATE_TMP\"; fi; exit \"$status\"' EXIT && RUN_GATE_ABS=\"$(realpath \"$RUN_GATE_TMP\")\" && GIT_CEILING_DIRECTORIES=\"$RUN_GATE_ABS\" /opt/tester-venv/bin/python -m pytest tests -q -rs --basetemp \"$RUN_GATE_ABS\" --cov=. --cov-branch --cov-report=json:coverage.json && /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base latest-release-tag --coverage-json coverage.json --source run_gate.py --source run_gate_admission.py --source run_gate_profile.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 

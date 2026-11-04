@@ -282,12 +282,12 @@ CA or mkcert) in the same `live/<domain>/` layout as static mode.  For
 devcontainer / Docker-outside-of-Docker (DooD) environments, a named volume
 (`certs-dev`) carries the certificate material into the container.
 
-### Port 80 is OFF by default
+### Port 80 is ON by default
 
-The edge proxy is a TLS-only service.  Port 80 stays free on the host and no
-HTTP→HTTPS redirect is configured unless `expose_http = true` is set.
-Consumers must publish `https://` URLs directly.  Enabling port 80 also
-permits `acme-http` mode.
+Port 80 carries a permanent HTTP→HTTPS redirect and ACME HTTP-01 challenges
+(`acme-http` mode requires it).  `expose_http = false` (installer
+`--disable-port-80`) frees the port for a host that must not serve it; the edge
+is then TLS-only.  Consumers should still publish `https://` URLs.
 
 ### Wildcard DNS record vs wildcard certificate vs per-name ACME
 
@@ -352,7 +352,7 @@ service itself, increasing drift risk.
 Traefik needs to watch Docker events to discover containers.  This requires
 access to the Docker socket, which in turn grants significant host control.
 
-**Mitigation**: Docker socket proxy (`tecnativa/docker-socket-proxy:v0.4.2`).
+**Mitigation**: Docker socket proxy (`tecnativa/docker-socket-proxy:v0.5.0`).
 
 The socket proxy is a separate container that accepts a restricted subset of
 Docker API calls and proxies them to the real socket.  Configuration:
@@ -433,7 +433,7 @@ lateral movement to other containers, no persistence mechanism, no host escape.
 - `security_opt: no-new-privileges:true` on the socket proxy container.
 - Socket proxy is attached to `traefik_internal` only — it is not reachable
   from `ingress_public` or any consumer network.
-- Socket proxy image is version-pinned (`tecnativa/docker-socket-proxy:v0.4.2`)
+- Socket proxy image is version-pinned (`tecnativa/docker-socket-proxy:v0.5.0`)
   for reproducibility.
 
 See [Section 5](#5-edge-proxy-selection) for the edge proxy selection rationale.
@@ -497,37 +497,28 @@ ambiguous.  At least one discriminator is required.
 | Option | Requirement | Recommendation |
 |---|---|---|
 | Different subdomains (`svc1.domain`, `svc2.domain`) | DNS that resolves each name to this host (wildcard record covers all at once); ACME modes issue certs automatically | **Preferred** |
-| Different external ports (`443`, `8443`) | Only one service per port; limited number of ports | **Fallback** |
+| Different external ports | Only one service per port; limited number of ports; every extra port needs firewall and provider rules | **Rejected** (no alternate HTTPS port) |
 | Different path prefixes (`/svcA`, `/svcB`) | Services must not conflict on `/api` etc.; requires path rewriting sometimes | Possible addition |
 | Custom routing header | Non-standard; clients must set the header | Not viable for general use |
 | Different host IPs | Multiple public IPs on the host | Infrastructure option |
 
-### Decision: support both subdomain and port-based routing
+### Decision: host-name routing only
 
-Two HTTP/TLS Traefik entrypoints are defined:
-- `websecure` on port 443: used for subdomain routing.
-- `websecure-alt` on port 8443: used for port-based routing when a subdomain
-  is not resolvable to this host or (in static mode) not in the certificate
-  SAN list.
+One HTTP/TLS Traefik entrypoint carries all HTTPS: `websecure` on port 443.
+Every service gets its own host name; there is no alternate HTTPS port.  The
+public ports are exactly 80/tcp, 443/tcp and 8443 tcp+udp.
 
-When Mattermost Calls support is enabled, two raw L4 entrypoints are added:
-one TCP and one UDP. The default feature is off. On the gstammtisch host, the
-public port 8443 is used for both Calls protocols, while alternate HTTPS is
-published on 9443 and still reaches Traefik's internal TCP 8443. Calls TCP
-uses internal TCP 8444; Calls UDP uses internal UDP 8443. These are distinct
-protocol sockets, so the numeric port can be reused safely.
+When Mattermost Calls support is enabled (the default), two raw L4 entrypoints
+are added: one TCP and one UDP, both on public (and container) port 8443.  They
+are distinct protocol sockets, so the same numeric port is safe.
 
-Consumers choose which entrypoint to use via labels.  The same Traefik instance
-serves both.
+Path-based routing can be layered on top by adding `&& PathPrefix(...)` to the
+router rule.
 
-Path-based routing can be layered on top of either mode by adding
-`&& PathPrefix(...)` to the router rule.
+### Why no plain HTTP service port
 
-### Why `websecure-alt` is still TLS
-
-Running plain HTTP on an alternative port was rejected.  All external-facing
-traffic should be TLS regardless of port, for the same cipher, certificate, and
-transport security guarantees.
+All external-facing traffic is TLS (port 80 only redirects), for the same
+cipher, certificate, and transport security guarantees.
 
 ---
 
@@ -711,7 +702,7 @@ middlewares, and the static certificate store.
 | `volumes: /var/run/docker.sock:ro` | Socket mounted read-only to the proxy container |
 | Healthcheck: `wget /version` | Confirms the proxy is accepting API calls before Traefik starts |
 | Logging: json-file, 10 m × 3 | Bounded log storage |
-| Image pinned: `tecnativa/docker-socket-proxy:v0.4.2` | Reproducible deployments |
+| Image pinned: `tecnativa/docker-socket-proxy:v0.5.0` | Reproducible deployments |
 
 ### Secure-headers middleware
 
@@ -870,14 +861,10 @@ curl -sv https://svc.my.domain/ 2>&1 | grep -E "< HTTP|Server"
 curl --cacert /path/to/local-ca.crt https://svc.my.domain/
 # or (insecure, dev only):
 curl -k https://svc.my.domain/
-
-# Port-based routing check
-curl -sv https://my.domain:8443/ 2>&1 | grep -E "< HTTP"
 ```
 
-Note: port 80 is off by default.  There is no HTTP→HTTPS redirect unless
-`expose_http = true` is configured.  `curl http://...` will time out or be
-refused rather than redirect.
+Note: port 80 is on by default and answers with a permanent redirect to
+https.  When `expose_http = false`, `curl http://...` times out or is refused.
 
 ### Access log as audit trail
 
@@ -1032,7 +1019,7 @@ a second gate that is harder to satisfy accidentally.
 | Zero-downtime cert renewal in static mode depends on inotify | If the file watcher does not fire (e.g. attribute-only change), certs do not reload | Hook uses a content rewrite to ensure inotify fires; fallback: `docker restart --time 5 edge-traefik` (~3s downtime) |
 | acme-data volume loss | `docker compose down -v` destroys ACME state; all certs are re-issued on next start; LE rate limits (~5 duplicate certs/week) apply | Never use `-v` in production without a backup plan; use staging CA for experiments |
 | sniStrict rejects SNI-less clients | Bare-IP probes, some uptime checkers, and `openssl s_client` without `-servername` are rejected | Expected and desirable; disable `sniStrict` in `conf.d/options.yml` only if such clients must be served |
-| Port 80 is off by default | No HTTP→HTTPS redirect; clients using http:// get refused | Publish https:// URLs; enable `expose_http = true` only if HTTP-01 or redirect is required |
+| Port 80 is on by default | The edge answers on a second public port | `expose_http = false` (installer `--disable-port-80`) when the host must not serve it; `acme-http` then cannot be used |
 | Router name uniqueness is operator-enforced | Two stacks using the same router name will conflict | Naming convention adopted in examples: `<stack>-<service>` |
 | App must configure loopback bind for ops | Docker cannot enforce this; relies on app configuration discipline | Document requirement prominently; verify via `scripts/verify.sh` |
 | Single Traefik instance is a SPOF | If Traefik crashes, all public services are unreachable | `restart: unless-stopped` mitigates transient failures; HA Traefik requires Swarm or Kubernetes |

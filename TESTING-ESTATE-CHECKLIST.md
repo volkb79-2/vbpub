@@ -73,6 +73,18 @@ Rigor levels have these meanings:
 - **R3** — a canary proves that the complete gate rejects a deliberately broken
   change for the intended reason.
 
+Every release-facing source lane also needs a mechanical syntax/build
+preflight in its declared environment. For Go this is `gofmt -l .` followed by
+`go build ./...` (and the lane's `go vet ./...` and `go test ./...`); the Go
+compiler is the authoritative parser and catches malformed raw strings,
+unterminated literals, and similar source damage before tests run. For Python,
+`python -m py_compile` over the tracked source files, or an equivalent
+`python -m compileall` command, is the authoritative parse check. Ruff can add
+AST/lint findings and mypy or Pyright can add type findings, but neither is a
+substitute for the language build/test command. These checks are R0 evidence;
+Assay may orchestrate and retain their result, while the language toolchain
+still owns the conclusion.
+
 For Python and JavaScript coverage formats that carry branch arcs, a lane that
 claims full branch coverage must set `require_branch = true` and enforce its
 declared floor. Go's `go-cover` format is statement-only; Go branch coverage is
@@ -103,7 +115,7 @@ audit, even when that run is ineligible.
 | `scripts/gstammtisch-guide/` | `fb9995a2 / 2026-09-19` | ✅ Raw | 🟡 Raw branch-aware command | ✅ Assay | ✅ Raw canary | Branch data is collected without a uniform Assay floor | Assay R2; other tiers are raw commands in `tester-unified` | No local history record | No complete checklist audit | No project-owned Hypothesis suite; no API for Schemathesis | Normalize R0/R1/R3 evidence and add selective properties |
 | [`scripts/netcup/`](scripts/netcup/run-gate.toml) | `61111578 / 2026-09-19` | ✅ Raw pytest | ❌ | ❌ | ❌ | None | `tester-unified`, `dev-gates.slice`; no `assay.toml` | Current gate PASS: 136 passed in 1.22s | No checklist audit | No property/API testing found | Add Assay R0 and decide whether its API client needs contract tests |
 | [`scripts/telegram/`](scripts/telegram/run-gate.toml) | `fb9995a2 / 2026-09-19` | ✅ Raw pytest | ❌ | ❌ | ❌ | None | Raw command; no `assay.toml` | No local history record | No checklist audit | No property/API testing found | Add Assay R0 and message/transport behavioral tests |
-| [`mattermost-server/`](mattermost-server/run-gate.toml) | `MM-MOVE 2026-10-07` | ✅ Raw pytest + coverage report (83%, hooks 76% / tools 89%, not enforced) | ❌ | ❌ | ❌ | None | Raw command (`suite`); no `assay.toml`; the tests moved from nyxloom's lane, which never measured this code | No local history record | No checklist audit | No property/API testing found | Add Assay R0/R1 with a coverage floor; cover `post_compose_provision.py` 1201-1268 and the mmctl error paths |
+| [`voice-screen-share/mattermost-server/`](voice-screen-share/mattermost-server/run-gate.toml) | `MM-MOVE 2026-10-07` | ✅ Raw pytest + coverage report (83%, hooks 76% / tools 89%, not enforced) | ❌ | ❌ | ❌ | None | Raw command (`suite`); no `assay.toml`; the tests moved from nyxloom's lane, which never measured this code | No local history record | No checklist audit | No property/API testing found | Add Assay R0/R1 with a coverage floor; cover `post_compose_provision.py` 1201-1268 and the mmctl error paths |
 | [`plesk-mailbox-create/`](plesk-mailbox-create/run-gate.toml) | `fb9995a2 / 2026-09-19` | 🟡 Smoke only | ❌ | ❌ | ❌ | None | Raw smoke command; no test file inventory | No local history record | No checklist audit | No property/API testing found | Add real behavioral tests and an Assay R0 lane |
 | Wings Go patch stack ([`wings-patchstack/assay/assay.toml`](wings-patchstack/assay/assay.toml)) | `v1.13.4 port / 2026-10-30` | ✅ | ✅ changed-line coverage | N/A (Go R2 unsupported) | N/A | Go branch data unavailable in `go-cover` | Registered `coverage` Assay lane in `tester-unified` via Run-Gate; inherits the estate environment | No eligible coverage receipt for the v1.13.4 base yet | Project-specific reviews exist outside this matrix | Use Go fuzzing where useful | Run the registered coverage lane against the updated v1.13.4 base; record Go R2/R3/branch limitations explicitly |
 | Release-only assets (`tls-edge`, Empyrion, devcontainer images) | `fb9995a2 / 2026-09-19` | ? | ? | ? | ? | ? | No project-local Assay/run-gate declaration found | No comparable run record | Out of scope for this test-lane snapshot | Must be decided per asset | Add an explicit `testing_scope` entry rather than silently omitting them |

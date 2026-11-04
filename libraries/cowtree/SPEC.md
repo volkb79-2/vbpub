@@ -125,6 +125,23 @@ Argparse usage errors exit `2`. Typed `CowError` statuses are `cow` → `1`,
 `root-invalid` → `3`, `space` → `4`, `path` → `5`, `backend` → `6`, and
 `lease` → `7`; an unknown subclass code uses `1`.
 
+## Persistence declarations (COW-BL-04)
+
+Relaxed fsync is the default for disposable CoW state. Page cache survives a
+process or container kill, so every operation stays correct across those; only
+a host crash or power loss loses unsynced data.
+
+| Id | Write | Durability declaration |
+| --- | --- | --- |
+| P1 | Clone creation (btrfs snapshot, reflink, copy) | No fsync. After a host crash the clone is discarded and recreated. |
+| P2 | Sealed trees | No fsync of content; the seal marker is written last by atomic rename, so a reader sees a complete seal or none. Unsealed or missing marker means rebuild. |
+| P3 | `owner.json` and `owner.lock` | Atomic replace stays; the file and directory fsync are not relied on for correctness. A manifest that is empty, truncated or unparsable is read as "no manifest": `gc` reports `manifestless-or-invalid`, `dead_flock_runs` skips it, `survey` reports `unknown`, and nothing trusts it. Test: `test_truncated_owner_manifest_is_untrusted_and_never_collected`. |
+| P4 | Explicit copies to a durable destination | The one durable write: fsync of the destination. |
+
+P3 retains such a run rather than deleting it: removal of a manifestless
+directory is an operator decision, never automatic, because the same state is
+visible to a run that is mid-creation.
+
 ## Live qualification
 
 `tests/live/test_live.py` is stdlib `unittest` and is gated by

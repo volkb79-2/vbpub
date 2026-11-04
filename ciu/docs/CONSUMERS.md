@@ -373,7 +373,7 @@ Only one branch name is accepted, `all` is refused, and `-y` does not imply
 consent. For example:
 
 ```console
-ciu worktree rm pkg-under-test -y --discard-changes pkg-under-test
+ciu worktree rm pkg-under-test --yes --discard-changes pkg-under-test
 ```
 
 CIU rechecks these paths after cleanup and refuses if a new tracked or
@@ -440,7 +440,7 @@ checkout's reported branch is `feature/api-retry`, rerun the named checkout
 with that exact branch value:
 
 ```console
-ciu worktree rm pkg-under-test -y --root-escalation feature/api-retry
+ciu worktree rm pkg-under-test --yes --root-escalation feature/api-retry
 ```
 
 If the failure document printed a retry command, use that command so the
@@ -504,9 +504,9 @@ merged-protected:
       ignored .assay [protected] 4 file(s), 8192 bytes
 ```
 
-Survey only — nothing is removed. `-y` removes `prunable` branches and keeps
+Survey only — nothing is removed. `--yes` removes `prunable` branches and keeps
 `merged-protected` branches with a named skip reason. To authorize one
-protected branch, name it exactly: `ciu worktree branches -y
+protected branch, name it exactly: `ciu worktree branches --yes
 --discard-protected-state feat/assay`. The option is repeatable for separate
 exact branch names; it accepts no glob or `all`. A failed ignored-state
 enumeration is `merged-ignored-unknown`, never an empty inventory, and is
@@ -554,7 +554,7 @@ exists anywhere in this command: a branch one minute old that is fully merged
 is prunable, a branch six months old that is not is not.
 
 Automation allowlists the capability id `worktree.branches.v1`
-(`ciu capabilities --json`) instead of inferring the feature from SemVer;
+(`ciu schema capabilities --json`) instead of inferring the feature from SemVer;
 the `--json` document is versioned (`schema_version: 4` — 3 adds the current
 protected-reason field and checkout-wide walk cap, 2 predates the ignored-state categories,
 operations `branches`/`branches-prune`, statuses
@@ -605,9 +605,9 @@ unattributable and are NEVER reaped ...
 **See the exact commands, then run them.**
 
 ```bash
-ciu worktree reap -y --dry-run          # prints, executes nothing
-ciu worktree reap -y                    # reaps the four provable categories
-ciu worktree reap -y --category orphaned  # narrow it further
+ciu worktree reap --yes --dry-run          # prints, executes nothing
+ciu worktree reap --yes                    # reaps the four provable categories
+ciu worktree reap --yes --category orphaned  # narrow it further
 ```
 
 What the categories guarantee:
@@ -624,7 +624,7 @@ What the categories guarantee:
   selection. There is no flag anywhere that forces them, because those
   categories mean exactly that no proof of ownership exists. Your unrelated
   compose projects on the same host land here and are safe.
-- **A surviving checkout is disposed of by `ciu clean -y` run inside it**,
+- **A surviving checkout is disposed of by `ciu clean --yes` run inside it**,
   never by a bare `docker rm`: `clean` knows the rendered config, the `vol-*`
   host directories and the privileged removal helper. If that clean fails,
   reap reports it and stops — it does not second-guess it.
@@ -648,7 +648,7 @@ pass exits **1** in both `--json` and human output. The returned document is a
 re-survey of the post-state, not the plan.
 
 Automation allowlists `worktree.reap.v1` (and `worktree.lease.v1`, which it
-consults) via `ciu capabilities --json`. The reap document is separately
+consults) via `ciu schema capabilities --json`. The reap document is separately
 versioned (`schema_version: 1`, operation `reap`, statuses
 `survey`/`dry-run`/`reaped`/`partial`), and `counts` always carries all seven
 categories including the zero-valued ones, so a consumer can key on them
@@ -665,6 +665,14 @@ ciu worktree lease nightly-run --extend 48h   # bounded claim
 ciu worktree lease bench-rig  --perpetual     # long-lived ON PURPOSE
 ciu worktree lease scratch    --release       # claims nothing (still never reaped)
 ```
+
+After you legitimately rebase a managed worktree onto a newer trunk, its
+recorded `fork_point_sha` is spent and run-gate (R-35a) refuses `NOT_RUN
+no-base`. `ciu worktree inspect NAME` reports `fork_point: stale` and names the
+remedy; `ciu worktree refork NAME [--onto TRUNK]` re-records it as
+`merge-base(trunk, HEAD)` (it refuses a dirty tree and a branch that diverged
+rather than rebased). `ciu worktree rm` cleans every committed CIU root of the
+checkout, not only the selected one, and keeps the checkout if any root fails.
 
 
 ## 5c. Declare a cross-profile secret producer (`produced_by`, S13.6)
@@ -809,7 +817,7 @@ container; it does not weaken project/service/network uniqueness.
 ## 9. Discover capabilities instead of guessing from the version
 
 ```console
-$ ciu capabilities --json
+$ ciu schema capabilities --json
 {"schema_version": 1, "capabilities": ["worktree.exec-local.v1",
  "worktree.exec-target.v1", "worktree.identity.v1",
  "worktree.inspect.v1", "worktree.lifecycle-json.v1", "worktree.up.v1"]}
@@ -876,12 +884,12 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
 ## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
 
 ```console
-$ ciu clean -y                      # in a managed worktree instance
+$ ciu clean --yes                   # in a managed worktree instance
 [INFO] Removed 2 network(s): myapp-abc123-network, myapp-dev-vault_default
 [SUCCESS] clean complete
 $ docker network ls | grep myapp-abc123   # → nothing; zero identity objects remain
 
-$ ciu clean -y                      # in the MAIN workspace (no instance record)
+$ ciu clean --yes                   # in the MAIN workspace (no instance record)
 [INFO] kept: myapp-abc123-network (workspace network of the main workspace (devcontainer residence))
 [SUCCESS] clean complete (kept: myapp-abc123-network)
 ```
@@ -915,7 +923,7 @@ removed like any other stack's:
 ```console
 $ ciu up --dir vendor/vault --shipped
 [INFO] [S8.7] deploy.project_name/environment_tag not set — shipped stack uses the workspace-identity compose project 'myapp-abc123-vault'
-$ ciu clean -y
+$ ciu clean --yes
 [INFO] Removing 2 container(s): myapp-abc123-vault-vault-1, myapp-abc123-vault-vault-init
 [SUCCESS] clean complete
 ```
@@ -940,7 +948,7 @@ exactly where they are — that has always been true and does not change. When
 you want a workspace back at freshly-CLONED state, ask for it explicitly:
 
 ```console
-$ ciu clean --vanilla -y
+$ ciu clean --vanilla --yes
 [SUCCESS] clean complete
 [INFO] --vanilla: removed ciu.global.toml, ciu.env, ciu.global.instance.toml.j2, ciu.instance.generated.toml
 ```
@@ -1221,7 +1229,7 @@ actually proves something:
 $ ciu env generate
 $ rm ciu.env
 $ ciu status --json | head -3        # still names your compose projects
-$ ciu clean -y                       # still finds and removes your network
+$ ciu clean --yes                    # still finds and removes your network
 ```
 
 That one is weaker than it looks — CIU regenerates the export it no longer
@@ -1242,7 +1250,7 @@ deleted casually. It has always been declared gitignored (S3.1b), but it is now
 the only record of your instance identity. A checkout that loses it cannot name
 its own compose project, network or ownership labels until `ciu env generate`
 puts it back. `ciu clean --vanilla` removes it deliberately (that is a full
-reset); plain `ciu clean` preserves it. `ciu migration-check` reports a
+reset); plain `ciu clean` preserves it. `ciu migrate --check` reports a
 `.gitignore` missing either entry.
 
 ## 12. The implementation gate (Assay-backed, S18)
@@ -1429,7 +1437,7 @@ def run(ctx):
 ```
 
 The declaration must be a literal `True`; computed values and function-local
-assignments do not opt in. `ciu profiles` is a read-only listing too: it renders
+assignments do not opt in. `ciu show profiles` is a read-only listing too: it renders
 in memory and does not create or update `ciu.global.toml`.
 
 Exit codes are S13.4's: `0` clean, `2` any static configuration error
@@ -1612,9 +1620,9 @@ CIU-84 — so does everything ahead of it in the orchestrator: `ciu check
 --json`'s stdout is now the JSON document and nothing else (verified with
 `json.loads` on the full captured stdout, not a substring check), so a plain
 `ciu check --json | jq` works without skipping any leading `[INFO]` lines.
-The same fix applies to `ciu graph --format json`'s orchestrator-level
+The same fix applies to `ciu graph --json`'s orchestrator-level
 prose; `action_graph`'s own internal notes/errors are a narrower, still-open
-gap (CIU-86) — `ciu graph --format json` piped straight into `jq` can still
+gap (CIU-86) — `ciu graph --json` piped straight into `jq` can still
 see a stray line on its error/empty-graph paths, though not on the common
 "the graph rendered cleanly" path.
 
@@ -2027,7 +2035,7 @@ name and the `/run/secrets/<name>` basename).
 - `ciu check`'s `vault-presence` stage (`[S13.4d]`) refuses a stack declaring
   `ASK_VAULT`/`GEN_TO_VAULT` with no `topology.services.vault` — previously a
   runtime-only failure, mid-`ciu up`.
-- `ciu migration-check [--root-folder PATH] [--json]` (S13.7) reports stale
+- `ciu migrate --check [--root-folder PATH] [--json]` (S13.7) reports stale
   pre-cutover artifacts in a checkout. CIU performs hard cutovers with no
   legacy-compat shims anywhere in its normal code paths; this verb is the one
   place that knows the version history, so a stale artifact is a named
@@ -2061,10 +2069,10 @@ anywhere needs a single character edited.
 fallback read of `ciu.global.worktree.toml.j2` anywhere, and an existing
 checkout's copy of it stops being merged into any render the moment you
 upgrade. That is deliberate (no legacy-compat shims in normal code paths), and
-`ciu migration-check` is how you find out rather than being broken silently:
+`ciu migrate --check` is how you find out rather than being broken silently:
 
 ```console
-$ ciu migration-check
+$ ciu migrate --check
 [WARN] retired-overlay-file: found 'ciu.global.worktree.toml.j2' at the ciu root — this filename is retired and its content is NO LONGER merged into any render
           fix: move any hand-authored overrides from 'ciu.global.worktree.toml.j2' into 'ciu.global.instance.toml.j2' by hand, then delete 'ciu.global.worktree.toml.j2'. Its CIU-owned [ciu.instance.generated] table needs no hand-copying — `ciu env generate` rewrites those facts into 'ciu.instance.generated.toml'; copy nothing from it.
 [ERROR] migration-check: 1 finding(s)
@@ -2072,7 +2080,7 @@ $ ciu migration-check
 
 **Migration, per checkout, once:**
 
-1. `ciu migration-check` — or just `ciu up`/`ciu check`, whose `migration`
+1. `ciu migrate --check` — or just `ciu up`/`ciu check`, whose `migration`
    stage runs the same rule and notes the finding.
 2. Copy your OWN content out of `ciu.global.worktree.toml.j2` into
    `ciu.global.instance.toml.j2`: `[ciu.instance] service_profiles`, a
@@ -2088,7 +2096,7 @@ created by `ciu env generate` alone) needs only steps 3 and 4, in either order.
 **`.gitignore`:** `ciu init`'s canonical set now lists
 `ciu.global.instance.toml.j2` and `ciu.instance.generated.toml`, and no longer
 lists the retired name. Add both to an existing repo's `.gitignore`;
-`ciu migration-check`'s `gitignore-gaps` rule names them if you forget.
+`ciu migrate --check`'s `gitignore-gaps` rule names them if you forget.
 Removing the old pattern is optional hygiene and does not affect detection —
 the retired-overlay rule asks the filesystem, not your `.gitignore`.
 
@@ -2121,6 +2129,37 @@ Check the installed console entrypoint before selecting a CIU verb:
     ciu --version
 
 It prints `ciu <version>` on stdout, exits 0, and writes nothing to stderr.
+
+## 22. The registered CLI: what a script or agent can rely on (ciu 7.20, CIU-114) — BREAKING
+
+Every verb is registered with `libraries/cli-extended`; `ciu help [verb]` / `ciu <verb> --help` is
+generated from that registration and `docs/cli-surface.json` + SPEC S10.8 export it.
+
+| Was | Is | Action |
+|---|---|---|
+| `-y` | `--yes` | replace in every script (`ciu clean -y` → `ciu clean --yes`) |
+| `secrets ... -d PATH`, `up --dir ... -f NAME` | `--dir PATH`, `--file NAME` | replace |
+| `-h`, `--prof`, `--hos=…` (prefixes) | `--help`, exact spellings | prefixes are usage errors (exit 2), never a silent fall-through |
+| `health [--preflight]` | `status --gate`, `status --preflight` | the gate's verdict is its exit status |
+| `profiles`, `layouts` | `show profiles`, `show layouts` (+ `--json`) | read-only listings |
+| `ksm build`, `iops-baseline` | `governance ksm`, `governance iops-baseline` | |
+| `capabilities` | `schema capabilities` | the allowlist document is unchanged |
+| `migration-check` | `migrate --check` | |
+| `host-secrets HOST …` | `secrets host HOST …` | |
+| bare `ciu env`, `up --check`, `provenance --force`, `graph --format json` | `env print`, `ciu check`, `--ignore-mismatch`, `graph --json` | removed |
+
+- Machine output: `--json` where a verb offers it (`status`, `diagnose`, `check`, `graph`, `resolve`
+  (always JSON), `provenance`, `schema capabilities`, `migrate --check`, `show profiles|layouts`,
+  `worktree create|ensure|adopt|rm|list|inspect|lease|refork|branches|reap`, `doctor`, `skills`).
+- Exit codes: `0` success, `1` runtime failure (an unexpected exception is one `[ERROR]` line;
+  `--traceback` shows the stack), `2` usage/configuration refusal, `3` environment/bootstrap (also: a
+  source tree that was neither built nor installed has no version), `130` prompt cancelled. `4` and `5`
+  are reserved for v8.
+- Diagnostics lead with `[ERROR] …`, then the headline and usage; help screens start with the headline.
+- `ciu doctor [--check NAME] [--json]` verifies the environment; `ciu skills install|check|list|uninstall`
+  manages the agent skills the wheel ships (re-run `install` after every upgrade).
+- Install order: `cli-extended` (a released wheel, published on GitHub Releases only) before `ciu`
+  (`--no-index --find-links` or `--no-deps`); `get.py` already hoists it.
 
 ## Configure CIU resource limits
 

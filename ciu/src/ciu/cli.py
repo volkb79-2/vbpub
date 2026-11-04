@@ -10,676 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .cli_utils import CiuArgumentParser, cli_error, cli_headline, get_cli_version
+from .cli_utils import CiuArgumentParser, cli_error, get_cli_version
 from .config_constants import GLOBAL_CONFIG_DEFAULTS, WORKSPACE_ENV
-from .output import consume_cli_flags
-
-_USAGE = """\
-CIU {ver} — Container Infrastructure Utility
-Container orchestration, development worktrees, and host operations (compose · init · up)
-Uses: ciu.global.toml + ciu.env (run from a CIU-enabled repository)
-
-Usage: ciu <verb> [options]
-       ciu --version
-       ciu version
-
-Run-scoped overrides (never written back to the TOML layer):
-  --ksm / --no-ksm       inject / do not inject CIU's KSM shim, THIS run only.
-                         --no-ksm is PASSTHROUGH: it stops CIU injecting, it
-                         does NOT disable KSM an image enables itself (S15.18)
-  --log-prefix-time-short  prefix severity messages with HH:MM:SS. Interactive
-                           terminals colour INFO/WARN/ERROR; pipes and logs stay plain.
-
-REPO_ROOT resolution (`dev` and ordinary stack verbs, S1.1): --root-folder
-always wins; otherwise CIU derives the nearest root by walking up from cwd (or
---dir) for ciu.global.defaults.toml.j2. REPO_ROOT is an output for child
-processes, never a root selector. Worktree verbs are family-scoped: their
---root-folder selects the containing Git root, and create discovers all
-committed CIU markers at the selected base.
-
-Run `ciu <verb> --help` for the complete options and examples for one verb.
-Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
-            · 3 environment/bootstrap error
-
-  SCAFFOLDING
-    init [--project-name NAME] [--environment-tag TAG] [--stacks A,B]
-         [--hooks NAME1,NAME2]
-                                guided repo scaffolding: writes a validated
-                                ciu.global.defaults.toml.j2, gitignore entries,
-                                and optional stack skeletons (never overwrites);
-                                --hooks copies shipped hook templates
-                                (S19.1) into every scaffolded stack
-
-  ENVIRONMENT
-    env                         show ciu.env key=value pairs (read-only)
-    env generate [--root-folder PATH]
-                                generate or refresh ciu.env from system state
-    iops-baseline [--path P] [--runtime N] [--force]
-                                measure disk randread IOPS (fio) → io-baseline.env (S15.9)
-
-  AUTHORING
-    render                      render ciu.global.toml from Jinja2 template
-    profiles                    list available host profiles
-    layouts                     list declared deploy layouts
-
-  WORKTREE INSTANCES (S16)
-    worktree create LOGICAL [--base REF] [--profile P1,P2]
-         [--name DISPLAY | --prefix P --feature F]
-         [--branch BRANCH] [--path PATH] [--json]
-                                canonical managed checkout + CIU identity;
-                                --base may be a branch, tag, or exact commit
-                                SHA (default: main); creation does NOT deploy
-                                or start containers
-    worktree ensure LOGICAL [--base REF] [--worktree-dir DIR]
-         [--adopt-existing-network] [create options] [--json]
-                                idempotently reuse a ready instance, or
-                                create/resume a safe, checkpointed allocation
-    worktree adopt LOGICAL PATH [--profile P1,P2]
-         [--adopt-existing-network] [--json]
-                                adopt an existing unmanaged linked checkout
-    worktree rm LOGICAL [-y] [--keep-branch | --delete-branch]
-                             [--discard-protected-state BRANCH]
-                             [--discard-changes BRANCH]
-                             [--root-escalation BRANCH] [--json]
-                                clean, THEN remove; keeps unmerged branch tips by default
-                                and requires exact branch consent for changes or
-                                protected ignored state
-    worktree list [--json]      list linked checkouts
-    worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
-    worktree lease LOGICAL (--extend D | --perpetual | --release) [--json]
-    worktree branches [--base REF] [-y] [--discard-protected-state BRANCH]
-         [--json]                survey branches and ignored state; -y keeps
-                                protected resumable state unless named
-    worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
-                                survey Docker resource groups; -y DESTROYS
-                                exactly the record/lease/label-provable ones
-                                (S16.10)
-    worktree up LOGICAL         explicitly start the selected ready instance
-    worktree exec LOGICAL [--target ALIAS] -- ARGV...
-                                run exact argv (no shell); never starts
-                                implicitly; local root or declared container
-                                target
-
-  MANAGED WORKTREE EXAMPLES
-    ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
-                                pin creation to the exact commit under test;
-                                creation does NOT deploy
-    ciu worktree ensure pkg-under-test --json
-                                safely reuse/resume the same logical instance
-    ciu worktree inspect pkg-under-test
-    ciu worktree up pkg-under-test
-    ciu worktree exec pkg-under-test -- pytest -q
-    ciu worktree rm pkg-under-test -y
-
-  MACHINE INTERFACES (D-009)
-    capabilities [--json]       versioned, closed capability allowlist
-    resolve [--stack S] [--service X] [--live] --json
-                                read this instance's service identities
-    exec <stack>[:<service>] -- ARGV...
-                                run exact argv in one already-running service
-
-  EVIDENCE
-    provenance [--ignore-mismatch | --no-preflight] [--json]
-                                verify RUNNING containers were built from the
-                                commit under test, before a live lane runs (S17.2)
-
-  STACK ORCHESTRATION
-    up   [--profile NAME | --dir PATH | --layout NAME]   start Docker Compose stack
-    down [--profile NAME | --dir PATH]  stop stack (preserve volumes)
-    clean                                remove containers and volumes
-    health [--profile NAME]              health gate check
-    health --preflight [--strict]        probe images for missing healthcheck tools
-    diagnose [--project NAME] [--logs N] [--json]
-                                explain common container failures (read-only)
-    status [--profile NAME] [--json]
-                                per-stack compose project, containers, health (read-only)
-
-  PROVISIONING (requires/provides graph)
-    check [--profile NAME] [--live] [--json]
-                                        validate the config pipeline (no deploy)
-    graph [--format mermaid|dot|json]    render the dependency graph (no deploy)
-
-  MIGRATION
-    migration-check [--root-folder PATH] [--json]
-                                        report stale pre-cutover artifacts in
-                                        this checkout (S13.7); exit non-zero on
-                                        ANY finding
-
-  DEV-LOOP BUILDS
-    bake [targets ...] [--profile NAME] [--no-cache]
-                                          docker buildx bake --load
-    ksm build [--force]                  build the KSM shim into .ciu/ksm/ (S15.17)
-    dev <stack> [--profile NAME]          run a stack's live dev loop (HMR)
-
-  SECRETS
-    secrets list   [-d PATH]             list materialised secret names
-    secrets reset  [--name N] [-y]       delete secret store files
-    host-secrets <host> [--materialize | --list | --path NAME] [-y]
-                                host-scoped local secrets (S14.3a, explicit-only)
-
-  REMOTE (requires hosts file — see .ciu.hosts.toml)
-    host enroll <name> [...]                    enroll a bare host: generate a key +
-                                                print the target one-liner (step 1);
-                                                --ssh-host/--fingerprint pins and
-                                                writes the row (step 2, S14.7)
-    ssh <host> [--admin] [-- cmd...]            remote shell or command (access plane)
-    render --host <name> [selection flags]      render on a remote host
-    up  --host <name> [selection flags]         push-deploy: bundle-sync + render-on-target
-    down/health --host <name> [--thin]          remote lifecycle/health action
-"""
-
-
-# ---------------------------------------------------------------------------
-# S10.1 / CIU-7 — per-verb, verb-scoped help.
-#
-# `ciu <verb> -h|--help` MUST print the verb's OWN synopsis/options, never the
-# legacy `ciu-deploy` argparse surface (which exposes withdrawn flags like
-# --deploy/--stop). Each entry lists only the flags that actually reach the
-# verb's handler. `env generate --help` is intentionally NOT intercepted here —
-# it has its own argparse help one level down.
-# ---------------------------------------------------------------------------
-
-_VERB_HELP: dict[str, str] = {
-    "resolve": """\
-ciu resolve [--root-folder PATH] [--profile NAME ...] [--stack S]
-            [--service X] [--live] --json
-  Read service identities from the rendered config without writing generated
-  files or contacting Docker. The JSON shape mirrors v8's
-  `resolved.identities.<stack>.<service>` data (S18 / CIU-118).
-
-  --stack S       selected repo-relative stack path; a unique basename works
-  --profile NAME  select a deployment profile; repeat to compose profiles
-  --service X     exact Compose service key (not a substring)
-  --live          add container state and health from exact Compose labels
-  --root-folder   override the CIU repo root
-  --json          emit one versioned JSON document on stdout (required)
-""",
-    "exec": """\
-ciu exec [--root-folder PATH] [--profile NAME ...] <stack>[:<service>] -- ARGV...
-  Run exact argv in exactly one already-running service of this instance.
-  CIU does not start the stack. A matching declared
-  [ciu.worktree.exec_targets] entry applies its workdir and mount proof
-  (S16.7 / CIU-118).
-""",
-    "worktree": """\
-ciu worktree create LOGICAL [--base REF] [--profile P1,P2] [--up]
-                             [--name DISPLAY | --prefix P --feature F]
-                             [--branch BRANCH] [--path PATH]
-                             [--worktree-dir DIR] [--json]
-ciu worktree adopt LOGICAL PATH [--profile P1,P2] [--adopt-existing-network] [--json]
-ciu worktree ensure LOGICAL [--base REF] [--profile P1,P2]
-                             [--name DISPLAY | --prefix P --feature F]
-                             [--branch BRANCH] [--path PATH]
-                             [--worktree-dir DIR] [--adopt-existing-network] [--json]
-ciu worktree rm LOGICAL [-y] [--force] [--keep-branch | --delete-branch]
-                             [--discard-protected-state BRANCH]
-                             [--discard-changes BRANCH]
-                             [--root-escalation BRANCH] [--json]
-ciu worktree list [--json]
-ciu worktree inspect LOGICAL [--json]
-ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release) [--json]
-ciu worktree branches [--base REF] [-y] [--discard-protected-state BRANCH] [--json]
-ciu worktree reap [-y] [--category C1,C2] [--dry-run] [--json]
-ciu worktree up LOGICAL [--all]
-ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
-  Manage durable, family-scoped worktree identities. `create` is the canonical
-  operation: it creates a managed linked checkout and its CIU identity; it
-  does NOT deploy or start containers unless `--up` is supplied. `--up` starts
-  the project's declared selection after creation. Pass `--base REF` to choose
-  the branch, tag, or exact commit SHA under test (default: `main`). Generated UTC
-  branch/directory names are identical.
-
-  `ensure` is the idempotent spelling for automation: it reuses an exact ready
-  instance, creates one when absent, or resumes a checkpointed CIU-owned
-  partial allocation. It refuses an interrupted initial checkout whose exact
-  post-reset commit was not saved, because repeating that reset could discard
-  operator work. It does not rewrite a conflicting instance. `--profile P1,P2`
-  selects service profiles in the selected CIU root's initial instance overlay;
-  run from that root or select it with `--root-folder`. The root must be
-  committed at the selected base, and an empty profile is invalid.
-  On an existing record, omit initial-overlay options when resuming; the saved
-  intent is authoritative and a ready overlay is operator-owned.
-  An existing Docker network must match its recorded object id or carry the
-  CIU owner label. `--adopt-existing-network` explicitly claims one unlabelled
-  legacy network and saves its exact Docker object id.
-  With an existing record, an explicit `--base` must resolve to its saved
-  allocation commit and `--worktree-dir` must resolve to its recorded path.
-  `adopt` is the only operation that takes ownership of an existing unmanaged
-  linked checkout and prepares every committed CIU root in that checkout.
-
-  Creation, ensure, and adopt prepare an instance. Use `create --up` or the
-  explicit `up` verb to start it; `up --all` forces the default deploy set,
-  otherwise a declared `[ciu.worktree].up` profile list is started together.
-  `exec` runs exact argv (no shell) in the
-  selected root or its declared container target and never starts anything
-  implicitly. `rm` cleans before removal, refuses tracked or non-ignored
-  untracked changes without `--discard-changes BRANCH`, and keeps unmerged
-  branch tips by default. It refuses protected `.assay/` or any `vol-*` path
-  component without `--discard-protected-state BRANCH`; other ignored paths
-  are disclosed and deleted. Use `--keep-branch` to preserve a merged ref or
-  `--delete-branch` to explicitly delete an unmerged one. After checkout
-  deletion fails with a confirmed permission blocker, `--root-escalation
-  BRANCH` authorizes retry of only the blocked descendants for that exact
-  branch.
-
-  Examples (all commands are pasteable):
-    ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json
-    ciu worktree ensure pkg-under-test --json
-    ciu worktree inspect pkg-under-test
-    ciu worktree up pkg-under-test
-    ciu worktree up pkg-under-test --all
-    ciu worktree exec pkg-under-test -- pytest -q
-    ciu worktree rm pkg-under-test -y
-
-  `inspect` reports the persisted record plus freshly read Git facts; `list
-  --json`/`inspect --json`/`rm --json` emit one versioned JSON document on
-  stdout (S16.4). `rm --json` includes a phase report and branch/state outcome.
-  `branches` surveys local branches against a base and `-y`
-  prunes exactly the fully-merged, clean ones with no protected ignored state — never age-based, never the
-  mainline, the primary or invoking checkout's branch, and never a checkout
-  carrying a CIU-managed instance (use `worktree rm`, which cleans first);
-  mergedness is always judged from the PRIMARY worktree (S16.8). `lease` sets
-  this instance's EXPLICIT ownership claim (S16.9): --extend DURATION (e.g.
-  24h) renews a bounded `held` lease, --perpetual declares an unbounded one,
-  --release drops the claim. It reads no Docker state, so it works on a
-  stopped instance exactly as on a running one. `reap` is the DOCKER half of
-  the same survey-then-act shape (S16.10): it sorts every Docker resource
-  group into seven closed categories and, with -y, destroys exactly the four
-  a record, a lease or a `ciu.instance` label PROVES are disposable
-  (checkout-missing, lease-expired, orphaned, partial-cleanup). Age, name
-  similarity and "no process is running" are never consulted; `unattributable`
-  and `ambiguous` groups are never destroyed and cannot be selected with
-  --category at all. A group whose checkout survives is disposed of by running
-  `ciu clean` there, never by a bare docker removal. Run it without -y (or
-  with -y --dry-run) first: that is a pure survey. `up` starts the selected
-  ready instance under its OWN generated-facts record; `exec` runs exact argv (no shell) in
-  that root and never starts anything implicitly (S16.6). `exec --target
-  ALIAS` runs inside the ONE already-running declared container (S16.7).
-
-  Worktree verbs select their Git family from --root-folder or cwd; create and
-  ensure then prepare every committed nested CIU root. Ambient $REPO_ROOT is an
-  output, not a selector -- see `ciu --help` and docs/DESIGN-GUIDE.md.
-""",
-    "capabilities": """\
-ciu capabilities [--json]
-  Print CIU's versioned, closed capability allowlist (D-009). Consumers
-  allowlist shipped machine-contract identifiers instead of inferring
-  features from SemVer. `--json` emits the separately versioned document.
-""",
-    "env": """\
-ciu env — show ciu.env key=value pairs (read-only)
-ciu env generate [--root-folder PATH] — (re)generate ciu.env from system state,
-  and rewrite this checkout's CIU-owned ciu.instance.generated.toml (the
-  [ciu.instance.generated] table) so TEMPLATES read those identity facts from
-  the merged config chain instead of ambient environment (S3.1b)
-ciu env print [--root-folder PATH] — print the existing ciu.env as shell
-  `export KEY='value'` lines, for: eval "$(ciu env print)"
-  It PRINTS; it cannot itself change your shell (no subprocess can), and it
-  generates nothing — run `ciu env generate` first if ciu.env is missing.
-
-  --root-folder PATH   override repo root (no parent walking); for `generate`
-                       and `print`
-""",
-    "iops-baseline": """\
-ciu iops-baseline [--path PATH] [--runtime N] [--force]
-  Measure this host's disk randread IOPS ceiling with fio and write a
-  shell-style baseline file (RIOPS_MAX=<n>, RIOPS_ENGINE=<engine>) that
-  governance read_iops derivation consumes (S15.4/S15.9). Explicit opt-in
-  only — CIU never runs this automatically. WARNING: generates ~10s of
-  saturating read I/O; avoid running while latency-sensitive workloads are
-  active. Uses fio's libaio engine (psync fallback is flagged: queue-depth-1
-  latency, not the ceiling). Requires fio; without it the command prints a
-  notice and exits 0 (derivation then uses the fallback 200).
-
-  --path PATH     output file (default: /var/lib/ciu/io-baseline.env)
-  --runtime N     fio measurement seconds (default: 10)
-  --force         re-measure even when the existing result is < 30 days old
-""",
-    "render": """\
-ciu render [--profile NAME] [--phases N,M] [--root-folder PATH]
-ciu render --host NAME [selection flags]
-  Render ciu.global.toml + per-stack ciu.toml from their Jinja2 templates.
-
-  --profile NAME       host profile to render for (repeatable; default: active profile)
-  --phases N,M         restrict rendering to the given phase numbers
-  --root-folder PATH   override repo root (no parent walking)
-  --host NAME          sync/execute the render on a configured remote host
-""",
-    "profiles": """\
-ciu profiles
-  List available host profiles. Takes no options.
-""",
-    "layouts": """\
-ciu layouts [--root-folder PATH]
-  List declared deploy layouts ([deploy.layouts.<name>]) with their
-  environment and ordered host list (S7.5c). Shows what is DECLARED —
-  `ciu up --layout` is the validating consumer.
-
-  --root-folder PATH override repo root
-""",
-    "up": """\
-ciu up [--profile NAME | --dir PATH | --layout NAME] [selection/options]
-ciu up --host NAME [selection...]                              # render-on-target
-ciu up --host NAME --thin [--bootstrap | --rollback] [selection...] # docker-optional
-  Render + materialise secrets + start the Docker Compose stack(s).
-
-  Actions (S10.2) — with none of these, `ciu up` runs --deploy:
-  --deploy           run each phase in order (the default action)
-  --healthcheck      run the S7.7 health gate. Combined as
-                     `--deploy --healthcheck` it gates AFTER each phase, so a
-                     later phase's `stack:<name>:healthy|completed`
-                     requirement is met before that phase starts; with `--dir`
-                     it gates the one selected stack after it starts. Since
-                     CIU-68 you rarely need to type it: the gate turns itself
-                     on whenever a selected stack declares such a requirement
-
-  Profile/multi-stack mode:
-  --profile NAME     deploy the named host profile (repeatable; default: active profile)
-  --phases N,M       restrict to the given phase numbers
-  --dry-run          render and validate, but do not call Docker
-  --no-preflight     skip host/provisioning preflight checks (break-glass)
-  --skip-check       skip the `ciu check` static preflight (break-glass).
-                     `ciu up` runs it BY DEFAULT before STEP 1 (S13.4c) —
-                     side-effect-free, and it refuses on any ERROR-severity
-                     finding, including a hook's validate_config (S9.5).
-                     WARN-severity findings are printed, never blocking
-  --root-folder PATH override repo root
-  -y, --yes          assume yes to prompts
-  --ignore-errors    continue past a failing stack
-  --check            run the static config-validation pipeline (S13.4a)
-
-  Layout mode (S7.5c) — push-deploy a named host→bundles plan:
-  --layout NAME      resolve [deploy.layouts.<name>] and push to each host in
-                     declaration order. Each host's remote command runs with
-                     CIU_SERVICES_PROFILE set to that host's bundles and
-                     CIU_LAYOUT / CIU_LAYOUT_HOST / CIU_DEPLOY_ENVIRONMENT
-                     exported (S7.5c). A host failure aborts the sequence.
-                     Mutually exclusive with --host and --profile.
-
-  Single-stack mode (`--dir`) also accepts the shared `--deploy` and
-  `--healthcheck` actions, plus these engine options:
-  --dir PATH         deploy one stack directory
-  --render-toml      stop after rendering TOML
-  --print-context    print the template context
-  --reset            remove this stack's containers/volumes/artifacts first
-  --skip-hostdir-check / --skip-hooks / --skip-secrets
-                     skip the named single-stack step
-  --shipped          run the committed docker-compose.yml path
-  -f NAME            select the stack template (advanced)
-
-  Remote (SPEC S14):
-  --host NAME        push-deploy to a host from the inventory (.ciu.hosts.toml)
-  --thin             docker-optional: push an artifact to bundle_dir, then run the
-                     host's shell activation contract (bootstrap|apply|health|
-                     rollback) — no docker/python needed on the target (S14.6)
-  --bootstrap        (with --thin) run the 'bootstrap' verb before 'apply'
-  --rollback         (with --thin) run the 'rollback' verb only (no fresh push)
-""",
-    "down": """\
-ciu down [--profile NAME] [--phases N,M] [--root-folder PATH]
-ciu down --dir PATH [--profile NAME ...] [--root-folder PATH]
-ciu down --host NAME [--profile NAME]
-  Stop project containers; volumes are preserved (use `ciu clean` to remove them).
-
-  --profile NAME     restrict to the named host profile (repeatable)
-  --phases N,M       restrict to the given phase numbers
-  --dir PATH         stop only the selected stack's running Compose project
-  --root-folder PATH override repo root
-  --host NAME        run the stop action on a configured remote host
-""",
-    "clean": """\
-ciu clean [--profile NAME] [--phases N,M] [-y] [--ignore-errors]
-ciu clean --identity OLD_ID [-y] [--root-folder PATH]
-  [--expected-checkout PATH]
-  Tear down completely: remove ALL project containers (running AND exited, incl.
-  init/sidecars), `docker compose down -v --remove-orphans`, remove project
-  volumes and `vol-*` hostdirs, and remove rendered artifacts. The post-clean
-  invariant (S6.4) is enforced: zero project containers AND zero project volumes
-  remain, else clean fails (exit 1).
-
-  --profile NAME     restrict to the named host profile (repeatable)
-  --phases N,M       restrict to the given phase numbers
-  --root-folder PATH override repo root
-  -y, --yes          assume yes to prompts
-  --ignore-errors    continue past a failing stack (best-effort per stack)
-  --vanilla          ALSO remove this workspace's ciu.global.toml (rendered),
-                     ciu.env, ciu.global.instance.toml.j2 and
-                     ciu.instance.generated.toml — a full reset to
-                     freshly-cloned state. Without it they are left untouched,
-                     exactly as before. Only runs when the teardown above
-                     succeeded; a failed clean keeps them for the retry.
-  --identity OLD_ID  remove resources carrying a retired instance id by
-                     exact Compose labels, without loading the old config.
-  --expected-checkout PATH
-                     require the resource owner label to match this absolute
-                     CIU root; refuses the selected root's current identity.
-""",
-    "health": """\
-ciu health [--profile NAME] [--phases N,M] [--root-folder PATH]
-ciu health --preflight [--strict]
-ciu health --host NAME [--thin] [selection]
-  Run the health gate (S7.7) over the selection, or probe images for missing
-  healthcheck tools (--preflight).
-
-  --profile NAME   restrict to the named host profile (default: active profile)
-  --preflight      probe rendered compose images for missing healthcheck tools
-  --strict         (with --preflight) treat missing tools as an error
-  --host NAME      run the health gate on a remote host (SPEC S14)
-  --thin           (with --host) run the docker-optional 'health' activation
-                   verb instead of remote `ciu health` (S14.6)
-  --phases N,M     restrict to the given phase numbers
-  --root-folder PATH override repo root
-""",
-    "diagnose": """\
-ciu diagnose [--project NAME] [--logs N] [--json]
-  Read-only scan of CIU-labelled containers. Correlates Docker state, OOM and
-  exit evidence, restart counts, health history, memory/swap configuration,
-  and bounded recent logs with known failure signatures.
-
-  --project NAME   restrict to one Compose/CIU project label
-  --logs N         recent log lines per container to scan (default: 100)
-  --json           machine-readable findings
-""",
-    "status": """\
-ciu status [--profile NAME] [--json]
-  Read-only per-stack report: for every stack selected by --profile (same
-  resolution chain as `ciu up`), the resolved Docker Compose project, its
-  running containers, each container's health (classify()'s closed
-  vocabulary: healthy/starting/unhealthy/no-healthcheck/not-found), and
-  image reference. A stack not yet deployed is reported with an empty
-  container list, not an error. A Docker daemon that cannot be reached is
-  reported as a clean error and a non-zero exit — never as an empty/healthy-
-  looking result.
-
-  --profile NAME   restrict to the named host profile (repeatable; default:
-                   active profile — same default as `ciu up`)
-  --json           emit the versioned {schema_version, profile, stacks: [...]}
-                   document instead of one line per stack
-""",
-    "bake": """\
-ciu bake [targets ...] [--profile NAME] [--no-cache] [--allow-shared-tag]
-  Thin wrapper over `docker buildx bake --load`. No targets, no --profile →
-  bake `all`. With --profile, the target list instead comes from the SAME
-  resolution chain `ciu up --profile` uses (host profile -> selected stacks
-  -> applications/tools/ path segments), so `ciu bake --profile X` builds
-  exactly the images `ciu up --profile X` would deploy. --profile and
-  explicit targets are mutually exclusive (pass one or the other).
-  (For an iterative dev server with HMR, see `ciu dev`.)
-
-  --profile NAME   resolve targets from this host profile's selection
-                   (repeatable; comma-separated forms accepted, same as
-                   `ciu status`/`ciu up`)
-  --no-cache       pass --no-cache to buildx
-  --allow-shared-tag
-                   allow a linked-worktree bake to write shared image tags
-""",
-    "dev": """\
-ciu dev <stack> [--profile NAME] [--no-prebuild]
-  Run the stack's [<root>.dev] dev-loop profile (S5a): ordered `prebuild` steps
-  (gated on `depends_on` health), then the long-running `command` with the
-  source bind-mounted and `port` exposed. For HMR dev servers (Vite/Next/
-  uvicorn --reload) and contract-coupled pre-build chains (codegen vs a live
-  service) that a production `bake` does not model.
-
-  <stack>            stack directory (relative to repo root) carrying [<root>.dev]
-  --profile NAME     host profile to render for (default: active profile)
-  --no-prebuild      skip the prebuild steps (re-run the dev server only)
-  --root-folder PATH override repo root. Without it CIU derives by walking up
-                     from cwd (S1.1); ambient REPO_ROOT is not consulted -- see
-                     `ciu --help`.
-""",
-    "secrets": """\
-ciu secrets list [-d PATH] [--root-folder PATH]
-ciu secrets reset [-d PATH] [--name N] [-y] [--root-folder PATH]
-  Inspect or delete materialised secret store files (S4.25).
-
-  -d PATH        stack directory (default: cwd)
-  --root-folder PATH
-                 override repository root
-  --name N       restrict reset to one secret name
-  -y, --yes      assume yes to prompts
-""",
-    "host": """\
-ciu host enroll <name> [--user U] [--port N] [--controller FQDN] [--from PATTERN]
-                       [--docker] [--installer-url URL] [--replace] [--root-folder PATH]
-ciu host enroll <name> --ssh-host ADDR [--fingerprint SHA256:...] [--port N]
-                       [--user U] [--replace] [--root-folder PATH]
-ciu host enroll <name> --abort
-  Enroll a bare remote host into .ciu.hosts.toml (S14.7 / CIU-93). Two steps,
-  ONE verb — which one runs is decided by whether --ssh-host/--fingerprint are
-  present, because step 2 is only meaningful once the target has the key.
-
-  STEP 1 (no --ssh-host): generates an ed25519 key pair with ssh-keygen into
-  <repo>/.ciu/secrets/hosts/<name>/ssh_key (dir 0700, key 0600) and PRINTS the
-  public key plus the one command the target's admin runs — ciu's own get.py
-  installer, pinned to THIS host's ciu version, with `enroll --authorized-key
-  '<pubkey>' --controller <FQDN> --user <U> --name <name>`. NOTHING is written
-  to the inventory: a partial enrollment leaves only the key files.
-
-  STEP 2 (--ssh-host ADDR): ssh-keyscans ADDR, refuses unless a scanned key's
-  SHA256 fingerprint equals --fingerprint (the one the admin read on the
-  target's console — TOFU with a second channel; without the flag a TTY is
-  asked to confirm and a non-TTY run is refused), connects with the generated
-  key and that host key pinned for ONE connection, runs `ciu version` on the
-  target as proof, and only THEN writes [deploy.hosts.<name>] with a
-  round-trip edit that leaves every other table and comment untouched.
-
-  --user U          deploy user on the target (default ciu)
-  --port N          ssh port (default 22; written as ssh_port and pinned in the
-                    S14.4c [ADDR]:N known-hosts form only when it is not 22)
-  --controller FQDN name for the key comment; defaults to
-                    topology.external.public_fqdn and is REQUIRED when that is
-                    not declared — CIU never guesses a controller hostname
-  --from PATTERN    add an authorized_keys from="PATTERN" restriction to the
-                    printed key line (opt-in: OpenSSH matches from= against the
-                    client's source address, which differs behind NAT/a mesh)
-  --docker          ask the installer to add the deploy user to the docker group
-  --installer-url URL   override the pinned release-asset URL (a mirror, or a
-                    commit-pinned raw URL). Nothing ever falls back to `latest`.
-                    REQUIRED when this control host runs an UNRELEASED ciu (a
-                    setuptools-scm `.dev`/local version, i.e. a source
-                    checkout): there is no release asset to pin, so step 1
-                    refuses rather than print a URL that 404s.
-  --replace         rotate: regenerate the key and overwrite an existing row's
-                    ssh_key/known_host at step 2
-  --abort           remove a pending (step-1-only) key pair
-  --root-folder PATH override repo root
-
-  CIU_SSH_INSECURE_TOFU is never set by this verb under any flag combination —
-  the fingerprint confirmation IS the secure alternative to that escape hatch.
-""",
-    "host-secrets": """\
-ciu host-secrets <host> [--materialize | --list | --path NAME] [-y] [--root-folder PATH]
-  Host-scoped local secrets (S14.3a / CIU-35): ASK_EXTERNAL / GEN_LOCAL
-  entries declared under [deploy.hosts.<host>.secrets], materialized under
-  the project store's hosts/<host>/ namespace — resolvable BEFORE any Vault
-  exists on the target. Explicit-only: values are never printed and nothing
-  materializes implicitly inside ssh/up.
-
-  --materialize   resolve all declared entries (prompt rules identical to
-                  stack ASK_EXTERNAL: TTY + not -y); prints store file paths
-  --list          print entry names + store-file existence (never values)
-  --path NAME     print the store file path for one declared entry
-  -y, --yes       with --materialize, skip interactive prompts (S4.13)
-  --root-folder PATH override repo root
-""",
-    "check": """\
-ciu check [--profile NAME] [--live] [--json] [--phases N,M] [--root-folder PATH]
-  Validate the whole config pipeline across the selection (no deploy, S13.4a):
-  stack shape, secret directive grammar/placement, the requires/provides graph,
-  governance shape, configfile template/schema existence, hook loading, each
-  hook's optional validate_config() preflight, the guarded compose render, the
-  leak scan, and the declared-vs-consumed secret cross-check. Entirely in
-  memory: no hostdir, no materialized secret, no rendered file, no hook run().
-
-  Three further stages run here (ciu-P46): `vault-presence` refuses a stack
-  declaring ASK_VAULT/GEN_TO_VAULT with no topology.services.vault (S13.4d),
-  `state-secrets` refuses a secret-shaped key in any `[state]` table (S3.4a),
-  and `migration` walks `ciu migration-check`'s rule registry (S13.7) — the
-  same registry the standalone verb walks, with its findings weighted as this
-  report weighs every other stage's (WARN notes, ERROR fails).
-
-  --profile NAME     restrict to the named host profile (repeatable)
-  --live             probe live Vault/Postgres/MinIO/Consul/Docker state too
-  --json             emit the per-stage report as one versioned JSON object
-  --root-folder PATH override repo root
-  --phases N,M       restrict to the given phase numbers
-""",
-    "migration-check": """\
-ciu migration-check [--root-folder PATH] [--json]
-  Report artifacts in THIS checkout left behind by an older CIU (S13.7).
-
-  CIU performs hard cutovers: a renamed or removed artifact is simply gone
-  from every normal code path — no fallback reads, no legacy-compat shims.
-  This verb is the single place that knows CIU's own version history, so a
-  stale artifact produces a named finding with a remediation instead of a
-  silent break. Every rule is pattern-based (does this file/key/table exist);
-  no rule compares an installed version against anything.
-
-  It is also registered as `ciu check`'s `migration` stage, so `ciu up`'s
-  automatic static preflight (S13.4c) covers it with no extra invocation.
-
-  Exit code: 0 when there are NO findings, non-zero when there are any —
-  regardless of WARN/ERROR. This is a diagnostic, not `ciu check`'s
-  severity-gated verdict; the stage form keeps `ciu check`'s aggregation.
-
-  --root-folder PATH override repo root
-  --json             emit one versioned JSON object (rules + findings)
-""",
-    "graph": """\
-ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]
-  Render the requires/provides dependency graph to STDOUT; this never deploys.
-  Pipe Mermaid or DOT output into documentation/Graphviz as needed.
-
-  --format FMT       mermaid (default), dot (Graphviz), or json
-  --profile NAME     restrict to the named host profile (repeatable)
-  --phases N,M       restrict to the given phase numbers
-  --root-folder PATH override repo root
-""",
-    "ssh": """\
-ciu ssh <host> [--admin] [--root-folder PATH] [-- <cmd...>]
-  Open an interactive shell or run a command on a remote host.
-  Host config is read from .ciu.hosts.toml or ~/.ciu/hosts.toml.
-
-  <host>              name of the host in the hosts inventory
-  --admin             use the admin key/user (higher-privilege access)
-  --root-folder PATH  override repo root; must
-                      precede `--` — anything after `--` is the remote
-                      command and is never parsed as a CIU flag
-  -- <cmd...>         command to run (default: interactive shell)
-""",
-}
-
-
-def _print_verb_help(verb: str) -> None:
-    """Print the verb-scoped help block (CIU-7); falls back to top-level usage."""
-    block = _VERB_HELP.get(verb)
-    if block is None:
-        print(_USAGE.format(ver=get_cli_version()))
-    else:
-        print(f"{cli_headline()}\n")
-        print(block, end="")
-
 
 def _resolve_repo_root_cli(define_root: Path | str | None, start_dir: Path) -> Path:
     """Resolve the repo root for a CLI verb, or exit cleanly on refusal (S1.1).
@@ -777,41 +109,22 @@ def _resolve_worktree_ciu_root_cli(
 def _extract_define_root(rest: list[str]) -> tuple[Path | None, list[str]]:
     """Pull ``--root-folder``/``--root-folder`` out of *rest* first, before any
     other local parsing on one of CIU-54's fixed sites (S1.1): the
-    ``--host`` branches of ``render``/``up``/``down``/``health``, ``up
-    --layout``, ``layouts``, ``host-secrets``, ``ssh``, and (S14.7, CIU-93)
-    ``host``.
+    ``--host`` branches of ``render``/``up``/``down``/``status --gate``, ``up
+    --layout``, ``show layouts``, ``secrets host``, ``ssh``, and (S14.7,
+    CIU-93) ``host``.
 
     Consumed here, NOT left in the returned remainder. Every one of these
     sites either forwards its remainder verbatim into a REMOTE argv
-    (``render``/``up``/``down``/``health --host``'s ``ssh_exec``/
+    (``render``/``up``/``down``/``status --gate --host``'s ``ssh_exec``/
     ``_push_host`` calls, ``ssh``'s ``cmd_argv``) or hands it to a stricter
-    downstream parser (``_parse_layout_argv``'s forbidden-flag guard, whose
-    registered flags deliberately keep distinct second characters so no
-    abbreviation is ambiguous — see its own docstring, and ``_flag_given``'s,
-    on exactly this hazard). A LOCAL ``--root-folder`` value names a path on
-    THIS machine; forwarding it would be nonsensical on the remote side (a
-    foreign local path re-parsed by a remote ``ciu``) and, on the layout
-    side, ``--root-folder``/``--dir`` share second character 'd' — the
-    layout guard's own docstring already flags ``--d`` as "genuinely
-    ambiguous against ``--root-folder PATH``". Extracting it first, with its
-    own single-purpose parser, sidesteps both: nothing survives to leak
-    remotely, and ``_parse_layout_argv`` never has to reason about an 8th
-    registered flag.
+    downstream parser. A LOCAL ``--root-folder`` value names a path on THIS
+    machine; forwarding it would be nonsensical on the remote side (a foreign
+    local path re-parsed by a remote ``ciu``). Extracting it first, with its
+    own single-purpose parser, means nothing survives to leak remotely.
 
-    ``allow_abbrev=False`` is deliberate, not the argparse default: this
-    parser runs BEFORE each site's own flag vocabulary is known to it, so it
-    cannot verify an abbreviation is unambiguous the way a single shared
-    parser can (the way ``dev``/``worktree``/``env``/``secrets``/``check``/
-    ``graph``/plain ``up`` register ``--root-folder`` directly in their OWN
-    one parser). Concretely, on ``up --layout``: ``test_up_layout_refuses_
-    every_abbreviated_forbidden_flag_*_form`` (ciu-P29) pins EVERY
-    abbreviation length of ``--dir``/``--rollback``, down to bare ``--d``/
-    ``--r``, as caught by ``_parse_layout_argv``'s forbidden-flag guard —
-    exactly the prefixes ``--root-folder``/``--root-folder`` would otherwise
-    claim first. Requiring the full flag name (the ``--flag=value`` form is
-    unaffected by ``allow_abbrev`` and still works) means a short abbreviation
-    always falls through to the site's own parser unclaimed, so no existing
-    abbreviation contract anywhere in this module can regress.
+    ``allow_abbrev=False`` keeps the exact-spelling contract of the registry
+    (SPEC S10.4): only the full flag name or its ``--flag=value`` form is
+    consumed.
     """
     import argparse as _ap
 
@@ -920,191 +233,15 @@ def _push_host(
     return "exec", rc
 
 
-# ciu-P29 (hotfix) — the flags `ciu up --layout` refuses to accept. The layout
-# owns host order and bundles, so a companion `--profile` would silently
-# override the exported CIU_SERVICES_PROFILE (S7.5 CLI precedence) on EVERY
-# host in the plan, and `--dir`/`--thin`/`--bootstrap`/`--rollback` have no
-# meaning without a local `--host` push.
-_LAYOUT_FORBIDDEN = (
-    "--profile", "--host", "--dir", "--thin", "--bootstrap", "--rollback",
-)
-
-
-# ciu-P29 (hotfix) — the modifiers that SELECT a verb's code path (S10.4):
-# `--layout` and `--dir` on `up`, `--host` on `up`/`down`/`health`/`render`.
-# No entry may be an argparse prefix of another (they have distinct second
-# characters), or an abbreviation would be claimed by whichever branch happens
-# to be tested first instead of being reported as ambiguous — pinned by
-# test_dispatch_flags_have_distinct_second_characters.
-_DISPATCH_FLAGS = ("--layout", "--host", "--dir")
-
-# Of those, the ones whose ABBREVIATIONS must dispatch too. See _flag_given:
-# this is exactly the set that `deploy.py`'s parser would ALSO accept, i.e.
-# where a fall-through is silent rather than loud.
-_ABBREV_DISPATCH_FLAGS = ("--host",)
-
-
-def _flag_dest(flag: str) -> str:
-    """argparse dest for a long flag, namespaced so registrations never collide."""
-    return "flag_" + flag[2:].replace("-", "_")
-
-
 def _flag_given(argv: list[str], flag: str) -> bool:
     """True when *flag* selects this verb's code path (S10.4).
 
-    Always matches `--flag VALUE` and `--flag=VALUE`. For a flag in
-    `_ABBREV_DISPATCH_FLAGS` it ALSO matches every unambiguous argparse
-    abbreviation, resolved by argparse itself rather than by prefix arithmetic
-    — the same technique :func:`_parse_layout_argv` uses for the layout guard.
-
-    ciu-P29, first pass: every dispatch site was a plain ``flag in argv``
-    membership test, which sees the space form but not the ``=`` form, so
-    `--flag=value` silently took a DIFFERENT code path.
-
-    ciu-P29, second pass (review REJECT): exact-or-`=` was still not enough,
-    and the reason is worth stating because it is NOT symmetric across the
-    three dispatch modifiers. What a fall-through COSTS depends entirely on
-    what `deploy.py`'s parser does with the leftover token:
-
-    * `--layout` and `--dir` do not exist there at all. `--lay x` and
-      `--di=/srv` are `unrecognized arguments`; `--d /srv` is `ambiguous
-      option: --d could match --deploy, --dry-run, --root-folder`. Every
-      abbreviation fails LOUDLY, exit 2, nothing deployed.
-    * `--host` DOES exist there — declared at deploy.py:3592 for the help text
-      and read by NOTHING. So `--hos=edge-a` and `--ho edge-a` parse CLEANLY,
-      `args.host` is silently discarded, and the run becomes a LOCAL deploy of
-      the active profile while the operator believes they pushed to a remote
-      host. Exit 0, no warning, zero hosts contacted.
-
-    Hence `--host` alone is abbreviation-aware here. `--layout`/`--dir` stay
-    exact-or-`=` deliberately: they have no such gap, and widening them would
-    INVENT a divergence rather than close one — locally `--d /srv` would become
-    `--dir`, while downstream `--d` is genuinely ambiguous against
-    `--root-folder PATH`, a different path-taking flag. A loud error is the
-    correct answer there, and it is what already happens.
-
-    The premise this asymmetry rests on is not left to a comment:
-    `test_dispatch_abbreviation_premise_against_the_real_deploy_parser` pins it
-    against the REAL `deploy.parse_args`, so if `deploy.py` ever grows a
-    `--dir`/`--layout`, or stops accepting `--hos`, that test fails rather than
-    this docstring quietly going stale.
+    The registry (``cli_registry``) has already validated every spelling: option
+    prefixes are refused there and the mode exclusions (``--layout`` vs ``--host``/
+    ``--dir``/``--profile``, ``--thin`` needs ``--host``) are declared constraints, so
+    this router only needs the exact ``--flag VALUE`` / ``--flag=VALUE`` forms.
     """
-    if any(a == flag or a.startswith(flag + "=") for a in argv):
-        return True
-    if flag not in _ABBREV_DISPATCH_FLAGS:
-        return False
-    import argparse as _ap
-
-    # Register ALL the dispatch modifiers, not just *flag*: an abbreviation
-    # that is ambiguous BETWEEN modifiers then stays ambiguous (argparse exits
-    # 2, loudly) instead of being silently claimed by whichever branch is
-    # tested first. None is ambiguous today — see _DISPATCH_FLAGS.
-    # nargs="?"/const=True keeps a bare `--host` from raising `expected one
-    # argument` HERE; the branch's own parser still owns that error, exactly as
-    # it did before this predicate existed.
-    p = CiuArgumentParser(add_help=False)
-    for candidate in _DISPATCH_FLAGS:
-        p.add_argument(candidate, dest=_flag_dest(candidate),
-                       nargs="?", const=True, default=None)
-    opts, _remaining = p.parse_known_args(argv)
-    return getattr(opts, _flag_dest(flag)) is not None
-
-
-def _parse_layout_argv(rest: list[str]) -> tuple[str | None, list[str], list[str]]:
-    """Resolve `ciu up --layout`'s argv the way the REMOTE parser will.
-
-    Returns ``(layout, remaining, forbidden)`` where *forbidden* names the
-    resolved `_LAYOUT_FORBIDDEN` flags the operator actually supplied.
-
-    ciu-P29 (hotfix): the previous guard compared each leftover token against a
-    denylist of EXACT spellings (``a == flag or a.startswith(flag + "=")``).
-    ``deploy.parse_args`` builds its ``ArgumentParser`` without passing
-    ``allow_abbrev=False``, i.e. with argparse's default ``allow_abbrev=True``,
-    so the REMOTE parser happily resolves ``--prof=core`` to ``--profile``.
-    An abbreviated spelling therefore walked past the local denylist, was
-    forwarded verbatim in the remote argv, and silently overrode the layout's
-    per-host ``CIU_SERVICES_PROFILE`` with one CLI profile on every host.
-
-    The fix is to stop hand-rolling the match: register the forbidden long
-    options on a local parser with the SAME ``allow_abbrev`` semantics the
-    remote uses and let argparse itself resolve the spelling before the guard
-    looks. Every abbreviation length is covered by construction, not by
-    enumeration, and the resolved flags are CONSUMED here rather than left in
-    *remaining*, so nothing survives to be forwarded even in principle.
-
-    ``nargs="?"`` + ``const=True`` on each forbidden flag is what makes the
-    guard total: a value-taking flag supplied with no value (``--profile`` last
-    in argv) and a store-true-style flag supplied with one (``--thin=1``) both
-    reach the guard instead of dying first inside argparse with a raw
-    ``expected one argument`` / ``ignored explicit argument`` message.
-    """
-    import argparse as _ap
-
-    # allow_abbrev is left at argparse's default (True) ON PURPOSE: it is the
-    # setting deploy.parse_args runs with, so an abbreviation resolves here
-    # exactly as it would on the remote. The six forbidden flags plus --layout
-    # have distinct second characters (l/p/h/d/t/b/r), so no abbreviation of
-    # one is ambiguous against another.
-    p = CiuArgumentParser(add_help=False)
-    p.add_argument("--layout", dest="layout", default=None)
-    for flag in _LAYOUT_FORBIDDEN:
-        p.add_argument(flag, dest=_flag_dest(flag),
-                       nargs="?", const=True, default=None)
-    opts, remaining = p.parse_known_args(rest)
-    forbidden = [
-        flag for flag in _LAYOUT_FORBIDDEN
-        if getattr(opts, _flag_dest(flag)) is not None
-    ]
-    return opts.layout, remaining, forbidden
-
-
-def _wants_verb_help(verb: str, rest: list[str]) -> bool:
-    """True when `-h`/`--help` should print the verb's own help.
-
-    `env generate --help` / `env print --help` are excluded so their own
-    argparse help is reachable.
-    """
-    # A command after the required separator belongs to the child verb. In
-    # particular, `ciu exec stack -- python --help` must pass --help through.
-    if verb == "exec" and "--" in rest:
-        rest = rest[:rest.index("--")]
-    if "-h" not in rest and "--help" not in rest:
-        return False
-    if verb == "env" and rest and rest[0] in ("generate", "print"):
-        return False
-    return True
-
-
-def _env_show() -> int:
-    """Walk up from cwd to find and print ciu.env key=value pairs.
-
-    CIU-75: this verb reads the LEGACY write-only export, which since 7.7.0 is
-    no longer what CIU itself consults for instance identity. It keeps working
-    unchanged (the file and its key set are unchanged), but every invocation
-    carries the one-release deprecation notice on STDERR — stdout stays exactly
-    the key=value stream a consumer may already be parsing.
-    """
-    from .workspace_env import LEGACY_ENV_EXPORT_WARNING
-
-    current = Path.cwd()
-    while True:
-        candidate = current / WORKSPACE_ENV
-        if candidate.exists():
-            print(
-                f"[WARN] {LEGACY_ENV_EXPORT_WARNING.format(path=candidate)}",
-                file=sys.stderr,
-            )
-            for line in candidate.read_text().splitlines():
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#"):
-                    print(line)
-            return 0
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-    print(f"[INFO] No {WORKSPACE_ENV} found. Run: ciu env generate", file=sys.stderr)
-    return 1
+    return any(a == flag or a.startswith(flag + "=") for a in argv)
 
 
 def _env_generate(rest: list[str]) -> int:
@@ -1773,6 +910,27 @@ def _worktree_exec(rest: list[str], resolve_repo_root) -> int:
     return wt_mod.exec_instance(repo_root, logical_name, argv)
 
 
+def _seed_selected_root_env(define_root: Path | None) -> None:
+    """Seed this process from the selected root's instance record (CIU-139).
+
+    `resolve` and `exec` render Compose, so they need the same identity and
+    machine facts `ciu up`/`check` get from ``bootstrap_workspace_env``; an
+    unprimed shell must not be a failure. The bootstrap is read-only: a root
+    with no record refuses naming the file and `ciu env generate`.
+    """
+    from .config_constants import GLOBAL_CONFIG_DEFAULTS as _defaults
+    from .workspace_env import REQUIRED_KEYS_CORE, bootstrap_workspace_env
+
+    bootstrap_workspace_env(
+        start_dir=Path.cwd(),
+        define_root=define_root,
+        defaults_filename=_defaults,
+        generate_env=False,
+        update_cert_permission=False,
+        required_keys=REQUIRED_KEYS_CORE,
+    )
+
+
 def _resolve_identities_cli(rest: list[str]) -> int:
     """CLI adapter for the read-only ``ciu resolve`` data surface."""
     define_root, rest = _extract_define_root(rest)
@@ -1789,6 +947,7 @@ def _resolve_identities_cli(rest: list[str]) -> int:
     repo_root = _resolve_repo_root_deploy(define_root)
     from .deploy import resolve_identities
     try:
+        _seed_selected_root_env(define_root)
         document = resolve_identities(
             repo_root,
             stack=opts.stack,
@@ -1830,6 +989,7 @@ def _exec_service_cli(rest: list[str]) -> int:
     repo_root = _resolve_repo_root_deploy(define_root)
     from .deploy import exec_service
     try:
+        _seed_selected_root_env(define_root)
         return exec_service(
             repo_root, opts.selector, command_args, profiles=opts.profile
         )
@@ -1968,6 +1128,12 @@ def _worktree(rest: list[str]) -> int:
     p_lease_mode.add_argument("--release", action="store_true", default=False)
     p_lease.add_argument("--json", action="store_true", default=False)
 
+    # CIU-142 — re-record fork_point_sha after a legitimate rebase.
+    p_refork = sub.add_parser("refork", add_help=False)
+    p_refork.add_argument("logical_name")
+    p_refork.add_argument("--onto", default=None, metavar="TRUNK_REF")
+    p_refork.add_argument("--json", action="store_true", default=False)
+
     p_branches = sub.add_parser("branches", add_help=False)
     p_branches.add_argument("--base", default="main", metavar="REF")
     p_branches.add_argument(
@@ -2009,7 +1175,7 @@ def _worktree(rest: list[str]) -> int:
 
     for parser in (
         p, p_create, p_ensure, p_adopt, p_rm, p_list, p_inspect,
-        p_lease, p_up, p_branches, p_reap,
+        p_lease, p_refork, p_up, p_branches, p_reap,
     ):
         parser.add_argument("--root-folder", dest="define_root", default=None,
                             metavar="PATH")
@@ -2151,6 +1317,29 @@ def _worktree(rest: list[str]) -> int:
                 print(f"  branch: {git['branch']}")
                 print(f"  HEAD: {git['head']}")
                 print(f"  dirty: {git['dirty']}")
+                fork = doc.get("fork_point")
+                if fork is not None:
+                    print(f"  fork point: {fork['status']}")
+                if fork is not None and fork.get("remedy"):
+                    print(
+                        f"  recorded {fork['recorded']} != merge-base "
+                        f"{fork['merge_base']}; run `{fork['remedy']}`"
+                    )
+            return 0
+
+        if opts.action == "refork":
+            doc = wt_mod.refork_instance(
+                lifecycle_root, opts.logical_name, onto=opts.onto
+            )
+            if getattr(opts, "json", False):
+                print(json.dumps(doc, sort_keys=True))
+            else:
+                info = doc["refork"]
+                print(f"worktree refork: {doc['instance']['logical_name']}")
+                print(f"  trunk: {info['trunk']}")
+                print(f"  previous fork point: {info['previous_fork_point_sha']}")
+                print(f"  fork point: {info['fork_point_sha']}")
+                print(f"  changed: {info['changed']}")
             return 0
 
         if opts.action == "lease":
@@ -2364,23 +1553,11 @@ def _host(rest: list[str]) -> int:
     repo_root = _resolve_repo_root_deploy(define_root)
     config = _load_remote_config(repo_root)
     try:
+        # The registry already refuses --abort with any other enrollment flag and
+        # --fingerprint without --ssh-host (declared Conflicts/Requires).
         if opts.abort:
-            if opts.ssh_host or opts.fingerprint or opts.replace:
-                print(
-                    "[S14.7] --abort removes a pending key pair and takes no other "
-                    "enrollment flags.",
-                    file=sys.stderr,
-                )
-                return 2
             return enroll_abort(repo_root, opts.name)
-        if opts.ssh_host or opts.fingerprint:
-            if not opts.ssh_host:
-                print(
-                    "[S14.7] --fingerprint is a step-2 flag and needs --ssh-host "
-                    "ADDR; there is nothing to keyscan without an address.",
-                    file=sys.stderr,
-                )
-                return 2
+        if opts.ssh_host:
             return enroll_step2(
                 repo_root, opts.name,
                 config=config,
@@ -2407,46 +1584,55 @@ def _host(rest: list[str]) -> int:
         return 2
 
 
+def _run_legacy(tokens: list[str]) -> int:
+    """Run the implementation behind one registered command; its exit status.
+
+    ``tokens`` is the implementation-layer spelling built by ``cli_registry.adapter``
+    (the registry has already validated every option). The implementation signals its
+    result with ``SystemExit``; that becomes the return value the registry converts back
+    into the process status.
+    """
+    try:
+        _legacy_dispatch(tokens)
+    except SystemExit as stop:
+        code = stop.code
+        if code is None:
+            return 0
+        if isinstance(code, int):
+            return code
+        print(code, file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> None:
-    raw = consume_cli_flags(sys.argv[1:])
+    """Console entry point: build the registered CLI and run it."""
+    from cli_extended import VersionLookupError
 
-    if not raw or raw[0] in ("-h", "--help"):
-        print(_USAGE.format(ver=get_cli_version()))
-        raise SystemExit(0)
+    from . import output
 
-    # `version` remains the canonical CIU verb; --version is the estate-wide
-    # top-level compatibility spelling used by console entrypoints.
-    if raw[0] in ("version", "--version"):
-        print(f"ciu {get_cli_version()}")
-        raise SystemExit(0)
+    output.configure(os.environ.get(output._TIME_ENV) == "1")
+    try:
+        from .cli_registry import build_cli
 
+        cli = build_cli()
+    except VersionLookupError as exc:
+        # A source tree that was neither built nor installed has no version; the library
+        # refuses to invent one. Exit 3 = environment/bootstrap error (SPEC S10.3).
+        print(f"[ERROR] ciu is not installed as a distribution: {exc}", file=sys.stderr)
+        raise SystemExit(3) from exc
+    raise SystemExit(cli.run(argv=sys.argv[1:]))
+
+
+def _legacy_dispatch(raw: list[str]) -> None:
     verb = raw[0]
     rest = raw[1:]
 
-    # S15.18 (CIU-17) — ad-hoc KSM override, stripped here so it works on any
-    # verb that renders (up, render, ...) without each one declaring it. It sets
-    # the ambient CIU_KSM that governance.resolve_ksm_optin reads, so the flag
-    # and the env var are ONE resolution point, not two that can disagree.
-    if "--ksm" in rest or "--no-ksm" in rest:
-        if "--ksm" in rest and "--no-ksm" in rest:
-            print("ciu: --ksm and --no-ksm are mutually exclusive.", file=sys.stderr)
-            raise SystemExit(2)
-        from .governance import BUILTIN_KSM, KSM_ENV_VAR
-        os.environ[KSM_ENV_VAR] = BUILTIN_KSM if "--ksm" in rest else "off"
-        rest = [a for a in rest if a not in ("--ksm", "--no-ksm")]
-
-    # CIU-7 / S10.1: intercept `-h`/`--help` per verb BEFORE forwarding to the
-    # legacy deploy/engine argparse, so each verb shows its own options.
-    if _wants_verb_help(verb, rest):
-        _print_verb_help(verb)
-        raise SystemExit(0)
-
     if verb == "env":
-        if rest and rest[0] == "generate":
+        # The registry guarantees the action is `generate` or `print`.
+        if rest[0] == "generate":
             raise SystemExit(_env_generate(rest[1:]))
-        if rest and rest[0] == "print":
-            raise SystemExit(_env_print(rest[1:]))
-        raise SystemExit(_env_show())
+        raise SystemExit(_env_print(rest[1:]))
 
     elif verb == "iops-baseline":
         raise SystemExit(_iops_baseline(rest))
@@ -2484,6 +1670,15 @@ def main() -> None:
         config = _load_remote_config(repo_root)
         from .deploy_pkg.layouts import list_layouts
         rows = list_layouts(config)
+        if "--json" in rest:
+            print(json.dumps({
+                "schema_version": 1,
+                "layouts": {
+                    name: {"environment": environment, "hosts": list(hosts)}
+                    for name, environment, hosts in rows
+                },
+            }, sort_keys=True))
+            raise SystemExit(0)
         if not rows:
             print("(no layouts declared)")
             raise SystemExit(0)
@@ -2496,39 +1691,19 @@ def main() -> None:
     elif verb == "up":
         if _flag_given(rest, "--layout"):
             # S7.5c — push-deploy a named host→bundles plan. The layout owns
-            # host order and bundles, so --host/--profile are excluded: a
+            # host order and bundles, so --host/--dir/--profile/--thin/
+            # --bootstrap/--rollback are refused by the registered verb's
+            # declared constraints (cli_registry) before this code runs: a
             # passthrough --profile would silently override the exported
             # CIU_SERVICES_PROFILE (S7.5 CLI precedence).
             #
-            # B2 (review, ciu-P10 checkpoint C) fixed the `--profile=core`
-            # equals form and added the four unguarded flags. ciu-P29 closes
-            # the level BELOW that: the denylist still compared EXACT
-            # spellings, while the remote parser it forwards into runs with
-            # argparse's default allow_abbrev=True, so `--prof=core` resolved
-            # remotely and silently overrode every host's bundles. The check
-            # is now argparse's own resolution rather than a hand-rolled
-            # string match — see _parse_layout_argv.
-            #
-            # ciu-P45 (CIU-54): --root-folder is extracted BEFORE
-            # _parse_layout_argv sees `rest` at all, rather than registered
-            # on that parser directly — --root-folder and --dir share second
-            # character 'd' (see _extract_define_root's own docstring), and
-            # _parse_layout_argv's forbidden-flag set is deliberately kept to
-            # distinct second characters.
+            # ciu-P45 (CIU-54): --root-folder is extracted first (see
+            # _extract_define_root); the layout name is the only value left to read.
             define_root, rest = _extract_define_root(rest)
-            layout_name, remaining, forbidden = _parse_layout_argv(rest)
-            if forbidden:
-                print(
-                    "[S7.5c] --layout is mutually exclusive with --host and "
-                    "--profile (and with --dir/--thin/--bootstrap/--rollback, "
-                    "which only apply to the --host push path) — the layout "
-                    "owns the host order and the bundles. Refused: "
-                    + ", ".join(forbidden)
-                    + " (abbreviated and `=` spellings resolve to the same "
-                      "flag on the remote, so they are refused here too).",
-                    file=sys.stderr,
-                )
-                raise SystemExit(2)
+            layout_parser = CiuArgumentParser(add_help=False)
+            layout_parser.add_argument("--layout", dest="layout", default=None)
+            layout_opts, remaining = layout_parser.parse_known_args(rest)
+            layout_name = layout_opts.layout
             repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .deploy_pkg.layouts import resolve_layout
@@ -2594,9 +1769,8 @@ def main() -> None:
                 # Docker-optional push→activate path (S14.6). Pushes an artifact
                 # to bundle_dir, then runs the project's shell activation contract
                 # (bootstrap|apply|health|rollback) — no Docker/Python on target.
-                if opts.bootstrap and opts.rollback:
-                    print("[ERROR] --bootstrap and --rollback are mutually exclusive.", file=sys.stderr)
-                    raise SystemExit(2)
+                # (--bootstrap/--rollback exclusivity and their need for --thin are
+                # declared constraints of the registered verb.)
                 from .activate import run_thin_up
                 try:
                     rc = run_thin_up(
@@ -2612,11 +1786,6 @@ def main() -> None:
                     print(f"[ERROR] {exc}", file=sys.stderr)
                     raise SystemExit(2)
                 raise SystemExit(rc)
-
-            # --bootstrap/--rollback only apply to the --thin activation contract.
-            if opts.bootstrap or opts.rollback:
-                print("[ERROR] --bootstrap/--rollback require --thin (the docker-optional activation path).", file=sys.stderr)
-                raise SystemExit(2)
 
             # B3 (review): the ONE push implementation, shared with the
             # `--layout` loop above — behavior here is unchanged (same
@@ -2686,14 +1855,9 @@ def main() -> None:
             parser.add_argument("--identity", metavar="OLD_ID")
             parser.add_argument("-y", "--yes", action="store_true")
             parser.add_argument("--expected-checkout", metavar="PATH")
-            opts, remaining = parser.parse_known_args(rest)
-            if remaining:
-                print(
-                    "[ERROR] --identity cannot be combined with ordinary clean "
-                    f"options: {' '.join(remaining)}",
-                    file=sys.stderr,
-                )
-                raise SystemExit(2)
+            # Strict parse: the registry declares `--identity` as conflicting with every
+            # ordinary clean option, so anything left over is a usage error here too.
+            opts = parser.parse_args(rest)
             repo_root = _resolve_repo_root_deploy(define_root)
             from .deploy import action_clean_identity
             raise SystemExit(
@@ -2740,7 +1904,7 @@ def main() -> None:
                     raise SystemExit(2)
                 raise SystemExit(rc)
             from .transport_ssh import ssh_exec
-            remote_cmd = shlex.join(["ciu", "health", *remaining])
+            remote_cmd = shlex.join(["ciu", "status", "--gate", *remaining])
             # Pass the whole command as ONE argv element: ssh space-joins remote
             # args into a single string for the remote login shell to re-parse, so
             # an "sh -c" wrapper here would be re-split and break "&&"/cd. The login
@@ -2814,10 +1978,7 @@ def main() -> None:
         p.add_argument("--no-prebuild", dest="no_prebuild", action="store_true")
         p.add_argument("--root-folder", dest="define_root",
                        type=Path, default=None, metavar="PATH")
-        opts = p.parse_args(rest)
-        if not opts.stack:
-            cli_error("ciu dev: missing <stack>. Run 'ciu dev --help'.")
-            raise SystemExit(2)
+        opts = p.parse_args(rest)  # the registry requires <stack>
         repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
         raise SystemExit(run_dev(
             opts.stack,
@@ -2845,21 +2006,8 @@ def main() -> None:
         p.add_argument("--list", action="store_true", default=False)
         p.add_argument("--path", dest="path_name", default=None)
         p.add_argument("-y", "--yes", action="store_true", default=False)
-        opts, _ = p.parse_known_args(rest)
-        if opts.host is None:
-            print(
-                "ciu host-secrets <host> [--materialize | --list | --path <name>] "
-                "[-y]  (S14.3a)",
-                file=sys.stderr,
-            )
-            raise SystemExit(2)
-        modes = [opts.materialize, opts.list, opts.path_name is not None]
-        if sum(1 for m in modes if m) != 1:
-            print(
-                "[S14.3a] choose exactly one of --materialize, --list, --path <name>.",
-                file=sys.stderr,
-            )
-            raise SystemExit(2)
+        # The registry requires <host> and exactly one of --materialize/--list/--path.
+        opts = p.parse_args(rest)
         repo_root = _resolve_repo_root_deploy(define_root)
         from .hosts import get_host_secrets
         try:
@@ -2923,7 +2071,7 @@ def main() -> None:
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--graph"] + rest))
 
-    elif verb == "ssh":
+    else:  # "ssh": the registry only hands over registered verbs, and ssh is the last
         # Parse: ciu ssh <host> [--admin] [-- cmd...]
         import argparse as _ap
         from .hosts import get_host
@@ -2943,10 +2091,7 @@ def main() -> None:
         # never from cmd_argv, which is the literal remote command and must
         # pass through untouched even if it happens to contain that spelling.
         define_root, ssh_rest = _extract_define_root(ssh_rest)
-        opts = p.parse_args(ssh_rest)
-        if not opts.host:
-            cli_error("ciu ssh: missing <host>. Run 'ciu ssh --help'.")
-            raise SystemExit(2)
+        opts = p.parse_args(ssh_rest)  # the registry requires <host>
         # Resolve repo root (S1.1, CIU-54)
         repo_root = _resolve_repo_root_deploy(define_root)
         config = _load_remote_config(repo_root)
@@ -2963,18 +2108,6 @@ def main() -> None:
             interactive=interactive,
             admin=opts.admin,
         ))
-
-    else:
-        if verb == "-d" and rest:
-            print(cli_headline(), file=sys.stderr)
-            print(
-                f"ciu: '-d' is not a verb. Did you mean: ciu up --dir {rest[0]!r}?",
-                file=sys.stderr,
-            )
-        else:
-            print(cli_headline(), file=sys.stderr)
-            print(f"ciu: unknown verb '{verb}'. Run 'ciu' for usage.", file=sys.stderr)
-        raise SystemExit(2)
 
 
 if __name__ == "__main__":

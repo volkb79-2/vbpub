@@ -1,9 +1,10 @@
 # tls-edge
 
 tls-edge provides TLS termination as a shared host service: one hardened
-Traefik v3 container handles HTTPS (ports 443 and 8443 by default; port 80
-off by default) for Docker Compose stacks on a host. Optional Mattermost Calls
-support adds raw TCP and UDP media forwarding on a configured public port.
+Traefik v3 container handles HTTPS (port 443, one host name per service; port 80
+for the redirect and ACME HTTP-01) for Docker Compose stacks on a host. Mattermost Calls support
+is on by default and adds raw TCP and UDP media forwarding on public port 8443
+(`[tls_edge.calls] enabled = false` turns it off).
 Consumers join the shared `ingress_public` network and declare labels — TLS
 certificates are handled by the edge, including automatic issuance and
 zero-downtime renewal via Let's Encrypt. A docker-socket-proxy (POST denied)
@@ -15,73 +16,40 @@ shields the Docker API from Traefik. See the
 
 ## Install
 
-On any Linux host with Docker installed (requires `curl`, `python3`):
+On a Linux host with Docker, `git`, and `python3` 3.13 or 3.14 (x86_64):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py \
-  | sudo python3 - install
+curl -fsSLO https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py
+sudo python3 get.py install --variant py313      # py314 on a 3.14 host
+cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
-This downloads the latest release artifact from GitHub Releases, **verifies its
-SHA256 checksum**, extracts to `/opt/tls-edge-src/tls-edge`, and places a
-`tls-edge` command at `/usr/local/bin/tls-edge`.  When it finishes, run:
+`get.py` downloads the release bundle, **verifies its SHA256 and manifest**, builds
+a private venv from the **bundled** `ciu` and dependency wheels (offline, hash
+locked), and asks for the domain and certificate mode.  The instance lives in
+`/srv/tls-edge-instance/stack`, a stable path that keeps the same ciu identity
+across updates.  Install, certificate configuration, adding a consumer, update,
+rollback and migrating a hand-made deployment are all in
+**[docs/INSTALL.md](docs/INSTALL.md)**; label-by-label consumer examples are in
+[consumer-examples/README.md](consumer-examples/README.md).
+
+### Update
 
 ```bash
-tls-edge install
+sudo /srv/tls-edge-instance/bin/tls-edge-installer update --variant py313
+cd /srv/tls-edge-instance/stack && sudo ./ciu up
 ```
 
-### Pin a specific version
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py \
-  | sudo python3 - install --version tls-edge-v0.2.0
-```
-
-`--version` accepts either the full tag (`tls-edge-v0.2.0`) or a bare
-semver (`0.2.0`).
-
-### Update to a newer release
-
-```bash
-tls-edge update
-```
-
-Downloads the latest release artifact, verifies its checksum, and extracts it
-over the install directory.  Your site-specific config
-(`ciu-stack/ciu.toml.j2`, `edge-proxy/.env`) is backed up to `*.pre-update`
-before extraction and restored if the new artifact does not provide them.
-
-### Checksum verification
-
-Every release artifact (`tls-edge-v<ver>.tar.xz`) ships with a
-`tls-edge-v<ver>.tar.xz.sha256` sidecar.  `get.py` verifies the SHA256
-automatically before extraction; installation is aborted on mismatch.
-
-To verify manually after download:
-
-```bash
-sha256sum -c tls-edge-v0.2.0.tar.xz.sha256
-```
-
-### Air-gapped / dev installs (git-clone fallback)
-
-For hosts without internet access to GitHub Releases, or for development
-purposes, force the git-clone path:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/tls-edge/get.py \
-  | sudo python3 - install --via git
-```
-
-This performs a sparse, blobless clone of the `vbpub` repo and checks out the
-resolved tag — no artifact download, no checksum verification.  Requires `git`.
+Your site config (`ciu-stack/ciu.toml.j2`) and ciu's state (`.ciu/`) are never
+overwritten; `rollback` re-points to the previous release.
 
 ### Releases
 
 Releases are immutable GitHub Releases in the `vbpub` monorepo tagged
-`tls-edge-v<semver>` (e.g. `tls-edge-v0.2.0`).  Each release carries:
-- `tls-edge-v<ver>.tar.xz` — the runtime artifact
-- `tls-edge-v<ver>.tar.xz.sha256` — SHA256 checksum sidecar
+`tls-edge-v<semver>` (e.g. `tls-edge-v2.1.0`).  Each release carries one bundle
+per Python interpreter (the platform wheels are interpreter specific):
+- `tls-edge-v<ver>-py313.tar.xz`, `tls-edge-v<ver>-py314.tar.xz` — the bundles
+- a `.sha256` sidecar for each
 
 "Latest" is resolved by scanning `tls-edge-v*` releases and picking the
 highest semver — no separate "latest" release is used as the source of truth.
@@ -118,9 +86,9 @@ tls-edge/
 
   consumer-examples/          ← ready-to-copy example stacks
     pattern-a-public-only/
-    pattern-b-public-and-private/
-    pattern-c-public-and-ops-sidecar/
     pattern-d-guarded/          ← basicAuth per-route guard (labels only; no edge changes)
+    pattern-e-media-udp/        ← HTTPS host + TCP and UDP media routers (Mattermost Calls)
+    README.md                   ← label-by-label explanation
 
   ARCHITECTURE.md             ← design rationale, tradeoffs, rejected alternatives
   CONSUMER_GUIDE.md           ← onboarding guide for service teams
@@ -134,7 +102,7 @@ tls-edge/
 Suitable for sysadmins who want to inspect the rendered defaults and start
 without installing any tooling.
 
-**Defaults**: ACME TLS-ALPN-01 challenge, port 80 off, Let's Encrypt
+**Defaults**: ACME TLS-ALPN-01 challenge, port 80 on, Let's Encrypt
 production CA.  Setting an ACME contact email is strongly recommended (avoids
 rate-limit notices from Let's Encrypt); see the note below.
 
@@ -358,9 +326,9 @@ on disk.
 when certbot prompts.  No DNS API key needed.  Requires manual action every
 ~60 days.  See Quickstart C above.
 
-**Port 80 note**: port 80 is off by default.  Enable it by setting
-`tls_edge.ports.expose_http = true` in your override and re-rendering.  This
-also activates the HTTP→HTTPS redirect entrypoint (required for `acme-http`).
+**Port 80 note**: port 80 is on by default (HTTP→HTTPS redirect, required for
+`acme-http`).  Turn it off with `tls_edge.ports.expose_http = false` in your
+override and re-rendering.
 
 **Static mode note**: both `live/<domain>/` and `archive/<domain>/` must be
 mounted.  Certbot uses relative symlinks between these two directories; mounting
@@ -375,7 +343,7 @@ only `live/` causes silent TLS failure inside the container.
 | Check | What it verifies |
 |---|---|
 | Stack health | Both containers report healthy (`docker inspect`) |
-| Port binding | 443 and 8443 are bound on the expected interface |
+| Port binding | 80, 443 and (Calls) TCP+UDP 8443 are bound on the expected interface |
 | TLS handshake | `openssl s_client` against the host FQDN; cert loaded (not the Traefik default self-signed) |
 | ACME volume | `acme.json` exists, is non-empty, and has mode 0600 |
 | Network | `ingress_public` network exists and Traefik is attached |
@@ -425,20 +393,20 @@ cmru release tls-edge --set-version 0.2.0
 
 `get.py` resolves the latest release by querying the GitHub Releases API and
 picking the highest-semver `tls-edge-v*` tag.  Once the release is published,
-`tls-edge update` on any installed host will download and verify the new
-artifact automatically.
+`bin/tls-edge-installer update` on any installed host downloads and verifies
+the new bundle automatically.
 
 ### Artifact filename scheme
 
 ```
-tls-edge-v<semver>.tar.xz         ← runtime artifact
-tls-edge-v<semver>.tar.xz.sha256  ← SHA256 sidecar (sha256sum -c format)
+tls-edge-v<semver>-<variant>.tar.xz         ← bundle per interpreter (py313, py314)
+tls-edge-v<semver>-<variant>.tar.xz.sha256  ← SHA256 sidecar (sha256sum -c format)
 ```
 
-Example for version 0.2.0:
+Example for version 2.1.0:
 ```
-tls-edge-v0.2.0.tar.xz
-tls-edge-v0.2.0.tar.xz.sha256
+tls-edge-v2.1.0-py313.tar.xz
+tls-edge-v2.1.0-py313.tar.xz.sha256
 ```
 
 The tarball contains a single top-level directory `tls-edge-v<ver>/` so

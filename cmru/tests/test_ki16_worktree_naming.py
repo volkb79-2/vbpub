@@ -339,3 +339,28 @@ def test_old_style_worktrees_remain_discoverable_resumable_and_removable(tmp_pat
 
     transaction.remove_workspace(new_workspace)
     assert not new_workspace.path.exists()
+
+
+def test_remove_workspace_refuses_mount_under_checkout_and_never_deletes(tmp_path, monkeypatch):
+    """WT-OW-01 through cmru's own surface (abandon/cleanup removal): a mount
+    under the release worktree refuses removal and leaves content intact; it
+    works again once the mount is gone."""
+    root = _repo(tmp_path)
+    base = _git(root, "rev-parse", "HEAD")
+    workspace = transaction.create_workspace(root, base=base, purpose="release", scope="demo")
+    mount = workspace.path / "artifacts" / "vm-lab"
+    mount.mkdir(parents=True)
+    (mount / "disk.img").write_text("precious", encoding="utf-8")
+    table = (
+        "22 1 8:1 / / rw - ext4 /dev/sda1 rw\n"
+        f"101 22 0:50 / {mount} rw - btrfs /dev/vda1 rw,subvol=/vm-lab\n"
+    )
+    shared_core = transaction._shared_worktree().core
+    with monkeypatch.context() as patch:
+        patch.setattr(shared_core, "_read_mountinfo", lambda: table)
+        with pytest.raises(RuntimeError, match="detach it first") as caught:
+            transaction.remove_workspace(workspace)
+    assert str(mount) in str(caught.value)
+    assert (mount / "disk.img").read_text(encoding="utf-8") == "precious"
+    transaction.remove_workspace(workspace)
+    assert not workspace.path.exists()

@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Iterator
 
 from .errors import AssayError, Outcome, ReasonCode
-from .workspace import ActiveWorkspace, WorkspaceEstimate
+from .workspace import ActiveWorkspace, WorkspaceCleanupError, WorkspaceEstimate
+
+# cowtree's own environment names, duplicated so the no-area decision needs
+# no import of cowtree (B196).
+_ENV_ROOT = "MDT_COW_ROOT"
+_ENV_MODE = "COWTREE_MODE"
 
 
 def _load_cowtree():
@@ -70,6 +75,32 @@ def _require_btrfs(cowtree, caps) -> None:
         )
 
 
+def _load_cowtree_gc():
+    """Load cowtree's garbage collector module (same package, lazy)."""
+    return importlib.import_module("cowtree.gc")
+
+
+def _collect_dead_runs(cowtree, area) -> None:
+    """B197: remove runs whose owner died (SIGKILL, container kill).
+
+    cowtree.gc deletes only valid, non-external runs whose owner flock is
+    free and whose owner identity is provably dead, so a live sibling run is
+    never touched. Collection is housekeeping: a failure is an advisory and
+    never refuses the lane.
+    """
+    try:
+        items = _load_cowtree_gc().gc(area.runs_dir)
+    except (cowtree.CowError, OSError) as exc:
+        sys.stderr.write(f"Assay advisory: dead copy-on-write run collection failed: {exc}\n")
+        return
+    deleted = [item for item in items if item.status == "deleted"]
+    if deleted:
+        sys.stderr.write(
+            "Assay advisory: collected "
+            f"{len(deleted)} dead copy-on-write run(s) left by an earlier killed run\n"
+        )
+
+
 def _as_assay_error(exc: Exception) -> AssayError:
     return AssayError(
         f"copy-on-write workspace failed: {exc}",
@@ -94,8 +125,19 @@ def open_workspace(
     does not apply here, not a lane failure: Assay uses the plain path and
     says so once. A run whose backend changes after detection still refuses.
     """
-    cowtree = _load_cowtree()
     environment = dict(os.environ)
+    if (
+        _ENV_ROOT not in environment
+        and environment.get(_ENV_MODE, "auto") in {"auto", "off"}
+    ):
+        # B196: no CoW area is configured, so cowtree would answer "none".
+        # Do not import it at all: a missing sibling package must not become
+        # an import error before any verdict. (An invalid COWTREE_MODE still
+        # goes through cowtree so it is refused there.)
+        yield None
+        return
+    cowtree = _load_cowtree()
+    body_finished = False
     try:
         area = cowtree.detect(environ=environment)
         if area is None:
@@ -109,6 +151,7 @@ def open_workspace(
             )
             yield None
             return
+        _collect_dead_runs(cowtree, area)
         cow_estimate = cowtree.SpaceEstimate(
             ingest_bytes=estimate.ingest_bytes,
             per_clone_bytes=estimate.per_clone_bytes,
@@ -129,5 +172,13 @@ def open_workspace(
             )
             workspace.reserve(max_live_clones=estimate.max_live_clones)
             yield workspace
+            body_finished = True
     except cowtree.CowError as exc:
+        if body_finished:
+            # B199: only Run.close failed, after the measurement completed.
+            raise WorkspaceCleanupError(
+                f"copy-on-write workspace cleanup failed: {exc}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.EXEC_FAILED,
+            ) from exc
         raise _as_assay_error(exc) from exc

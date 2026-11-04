@@ -752,7 +752,7 @@ Lanes that NEED a variable declare `required_env = ["SCHEMA_GATE_PW"]`: the
 gate refuses to start unless each name is present and non-empty, verifies
 container lanes can actually receive it (it must be on `forward_env`), and
 prints which forwarding keys were present at start — names only, never
-values (the docker-argv print redacts them too). Run
+values (the docker argv carries `-e NAME` only; the value rides in the docker client's environment). Run
 `run-gate --check-env` for an advisory sweep of env references in the
 project's Python sources that no lane forwards or requires.
 
@@ -2206,6 +2206,25 @@ noticing — that boundary is the point.
   (mutation, fuzz) via the identical entrypoint; `--list` output is the
   pipeline generator's input. Design note lives in assay B009.
 
+## Runner uid: one owner for checkout, cockpit and lane
+
+`tester-unified` runs lanes as uid/gid 1003 (its venv and home belong to that uid) and Assay refuses a tree whose Git
+owner differs from the process uid (`dubious ownership`; Assay replaces Git's configuration, so `safe.directory` cannot
+be granted). Run-Gate's own host-side Git is hardened the same way and ignores global `safe.directory`. The only layout
+that works without ACLs or world-writable directories is therefore **one uid for everything that touches a checkout**:
+
+- the account that owns `/workspaces` checkouts and the CoW root (`MDT_COW_ROOT` must be owned by the lane uid),
+- the user that invokes `run-gate` (cockpit `vscode`), and
+- the lane user, uid 1003.
+
+On a developer host that is the normal case (the devcontainer maps `vscode` onto the workspace owner). On a runner host
+provisioned by hand (for example the netcup runner scripts) create the runner account as uid/gid 1003 and remap the
+cockpit's `vscode` user to it (`usermod -u 1003`); do not chown a checkout to a second uid per run. A different uid is
+only possible with `[environments.<name>] user = "invoker"` and an image whose venv that uid can write; `tester-unified`
+is not such an image. Symptoms of a mismatch: `run-gate: editable assay install failed` with `dubious ownership` in the
+build log, `Permission denied` on `<project>/.run-gate/...`, or `MDT_COW_ROOT must be owned by the non-root caller uid`.
+See RG-150.
+
 ## Distribution — installed wheel and SemVer
 
 Run-Gate is distributed as a wheel and invoked through its installed
@@ -2239,8 +2258,21 @@ The lane invokes its coverage helper this way:
 
 ```console
 python tools/coverage_gate.py --repo . --base latest-release-tag \
-  --coverage-json coverage.json --source run_gate.py
+  --coverage-json coverage.json --source run_gate.py \
+  --source run_gate_admission.py
 ```
+
+`--source` repeats; a path is judged against the first prefix that contains
+it. Changed continuation lines of a multi-line statement are judged as the
+statement's first line (the only one coverage.py lists), and a hunk body is
+delimited by its header counts, so an added line reading `++ x` is not
+mistaken for a file header.
+
+A `kind = "command"` lane that relies on `pytest --cov-fail-under` must set
+`[tool.coverage.report] precision = 2` (or pass `--cov-precision=2`):
+pytest-cov compares the total at the configured precision (default 0 digits)
+while printing it at two, so 96.94% against a 97 floor exits 0 otherwise
+(RG-122). Run-Gate maps the process exit status and never parses tool output.
 
 Only on a project's FIRST stable release, when no stable tag exists anywhere,
 may the explicit `--allow-first-release` option report this diff check as

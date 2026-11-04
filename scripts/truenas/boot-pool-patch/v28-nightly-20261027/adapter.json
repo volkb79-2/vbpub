@@ -1,0 +1,7 @@
+{
+  "id": "v28-nightly-20261027",
+  "target_count": 19,
+  "target_manifest_sha256": "5fed1afd5acef4464d872e5b5dc068924f21ba33281eace18333501d754c5f3f",
+  "train": "TrueNAS-28-Nightlies",
+  "version": "28.0.0-MASTER+20261027-175229"
+}

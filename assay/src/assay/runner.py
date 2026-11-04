@@ -1677,8 +1677,8 @@ def _classify_r0_result(
         limits=None if observed is None else observed.limits,
         observation=(
             "not_requested"
-            if observed is None or observed.status == "unobserved"
-            else observed.status
+            if observed is None
+            else contention.observation_input(observed)
         ),
         observation_required=observation_required,
     )
@@ -6582,6 +6582,22 @@ def _run_higher_rigor_lane(
                         worktree_integrity=worktree_integrity,
                     )
                 )
+    except workspace_api.WorkspaceCleanupError as exc:
+        # (B199) The CoW workspace failed to CLOSE after the measurement had
+        # completed: every verdict input exists, so the cleanup problem is an
+        # advisory, not a verdict-voiding ERROR. Without a completed
+        # measurement there is nothing to keep and it refuses as any other
+        # workspace failure does. A leaked-state RuntimeError (below) stays a
+        # refusal.
+        if not outcome_holder:
+            return refuse_all(
+                exc.outcome,
+                exc.reason_code,
+                detail=announce_refusal(exc, diagnostics=diagnostics),
+            )
+        if diagnostics is not None:
+            print(f"assay: advisory: {exc}", file=diagnostics)
+        outcome = outcome_holder[0]
     except AssayError as exc:
         # (B053/A-409) Announced on BOTH branches: the error refuses the
         # whole lane on one and replaces the highest higher-rigor claim with

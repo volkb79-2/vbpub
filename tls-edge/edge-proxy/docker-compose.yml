@@ -16,11 +16,9 @@ services:
 
   # ── Docker socket proxy ────────────────────────────────────────────────────
   dockerproxy:
-    image: tecnativa/docker-socket-proxy:v0.4.2
+    image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: edge-dockerproxy
     restart: unless-stopped
-
-    cgroup_parent: edge.slice
 
     environment:
       CONTAINERS: 1   # read container inspect/list
@@ -56,8 +54,6 @@ services:
     container_name: edge-traefik
     restart: unless-stopped
 
-    cgroup_parent: edge.slice
-
     depends_on:
       dockerproxy:
         condition: service_healthy
@@ -67,24 +63,21 @@ services:
       # HTTP: received and immediately redirected to HTTPS by Traefik.
       - "80:80"
 
-      # Primary HTTPS: subdomain-based routing (preferred).
+      # HTTPS: host-name routing, one certificate per service host name.
       - "443:443"
-      # Alternative HTTPS: port-based routing fallback.
-      - "9443:8443"
 
-      # Mattermost Calls: same public port over TCP and UDP. TCP maps to its
-      # own Traefik port because internal 8443/TCP belongs to websecure-alt.
-      - "8443:8444/tcp"
+      # Mattermost Calls: the same public port over TCP and UDP.
+      - "8443:8443/tcp"
       - "8443:8443/udp"
 
     volumes:
 
       # Static Traefik config — re-render + restart container on change.
-      - /home/vb/volkb79-2/vbpub/tls-edge/edge-proxy/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
       # Dynamic config — Traefik hot-reloads changes via inotify.  :ro blocks
       # writes from INSIDE the container only; host-side writes still propagate
       # and trigger the reload (this is how cert renewal works in static mode).
-      - /home/vb/volkb79-2/vbpub/tls-edge/edge-proxy/conf.d:/etc/traefik/conf.d:ro
+      - ./conf.d:/etc/traefik/conf.d:ro
 
       # ACME account + issued certificates (acme.json, created 0600 by traefik).
       # NOTE: `docker compose down -v` / `ciu --reset` destroys this volume and
@@ -123,6 +116,7 @@ networks:
   # Only containers with traefik.enable=true labels are routed.
   ingress:
     name: ingress_public
+
     driver: bridge
 
   # Isolated bridge between traefik and dockerproxy only.  internal: no

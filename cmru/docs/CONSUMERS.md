@@ -247,15 +247,20 @@ The two snippets above are a complete loadable pair: save the project snippet as
 [`cmru.project.sample.toml`](../../cmru.project.sample.toml), which keeps its own
 `[github]` and `[targets]` facts.
 
-The `cmru get-py` command uses the template bundled inside the installed wheel, so an
-adopter can render an installer from any working directory after installing CMRU:
+The `cmru installer render` command uses the template bundled inside the installed wheel, so an
+adopter can render an installer from any working directory after installing CMRU, and
+`cmru installer check` proves the committed file has not drifted from the template and config:
 
 ```sh
-cmru get-py example-wheel --config /path/to/cmru.orchestration.toml --output ./get.py
+cmru installer render example-wheel --config /path/to/cmru.orchestration.toml --output ./get.py
+cmru installer check  example-wheel --config /path/to/cmru.orchestration.toml --installer ./get.py
 ```
 
-`cmru --help` lists top-level CMRU commands, while
-`cmru help get-py` or `cmru get-py --help` prints the exact delegated grammar.
+`check` renders in memory and compares byte-for-byte: exit 0 when identical, otherwise exit 1
+with one `[ERROR]` line naming the file and a unified-diff summary capped at 40 lines. The
+former `cmru get-py` is a deprecated alias of `render` (one `[WARN]` line on stderr; removal in
+cmru 7.0). `cmru --help` lists top-level CMRU commands, while
+`cmru help installer` or `cmru installer render --help` prints the exact delegated grammar.
 
 ### Installer extensions (project-owned `get.py` commands)
 
@@ -268,7 +273,7 @@ command declares it as a fragment and lists it in its `cmru.toml`:
 extensions = ["installer/mycmd.py"]   # project-relative, .py, no "..", must exist at render time
 ```
 
-`cmru get-py` inlines each fragment verbatim at the template's `# @@EXTENSIONS@@` marker, in
+`cmru installer render` inlines each fragment verbatim at the template's `# @@EXTENSIONS@@` marker, in
 declared order, between `# --- extension: <path> sha256=<digest> ---` and
 `# --- end extension: <path> ---` lines. The result is still ONE file, byte-identical across
 renders. A fragment must:
@@ -357,7 +362,8 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
    missing root) or an invalid `--tag` is a one-line `[ERROR]` and a non-zero exit (1 for the
    tree, 2 for the tag), never a traceback. Manifest `files` keys must be normalised relative
    paths: `../x`, `..`, `/abs`, `a//b`, `./a`, NUL and backslash are refused.
-3. **Render and commit** `cmru get-py myproj --config cmru.toml --output get.py`.
+3. **Render and commit** `cmru installer render myproj --config cmru.toml --output get.py`;
+   guard it against drift with `cmru installer check myproj --config cmru.toml --installer get.py`.
 4. **Users** run the installer. It runs as root, so lead with the verified, chained form: a
    private temp directory (no predictable `get.py` in the current directory), HTTPS only, and a
    checksum that must pass before anything runs (`&&` stops the chain on any failure). Take
@@ -403,6 +409,71 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
    `cmru.manifest.build_trusted_comment(project=, tag=, manifest_path=)` and
    `cmru.delegated.minisign_sign(...)` from a project-owned release step; `cmru release` does not
    sign automatically yet (SPEC S6.15).
+
+### Stable stack folder, stubs, self-copy and wizard questions
+
+Four optional `[project.installer]` features (normative: SPEC S6.18-S6.21) for a project that
+installs a *stack*, such as a ciu stack pinned to a ciu wheel, rather than a single tool.
+
+**The problem they solve.** The release layout is `<root>/releases/<ver>/`, so a tool that
+derives its identity from its PHYSICAL path (ciu hashes the stack path into its INSTANCE_ID,
+and keeps data and secrets under that identity) would see a NEW path, hence a new instance,
+on every update. `stable_dir` gives the stack one path that never changes:
+
+```text
+[project.myproj.installer]
+install_dir_system = "/opt/myproj"
+install_dir_user   = "myproj"
+launchers          = ["ciu"]            # <root>/bin/ciu -> ../current/venv/bin/ciu
+stable_dir         = "stack"            # <root>/stack/ mirrors the ACTIVE release's files
+stub_launchers     = ["ciu"]            # <root>/stack/ciu: sh stub exec'ing the pinned ciu
+
+[[project.myproj.installer.questions]]
+id      = "public_host"
+prompt  = "Public host name"
+type    = "string"
+default = "localhost"
+[[project.myproj.installer.questions]]
+id      = "tier"
+prompt  = "Size"
+type    = "choice"
+choices = ["small", "large"]
+```
+
+- **`stable_dir`.** After every install, update and rollback, `<root>/stack/` is synced to the
+  active release's manifest `files` (wheels and `preserve` paths excluded), with the manifest's
+  modes, atomically per file. Files the previous release shipped and the new one does not are
+  deleted (and directories that leaves empty); nothing else is ever touched, so `.ciu/`,
+  `vol-*`, rendered `ciu.*` files and `ciu.env` survive. The synced set is recorded in
+  `<root>/stack/.cmru-installer-sync.json`. Run the stack from `<root>/stack/`: its path, and
+  with it the ciu instance, is the same for every release.
+- **Local-modification guard.** A synced file edited on the host (sha256 differs from the
+  record), or, on a first install, a pre-existing file with other content, makes the run exit 2
+  listing up to 20 paths, before the adapter runs and with `current` unchanged. Put host edits in
+  a `preserve` path or accept the replacement with `--overwrite-local`, which first copies each
+  modified file to `<root>/shared/overwritten/<UTC timestamp>/<relpath>`. A failed sync undoes
+  itself and restores the previous `current`. `status` shows the stable dir, the synced tag and
+  the count of locally modified files.
+- **`stub_launchers`.** Requires `stable_dir`; each name must be in `launchers` or be a console
+  script of a configured wheel. `<root>/stack/ciu` is a 0755 `#!/bin/sh` stub that execs
+  `<root>/current/venv/bin/ciu`, so `cd <root>/stack && ./ciu up` always runs the pinned ciu.
+  Stubs are in the sync record (`"stub": true`): editing one is a local modification and removing
+  one from the config deletes it.
+- **Self-copy.** After a successful install or update the installer keeps a copy of itself at
+  `<root>/bin/<project>-installer` (0755). `<root>/bin/<project>-installer update|status|rollback`
+  is the in-place maintenance path. When the installer was piped into `python3 -` there is no
+  file to copy: it warns, and you download `get.py` and run that file instead.
+- **Wizard questions.** `install` and `update` ask each `[[project.installer.questions]]`
+  (`id`, `prompt`, `type` = `string|bool|choice|int`, optional `default`, `choices` for `choice`,
+  `required` default true); `update` asks only what has no stored answer. Answers live in
+  `<root>/shared/answers.toml` (0600) and their path reaches the adapter/entrypoint and any
+  extension as the environment variable `CMRU_INSTALLER_ANSWERS` (read it; it is not an
+  `EXTENSION_API` name). On a terminal the installer prompts (default shown, invalid input
+  re-prompts). `--unattended [--answers FILE]` never prompts: values come from the flat TOML
+  FILE, then stored answers, then defaults; a required question with none exits 2 listing every
+  missing id, and an unknown id in FILE exits 2. Without a terminal and without `--unattended`
+  the installer exits 2 before changing anything (no silent defaults; `curl ... | python3 -`
+  therefore needs `--unattended`).
 
 ## Using the wheel and component interfaces
 
@@ -799,9 +870,9 @@ The native-R2 `mutation` lane requests contract-2 event evidence from
 working observation to those command lanes. The CMRU release step currently
 runs `run-gate gate-provisional`, which skips the long mutation
 lane and records that deferral in `.assay/mutation-postponed-cmru.json` under
-KI-79. The deferral is authorized only for CMRU >= 6.2.0 and < 6.3.0 (the 6.2 patch line) or >= 7.0.0 and < 7.1.0 (the 7.0 patch line) or >= 7.1.0 and < 7.2.0 (the 7.1 patch line;
-6.3.x, 7.2.0 and everything else refuse), so a 6.2.x, 7.0.x or 7.1.x release is an ordinary patch release; a
-bump that computes a version outside those windows is refused by the gate. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 or 7.2.0, whichever is first (KI-79). That release
+KI-79. The deferral is authorized only for CMRU >= 6.2.0 and < 6.3.0 (the 6.2 patch line) or >= 7.0.0 and < 7.1.0 (the 7.0 patch line) or >= 7.1.0 and < 7.2.0 (the 7.1 patch line) or >= 7.2.0 and < 7.3.0 (the 7.2 patch line; operator decision 2026-11-04;
+6.3.x, 7.3.0 and everything else refuse), so a 6.2.x, 7.0.x, 7.1.x or 7.2.x release uses the deferral; a
+bump that computes a version outside those windows is refused by the gate. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 or 7.3.0, whichever is first (KI-79). That release
 therefore has no mutation event evidence. Read its result from
 `cmru/.assay/release-gate-snapshot.json`: `"state": "provisional"` with a `deferred_lanes`
 entry for `mutation` (never `"passed"`), for example
@@ -940,7 +1011,7 @@ by CMRU's estate-adoption test, so the full suite remains runnable in each
 baseline and mutant copy.
 `gate` also runs CMRU's total-coverage and cause-sensitive canary lanes. It
 starts with the KI-26 installed-wheel acceptance lane, which builds the wheel,
-installs it into a fresh isolated venv, and invokes `cmru get-py` outside the
+installs it into a fresh isolated venv, and invokes `cmru installer render` outside the
 source checkout. (The former real-enrollment lane moved to ciu with `get.py
 enroll`; see "Installer extensions" below.)
 When a canary's known-good control fails, its message includes the first pytest

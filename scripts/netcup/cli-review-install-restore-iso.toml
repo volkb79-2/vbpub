@@ -1,0 +1,782 @@
+schema_version = 1
+cli_id = "install-restore-iso"
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/argument-shape/argument:route:entrypoint:install-restore-iso/finish/server_id"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:2da9dbef39cabf70e37de010339ae5d9e8404183f1f91dac99b61b162c909d8c"
+rationale = "The server ID must be a positive integer; reject zero during argument parsing before configuration or API access."
+invocation = ["finish", "0", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must be a positive integer"
+effects = ["Refuses during argument parsing; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/argument-shape/argument:route:entrypoint:install-restore-iso/finish/server_id]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:976cc7cd89f0bee36572095809e246310df6e9c874e991fd0dc7352dc0304e3c"
+rationale = "The minimum finish invocation supplies its required inputs and parses before any credentials or provider calls are loaded."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented minimum argv only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bce466b5207476709bf8d31380ee8798b126e9b8858b12b3fad6988f8f6fc2f4"
+rationale = "--debug-raw is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:eeba268edc223d0e198811f0cdf54d90850d77b1972c9fd30390f513a48f629f"
+rationale = "--dry-run is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--restore-complete/--restore-complete"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1b1883f12bd9a97fadb46361d5f034966ecd279e5d31786f4d5887dd3acccee9"
+rationale = "--restore-complete is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--restore-complete"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--restore-complete/--restore-complete]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--server-ready-timeout-seconds/--server-ready-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:85f7164bf7d6a22f35fccc4bed39ae55da53577cbf008eddf79c96b855927ab7"
+rationale = "--server-ready-timeout-seconds is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--server-ready-timeout-seconds", "30"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--server-ready-timeout-seconds/--server-ready-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-host-key-alias/--ssh-host-key-alias"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bf6269199fa3b227ea42aee48abca48c3e49f0d9c32e74b4704fbe906f9979f9"
+rationale = "--ssh-host-key-alias is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--ssh-host-key-alias", "v1001.vxxu.de"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-host-key-alias/--ssh-host-key-alias]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-host/--ssh-host"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fd928954f2800eeefe4da2936db3379b413e603524f5102950fc333cd5c1b3a8"
+rationale = "--ssh-host is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--ssh-host", "v1001.vxxu.de"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-host/--ssh-host]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-identity-file/--ssh-identity-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:953894b011d945a4590b86dd13067cdfc31c5b16510f3b22f53ddfd75daf0a92"
+rationale = "--ssh-identity-file is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--ssh-identity-file", "/tmp/root_ed25519"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-identity-file/--ssh-identity-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-known-hosts/--ssh-known-hosts"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:74cea0a709bcb5e8fbe031e36c75d55689242e78f20ecc108620bfcac018d9ec"
+rationale = "--ssh-known-hosts is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--ssh-known-hosts", "/tmp/known_hosts"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-known-hosts/--ssh-known-hosts]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-timeout-seconds/--ssh-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:73cf7cbd18d8d4773bd913e19af1bf80b959ad052c16d7d5e11a543230e4bac5"
+rationale = "--ssh-timeout-seconds is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--ssh-timeout-seconds", "30"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--ssh-timeout-seconds/--ssh-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--state-file/--state-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c2e0b28cc56cade59f2c54ad59fa13f3b226a9a7194c0829d5a8298712cdcc3a"
+rationale = "--state-file is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--state-file", "/tmp/state.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--state-file/--state-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--task-timeout-seconds/--task-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:02f459e245ba6639d7f8d2f571838a9e732c1449a1e28ded906df415135e8fa4"
+rationale = "--task-timeout-seconds is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--task-timeout-seconds", "30"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--task-timeout-seconds/--task-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:eb00ea29c507ee2e81ba3db224debe86c39cd8d0de33c32c25299e74627c642e"
+rationale = "--yes is the declared spelling for this option and must remain parseable on finish."
+invocation = ["finish", "804027", "--restore-complete", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/finish/option-spelling/option:route:entrypoint:install-restore-iso/finish/--yes/--yes]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/argument-shape/argument:route:entrypoint:install-restore-iso/recover/server_id"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:6ddce8dfe5b816bc7d706a41b1e023afb4f7ff4250521061b4ecc03bc3188909"
+rationale = "The server ID must be a positive integer; reject zero during argument parsing before configuration or API access."
+invocation = ["recover", "0", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must be a positive integer"
+effects = ["Refuses during argument parsing; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/argument-shape/argument:route:entrypoint:install-restore-iso/recover/server_id]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3f23c44eedaecc20fc3526424d1db7f4703d6c0d0e977fbcae73437c81ef01ca"
+rationale = "The minimum recover invocation supplies its required inputs and parses before any credentials or provider calls are loaded."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented minimum argv only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9355d1f1a58a55ef2b703baa430da11b535f6644f775f56a55f0f46af1ff7f1a"
+rationale = "--debug-raw is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d191b65f1683f575f45fc7b4f2bc34a2f2dd89825c7c2d89961e2b57febd76f2"
+rationale = "--dry-run is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--server-ready-timeout-seconds/--server-ready-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dabad90f82c4d77bd347f4ce207f060ad453405bb37dde2103b4cbead35ae20b"
+rationale = "--server-ready-timeout-seconds is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--server-ready-timeout-seconds", "30"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--server-ready-timeout-seconds/--server-ready-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-host-key-alias/--ssh-host-key-alias"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:506155ab7b60812a1dcf1c71b85df13600e668e7a3ff1e13233134672d01920d"
+rationale = "--ssh-host-key-alias is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--ssh-host-key-alias", "v1001.vxxu.de"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-host-key-alias/--ssh-host-key-alias]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-host/--ssh-host"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:78f73f2c780c45fcf86affb8960cebd27feeb7e4fd53f2274bf42319d2f02a56"
+rationale = "--ssh-host is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--ssh-host", "v1001.vxxu.de"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-host/--ssh-host]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-identity-file/--ssh-identity-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:66a0ea2ac6eddf5c4a257aef74424ad802a7e747b8052e899e65833c14b430ae"
+rationale = "--ssh-identity-file is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--ssh-identity-file", "/tmp/root_ed25519"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-identity-file/--ssh-identity-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-known-hosts/--ssh-known-hosts"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b1602b7556e3f0080277e49fa79c60ab3dd739b5698c4afc098600ee9cc3177a"
+rationale = "--ssh-known-hosts is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--ssh-known-hosts", "/tmp/known_hosts"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-known-hosts/--ssh-known-hosts]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-timeout-seconds/--ssh-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d36289e845edb638986e2c6d08a3e26a3135e53871abe65c579f097688928737"
+rationale = "--ssh-timeout-seconds is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--ssh-timeout-seconds", "30"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--ssh-timeout-seconds/--ssh-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--state-file/--state-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1d872f1c2a34d5581a83840a4276d82f19a3e747e331324643bc89db2e2e0321"
+rationale = "--state-file is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--state-file", "/tmp/state.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--state-file/--state-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--task-timeout-seconds/--task-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:64394bf03a2afe394601bf697b3d1e78a6e8a2b144f254397194bdca4c9811d6"
+rationale = "--task-timeout-seconds is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--task-timeout-seconds", "30"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--task-timeout-seconds/--task-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--try-disk-boot/--try-disk-boot"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7b3ff76d8304294e26cf506a3b09aaf6462f5aaafc4caf3ab4e9a858f92ac03b"
+rationale = "--try-disk-boot is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--try-disk-boot"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--try-disk-boot/--try-disk-boot]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bd817654019222277711e4b3c46289a2916a9719b0c3eb6958be31f9063ae707"
+rationale = "--yes is the declared spelling for this option and must remain parseable on recover."
+invocation = ["recover", "804027", "--try-disk-boot", "--ssh-host", "v1001.vxxu.de", "--ssh-identity-file", "/tmp/root_ed25519", "--ssh-known-hosts", "/tmp/known_hosts", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/recover/option-spelling/option:route:entrypoint:install-restore-iso/recover/--yes/--yes]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/argument-shape/argument:route:entrypoint:install-restore-iso/start/server_id"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:0a4099c44bba5a163f5844694fcd2fd4c3b4ceb09e05af54b391ccf51077c2fa"
+rationale = "The server ID must be a positive integer; reject zero during argument parsing before configuration or API access."
+invocation = ["start", "0", "--iso", "/tmp/restore.iso"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must be a positive integer"
+effects = ["Refuses during argument parsing; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/argument-shape/argument:route:entrypoint:install-restore-iso/start/server_id]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b435c4e823c0f1d4dea1de4c5e0699d82b40ede8692ee91f34996ef5045b45ae"
+rationale = "The minimum start invocation supplies its required inputs and parses before any credentials or provider calls are loaded."
+invocation = ["start", "804027", "--iso", "/tmp/restore.iso"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented minimum argv only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:84b0d42a2e9a6c37c20070478bbb1d16c7a40f1ce1b777868517967b090ce3fb"
+rationale = "--debug-raw is the declared spelling for this option and must remain parseable on start."
+invocation = ["start", "804027", "--iso", "/tmp/restore.iso", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4f535005652bfd6bb17da9f09e7aef4bb84fe4fee1deae6bff67e99ddf0542ea"
+rationale = "--dry-run is the declared spelling for this option and must remain parseable on start."
+invocation = ["start", "804027", "--iso", "/tmp/restore.iso", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--iso/--iso"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b51fedd73dc8d12cb4e18019cd0809dc7e2bad305091d707374ff0131a663584"
+rationale = "--iso is the declared spelling for this option and must remain parseable on start."
+invocation = ["start", "804027", "--iso", "/tmp/restore.iso", "--iso", "/tmp/restore.iso"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--iso/--iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--part-size-mib/--part-size-mib"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:31cea4db7a3ab3113f16ced10440587bf009006e144e22a0743aaa3e384778c6"
+rationale = "--part-size-mib is the declared spelling for this option and must remain parseable on start."
+invocation = ["start", "804027", "--iso", "/tmp/restore.iso", "--part-size-mib", "64"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--part-size-mib/--part-size-mib]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--replace-state/--replace-state"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f75819cb0df0246c9145590e2581f30438648ae39bc1677da61cae7cea6de66d"
+rationale = "--replace-state is the declared spelling for this option and must remain parseable on start."
+invocation = ["start", "804027", "--iso", "/tmp/restore.iso", "--replace-state"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--replace-state/--replace-state]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--state-file/--state-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5601fcad7062426744705bc2b24eba3f5ede824091c732b9070c7f28d9b839ae"
+rationale = "--state-file is the declared spelling for this option and must remain parseable on start."
+invocation = ["start", "804027", "--iso", "/tmp/restore.iso", "--state-file", "/tmp/state.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--state-file/--state-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--task-timeout-seconds/--task-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:94d2ea42746218b9e7bdde276fff7b56496920ecddaa297bc8e21c16c43f502a"
+rationale = "--task-timeout-seconds is the declared spelling for this option and must remain parseable on start."
+invocation = ["start", "804027", "--iso", "/tmp/restore.iso", "--task-timeout-seconds", "30"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--task-timeout-seconds/--task-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--user-iso-name/--user-iso-name"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2146fe7271a7bf1185cac89ef99fc59fe1f0c8d2fa4105d4e32bf432a2148bc6"
+rationale = "--user-iso-name is the declared spelling for this option and must remain parseable on start."
+invocation = ["start", "804027", "--iso", "/tmp/restore.iso", "--user-iso-name", "restore.iso"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--user-iso-name/--user-iso-name]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:753f276708d4401275312497bf3b475a53f8145f33672c4cee535d195738f8ea"
+rationale = "--yes is the declared spelling for this option and must remain parseable on start."
+invocation = ["start", "804027", "--iso", "/tmp/restore.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/start/option-spelling/option:route:entrypoint:install-restore-iso/start/--yes/--yes]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/status/argument-shape/argument:route:entrypoint:install-restore-iso/status/server_id"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:27bda3f7b18e8b06f29b20363da92ba10fd89edc6f01f58b97eba82fcd9f0c9c"
+rationale = "The server ID must be a positive integer; reject zero during argument parsing before configuration or API access."
+invocation = ["status", "0"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must be a positive integer"
+effects = ["Refuses during argument parsing; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/status/argument-shape/argument:route:entrypoint:install-restore-iso/status/server_id]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/status/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bdcf098a0ab7c875d6ee2f475256c16e1df4cd194f120f1ad754940ec7ce1010"
+rationale = "The minimum status invocation supplies its required inputs and parses before any credentials or provider calls are loaded."
+invocation = ["status", "804027"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented minimum argv only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/status/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/status/option-spelling/option:route:entrypoint:install-restore-iso/status/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f32117d64cd5df8834a88d7820ad87c2daa48d5422cda8e3ad0684868a412b4f"
+rationale = "--debug-raw is the declared spelling for this option and must remain parseable on status."
+invocation = ["status", "804027", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/status/option-spelling/option:route:entrypoint:install-restore-iso/status/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/status/option-spelling/option:route:entrypoint:install-restore-iso/status/--state-file/--state-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:65252de4280f527d0aa635b6674d56fc807f4bfcd293a267531074af290bde47"
+rationale = "--state-file is the declared spelling for this option and must remain parseable on status."
+invocation = ["status", "804027", "--state-file", "/tmp/state.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option spelling only; no handler runs and no credentials, files, or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/status/option-spelling/option:route:entrypoint:install-restore-iso/status/--state-file/--state-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:12e6550f2cf698dac59e3b205f5f919c27295d1575372fea845d7290ef95c6fc"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d7965e8ac6bbcab8d2d31c003f85d6751dae456df3a8fd1c177832a069bdebbb"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--install-timeout-seconds/--install-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7d26600c2795df6cb810ec4f2c45fc899fbd6095ccc8787b440de60e7ba00b21"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--install-timeout-seconds", "30"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--install-timeout-seconds/--install-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--iso/--iso"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:64915c0ec76978793984f8aac64e64beb3be4f5bf4dd2d4d3f9985f76510300b"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--iso/--iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--part-size-mib/--part-size-mib"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:017ce5b291bf9f426bff2d30330ff0d6d70620ae11f37e3d1280a712475b2a6b"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--part-size-mib", "64"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--part-size-mib/--part-size-mib]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--server-ready-timeout-seconds/--server-ready-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f66a38c088ada7826ba40948c215a96fbf4d33aab74561c1ea792e233f69b139"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--server-ready-timeout-seconds", "30"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--server-ready-timeout-seconds/--server-ready-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--state-file/--state-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:25eb6ed93aa29e2540ffa97605f83a0c43d86333b3e91a93b3cb187057cb8562"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--state-file", "/tmp/install.json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--state-file/--state-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--task-timeout-seconds/--task-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7dee49b5b1b8b4581bf894da98ef601ed666c9193b20bca895965dffefdfd71c"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--task-timeout-seconds", "30"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--task-timeout-seconds/--task-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--user-iso-name/--user-iso-name"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a252c398fc748f48e6a1c48b42837f9bd3b02cdf8ef870e6a71cceb54e576b1f"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--user-iso-name", "installer.iso"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--user-iso-name/--user-iso-name]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e1fd63f736a1bc284a97d1dc5553b490da85158c072af47cb479d385b220ee79"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--yes/--yes]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--ready-url/--ready-url"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f5f5e1af32e28b2d2accf26b805e8422fcdf24f23f9dc1ff2f91e3d501483008"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--ready-url", "https://host.example.test/health"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--ready-url/--ready-url]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--ready-text/--ready-text"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2b1c7ddf61a9a256256d7db6e2e8474c5585466897d48a5ac4df69271c568089"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--ready-text", "ready", "--ready-url", "https://host.example.test/health"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--ready-text/--ready-text]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--http-ready-timeout-seconds/--http-ready-timeout-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f0cd5189bae71321046ee1f1fc23f9aef2e7414941d56b93c5be5bb9449838ba"
+rationale = "This option spelling is part of the documented generic installer workflow interface."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--http-ready-timeout-seconds", "30", "--ready-url", "https://host.example.test/health"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented install invocation; the handler does not run and no credentials or provider state are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/option-spelling/option:route:entrypoint:install-restore-iso/install/--http-ready-timeout-seconds/--http-ready-timeout-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/argument-shape/argument:route:entrypoint:install-restore-iso/install/server_id"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:11ba28f80e899be69c731ae1b04c75c2ea0fc37365032fd67cbc6e4aef91313d"
+rationale = "Server IDs must be positive integers; zero is rejected during parsing before local credentials or the provider API are used."
+invocation = ["install", "0", "--iso", "./installer.iso"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must be a positive integer"
+effects = ["Refuses during argument parsing; no handler, credentials, local files, or provider calls are touched."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/argument-shape/argument:route:entrypoint:install-restore-iso/install/server_id]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:12ecb1897ee115fedd08f3616c6d5fdd011be059576c8906897c21c460064908"
+rationale = "The minimum invocation starts the generic installer workflow with only its required server ID and ISO; provider-level disk boot is the default completion check."
+invocation = ["install", "804027", "--iso", "./installer.iso"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the minimum install invocation; no handler, credentials, or provider calls are made."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/constraint-requires/1"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:26f272ad5b14191d9839451ebfba1be613cc34d210b28a596fe0a7ccae6ac06d"
+rationale = "--ready-text has meaning only when an HTTP readiness URL is supplied, so the CLI rejects this incomplete option combination before provider setup."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--ready-text", "ready"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--ready-text requires"
+effects = ["The declared CLI constraint refuses before the handler, credential loading, ISO upload, or provider mutation."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/constraint-requires/1]"]
+
+[[cases]]
+id = "case:route:entrypoint:install-restore-iso/install/constraint-requires/2"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:efb4f606953c5d9cbf359cfa3e63e6c62e6a366958b2ca97bd6588e4992a9d0a"
+rationale = "--http-ready-timeout-seconds has meaning only when an HTTP readiness URL is supplied, so the CLI rejects this incomplete option combination before provider setup."
+invocation = ["install", "804027", "--iso", "./installer.iso", "--http-ready-timeout-seconds", "30"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--http-ready-timeout-seconds requires"
+effects = ["The declared CLI constraint refuses before the handler, credential loading, ISO upload, or provider mutation."]
+test_ids = ["tests/test_cli_cases_install_restore_iso.py::test_replayed_case_matches_catalog[case:route:entrypoint:install-restore-iso/install/constraint-requires/2]"]

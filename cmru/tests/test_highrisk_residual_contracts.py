@@ -79,3 +79,25 @@ def test_version_external_release_requires_prepare_fact(tmp_path):
     with patch.object(version, "detect_changed_projects", return_value=[("demo", project, None, "patch")]):
         with pytest.raises(RuntimeError, match="prepare step"):
             version.release_cmd(root, {"demo": project})
+
+
+def test_remove_workspace_refuses_mount_under_the_checkout_through_cmru_surface(tmp_path):
+    """WT-OW-01 through cmru's own removal entry point (fake mountinfo, no real mount)."""
+    root = repo(tmp_path)
+    workspace = transaction.create_workspace(root, base=git(root, "rev-parse", "HEAD"), purpose="build")
+    mount = workspace.path / "demo" / "vm-disk"
+    mount.mkdir(parents=True)
+    (mount / "disk.img").write_text("precious")
+    shared = transaction._shared_worktree()
+    table = (
+        "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"
+        f"100 22 0:100 / {mount} rw,relatime shared:1 - btrfs /dev/vda1 rw\n"
+    )
+    with patch.object(shared.core, "_read_mountinfo", return_value=table):
+        with pytest.raises(RuntimeError, match="detach it first"):
+            transaction.remove_workspace(workspace)
+    assert (mount / "disk.img").read_text() == "precious"
+    assert workspace.path.is_dir()
+    # Once the mount is gone the same call removes the workspace normally.
+    transaction.remove_workspace(workspace)
+    assert not workspace.path.exists()

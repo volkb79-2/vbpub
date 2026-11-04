@@ -1,0 +1,17 @@
+# Instance root (<root>/stack): ciu keeps its state here; none of it is source.
+**/.ciu/
+vol-*/
+ciu.env
+ciu.global.toml
+ciu.instance.generated.toml
+consumer.env
+.cmru-installer-sync.json
+ciu-stack/ciu.toml.j2
+ciu-stack/traefik.yml
+# ciu's machine-owned artifacts (ciu check lists these when missing)
+**/ciu.toml
+**/ciu.compose.yml
+ciu.global.instance.toml.j2
+**/.ciu.global.instance.toml.j2.*.tmp
+ciu.worktree-instance.json
+**/.ciu.worktree-instance.json.*.tmp

@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-18
 title: "DAMON initial context uses online-only commit before kdamond startup"
-status: open
+status: fixed
 type: "bugfix"
 severity: "high"
 component: "DAMON session lifecycle"
@@ -99,3 +99,7 @@ The host showed `DAMON_STAT` enabled while `nr_kdamonds=0`, matching the
 documented global-DAMON conflict. The host setting was left unchanged, so the
 successful-DAMON-sample oracle remains pending. Evidence:
 `reports/cgprofile-CP18-CP19-LIVE-ACCEPTANCE-20261015.md`.
+
+## Resolution
+
+FIXED 2026-11-04 (fix-cgp-2-20261104, hygiene; stale entry). The code is on main: `lib/damon.py` ~890-900 writes the initial context while the kdamond is off and starts it with `state=on`, no commit before first start; `tests/test_damon.py:649` asserts `kdamond_commit` is absent from the initial start and `:1638` that recommit issues it on a running kdamond. The 2026-10-15 live-DAMON-sample oracle was blocked by the host's `DAMON_STAT` conflict, an environment fact rather than a code defect.

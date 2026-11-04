@@ -3729,6 +3729,10 @@ def promote_workspace(
             release_label=release_label,
         ):
             raise RuntimeError(failure)
+        # KI-55: the merge commit exists only in the local worktree until the
+        # push lands; refresh the durable origin backup so a failed retry or a
+        # crash leaves the merged tip inspectable on origin.
+        push_backup_branch(workspace, git_auth=git_auth)
 
 
 def push_backup_branch(

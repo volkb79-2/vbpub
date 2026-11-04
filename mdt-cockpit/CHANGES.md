@@ -5,10 +5,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- Backlog MDT-049 to MDT-052 filed from a live runner reinstall: the BuildKit shim rewrites an explicit `BUILDX_BUILDER=default`
+  (`MDT_BUILDX_PASSTHROUGH=1` is the workaround), the example `DEV_INTERACTIVE_MEMORY_LOW`, `mdt-host-check.sh` `auto` noise, and the
+  missing UID remap in the docker-run form of the host-folder cockpit.
+- Backlog: the older duplicates of MDT-032 and MDT-033 are renumbered MDT-060 (cmru release smoke lane) and
+  MDT-061 (build inputs in `/tmp`); MDT-032 and MDT-033 now each name one entry. The stale "not on main yet" note is gone.
 - The finalize step attaches a recreated or rebuilt devcontainer to the network of an already
   running PWMCP stack (filtered `docker ps`, `docker inspect --type container`, alias `pwmcp`;
-  idempotent, non-fatal). The stack is selected by the exact name `pwmcp-<INSTANCE_ID>-pwmcp` of this
-  workspace (`PWMCP_STACK_CONTAINER` override, `INSTANCE_ID`, or `ciu.env`); other stacks on the host
+  idempotent, non-fatal). The stack is selected by exact name: `PWMCP_STACK_CONTAINER` override, else the
+  shipped instance `/srv/pwmcp-instance` (its `ciu.env`, or the running stack labelled with that compose
+  working dir), else `INSTANCE_ID` from the environment or the workspace `ciu.env`; other stacks on the host
   are never joined, an unknown or unmatched identity joins nothing and logs how to choose, and a failing
   `docker ps` is a warning, not "no stack". So `PWMCP_MCP_URL=http://pwmcp:8931/mcp` resolves without a manual
   `docker network connect`. With no running stack it logs how to start it.
@@ -35,7 +41,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   protected units' memory and CPU pressure and the host's memory `full` pressure. `MDT_PSI_GUARD=report`
   (shipped) only writes `/run/mdt/psi-guard/events.jsonl`; `enforce` sets the tier weights to 1 and then
   lowers `MemoryHigh` of the gates and background tiers, reverting on release, stop and the next start;
-  `off` disables the service. `mdt-dev-governance-reconcile.sh` skips keys listed in the guard's state file.
+  `off` disables the service. `mdt-dev-governance-reconcile.sh` only logs the keys the guard owns (it writes none of them);
+  the real overwriter is systemd re-applying unit values on `daemon-reload` (see the Known limit in `mdt-psi-guard.py`).
 - host-setup keys renamed outright, with no alias: `DEV_CPU_RESERVE_CORES` is `MDT_EXCLUDED_CPU_CORES`,
   `DEV_SUBSLICE_CPU_RESERVE_CORES` is `DEV_TIER_EXCLUDED_CPU_CORES` (`max(0, k - c)`), `DEV_MEMORY_RESERVE` is
   `MDT_EXCLUDED_RAM`. The installer, the wizard and `mdt-host-check.sh` refuse the old names with a message

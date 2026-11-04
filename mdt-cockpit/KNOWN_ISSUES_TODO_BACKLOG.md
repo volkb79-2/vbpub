@@ -468,7 +468,9 @@ Fix direction: a `stage_tool_artifacts.py prune --older-than` and a unit test; n
 <!-- MDT-028..MDT-031 are taken by the iogov review branch (iogov-fable-review-20261027); the entries below
      were filed by the mdt-cockpit deep review of 2026-10-27 and start at MDT-032 to avoid a collision. -->
 
-## MDT-032 - `cmru release` never runs the smoke lane, and the release lane skips every pytest-style staging test (2026-10-27)
+## MDT-060 - `cmru release` never runs the smoke lane, and the release lane skips every pytest-style staging test (2026-10-27)
+
+*(Renumbered from MDT-032 on 2026-11-04: the id was reused by the iogov fill-test entry; MDT-032 now means that entry.)*
 
 `cmru.toml` `[steps.run-tests]` runs `run-gate release` and `run-gate oci-push` only. The `release` lane is
 `python -m unittest scripts.test_release_flow scripts.test_oci_tool_staging scripts.test_oci_push_lane`, and
@@ -480,7 +482,9 @@ waiver test, the dpkg clean-up after the final assertions) and the 2026-10-27 re
 the `release` lane run `pytest` over those modules (tester-unified has `/opt/tester-venv/bin/pytest`) or add
 `run-gate smoke` to `run-tests`; `test_release_flow.py` should assert the lane runs every test function.
 
-## MDT-033 - build inputs COPYed to `/tmp` are baked into the image layers (2026-10-27)
+## MDT-061 - build inputs COPYed to `/tmp` are baked into the image layers (2026-10-27)
+
+*(Renumbered from MDT-033 on 2026-11-04: the id was reused by the capacity entry; MDT-033 now means that entry.)*
 
 `COPY apt/packages.list`, `pip/wheels.list`, `pip/wheels/`, `requirements/`, `package-manifests-versioned/`,
 `customization/`, `scripts/mdt_cli.py`, `apt/backports.sources.in` and `build/tool-artifacts-staging/tool-versions.env`
@@ -969,3 +973,245 @@ image's wheel list without inventing a package.
 
 **Acceptance.** `cgprofile` resolves from a published wheel and `check_wheel_set` plus the manifest test pass with it declared;
 or the decision to stay image-less is recorded here with the checkout invocation.
+
+## MDT-049 - the BuildKit shim rewrites an explicit `BUILDX_BUILDER=default` to `mdt-managed`; builds FROM a locally loaded image fail (2026-11-04)
+
+**Status:** OPEN. Found while building `tester-unified` on a runner host on top of a locally loaded `tester-base:local`.
+
+**Observed.** `docker-buildx-shim.sh` treats `BUILDX_BUILDER` unset **and** `default` the same (`case ... ""|default) BUILDX_BUILDER=$MDT_BUILDER`). The
+managed builder is rootless BuildKit with its own image store; it cannot see an image that exists only in the Docker daemon's store, so
+`FROM tester-base:local` fails with `pull access denied ... repository does not exist`. A caller who selects `default` explicitly (the
+docker driver, which does see local images) is overridden without notice. The only escape is `MDT_BUILDX_PASSTHROUGH=1`, which also disables
+the cgroup/registration handling for that call.
+
+**Next steps.**
+
+1. Honor an explicit `BUILDX_BUILDER=default` (rewrite only when it is unset), or keep the rewrite and print one stderr line naming
+   `MDT_BUILDX_PASSTHROUGH=1` and `--builder` as the way to the docker driver.
+2. Document the local-base-image limitation and the passthrough workaround in `tester-unified/README.md` ("Build") and
+   `docs/BUILD-ARCHITECTURE.md`.
+3. Alternative that removes the need: build `tester-base` with `--output type=image` into the registry used by the managed builder, or pass the base as a
+   BuildKit `--build-context` of the local image.
+
+**Acceptance.** A shim test (fake buildx plugin) shows `BUILDX_BUILDER=default` is passed through unchanged, or that the hint line is printed; the
+docs name the workaround.
+
+## MDT-050 - `host-setup.env.example` ships `DEV_INTERACTIVE_MEMORY_LOW=2.5G` while the README says no MemoryLow is proposed (2026-11-04)
+
+**Status:** OPEN. The wizard warns on the shipped example: `DEV_INTERACTIVE_MEMORY_LOW` is set but `dev.slice` has no `MemoryLow` ancestor, so it is
+inert. A first live `install.sh` run needed a manual edit to the empty value.
+
+**Fix.** Set the example default to empty (line 265, `DEV_INTERACTIVE_MEMORY_LOW=`), keep the allowed-values comment, and add a test that the
+example parses with no wizard warning on a host with no `DEV_MEMORY_LOW`.
+
+## MDT-051 - `mdt-host-check.sh` warns on `auto` values it should resolve (2026-11-04)
+
+**Status:** OPEN. On a freshly installed host 10 of 12 warnings were noise: `DEV_*_CPU_QUOTA=auto is not a recognized CPUQuota form (N%%)` (the message
+also doubles the `%`) and `*_SWAP_MAX=auto is not byte-comparable`. The other two (no io baseline; IOWeight inert without io.cost) are real and expected.
+
+**Fix.** Resolve `auto` to the computed value (the same function the installer uses) before comparing, or skip the comparison with an `info` line;
+fix the doubled `%%` in the message. Test: a fake host-setup.env with `auto` for both keys yields no warning.
+
+## MDT-052 - the docker-run form of the host-folder cockpit has no UID remap, so checkouts, CoW root and lane user disagree (2026-11-04)
+
+**Status:** OPEN. Hosts without the devcontainer CLI create the cockpit with `docker run`, which skips `updateRemoteUserUID`. The container's `vscode`
+(uid 1000) then owns nothing the 1003 `tester-unified` lane user can share: a checkout owned by one uid fails Git (`dubious ownership`) or the CoW root
+check (`MDT_COW_ROOT must be owned by the non-root caller uid`) on the other side (Run-Gate RG-150).
+
+**Fix.** Ship the docker-run equivalent as a supported helper (`mdt-cockpit run-host-folder`, or a documented script) that creates the container as root,
+remaps `vscode` to the owner uid/gid of the checkouts directory (`groupmod`/`usermod`), then runs `finalize_container_environment.py` as `vscode`; document that
+the runner account must be uid 1003 (the tester-unified lane uid). Test the helper with a fake docker.
+
+**Rescope 2026-11-04 (operator decision, see MDT-055).** Step 1 is decided: the cgprofile release ships a wheel (client CLI plus
+the stdlib-only collector, `host-unit` subcommand; CP-41). The wheel serves two consumers: this image's wheel list and host-setup's
+native cgprofile service (MDT-055). The `report` extra stays out of both closures.
+
+## MDT-053 - fixed estate group `mdt-docker` (gid 2751) on the host Docker relay socket (2026-11-04)
+
+**Status:** OPEN. Packages in order: this entry first (host-setup), then MDT-054, CIU-160, NL-54 and the assay/run-gate entries.
+
+**Problem.** The relay socket `/run/docker-api/docker.sock` is `root:docker 0660` (`units/docker-api-socket.conf:56-63`) and the
+cockpit gets access through `--group-add ${localEnv:DOCKER_GID}`. That number is a host fact that must be exported in the host shell
+before `docker run`, because nothing inside the container can look it up before the container exists; ciu then persists the
+host's number into `ciu.env`, and ownership of `vol-*` directories follows it. A different host (or a reinstalled docker group)
+silently changes access and ownership. `/run/cgprofile` (`root:docker 0770`) rides on the same gid.
+
+**Decision record (operator, 2026-11-04, binding).** A new fixed estate group `mdt-docker`, gid **2751** (option A2 of the platform
+memo; the image's `mdt` group, gid 2750, is NOT reused because "may write /opt/mdt" must not also mean "root-equivalent through
+Docker"). The group lives on the host-setup relay socket. The host's own `/var/run/docker.sock` stays `root:docker`.
+
+**Design.**
+
+1. New `units/mdt-docker.sysusers`: `g mdt-docker 2751 - -`. `install.sh` runs `systemd-sysusers`, then verifies by `getent`
+   that the name resolves to gid 2751; if the gid is taken by another name, or the name exists with another gid, refuse with a
+   message naming both (no silent adoption, same pattern as the `cgprofile-observer` checks at `install.sh:155-201`).
+2. `docker-api-socket.conf` sets `SocketGroup=mdt-docker` (socket mode stays 0660). The `/run/docker-api` directory is
+   `root:mdt-docker 0750`/the existing mode with the new group.
+3. `mdt-cgprofile.conf` (`d /run/cgprofile 0770 root mdt-docker -`): the cgprofile control-socket directory moves to the same
+   group (the decision and the consequence for `cgprofile-observer` are recorded in CP-43). The observer group stays
+   `cgprofile-observer` (0751) and must differ from both `mdt-docker` and the host `docker` gid; the existing check at
+   `install.sh:201` gains the second comparison.
+4. `check.sh` assertions: group exists with gid 2751; relay socket group is `mdt-docker`; `/run/cgprofile` group is `mdt-docker`;
+   host socket still `docker`.
+5. One-time migration, documented in the README (and batched with the next host-setup restart because restarting
+   `docker.socket` is disruptive on the production-shared host): create the group, regroup the socket, restart `docker.socket`,
+   rebuild the cockpit (MDT-054), regenerate `ciu env` (CIU-160), `chgrp` existing hostdirs per the README recipe.
+
+**Acceptance.**
+
+- Fake-root `install.sh` tests: fresh host creates the group at 2751; an occupied gid, or an existing `mdt-docker` with another
+  gid, is refused with both identities named; rerun is a no-op with no docker.socket restart unless the drop-in changed.
+- `check.sh` fails when any of the four assertions is violated.
+- A live run on a scratch host (not the production-shared host first): a container whose image adds its user to `mdt-docker`
+  reaches the relay socket with no `--group-add`.
+- **Non-mdt path (operator criterion, 2026-11-04).** Nothing in repo tools requires the group: a test (or documented live check)
+  on a host without host-setup shows `ciu`, `run-gate`, `cmru`, `assay` and `nyxloom` resolving the docker gid by `stat` of the
+  socket they actually use and working for a user with only the normal docker access of that environment. This entry owns the
+  CONSUMERS statement: "`mdt-docker` is a cockpit-side access group, never a prerequisite of any repo tool".
+
+**Test plan.** Extend host-setup's existing fake-root install tests; add the check.sh cases; one scratch-host live run.
+
+## MDT-054 - cockpit image and templates: `vscode` in `mdt-docker`, no `--group-add`; finalize derives the gid from `DOCKER_HOST` (2026-11-04)
+
+**Status:** OPEN. Depends on MDT-053.
+
+**Problem.** `.devcontainer/devcontainer.json:228-231` and both templates pass `--group-add ${localEnv:DOCKER_GID}`; the r1002
+runner does the same in `start-cockpit-runner.sh:14`. `finalize_container_environment.py:143-146` stats only
+`/var/run/docker{-host,}.sock`; under `DOCKER_HOST=unix:///run/docker-api/docker.sock` it likely prints `docker_gid=?` (`:702`).
+
+**Decision record (operator, 2026-11-04).** The image creates group `mdt-docker` gid 2751 and adds `vscode` to it; Docker applies the
+image's supplementary groups, so no runArg is needed. `--group-add ${localEnv:DOCKER_GID}` is removed everywhere (no alias, no
+fallback): the devcontainer, both templates, the r1002 runner start script and its docs.
+
+**Design.**
+
+- Dockerfile: `groupadd -g 2751 mdt-docker` and `usermod -aG` for `vscode` (and for the runner remap path, which re-creates
+  `vscode` with a new uid: the supplementary group membership must survive the remap; test it).
+- Templates and `start-cockpit-runner.sh`: drop the runArg and the `DOCKER_GID` host-shell prerequisite from the docs.
+- finalize: derive and print the gid by `stat` of the socket named by `DOCKER_HOST` when it is `unix://`, else the legacy paths;
+  report both the socket gid and whether the current user is a member.
+- Image check: a test asserts `getent group mdt-docker` is 2751 and `vscode` is a member.
+
+**Acceptance.**
+
+- Image build test pins the group and membership; template tests refuse `DOCKER_GID` anywhere under `.devcontainer/`.
+- finalize prints the real gid on a fake socket path, and names `mdt-docker` as the expected group on a mismatch.
+- Live: launching without exporting `DOCKER_GID` still reaches the relay socket.
+- **Non-mdt path.** The same image used outside the mdt cockpit (plain Debian host or another devcontainer that mounts a docker
+  socket of another gid) still works: tools read the gid by `stat` of the socket mounted, and the documentation says a user
+  of another environment needs that environment's normal docker access (its own `--group-add` or group), nothing from `mdt-docker`.
+
+**Test plan.** Template/dockerfile static tests, finalize unit tests with a fake socket, one live launch.
+
+## MDT-055 - host-setup installs and pins the cgprofile host service from the released wheel (2026-11-04)
+
+**Status:** OPEN. Depends on CP-41/CP-42 (wheel release and `host-unit`) and the MDT-048 distribution decision (now made). Interim
+(RG-55 C option): until the wheel exists the ciu deployment of `cgprofile-host-daemon` stays, with the gates slice rendered from
+host config instead of hand edits (NC-06).
+
+**Problem.** The daemon runs as a ciu-managed privileged container (`scripts/cgroup-profiler/ciu.compose.yml.j2`) and depends on a
+repo checkout, ciu, and on r1002 two uncommitted hand edits (`RUNBOOK.md:52-90`). It restarts with dockerd, which is exactly the
+event it should observe (MDT-047). host-setup owns the `/run/cgprofile` directory, the `cgprofile-observer` group and the slice
+names, yet calls the daemon "out of scope" (`README.md:72-75,450-455`); `infra/cgprofile.slice` is installed by hand.
+
+**Decision record (operator, 2026-11-04).** Option B of the platform memo: a native systemd service from a RELEASED WHEEL, installed
+and pinned by host-setup the way `mdt-psi-guard` is; the ciu deployment of the host daemon is retired after one release with a
+dated migration window (no alias).
+
+**Design.**
+
+- `host-setup.env`: `CGPROFILE_WHEEL` (pinned version plus sha256; refused when empty while the service is enabled) and
+  `CGPROFILE_ENABLE`. `install.sh` installs the wheel into `/opt/cgprofile` (venv, `--no-index`, hash-checked), renders the unit
+  from `cgprofile host-unit --print` (CP-42; the unit template ships inside the wheel so cgprofile keeps a single source) with
+  host-setup's tier names (`dev-gates.slice` etc.), and restarts only on drift (wheel hash or rendered unit changed).
+- Protection of the host from a misbehaving daemon is part of the rendered unit; the values and rationale are CP-42. host-setup
+  owns `cgprofile.slice` (replacing the hand-installed `infra/cgprofile.slice`) and its env-tunable limits.
+- The daemon keeps its write rule: `cgroup.kill` only on exact gates-slice container cgroups (PROTOCOL.md section 3). The unit must
+  not widen this; no `Delegate=` beyond what the existing placement needs, reviewed in CP-42.
+- Socket paths, groups (CP-43) and the observer layout stay unchanged, so run-gate, assay and cockpits need no change.
+- README: the scope statement changes from "daemon out of scope" to "host-setup installs and pins the cgprofile service".
+- `check.sh`: service active, version equals the pin, `ctl.sock` and the observer socket present with the expected groups.
+- Retirement: after one release the ciu compose, `ciu.toml.j2` host profile and `infra/cgprofile.slice` hand-install steps are
+  deleted from `scripts/cgroup-profiler` (CP-44) and RUNBOOK edits dropped.
+
+**Acceptance.** Fake-root install tests (fresh, no-op rerun without restart, pin drift restarts once, empty pin refused);
+`systemd-analyze verify` on the rendered unit; r1002 first, then the shared host in an idle window; run-gate and assay
+`ctl`/observer probes unchanged after the swap.
+**Non-mdt path.** run-gate, assay and tools stay usable without the service on a host that never ran host-setup (existing
+`docker exec` fallback and the explicit infrastructure refusal when the observer is required): add a test per consumer, owned in
+RG-152 / B212.
+
+## MDT-056 - local base images through OCI-layout build contexts on `mdt-managed` (2026-11-04)
+
+**Status:** OPEN. Packages (memo order): tester-chain pilot (TB-14), wheel-builder, srdm (SRDM entry), cmru `build_contexts`
+(KI-113), pwmcp investigation (PWMCP-23), then docs here.
+
+**Problem.** `mdt-managed` (rootless buildkitd, `mdt-buildkitd.service`) is a remote builder and cannot see dockerd's image store,
+so `FROM <local-tag>` fails. Today the estate bypasses it with the docker driver: `cmru/build-initial-standalone.sh:312,320`,
+`tester-unified/build-image.sh` with a local base, `wheel-builder/Dockerfile:35`, srdm `go-base.sh:39`. A bypass loses the
+governance slice, the btrfs cache and GC (MDT-024), the fail-closed shim and the guard, and identifies bases by a mutable tag
+(TB-11).
+
+**Decision record (operator, 2026-11-04).** Keep `mdt-managed` as the ONLY builder. Local bases are exported as OCI layouts and passed
+as named build contexts pinned by digest: `--build-context <ref>=oci-layout://<dir>@sha256:<digest>`
+(`BUILDKITD-FLOWS.md:151` already names this; `release-repack.sh:101,113` is prior art). The bypass survives only for the fresh-host
+bootstrap (`build-initial-standalone.sh`, before `mdt-managed` exists), spelled `--builder default`, never chosen through an
+environment variable.
+
+**Design.** Pilot first: confirm that a context key with a tag (`tester-base:local`) maps a tagged `FROM tester-base:local`. Then the
+pattern rolls to each chain through its own entry. This entry owns the shim caveat (MDT-057), the docs (BUILDKITD-FLOWS section 6
+and CONSUMERS; remove the documented bypasses) and a guard test that no committed script selects the default builder by
+environment variable after the migration.
+
+**Acceptance.** Pilot on tester-base to tester-unified measured against the bypass (wall time, cache hit, slice accounting);
+digest of the base lands in the derived image's labels; docs list `--builder default` only under "fresh-host bootstrap".
+**Non-mdt path.** The same build scripts run on a plain Debian host with an ordinary buildx builder or the classic docker driver:
+the layout and context flags are accepted by both; test the script's argument construction without mdt.
+
+## MDT-057 - live check: does the shim remap `BUILDX_BUILDER=default` back to `mdt-managed` on the host? (2026-11-04)
+
+**Status:** OPEN (check only; no code change until it is run). Memo finding, derived from the code and not checked live.
+
+**Problem.** `scripts/docker-buildx-shim.sh:71-76` forces `mdt-managed` when `BUILDX_BUILDER` is unset or `default`. The documented
+bypass `BUILDX_BUILDER=default` may therefore work only inside the devcontainer; on the host it may need `--builder default` or
+`MDT_BUILDX_PASSTHROUGH=1`. Several documents and scripts (pwmcp release, tester-base docs) spell the bypass by environment.
+
+**Check steps (read-only except a throwaway build; use a trivial `FROM scratch` Dockerfile in a scratch directory; no
+all-container inventories).**
+
+1. On the host shell and inside the devcontainer: `docker buildx ls` and `docker buildx inspect` to record the effective default.
+2. `BUILDX_BUILDER=default docker buildx build --progress=plain -t mdt-shim-probe:1 <scratch>`; record which builder ran (the
+   plain output names the driver) in each location.
+3. Repeat with `--builder default` and with `MDT_BUILDX_PASSTHROUGH=1`; repeat with plain `docker build`.
+4. Record the table in `BUILDKITD-FLOWS.md` and list every committed script whose spelling does not work where it runs.
+
+**Acceptance.** The table is committed; a failing spelling is either fixed to `--builder default` (MDT-056 rule) or the shim is
+changed with a test; the documented bypass text matches measured behavior. Remove the probe image by exact name afterwards.
+
+## MDT-058 - docs: attach to a remote runner (docker context over ssh, VS Code, restricted key) (2026-11-04)
+
+**Status:** OPEN (docs). Companion of NC-07 (the key and the runner README recipe). Wait for `fix-r1002-findings-20261104` to merge.
+
+**Decision record (operator, 2026-11-04).** r1002 access is `docker context create r1002 --docker host=ssh://runner@<host>` plus VS Code
+"Attach to Running Container" for the IDE, and a restricted ssh key with a forced `command=` into the container shell for a
+terminal. No sshd in any container (a supervisor, persistent host keys, a published port and a second auth surface, with no
+isolation gained since the container already holds the Docker socket).
+
+**Design.** A section in the devcontainer docs: prerequisites (the user's key is in `runner`'s authorized_keys), creating the
+context, attaching, which uid the shell gets, and the security note that `runner` is in the docker group, so its keys belong only to
+operators and the controller. Cross-link NC-07. No code.
+
+**Acceptance.** A reader can attach from a laptop in the documented steps; the doc states the single-uid rule as it stands today and
+points at RG-151 phase 4 for the relaxed form. A docs-sync test (if the cockpit docs have one) passes.
+
+## MDT-059 - relax the "uid 1003" runner/cockpit rule after lane-uid phase 4 (MDT-052, NC-04) (2026-11-04)
+
+**Status:** BLOCKED on RG-151 phase 4 (and TB-13). Operator decision 2026-11-04: lanes run as the checkout owner; the baked uid 1003 rule retires.
+
+**Problem.** MDT-052 (a `docker run` cockpit has no automatic remap) and NC-04 (a runner account must be uid 1003) exist only
+because tester-unified bakes 1003 and git refuses a differently-owned tree.
+
+**Design / acceptance.** After phase 4, update MDT-052 and NC-04 to "any uid, as long as the checkout, the CoW root and the cockpit
+user share it"; delete the 1003 wording from the README, the runner scripts and their tests, keeping the RG-150 owner preflight as the
+safety net. Lanes that need Docker add the socket gid derived by `stat` (MDT-054). A test pins the new wording and that
+the provisioning script no longer hardcodes 1003.

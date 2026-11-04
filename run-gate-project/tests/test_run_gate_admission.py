@@ -1090,3 +1090,83 @@ def test_sigterm_unwinds_and_releases_admission_ticket(tmp_path, monkeypatch):
     monkeypatch.setattr(run_gate, "run_bare_host_lane", sigterm)
     assert run_gate.main(["unit"]) == 2
     assert manager.released == ["ciu-res-gates-test"]
+
+
+# --- fix-rg-2 (RG-117e): admission hypotheses verified or closed -----------
+
+def _acquired(manager):
+    publish(manager, 2)
+    return manager.acquire(lane="unit", run_id="r-own", image="ticket:local",
+                           wait_seconds=0, budget_seconds=30)
+
+
+def test_resume_binds_the_ticket_to_the_owner_the_lane_persisted():
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    ticket = _acquired(manager)
+    persisted = ticket.result()
+    assert admission.validate_owner(persisted["owner"]) is not None
+    resumed = manager.resume(persisted)
+    assert resumed is not None and resumed.name == ticket.name
+    assert resumed.owner == persisted["owner"]
+    assert resumed.result() == persisted
+
+
+def test_resume_refuses_a_ticket_name_now_owned_by_another_gate():
+    """A prune reset the allocator and another gate took the same ticket name:
+    the name alone must not let this lane adopt (and later release) it."""
+    fake, clock, notices = FakeDocker(), Clock(), []
+    manager = make_manager(fake, clock, notices)
+    ticket = _acquired(manager)
+    persisted = ticket.result()
+    other = admission.owner_tuple("other-lane", "r-other")
+    fake.objects[ticket.name]["Config"]["Labels"][
+        "ciu.reservation.owner"] = admission.compact_json(other)
+    assert manager.resume(persisted) is None
+    assert any("does not belong" in message for message in notices)
+
+
+def test_resume_refuses_a_record_that_persisted_no_owner():
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    ticket = _acquired(manager)
+    legacy = {key: value for key, value in ticket.result().items()
+              if key != "owner"}
+    assert manager.resume(legacy) is None
+
+
+def test_exited_malformed_ticket_is_a_tombstone_not_a_live_slot():
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    publish(manager, 1)
+    fake._add("ciu-res-gates-1", {"ciu.reservation.tier": "gates"},
+              status="exited")
+    ticket = manager.acquire(lane="unit", run_id="r1", image="ticket:local",
+                             wait_seconds=0, budget_seconds=30)
+    assert ticket is not None and ticket.number == 2
+
+
+@pytest.mark.parametrize(("stderr", "collision"), [
+    ('Conflict. The container name "/x" is already in use by container "abc"',
+     True),
+    ("Error response from daemon: container name x already exists", True),
+    ("Error response from daemon: conflicting options: --foo and --bar", False),
+])
+def test_only_a_name_collision_is_a_collision(stderr, collision):
+    fake, clock = FakeDocker(), Clock()
+    manager = make_manager(fake, clock)
+    manager._call = lambda *a, **k: subprocess.CompletedProcess(
+        a, 1, "", stderr)
+    if collision:
+        assert manager._create_named("x", "ticket:local", {}) is False
+    else:
+        with pytest.raises(admission.AdmissionError, match="conflicting"):
+            manager._create_named("x", "ticket:local", {})
+
+
+@pytest.mark.parametrize("spelling", ["٣٤", "0123", "-1", "1_0", ""])
+def test_owner_pid_ns_must_be_the_canonical_ascii_decimal(spelling):
+    owner = dict(admission.owner_tuple("unit", "r1"), pid_ns=spelling)
+    assert admission.validate_owner(admission.compact_json(owner)) is None
+    good = dict(owner, pid_ns="4026531836")
+    assert admission.validate_owner(admission.compact_json(good)) == good

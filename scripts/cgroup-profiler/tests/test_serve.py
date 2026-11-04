@@ -29,6 +29,7 @@ import os
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -2620,6 +2621,97 @@ def test_forced_finalize_with_a_worker_holding_the_session_lock_forever_returns(
     release.set()
 
 
+class _CountingLock:
+    """A real lock behind a counter: every acquire, however spelled, counts."""
+
+    def __init__(self):
+        self._inner = threading.Lock()
+        self.acquires = 0
+
+    def acquire(self, *args, **kwargs):
+        self.acquires += 1
+        return self._inner.acquire(*args, **kwargs)
+
+    def release(self):
+        self._inner.release()
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, *_exc):
+        self.release()
+
+
+def test_finalize_takes_the_session_lock_exactly_once(simple_server, monkeypatch):
+    """CP-27 N5 (S9): the old free-then-retake shape acquired the session lock
+    twice (a probe, then an unbounded block); the fix is structural, so pin it
+    with a counter."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    proxy = _CountingLock()
+    sess.lock = proxy
+    with simple_server._lock:
+        assert simple_server._finalize_session_locked(
+            sess, aborted_reason=None, force=True) is True
+    assert proxy.acquires == 1
+    assert closed == [True] and released == [True]
+    release.set()
+
+
+def test_own_thread_finalize_with_a_held_session_lock_logs_the_failure(
+    simple_server, monkeypatch, capsys,
+):
+    """CP-27 N6: the own-thread callers ignore the return value, so a lock held
+    for the full bound must still leave a log line, and the session stays live."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    sess.thread = threading.current_thread()  # the own-thread (no-join) path
+    holding = threading.Event()
+
+    def hold():
+        with sess.lock:
+            holding.set()
+            release.wait()
+
+    threading.Thread(target=hold, daemon=True).start()
+    assert holding.wait(timeout=5.0)
+    simple_server._finalize_after_kill(sess)
+    assert "the session lock is held" in capsys.readouterr().err
+    assert not sess.finished and closed == [] and released == []
+    release.set()
+
+
+def test_stop_with_a_busy_session_lock_does_not_blame_the_worker(
+    simple_server, monkeypatch,
+):
+    """CP-27 N8: the worker has exited but another verb holds the session lock;
+    `stop` must say the lock is busy, not that the worker did not exit."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    release.set()
+    sess.thread.join(timeout=5.0)  # the worker has exited
+    assert not sess.thread.is_alive()
+    sess.lock.acquire()
+    try:
+        response = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    finally:
+        sess.lock.release()
+    assert response["ok"] is False
+    assert response["error"]["code"] == "stop-incomplete"
+    message = response["error"]["message"]
+    assert "session lock was busy" in message
+    assert "worker did not exit" not in message
+    assert closed == [] and released == []
+
+
+def test_stop_with_a_wedged_worker_still_says_the_worker_did_not_exit(
+    simple_server, monkeypatch,
+):
+    """CP-27 N8 counter-case: the wedged-worker message is unchanged."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    response = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert "worker did not exit" in response["error"]["message"]
+    release.set()
+
+
 def test_observe_liveness_after_close_never_reaches_the_kill(
     simple_server, monkeypatch,
 ):
@@ -3276,15 +3368,29 @@ def test_report_with_a_malformed_session_id(simple_server):
 
 # ── socket plumbing: stale files, unlink failures, short reads, accept() ──
 
-def test_bind_removes_a_stale_socket_file(tmp_path):
+def test_bind_removes_a_stale_socket_node(tmp_path):
+    # A dead socket node (nobody listens) is stale and replaced. A REGULAR
+    # file is not: CP-34 refuses it (see the cp34 tests below).
     socket_path = str(tmp_path / "ctl.sock")
-    Path(socket_path).write_text("stale")
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(socket_path)
+    stale.close()
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path)
     server._bind()
     try:
-        assert os.path.exists(socket_path)
+        assert stat.S_ISSOCK(os.lstat(socket_path).st_mode)
+        assert server._sock is not None
     finally:
         server._close_socket()
+
+
+def test_bind_refuses_a_regular_file_at_the_socket_path(tmp_path):
+    socket_path = str(tmp_path / "ctl.sock")
+    Path(socket_path).write_text("not a socket")
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path)
+    with pytest.raises(serve.ControlSocketError):
+        server._bind()
+    assert Path(socket_path).read_text() == "not a socket"
 
 
 def test_bind_with_a_bare_relative_socket_path_skips_the_dirname_makedirs(tmp_path, monkeypatch):
@@ -4384,3 +4490,684 @@ def test_stop_while_the_worker_finalizes_itself_is_not_a_spurious_incomplete(
     assert response["already_stopped"] is True   # the worker finalized itself
     assert time.monotonic() - began < 4.0
     assert sess.finished and sess.stop_attempts == 0
+
+
+# ── CP-27 N9/N10/N11 ─────────────────────────────────────────────────────
+
+def _stopped_session(simple_server):
+    """A started session whose sampling worker has exited."""
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+    sess.stop_event.set()
+    sess.thread.join(timeout=5.0)
+    sess.stop_event.clear()
+    return sess
+
+
+def test_n9_a_raising_finalize_reopens_the_session_and_a_retry_succeeds(simple_server):
+    sess = _stopped_session(simple_server)
+    state = {"fail": True}
+
+    class _Placement:
+        def release(self):
+            if state["fail"]:
+                raise RuntimeError("release exploded")
+
+        def block(self):
+            return {"leaf": None}
+
+    sess.placement = _Placement()
+    with simple_server._lock:
+        assert simple_server._finalize_session_locked(sess, aborted_reason=None) is False
+    assert sess.closed is False and not sess.finished
+    assert sess.finalize_refusal == "error"
+    assert "RuntimeError: release exploded" in sess.finalize_error
+    response = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert response["error"]["code"] == "stop-incomplete"
+    assert "release exploded" in response["error"]["message"]
+    assert sess.lock.acquire(blocking=False)   # the session lock was released
+    sess.lock.release()
+    state["fail"] = False
+    retried = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert retried["ok"] is True and sess.finished
+
+
+def test_n9_a_failed_forced_finalize_clears_the_forced_mark(simple_server, monkeypatch):
+    sess, release, _closed, _released = _wedge(simple_server, monkeypatch)
+
+    class _Boom:
+        def release(self):
+            raise OSError("no")
+
+        def block(self):
+            return {"leaf": None}
+
+    sess.placement = _Boom()
+    with simple_server._lock:
+        assert simple_server._finalize_session_locked(
+            sess, aborted_reason=None, force=True) is False
+    assert sess.stop_forced is False and sess.closed is False
+    release.set()
+
+
+def test_n10_damon_runtime_close_is_done_under_the_session_lock(simple_server, monkeypatch):
+    """A forced finalization arriving while DAMON is being closed must wait for
+    it and then see the disposition, so the Summary carries `damon_cleanup`."""
+    monkeypatch.setattr(serve, "STOP_JOIN_SECONDS", 5.0)
+    sess = _stopped_session(simple_server)
+    finalizer: List[threading.Thread] = []
+
+    def finalize():
+        with simple_server._lock:
+            simple_server._finalize_session_locked(sess, aborted_reason=None, force=True)
+
+    class _Damon:
+        cleanup_confirmed = True
+        kdamond_idx = 1
+
+        def __exit__(self, *_args):
+            thread = threading.Thread(target=finalize, daemon=True)
+            thread.start()
+            finalizer.append(thread)
+            thread.join(timeout=0.3)   # old code: it completes right here
+
+    sess.damon_session = _Damon()
+    simple_server._disable_damon_for_session(sess, RuntimeError("sysfs vanished"))
+    finalizer[0].join(timeout=5.0)
+    assert sess.finished
+    assert sess.summary_doc["damon_cleanup"] == sess.damon_cleanup
+    assert sess.damon_cleanup["confirmed"] is True
+
+
+def test_n11_shutdown_waits_for_workers_outside_the_daemon_lock(simple_server):
+    sess = _stopped_session(simple_server)
+    seen: List[bool] = []
+
+    def lock_free() -> bool:
+        out: List[bool] = []
+
+        def probe():
+            ok = simple_server._lock.acquire(blocking=False)
+            out.append(ok)
+            if ok:
+                simple_server._lock.release()
+
+        thread = threading.Thread(target=probe)
+        thread.start()
+        thread.join()
+        return out[0]
+
+    class _Worker:
+        def join(self, timeout=None):
+            if timeout:      # the real wait; the locked re-check passes 0
+                seen.append(lock_free())
+
+        def is_alive(self):
+            return False
+
+    sess.thread = _Worker()
+    simple_server._stop_all_sessions(aborted_reason="daemon-stopped")
+    assert seen and all(seen)          # the join ran with the daemon lock free
+    assert sess.finished
+
+
+# ── CP-34: _bind never steals or deletes what it does not own ───────────
+
+def _unbound_server(tmp_path, name="ctl.sock", sessions="sessions", **kw):
+    run = tmp_path / "run"
+    run.mkdir(exist_ok=True)
+    return serve.SessionServer(
+        sessions_dir=str(tmp_path / sessions), socket_path=str(run / name),
+        observer_socket_path=str(run / "observer.sock"), accept_timeout=0.05, **kw,
+    )
+
+
+@pytest.mark.parametrize("kind, word", [
+    ("file", "regular file"), ("dir", "directory"),
+    ("symlink", "symlink"), ("fifo", "non-socket node"),
+])
+def test_cp34_a_non_socket_node_is_refused_and_left_in_place(tmp_path, kind, word):
+    server = _unbound_server(tmp_path)
+    node = Path(server.socket_path)
+    if kind == "file":
+        node.write_text("operator data")
+    elif kind == "dir":
+        node.mkdir()
+    elif kind == "symlink":
+        node.symlink_to(tmp_path)
+    else:
+        os.mkfifo(node)
+    with pytest.raises(serve.ControlSocketError, match=word):
+        server._bind()
+    assert os.path.lexists(node)
+    assert kind != "file" or node.read_text() == "operator data"
+
+
+def test_cp34_a_failed_bind_closes_its_socket_and_raises(tmp_path, monkeypatch):
+    server = _unbound_server(tmp_path)
+    closed: List[bool] = []
+
+    class _Sock:
+        def bind(self, _path):
+            raise OSError("bind failed")
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(serve.socket, "socket", lambda *a, **k: _Sock())
+    with pytest.raises(OSError, match="bind failed"):
+        server._bind_control_socket()
+    assert closed == [True] and server._sock is None and server._sock_identity is None
+
+
+def test_cp34_close_tolerates_a_vanished_node_and_a_failing_unlink(tmp_path, monkeypatch):
+    server = _unbound_server(tmp_path)
+    server._bind()
+    os.unlink(server.socket_path)
+    server._close_socket()                       # node already gone: no error
+    again = _unbound_server(tmp_path, sessions="s2")
+    again._bind()
+
+    def refuse(_path):
+        raise PermissionError("no")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(serve.os, "unlink", refuse)
+        again._close_socket()                    # unlink fails: swallowed
+    os.unlink(again.socket_path)
+
+
+def test_cp34_a_live_daemon_is_not_stolen_from(tmp_path):
+    first = _unbound_server(tmp_path)
+    first._bind()
+    try:
+        second = _unbound_server(tmp_path, sessions="sessions2")
+        with pytest.raises(serve.ControlSocketError, match="another daemon answers"):
+            second._bind()
+        # The original listener is still the node at the path and connectable.
+        identity = os.lstat(first.socket_path)
+        assert (identity.st_dev, identity.st_ino) == first._sock_identity
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5.0)
+            client.connect(first.socket_path)
+    finally:
+        first._close_socket()
+
+
+def test_cp34_a_dead_socket_node_is_removed_and_the_daemon_starts(tmp_path, capsys):
+    server = _unbound_server(tmp_path)
+    dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    dead.bind(server.socket_path)
+    dead.close()                      # the node stays, nobody listens
+    assert os.path.exists(server.socket_path)
+    server._bind()
+    try:
+        assert server._sock is not None
+        assert "removed a stale control socket node" in capsys.readouterr().err
+    finally:
+        server._close_socket()
+
+
+def test_cp34_close_leaves_a_successors_socket_alone(tmp_path):
+    server = _unbound_server(tmp_path)
+    server._bind()
+    os.unlink(server.socket_path)
+    successor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    successor.bind(server.socket_path)
+    successor.listen(1)
+    try:
+        server._close_socket()
+        assert os.path.exists(server.socket_path)
+    finally:
+        successor.close()
+
+
+_REAL_SOCKET = socket.socket   # captured before any test replaces `socket.socket`
+
+
+def _probe_raising(monkeypatch, exc, before=None):
+    """Replace the one probe socket `_clear_control_socket_path` creates with
+    a stand-in whose connect() raises ``exc`` (after running ``before``)."""
+    class _Probe:
+        def settimeout(self, _t):
+            pass
+
+        def connect(self, _p):
+            if before is not None:
+                before()
+            raise exc
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(serve.socket, "socket", lambda *a, **k: _Probe())
+
+
+def _dead_node(server):
+    dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    dead.bind(server.socket_path)
+    dead.close()
+
+
+def test_cp34_an_unprovable_peer_is_refused_not_removed(tmp_path, monkeypatch):
+    server = _unbound_server(tmp_path)
+    _dead_node(server)
+    _probe_raising(monkeypatch, PermissionError("denied"))
+    with pytest.raises(serve.ControlSocketError, match="cannot prove"):
+        server._clear_control_socket_path()
+    assert os.path.exists(server.socket_path)
+
+
+def test_cp34_a_node_that_vanishes_during_the_probe_is_simply_free(tmp_path, monkeypatch):
+    server = _unbound_server(tmp_path)
+    _dead_node(server)
+    _probe_raising(monkeypatch, FileNotFoundError("gone"))
+    server._clear_control_socket_path()          # no error, nothing to remove
+
+
+def test_cp34_a_node_replaced_during_the_probe_is_not_removed(tmp_path, monkeypatch):
+    server = _unbound_server(tmp_path)
+    _dead_node(server)
+    path = server.socket_path
+    swapped: List[socket.socket] = []
+
+    real_socket = _REAL_SOCKET
+
+    def swap():
+        os.link(path, path + ".keep")      # keep the old inode number taken
+        os.unlink(path)
+        other = real_socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        other.bind(path)
+        swapped.append(other)
+
+    _probe_raising(monkeypatch, ConnectionRefusedError("refused"), before=swap)
+    try:
+        with pytest.raises(serve.ControlSocketError, match="changed while checking"):
+            server._clear_control_socket_path()
+        assert os.path.exists(path)
+    finally:
+        swapped[0].close()
+
+
+# ── CP-31: the socket path is verified and rebound ──────────────────────
+
+def test_cp31_an_intact_socket_is_left_alone(tmp_path, capsys):
+    server = _unbound_server(tmp_path)
+    server._bind()
+    try:
+        before = server._sock_identity
+        server._check_control_socket()
+        assert server._sock_identity == before
+        assert "rebinding" not in capsys.readouterr().err
+    finally:
+        server._close_socket()
+
+
+@pytest.mark.parametrize("how", ["unlinked", "replaced"])
+def test_cp31_a_missing_or_replaced_socket_is_rebound(tmp_path, capsys, how):
+    server = _unbound_server(tmp_path)
+    server._bind()
+    try:
+        old = server._sock_identity
+        os.link(server.socket_path, server.socket_path + ".keep")   # inode stays taken
+        os.unlink(server.socket_path)
+        if how == "replaced":
+            stray = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            stray.bind(server.socket_path)   # a dead node: nobody listens
+            stray.close()
+        server._check_control_socket()
+        assert server._socket_lost is False
+        current = os.lstat(server.socket_path)
+        assert (current.st_dev, current.st_ino) == server._sock_identity
+        assert server._sock_identity != old
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(5.0)
+            client.connect(server.socket_path)
+        assert "rebound" in capsys.readouterr().err
+    finally:
+        server._close_socket()
+
+
+def test_cp31_a_never_bound_server_binds_on_the_first_check(tmp_path):
+    server = _unbound_server(tmp_path)
+    try:
+        server._check_control_socket()
+        assert server._sock is not None and server._socket_lost is False
+    finally:
+        server._close_socket()
+
+
+def test_cp31_an_unbindable_path_flags_the_loss_and_stops(tmp_path, capsys):
+    server = _unbound_server(tmp_path)
+    server._bind()
+    try:
+        os.unlink(server.socket_path)
+        Path(server.socket_path).write_text("squatter")
+        server._check_control_socket()
+        assert server._socket_lost is True and server._stopping is True
+        assert "exiting so the restart policy recreates the daemon" in capsys.readouterr().err
+        assert Path(server.socket_path).read_text() == "squatter"
+    finally:
+        server._close_socket()
+
+
+def test_cp31_the_running_loop_rebinds_and_a_lost_socket_exits_non_zero(tmp_path, monkeypatch):
+    server = _unbound_server(tmp_path, socket_check_interval=0.05)
+    monkeypatch.setattr(server, "_install_signals", lambda: None)
+    result: List[int] = []
+    thread = threading.Thread(target=lambda: result.append(server.serve_forever()), daemon=True)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10.0
+        while server._sock is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        old = server._sock_identity
+        os.link(server.socket_path, server.socket_path + ".keep")   # inode stays taken
+        os.unlink(server.socket_path)
+        while server._sock_identity in (old, None) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert server._sock_identity not in (old, None)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(10.0)
+            client.connect(server.socket_path)
+            client.sendall(_wire_bytes("version"))
+            assert json.loads(client.recv(65536).decode())["ok"] is True
+        # Now make the path unbindable: the daemon must exit non-zero.
+        os.unlink(server.socket_path)
+        Path(server.socket_path).write_text("squatter")
+        thread.join(timeout=10.0)
+        assert not thread.is_alive()
+        assert result == [serve.EXIT_SOCKET_LOST]
+    finally:
+        server.request_shutdown()
+        thread.join(timeout=10.0)
+
+
+def test_cp31_a_clean_shutdown_exits_zero(tmp_path, monkeypatch):
+    server = _unbound_server(tmp_path)
+    monkeypatch.setattr(server, "_install_signals", lambda: None)
+    result: List[int] = []
+    thread = threading.Thread(target=lambda: result.append(server.serve_forever()), daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10.0
+    while server._sock is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    server.request_shutdown()
+    thread.join(timeout=10.0)
+    assert result == [0]
+
+
+# ── CP-33: concurrent connections with bounded admission ────────────────
+
+def _connect(path):
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(10.0)
+    client.connect(path)
+    return client
+
+
+def _ask(path, verb="version", **args):
+    with _connect(path) as client:
+        client.sendall(_wire_bytes(verb, **args))
+        return json.loads(client.makefile("rb").readline().decode())
+
+
+def _running(tmp_path, **kw):
+    server = _unbound_server(tmp_path, **kw)
+    return server, _start_ready_socket_server(server)
+
+
+def _stop_running(server, thread):
+    server.request_shutdown()
+    thread.join(timeout=30.0)
+    assert not thread.is_alive()
+
+
+def test_cp33_a_stalled_peer_does_not_delay_another_verb(tmp_path):
+    server, thread = _running(tmp_path)
+    try:
+        stalled = _connect(server.socket_path)
+        stalled.sendall(b'{"verb": "ver')          # half a line, never finished
+        began = time.monotonic()
+        assert _ask(server.socket_path)["ok"] is True
+        assert time.monotonic() - began < 1.0
+        stalled.close()
+    finally:
+        _stop_running(server, thread)
+
+
+def test_cp33_a_long_verb_does_not_delay_another_verb(tmp_path):
+    server, thread = _running(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    real = server._dispatch
+
+    def dispatch(req):
+        if req.get("verb") == "host":
+            entered.set()
+            release.wait(timeout=30.0)
+        return real(req)
+
+    server._dispatch = dispatch
+    slow: List[Dict[str, Any]] = []
+    worker = threading.Thread(target=lambda: slow.append(_ask(server.socket_path, "host")), daemon=True)
+    try:
+        worker.start()
+        assert entered.wait(timeout=10.0)
+        began = time.monotonic()
+        assert _ask(server.socket_path)["ok"] is True       # `version` meanwhile
+        assert time.monotonic() - began < 1.0
+        release.set()
+        worker.join(timeout=10.0)
+        assert slow and slow[0]["ok"] is True
+    finally:
+        release.set()
+        _stop_running(server, thread)
+
+
+def test_cp33_verbs_over_the_handler_cap_are_busy_and_the_slot_is_returned(tmp_path):
+    server, thread = _running(tmp_path, max_control_handlers=1)
+    entered, release = threading.Event(), threading.Event()
+    real = server._dispatch
+
+    def dispatch(req):
+        if req.get("verb") == "host":
+            entered.set()
+            release.wait(timeout=30.0)
+        return real(req)
+
+    server._dispatch = dispatch
+    slow: List[Dict[str, Any]] = []
+    worker = threading.Thread(target=lambda: slow.append(_ask(server.socket_path, "host")), daemon=True)
+    try:
+        worker.start()
+        assert entered.wait(timeout=10.0)
+        busy = _ask(server.socket_path)
+        assert busy["ok"] is False and busy["error"]["code"] == "busy"
+        assert busy["contract"] == 1
+        release.set()
+        worker.join(timeout=10.0)
+        assert slow[0]["ok"] is True
+        assert _ask(server.socket_path)["ok"] is True       # the slot came back
+    finally:
+        release.set()
+        _stop_running(server, thread)
+
+
+def test_cp33_report_has_its_own_cap_and_never_starves_other_verbs(tmp_path):
+    server, thread = _running(tmp_path, max_control_handlers=1, max_report_jobs=1)
+    entered, release = threading.Event(), threading.Event()
+    real = server._dispatch
+
+    def dispatch(req):
+        if req.get("verb") == "report":
+            entered.set()
+            release.wait(timeout=30.0)
+            return {"ok": True, "contract": 1}
+        return real(req)
+
+    server._dispatch = dispatch
+    slow: List[Dict[str, Any]] = []
+    worker = threading.Thread(
+        target=lambda: slow.append(_ask(server.socket_path, "report", session="s")),
+        daemon=True,
+    )
+    try:
+        worker.start()
+        assert entered.wait(timeout=10.0)
+        # The one report slot is taken: a second report is busy ...
+        second = _ask(server.socket_path, "report", session="s")
+        assert second["ok"] is False and second["error"]["code"] == "busy"
+        assert "reports" in second["error"]["message"]
+        # ... but the shared handler pool (cap 1) is untouched.
+        assert _ask(server.socket_path)["ok"] is True
+        release.set()
+        worker.join(timeout=10.0)
+        assert slow[0]["ok"] is True
+        third = _ask(server.socket_path, "report", session="s")
+        assert third["ok"] is True                       # the report slot came back
+    finally:
+        release.set()
+        _stop_running(server, thread)
+
+
+def test_cp33_a_failing_handler_returns_its_slot(tmp_path):
+    server, thread = _running(tmp_path, max_control_handlers=1)
+
+    def dispatch(_req):
+        raise RuntimeError("handler bug")
+
+    real = server._dispatch
+    server._dispatch = dispatch
+    try:
+        with _connect(server.socket_path) as client:
+            client.sendall(_wire_bytes("version"))
+            assert client.makefile("rb").readline() == b""   # closed, no reply
+        server._dispatch = real
+        assert _ask(server.socket_path)["ok"] is True
+    finally:
+        _stop_running(server, thread)
+
+
+def test_cp33_connections_over_the_reader_cap_are_busy(tmp_path):
+    server, thread = _running(tmp_path, max_request_readers=1)
+    try:
+        holder = _connect(server.socket_path)
+        holder.sendall(b'{"verb"')                   # holds the only reader slot
+        with _connect(server.socket_path) as second:
+            line = json.loads(second.makefile("rb").readline().decode())
+        assert line["error"]["code"] == "busy"
+        holder.close()
+        deadline = time.monotonic() + 10.0
+        while True:                                   # the slot returns on close
+            answer = _ask(server.socket_path)
+            if answer["ok"] or time.monotonic() > deadline:
+                break
+            time.sleep(0.05)
+        assert answer["ok"] is True
+    finally:
+        _stop_running(server, thread)
+
+
+def test_cp33_watch_streams_over_the_cap_are_busy_and_slots_return(tmp_path):
+    server, thread = _running(tmp_path, max_watch_streams=2)
+    try:
+        assert server._watch_slots.acquire(blocking=False)
+        assert server._watch_slots.acquire(blocking=False)      # both in use
+        busy = _ask(server.socket_path, "watch", session=SESSION_ID)
+        assert busy["error"]["code"] == "busy"
+        server._watch_slots.release()
+        # With one slot free the watch is admitted (the session is unknown, so
+        # the stream ends at once) and its slot is returned afterwards.
+        refused = _ask(server.socket_path, "watch", session=SESSION_ID)
+        assert refused["error"]["code"] == "unknown-session"
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            if server._watch_slots.acquire(blocking=False):
+                server._watch_slots.release()
+                break
+            time.sleep(0.01)
+        assert server._watch_slots.acquire(blocking=False)
+        server._watch_slots.release()
+        server._watch_slots.release()
+    finally:
+        _stop_running(server, thread)
+
+
+def test_cp33_a_thread_that_cannot_start_is_answered_busy(tmp_path, monkeypatch):
+    server = _unbound_server(tmp_path)
+    left, right = socket.socketpair()
+
+    class _NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(serve.threading, "Thread", _NoThread)
+        server._admit_connection(left)
+    right.settimeout(5.0)
+    assert json.loads(right.makefile("rb").readline().decode())["error"]["code"] == "busy"
+    right.close()
+    assert server._reader_slots.acquire(blocking=False)         # slot was returned
+    server._reader_slots.release()
+
+
+def test_cp33_a_watch_thread_that_cannot_start_is_answered_busy(tmp_path, monkeypatch):
+    server = _unbound_server(tmp_path)
+    left, right = socket.socketpair()
+    right.sendall(_wire_bytes("watch", session=SESSION_ID))
+
+    class _NoThread:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(serve.threading, "Thread", _NoThread)
+        server._handle_connection(left)
+    right.settimeout(5.0)
+    assert json.loads(right.makefile("rb").readline().decode())["error"]["code"] == "busy"
+    right.close()
+    assert server._watch_slots.acquire(blocking=False)
+    server._watch_slots.release()
+
+
+def test_cp33_a_busy_refusal_to_a_peer_that_never_reads_does_not_block(tmp_path):
+    server = _unbound_server(tmp_path)
+    left, right = socket.socketpair()
+    left.close()                      # the peer is gone: the send fails quietly
+    server._refuse_busy(left, "x")    # closing an already-closed socket is fine
+    right.close()
+
+
+def test_cp33_no_verb_starts_once_the_daemon_is_stopping(tmp_path):
+    server = _unbound_server(tmp_path)
+    server._stopping = True
+    resp = server._dispatch_admitted(_wire("version"))
+    assert resp["error"]["code"] == "busy" and "shutting down" in resp["error"]["message"]
+    assert server._handler_slots.acquire(blocking=False)        # slot was returned
+    server._handler_slots.release()
+
+
+def test_cp33_shutdown_waits_for_an_inflight_verb(tmp_path, capsys):
+    server = _unbound_server(tmp_path)
+    assert server._begin_inflight()
+    finisher = threading.Timer(0.2, server._end_inflight)
+    finisher.start()
+    began = time.monotonic()
+    server._drain_inflight()
+    finisher.join()
+    assert server._inflight == 0 and time.monotonic() - began < 5.0
+
+
+def test_cp33_shutdown_stops_waiting_after_the_bound(tmp_path, monkeypatch, capsys):
+    server = _unbound_server(tmp_path)
+    monkeypatch.setattr(serve, "SHUTDOWN_DRAIN_SECONDS", 0.05)
+    assert server._begin_inflight()
+    server._drain_inflight()
+    assert "verb(s) still running" in capsys.readouterr().err
+    server._end_inflight()

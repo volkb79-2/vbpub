@@ -4,7 +4,7 @@ schema_version = 1
 kind = "none"
 
 [env]
-TLS_EDGE_RELEASE_NOTES = "## tls-edge tarball\n\nEdge proxy and TLS termination stack for vbpub infrastructure.\n\n**Verify**\n```bash\nsha256sum -c tls-edge-v*.tar.xz.sha256\n```"
+TLS_EDGE_RELEASE_NOTES = "## tls-edge offline installer\n\nEdge proxy and TLS termination (Traefik v3) as a self-contained instance, one bundle per interpreter: `tls-edge-v<ver>-py313.tar.xz` and `-py314`. Install with `get.py install --variant py313` (see docs/INSTALL.md).\n\n**Breaking**: the alternate HTTPS port (9443) is removed; ciu container names are `tls-edge-<id>-traefik` / `-dockerproxy`. Read docs/INSTALL.md section 8 before updating a live edge.\n\n**Verify** (releases are unsigned: SHA-256 and the in-bundle manifest only)\n```bash\nsha256sum -c tls-edge-v*-py313.tar.xz.sha256\n```"
 
 [project]
 id = "tls-edge"
@@ -23,36 +23,106 @@ build_step = "build"
 artifact_dirs = ["dist"]
 
 [project.installer]
-install_dir_system = "/opt/tls-edge"
-install_dir_user = "tls-edge"
+install_dir_system = "/srv/tls-edge-instance"
+install_dir_user = "tls-edge-instance"
 asset_suffix = ".tar.xz"
-required_commands = ["python3", "docker"]
-preserve = ["ciu-stack/ciu.toml.j2", "edge-proxy/.env"]
+entrypoint = "installer/adapter.py"
+required_commands = ["python3", "docker", "git"]
 manifest_name = "manifest.json"
 signature_name = "manifest.json.minisig"
-wheels = []
+# The bundled ciu (wheel + dependency wheels) runs the stack from <root>/stack/.
+launchers = ["ciu"]
+stable_dir = "stack"
+stub_launchers = ["ciu"]
+
+# MarkupSafe and PyYAML are platform wheels: one asset per interpreter variant,
+# selected at install time with `get.py install --variant py313`.
+[[project.variants]]
+name = "py313"
+build_arg = "PYTHON_TAG=cp313"
+label = "CPython 3.13, x86_64 glibc"
+
+[[project.variants]]
+name = "py314"
+build_arg = "PYTHON_TAG=cp314"
+label = "CPython 3.14, x86_64 glibc"
+
+[[project.installer.wheels]]
+path = "wheels/ciu-*.whl"
+distribution = "ciu"
+
+[[project.installer.wheels]]
+path = "wheels/jinja2-*.whl"
+distribution = "Jinja2"
+
+[[project.installer.wheels]]
+path = "wheels/markupsafe-*.whl"
+distribution = "MarkupSafe"
+
+[[project.installer.wheels]]
+path = "wheels/pyyaml-*.whl"
+distribution = "PyYAML"
+
+[[project.installer.wheels]]
+path = "wheels/tomli_w-*.whl"
+distribution = "tomli_w"
+
+[[project.installer.questions]]
+id = "domain"
+prompt = "Public domain served through the edge (TLS_EDGE_DOMAIN, e.g. example.test)"
+type = "string"
+
+[[project.installer.questions]]
+id = "acme_email"
+prompt = "ACME account email (Let's Encrypt notices; empty = none)"
+type = "string"
+required = false
+
+[[project.installer.questions]]
+id = "tls_mode"
+prompt = "Certificate mode"
+type = "choice"
+choices = ["acme-tls", "acme-http", "acme-dns", "static", "dev"]
+default = "acme-tls"
+
+[[project.installer.questions]]
+id = "dns_provider"
+prompt = "DNS provider (lego name, only for acme-dns; empty = cloudflare)"
+type = "string"
+required = false
+
+[[project.installer.questions]]
+id = "calls"
+prompt = "Publish the Mattermost Calls pair on 8443 (tcp and udp)?"
+type = "bool"
+default = true
 
 [steps.run-tests]
 quiet = true
 commands = [
   { label = "tls-edge: standalone render validation", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "scripts/render_standalone.py", "--check", "--defaults-only"], cwd = "." },
+  { label = "tls-edge: Calls defaults agreement", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider"], cwd = "." },
 ]
 
 [steps.build]
 quiet = true
 commands = [
-  { label = "tls-edge: build tarball", argv = ["bash", "scripts/build-artifact.sh"], cwd = "." },
+  { label = "tls-edge: stage ciu and dependency wheels per interpreter", argv = ["python3", "scripts/stage-wheels.py"], cwd = "." },
+  { label = "tls-edge: build one installer bundle per interpreter variant", argv = ["bash", "scripts/build-artifact.sh"], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "tls-edge: publish tarball", argv = ["cmru", "handler", "tarball-publish", "--prefix", "tls-edge", "--cwd", ".", "--glob", "tls-edge-v*.tar.xz", "--version-file", "dist/VERSION", "--notes-env", "TLS_EDGE_RELEASE_NOTES"], cwd = "." },
+  # One tarball per interpreter variant, all under the same release tag or none (cmru KI-115).
+  # The --variant names and labels repeat [[project.variants]] above; tests/test_release_config.py
+  # keeps the two in step. dist/get.py is the installer, published beside the bundles.
+  { label = "tls-edge: publish variant bundles", argv = ["cmru", "handler", "tarball-publish", "--prefix", "tls-edge", "--cwd", ".", "--glob", "tls-edge-v*.tar.xz", "--version-file", "dist/VERSION", "--notes-env", "TLS_EDGE_RELEASE_NOTES", "--variant", "py313=CPython 3.13, x86_64 glibc", "--variant", "py314=CPython 3.14, x86_64 glibc", "--extra-asset", "dist/get.py"], cwd = "." },
 ]
 
 [versions.targets."oci.socket-proxy"]
 mode = "single"
-constraint = ">=0.4.2"
+constraint = ">=0.5.0"
 
 [versions.targets."oci.socket-proxy".oci]
 image = "docker.io/tecnativa/docker-socket-proxy"

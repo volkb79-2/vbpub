@@ -5,6 +5,10 @@ internal library, not a separately published release target.
 
 ## [Unreleased]
 
+### Fixed
+- COW-BL-04: declare per-write persistence expectations under relaxed fsync
+  (SPEC P1-P4) and test that a truncated `owner.json` is untrusted and retained.
+
 ### Added
 - Add the stdlib-only run API, btrfs/reflink/copy backends, input-derived
   admission, owner manifests, flock leases, conservative garbage collection,

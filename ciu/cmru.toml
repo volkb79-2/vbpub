@@ -35,7 +35,7 @@ git_tag = true
 build_step = "build"
 artifact_dirs = ["dist"]
 
-# S14.7a / CIU-93 — inputs for `cmru get-py ciu`, whose rendered
+# S14.7a / CIU-93 — inputs for `cmru installer render ciu`, whose rendered
 # output is committed at `ciu/get.py` and published as a release asset (see
 # [steps.push]'s --extra-asset below). `ciu host enroll` prints
 #   https://github.com/<owner>/<repo>/releases/download/ciu-v<version>/get.py
@@ -58,6 +58,12 @@ signature_name = "manifest.json.minisig"
 # rendered get.py by cmru's extensions mechanism (cmru W1-CIU-ENROLL, O4).
 # Hardening: CIU-122 / CIU-123.
 extensions = ["installer/enroll.py"]
+
+# cli-extended is a real wheel dependency of ciu (CIU-114): the bundle carries the released
+# wheel next to ciu's, and the installer installs it first (--no-index, hash-locked; KI-51).
+[[project.installer.wheels]]
+path = "vendor/cli_extended-*.whl"
+distribution = "cli-extended"
 
 [[project.installer.wheels]]
 path = "vendor/ciu-*.whl"

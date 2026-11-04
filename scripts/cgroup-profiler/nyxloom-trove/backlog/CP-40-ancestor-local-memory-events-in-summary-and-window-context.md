@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-40
 title: "Ancestor local memory.events deltas (up to dev.slice) in the Summary and in contract-3 window context, so consumers can tell ancestor-driven reclaim from a lane's own limit"
-status: carved
+status: fixed
 type: "feature"
 component: "summary"
 context_estimate: "small"
@@ -60,3 +60,5 @@ and recorded as `ancestor_events: unknown`: it neither flags nor clears a run.
 ## Updates
 
 **2026-11-03** — Implemented in branch fan-cgp-20261103 (lib/ancestor_events.py; Summary key ancestors_memory_events_local injected at finalization; the same list in contract-3 window context). Fixtures: summary-v1.1.json regenerated with the key, new summary-v1.1-ancestors.json with a non-zero event. Unit suite 2752 passed, coverage 100%. Pending: review, the registered gate on the exact tip, release 1.2.0 with CP-39, vendoring the fixture into run-gate (RG-144). The Summary key still needs an amendment in RG55-INTERFACE-CONTRACT section 8.7, whose canonical copy is run-gate-project's and is mirrored byte-for-byte here (docs/PROTOCOL.md carries the definition meanwhile).
+
+FIXED 2026-11-04 (2d1f0a6cf, merged to main). Implemented as described; the RG55 contract section 8.7 amendment and the run-gate fixture vendoring (RG-144) remain downstream actions.

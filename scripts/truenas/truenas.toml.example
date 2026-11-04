@@ -1,0 +1,6 @@
+schema_version = 1
+
+[api]
+uri = "wss://truenas.example.invalid/api/current"
+username = "replace-with-TrueNAS-API-username"
+verify_ssl = true

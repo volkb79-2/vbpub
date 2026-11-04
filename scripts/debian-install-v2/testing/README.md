@@ -66,7 +66,9 @@ is a FAILURE (`debian_install_v2/tests/os_integration_plugin.py`). The guest the
 `procps` and the lane preflight checks `systemd-tmpfiles` and `sysctl` beside the disk tools.
 
 For interactive work, the lower-level controls are documented in
-[`vm/README.md`](vm/README.md):
+[`vm/README.md`](vm/README.md); the [usage/testing guide](vm/USAGE-TESTING.md)
+covers manual cloud-image and private seed-ISO acceptance checks plus host and
+guest diagnosis:
 
 ```bash
 ./vm/run-vm-harness.sh prepare-base case-b

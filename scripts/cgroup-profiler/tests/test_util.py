@@ -80,6 +80,35 @@ class TestReaders:
         path.write_text("not-a-number\n")
         assert util.read_int(str(path)) is None
 
+    @pytest.mark.parametrize("text", ["1_000", "+5", "٣", "1e3", "0x10", "--1", "1.0"])
+    def test_read_int_pins_the_kernel_decimal_grammar(self, tmp_path: Path, text: str):
+        """CP-37: Python-only spellings are not kernel output."""
+        path = tmp_path / "memory.current"
+        path.write_text(text + "\n")
+        assert util.read_int(str(path)) is None
+
+    def test_read_int_still_reads_plain_and_negative_decimals(self, tmp_path: Path):
+        path = tmp_path / "x"
+        path.write_text("1000\n")
+        assert util.read_int(str(path)) == 1000
+        path.write_text("-3\n")
+        assert util.read_int(str(path)) == -3
+
+    def test_read_kv_rejects_python_only_spellings_but_keeps_other_keys(self, tmp_path: Path):
+        path = tmp_path / "memory.events"
+        path.write_text("high +5\nmax 1_0\noom ٣\nlow 7\n")
+        assert util.read_kv(str(path)) == {"low": 7}
+
+    def test_flat_keyed_rejects_python_only_spellings_per_field(self, tmp_path: Path):
+        path = tmp_path / "io.stat"
+        path.write_text("8:0 rbytes=1_0 wbytes=+2 rios=3\n")
+        assert util.read_flat_keyed(str(path)) == {"8:0": {"rios": 3}}
+
+    def test_flat_keyed_drops_a_line_with_a_repeated_key(self, tmp_path: Path):
+        path = tmp_path / "io.stat"
+        path.write_text("8:0 rbytes=1 rbytes=2\n9:0 rbytes=5 wbytes=6\n")
+        assert util.read_flat_keyed(str(path)) == {"9:0": {"rbytes": 5, "wbytes": 6}}
+
     def test_read_kv_skips_a_line_with_only_one_token(self, tmp_path: Path):
         path = tmp_path / "memory.stat"
         path.write_text("lonely\nanon 100\n")

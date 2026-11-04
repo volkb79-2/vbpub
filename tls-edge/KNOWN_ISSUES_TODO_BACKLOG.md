@@ -6,6 +6,11 @@
 
 ### Mattermost Calls: tls-edge and mattermost-server defaults disagree (INT-01 A-06, filed 2026-10-19)
 
+**RESOLVED 2026-11-04 (operator decision: Calls on by default, both sides):** tls-edge now defaults
+`[tls_edge.calls] enabled = true, public_port = 8443` and no alternate HTTPS port; a test pins agreement
+(`tests/test_calls_defaults_agree.py`). `edge-proxy/` already matched. Still open: the `mmctl plugin list`
+acceptance probe and the plugin-env-name verification. Original analysis:
+
 Introduced by `93c6a39aa` (no review recorded, no test or lane). tls-edge defaults
 `[tls_edge.calls] enabled = false, public_port = 8444`; mattermost-server defaults
 `[mattermost.calls] enabled = true, port = 8443, public_port = 8443` and advertises
@@ -55,33 +60,17 @@ hot-reloads the file via inotify; no container restart is required.
 
 ---
 
-### Port-based routing is single-slot per entrypoint
+### One media pair per edge (Calls)
 
-The `websecure-alt` entrypoint (port 8443) can route one `Host()` + entrypoint
-combination per service.  A second service that needs its own external port
-cannot share `websecure-alt` with a different `Host()` rule and must get a new
-entrypoint — which requires adding it to `traefik.yml` (static config) and to
-`docker-compose.yml` ports, meaning a re-render and a container restart.
-
-Workaround: use `PathPrefix` sharing on `websecure-alt` to fit two services
-behind the same entrypoint, provided paths do not conflict.
-
-Roadmap: pre-provision additional `websecure-alt2` / `websecure-alt3`
-entrypoints so that up to three port-routed services can be deployed without a
-re-render.
+The Calls TCP and UDP entrypoints (8443) can be attached by one consumer only: a second consumer would
+share the public port.  There is no alternate HTTPS port; every HTTPS service needs its own host name.
 
 ---
 
-### Port 80 off means no HTTP→HTTPS redirect
+### Port 80 is on by default
 
-By default, port 80 is not bound.  Users who type `http://` URLs get a
-connection refused rather than an automatic redirect to HTTPS.
-
-Workaround: enable port 80 by setting `tls_edge.ports.expose_http = true` in
-your override and re-rendering (`scripts/render.sh`).  This is required anyway
-for `acme-http` (HTTP-01 challenge) mode.  Once a browser has visited the site
-over HTTPS and received the HSTS header, subsequent HTTP visits are upgraded
-client-side without the redirect entrypoint.
+Port 80 carries the permanent HTTP→HTTPS redirect and ACME HTTP-01.  A host that must not serve it sets
+`tls_edge.ports.expose_http = false` (installer `--disable-port-80`); `acme-http` mode then cannot work.
 
 ---
 
@@ -206,12 +195,13 @@ Stack and Splunk as alternatives).  The access log already includes timestamp,
 router name, service name, upstream address, HTTP status, and latency —
 sufficient for a searchable, persistent audit trail.
 
-### Additional pre-provisioned alt entrypoints
+### Instance packaging follow-ups (filed 2026-11-04)
 
-Pre-define `websecure-alt2` (port 8444) and `websecure-alt3` (port 8445) in
-the default rendered configuration so that up to three port-routed services can
-be onboarded without requiring a re-render and container restart to add new
-static entrypoints.
+- Drop the installer adapter's `git init` once ciu runs in a non-git standalone root (ciu CIU-163).
+- Multi-variant publication goes through `cmru handler tarball-publish --variant` (cmru KI-115); `scripts/publish-variants.py` is gone and
+  a retained build-output record publishes like any other release.
+- Wheel freshness: `scripts/stage-wheels.py` refuses PyPI wheels younger than 14 days; a pinned older version needs a constraint file (not yet added).
+- Live migration of the hand-made deployment: planned in `docs/INSTALL.md`, not executed.
 
 ### ciu dev-mode integration: generate dev certs via a pre-compose hook
 

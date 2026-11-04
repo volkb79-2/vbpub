@@ -28,7 +28,10 @@ if a[0] == "ps":
     if world.get("ps_rc", 0):
         sys.stderr.write("Cannot connect to the Docker daemon\\n")
         sys.exit(world["ps_rc"])
-    print("\\n".join(world.get("ps", [])))
+    if any("project.working_dir=" in x for x in a):
+        print("\\n".join(world.get("ps_by_dir", [])))
+    else:
+        print("\\n".join(world.get("ps", [])))
 elif a[0] == "inspect":
     nets = world["containers"].get(a[-1])
     if nets is None:
@@ -61,6 +64,7 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HOSTNAME", ME)
     monkeypatch.setenv("INSTANCE_ID", "abc")
     monkeypatch.delenv("PWMCP_STACK_CONTAINER", raising=False)
+    monkeypatch.setenv("PWMCP_INSTANCE_DIR", str(tmp_path / "no-instance"))
     monkeypatch.chdir(tmp_path)
 
     def set_world(**kw) -> None:
@@ -141,7 +145,8 @@ def test_the_queries_are_filtered_and_by_exact_name(world) -> None:
     set_world(ps=["pwmcp-abc-pwmcp"], containers={"pwmcp-abc-pwmcp": {"n1": ["pwmcp"]}, ME: {"n1": []}})
     finalize.join_pwmcp_network()
     ps = [c for c in calls() if c.startswith("ps")]
-    assert len(ps) == 1 and "name=^pwmcp-" in ps[0] and "compose.service=pwmcp" in ps[0]
+    assert len(ps) == 2 and all("name=^pwmcp-" in c and "compose.service=pwmcp" in c for c in ps)
+    assert "project.working_dir=" in ps[1]
     inspects = [c for c in calls() if c.startswith("inspect")]
     assert inspects and all(c.split()[-1] in ("pwmcp-abc-pwmcp", ME) for c in inspects)
     assert all(c.startswith("inspect --type container ") for c in inspects)
@@ -212,6 +217,69 @@ def test_identity_is_read_from_the_workspace_ciu_env(
     _two_stacks(set_world)
     finalize.join_pwmcp_network()
     assert [c for c in calls() if c.startswith("network connect")] == [f"network connect net-zzz {ME}"]
+
+
+def test_the_shipped_instance_ciu_env_beats_the_workspace_instance_id(
+    world, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The workspace INSTANCE_ID (abc) is another ciu instance; the instance's own file names zzz."""
+    set_world, calls = world
+    inst = tmp_path / "inst"
+    inst.mkdir()
+    (inst / "ciu.env").write_text('export INSTANCE_ID="zzz"\n', encoding="utf-8")
+    monkeypatch.setenv("PWMCP_INSTANCE_DIR", str(inst))
+    _two_stacks(set_world)
+    finalize.join_pwmcp_network()
+    assert [c for c in calls() if c.startswith("network connect")] == [f"network connect net-zzz {ME}"]
+
+
+def test_the_dotciu_instance_file_is_read_too(
+    world, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_world, calls = world
+    inst = tmp_path / "inst"
+    (inst / ".ciu").mkdir(parents=True)
+    (inst / ".ciu" / "ciu.env").write_text("INSTANCE_ID=zzz\n", encoding="utf-8")
+    monkeypatch.setenv("PWMCP_INSTANCE_DIR", str(inst))
+    _two_stacks(set_world)
+    finalize.join_pwmcp_network()
+    assert [c for c in calls() if c.startswith("network connect")] == [f"network connect net-zzz {ME}"]
+
+
+def test_override_still_beats_the_instance_file(
+    world, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_world, calls = world
+    inst = tmp_path / "inst"
+    inst.mkdir()
+    (inst / "ciu.env").write_text('INSTANCE_ID="zzz"\n', encoding="utf-8")
+    monkeypatch.setenv("PWMCP_INSTANCE_DIR", str(inst))
+    monkeypatch.setenv("PWMCP_STACK_CONTAINER", "pwmcp-abc-pwmcp")
+    _two_stacks(set_world)
+    finalize.join_pwmcp_network()
+    assert [c for c in calls() if c.startswith("network connect")] == [f"network connect net-abc {ME}"]
+
+
+def test_instance_without_a_file_is_found_by_its_compose_working_dir_label(
+    world, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Live case: no ciu.env in the instance dir and the workspace id (abc) matches no stack."""
+    set_world, calls = world
+    monkeypatch.setenv("PWMCP_INSTANCE_DIR", str(tmp_path / "no-such-instance"))
+    _two_stacks(set_world, ps_by_dir=["pwmcp-zzz-pwmcp"])
+    finalize.join_pwmcp_network()
+    assert [c for c in calls() if c.startswith("network connect")] == [f"network connect net-zzz {ME}"]
+
+
+def test_a_label_match_not_among_the_stacks_is_ignored(
+    world, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    set_world, calls = world
+    monkeypatch.setenv("PWMCP_INSTANCE_DIR", str(tmp_path / "no-such-instance"))
+    monkeypatch.setenv("INSTANCE_ID", "other")
+    _two_stacks(set_world, ps_by_dir=["pwmcp-ghost-pwmcp", "pwmcp-zzz-pwmcp"])
+    finalize.join_pwmcp_network()
+    assert not any(c.startswith("network connect") for c in calls())
 
 
 def test_a_failing_docker_ps_warns_with_the_error_not_no_stack(world, capsys) -> None:

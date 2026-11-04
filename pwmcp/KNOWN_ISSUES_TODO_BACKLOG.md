@@ -115,7 +115,7 @@ gate validates the implementation and documentation change.
 
 ## PWMCP-05 — the canonical `pwmcp-fetch` skill hard-codes a consumer's literal ciu instance id in its examples
 
-**Status:** OPEN. Filed 2026-10-15 from dstdns (docs-sync W05, dstdns@16fc5d7e). Severity Low. Type: bugfix (docs).
+**Status:** STALE-FIXED 2026-11-04 (already fixed by 948080489 "keep fetch skill install agnostic"; the skill at `client/src/pwmcp_client/skills/pwmcp-fetch/SKILL.md` has no literal instance id, oracle grep finds none; the skill moved from `.claude/skills/`). Filed 2026-10-15 from dstdns (docs-sync W05, dstdns@16fc5d7e). Severity Low. Type: bugfix (docs).
 
 **Observed.** `.claude/skills/pwmcp-fetch/SKILL.md:30` and `:34` give `dstdns-98535c-pwmcp` and `dstdns-98535c-network` as examples. `98535c` is a ciu instance id that dstdns's checkout path once derived. Instance ids are dynamic: dstdns's current main instance has another id, and every worktree has its own. A reader who copies the example targets a container that does not exist. A consumer that vendors the skill also trips its own literal-instance-id check (dstdns `tests/config/test_instance_identity_contract.py`).
 
@@ -277,7 +277,7 @@ does not mistake it for page content; the `pwmcp-fetch` skill documents the outc
 
 ## PWMCP-10 — two concurrent clients collide on the single shared browser ("Browser is already in use")
 
-**Status: OPEN (filed 2026-10-27).** Running four `browser_navigate` clients in parallel against
+**Status: MESSAGES FIXED 2026-11-04 (6be337905): the `pwmcp-fetch` skill and `docs/CONSUMERS.md` say fetches must be serialised and the `--isolated` hint must not be followed. The error text itself is emitted by the upstream Playwright MCP and cannot be changed here. Concurrent sessions remain OPEN (per-session contexts) (filed 2026-10-27).** Running four `browser_navigate` clients in parallel against
 `http://pwmcp:8931/mcp` made all but one fail with: `Browser is already in use for
 /tmp/.cache/ms-playwright-mcp/mcp-chrome-for-testing-8a5edab, use --isolated to run multiple instances of the
 same browser`. Sequential use works. `containers/pwmcp/supervisord.shared.conf:27,114` records that `--isolated`
@@ -435,7 +435,7 @@ image rebuild and the `test` extra in `client/pyproject.toml` (not touched on th
 
 ## PWMCP-12 — the session cleanliness guard makes Git a prerequisite for the whole test suite
 
-**Status:** OPEN. Severity: P2. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** Guard in `pwmcp/conftest.py`: missing git / non-worktree / `safe.directory` each give one `UsageError` before the suite, `--no-optional-locks`, 60 s timeout, explicit warned opt-out `PWMCP_ALLOW_NO_GIT_GUARD=1`; oracle `tests/test_git_guard.py`. (Original: Severity P2.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
 
 **Observed.** The autouse session fixture in `pwmcp/conftest.py:17-30,33-38`
 invokes `git status` before and after every test session. If Git is absent, the
@@ -453,7 +453,7 @@ identity setup in sync.
 
 ## PWMCP-13 — the Git-visible cleanliness guard misses ignored and exit-time writes
 
-**Status:** OPEN. Severity: P2. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3), narrower contract chosen.** The module docstring of `pwmcp/conftest.py` now states that ignored paths and exit-time writers (coverage) are out of scope; the guard certifies no new Git-visible entries under `pwmcp/`. (Original: Severity P2.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
 
 **Observed.** `pwmcp/conftest.py:23-29,35-42` compares `git status
 --untracked-files=all`, which omits ignored paths such as `.pytest_cache/`,
@@ -469,7 +469,7 @@ runs after coverage and other interpreter-exit writers complete.
 
 ## PWMCP-14 — repository-wide status can blame PWMCP for another subtree's writes
 
-**Status:** OPEN. Severity: P2. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** `git status ... -- .` from `pwmcp/`; oracle `test_write_outside_pwmcp_is_not_blamed`. (Original: Severity P2.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
 
 **Observed.** `pwmcp/conftest.py:23-29` runs `git status` from the PWMCP
 directory but supplies no pathspec, so Git reports changes anywhere in the
@@ -481,7 +481,7 @@ the assertion's scope and wording aligned.
 
 ## PWMCP-15 — the session guard can report xdist workers' temporary writes as failures
 
-**Status:** OPEN. Severity: P3. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** The comparison runs in `pytest_sessionstart`/`pytest_sessionfinish` of the xdist controller only (workers return early); oracle `test_xdist_workers_do_not_trip_the_guard` runs `-n 2` with transient writes. (Original: Severity P3.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
 
 **Observed.** The current suite does not enable pytest-xdist, but the session
 fixture in `pwmcp/conftest.py:33-43` takes independent before/after snapshots
@@ -495,7 +495,7 @@ overlap and misattribute a write.
 
 ## PWMCP-16 — the session guard walks and prints more repository state than needed
 
-**Status:** OPEN. Severity: P3. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: FIXED 2026-11-04 (48838ede3).** Pathspec-limited status with `--no-optional-locks`; failure report lists at most 20 added and 20 removed entries plus "... and N more" (oracle `test_new_file_under_pwmcp_fails_with_bounded_report`). (Original: Severity P3.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
 
 **Observed.** `pwmcp/conftest.py:23-29,39-43` walks the whole monorepo twice
 per session, including nested pytest sessions, and prints complete before and
@@ -508,7 +508,7 @@ omitted paths.
 
 ## PWMCP-17 — the new top-level test is separated from the next statement by one blank line
 
-**Status:** OPEN. Severity: P3. Filed 2026-10-30 from `reviews/pwmcp2.out`.
+**Status: STALE 2026-11-04 (48838ede3).** `flake8` 7.3.0 no longer reports E305 for `tests/test_ocr_service.py` (two blank lines precede the `try:` block); it did report an unused `import shutil` (F401), removed in that commit. (Original: Severity P3.) Filed 2026-10-30 from `reviews/pwmcp2.out`.
 
 **Observed.** `pwmcp/tests/test_ocr_service.py:51-58` has one blank line
 between the top-level test function and the following top-level `try:` block,
@@ -520,7 +520,7 @@ the module's import-time setup.
 
 ## PWMCP-18 — RGB PNG color-key transparency is not composited before OCR
 
-**Status:** OPEN. Severity: P2. Filed 2026-11-02 from the PWMCP R2 survivor
+**Status:** FIXED 2026-11-04 (6be337905; `_flatten` now composites P/L/RGB with `tRNS`; test `test_rgb_and_gray_colour_key_transparency_is_composited_onto_white`). Severity: P2. Filed 2026-11-02 from the PWMCP R2 survivor
 triage (`ocr_service.py:387`, `And->Or`).
 
 **Observed.** The OCR service accepts PNG images and the README says transparent
@@ -551,12 +551,16 @@ on the changed targets. The latest campaign judged 56 candidates and retained re
 PWMCP-18 (`containers/ocr/ocr_service.py:387`) remains an open survivor. The r4 release already shipped after its R1 gate, so this item tracks the
 separate mutation-evidence follow-up.
 
+**Runner note (2026-11-04).** `pwmcp/assay.toml` `[lanes.r2.judge.mutation]` declares `jobs = 1`, so `run-gate r2 --jobs auto` selects N=1
+(`jobs_max=1` in Run-Gate's INFO line) however many CPUs the runner has: the 384-candidate campaign runs serially. Parallel judging needs a
+declared `jobs` above 1 (or `"auto"`) in `assay.toml`, which is a pwmcp decision (candidate isolation and the OCR service tests' memory).
+
 **Close by:** resume the r2 campaign on the btrfs runner with the supported lane and parallelism, account for all candidates, triage the five pending
 rows and remaining survivors, then record the final verdict and any accepted survivors here or in the linked R2 report.
 
 ## PWMCP-21 — corpus tooling should consume the per-project VM layout
 
-**Status:** OPEN (filed 2026-11-03). The console-capture launcher now defaults to
+**Status:** PARTLY FIXED 2026-11-04 (6be337905): `eval_glyphgrid.py` defaults derive from the script location and the docs name `pwmcp/artifacts/console-corpus` as the place to point `PWMCP_CONSOLE_CORPUS_DIR` at (unset still raises `CorpusMissing`). Still open: `console_corpus.py run --out`/verifier defaults (explicit paths) (filed 2026-11-03). The console-capture launcher now defaults to
 `pwmcp/artifacts/vm-lab/<vm-name>/` and resolves bare ISO names in the repo `downloads/` directory (root `AGENTS.md`,
 "VM files and downloads"). The corpus side does not yet follow: capture output (`console_capture.py run --out`) and the
 verifier still take explicit paths, and `tools/glyphgrid/eval_glyphgrid.py` hardcodes `DEFAULT_SERIES` under a home directory.
@@ -566,3 +570,88 @@ location, and make that the documented place to point `PWMCP_CONSOLE_CORPUS_DIR`
 the corpus design (`docs/DESIGN-OCR-PHASE2-3.md`) deliberately has no fallback, so an unset variable must keep raising
 `CorpusMissing`; any change there is a design decision, not a path derivation. Replace the `eval_glyphgrid.py` home-directory default with a
 location derived from the same folder, and update the corpus README, `docs/CONSUMERS.md#local-console-corpus` and this tool's README.
+
+## PWMCP-22 — unported groundwork from the 2026-10-27 canvas-capture session: xterm.js buffer reader, password-only login helper, intrinsic-bitmap canvas capture
+
+**Status:** OPEN (filed 2026-11-04 while closing out the `.claude/worktrees` session worktrees). The shipped `pwmcp ocr --selector` path
+(compositor screenshot of the element) and the console-capture tools on main superseded that session's `pwmcp canvas-capture` verb and its
+TrueNAS/Netcup scripts; three ideas from it are not on main.
+
+- **xterm.js text without OCR.** Web terminals that expose `window.term` (Proxmox serial consoles and node shells) hold exact text in
+  `term.buffer.active.getLine(i).translateToString(true)`; reading it beats OCR and a WebGL canvas's `toDataURL` is blank. Measured on one setup only.
+- **Password-only login helper.** Fill from named environment variables (values never logged or returned), submit with a real `press('Enter')`
+  (spice-html5 listens for the Enter key event, not a button click). Never run against a live prompt.
+- **Intrinsic canvas bitmap.** `canvas.toDataURL` (with `getImageData` fallback) returns the page-painted bitmap, which a glyph-grid reader needs;
+  the screenshot path returns the element as displayed (CSS pixels). The metadata records whether CSS scaling applied.
+
+**Source.** Commits `c827746d9`, `7c5b35beb`, `19a78ceb2` (modules `pwmcp_client/{canvas,login,terminal}.py`, tests, CLI-SPEC/USAGE/surface
+entries). The branch was deleted; the commits are preserved as a git bundle at
+`/workspaces/vbpub/artifacts/worktree-archive-20261104/worktree-agent-ae5983017bc3b1d7e.bundle` (gitignored, local; `git fetch <bundle> <ref>`).
+
+**Close by:** decide against the PWMCP-11 phase 2 watcher design whether the in-page bitmap read and the xterm reader belong in the watcher or as
+standalone verbs, then port the wanted pieces from the bundle onto current main (the CLI surface files conflict) or drop them with a reason here.
+<!-- Id note (2026-11-04): PWMCP-22 exists on branch finish-pwmcp-1-20261104 (not on main). The id below is PWMCP-23. -->
+
+## PWMCP-23 — find the local base image behind the release's `BUILDX_BUILDER=default` bypass, or drop the bypass
+
+**Status:** OPEN (investigation). Filed 2026-11-04.
+
+**Problem.** The pwmcp release is documented to need `BUILDX_BUILDER=default BUILDKIT_HOST=` (environment only; `build-push.py:127` requires both variables
+when building through the configured endpoint, and `docs/ARCHITECTURE.md:130` says `BUILDX_BUILDER = "mdt-managed"`). `build-push.py:115-195` supports both
+paths and no committed text says why the default builder is needed. A bypass loses governance (`dev-buildkitd.slice`), the btrfs cache and the
+fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUILDX_BUILDER=default` back to `mdt-managed` (MDT-057).
+
+**Decision record (operator, 2026-11-04).** `mdt-managed` is the only builder; local bases come in as OCI-layout build contexts pinned by digest
+(`--build-context <ref>=oci-layout://...@sha256:...`); a bypass is allowed only for the fresh-host bootstrap and is never selected by environment.
+
+**Design / steps.**
+
+1. Identify what the build needs from the local store: a `FROM <local-tag>` (a base image built by another project), a `--load` consumer, or a
+   registry-auth reason. Record the finding in this entry.
+2. If a local base exists: build it as an OCI layout and consume it with `--build-context`, following the tester-chain pilot (TB-14).
+3. If none exists: drop the bypass from the release instructions and from the script, and run the release through `mdt-managed`.
+
+**Acceptance.** The release procedure names no environment-selected bypass; a test (or the release dry-run) shows the build runs on
+`mdt-managed`; docs updated. **Non-mdt path:** the build still works with any buildx builder (document the plain-host form).
+
+**Dependencies and order.** Package 5 of MDT-056, after TB-14 and the cmru `build_contexts` option (KI-113).
+
+<!-- Id note (2026-11-04): PWMCP-24..30 file the lazy/flaky-page findings (`reports/PWMCP-LAZY-PAGE-FINDINGS-2026-11-04.md` in the release-program directory, ChatGPT share test case: staged hydration, first-party assets answered 403, silent partial results). PWMCP-22 exists only on branch finish-pwmcp-1-20261104 and PWMCP-23 above is on main; check both before taking the next id. -->
+
+## PWMCP-24 — `inspect --retries N` with a stable-DOM check (finding PW-A, F1/F8)
+
+**Status: FIXED 2026-11-04 (004fbbe29).** `--retries N` (0..10, default 0): each attempt is a fresh context and navigation inside the same lease; a failed attempt, or text/snapshot that still changes over a 0.5 s settle window, starts the next one; every retry is reported on stderr and the last attempt is returned as it is. Tests: `client/tests/test_inspect.py` (`test_retries_*`, `test_unstable_page_is_retried_and_stable_one_is_not`). Not done here: a separate `--until-stable` flag (the settle check is part of `--retries`).
+
+## PWMCP-25 — surface failed subresources and console errors in the `inspect` footer (PW-C, F2)
+
+**Status: FIXED 2026-11-04 (004fbbe29).** One stderr line `page diagnostics: ...` (main document HTTP status when >=400, console error count, failed subresources counted per status, outright failed requests) whenever any is non-zero; stdout and JSON shape unchanged, `--quiet` cannot hide it. Test: `test_page_diagnostics_are_reported_on_stderr_only`.
+
+## PWMCP-26 — warn when an `inspect` result is much smaller than the previous attempt or looks like a shell (PW-A, F1)
+
+**Status: FIXED 2026-11-04 (004fbbe29).** Text/snapshot output under 1 KiB without `--wait-for` warns on stderr (advice, a legitimately tiny page also triggers it); with `--retries`, a result under half the size of an earlier attempt warns. Tests: `test_small_result_without_wait_for_warns`, `test_result_much_smaller_than_an_earlier_attempt_warns`.
+
+## PWMCP-27 — `inspect --format html|embedded-json` and chunked output for results over 1 MiB (PW-B, F3/F4)
+
+**Status:** OPEN. Severity: P2 (feature). Raw rendered `outerHTML` and the embedded `application/json`/`ld+json`/`__NEXT_DATA__`-style script blobs are the robust fallback when a page's UI is a shell (the whole ChatGPT share conversation was in a 506 KB `__WEB_MOBILE_DATA__` script). MCP `browser_evaluate` fails above 1 MiB per SSE event, so provide file output or chunked fetch and document the limit. Acceptance: both formats with `--output`, tests with a fixture page, CLI review cases.
+
+## PWMCP-28 — `inspect --scroll-to-bottom` auto-scroll for genuinely lazy lists (PW-D, F10)
+
+**Status:** OPEN. Severity: P3 (feature). Scroll in steps with settle waits until height stops growing, bounded by `--timeout-ms`. The reference page did not need it (no virtualisation), so write the test against a synthetic infinite-scroll fixture.
+
+## PWMCP-29 — update the `pwmcp-fetch` skill for the completeness probe, reload loop, embedded-JSON recipe and the 1 MiB event limit (PW-F, F8)
+
+**Status:** OPEN. Severity: P3 (docs). Advise a content-based `--wait-for`, `--retries`, treating `innerText < ~5 KB` or zero turns as not rendered, the embedded-JSON recipe once PWMCP-27 lands, and the stderr diagnostics of PWMCP-25/26. Left open here because `pwmcp-2` edits the same skill file (PWMCP-05/10).
+
+## PWMCP-30 — `inspect --main-only` readability extraction and `--user-agent` documentation stance (PW-G/PW-E, F7/F9)
+
+**Status:** OPEN. Severity: P3. `--main-only` drops cookie banners and login chrome (about 3 KB of boilerplate in `innerText`). Document that a user agent preset is not a general fix for flaky renders (measured: it only shifted the odds); consider rotating the default only on a 403-on-assets signal.
+
+## PWMCP-31 — the released bundle's client cannot be installed by a consumer without a cli-extended source (dstdns test-runner rebuild fails)
+
+**Status:** OPEN. Filed 2026-11-04 from dstdns (P220 image build; dstdns@ed07ca19 base). Severity: P2 (blocks every consumer image rebuild that tracks `pwmcp-latest`).
+
+**Observed.** dstdns `tools/test-runner/Dockerfile` installs the client with `tools/test-runner/install-pwmcp-client.py`, which runs `pip install playwright==<contract pin> <bundle>/client`. With `pwmcp-v1.64.0-r4` (the current `pwmcp-latest`) that fails: `ERROR: Could not find a version that satisfies the requirement cli-extended>=0.3.0 (from pwmcp-client) (from versions: none)`. `cli-extended` is published on GitHub Releases only (`cli-extended-latest` -> `cli_extended-0.5.1-py3-none-any.whl`), the bundle ships no wheelhouse, and `bundle/client/requirements-runtime.txt` only repeats the floor. The previous release (1.63.0-r2, still inside dstdns's running runner) had no such dependency, so the break appeared with PWMCP-02 and is invisible until a consumer image is rebuilt.
+
+**Fix direction.** Make the consumer install recipe part of the bundle: either ship the cli-extended wheel (and its checksum) inside the bundle and have the documented install command use `--find-links <bundle>/wheels`, or document the exact `--find-links`/release URL a consumer must add, with a consumer-side test in the release gate that installs the bundle into a clean image with no index access beyond PyPI. The dstdns side (`install-pwmcp-client.py` passes no find-links) is the consumer half and is reported separately in the dstdns P220 report.
+
+**Acceptance.** A clean `python:3.14-slim` image can install the released bundle's client with the command the bundle README documents, and the release gate fails when it cannot.

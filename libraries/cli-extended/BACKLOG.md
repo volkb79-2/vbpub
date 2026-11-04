@@ -584,7 +584,7 @@ round 1 (B1).
 
 ## CLI-EXT-30 — `register_skills_verbs` raises `ValueError` with a consumer's legacy global `--dry-run`
 
-**Status:** Open (found in the CX-BACKLOG review, 2026-10-06). Size S.
+**Status:** FIXED 2026-11-04 (add529e68): the skills delegate drops a consumer global whose flags include `--dry-run`/`--json`, and the root `skills` verb stops adding a second `--json`. Tests: `test_cx30_*`. Size S.
 **Type:** Defect (migration regression)
 **Area:** Skills, global options
 
@@ -605,7 +605,7 @@ document that the legacy global must be removed before adopting `skills`.
 
 ## CLI-EXT-31 — the partial-run opt-out of the pytest CLI-case check is not discoverable
 
-**Status:** Error-message hint fixed in this branch (review round 1); docs mention remains open. Size S.
+**Status:** FIXED 2026-11-04 (1e8d0c8e1): error hint (review round 1) plus README audit-section and AC-22 checklist mentions. Size S.
 **Type:** Usability
 **Area:** Pytest plugin
 
@@ -624,7 +624,7 @@ checklist (the existing mentions are in the testing sections only).
 
 ## CLI-EXT-32 — audit AC-25 misses a library path built from path pieces
 
-**Status:** Open (found 2026-10-07 by pwmcp PWMCP-02). Size S.
+**Status:** FIXED 2026-11-04 (add529e68): `sys.path` mutations followed within 400 characters by `"libraries"` and `"cli-extended"`/`"cli_extended"` string pieces fail AC-25; marker exemption kept. Tests: `test_cx32_*`. Size S.
 **Type:** Defect (heuristic gap)
 **Area:** Audit
 

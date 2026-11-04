@@ -63,6 +63,7 @@ compose_file_args(stack_dir, overlay_path) -> list[str]
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -1146,6 +1147,18 @@ def _configfile_mount_services(base_service: str, compose_services: set[str]) ->
     return [service_name for _, service_name in sorted(matches)]
 
 
+CONFIG_HASH_LABEL = "ciu.configfile.sha256"
+
+
+def _staging_dir_digest(staging_dir: Path) -> str:
+    """SHA-256 over every file under *staging_dir* (relative path + bytes)."""
+    h = hashlib.sha256()
+    for path in sorted(p for p in Path(staging_dir).rglob("*") if p.is_file()):
+        h.update(str(path.relative_to(staging_dir)).encode("utf-8") + b"\0")
+        h.update(path.read_bytes() + b"\0")
+    return h.hexdigest()
+
+
 def generate_overlay(
     stack_dir: Path | str,
     materialized: Mapping[str, Any],
@@ -1397,6 +1410,25 @@ def generate_overlay(
             }
             svc = services.setdefault(service_name, {})
             svc.setdefault("volumes", []).append(volume_entry)
+
+        # CIU-147: a bind mount contributes only its PATH to Compose's
+        # service-definition hash, so a re-rendered file with changed content
+        # left the running container on the old config. Stamp each mounting
+        # service with a label holding the content hash of the staging
+        # directories it mounts: changed content changes the service
+        # definition (Compose recreates exactly that service); identical
+        # content keeps the hash and recreates nothing.
+        hashes: dict[str, list[tuple[str, str]]] = {}
+        for (service_name, target_dir), staging_dir in seen_dirs.items():
+            hashes.setdefault(service_name, []).append(
+                (target_dir, _staging_dir_digest(staging_dir))
+            )
+        for service_name, parts in hashes.items():
+            digest = hashlib.sha256(
+                "\n".join(f"{t}={d}" for t, d in sorted(parts)).encode("utf-8")
+            ).hexdigest()
+            labels = services.setdefault(service_name, {}).setdefault("labels", {})
+            labels[CONFIG_HASH_LABEL] = digest
 
     if governance_injections:
         for service_name, frag in governance_injections.items():

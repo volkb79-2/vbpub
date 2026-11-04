@@ -180,6 +180,8 @@ def test_environment_token_is_invocation_authority_over_secret_files(tmp_path, m
         (lambda p: p.replace('artifacts = ["wheel"]', 'artifacts = ["unknown"]'), "unknown"),
         (lambda p: p.replace('quiet = true', 'quiet = "yes"'), "quiet"),
         (lambda p: p.replace('build_step = "build"', 'build_step = "missing"'), "declared"),
+        # KI-56: the publishing step cannot be the rollback-window build step.
+        (lambda p: p.replace('build_step = "build"', 'build_step = "push"'), "tag rollback"),
     ],
 )
 def test_project_document_rejects_invalid_contracts(tmp_path, mutate, expected, capsys):

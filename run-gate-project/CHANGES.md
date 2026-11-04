@@ -9,7 +9,60 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [24.4.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=281c64123250d27c8abb9d9aee912846241556bd -->
+
+### Fixed
+- fix(run-gate): delta review H1-H3, M1-M3 (profile writes never fail a lane, selftest judges run_gate_profile, INCONCLUSIVE prints, resource env off argv) (f37283c6e)
+- fix(run-gate): exec-cleanup SIGTERM deferral, secrets off argv, safe log creation, slice nesting, ERROR on uncaught exception, passwd guard (RG-114, RG-117a-e, RG-118) (4568a5340)
+- fix(run-gate): admission resume binds the persisted owner; tombstones, collision wording, pid_ns grammar (RG-117e) (bdc80a4d2)
+- fix(cgprofile): control socket safety and concurrency (CP-34, CP-31, CP-33) and finalize failure handling (CP-27 N9-N11) (05ea66bda)
+- fix: footprint display, doctor and manifest read one I/O mode (RG-136) (270a15d83)
+- fix(run-gate): R2 closeout forwards --coverage (RG-139); follower skips closeout (RG-115) (1b5ecf768)
+- fix: judge both shipped modules, hunk-counted diff parsing, continuation lines (RG-116 items 3/4/6) and a precision-2 coverage floor (RG-122) (3fea77a5b)
+
+### Changed
+- Merge branch 'fix-cgp-1-20261104' (c82b11bd3)
+- Merge branch 'fix-rg-2-20261104' (855007054)
+- Merge branch 'fix-rg-4-20261104' (089f30791)
+- Merge branch 'backlog-platform-20261104' (e69a27940)
+- Merge branch 'fix-r1002-gate-ownership-20261104' (a1642a1e9)
+- Merge branch 'finish-assay-rg-iob-1-20261104' (475d6e8c7)
+- run-gate backlog: lane user owner with passwd overlay, socket-derived gids, default flip (RG-151..153) (ba48281ee)
+- Merge branch 'rg-int-20261103' (773375d05)
+- run-gate: resolve profile/xdist merge collisions (worker_nearest_rank/worker_distribution), harden observer argv test against ambient MDT_COW_ROOT (1dcd81881)
+- run-gate backlog: RG-149 relaxed io_sync as the default for ephemeral lanes (eeb4a66d5)
+- Merge branch 'fan-rg-xdist-20261103' into rg-int-20261103 (197e307ac)
+- run-gate: contamination flag and per-lane resource profiles (RG-144, RG-145) (6b9972007)
+- run-gate: xdist workers for command lanes, --scaling and --xdist-parity (RG-146, RG-147) (7273126b6)
+
+### Documentation
+- docs(run-gate): close RG-114, RG-117, RG-118 in the backlog with evidence (4bf1bc8c6)
+- docs: RG-136 changelog, spec and backlog status (fa90b9357)
+- docs(run-gate): RG-139 and RG-115 FIXED in backlog (1b5ecf768) (e7e415ef0)
+- docs: point B103 and RG-56 at their archive tags after worktree close-out (94f3ee478)
+- docs(run-gate): RG-150 runner-uid recipe for the worktree lane ownership failure (d85f61893)
+- docs: close RG-116 items 3/4/6 and RG-122 in the backlog (e43bf0278)
+- docs(run-gate): xdist workers and --scaling (README, SPEC R-54, CHANGES, backlog RG-146/RG-147) (c0596a172)
+- docs(run-gate): file RG-144..148 (contamination flag, worker sizing for plain lanes, history record) (f19efb7d5)
+
+### Testing
+- test: execute run_gate_profile module-level code under coverage via a fresh module copy (b30b69e17)
+- test(run-gate): cover the profile-dir chmod fallback and 0777 mode (143658faf)
+- test(run-gate): conflict-marker git-failure test stops Git's upward search so a basetemp inside a checkout is not a git tree (9a6deaf40)
+- test(run-gate): cover save_container_logs foreign-owner refusal and partial writes (RG-117b) (f99cf22e0)
+- test: cover footprint io_sync fallback when lane settings do not resolve (RG-136) (ea5feeb30)
+- test(run-gate): cover RG-139 coverage retention and disclosure branches (740d936fe)
+- test(run-gate): closed-result and wheel-layout pins cover the workers runner and plugin module (64839d9df)
+
+<!-- cmru: pending release notes begin -->
 ### Added
+- RG-150: documented the runner-uid recipe (CONSUMERS.md "Runner uid: one owner for checkout, cockpit and lane") and filed the
+  open preflight: checkout, cockpit user and lane user must share uid 1003, otherwise the `worktree` lane fails as
+  `editable assay install failed` / `dubious ownership` / `MDT_COW_ROOT must be owned by ...`.
 - RG-144: "time stalled on memory" is a contamination flag. One run-gate rule
   separates `self_limited` (the lane's own limit; printed as `memory limit
   reached N times`) from `contaminated` (ancestor reclaim, MDT PSI-guard
@@ -29,10 +82,6 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   it); cross-run percentiles recomputed from raw subjects; `run-gate history`
   prints the distributions and the status and contamination counts.
 
-### Changed
-- `r2_candidate_ram_p95_bytes` / `r2_candidate_ram_samples` and the history
-  duration and resource medians are computed from clean profiles only.
-
 - RG-146: lane keys `workers` (int or `"auto"`), `workers_max` and
   `xdist_safe` for pytest-xdist command lanes, with the `{workers}` argv token
   and `RUN_GATE_WORKERS`; enforced cpu and memory caps (or cgprofile placement)
@@ -49,13 +98,77 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   speedup/efficiency/per-worker-memory table.
 
 ### Changed
+- `r2_candidate_ram_p95_bytes` / `r2_candidate_ram_samples` and the history
+  duration and resource medians are computed from clean profiles only.
 - History keeps one entry per commit, io_sync and xdist worker count (was per
-  commit and io_sync), so scaling steps do not overwrite each other.
-- Seams for RG-144/RG-145: `workers_entry_is_clean` and `record_contaminated`
-  read a `contamination` object on history entries; profile ingestion beyond
-  the plugin's own files is RG-145's.
+  commit and io_sync), so scaling steps do not overwrite each other; older
+  versions still read the entries.
+- `--scaling` and `--xdist-parity` end FAIL (exit 1, the closed table) with an
+  INCONCLUSIVE-class reason (`XDIST_ISOLATION`, `scaling-contaminated`,
+  `no-parity-evidence`) when the evidence is contaminated or missing; the run
+  prints `INCONCLUSIVE/<reason>` and its history outcome is `inconclusive`. Only
+  a real per-test outcome mismatch is a product FAIL.
+- `DockerAdmission.resume` never adopts an admission record that has no
+  `owner`, so a lane in flight across the upgrade acquires a fresh ticket.
+- `workers_entry_is_clean` and `record_contaminated` read the `contamination`
+  object on history entries.
 
-<!-- cmru: release history -->
+### Fixed
+- Fix (delta review H1): the `run_gate_profile` plugin never changes a lane verdict: a failed profile write
+  (unwritable directory) or observer error is a stderr warning and `NO_MEASUREMENT`; the run's profile
+  directory is made 0777 so a container user with another uid can write it.
+- Fix (delta review H2): the selftest lane diff-judges `run_gate_profile.py` too (`--source`).
+- Fix (delta review M1): all resource facts including `PYTEST_ADDOPTS` now ride in the docker client's
+  environment (`-e KEY`), not on `docker run`/`docker exec` argv. (The env probe still carries only the
+  non-free-text facts as `-e KEY=value`.)
+- Fix (delta review M2): `save_container_logs` tightens an existing evidence directory to 0700.
+- Fix (RG-139): the R2 campaign closeout forwards the lane's declared coverage
+  artifact (`--coverage`, from the Assay inventory; only when the verdict and
+  the artifact exist and the judge's `analyze campaign` knows the flag), retains
+  it as `<run-id>.coverage.json` evidence when the analysis re-verified it, and
+  names the analysis's `coverage.artifact_status` in the closeout line.
+- Fix (RG-115): a follower (disowned record) no longer collects the Assay
+  closeout; it prints `assay closeout: the owning client records it` and keeps
+  no second evidence copy or spurious `unavailable` WARNING.
+- Fix (RG-136): footprint display, `doctor` drift and `footprint --write` no
+  longer mix strict and relaxed I/O-mode statistics. Manifest lane entries
+  carry `io_sync`; the live footprint line and `doctor` compare against the
+  same mode's history; a manifest without a mode is treated as strict and
+  `doctor` names the migration (re-run `footprint --write`).
+- Fix (RG-116 item 3, `tools/coverage_gate.py`): `--source` is repeatable and
+  the selftest lane passes `run_gate.py`, `run_gate_admission.py` and
+  `run_gate_profile.py`, so the modules shipped in the wheel are diff-judged too.
+- Fix (RG-116 item 4): a hunk body is delimited by its header line counts; an
+  added line reading `++ x` is no longer taken for a `+++` file header.
+- Fix (RG-116 item 6): a changed continuation line of a multi-line statement
+  (or the wrapped header of a `def`/`if`) is judged as the statement's first
+  line through the AST `end_lineno`, so it no longer leaves the denominator.
+- Fix (RG-122): the project sets `[tool.coverage.report] precision = 2` so a
+  96.97% total fails `--cov-fail-under=97` instead of exiting 0;
+  `tests/test_coverage_precision.py` pins it against real pytest-cov and
+  CONSUMERS.md tells command-lane consumers to do the same.
+- Fix (RG-114): the exec lane's cleanup `finally` runs under `deferred_sigterm()`, so a second SIGTERM
+  during the profiling stop no longer skips the in-flight record clear.
+- Fix (RG-117a): forwarded secret values (`forward_env`, the profile token) travel in the docker client's
+  environment as `-e KEY`; `docker run`/`docker exec` argv, `/proc/<pid>/cmdline` and the printed argv
+  carry names only. (Resource facts followed in the delta review M1 fix below.)
+- Fix (RG-117b): `save_container_logs` creates the file mode 0600 at creation (`O_NOFOLLOW`, no
+  chmod-after-write window), creates its directory 0700 and refuses a planted symlink or a foreign-owned
+  file or directory.
+- Fix (RG-117c): `slice_cgroupfs_dir` nests `a-b-c.slice` under `a.slice/a-b.slice/`, so `memory.max` of a
+  three-part slice is read instead of admitting with a warning; the test that pinned the wrong value is
+  corrected.
+- Fix (RG-117d): an exception escaping `main()` prints its traceback and ends as ERROR (exit 2), not as
+  Python's status 1 (a lane FAIL).
+- Fix (RG-117e): `DockerAdmission.resume` binds the ticket to the owner JSON the lane persisted (a ticket
+  name alone could be another gate's after an allocator reset); an exited ticket with malformed labels is
+  a tombstone, not a live slot; only Docker's name-collision wording is a collision; `pid_ns` must be a
+  canonical ASCII decimal; an empty or garbled `memory.max` means "no ceiling" instead of ValueError;
+  `effective_image` is recorded after the `RUN_GATE_HOST_IMAGE` override; the host-PSI stall pause credits
+  at most `PRESSURE_PAUSE_MAX_SECONDS` (30 min).
+- Fix (RG-118): a lane that runs as an explicit `user` first checks `getent passwd "$(id -u)"` and refuses
+  with exit 2 and a named line when the image has no entry for that uid.
+<!-- cmru: pending release notes end -->
 
 ## [24.3.0] - 2026-11-02
 <!-- cmru: generated -->

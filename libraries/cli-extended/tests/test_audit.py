@@ -930,6 +930,48 @@ def test_no_path_hacks_passes_when_only_the_gate_file_points_at_the_source(tmp_p
     )
 
 
+def test_cx32_ac25_flags_a_library_path_built_from_pieces(tmp_path):
+    files = {
+        "oneline.py": (
+            'sys.path.insert(0, str(Path(__file__).resolve().parents[4]'
+            ' / "libraries" / "cli-extended" / "src"))\n'
+        ),
+        "multiline.py": (
+            "sys.path.insert(\n    0,\n    str(root.joinpath('libraries', 'cli-extended', 'src')),\n)\n"
+        ),
+        "append_underscore.py": 'sys.path.append(os.path.join(r, "libraries", "cli_extended"))\n',
+        # Not hacks: pieces without a sys.path mutation, or an unrelated insert.
+        "pieces_only.py": 'p = Path("libraries") / "cli-extended"\n',
+        "other_insert.py": "sys.path.insert(0, 'x')\n" + "y = 1\n" * 200 + 'q = ("libraries", "cli-extended")\n',
+        "commented.py": '# sys.path.insert(0, root / "libraries" / "cli-extended")\n',
+    }
+    item = _audit(tmp_path, files=files)["no-path-hacks"]
+    assert (item.status, item.evidence) == (
+        "fail", ("append_underscore.py", "multiline.py", "oneline.py"),
+    )
+
+
+def test_cx32_ac25_piecewise_window_is_400_characters(tmp_path):
+    near = "sys.path.insert(0, 'x')\n" + "y = 1\n" * 10 + 'q = ("libraries", "cli-extended")\n'
+    just_outside = (
+        "sys.path.insert(0, 'x')\n" + "y = 1\n" * 80 + 'q = ("libraries", "cli-extended")\n'
+    )
+    item = _audit(tmp_path, files={"near.py": near, "far.py": just_outside})["no-path-hacks"]
+    # Documented behaviour: an unrelated near-miss is flagged, a far one is not.
+    assert (item.status, item.evidence) == ("fail", ("near.py",))
+
+
+def test_cx32_ac25_piecewise_hack_keeps_the_marker_exemption(tmp_path):
+    files = {
+        "t.py": (
+            "# cli-extended: allow-path-assertion\n"
+            'assert str(root / "libraries" / "cli-extended") not in sys.path\n'
+        ),
+    }
+    item = _audit(tmp_path, files=files)["no-path-hacks"]
+    assert (item.status, item.evidence) == ("pass", ())
+
+
 def test_cx28_marked_absence_assertions_pass_ac25(tmp_path):
     files = {
         "t_same_line.py": (

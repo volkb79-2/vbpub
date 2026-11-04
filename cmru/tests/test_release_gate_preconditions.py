@@ -11,6 +11,8 @@ import pytest
 
 from cmru import cli, release_preconditions
 
+_REAL_LOAD_GATE = release_preconditions._load_release_gate  # captured before any test patches it
+
 
 def _gate_preconditions(tmp_path: Path, monkeypatch, *, image_status="PASS", image_detail="labels match"):
     repo_root = tmp_path / "repo"
@@ -242,7 +244,8 @@ def test_prepared_version_reader_matches_the_release_gate_policy_at_head(tmp_pat
     gate = release_preconditions._load_release_gate(source_root, "HEAD")
 
     assert release_preconditions._prepared_version_error(gate, "7.1.4") is None
-    error = release_preconditions._prepared_version_error(gate, "7.2.0")
+    assert release_preconditions._prepared_version_error(gate, "7.2.0") is None
+    error = release_preconditions._prepared_version_error(gate, "7.3.0")
     assert error is not None
     assert "authorized only for CMRU" in error
 
@@ -1245,3 +1248,35 @@ def test_release_precondition_helper_passes_the_full_gate_choice_through(
     )
 
     assert observed == {"gate_provisional": False}
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["6.1.9", "6.2.0", "6.3.0", "7.0.0", "7.1.9", "7.2.0", "7.2.1", "7.2.9", "7.3.0", "8.0.0"],
+)
+def test_dry_run_precondition_agrees_with_the_real_gate_window_table(tmp_path, monkeypatch, version):
+    """KI-79/KI-109: the dry-run row and the gate table are one source and cannot diverge."""
+    from tests.test_release_gate import run_release_gate
+
+    repo_root = _gate_preconditions(tmp_path, monkeypatch)
+    gate_source = Path(run_release_gate.__file__).read_text(encoding="utf-8")
+    real_blobs = release_preconditions._git_blob_text
+    monkeypatch.setattr(
+        release_preconditions, "_git_blob_text",
+        lambda root, revision, path: (
+            gate_source if path == "cmru/tools/run_release_gate.py" else real_blobs(root, revision, path)
+        ),
+    )
+    monkeypatch.setattr(release_preconditions, "_load_release_gate", _REAL_LOAD_GATE)
+
+    rows = release_preconditions.evaluate_release_gate_preconditions(
+        repo_root, repo_root, "HEAD", {"cmru": version},
+    )
+
+    waiver = next(row for row in rows if row.check == "KI-79 waiver window")
+    major_minor_patch = tuple(int(part) for part in version.split("."))
+    in_table = any(
+        low <= major_minor_patch < below
+        for low, below in run_release_gate.POSTPONEMENT_RELEASE_VERSIONS["KI-79"]
+    )
+    assert (waiver.status == "PASS") is in_table

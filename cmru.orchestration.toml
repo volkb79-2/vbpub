@@ -186,7 +186,8 @@ depends_on = ["cli-extended", "run-gate-project"]
 # not a release dependency edge.
 [orchestration.project.ciu]
 config = "ciu/cmru.toml"
-depends_on = []
+# cli-extended is a real wheel dependency of ciu (CIU-114, CX-D1): released first.
+depends_on = ["cli-extended"]
 
 [orchestration.project.assay]
 config = "assay/cmru.toml"

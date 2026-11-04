@@ -1,0 +1,242 @@
+# ==========================================================================
+# jitsi-server — self-hosted Jitsi Meet (docker-jitsi-meet images)
+# ==========================================================================
+# Four services: web (nginx + Jitsi Meet frontend), prosody (XMPP), jicofo
+# (conference focus), jvb (video bridge, the SFU). Group calls, screen share
+# and — with the Jitsi Meet Electron desktop client — remote control.
+# Client side: CLIENT.md. Credentials: USERS.md.
+#
+# POSTURE (pinned by tests/):
+#   - HTTPS via the host-side tls-edge: `web` joins `ingress_public` with
+#     Traefik labels and its OWN hostname (jitsi.<domain>, its own certificate).
+#     No domain is hard-coded in tracked files: `public_host` derives from
+#     PUBLIC_FQDN, and a sparse ciu.toml.j2 can override it.
+#   - Media: JVB publishes UDP `jvb.port` (10000) DIRECTLY on the host. The
+#     edge has no UDP/TCP entrypoint for it, and tls-edge is not modified.
+#     Open UDP 10000 in the host AND provider firewall (README.md).
+#   - Secure-domain auth: ENABLE_AUTH=1, AUTH_TYPE=internal. Only registered
+#     users create/join; the hook registers them with `prosodyctl register`.
+[jitsi]
+name = "jitsi"
+container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}jitsi{% endif %}"
+# Own hostname -> own certificate at the edge. Domain stays configurable.
+public_host = "jitsi.{{ env.PUBLIC_FQDN }}"
+# Address JVB advertises in ICE candidates. Must be the host's PUBLIC IP
+# (the edge host is NATed or not, this value is what clients try to reach).
+public_ip = "{{ env.PUBLIC_IP }}"
+ingress_network = "ingress_public"
+# Edge router/service name: unique across the host (CONSUMER_GUIDE naming rule).
+router_name = "vss-jitsi-web"
+
+# ── Images (third-party; official GHCR images, operator exception to the 14-day rule) ──
+# stable-11248-3 (docker-jitsi-meet release 2026-11-02; image build 2026-11-02) is the
+# newest stable release. Docker Hub has no such tag (jitsi/web:stable-11248-3 is 404),
+# the official images are on GHCR (ghcr.io/jitsi/*). It is only 2 days old: the
+# operator explicitly prefers it for security fixes (decision 2026-11-04), so the
+# 14-day rule is waived for this pin (freshness_exception). Pinned tag@manifest-list
+# digest (docker buildx imagetools inspect, 2026-11-04). Previous pin stable-11031
+# (Hub, 2026-06-08) remains the fallback.
+[jitsi.images]
+checked_on = "2026-11-04"
+min_age_days = 14
+freshness_exception = true
+freshness_exception_reason = "operator preference for security fixes, 2026-11-04; stable-11248-3 is 2 days old"
+
+[jitsi.web]
+name = "web"
+image = "ghcr.io/jitsi/web"
+image_tag = "stable-11248-3@sha256:f2b3f749deb9b9d6d5b96cba50dc67f9c23a218af4fa13c63a7f17812ce4e147"
+image_date = "2026-11-02"
+# stable-11248+ nginx listens on 8000 (HTTP) / 8443 (TLS) inside the container.
+port = 8000
+mem_limit = "256m"
+mem_swap_limit = "1g"
+cpus = "0.5"
+
+[jitsi.prosody]
+name = "prosody"
+image = "ghcr.io/jitsi/prosody"
+image_tag = "stable-11248-3@sha256:3f1943334f2c07244d2f2ec582fa7b59e226d461ef97db267f0a92cbba13b968"
+image_date = "2026-11-02"
+mem_limit = "256m"
+mem_swap_limit = "1g"
+cpus = "0.5"
+
+[jitsi.jicofo]
+name = "jicofo"
+image = "ghcr.io/jitsi/jicofo"
+image_tag = "stable-11248-3@sha256:b934149573661e2d8e020e47bd81521263a7289de5fb38ba7da95d5b70933cd2"
+image_date = "2026-11-02"
+mem_limit = "512m"
+mem_swap_limit = "1g"
+cpus = "0.5"
+
+[jitsi.jvb]
+name = "jvb"
+image = "ghcr.io/jitsi/jvb"
+image_tag = "stable-11248-3@sha256:d8e100c3573d0935aaa93b02daaa7f74d172042f2518c5f7e6036125c1d4ba7e"
+image_date = "2026-11-02"
+# Media port, published on the HOST (UDP). Owned by this project in the
+# voice-screen-share port plan; it must stay equal to the README port row.
+port = 10000
+# JVB Colibri REST stats (COLIBRI_REST_ENABLED). Reachable only from inside the
+# stack's internal network (the 8080 server is not published); see README.
+rest_stats = true
+# No TCP media fallback: the stable-11248-3 jvb image's config template has no
+# TCP harvester settings (checked 2026-11-04), and the edge has no raw-TCP
+# entrypoint for one. Clients that cannot use UDP 10000 cannot get media.
+mem_limit = "1g"
+mem_swap_limit = "2g"
+cpus = "2"
+
+# ── Authentication (secure domain, internal prosody accounts) ───────────────
+# guests = false: every participant logs in (registered users only), which
+# is the safe default on a public host and what remote control needs anyway
+# (both ends run the Electron app). true = ENABLE_GUESTS=1: anonymous people
+# may join an already-started room by link, only logged-in users start rooms.
+[jitsi.auth]
+enabled = true
+type = "internal"
+guests = false
+xmpp_domain = "meet.jitsi"
+# Register the `dummy = true` test accounts too (default false, see users below).
+dummy_users = false
+
+# ── Users (registered by hooks/post_compose_users.py on every `ciu up`) ─────
+# Each `secret` is a GEN_LOCAL file under .ciu/secrets/jitsi/ (mode 0600,
+# gitignored). To rotate one: delete the file, `ciu up` (USERS.md).
+# Entries marked `dummy = true` are test accounts: they are registered ONLY when
+# `jitsi.auth.dummy_users` is true (default false: a production host gets the admin
+# account only). Their secret files may still be generated, but nothing
+# registers them, so they grant no access.
+# (the key sits in [jitsi.auth], above)
+[[jitsi.users]]
+name = "admin"
+secret = "user_admin"
+
+[[jitsi.users]]
+name = "dummy1"
+secret = "user_dummy1"
+dummy = true
+
+[[jitsi.users]]
+name = "dummy2"
+secret = "user_dummy2"
+dummy = true
+
+[[jitsi.users]]
+name = "dummy3"
+secret = "user_dummy3"
+dummy = true
+
+# ── Secrets (S4) ─────────────────────────────────────────────────────────────
+# The Jitsi images take these three ONLY from env (no *_FILE form), so they use
+# ciu's `expose_env` escape hatch (S4.19), same reasoning as mattermost-server's
+# DB password. They appear in the container environment (readable to the docker
+# group); that is the images' design. User passwords never reach compose:
+# `consumed_by = "hook"`, read by the hook, fed to prosodyctl over stdin.
+[jitsi.secrets]
+jicofo_auth_password = { directive = "GEN_LOCAL:jitsi/jicofo_auth_password", mode = "0600", expose_env = "JITSI_JICOFO_AUTH_PASSWORD" }
+jvb_auth_password = { directive = "GEN_LOCAL:jitsi/jvb_auth_password", mode = "0600", expose_env = "JITSI_JVB_AUTH_PASSWORD" }
+jicofo_component_secret = { directive = "GEN_LOCAL:jitsi/jicofo_component_secret", mode = "0600", expose_env = "JITSI_JICOFO_COMPONENT_SECRET" }
+user_admin = { directive = "GEN_LOCAL:jitsi/user_admin", mode = "0600", consumed_by = "hook" }
+user_dummy1 = { directive = "GEN_LOCAL:jitsi/user_dummy1", mode = "0600", consumed_by = "hook" }
+user_dummy2 = { directive = "GEN_LOCAL:jitsi/user_dummy2", mode = "0600", consumed_by = "hook" }
+user_dummy3 = { directive = "GEN_LOCAL:jitsi/user_dummy3", mode = "0600", consumed_by = "hook" }
+
+# ── Dark theme (templates/theme-dark.css.j2) ────────────────────────────────
+# Served as /static/theme/theme-dark.css and linked on every page by the
+# `custom-config.js` below, so it needs no image rebuild and survives upgrades.
+# Look: Dark Reader "dark" (near-black grey surfaces, off-white text, one muted
+# accent). Everything else (borders, hover, muted text) is derived from these
+# four colours in CSS (color-mix). `enabled = false` renders an empty stylesheet
+# and no <link> is injected (the mounts stay: ciu configfile sections are static).
+[jitsi.theme]
+enabled = true
+background = "#181a1b"
+surface = "#202324"
+text = "#e8e6e3"
+accent = "#3b6ea8"
+
+# ── Client features (templates/custom-config.js.j2 -> /config/custom-config.js) ──
+# Appended by the image to the generated config.js, so each key overrides the
+# image default. Documented in README.md ("Client features"). Defaults leave
+# the audio processing as upstream ships it; only visibility is raised.
+[jitsi.client]
+enabled = true
+# Audio processing: false = upstream default (browser AGC/AEC/NS on).
+disable_agc = false
+disable_aec = false
+disable_ns = false
+# Stereo (music/screen audio): true = audioQuality.stereo; disables mono downmix
+# and, in the browser, echo cancellation for that stream (upstream caveat).
+stereo = false
+# Opus max average bitrate in bit/s; 0 = leave the image default (~20k mono).
+opus_max_average_bitrate = 0
+# Connection indicator on every tile: always visible, details dialog allowed.
+connection_indicators_disabled = false
+connection_indicators_auto_hide = false
+disable_show_more_stats = false
+# "Participants stats" (speaker stats) dialog: search box + sort order.
+speaker_stats_search = true
+speaker_stats_order = ["role", "name", "hasLeft"]
+# Name used in analytics/stats records (empty = not set). Does NOT add UI.
+statistics_display_name = ""
+# Screen sharing frame rate (fps). 0 = leave the image default (auto).
+desktop_sharing_framerate_min = 5
+desktop_sharing_framerate_max = 15
+
+# ciu configfile mounts. ciu mounts the rendered file's parent DIRECTORY
+# read-only (SPEC S5.3a), so each target dir is owned by this project:
+# /config (only custom-config.js lives there) and a new /static/theme dir.
+# mode 0444: the images run as uid 1000, the rendered files belong to the operator.
+[jitsi."jitsi-web".configfile.custom_config]
+template = "templates/custom-config.js.j2"
+target = "/config/custom-config.js"
+mode = "0444"
+
+[jitsi."jitsi-web".configfile.theme_dark]
+template = "templates/theme-dark.css.j2"
+target = "/usr/share/jitsi-meet/static/theme/theme-dark.css"
+mode = "0444"
+
+[jitsi.hooks]
+post_compose = ["hooks/post_compose_users.py"]
+
+# ── Hostdirs (S6): config for each service; no database ─────────────────────
+# stable-11248+ images run as the unprivileged user `s6` (uid/gid 1000) and no
+# longer chown /config themselves (measured 2026-11-04), so every config dir is
+# declared 1000:1000, mode 0750 (owner rwx, group r-x, no world access: the
+# dirs hold account records and rendered component/auth secrets). Stable-11031
+# images started as root and used 100/999/998 here; on an upgrade re-own the
+# existing vol-* dirs to 1000:1000 first.
+# web has NO config hostdir: its /config holds only operator customisation files
+# (custom-config.js), which ciu renders from templates/ and mounts read-only
+# (configfile sections below). The image copies /config into /run/web/config at
+# start and writes nothing back (measured stable-11248-3), so nothing needs to persist.
+
+[jitsi.prosody.hostdir]
+config = { path = "", uid = 1000, gid = 1000, mode = "0750" }
+# Account store (/var/lib/prosody); persists registered users across recreation.
+data = { path = "", uid = 1000, gid = 1000, mode = "0750" }
+
+[jitsi.jicofo.hostdir]
+config = { path = "", uid = 1000, gid = 1000, mode = "0750" }
+
+[jitsi.jvb.hostdir]
+config = { path = "", uid = 1000, gid = 1000, mode = "0750" }
+
+[jitsi.health]
+interval = "20s"
+timeout = "10s"
+retries = 6
+start_period = "60s"
+
+[jitsi.logging]
+max_size = "10m"
+max_file = "3"
+
+[jitsi.governance]
+mem_limit = "1g"
+mem_swap_limit = "2g"
+cpus = "1"

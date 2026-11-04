@@ -10,8 +10,8 @@
 #   --fqdn <hostname>
 #   --dns-provider <cloudflare|hetzner|route53|desec|other>
 #   --staging           use Let's Encrypt staging CA
-#   --enable-port-80
-#   --ports <http>:<https>:<alt>   (e.g. 80:443:8443)
+#   --disable-port-80
+#   --ports <http>:<https>         (default 80:443)
 #   --cert-tool <mkcert|openssl>
 #   --yes               non-interactive (accept all suggestions)
 #   --render-only       write config + render templates, do not start stack
@@ -56,7 +56,7 @@ OPT_EMAIL=""
 OPT_FQDN=""
 OPT_DNS_PROVIDER=""
 OPT_STAGING=0
-OPT_PORT80=0
+OPT_PORT80=1
 OPT_PORTS=""
 OPT_CERT_TOOL=""
 OPT_YES=0
@@ -74,8 +74,8 @@ Options:
   --fqdn <hostname>  Override detected FQDN
   --dns-provider <p> DNS provider: cloudflare | hetzner | route53 | desec | other
   --staging          Use Let's Encrypt staging CA
-  --enable-port-80   Expose port 80 (HTTP -> HTTPS redirect / HTTP-01 challenges)
-  --ports h:s:a      Custom port mapping http:https:https_alt (default 80:443:8443)
+  --disable-port-80  Do not publish port 80 (default: published; HTTP -> HTTPS redirect / HTTP-01)
+  --ports h:s        Custom public port mapping http:https (default 80:443)
   --cert-tool <t>    Dev cert tool: mkcert | openssl
   --yes              Non-interactive; accept all suggestions
   --render-only      Write ciu.toml.j2 + render templates; do not start stack
@@ -93,7 +93,7 @@ while [[ $# -gt 0 ]]; do
         --fqdn)         OPT_FQDN="$2"; shift 2 ;;
         --dns-provider) OPT_DNS_PROVIDER="$2"; shift 2 ;;
         --staging)      OPT_STAGING=1; shift ;;
-        --enable-port-80) OPT_PORT80=1; shift ;;
+        --disable-port-80) OPT_PORT80=0; shift ;;
         --ports)        OPT_PORTS="$2"; shift 2 ;;
         --cert-tool)    OPT_CERT_TOOL="$2"; shift 2 ;;
         --yes|-y)       OPT_YES=1; shift ;;
@@ -332,7 +332,7 @@ echo "  [✓] Explicit per-subdomain records — add A records as you go"
 if [[ "$WANT_WILDCARD" == "y" ]]; then
     echo "  [✓] Wildcard cert — requires acme-dns (automated DNS API) or CNAME delegation + manual certbot"
 fi
-echo "  [✓] Port-based fallback — https_alt :8443 always available"
+echo "  [✓] One host name and one certificate per service (host-name routing on :443)"
 hr
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -398,20 +398,14 @@ esac
 # ═══════════════════════════════════════════════════════════════════════════════
 info "Step 7/11: Port 80 configuration"
 
-EXPOSE_HTTP=false
+EXPOSE_HTTP=true
 
-if [[ $OPT_PORT80 -eq 1 ]]; then
-    EXPOSE_HTTP=true
-elif [[ "$SELECTED_MODE" == "acme-http" ]]; then
-    warn "Mode acme-http requires port 80 — enabling automatically"
-    EXPOSE_HTTP=true
-else
-    ask_yn _want80 "Expose port 80 (HTTP→HTTPS redirect)? (default: no)" "n"
-    [[ "$_want80" == "y" ]] && EXPOSE_HTTP=true
+if [[ $OPT_PORT80 -eq 0 ]]; then
+    EXPOSE_HTTP=false
 fi
 
 if [[ "$SELECTED_MODE" == "acme-http" && "$EXPOSE_HTTP" != "true" ]]; then
-    fatal "Mode acme-http requires port 80 (pass --enable-port-80)"
+    fatal "Mode acme-http requires port 80 (drop --disable-port-80)"
 fi
 
 if [[ "$EXPOSE_HTTP" == "true" ]]; then
@@ -427,11 +421,10 @@ fi
 # Custom ports
 PORT_HTTP=80
 PORT_HTTPS=443
-PORT_ALT=8443
 BIND_IP=""
 
 if [[ -n "$OPT_PORTS" ]]; then
-    IFS=':' read -r PORT_HTTP PORT_HTTPS PORT_ALT <<<"$OPT_PORTS"
+    IFS=':' read -r PORT_HTTP PORT_HTTPS <<<"$OPT_PORTS"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -761,10 +754,9 @@ fi
 
     # [tls_edge.ports] — only emit keys that differ from defaults
     _ports_section=""
-    [[ "$EXPOSE_HTTP" == "true" ]] && _ports_section+="expose_http = true\n"
+    [[ "$EXPOSE_HTTP" != "true" ]] && _ports_section+="expose_http = false\n"
     [[ "$PORT_HTTP"  != "80"   ]] && _ports_section+="http = $PORT_HTTP\n"
     [[ "$PORT_HTTPS" != "443"  ]] && _ports_section+="https = $PORT_HTTPS\n"
-    [[ "$PORT_ALT"   != "8443" ]] && _ports_section+="https_alt = $PORT_ALT\n"
     [[ -n "$BIND_IP"           ]] && _ports_section+="bind_ip = \"$BIND_IP\"\n"
     if [[ -n "$_ports_section" ]]; then
         echo "[tls_edge.ports]"
@@ -896,7 +888,6 @@ echo
 echo "  URLs:"
 for _dom in "${OPT_DOMAINS[@]}"; do
     echo "    https://$_dom"
-    [[ "$PORT_ALT" != "443" ]] && echo "    https://$_dom:$PORT_ALT  (alt port)"
 done
 echo
 

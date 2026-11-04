@@ -46,6 +46,21 @@ class PackageLookupUnauthorized(RuntimeError):
         self.body = body
 
 
+class GhcrApiError(SystemExit):
+    """A GitHub API failure raised by :meth:`GitHubPackages._fail`.
+
+    It is a ``SystemExit(1)`` so every direct caller keeps the old hard-failure
+    behaviour; :meth:`GitHubPackages.mirror_package_visibility` catches it in
+    ``missing="warn"`` mode and degrades it to a warning (KI-103).
+    """
+
+    def __init__(self, action: str, status: int, body: str) -> None:
+        super().__init__(1)
+        self.action = action
+        self.status = status
+        self.body = body
+
+
 UI_VISIBILITY_HINT = (
     "Set it ONCE in the UI (Your packages -> {package} -> Package settings -> "
     "Danger Zone -> Change visibility -> {visibility}) and, for a first push, link the "
@@ -67,6 +82,7 @@ class GitHubPackages:
         self.token = token
         self.owner_type = owner_type
         self.api_base = api_base
+        self._soft = False
 
     def _request(
         self,
@@ -91,8 +107,9 @@ class GitHubPackages:
             return exc.code, (exc.read().decode("utf-8") if exc.fp else "")
 
     def _fail(self, action: str, status: int, body: str) -> None:
-        print(f"[ERROR] {action}\n[ERROR] HTTP {status}: {body}", file=sys.stderr)
-        raise SystemExit(1)
+        if not self._soft:
+            print(f"[ERROR] {action}\n[ERROR] HTTP {status}: {body}", file=sys.stderr)
+        raise GhcrApiError(action, status, body)
 
     def _repo_url(self) -> str:
         return f"{self.api_base}/repos/{self.owner}/{self.repo}"
@@ -189,6 +206,40 @@ class GitHubPackages:
         """
         if missing not in ("warn", "fail"):
             raise ValueError(f"missing must be 'warn' or 'fail', not {missing!r}")
+        if missing == "fail":
+            return self._mirror_package_visibility(
+                package_name, expected_visibility, retries, delay, missing,
+            )
+        # KI-103: in warn mode EVERY API failure (repository lookup, unsupported
+        # owner_type, a 5xx package lookup, a mismatching sync response) is
+        # post-push and must not fail the release.
+        self._soft = True
+        try:
+            return self._mirror_package_visibility(
+                package_name, expected_visibility, retries, delay, missing,
+            )
+        except GhcrApiError as exc:
+            detail = f"HTTP {exc.status}" if exc.status else "no usable response"
+            hint_visibility = expected_visibility or "<the repository visibility>"
+            sys.stderr.write(
+                f"[WARN] Could not sync GHCR visibility for {package_name}: {exc.action} "
+                f"({detail}). The image push already succeeded, so the release continues; "
+                "the package may still be private. "
+                + UI_VISIBILITY_HINT.format(package=package_name, visibility=hint_visibility)
+                + "\n"
+            )
+            return None
+        finally:
+            self._soft = False
+
+    def _mirror_package_visibility(
+        self,
+        package_name: str,
+        expected_visibility: Optional[str],
+        retries: int,
+        delay: int,
+        missing: str,
+    ) -> Optional[str]:
         if expected_visibility is None:
             expected_visibility = self.repo_visibility()
 
@@ -249,10 +300,13 @@ class GitHubPackages:
             return current or expected_visibility
         new_visibility = str(updated.get("visibility") or "").strip()
         if new_visibility and new_visibility != expected_visibility:
-            self._fail(
-                f"GHCR package {package_name} visibility sync returned {new_visibility!r} "
-                f"instead of {expected_visibility!r}",
-                0,
-                json.dumps(updated),
+            # A server that CONFIRMS the wrong visibility is not an unreachable
+            # API: stay a hard failure in every mode (KI-103 degrades lookups only).
+            print(
+                f"[ERROR] GHCR package {package_name} visibility sync returned "
+                f"{new_visibility!r} instead of {expected_visibility!r}\n"
+                f"[ERROR] HTTP 0: {json.dumps(updated)}",
+                file=sys.stderr,
             )
+            raise SystemExit(1)
         return expected_visibility

@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-32
 title: "requirements-report.txt lock omits coverage although pyproject [test] extra requires it; setup.sh --check cannot vouch for the coverage gate"
-status: open
+status: fixed
 type: "bugfix"
 severity: "low"
 component: "gate"
@@ -41,3 +41,7 @@ directly, not from this lock. The review venv for 2026-10-27 had to `pip install
 
 `setup.sh --check` on a fresh `setup.sh` venv passes AND `venv/bin/python -m coverage --version` works; the new test
 fails when `coverage` is removed from the lock.
+
+## Resolution
+
+FIXED 2026-11-04 (b23a13f0a). `requirements-report.txt` now pins `coverage==7.16.2` (7.17.0 was released 2026-10-22, under the 14-day buffer; 7.16.2 is the newest qualifying release). Only that line was added rather than a full `--relock`, which would have moved every other pin past the freshness buffer unreviewed. Tests: `test_report_lock_pins_every_distribution_the_test_and_report_extras_name` and `test_lock_drift_check_goes_red_when_coverage_is_removed_from_the_lock` in `tests/test_deployment_contract.py`.

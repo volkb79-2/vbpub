@@ -326,6 +326,16 @@ def _snapshot_file_signature(root: Path) -> tuple[tuple[object, ...], ...]:
     return tuple(signature)
 
 
+def _snapshot_git_state(root: Path) -> dict[str, str]:
+    """Git's own view of a materialized snapshot: status and the index."""
+    return {
+        "status": _git(root, "status", "--porcelain=v1"),
+        "index_entries": _git(root, "ls-files", "--stage"),
+        "index_tree": _git(root, "write-tree"),
+        "head_tree": _git(root, "rev-parse", "HEAD^{tree}"),
+    }
+
+
 class _CopyingWorkspace:
     """A controlled stand-in for Run that records Level A file clones."""
 
@@ -473,6 +483,7 @@ def test_workspace_materialization_matches_plain_snapshot_and_clones_pack_files(
         with plain.materialize(timeout=TIMEOUT) as snapshot:
             plain_signature = _snapshot_file_signature(snapshot.root)
             plain_commit = snapshot.commit
+            plain_git_state = _snapshot_git_state(snapshot.root)
 
     with prepare_snapshot(
         _spec(repo, cow_scratch, commit), timeout=TIMEOUT, workspace=provider
@@ -481,9 +492,16 @@ def test_workspace_materialization_matches_plain_snapshot_and_clones_pack_files(
         with cow.materialize(timeout=TIMEOUT) as snapshot:
             cow_signature = _snapshot_file_signature(snapshot.root)
             cow_commit = snapshot.commit
+            cow_git_state = _snapshot_git_state(snapshot.root)
 
     assert cow_signature == plain_signature
     assert cow_commit == plain_commit == commit
+    # B200: the Git view must match too, not only the file bytes. A clean
+    # status and an index tree equal to HEAD's are what a judged snapshot is.
+    assert cow_git_state == plain_git_state
+    assert plain_git_state["status"] == ""
+    assert plain_git_state["index_tree"] == plain_git_state["head_tree"]
+    assert plain_git_state["index_entries"]
     assert provider.estimate.ingest_bytes > 0
     assert provider.estimate.per_clone_bytes > 0
     assert provider.estimate.max_live_clones == 2

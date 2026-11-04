@@ -1,0 +1,3 @@
+# Official TrueNAS API WebSocket client, pinned to TS-27.0.0-RC.1. Move to a
+# stable tagged client when the TrueNAS 27 release is available.
+truenas_api_client @ git+https://github.com/truenas/api_client.git@ecc1f7af16f60f39bb45ead850a1d4c92a5b76a1

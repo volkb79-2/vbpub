@@ -257,6 +257,20 @@ def test_toml_http_bind_is_ignored_THE_DISCRIMINATOR(tmp_path, monkeypatch):
     assert cfg.policy.http_bind == "127.0.0.1"
 
 
+def test_retired_gate_verify_interval_days_loads_ignored_and_warns(tmp_path, monkeypatch):
+    """NL-14: the retired knob is not a Policy field; a nonzero toml value
+    still loads, is dropped, and is reported (no silent no-op)."""
+    from nyxloom import config as config_module
+    warnings: list = []
+    monkeypatch.setattr(config_module.log, "warning",
+                        lambda event, **kw: warnings.append((event, kw)))
+    root = _write_policy_project(tmp_path, policy_lines="gate_verify_interval_days = 14")
+    cfg = ProjectConfig.load(root)
+    assert not hasattr(cfg.policy, "gate_verify_interval_days")
+    assert warnings == [("policy key retired and ignored",
+                         {"key": "gate_verify_interval_days", "value": 14})]
+
+
 def test_env_wins_over_toml_http_bind_toml_is_not_even_a_fallback(tmp_path, monkeypatch):
     """Paired with the discriminator: toml is not a source AT ALL, not merely a
     lower-priority one. With both set, the env value wins and the toml value

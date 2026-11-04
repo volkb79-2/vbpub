@@ -412,7 +412,7 @@ The bootstrap script orchestrates complete system setup beyond just swap configu
 | `RUN_APT_CONFIG` | `yes` | Configure APT with deb822 format, backports, testing repos |
 | `RUN_JOURNALD_CONFIG` | `yes` | Configure journald log retention (200M max, 12 months) |
 | `RUN_DOCKER_INSTALL` | `no` | Install Docker from official repository with modern settings |
-| `RUN_GEEKBENCH` | `no` | Run Geekbench 6 and upload results (5-10 min) |
+| `RUN_GEEKBENCH` | `no` | Run Geekbench 6 and upload results (typically 5–10 min on a native/accelerated CPU; TCG emulation can take much longer) |
 | `RUN_BENCHMARKS` | `no` | Run comprehensive swap benchmarks |
 | `SEND_SYSINFO` | `yes` | Send system info to Telegram if configured |
 
@@ -444,6 +444,7 @@ The bootstrap script orchestrates complete system setup beyond just swap configu
    - Run CPU and compute benchmarks
    - Upload to Geekbench Browser
    - Extract result URL and claim URL
+
 8. **Swap benchmarks** (if RUN_BENCHMARKS=yes)
    - Test block sizes, compression algorithms, allocators
    - Test concurrency scaling
@@ -454,6 +455,30 @@ The bootstrap script orchestrates complete system setup beyond just swap configu
    - Send formatted report via Telegram
    - Attach detailed system info as file
    - Attach bootstrap log as file
+
+#### Geekbench runtime and QEMU TCG reference
+
+The `RUN_GEEKBENCH` duration depends strongly on where it runs: the usual
+5–10-minute estimate is for a normally accelerated/native CPU, not software
+CPU emulation. On 2026-10-14, Geekbench 6.7.2 scored 65 single-core / 215
+multi-core in our four-vCPU x86-64 QEMU TCG guest, versus 1,667 / 4,596 on the
+same EPYC 9634 host with Geekbench pinned to four host CPUs. That is about
+25.6× slower single-core and 21.4× slower multi-core (the TCG scores were 3.9%
+and 4.7% of the native scores). See the [TCG result](https://browser.geekbench.com/v6/cpu/19341722),
+[native result](https://browser.geekbench.com/v6/cpu/19341831), and the [full
+test conditions and host-side per-workload profile](../debian-install-v2/testing/vm/USAGE-TESTING.md#geekbench-6-tcg-guest-versus-native-host).
+
+Treat this as evidence that a 20–30× gap is possible in this setup, not as a
+typical TCG multiplier or a clean estimate of virtualization overhead. QEMU
+TCG dynamically translates guest instructions and uses a software MMU for
+system emulation ([QEMU TCG internals](https://www.qemu.org/docs/master/devel/tcg.html));
+it is software emulation, not hardware-accelerated KVM. Ratios vary with the
+workload, guest/host architectures, CPU model, and host pressure. For example,
+a [Linaro QEMU Android-boot investigation](https://www.linaro.org/blog/qemu-a-tale-of-performance-analysis/)
+reported TCG boot times about 8× slower for an x86-64 guest and 12× for an
+AArch64 guest than its hardware-assisted reference—different work, so not a
+direct Geekbench comparison. Our benchmark also had host contention and memory
+pressure, and the guest and native CPU topology/model reports differed.
 
 ### Example: Complete System Setup
 

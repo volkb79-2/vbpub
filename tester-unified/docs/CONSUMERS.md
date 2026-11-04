@@ -21,8 +21,11 @@ must export `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`,
 `CMRU_TESTER_CGROUP_PROBE_IMAGE` from `cmru.orchestration.toml`. The probe
 image must already be available locally.
 
-The default base is the local `tester-base:local` (`docker buildx build --load -t tester-base:local
-tester-base/`, public upstream inputs only; a missing base fails the build). For a zero-release
+The default base is the local `tester-base:local` (build it with `cmru/build-initial-standalone.sh`, or with
+`docker buildx build --load --build-arg TESTER_BASE_SOURCE_HASH="$(sha256sum tester-base/Dockerfile | cut -d' ' -f1)"
+-t tester-base:local tester-base/`: without that argument the image's source-hash label is empty and the bootstrap
+script reads it as stale; public upstream inputs only; a missing base fails the build). tester-unified and
+wheel-builder reset the inherited `org.vbpub.tester-base.*` labels, so only a real tester-base build carries them. For a zero-release
 bootstrap you may instead choose the upstream Python base explicitly, so building the gate image does
 not require any published vbpub image. Bootstrap CMRU
 and cli-extended from this checkout first, then pass the digest that command
@@ -202,7 +205,14 @@ developer `run-gate-project/dist` wheel can never pass it.
    `tester-unified/build-image.sh --run-gate-published latest --no-cache --tag tester-unified:wave-<date>`
    (about 4 minutes). It fetches the published wheel, verifies pointer, sidecar and bytes, builds CMRU from the
    checked-out source, resolves every third-party package at least `PIP_MIN_RELEASE_AGE` (14 days) old, and
-   re-reads the identity labels. `wheel-builder` follows the same rule:
+   re-reads the identity labels. The fetcher caps every response at 64 MiB, retries a transient transport failure
+   (three attempts in all) and leaves the digest it verified beside the wheel as `<wheel>.sha256`, which the builder
+   compares with its own hash of the staged file. A base that is absent locally is pulled only when its reference
+   names a registry host (`ghcr.io/...`, `localhost:5000/...`); a Docker Hub reference (`python:3.14-trixie`) needs
+   `--pull-base`, and a bare local tag is never pulled. `wheel-builder` follows the same rule (the age window also
+   covers the build backends `cmru handler wheel-build` installs at run time, through the image's
+   `PIP_UPLOADED_PRIOR_TO`: a backend pin younger than the window fails that build until it ages, and
+   `CMRU_WHEEL_BUILD_AGE_OVERRIDE_REASON="<reason>"` lifts it for one build and logs the reason):
    `docker buildx build --load --no-cache --cgroup-parent "$CGROUP_PARENT_DEV_GATES" -f wheel-builder/Dockerfile -t wheel-builder:wave-<date> .`
 4. Verify before promoting: the labels equal the published release
    (`docker image inspect --format '{{index .Config.Labels "org.vbpub.run-gate.version"}}' tester-unified:wave-<date>`,
@@ -210,14 +220,14 @@ developer `run-gate-project/dist` wheel can never pass it.
    exact candidate, selected by its immutable id as the README does (a tag can be moved under a running gate):
    `RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:wave-<date>)" run-gate <lane>`
    (the cmru `coverage` lane exercises the image-contract tests and the whole suite).
-5. Promote both images. Keep the rollbacks first: `docker tag tester-unified:local tester-unified:prev-<date>` and
-   `docker tag wheel-builder:local wheel-builder:prev-<date>` (a second promotion on the same day would overwrite
-   them: check that `docker image inspect tester-unified:prev-<date>` fails before tagging, or suffix the name).
-   Then `docker tag tester-unified:wave-<date> tester-unified:local` and
-   `docker tag wheel-builder:wave-<date> wheel-builder:local` (`CMRU_WHEEL_BUILDER_IMAGE` in
-   `cmru.orchestration.toml` names the latter, and cmru checks only its kind label, so nothing else notices a
-   stale builder). Roll back the same way: `docker tag tester-unified:prev-<date> tester-unified:local`. Remove
-   nothing by pattern; use exact tag names.
+5. Promote both images with `tester-unified/promote-image.sh --image tester-unified --candidate
+   tester-unified:wave-<date>` and `tester-unified/promote-image.sh --image wheel-builder --candidate
+   wheel-builder:wave-<date>` (`CMRU_WHEEL_BUILDER_IMAGE` in `cmru.orchestration.toml` names the latter, and cmru
+   checks only its kind label, so nothing else notices a stale builder). Each run resolves the candidate to its
+   immutable id, keeps the image currently tagged `:local` as `<image>:prev-<date>`, writes the replaced and
+   promoted ids to `.assay/promotions/<image>-<date>.json`, and promotes by id. It REFUSES to overwrite an existing
+   `prev-*` tag (a second promotion on the same day needs `--date <date>-b`). Roll back with `docker tag
+   <image>:prev-<date> <image>:local`. Remove nothing by pattern; use exact tag names.
 6. Re-run step 3 to 5 whenever the host's Run-Gate judge changes version, and when a build must pick up newer
    aged third-party releases (`--no-cache` is what re-resolves them).
 

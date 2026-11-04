@@ -9,6 +9,7 @@ class V27(Backend):
     generation = "v27"
     verified = "reference"  # names read from the v27.0 reference; the disk.details params are UNVERIFIED (BACKLOG TNT-01)
     destructive = DESTRUCTIVE_METHODS  # methods an action may only contain as a DESTRUCTIVE action
+    optional_features = frozenset({"vm-disk-import", "file-upload"})
     manifest = {
         "disks": {
             "disk.query": MethodSpec("read"), "disk.details": MethodSpec("read"),
@@ -121,6 +122,12 @@ class V27(Backend):
             "core.download": MethodSpec("write"),
             "smb.status": MethodSpec("read"),
         },
+        # Runtime-detected (TNT-61): vanilla v27 may not list vm.device.virtual_size / vm.device.convert, which are
+        # not in the reference method index. filesystem.put is the middleware upload job behind POST /_upload.
+        "vm-disk-import": {
+            "vm.device.virtual_size": MethodSpec("read"), "vm.device.convert": MethodSpec("write"),
+        },
+        "file-upload": {"filesystem.put": MethodSpec("write"), "filesystem.listdir": MethodSpec("read")},
         "conditional-menu": {
             "kmip.config": MethodSpec("read"), "enclosure2.query": MethodSpec("read"),
         },

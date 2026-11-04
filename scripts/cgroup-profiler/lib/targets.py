@@ -681,11 +681,21 @@ def parse_target(
         return [make(cgroup, name, "container", container_id=cid)]
 
     if scheme == "slice":
+        if "@" in value:
+            # A slice unit name cannot contain '@' (templates are services),
+            # so this is an option typo that `_parse_options` left in the name.
+            raise TargetError(
+                f"slice: name {value!r} contains '@': a slice unit name cannot; "
+                f"probably a misspelt option after '@' (known options: "
+                f"{', '.join(sorted(OPTION_KEYS - {_HELPER_PID_OPTION}))})"
+            )
         cgroup = slice_to_path(value)
         return [make(cgroup, value, "slice")]
 
     if scheme == "cgroup":
         cgroup = _canonical_cgroup_path(value)
+        if not rest.rstrip().endswith("@"):  # trailing '@' = explicit no-options escape
+            _refuse_misspelt_option(value, cgroup, root)
         return [make(cgroup, util.short_label(cgroup), "cgroup")]
 
     # No scheme: infer. A running container name is the friendliest reading,
@@ -699,6 +709,27 @@ def parse_target(
         if value.endswith(".slice") or _looks_like_slice(value):
             return parse_target(f"slice:{rest}", root, default_follow, role, proc_root)
     return parse_target(f"cgroup:{rest}", root, default_follow, role, proc_root)
+
+
+_OPTION_LOOKING = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(=[^,@/]*)?(,[A-Za-z][A-Za-z0-9_-]*(=[^,@/]*)?)*$")
+
+
+def _refuse_misspelt_option(value: str, cgroup: str, root: str) -> None:
+    """A ``cgroup:`` value whose last ``@``-segment looks like an option but is
+    not a known one, and whose cgroup does not exist, is a probable typo
+    (`/a@follo`): the option grammar left it in the name, so say so now
+    instead of sampling a nonexistent cgroup forever. A cgroup that exists
+    (`user@1000.service`) is never refused."""
+    _, sep, tail = value.rpartition("@")
+    if not sep or not _OPTION_LOOKING.match(tail):
+        return
+    if os.path.isdir(os.path.join(root, cgroup.lstrip("/"))):
+        return
+    raise TargetError(
+        f"no cgroup {cgroup!r}; the last '@' segment {tail!r} looks like a "
+        f"misspelt option (known: {', '.join(sorted(OPTION_KEYS - {_HELPER_PID_OPTION}))}); "
+        f"to name a cgroup that really ends in '@{tail}', add a trailing '@'"
+    )
 
 
 def _canonical_cgroup_path(value: str) -> str:

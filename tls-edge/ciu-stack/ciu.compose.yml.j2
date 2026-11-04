@@ -69,17 +69,13 @@ services:
       # HTTP: received and immediately redirected to HTTPS by Traefik.
       - "{{ bind }}{{ tls_edge.ports.http }}:80"
 {% else %}
-      # Port 80 is OFF (TLS-only edge; no HTTP->HTTPS redirect).  To enable it,
-      # set [tls_edge.ports] expose_http = true in ciu.toml.j2 and re-render
-      # (scripts/render.sh), or run scripts/install.sh --enable-port-80.
+      # Port 80 is OFF ([tls_edge.ports] expose_http = false: TLS-only edge,
+      # no HTTP->HTTPS redirect).  Default is ON.
 {% endif %}
-      # Primary HTTPS: subdomain-based routing (preferred).
+      # HTTPS: host-name routing, one certificate per service host name.
       - "{{ bind }}{{ tls_edge.ports.https }}:443"
-      # Alternative HTTPS: port-based routing fallback.
-      - "{{ bind }}{{ tls_edge.ports.https_alt }}:8443"
 {% if tls_edge.calls.enabled %}
-      # Mattermost Calls: same public port over TCP and UDP. TCP maps to its
-      # own Traefik port because internal 8443/TCP belongs to websecure-alt.
+      # Mattermost Calls: the same public port over TCP and UDP.
       - "{{ bind }}{{ tls_edge.calls.public_port }}:{{ tls_edge.calls.tcp_internal_port }}/tcp"
       - "{{ bind }}{{ tls_edge.calls.public_port }}:{{ tls_edge.calls.udp_internal_port }}/udp"
 {% endif %}
@@ -160,7 +156,14 @@ networks:
   # Only containers with traefik.enable=true labels are routed.
   ingress:
     name: {{ tls_edge.ingress_network }}
+{% if tls_edge.ingress_external %}
+    # Adopted, not created: the network already exists (migration from a
+    # hand-made deployment whose consumers are attached).  This stack neither
+    # creates nor removes it.
+    external: true
+{% else %}
     driver: bridge
+{% endif %}
 
   # Isolated bridge between traefik and dockerproxy only.  internal: no
   # outbound connectivity; no other container may join.
@@ -181,6 +184,12 @@ networks:
 volumes:
 {% if acme %}
   acme-data:
+{% if tls_edge.acme.volume_name %}
+    # Adopted existing volume (migration): keeps the ACME account and every
+    # issued certificate, so no re-issuance and no Let's Encrypt rate-limit hit.
+    name: {{ tls_edge.acme.volume_name }}
+    external: true
+{% endif %}
 {% else %}
   certs-dev:
 {% endif %}

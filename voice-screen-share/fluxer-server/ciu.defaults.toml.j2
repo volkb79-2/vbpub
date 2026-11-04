@@ -1,0 +1,168 @@
+# ==========================================================================
+# fluxer-server — tryout of Fluxer (github.com/fluxerapp/fluxer, AGPL-3.0)
+# ==========================================================================
+# Discord-style chat + persistent voice channels + screen share; client-side
+# noise suppression (RNNoise default). Verified 2026-11-04, see README.md.
+#
+# ISOLATION CONTRACT (pinned by tests/test_isolation.py):
+#   - OWN names: project_name "fluxer", container_prefix
+#     "fluxer-<instance id>", own bridge network `fluxer`, own named volumes.
+#   - The ONLY host ports are LiveKit's media pair (`livekit.tcp_port` /
+#     `livekit.udp_port`, default 7891/tcp + 7892/udp, claimed in
+#     voice-screen-share/README.md). Web traffic is NOT published: with
+#     expose_public = true the edge joins tls-edge's shared ingress network
+#     (documented consumer pattern, tls-edge/docs/CONSUMERS.md), with its OWN
+#     host name and certificate.
+#   - No hard-coded domain: public_host derives from $PUBLIC_FQDN and can be
+#     overridden; expose_public is true (operator decision 2026-11-04: wildcard
+#     DNS covers public_host, tls-edge ACME issues its certificate).
+[fluxer]
+name = "fluxer"
+container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}fluxer{% endif %}"
+# Own host name (own certificate issued by tls-edge). Override per host.
+public_host = "fluxer.{{ env.PUBLIC_FQDN }}"
+# true (default since 2026-11-04): the Caddy `edge` service joins
+# `ingress_network` and carries the Traefik labels for public_host.
+# false: nothing is routed through tls-edge (reach it with `docker exec`).
+expose_public = true
+ingress_network = "ingress_public"
+# Public URL parts the clients are told (behind tls-edge: https on 443).
+public_scheme = "https"
+public_port = 443
+
+[fluxer.release]
+# The compose bundle that this project was derived from
+# (https://fluxer.dev/compose/latest, fetched 2026-11-04).
+bundle = "fluxer-release@2026.1102.205049"
+bundle_date = "2026-11-02"
+# 14-DAY FRESHNESS EXCEPTION (operator decision 2026-11-04): no bundle line is
+# 14 days old yet (the coherent `fluxer-release@` line starts 2026-10-24). The
+# newest bundle is pinned anyway as a tryout. Re-pin to the newest bundle that
+# is >= 14 days old once one exists. Recorded in README.md.
+freshness_exception = true
+
+# First-party images: tag@digest straight from the bundle's release manifest
+# (fluxer-release-2026.1102.205049.json); the bundle compose pins them by digest.
+[fluxer.images]
+api = "ghcr.io/fluxerapp/fluxer-api:2026.1102.200651@sha256:38f8e2c47dee9b2104ce879725649b37d03d0b2696e60d3dbf620841f4c42553"
+gateway = "ghcr.io/fluxerapp/fluxer-gateway:2026.1102.200652@sha256:4310cceacea2a70eac560e769277ad5cbea1dc376f5a603848a4103347c6db83"
+media_proxy = "ghcr.io/fluxerapp/fluxer-media-proxy:2026.1102.200613@sha256:e04662768403b35ef29b8f916de3d582f2c882d57ada490113b19136f8943a32"
+push = "ghcr.io/fluxerapp/fluxer-push:2026.1102.200624@sha256:56f3329efe28e39306eacbceaf4260050ea88eafdce4c2b71607ed112e85d446"
+static_proxy = "ghcr.io/fluxerapp/fluxer-static:2026.1102.200633@sha256:c2743685868f73289d87a056988f9692630252c933119e1d282d89f348086a46"
+app_proxy = "ghcr.io/fluxerapp/fluxer-app-proxy-self-hosted:2026.1102.202600@sha256:c73c6ee734e97d23f722670883fa0d6000431add98d499a3cb96f2ce5c0e9b24"
+snowflakes = "ghcr.io/fluxerapp/fluxer-snowflakes:2026.1102.200615@sha256:0aa5680c2219254438b84b67faf94f51c0be2041958c882ac4792bdb632f8761"
+users = "ghcr.io/fluxerapp/fluxer-users:2026.1102.200558@sha256:3d56920b4305ee553b040174354718f336647323bc3ad3beac407e7db6845ec1"
+gifs = "ghcr.io/fluxerapp/fluxer-gifs:2026.1102.200632@sha256:ab5565c1c5c9a14c3c05b294e3233eb14de5979455653dfa84c4a8b95df2ac3e"
+messages = "ghcr.io/fluxerapp/fluxer-messages:2026.1102.200637@sha256:cc648669786f3a1b6d34a0d0a6e2c7c7412a7317c0bfd35030ecf4ab59db7f53"
+unfurl = "ghcr.io/fluxerapp/fluxer-unfurl:2026.1102.200608@sha256:8dbb0becc371e7313ed891dfd35b969d3ae41f275c175ad5b406ad792780820f"
+admin = "ghcr.io/fluxerapp/fluxer-admin:2026.1102.200626@sha256:c3289590711ff15aa9f39c2cea042d35dd22f2f416f2e974f7f79f949a2b88f3"
+# Third-party images: the bundle pins only floating tags (caddy:2.11-alpine,
+# postgres:16-alpine, ...), so each is re-resolved to tag@digest. Rule: the
+# newest release in the bundle's own line (same minor) that is >= 14 days old
+# on 2026-11-04 (cutoff 2026-10-21). Dates are the registry "last updated" of
+# the tag (Docker Hub API, 2026-11-04). The bundle's line is kept on purpose:
+# Fluxer is tested against it, and newer minors exist (postgres 16.15 2026-10-26,
+# valkey 9.1.3 2026-10-27, nats 2.14.9 2026-10-27 / 2.14.8 2026-10-22,
+# meilisearch v1.55/v1.56, seaweedfs 4.50/4.51, livekit v1.13.x, caddy 2.11.7
+# 2026-10-30) but are either younger than 14 days or a different minor.
+#   caddy        2.11.6-alpine   2026-10-04
+#   postgres     16.14-alpine    2026-07-08  (16.15 is 9 days old)
+#   valkey       9.1.2-alpine    2026-09-21  (9.1.3 is 8 days old)
+#   nats         2.14.7-alpine   2026-09-18  (2.14.8 is 13 days old, one day short)
+#   meilisearch  v1.53.3         2026-10-01
+#   seaweedfs    4.48            2026-09-28  (4.50 is 10 days old; no 4.49 tag)
+#   livekit      v1.12.0         2026-06-08  (the bundle's tag; v1.13.10 is 21 days
+#                                            old but a different minor; revisit)
+caddy = "caddy:2.11.6-alpine@sha256:d44355d3c2149dc580ce2cac735955d1c08d3d00882c30489c241aa51a5c10d9"
+postgres = "postgres:16.14-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
+valkey = "valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11"
+nats = "nats:2.14.7-alpine@sha256:4063edae0717ba5f7501bfde75f97fd9b57f5b93597b92c70b6a6fbbf6a74e06"
+meilisearch = "getmeili/meilisearch:v1.53.3@sha256:cf9bb47e8ecf080f0b3ca33f58a2f9d1e382d5479d360541df05e1c49841e4a9"
+seaweedfs = "chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d"
+livekit = "livekit/livekit-server:v1.12.0@sha256:b1281e66e35e8f9749ffbcf0fe6ab4d40d1438aa00f36c2ea7e6975e5e261e2e"
+
+[fluxer.livekit]
+# Media pair, published on the host (the ONLY published ports). 7881/7882 are
+# claimed for Matrix/LiveKit in voice-screen-share/README.md's port plan.
+tcp_port = 7891
+udp_port = 7892
+# true: LiveKit discovers the host's public IP via STUN (upstream default).
+# Set node_ip for a fixed address (LAN test: the LAN IP).
+use_external_ip = true
+node_ip = ""
+api_key = "fluxer"
+stun_primary = "stun.l.google.com:19302"
+stun_secondary = "stun1.l.google.com:19302"
+
+[fluxer.postgres]
+db = "fluxer"
+user = "fluxer"
+
+[fluxer.s3]
+access_key = "fluxer"
+bucket_cdn = "fluxer"
+bucket_uploads = "fluxer-uploads"
+bucket_reports = "fluxer-reports"
+bucket_harvests = "fluxer-harvests"
+
+# Per-service caps, well under the bundle defaults (postgres 5g, api/worker
+# 2.5g each, meilisearch 1.5g, seaweedfs 2g, gateway 1g, media-proxy 1g).
+# Raise them if a service is OOM-killed under a real load; this is a tryout.
+[fluxer.limits]
+edge = { mem = "128m", cpus = "0.5" }
+postgres = { mem = "1g", cpus = "1.0", shm = "256m" }
+valkey = { mem = "128m", cpus = "0.5" }
+nats = { mem = "128m", cpus = "0.5" }
+meilisearch = { mem = "512m", cpus = "0.75" }
+seaweedfs = { mem = "512m", cpus = "0.75" }
+seaweedfs_init = { mem = "128m", cpus = "0.25" }
+livekit = { mem = "256m", cpus = "1.0" }
+api = { mem = "768m", cpus = "1.0" }
+worker = { mem = "768m", cpus = "1.0" }
+gateway = { mem = "384m", cpus = "1.0" }
+media_proxy = { mem = "384m", cpus = "1.0" }
+push = { mem = "128m", cpus = "0.25" }
+static_proxy = { mem = "128m", cpus = "0.25" }
+app_proxy = { mem = "128m", cpus = "0.25" }
+snowflakes = { mem = "128m", cpus = "0.25" }
+users = { mem = "128m", cpus = "0.25" }
+gifs = { mem = "128m", cpus = "0.25" }
+messages = { mem = "128m", cpus = "0.25" }
+unfurl = { mem = "128m", cpus = "0.25" }
+admin = { mem = "128m", cpus = "0.25" }
+
+[fluxer.edge.configfile.caddyfile]
+template = "Caddyfile"
+target = "/etc/caddy/Caddyfile"
+mode = "0444"
+
+[fluxer.health]
+interval = "10s"
+timeout = "5s"
+retries = 10
+start_period = "60s"
+app_retries = 30
+app_start_period = "90s"
+
+[fluxer.logging]
+max_size = "10m"
+max_file = "3"
+
+# ── Accounts (provisioned by hooks/post_compose_accounts.py) ───────────────
+# Sign-in method is "username" (FLUXER_ACCOUNT_IDENTITY): username + password,
+# no e-mail. The first account is created with the setup token and becomes
+# the instance administrator; the setup is then marked configured so the dummy
+# users can register. Passwords are generated once into
+# .ciu/secrets/accounts.json (0600, gitignored); see USERS.md.
+[fluxer.accounts]
+admin = "fx_admin"
+users = ["fx_alice", "fx_bob", "fx_carol"]
+date_of_birth = "1990-01-01"
+# Registration mode enforced after the accounts exist: "closed" (default),
+# "approval" or "open". Fluxer's own default is open, which would let anyone
+# sign up on a public host.
+registration_mode_after = "closed"
+
+[fluxer.hooks]
+pre_compose = ["hooks/pre_compose_secrets.py"]
+post_compose = ["hooks/post_compose_accounts.py"]

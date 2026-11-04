@@ -365,6 +365,38 @@ def _refuse_launch(spec: WrapperSpec, *, blocked_reason: str,
     return exit_code
 
 
+def _terminate_unsupervised_child(child: "subprocess.Popen", grace_seconds: float,
+                                  container: str) -> None:
+    """TERM the child's process group, KILL after ``grace_seconds``, reap it.
+
+    Used when the wrapper cannot publish ``child.pid`` and so cannot
+    supervise the child any further (NL-53).
+    """
+    try:
+        pgid = os.getpgid(child.pid)
+    except OSError:
+        pgid = None
+    sig = signal.SIGTERM
+    deadline = time.monotonic() + max(grace_seconds, 0)
+    while True:
+        if pgid is not None:
+            try:
+                os.killpg(pgid, sig)
+            except OSError:
+                pass
+        try:
+            done, _ = os.waitpid(child.pid, os.WNOHANG)
+        except OSError:
+            break
+        if done != 0:
+            break
+        if sig == signal.SIGTERM and time.monotonic() > deadline:
+            sig = signal.SIGKILL
+        time.sleep(0.05)
+    if container:
+        containment.force_remove(container)
+
+
 def contained_launch(spec: WrapperSpec, route: RouteDef,
                      env_overrides: dict[str, str]) -> tuple[list[str], str]:
     """``(argv, container_name)`` for this leg. Raises rather than downgrades.
@@ -527,8 +559,29 @@ def wrapper_main(spec_path: str) -> int:
                 # observed empty between create and write.
                 child_pid_path = Path(spec.attempt_dir, "child.pid")
                 child_pid_tmp = child_pid_path.with_name("child.pid.tmp")
-                child_pid_tmp.write_text(str(child.pid), encoding="utf-8")
-                os.replace(child_pid_tmp, child_pid_path)
+                try:
+                    child_pid_tmp.write_text(str(child.pid), encoding="utf-8")
+                    os.replace(child_pid_tmp, child_pid_path)
+                except OSError as exc:
+                    # NL-53: an unpublishable child.pid (ENOSPC, read-only fs)
+                    # must not leave the child running with nothing
+                    # supervising it. Terminate its process group (TERM, then
+                    # KILL after the grace period), reap it, drop the temp
+                    # file, release the leases and record a refusal.
+                    log.error("child-pid-publish-failed", project=spec.project,
+                              task=spec.task_id, attempt=spec.attempt_id,
+                              error=str(exc))
+                    _terminate_unsupervised_child(
+                        child, spec.term_grace_seconds, container)
+                    try:
+                        child_pid_tmp.unlink()
+                    except OSError:
+                        pass
+                    for held in held_leases:
+                        held.release()
+                    return _refuse_launch(
+                        spec, blocked_reason="child-pid-publish-failed",
+                        exit_code=75)
 
                 # Update attempt with pid/pgid and log_path
                 attempt.pid = child.pid
@@ -758,19 +811,25 @@ def wrapper_main(spec_path: str) -> int:
             amendment_request=amendment_request,
         )
 
+        # CR-03 (DR-13): collect the agent's judgement and bind it to the
+        # facts. BEFORE the receipt (NL-12): the receipt is what the daemon (and
+        # any observer) treats as "this attempt is over, consume it", so it must be
+        # the LAST thing published -- written first, a reader that saw the receipt
+        # could look for the typed result before it existed and read "missing" for
+        # a leg that had in fact answered. An unwritable result store must not
+        # suppress the receipt (the process-ended fact survives; the daemon then
+        # reads "missing" and relaunches), so only OSError is absorbed here.
+        try:
+            _write_typed_results(spec, log_text)
+        except OSError as exc:
+            log.error("typed-result-write-failed", attempt=spec.attempt_id, error=str(exc)[:200])
+
         # Atomic write
         receipt_path = Path(spec.receipt_path)
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = receipt_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(receipt.to_dict()), encoding="utf-8")
         os.replace(tmp_path, receipt_path)
-
-        # CR-03 (DR-13): collect the agent's judgement and bind it to the
-        # facts. AFTER the receipt, because the receipt records that the
-        # PROCESS ended and this records what the AGENT concluded -- two
-        # different facts, and the process one must survive even if the agent
-        # wrote nothing readable.
-        _write_typed_results(spec, log_text)
 
         # Append event
         state = storage.load_state(spec.project, spec.task_id)

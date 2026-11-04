@@ -983,8 +983,24 @@ def publish_versioned_variants(
     latest_pointer: bool = True,
     target_commitish: Optional[str] = None,
     release_notes: Optional[ReleaseNotes] = None,
+    extra_assets: Sequence[Path] = (),
+    require_existing_targets: bool = False,
+    latest_pointer_recreate: bool = True,
+    expected_tag_commit: Optional[str] = None,
+    verify_assets: bool = False,
 ) -> Dict[str, Any]:
     """Publish N per-interpreter variants under ONE ``<prefix>-v<version>`` release.
+
+    Additions for retained build-output publication (KI-115), all inert by default:
+
+    * ``extra_assets``: release-level files uploaded under their own names (a project's
+      ``get.py``); an upload name that collides with another asset is refused up front.
+    * ``require_existing_targets`` / ``latest_pointer_recreate`` / ``expected_tag_commit``:
+      the same contract as :func:`publish_versioned` -- the release and its tag must
+      already exist at the build's source commit, no Git ref is created or recreated.
+    * ``verify_assets``: after the versioned release is written, list its assets and refuse
+      (before the ``-latest`` pointer moves) unless EVERY expected asset is present, so
+      the pointer never advertises a partially published release.
 
     Each variant contributes a deterministically-named asset
     (``<prefix>-v<version>-<name><asset_suffix>``) plus its ``.sha256`` sidecar and any
@@ -999,9 +1015,35 @@ def publish_versioned_variants(
     """
     if not variants:
         _die("publish_versioned_variants requires at least one variant")
+    if require_existing_targets and (
+        target_commitish is not None or (latest_pointer and latest_pointer_recreate)
+    ):
+        _die(
+            "require_existing_targets cannot create or recreate Git refs; "
+            "omit target_commitish and disable latest_pointer_recreate"
+        )
 
     released = is_release_version(version)
+    if require_existing_targets and not released:
+        _die(f"build-output publication needs a release version, got {version!r}")
     release_tag = version_to_tag(prefix, version)
+    latest_tag = f"{prefix}-latest"
+
+    # Refuse every malformed input BEFORE any file is written or uploaded: a duplicate
+    # variant, a missing file, or two uploads sharing one name would otherwise publish a
+    # release that silently lacks (or overwrites) part of the matrix.
+    seen_variants: set[str] = set()
+    for v in variants:
+        if v.name in seen_variants:
+            _die(f"publish_versioned_variants: duplicate variant {v.name!r}")
+        seen_variants.add(v.name)
+        for source in (Path(v.asset_path), *(Path(e) for e in v.extra_assets)):
+            if not source.is_file():
+                _die(f"variant {v.name!r}: {source} is not a file; refusing a partial release")
+    release_level = [Path(e) for e in extra_assets]
+    for source in release_level:
+        if not source.is_file():
+            _die(f"release-level asset {source} is not a file; refusing a partial release")
 
     records: List[Dict[str, Any]] = []
     assets: List[Path] = []
@@ -1022,14 +1064,91 @@ def publish_versioned_variants(
             "url": gh.asset_download_url(release_tag, canonical) if released else None,
             "label": v.label,
         })
+    assets.extend(release_level)
+    upload_names = [a.name for a in assets]
+    duplicated = sorted({n for n in upload_names if upload_names.count(n) > 1})
+    if duplicated:
+        _die(f"asset name collision, refusing to publish: {duplicated}")
+    if "latest.json" in upload_names:
+        _die("asset name 'latest.json' is reserved for the thin pointer")
 
-    result: Dict[str, Any] = {"version": version, "release_tag": None, "variants": records}
+    update_latest_pointer = latest_pointer
+    resolved_release_ids: Dict[str, int] = {}
+    resolved_commits: Dict[str, str] = {}
+    if require_existing_targets:
+        if latest_pointer:
+            newer_version = _newer_release_version(gh, prefix, version)
+            if newer_version is not None:
+                update_latest_pointer = False
+                print(
+                    f"[INFO] Keeping {latest_tag} on newer {prefix}-v{newer_version}; "
+                    f"retained build {release_tag} is older"
+                )
+        required_tags = [release_tag] + ([latest_tag] if latest_pointer else [])
+        for tag in required_tags:
+            existing = gh.get_release_by_tag(tag)
+            if existing is None:
+                _die(
+                    f"build-output publication cannot verify the existing GitHub Release {tag}; "
+                    "confirm it exists and is accessible"
+                )
+            if not isinstance(existing, dict):
+                _die(f"build-output publication received a malformed GitHub Release record for {tag}")
+            release_id = existing.get("id")
+            if type(release_id) is not int or release_id <= 0:
+                _die(f"build-output publication cannot verify the existing GitHub Release ID for {tag}")
+            if existing.get("tag_name") != tag:
+                _die(f"build-output publication received a malformed GitHub Release identity for {tag}")
+            resolved_release_ids[tag] = release_id
+            commit = gh.get_tag_commit(tag)
+            if commit is None:
+                _die(
+                    f"build-output publication cannot verify the existing Git tag {tag}; "
+                    "confirm it exists and is accessible"
+                )
+            resolved_commits[tag] = commit
+        if not expected_tag_commit or resolved_commits[release_tag] != expected_tag_commit:
+            _die(
+                f"build-output source commit {expected_tag_commit!r} "
+                f"does not match existing release tag {release_tag} "
+                f"({resolved_commits[release_tag]})"
+            )
+
+    def publish_assets(
+        tag: str, body: str, files: List[Path], *, recreate: bool = False,
+    ) -> Dict[str, Any]:
+        if require_existing_targets:
+            return gh.publish(
+                tag, tag, body, files, recreate=recreate,
+                target_commitish=target_commitish, require_existing_release=True,
+                expected_release_id=resolved_release_ids[tag],
+                expected_tag_commit=resolved_commits[tag],
+            )
+        return gh.publish(
+            tag, tag, body, files, recreate=recreate, target_commitish=target_commitish,
+        )
+
+    result: Dict[str, Any] = {
+        "version": version, "release_tag": None, "variants": records,
+        "assets": upload_names,
+    }
 
     if released:
         body = build_variants_release_body(
             prefix, version, records=records, notes=notes, release_notes=release_notes,
         )
-        gh.publish(release_tag, release_tag, body, assets, target_commitish=target_commitish)
+        published = publish_assets(release_tag, body, assets)
+        if verify_assets:
+            release_id = published.get("id") if isinstance(published, dict) else None
+            if type(release_id) is not int:
+                _die(f"cannot verify the assets of {release_tag}: no release ID was returned")
+            present = {a.get("name") for a in gh.list_assets(release_id)}
+            missing = [n for n in upload_names if n not in present]
+            if missing:
+                _die(
+                    f"{release_tag} is missing {missing} after upload; refusing to move "
+                    f"{latest_tag}. Re-run the publish step: it replaces same-named assets"
+                )
         result["release_tag"] = release_tag
         print(f"[INFO] Published immutable multi-variant release {release_tag} "
               f"({', '.join(r['name'] for r in records)})")
@@ -1037,29 +1156,41 @@ def publish_versioned_variants(
         print(f"[INFO] Dev build {version} — no immutable version release")
 
     if latest_pointer:
-        latest_tag = f"{prefix}-latest"
         if released:
-            manifest = Path(variants[0].asset_path).with_name("latest.json")
-            manifest.write_text(json.dumps({
-                "project": prefix,
-                "version": version,
-                "tag": release_tag,
-                "variants": [
-                    {"name": r["name"], "asset": r["asset"], "sha256": r["sha256"],
-                     "url": r["url"], "label": r["label"]}
-                    for r in records
-                ],
-                "note": "multi-variant release — pick a variant at install time "
-                        "(get.py --variant <name>); assets live on the versioned release",
-            }, indent=2) + "\n", encoding="utf-8")
-            gh.publish(latest_tag, latest_tag,
-                       f"{prefix} latest → {version} "
-                       f"({len(records)} variants; thin pointer, see latest.json)",
-                       [manifest], recreate=True)
-            print(f"[INFO] Refreshed thin pointer {latest_tag} → {release_tag}")
+            if update_latest_pointer and require_existing_targets:
+                newer_version = _newer_release_version(gh, prefix, version)
+                if newer_version is not None:
+                    update_latest_pointer = False
+                    print(
+                        f"[INFO] Keeping {latest_tag} on newer {prefix}-v{newer_version}; "
+                        f"retained build {release_tag} is older"
+                    )
+            if update_latest_pointer:
+                manifest = Path(variants[0].asset_path).with_name("latest.json")
+                manifest.write_text(json.dumps({
+                    "project": prefix,
+                    "version": version,
+                    "tag": release_tag,
+                    "variants": [
+                        {"name": r["name"], "asset": r["asset"], "sha256": r["sha256"],
+                         "url": r["url"], "label": r["label"]}
+                        for r in records
+                    ],
+                    "note": "multi-variant release — pick a variant at install time "
+                            "(get.py --variant <name>); assets live on the versioned release",
+                }, indent=2) + "\n", encoding="utf-8")
+                publish_assets(
+                    latest_tag,
+                    f"{prefix} latest → {version} "
+                    f"({len(records)} variants; thin pointer, see latest.json)",
+                    [manifest], recreate=latest_pointer_recreate,
+                )
+                print(f"[INFO] Refreshed thin pointer {latest_tag} → {release_tag}")
         else:
-            gh.publish(latest_tag, latest_tag, f"{prefix} latest (dev → {version})",
-                       assets, recreate=True)
+            publish_assets(
+                latest_tag, f"{prefix} latest (dev → {version})", assets,
+                recreate=latest_pointer_recreate,
+            )
             print(f"[INFO] Moved {latest_tag} (dev variant assets → {version})")
 
     return result

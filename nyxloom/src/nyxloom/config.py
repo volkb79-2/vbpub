@@ -62,7 +62,11 @@ class GateDef:
     # GA2 (docs/plan-gate-adoption.md checklist item 7 "rigor declared"): an
     # optional, self-reported list of what this gate actually enforces --
     # constrained by the schema enum to {tests-pass, changed-line-coverage,
-    # mutation, canary-verified, assay-verdict}. Defaults to [] (undeclared
+    # coverage-floor, mutation, canary-verified, assay-verdict}.
+    # `coverage-floor` (NL-25) = the gate enforces its own configured
+    # coverage floor (target and line/branch scope per the gate's contract);
+    # it is distinct from, and never aliased to, `changed-line-coverage`.
+    # Defaults to [] (undeclared
     # -- the GA1 behavior, unchanged).
     asserts: list[str] = field(default_factory=list)
 
@@ -273,15 +277,6 @@ class Policy:
     # about). nyxloom's own nyxloom.toml sets 14 -- dogfooding, and the reason
     # this is not a dead stub (P43's guard).
     test_health_interval_days: int = 0
-    # GA4 2026-07-25 (module contract item 16, mirrors test_health_interval_days
-    # above): cadence in DAYS for the periodic re-verification that this
-    # project's declared gate still REJECTS a known-bad canary (GA1's `nyxloom
-    # gate verify` probe, re-run on a schedule instead of only ever run by
-    # hand). 0 disables it (the default: a gate can quietly stop
-    # discriminating -- a lint exclusion widens, a test gets skipped -- with
-    # nothing else in the daemon noticing, but a project must opt in before
-    # nyxloom starts spending a background subprocess probe on it unasked).
-    gate_verify_interval_days: int = 0
     # F007 2026-07-27 (gap-engine, module contract item 17): activity-counted
     # threshold (in changed LINES across gap_audit_source_paths) for the
     # periodic gap-audit carve trigger. UNLIKE its neighbors (time-based cadences
@@ -506,6 +501,13 @@ class ProjectConfig:
         # http_bind as an unknown key, so this drop is belt-and-braces, not silent.
         policy_data = dict(data.get("policy", {}))
         policy_data.pop("http_bind", None)
+        # NL-14: gate_verify_interval_days was retired with GA4 (nyxloom-P98).
+        # An existing nyxloom.toml may still carry it; accept and drop it
+        # LOUDLY when set, rather than failing the load or silently no-oping.
+        retired_interval = policy_data.pop("gate_verify_interval_days", None)
+        if retired_interval:
+            log.warning("policy key retired and ignored",
+                        key="gate_verify_interval_days", value=retired_interval)
         pol = Policy(**policy_data)
         # P38 2026-07-16 / 2026-07-20: the env var is the authority (see above).
         # Absent, the safe loopback default from Policy stands.

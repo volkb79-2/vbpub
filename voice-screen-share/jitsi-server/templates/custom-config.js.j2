@@ -1,0 +1,64 @@
+// custom-config.js: rendered by ciu from [jitsi.client] and [jitsi.theme]
+// (ciu.defaults.toml.j2), mounted at /config/custom-config.js. The web image
+// appends this file to the generated config.js, so `config` already exists and
+// every assignment below overrides the image default.
+{% if jitsi.client.enabled -%}
+// ---- Client features ([jitsi.client]) ----
+config.disableAGC = {{ 'true' if jitsi.client.disable_agc else 'false' }};
+config.disableAEC = {{ 'true' if jitsi.client.disable_aec else 'false' }};
+config.disableNS = {{ 'true' if jitsi.client.disable_ns else 'false' }};
+config.audioQuality = config.audioQuality || {};
+config.audioQuality.stereo = {{ 'true' if jitsi.client.stereo else 'false' }};
+{% if jitsi.client.opus_max_average_bitrate > 0 -%}
+config.audioQuality.opusMaxAverageBitrate = {{ jitsi.client.opus_max_average_bitrate }};
+{% endif -%}
+config.connectionIndicators = Object.assign(config.connectionIndicators || {}, {
+    disabled: {{ 'true' if jitsi.client.connection_indicators_disabled else 'false' }},
+    autoHide: {{ 'true' if jitsi.client.connection_indicators_auto_hide else 'false' }}
+});
+config.disableShowMoreStats = {{ 'true' if jitsi.client.disable_show_more_stats else 'false' }};
+config.speakerStats = Object.assign(config.speakerStats || {}, {
+    disableSearch: {{ 'false' if jitsi.client.speaker_stats_search else 'true' }},
+    order: {{ jitsi.client.speaker_stats_order | tojson }}
+});
+{% if jitsi.client.statistics_display_name -%}
+config.statisticsDisplayName = {{ jitsi.client.statistics_display_name | tojson }};
+{% endif -%}
+{% if jitsi.client.desktop_sharing_framerate_max > 0 -%}
+config.desktopSharingFrameRate = {
+    min: {{ jitsi.client.desktop_sharing_framerate_min }},
+    max: {{ jitsi.client.desktop_sharing_framerate_max }}
+};
+{% endif -%}
+{% else -%}
+// [jitsi.client] enabled = false: no client overrides.
+{% endif -%}
+
+{% if jitsi.theme.enabled -%}
+// ---- Dark theme ([jitsi.theme]) ----
+// Runs while index.html is still parsing (config.js is inlined into <head> by
+// nginx SSI): paint the page dark at once, then link the stylesheet.
+(function () {
+    if (typeof document === 'undefined' || !document.head) {
+        return;
+    }
+    var root = document.documentElement;
+
+    root.style.colorScheme = 'dark';
+    root.style.backgroundColor = {{ jitsi.theme.background | tojson }};
+
+    var meta = document.createElement('meta');
+
+    meta.name = 'color-scheme';
+    meta.content = 'dark';
+    document.head.appendChild(meta);
+
+    var link = document.createElement('link');
+
+    link.rel = 'stylesheet';
+    link.href = '/static/theme/theme-dark.css';
+    document.head.appendChild(link);
+}());
+{% else -%}
+// [jitsi.theme] enabled = false: no theme is loaded.
+{% endif -%}

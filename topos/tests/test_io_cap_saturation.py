@@ -264,3 +264,73 @@ def _make_sample(raw_counters: dict[str, int]):
         metrics={},
         raw_counters=raw_counters,
     )
+
+
+# ── B-012: per-device caps, rates and attribution ────────────────────────────
+
+
+def test_read_io_max_caps_by_device_keeps_devices_apart(tmp_path: Path) -> None:
+    from topos.collect.cgroup import read_io_max_caps_by_device
+
+    path = tmp_path / "io.max"
+    path.write_text("8:16 rbps=1000 wbps=max\n\n8:32 rbps=max wbps=5000 riops=bad\n8:48 rbps=max\n")
+    devices, src = read_io_max_caps_by_device(path)
+    assert src == "exact"
+    assert devices == {"8:16": {"rbps": 1000}, "8:32": {"wbps": 5000}}
+
+
+def test_read_io_max_caps_by_device_missing_file(tmp_path: Path) -> None:
+    from topos.collect.cgroup import read_io_max_caps_by_device
+
+    devices, src = read_io_max_caps_by_device(tmp_path / "io.max")
+    assert devices == {} and src in ("unavail_kernel", "unavail_perm")
+
+
+def test_collect_cgroup_emits_per_device_counters(tmp_path: Path) -> None:
+    from topos.collect.cgroup import collect_cgroup
+
+    unit = tmp_path / "demo.scope"
+    unit.mkdir()
+    (unit / "io.stat").write_text(
+        "8:16 rbytes=10 wbytes=20 rios=1 wios=2 dbytes=0 dios=0\n"
+        "8:32 rbytes=100 wbytes=200 rios=10 wios=20 dbytes=0 dios=0\n"
+    )
+    (unit / "io.max").write_text("8:16 rbps=max wbps=1000 riops=max wiops=max\n")
+    sample = collect_cgroup(tmp_path, "demo.scope", Entity(key="demo.scope", kind="scope", parent=""))
+    assert sample.raw_counters["io.stat:wbytes"] == 220  # aggregate unchanged
+    assert sample.raw_counters["io.stat@8:16:wbytes"] == 20
+    assert sample.raw_counters["io.stat@8:32:wbytes"] == 200
+    assert sample.raw_counters["io.max@8:16:wbps"] == 1000
+    assert "io.max@8:32:wbps" not in sample.raw_counters
+
+
+def test_io_cap_saturation_is_judged_per_device_with_attribution() -> None:
+    """Summing rates and caps hid a saturated capped device behind an idle one."""
+    from topos.collect.collector import Collector
+
+    c = Collector(config=ToposConfig(), cgroup_root=Path("/dev/null"))
+    caps = {"io.max@8:16:wbps": 1_000, "io.max@8:32:wbps": 1_000}
+    first = {"io.stat:wbytes": 0, "io.stat@8:16:wbytes": 0, "io.stat@8:32:wbytes": 0, **caps}
+    c._derived_rates("demo.scope", _make_sample(first), interval_s=1.0)
+    second = {
+        "io.stat:wbytes": 1_000,           # aggregate: 1000 / (1000+1000) would read 50%
+        "io.stat@8:16:wbytes": 1_000,      # this device is at 100% of its own cap
+        "io.stat@8:32:wbytes": 0,
+        "io.max:wbps": 2_000,
+        **caps,
+    }
+    rates = c._derived_rates("demo.scope", _make_sample(second), interval_s=1.0)
+    assert rates["io_cap_saturation_pct"].v == 100.0
+    assert c.io_saturation_device["demo.scope"] == "8:16 wbps"
+
+
+def test_io_cap_saturation_ignores_uncapped_device_traffic() -> None:
+    from topos.collect.collector import Collector
+
+    c = Collector(config=ToposConfig(), cgroup_root=Path("/dev/null"))
+    base = {"io.stat@8:16:wbytes": 0, "io.stat@8:32:wbytes": 0, "io.max@8:16:wbps": 1_000}
+    c._derived_rates("demo.scope", _make_sample(dict(base)), interval_s=1.0)
+    busy = dict(base, **{"io.stat@8:32:wbytes": 10_000_000, "io.stat@8:16:wbytes": 250})
+    rates = c._derived_rates("demo.scope", _make_sample(busy), interval_s=1.0)
+    assert rates["io_cap_saturation_pct"].v == 25.0
+    assert c.io_saturation_device["demo.scope"] == "8:16 wbps"

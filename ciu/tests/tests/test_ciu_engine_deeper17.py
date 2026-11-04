@@ -65,3 +65,51 @@ def test_hook_secret_lookup_denies_unknown_name_before_secret_materialization(
 
     assert engine.main(["--dry-run", "-d", str(stack), "--root-folder", str(tmp_path)]) == 1
     assert "unknown secret denied" in capsys.readouterr().out
+
+
+def test_hook_secret_lookup_resolves_hook_persisted_name_but_not_a_never_persisted_one(
+    tmp_path, monkeypatch, capsys
+):
+    """CIU-102 / S9.4a: a hook can read back a secret a hook persisted.
+
+    The name has no directive, so only the provenance sidecar knows it. It
+    resolves to the stack store path (even if the file itself is gone); a name
+    that was never persisted still raises ``KeyError``.
+    """
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    stack = tmp_path / "stack"
+    store = stack / ".ciu" / "secrets"
+    store.mkdir(parents=True)
+    (store / ".hook-persisted.toml").write_text(
+        '[secrets]\nminted_token = "hook:post_compose.py"\n', encoding="utf-8"
+    )
+    merged = {
+        "deploy": {"project_name": "demo", "environment_tag": "test"},
+        "demo": {"hooks": {"pre_secrets": ["secret-check"]}},
+    }
+    monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
+    monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kwargs: None)
+    monkeypatch.setattr(engine, "enforce_standalone_root", lambda _path: None)
+    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *_args: {})
+    monkeypatch.setattr(engine, "configure_logging", lambda *_args: None)
+    monkeypatch.setattr(engine.config_model, "render_stack", lambda *_args, **_kwargs: {"demo": {}})
+    monkeypatch.setattr(engine, "ensure_workspace_network", lambda **_kwargs: None)
+    monkeypatch.setattr(engine.config_model, "deep_merge", lambda *_args: merged)
+    monkeypatch.setattr(engine.config_model, "validate_stack_shape", lambda _stack: "demo")
+    monkeypatch.setattr(engine.secret_directives, "discover", lambda *_args: [])
+    monkeypatch.setattr(engine.secret_directives, "find_misplaced", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(engine, "_check_gitignore", lambda _path: None)
+    monkeypatch.setattr(engine, "auto_generate_values", lambda config: config)
+    monkeypatch.setattr(engine, "create_hostdirs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(engine, "_dood_preflight", lambda *_args: None)
+    monkeypatch.setattr(engine, "to_physical_path", lambda path, **_kwargs: path)
+
+    def secret_check(_hooks, point, _config, ctx, _stack_toml, **_kw):
+        assert ctx.secret_file("minted_token") == stack / ".ciu" / "secrets" / "minted_token"
+        with pytest.raises(KeyError, match="never_minted"):
+            ctx.secret_file("never_minted")
+        raise engine.hooks_runner.HookExecutionError("lookup checked")
+
+    monkeypatch.setattr(engine.hooks_runner, "run_hooks", secret_check)
+    assert engine.main(["--dry-run", "-d", str(stack), "--root-folder", str(tmp_path)]) == 1
+    assert "lookup checked" in capsys.readouterr().out

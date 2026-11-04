@@ -108,7 +108,10 @@ def test_skipped_files_are_counted_not_hidden(tmp_path):
     assert hits == [] and skipped == 2
 
 
-def test_a_git_failure_in_a_full_monorepo_fails_instead_of_skipping(tmp_path):
+def test_a_git_failure_in_a_full_monorepo_fails_instead_of_skipping(tmp_path, monkeypatch):
+    # The basetemp may sit inside a checkout (the gate keeps it under .run-gate/); stop Git's upward
+    # search at tmp_path so the directory really is "not a git tree".
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     (tmp_path / "run-gate.root.toml").write_text("", encoding="utf-8")  # looks like the monorepo, is not a git tree
     with pytest.raises(RuntimeError, match="git ls-files failed"):
         check_repository(tmp_path)

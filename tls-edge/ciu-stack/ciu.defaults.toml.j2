@@ -14,6 +14,14 @@
 
 [tls_edge]
 stack_name = "edge-proxy"
+# The operator's base domain (e.g. "example.test").  Every service gets its OWN
+# host name under it (app.<domain>) and its OWN certificate; the edge itself
+# does not need it for routing (routers carry their own Host() rule), so it is
+# informational for the edge and the single input consumers read as
+# TLS_EDGE_DOMAIN (see docs/INSTALL.md, consumer-examples/).  Never commit a
+# real domain: it lives in the instance's ciu.toml.j2 (written by the get.py
+# wizard), not in tracked files.
+domain = ""
 # Forced to true by scripts/render_standalone.py; ciu leaves it false.
 standalone = false
 # Filesystem location prefix for the standalone bind mounts of traefik.yml and
@@ -33,6 +41,10 @@ ingress_network = "ingress_public"
 # Isolated bridge between traefik and the docker socket proxy.  Nothing else
 # may join it.
 internal_network = "traefik_internal"
+# true: adopt an EXISTING ingress_network instead of creating it (migration from
+# a hand-made deployment whose consumers are already attached; see
+# docs/INSTALL.md "Migrate").  false: the stack creates and owns it.
+ingress_external = false
 # ciu repos only: additionally attach traefik to the shared workspace network
 # ({{ '{{ deploy.network_name }}' }}) so ciu-managed app stacks can be routed
 # without joining ingress_network.
@@ -52,7 +64,7 @@ api_insecure = false
 
 [tls_edge.dockerproxy]
 name = "dockerproxy"
-image = "tecnativa/docker-socket-proxy:v0.4.2"
+image = "tecnativa/docker-socket-proxy:v0.5.0"
 
 [tls_edge.ports]
 # "" binds dual-stack (IPv4 + IPv6 when the host supports it).  Set "0.0.0.0"
@@ -61,19 +73,24 @@ image = "tecnativa/docker-socket-proxy:v0.4.2"
 bind_ip = ""
 http = 80
 https = 443
-https_alt = 8443
-# DEFAULT OFF: the edge is a TLS-only service; port 80 stays free on the host.
-# Enabling adds the HTTP->HTTPS redirect entrypoint and permits tls.mode
-# "acme-http" (HTTP-01 challenge).
-expose_http = false
+# The edge publishes exactly three public ports: 80/tcp (HTTP -> HTTPS
+# redirect and the HTTP-01 challenge), 443/tcp (HTTPS, host-name routing: one
+# host name and one certificate per service) and 8443 tcp+udp (the Calls media
+# pair, see [tls_edge.calls]).  There is NO alternate HTTPS port.
+# false drops the :80 listener (TLS-only edge; then tls.mode "acme-http" is
+# refused).
+expose_http = true
 
 [tls_edge.calls]
-# Optional raw media listeners for Mattermost Calls. Disabled for normal
-# tls-edge deployments. If enabled, TCP and UDP share one public port; TCP
-# uses its own Traefik container entrypoint so it cannot collide with HTTPS.
-enabled = false
-public_port = 8444
-tcp_internal_port = 8444
+# Raw media listeners for Mattermost Calls: ON by default, in agreement with
+# the Mattermost project's own default ([mattermost.calls] port/public_port =
+# 8443). TCP and UDP share the number 8443 publicly and inside the container
+# (a TCP and a UDP socket do not collide). Agreement is pinned by
+# tests/test_calls_defaults_agree.py.
+# Set enabled = false for an edge that must not open a media port.
+enabled = true
+public_port = 8443
+tcp_internal_port = 8443
 udp_internal_port = 8443
 
 [tls_edge.runtime]
@@ -114,6 +131,9 @@ ca_server = "https://acme-v02.api.letsencrypt.org/directory"
 # Use the staging CA for first-time experiments to avoid LE rate limits:
 #   ca_server = "https://acme-staging-v02.api.letsencrypt.org/directory"
 resolver_name = "letsencrypt"
+# Name of an EXISTING docker volume holding acme.json to adopt (migration);
+# "" lets the stack create and own its own acme-data volume.
+volume_name = ""
 
 [tls_edge.acme.dns]
 # lego provider code: cloudflare | hetzner | route53 | desec | rfc2136 | ...
@@ -158,10 +178,14 @@ max_file = "3"
 
 [tls_edge.secrets]
 # Empty by default — the standalone renderer rejects entries here (secrets
-# directives need ciu).  ciu users running acme-dns add to their gitignored
-# ciu.toml.j2:
+# directives need ciu).  Under ciu, acme-dns declares the DNS credential here
+# (the get.py adapter writes this into the instance's ciu.toml.j2):
 #   [tls_edge.secrets]
-#   dns_api_token = "ASK_EXTERNAL:CF_DNS_API_TOKEN"   # or ASK_VAULT:<path>
+#   dns_api_token = { directive = "ASK_EXTERNAL:CF_DNS_API_TOKEN", mode = "0444" }
+# mode 0444: Traefik runs as root with every capability but NET_BIND_SERVICE
+# dropped, so it cannot read a file owned by another uid with mode 0400.
+# `ciu up` reads the value from that environment variable (or prompts) once and
+# caches it in ciu's secret store (ciu secrets list|reset).
 
 # ─── ciu configfile mounts (S5; ignored by the standalone renderer, which
 #     bind-mounts ./traefik.yml and ./conf.d instead) ──────────────────────────

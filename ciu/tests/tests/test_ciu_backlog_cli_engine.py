@@ -12,6 +12,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import cli, deploy, engine  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _no_instance_record_seed(monkeypatch):
+    """These tests stub the verb bodies; CIU-139's seeding has its own tests
+    (test_ciu_resolve_unprimed_env.py) against a real generated record."""
+    monkeypatch.setattr(cli, "_seed_selected_root_env", lambda _root: None)
+
+
 def test_resolve_cli_requires_json_and_emits_document(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "_resolve_repo_root_deploy", lambda _root: tmp_path)
     seen = {}
@@ -137,7 +144,7 @@ def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_pa
             calls.append((root, identity, yes, expected_checkout)) or 0
         ),
     )
-    monkeypatch.setattr(sys, "argv", ["ciu", "clean", "--identity", "ab12cd", "-y"])
+    monkeypatch.setattr(sys, "argv", ["ciu", "clean", "--identity", "ab12cd", "--yes"])
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 0
@@ -146,7 +153,7 @@ def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_pa
     expected_checkout = str(tmp_path / "old")
     monkeypatch.setattr(
         sys, "argv",
-        ["ciu", "clean", "--identity", "ab12cd", "--expected-checkout", expected_checkout, "-y"],
+        ["ciu", "clean", "--identity", "ab12cd", "--expected-checkout", expected_checkout, "--yes"],
     )
     with pytest.raises(SystemExit) as exc:
         cli.main()
@@ -157,7 +164,7 @@ def test_clean_identity_cli_routes_and_rejects_mixed_options(monkeypatch, tmp_pa
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 2
-    assert "cannot be combined" in capsys.readouterr().err
+    assert "cannot be used together" in capsys.readouterr().err
 
 
 def test_shipped_single_stack_healthcheck_success_and_failure_paths(monkeypatch, tmp_path, capsys):

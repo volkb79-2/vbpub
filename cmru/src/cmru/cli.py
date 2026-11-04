@@ -461,12 +461,7 @@ def _create_bound_cmru_launcher(directory: Path) -> Path:
     worktree_root = repo_root / "libraries/worktree/src"
     if worktree_root.is_dir():
         import_roots.append(worktree_root)
-    program = (
-        "import sys; "
-        f"sys.path[:0] = {[str(path) for path in import_roots]!r}; "
-        "from cmru.cli import main; "
-        "raise SystemExit(main())"
-    )
+    program = _bound_launcher_program(import_roots)
     launcher.write_text(
         "#!/bin/sh\n"
         f"exec {shlex.quote(sys.executable)} -c {shlex.quote(program)} \"$@\"\n",
@@ -494,6 +489,28 @@ def _create_bound_cmru_launcher(directory: Path) -> Path:
     return launcher
 
 
+def _bound_launcher_program(import_roots: Sequence[Path]) -> str:
+    """The ``python -c`` program of the bound launcher.
+
+    KI-67: an import root that carries a ``*.egg-info`` (a stale dev build, or a
+    legacy editable install) would, placed first on ``sys.path``, win the
+    ``importlib.metadata`` lookup over the installed distribution and make the
+    identity check refuse every project command. Such a root is APPENDED, so the
+    installed metadata resolves first and the identity check judges the installed
+    release (a genuinely different copy is still refused, never silently run);
+    every other root keeps the first position.
+    """
+    first = [str(path) for path in import_roots if not any(Path(path).glob("*.egg-info"))]
+    last = [str(path) for path in import_roots if any(Path(path).glob("*.egg-info"))]
+    return (
+        "import sys; "
+        f"sys.path[:0] = {first!r}; "
+        f"sys.path.extend({last!r}); "
+        "from cmru.cli import main; "
+        "raise SystemExit(main())"
+    )
+
+
 def _bound_launcher_metadata_hint(import_roots: list[Path]) -> str:
     """Name where the launcher's interpreter resolves cmru's distribution metadata.
 
@@ -501,10 +518,10 @@ def _bound_launcher_metadata_hint(import_roots: list[Path]) -> str:
     ``cmru.egg-info`` under the source root shadows the installed release's metadata.
     The refusal is correct (fail closed) but its cause is otherwise invisible.
     """
+    path_setup = _bound_launcher_program(import_roots).split("from cmru.cli", 1)[0]
     probe = (
-        "import sys; "
-        f"sys.path[:0] = {[str(path) for path in import_roots]!r}; "
-        "import importlib.metadata as m; "
+        path_setup
+        + "import importlib.metadata as m; "
         "print(getattr(m.distribution('cmru'), '_path', None))"
     )
     try:
@@ -2717,12 +2734,24 @@ def _native_release_logging_scope() -> Iterator[None]:
             # TextIOWrapper may be block-buffered when stdout is a pipe. Flush
             # while fd 1/2 still point at tee or buffered release output would
             # land on the restored descriptors after this scope exits.
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os.dup2(current.saved_stdout, 1)
-            os.dup2(current.saved_stderr, 2)
-            os.close(current.saved_stdout)
-            os.close(current.saved_stderr)
+            flush_error: OSError | ValueError | None = None
+            try:
+                for stream in (sys.stdout, sys.stderr):
+                    try:
+                        stream.flush()
+                    except (OSError, ValueError) as exc:
+                        # A broken pipe or closed stream must not skip the
+                        # descriptor restore below, nor mask the in-flight
+                        # exception.
+                        if flush_error is None:
+                            flush_error = exc
+            finally:
+                os.dup2(current.saved_stdout, 1)
+                os.dup2(current.saved_stderr, 2)
+                os.close(current.saved_stdout)
+                os.close(current.saved_stderr)
+            if flush_error is not None and active_exception is not None:
+                active_exception.add_note(f"release log flush failed: {flush_error!r}")
             try:
                 current.process.wait(timeout=5)
             except subprocess.TimeoutExpired as exc:
@@ -2734,6 +2763,8 @@ def _native_release_logging_scope() -> Iterator[None]:
                 if active_exception is None:
                     raise error from exc
                 active_exception.add_note(f"{error}; cleanup timeout: {exc}")
+            if flush_error is not None and active_exception is None:
+                raise flush_error
 
 
 def _release_logging_scoped(function):
@@ -6564,10 +6595,35 @@ def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
             github_config=github_config,
         )
     else:
-        _release_child(
-            vargs, repo_root, configs, ordered, project_order, selected_names,
-            github_config, env_config, git_auth,
-        )
+        with _resumed_dry_run_leaves_candidate_tip_unchanged(vargs, repo_root):
+            _release_child(
+                vargs, repo_root, configs, ordered, project_order, selected_names,
+                github_config, env_config, git_auth,
+            )
+
+
+@contextmanager
+def _resumed_dry_run_leaves_candidate_tip_unchanged(vargs, repo_root: Path) -> Iterator[None]:
+    """KI-102: a ``--dry-run --resume`` must leave the retained candidate's tip alone.
+
+    The dry run prepares external-version inputs and the release-body preview
+    commits the prepared outputs; on a resumed run that worktree is the retained
+    candidate, which the launcher then reports as retained unchanged. Restore
+    the tip afterwards, on every exit path.
+    """
+    if not (vargs.dry_run and getattr(vargs, "resume", None)):
+        yield
+        return
+    head_before = _git(repo_root, "rev-parse", "HEAD")
+    try:
+        yield
+    finally:
+        if _git(repo_root, "rev-parse", "HEAD") != head_before:
+            run_local_git(repo_root, "reset", "--hard", head_before, check=True)
+            log_info(
+                f"[DRY RUN] discarded the prepared-inputs commit(s); the candidate tip is "
+                f"back at {head_before[:12]}"
+            )
 
 
 def _status(vargs, runtime, repo_root: Path, configs, selected_names: List[str]) -> None:
@@ -8703,7 +8759,7 @@ def _build_cli():
     from cmru.handlers import handlers_cli
     from cmru.tester_gate import tester_gate_cli
     from cmru.resolve import resolve_cli
-    from cmru.getpy import getpy_cli
+    from cmru.getpy import getpy_cli, installer_cli
     from cmru.standards import standards_cli
     from cmru.tool_deps import tool_deps_cli
     delegated.extend((
@@ -8712,7 +8768,8 @@ def _build_cli():
         VerbSpec("handler", description="Run a concrete project-step handler.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=handlers_cli(), include_json=False, include_progress=False),
         VerbSpec("tester-gate", description="Run one command inside tester-unified.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=tester_gate_cli(), include_json=False, include_progress=False),
         VerbSpec("resolve", description="Resolve a project's latest published artifact.", group=VerbGroup.EXPLORATION.value, delegate=resolve_cli(), include_json=False, include_progress=False),
-        VerbSpec("get-py", description="Emit the standalone Python installer.", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=getpy_cli(), include_json=False, include_progress=False),
+        VerbSpec("installer", description="Render or check a project's generated standalone installer (get.py).", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=installer_cli(), include_json=False, include_progress=False),
+        VerbSpec("get-py", description="DEPRECATED alias of 'installer render' (removal in a later major release).", group=VerbGroup.MODIFICATION.value, mutating=True, delegate=getpy_cli(), include_json=False, include_progress=False),
         VerbSpec("standards", description="Check or update CMRU framework markers.", group=VerbGroup.MIXED.value, mutating=True, delegate=standards_cli(), include_json=False, include_progress=False),
         VerbSpec("tool-deps", description="Verify declared tool dependency integrity, authenticity, and freshness.", group=VerbGroup.MIXED.value, mutating=True, delegate=tool_deps_cli(), include_json=False, include_progress=False),
     ))

@@ -927,9 +927,12 @@ class TestLeaseCli:
         with pytest.raises(SystemExit):
             cli._worktree(["lease", "one", "--root-folder", str(tmp_repo)])
 
-    def test_the_verb_is_documented_in_usage_and_verb_help(self):
-        assert "worktree lease" in cli._USAGE
-        assert "--perpetual" in cli._VERB_HELP["worktree"]
+    def test_the_verb_is_registered_with_its_three_modes(self):
+        from ciu.cli_registry import build_cli
+
+        verbs = {v.name: v for v in build_cli().delegates["worktree"].registered_verbs}
+        flags = {f for option in verbs["lease"].options for f in option.flags}
+        assert {"--extend", "--perpetual", "--release"} <= flags
 
 
 # ===========================================================================

@@ -6,7 +6,6 @@ import shutil
 import stat
 import struct
 import subprocess
-import tempfile
 from pathlib import Path
 
 import cowtree.backends as backend_module
@@ -543,28 +542,33 @@ def test_ingest_tree_falls_back_to_bytes_on_exdev_only(tmp_path):
 
 def test_plain_backend_and_cp_reflink_auto_fallback(tmp_path):
     cp = "cp"
-    source_root = Path(__file__).parent
+    # The scratch dir is tmp_path, never the source tree: assay isolation runs
+    # tests from a snapshot whose filesystem (overlay, tmpfs, ext4) varies.
+    # The expectation is derived from the scratch filesystem itself.
     mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
-    assert mount_fstype(str(source_root), mountinfo) == "ext4", "registered tester-unified lane needs ext4 for this fallback probe"
-    with tempfile.TemporaryDirectory(dir=source_root) as scratch:
-        scratch_dir = Path(scratch)
-        source = scratch_dir / "source"
-        source.write_bytes(b"ext4 fallback" * 4096)
-        always_destination = scratch_dir / "always-copy"
-        always = subprocess.run([cp, "--reflink=always", str(source), str(always_destination)], capture_output=True, check=False)
-        assert always.returncode != 0
-        cp_destination = scratch_dir / "cp-copy"
-        completed = subprocess.run([cp, "--reflink=auto", str(source), str(cp_destination)], capture_output=True, check=False)
-        assert completed.returncode == 0 and cp_destination.read_bytes() == source.read_bytes()
+    fstype = mount_fstype(str(tmp_path.resolve()), mountinfo)
+    reflink_capable = fstype in {"btrfs", "xfs", "zfs", "bcachefs"}
+    scratch_dir = tmp_path
+    source = scratch_dir / "source"
+    source.write_bytes(b"fallback" * 4096)
+    always_destination = scratch_dir / "always-copy"
+    always = subprocess.run([cp, "--reflink=always", str(source), str(always_destination)], capture_output=True, check=False)
+    if not reflink_capable:
+        # Fallback path under test: no reflink support, so --always must fail
+        # while --auto degrades to a plain copy.
+        assert always.returncode != 0, fstype
+    cp_destination = scratch_dir / "cp-copy"
+    completed = subprocess.run([cp, "--reflink=auto", str(source), str(cp_destination)], capture_output=True, check=False)
+    assert completed.returncode == 0 and cp_destination.read_bytes() == source.read_bytes()
 
-        plain_destination = scratch_dir / "plain-copy"
-        CopyBackend().clone_file(str(source), str(plain_destination))
-        assert plain_destination.read_bytes() == source.read_bytes()
+    plain_destination = scratch_dir / "plain-copy"
+    CopyBackend().clone_file(str(source), str(plain_destination))
+    assert plain_destination.read_bytes() == source.read_bytes()
 
-        strict = ReflinkBackend(FakeOps(clone_error=errno.EOPNOTSUPP))
-        with pytest.raises(BackendFailed) as caught:
-            strict.clone_file(str(source), str(scratch_dir / "strict-clone"))
-        assert caught.value.errno == errno.EOPNOTSUPP
+    strict = ReflinkBackend(FakeOps(clone_error=errno.EOPNOTSUPP))
+    with pytest.raises(BackendFailed) as caught:
+        strict.clone_file(str(source), str(scratch_dir / "strict-clone"))
+    assert caught.value.errno == errno.EOPNOTSUPP
 
 
 def test_ingest_cross_fs_copies_once(tmp_path, monkeypatch):

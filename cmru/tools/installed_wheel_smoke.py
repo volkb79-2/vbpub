@@ -230,7 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         run_env.pop("PYTHONPATH", None)
         run_env["PYTHONNOUSERSITE"] = "1"
         _run(
-            [str(env_dir / "bin" / "cmru"), "get-py", "demo", "--config", str(config), "--output", str(output)],
+            [str(env_dir / "bin" / "cmru"), "installer", "render", "demo", "--config", str(config), "--output", str(output)],
             cwd=tmp_path,
             env=run_env,
         )

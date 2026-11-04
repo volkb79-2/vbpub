@@ -120,8 +120,9 @@ growth can still use contiguous free space before the next existing partition.
 guest RAM using `min(RAM × 2, round(20% of disk capacity))`, expressed in GiB.
 Twice the RAM rounds up to a whole GiB; 20% of actual disk bytes rounds to the
 nearest GiB, with half-GiB ties upward. The retained pre-root swap partition,
-when present, is included in that target. For the suggested 20–512 GB disk and
-4–128 GB RAM range, see the [default sizing table](../README.md#disk--swap).
+when present, is included in that target. The example table covers nominal
+20–512 GB disks and 4–128 GB RAM; see the
+[default sizing table](../README.md#disk--swap).
 The default count is four total managed partitions, including retained
 pre-root swap; set `swap_partition_count` to change it. The nominal-capacity
 examples and the reasons for this sizing rule are in the
@@ -235,6 +236,238 @@ After first boot and installation, detach the seed ISO so a later cloud-init
 clean/reboot cannot consume the same credentials again. Review
 [the design note](DESIGN-GUIDE.md#private-vm-seed-iso-and-moving-profiles) for
 the moving-profile contract and the documented bootstrap handoff race.
+For a local QEMU first-boot acceptance test and non-secret guest checks, see
+the [VM usage/testing guide](../testing/vm/USAGE-TESTING.md).
+
+For a native-versus-TCG Geekbench 6 comparison, run the VM harness from a
+root host shell in a physical checkout (not from the devcontainer) and
+explicitly select the built-in `system.slice` parent:
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT/scripts/debian-install-v2/testing/vm"
+export CGROUP_PARENT_DEV_GATES=system.slice
+export BUILDX_BUILDER=mdt-managed  # use the host's configured Buildx builder
+export MDT_VM_SOURCE_DIR="$REPO_ROOT/scripts/debian-install"
+./run-vm-harness.sh start geekbench-tcg --case case-b \
+  --ssh-port 2230 --mem 4096 --smp 4 --disk-gb 20 --no-apt-cache
+```
+
+The wrapper checks that `system.slice` is loaded and the slice itself has no
+CPU/memory limits or CPU-set restriction. A host-wide Docker transient-scope
+backstop may still constrain the runner; inspect its live cgroup as described
+in the [benchmark procedure](../testing/vm/USAGE-TESTING.md#geekbench-6-tcg-guest-versus-native-host).
+`MDT_VM_SOURCE_DIR` mounts the sibling repository script read-only into the
+runner so it can be copied into the guest. This bypasses the gate slice only
+for that explicit manual benchmark and can compete with production workloads;
+wait for a quiet host and follow the
+[network-lockdown Geekbench steps](../testing/vm/USAGE-TESTING.md#geekbench-6-tcg-guest-versus-native-host)
+to block guest egress after downloading, with an optional narrow Browser
+allowlist if you want to publish the result.
+The documented run uses the cloud-init `case-b` image; NoCloud needs a
+different first-boot credential path, described in the guide's
+[image-choice notes](../testing/vm/USAGE-TESTING.md#image-choice).
+Geekbench identifies the virtual CPU as `QEMU TCG CPU`; the native comparison
+uses four-CPU affinity on the EPYC host. Geekbench may still report the host's
+full CPU topology; record both the affinity and reported topology. The free
+Geekbench binary automatically uploads results and returned exit 255 without
+scores in our offline attempt, so allow host egress only if publication is
+acceptable (or use a license with offline support). The successful run scored
+1,667 single-core / 4,596 multi-core and is public at
+[Geekbench Browser result 19341831](https://browser.geekbench.com/v6/cpu/19341831);
+its claim URL is private under `artifacts/vm-lab/`.
+Geekbench's single- and multi-core sequences run sequentially and can exceed
+the repository runner's 15-minute convenience timeout; invoke the downloaded
+binary directly with the three-hour bound in the
+[benchmark procedure](../testing/vm/USAGE-TESTING.md#geekbench-6-tcg-guest-versus-native-host).
+The same procedure shows host cgprofile sampling at five-second intervals.
+Correlate its whole-runner memory series with host-timestamped Geekbench
+workload output and an idle-VM baseline for approximate per-phase elapsed time
+and host-charged memory; this is not guest process RSS. Keep any claim URL in
+the ignored `artifacts/vm-lab/` folder; do not commit it. The guide links
+Geekbench's published per-workload working-set figures, clearly distinguished
+from measured peak RSS. The reviewed Geekbench 6 materials do not document a
+control for per-workload runtime. Do not substitute another benchmark or invent
+flags. No fast mode is planned unless Geekbench officially documents such a
+control. Any officially supported shortened run would be diagnostic, not an
+official comparable score unless Geekbench says otherwise, because the
+published composite aggregates the full suite's workload scores.
+The guide also explains that the
+documented five-second workload gaps add at most about 2 minutes 35 seconds to
+the full CPU suite; the TCG runtime is actual workload execution. Do not
+shorten it by using undocumented switches or modifying the binary.
+
+## Boot a Debian cloud VM with the private seed ISO
+
+Use a Debian Trixie generic cloud image as the VM's boot disk and the ISO from
+`build-iso` as a separate NoCloud data CD-ROM. The seed ISO is not bootable and
+is not an operating-system installer. In every hypervisor, set the Debian disk
+first in boot order; keep the seed CD-ROM attached as cloud-init metadata.
+
+The Debian installer grows/manages the guest root and swap partitions on its
+boot disk. Give that virtual disk the capacity your target needs. The README
+shows nominal 20–512 GB example disks; these are examples, not a supported
+capacity range. See the [disk/swap overview](../README.md#disk--swap). The
+downloaded QCOW2's file size is compressed storage use, not its guest virtual
+capacity. Inspect/resize the virtual disk before first boot.
+
+### Prepare the artifacts
+
+On a Linux workstation, build the private seed ISO as described above. Then
+download the current Trixie amd64 generic cloud QCOW2 and verify its SHA-512
+checksum using the matching entry from Debian's checksum file:
+
+```bash
+IMAGE_BASE='https://cloud.debian.org/images/cloud/trixie/latest'
+IMAGE='debian-13-genericcloud-amd64.qcow2'
+curl -fLO "$IMAGE_BASE/$IMAGE"
+curl -fLO "$IMAGE_BASE/SHA512SUMS"
+set -o pipefail
+grep -F "$IMAGE" SHA512SUMS | sha512sum --check -
+```
+
+The image is published in Debian's [Trixie cloud image directory](https://cloud.debian.org/images/cloud/trixie/latest/).
+The `latest` directory moves when Debian publishes a new image. Keep the
+checksum file from the same directory as the image. The installer ISO contains
+per-host secrets; transfer and store it as a private file.
+
+### TrueNAS 27+
+
+TrueNAS needs hardware virtualization exposed to it, memory for both TrueNAS
+and the Debian guest, a VM storage pool, and an active network bridge. Read
+TrueNAS's [VM management guide](https://www.truenas.com/docs/scale/27/virtualmachines/managingvms/)
+and [VM screen guide](https://www.truenas.com/docs/scale/27/virtualmachines/virtualmachinesscreens/),
+and check that its VM preflight reports hardware virtualization support. Do
+not select the Debian NoCloud seed ISO as bootable installation media: in the
+TrueNAS VM UI, create/import a Debian disk in **Disks**, then add the seed ISO
+as a CD-ROM device. The virtual disk is the boot medium.
+
+1. Copy the Debian QCOW2 and private seed ISO into a dataset, for example
+   `/mnt/tank/staging/`. Use an existing secured SMB/NFS share or SSH/SCP.
+2. In **Virtual Machines**, create a UEFI Debian VM. Set the intended vCPU and
+   RAM amounts, and attach a NIC to a bridge that can reach APT and the selected
+   Git remote over HTTPS. Keep the VM stopped and disable autostart through disk
+   conversion; the API client refuses import unless both conditions hold.
+3. Add the Debian disk by importing the QCOW2 into a new ZFS volume. Set the
+   target virtual disk capacity explicitly. `tnt` (`truenas/tnt`) does not
+   have this verb yet (backlog TNT-61); until it does, use the reference client
+   from the [prior-art directory](../../../truenas/tnt/docs/prior-art/truenas-vm/docs/CONSUMERS.md)
+   (install and API-key setup are described there):
+
+   ```bash
+   ./truenas-vm.py disk-image-import 4 \
+     --source /mnt/tank/staging/debian-13-genericcloud-amd64.qcow2 \
+     --zvol-name tank/vm/debian-root --zvol-size-gib 40
+   ```
+
+   Replace VM ID, pool/dataset, and capacity with the values chosen for this
+   host. The CLI checks that the requested ZFS volume is large enough for the
+   image and uses TrueNAS to create and fill the volume. Do not start the VM
+   until conversion is confirmed complete; the device's automatic boot order
+   does not prevent an incomplete disk from booting. If import is interrupted
+   or fails, follow the job-check and storage-recovery steps in the
+   [reference client guide](../../../truenas/tnt/docs/prior-art/truenas-vm/docs/CONSUMERS.md).
+4. Add a CD-ROM device whose path is
+   `/mnt/tank/staging/debian-vbpub.iso`. Add or verify a bridged NIC and set
+   boot order with the Debian disk first and the CD-ROM second. The ISO only
+   supplies cloud-init data.
+5. Open the VM console, start the VM, and confirm cloud-init reaches the
+   installer launcher. After the installer finishes both stages, detach the
+   seed ISO before the next boot.
+
+For VM create, device, power-state and console steps through the API, use
+[`tnt`](../../../truenas/tnt/README.md) (for example `tnt vm create` and
+`tnt vm console`); it requires a TLS WebSocket endpoint and TrueNAS 27.0 or
+newer. The reference client above additionally lists, updates and deletes
+individual VM devices.
+
+### Proxmox VE with ZFS storage
+
+On the Proxmox node, select an unused VM ID, a ZFS storage that accepts VM
+images, and a bridge connected to the network the Debian guest should use.
+`pvesm status` shows configured storage names and types; do not assume a storage
+called `local-zfs` exists. Upload the seed ISO to a storage that accepts ISO
+images, using the Proxmox UI or its documented storage path.
+
+Create the UEFI VM and import the QCOW2 to the selected ZFS storage:
+
+```bash
+VMID=900
+ZFS_STORAGE='your-zfs-storage-id'
+BRIDGE='your-bridge-name'
+IMAGE='./debian-13-genericcloud-amd64.qcow2'
+qm create "$VMID" --name debian-vbpub --memory 4096 --cores 2 \
+  --machine q35 --bios ovmf --scsihw virtio-scsi-single \
+  --net0 "virtio,bridge=$BRIDGE"
+qm set "$VMID" --efidisk0 "$ZFS_STORAGE:1"
+qm importdisk "$VMID" "$IMAGE" "$ZFS_STORAGE"
+qm config "$VMID"
+```
+
+Read the `unusedN` disk entry printed by `qm config` and copy its storage volume
+ID into `UNUSED_DISK`. The EFI disk may have consumed disk number 0, so derive
+this value from `qm config` instead of assuming its number:
+
+```bash
+UNUSED_DISK='your-zfs-storage-id:vm-900-disk-1'
+qm set "$VMID" --scsi0 "$UNUSED_DISK"
+qm resize "$VMID" scsi0 40G
+qm set "$VMID" --ide2 'your-iso-storage-id:iso/debian-vbpub.iso,media=cdrom'
+qm set "$VMID" --boot 'order=scsi0;ide2'
+qm start "$VMID"
+```
+
+Replace the VM ID, both storage IDs, bridge, and disk capacity. The example
+resizes the imported guest disk to 40 GiB; choose a capacity that fits the
+target workload. Disk import and resize are separate Proxmox operations. Open
+the VM console to follow the first boot and installer, then remove the seed
+CD-ROM device after successful stage two. See the official
+[Proxmox VE administration guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.html)
+for `qm importdisk`, VM storage, and disk attachment details.
+
+### Hyper-V
+
+Hyper-V needs a VHDX boot disk. Convert the QCOW2 with `qemu-img` on a machine
+where it is installed, then grow the VHDX to the intended VM disk capacity
+before attaching it. In PowerShell, select an existing virtual switch from
+`Get-VMSwitch` and set its exact name below:
+
+```powershell
+$Image = (Resolve-Path .\debian-13-genericcloud-amd64.qcow2).Path
+$Vhdx = Join-Path $PWD 'debian-vbpub.vhdx'
+$SeedIso = (Resolve-Path .\debian-vbpub.iso).Path
+$VmName = 'debian-vbpub'
+$VmPath = Join-Path $env:ProgramData "Microsoft\Windows\Hyper-V\$VmName"
+$SwitchName = 'replace-with-an-existing-switch'
+
+qemu-img convert -p -f qcow2 -O vhdx -o subformat=dynamic $Image $Vhdx
+Resize-VHD -Path $Vhdx -SizeBytes 40GB
+New-VM -Name $VmName -Generation 2 -MemoryStartupBytes 4GB `
+  -VHDPath $Vhdx -Path $VmPath -SwitchName $SwitchName
+Add-VMDvdDrive -VMName $VmName -Path $SeedIso
+$Disk = Get-VMHardDiskDrive -VMName $VmName
+$Dvd = Get-VMDvdDrive -VMName $VmName
+Set-VMFirmware -VMName $VmName -EnableSecureBoot On `
+  -SecureBootTemplate MicrosoftUEFICertificateAuthority `
+  -BootOrder $Disk, $Dvd
+Start-VM -Name $VmName
+```
+
+Replace the 40 GiB capacity and switch name for the target. This uses a
+Generation 2 UEFI VM and boots the hard disk before the NoCloud data CD-ROM.
+Open the Hyper-V console to follow first boot. Detach the seed DVD after the
+installer finishes stage two. See Microsoft's [`New-VM`](https://learn.microsoft.com/en-us/powershell/module/hyper-v/new-vm?view=windowsserver2025-ps)
+and [`Set-VMFirmware`](https://learn.microsoft.com/en-us/powershell/module/hyper-v/set-vmfirmware?view=windowsserver2025-ps)
+reference for generation and boot-order details.
+
+### First-boot checks
+
+The VM needs outbound HTTPS and working APT sources. It also needs a reachable
+public Git remote and the configured bootstrap and `cli-extended` release
+manifest URLs. If cloud-init does not find the seed, verify the ISO label is
+`cidata`, the CD-ROM is attached as a data disk, and the VM still boots the
+Debian disk first. Do not change the installer ISO or treat the NoCloud ISO as
+an operating-system boot medium.
 
 To inspect a real target host’s partition plan, run `plan` on that host. It
 reads the host’s root disk and does not write to it:

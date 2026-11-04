@@ -26,6 +26,13 @@ tools/gate.sh /path/to/worktree     # a nyxloom worktree
 tools/canary-run.sh                 # prove the oracles still reject bad code
 ```
 
+When the checkout is a linked Git worktree, the drivers translate the cockpit
+path through the enclosing Docker host mount and mount the worktree's common
+Git directory read-only as well. This lets coverage and canary commands use
+Git comparisons without requiring a manually supplied path. If the Docker
+daemon refuses privileged containers, the privileged-e2e lane exits 3 as
+infrastructure failure; it is not recorded as a passing skip.
+
 Both need a **verified** host cgroup tier. Resolution order:
 
 1. `$SRDM_CGROUP_PARENT` — the explicit per-project override, which is what

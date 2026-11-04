@@ -1,0 +1,37 @@
+# ==========================================================================
+# Global CIU defaults for tls-edge (standalone root)
+# ==========================================================================
+# tls-edge is its own CIU root: `cd <instance>/stack && ciu up` deploys the one
+# stack under ciu-stack/.  The same file serves a development checkout of
+# vbpub/tls-edge and the get.py instance (<root>/stack/).
+
+[deploy]
+project_name = "tls-edge"
+# Short, stable instance identity (ciu hashes the physical root path into
+# $INSTANCE_ID; the get.py `stable_dir` keeps that path unchanged across updates).
+environment_tag = "$INSTANCE_ID"
+network_name = "$DOCKER_NETWORK_INTERNAL"
+log_level = "INFO"
+
+[deploy.phases.phase_1]
+name = "tls-edge"
+services = [
+  { path = "ciu-stack", name = "tls-edge", enabled = true },
+]
+
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+[ciu]
+standalone_root = true
+# The edge terminates TLS itself and runs on a plain host, not in a
+# devcontainer: it owns its networks (ingress_public, traefik_internal), so the
+# devcontainer-attach machinery has nothing to do.
+require_certs = false
+require_fqdn = false
+auto_connect_network = false
+
+[state]
+initialized = false

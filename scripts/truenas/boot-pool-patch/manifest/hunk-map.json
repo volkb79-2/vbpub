@@ -1,0 +1,2815 @@
+{
+  "hunks": [
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/vm/info.py",
+      "hunk": 1,
+      "hunk_sha256": "7ec867864d41f017aca5297dc206a96b9ec00168faf0f8e55d98d888dfb59697",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/vm/info.py",
+      "hunk": 2,
+      "hunk_sha256": "2536022206e538239027610559fa3bd92f13d8edc24fa6e13d75cd90a31286a2",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/vm/info.py",
+      "hunk": 3,
+      "hunk_sha256": "4cbe3879ac7d19dbd0f8aeac08351b67d65d40fed6a48b14094c496a5f4ef29f",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/vm/info.py",
+      "hunk": 4,
+      "hunk_sha256": "cc0ab4fc6865709d3bf4cc26dc6d2f3e92a8bcd7c6741544b2647ac6b3a43567",
+      "legacy_changed_lines": 3,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 3
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/boot.py",
+      "hunk": 5,
+      "hunk_sha256": "088897a371b9782e0a2775436c41462e7edc40b3a7dce2a60fc078619fe7af56",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "path-b-boot-attach-guard"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-b-boot-attach-guard",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/async_validators.py",
+      "hunk": 1,
+      "hunk_sha256": "2d664bf559178bc153d35484a7ee3f21a5b8b370234cb3654ca655e34feea6a5",
+      "legacy_changed_lines": 39,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 42
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/async_validators.py",
+      "hunk": 2,
+      "hunk_sha256": "f2d9c369538bde55262d506fee64fcfe4fbba4337ad4470854d76b7fbedd44a4",
+      "legacy_changed_lines": 40,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 43
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/container.py",
+      "hunk": 3,
+      "hunk_sha256": "684815f039c7952079a4457c5a7c44a8031118ab07f846f48b9ee02ccc354530",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/container.py",
+      "hunk": 4,
+      "hunk_sha256": "562db9870e1b71c921a4846587bab06fb887f09b2be03ee526abe77b0372e562",
+      "legacy_changed_lines": 42,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 42
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 5,
+      "hunk_sha256": "bf31f382c7011ead2d713fbd411c87c059eaceb61753f8cdc667d86492d0afe1",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 6,
+      "hunk_sha256": "3aeca0c577739a3fd647672f932ad32dad28ebdea3defa46d6290bcba81d0e4e",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 7,
+      "hunk_sha256": "187b6b44cc42a9b7e30e702c87ccc11e97a74c40f31c34e623fba7fcfd0a3de2",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 8,
+      "hunk_sha256": "d4fbb56ab08a955ee71339866dd6eba8920edcfd6f687026fe933d4693dcca73",
+      "legacy_changed_lines": 10,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 10
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/image.py",
+      "hunk": 9,
+      "hunk_sha256": "579115df198b2f94c1b59214a0bed5ad3802429f846f253e43d4983ab5f001af",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/image.py",
+      "hunk": 10,
+      "hunk_sha256": "ae2977311559932de99eb29c4333ec5718bd2d25901473dc891c90d720a4e064",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/lifecycle.py",
+      "hunk": 11,
+      "hunk_sha256": "bda3f53bc11dc4b4d88a404560790173128a2d05d79466c4390f968ce74cfe63",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/lifecycle.py",
+      "hunk": 12,
+      "hunk_sha256": "b736e33dbadb6f41e82b5a8fb316886360faafb08c4206878e5db802339083f9",
+      "legacy_changed_lines": 6,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/lifecycle.py",
+      "hunk": 13,
+      "hunk_sha256": "7637ab3a0bdb0cf437de27fa5970d48a1884d7702c4da9a3de2a036c7913ee26",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/utils.py",
+      "hunk": 14,
+      "hunk_sha256": "7a66b6eb73fb2ed03bbb423493088cd06933d0e373e746f5c4f7c066b3be7a24",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/utils.py",
+      "hunk": 15,
+      "hunk_sha256": "cf2e75c70d5679add95e33a20343b1f54017f1b29f31519fc7be01666d3b718a",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/container/utils.py",
+      "hunk": 16,
+      "hunk_sha256": "9b7f5e482acd0f56501ef9e22816d0a8fecd27ebb54041d12393dbde9a0e5edc",
+      "legacy_changed_lines": 17,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 17
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 17,
+      "hunk_sha256": "189516b9d40900a16c92089a492cd1a38b9e6e158ec78c343a89262d28799308",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 18,
+      "hunk_sha256": "c9b3d96d5697d200b1013fb4312a1773d8b3c21b99ffa43f7b562d7bc2cd8099",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 19,
+      "hunk_sha256": "17b03e00bdd5b8306282addf259760c34fdb1105bcf202010163191897ec04d9",
+      "legacy_changed_lines": 29,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 34
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 20,
+      "hunk_sha256": "d05199422eb7c3d8ddadb93e4a0aa4c5fef31e15cdffcbd745d2acaf75c961b6",
+      "legacy_changed_lines": 15,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 23
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 21,
+      "hunk_sha256": "8a613204e741cedfb779e9c37115829ee69d4a361883c0d45ed9518771613562",
+      "legacy_changed_lines": 9,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 14
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 22,
+      "hunk_sha256": "8f2232580aa4b65cf1e6a9ceeb7d86cf004fbf353468b1b2d8c102f560f0cbe6",
+      "legacy_changed_lines": 3,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 23,
+      "hunk_sha256": "dc400c1698fa4351cb93f06bab8527fb1ea2167518cd036819271309385a2462",
+      "legacy_changed_lines": 7,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 13
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 24,
+      "hunk_sha256": "2ee8573a61597227fc338daf8fdb12efa408372d7f31d2cf1005712695995e5b",
+      "legacy_changed_lines": 6,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 7
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 25,
+      "hunk_sha256": "52e98443f0b09987f5f05c67c818ec090273ebf848a7132f55a89dc6ab4bb9ec",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 6
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 26,
+      "hunk_sha256": "a8ae0675070c2965b79a72d0e31ee62636e312e8ad7a233621d5131aad2d4749",
+      "legacy_changed_lines": 21,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 27
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+      "hunk": 27,
+      "hunk_sha256": "d45b88831be594f07ededb397e844dfcb444c717db01919cad1f813bb0e5893c",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+      "hunk": 28,
+      "hunk_sha256": "875f367dc8ef9a6742bddb9422913acbbe7b20c2412e8c264af3b423a12039ae",
+      "legacy_changed_lines": 8,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+      "hunk": 29,
+      "hunk_sha256": "db6e3ec5cf5f562470b5cda7b9e4cb63d25e5a2307ed3dac666f681c9c5e864a",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/vm/vm_devices.py",
+      "hunk": 30,
+      "hunk_sha256": "bf8dfb864c0f158b2d33ab0addd0dd6eb4132fc3de13333b13fdfb4d3030f96c",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/vm/vm_devices.py",
+      "hunk": 31,
+      "hunk_sha256": "e9969386078da5545c96cd117d60839f621e1e0b2fb880b2f5a5dbcbf4f2d61c",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/vm/vm_devices.py",
+      "hunk": 32,
+      "hunk_sha256": "f90ea96a065cc57ad3692f6cb42b8dba0356a83baf083558d9b2586dd769c461",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/vm/vm_devices.py",
+      "hunk": 33,
+      "hunk_sha256": "97a104477e5c0ff11e2c056cce50fcdb0536145274a5c1c719bbb2a9d0cec894",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/zfs/utils.py",
+      "hunk": 34,
+      "hunk_sha256": "a8fc224d71888c038db93457456f4217d0f9772a5a50f543bc104f9f874c62ff",
+      "legacy_changed_lines": 11,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 11
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/utils/libvirt/storage_devices.py",
+      "hunk": 35,
+      "hunk_sha256": "e9932687091d7d7e492233ad43eea3423edd2f23e991a283f99d34b8bf3090c1",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/utils/libvirt/storage_devices.py",
+      "hunk": 36,
+      "hunk_sha256": "5d03bf5c04397ebb1b4ad554ca58ed957595b3af4faf31c5fc7f78af8e651174",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/utils/libvirt/storage_devices.py",
+      "hunk": 37,
+      "hunk_sha256": "e6e4be88db765089b881aae75e7b0f744cf502845317bb9bb9a757aecff1add8",
+      "legacy_changed_lines": 40,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 40
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "truenas_pylibvirt/domain/vm/xml.py",
+      "hunk": 1,
+      "hunk_sha256": "55903aed02aded904d3a2e7ce44c37a3335e1c3c92069dc795375f9b135ab3d3",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "libvirt.patch",
+      "series_change_ids": [
+        "libvirt-qemu-fallback"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "libvirt-qemu-fallback",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "truenas_pylibvirt/domain/vm/xml.py",
+      "hunk": 2,
+      "hunk_sha256": "b9b2581a96392d2f993ad4332bb17a28b86311d0c0e1231956eb22b980931b59",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "libvirt.patch",
+      "series_change_ids": [
+        "libvirt-qemu-fallback"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "libvirt-qemu-fallback",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/import_pool.py",
+      "hunk": 1,
+      "hunk_sha256": "eec0cd9c639a9659f25bb6c9fa8cf620893086ec3b47541b626af398d58f948d",
+      "legacy_changed_lines": 6,
+      "legacy_patch": "boot-mount.patch",
+      "series_change_ids": [
+        "boot-pool-user-data-mount"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-pool-user-data-mount",
+          "changed_lines": 6
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/import_pool.py",
+      "hunk": 2,
+      "hunk_sha256": "3319eb8af359ff82b4876c7669728df4292a3b2378c0a7f380039ec1090793ba",
+      "legacy_changed_lines": 168,
+      "legacy_patch": "boot-mount.patch",
+      "series_change_ids": [
+        "boot-pool-user-data-mount"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-pool-user-data-mount",
+          "changed_lines": 169
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/import_pool.py",
+      "hunk": 3,
+      "hunk_sha256": "13911cfe3aae0c504d1399bcdd9df923e4542e03f0cc611d6d3830b5513c6e4c",
+      "legacy_changed_lines": 7,
+      "legacy_patch": "boot-mount.patch",
+      "series_change_ids": [
+        "boot-pool-user-data-mount"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-pool-user-data-mount",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/dataset_info.py",
+      "hunk": 1,
+      "hunk_sha256": "1fa7257b9dcfc70d0fb86acbeeb89ad71c1909232b2276208b9600aaaadd017b",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "zvol-blocksize.patch",
+      "series_change_ids": [
+        "boot-pool-zvol-default"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-pool-zvol-default",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 1,
+      "hunk_sha256": "7fe689b616051eb3fc4a9f4c9f7bec6f2dbcc6be596a4a8be269190741e6084a",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 2,
+      "hunk_sha256": "403d46136e9fecc8200d5c6a010493cf2cda949419c5cf5e9f78c18ec7611724",
+      "legacy_changed_lines": 3,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 3
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 3,
+      "hunk_sha256": "19ad32b7a3d868682c5674b3bb81dd9f797f22ef2b135c09be0db9ec07b18985",
+      "legacy_changed_lines": 44,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 45
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 4,
+      "hunk_sha256": "9282c41e89f9b62f3d2804cfac66830f5dba4b404d8fc048907a307b41d8d00e",
+      "legacy_changed_lines": 21,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 22
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/disk_/availability.py",
+      "hunk": 5,
+      "hunk_sha256": "32d3b0e856942b5ce6ae012b6b3c1342df8c3d2d737d31c6522b9e91b8491ead",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-nightly-20261029",
+      "build": "27.0.0-MASTER+20261029-173417",
+      "file": "middlewared/plugins/pool_/export.py",
+      "hunk": 6,
+      "hunk_sha256": "96ce052f70ed14bce72235c011edd1e95fd4781ad4342d4f1f21c8876cbf0f57",
+      "legacy_changed_lines": 8,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/vm/info.py",
+      "hunk": 1,
+      "hunk_sha256": "7ec867864d41f017aca5297dc206a96b9ec00168faf0f8e55d98d888dfb59697",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/vm/info.py",
+      "hunk": 2,
+      "hunk_sha256": "2536022206e538239027610559fa3bd92f13d8edc24fa6e13d75cd90a31286a2",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/vm/info.py",
+      "hunk": 3,
+      "hunk_sha256": "4cbe3879ac7d19dbd0f8aeac08351b67d65d40fed6a48b14094c496a5f4ef29f",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/vm/info.py",
+      "hunk": 4,
+      "hunk_sha256": "cc0ab4fc6865709d3bf4cc26dc6d2f3e92a8bcd7c6741544b2647ac6b3a43567",
+      "legacy_changed_lines": 3,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 3
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/boot.py",
+      "hunk": 5,
+      "hunk_sha256": "c16dba35d762dab00f01923d716a1d1925fd285fdb30f048822b588787f63cb3",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "path-b-boot-attach-guard"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-b-boot-attach-guard",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/async_validators.py",
+      "hunk": 1,
+      "hunk_sha256": "4bc1bf0128a3eaf1a056c9bff983e5de120e11281ce84d658297e723d33674ac",
+      "legacy_changed_lines": 8,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/async_validators.py",
+      "hunk": 2,
+      "hunk_sha256": "2f14ffd6ee2306124c5300db36687ba3602a3d2c1ae73e69d5277012948f363b",
+      "legacy_changed_lines": 31,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 34
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/async_validators.py",
+      "hunk": 3,
+      "hunk_sha256": "bc025e16e6063aab5f1b3afb2051b54307e3478e5287ffe68ce975273292cd0f",
+      "legacy_changed_lines": 40,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 43
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+      "hunk": 4,
+      "hunk_sha256": "d45b88831be594f07ededb397e844dfcb444c717db01919cad1f813bb0e5893c",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+      "hunk": 5,
+      "hunk_sha256": "875f367dc8ef9a6742bddb9422913acbbe7b20c2412e8c264af3b423a12039ae",
+      "legacy_changed_lines": 8,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+      "hunk": 6,
+      "hunk_sha256": "db6e3ec5cf5f562470b5cda7b9e4cb63d25e5a2307ed3dac666f681c9c5e864a",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 7,
+      "hunk_sha256": "54265f7b5bd1e924df3163a70e59ea5c26b02c805dd96b408d7258f61840f1f4",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 8,
+      "hunk_sha256": "e70c3c6e1c2b6661eeb5bb64b903cd3ca3325c49fb26ad17d86e75bb88c6763e",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 9,
+      "hunk_sha256": "85a6a44fa1bdff1ce262c1d810a3d3032e0f0ecfddadd473bc50a0f7f4678389",
+      "legacy_changed_lines": 29,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 34
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 10,
+      "hunk_sha256": "fb877dc4d85aceb829655be2a1227a969bb78e796595da162d6df356caa98243",
+      "legacy_changed_lines": 15,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 23
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 11,
+      "hunk_sha256": "67d6165d2a2947006077e1ca7a6bdc90d9a88d72dafb165723de7e9c8f176192",
+      "legacy_changed_lines": 9,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 14
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 12,
+      "hunk_sha256": "e2936b35862837297c9ddff21475f9f2c46e3a96c4542b9d54216604c73ed49e",
+      "legacy_changed_lines": 3,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 13,
+      "hunk_sha256": "4f32852942200ed6538d12d5e2cc115ddb10d3d652de7bed9b69e36620c37efd",
+      "legacy_changed_lines": 7,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 13
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 14,
+      "hunk_sha256": "cba778e97fc61bf993442d8b212eda8e3cdf656e784065759289f9d1da3d7fc3",
+      "legacy_changed_lines": 6,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 7
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 15,
+      "hunk_sha256": "4aae19379cb8b541acf6ef2498c807c7800255edc09c9dbd281156da36c17c73",
+      "legacy_changed_lines": 3,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 3
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 16,
+      "hunk_sha256": "a8a1ef75f2310f55bbddab242b0393aac8e999b75e1897da629f56c174be7dc4",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 6
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 17,
+      "hunk_sha256": "db885238d57ab10100e9902199aabb21c415f43721081f8c63820b2a41a78b39",
+      "legacy_changed_lines": 21,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 27
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/container.py",
+      "hunk": 18,
+      "hunk_sha256": "562f7caac807b76f9e77a030af0db89cb62ea51176dfd5a553a19b3139fd2235",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/container.py",
+      "hunk": 19,
+      "hunk_sha256": "1b41452cac403c249a02dc8406492e854594226b9d6b15fc26cf7f77ae4bbcd9",
+      "legacy_changed_lines": 42,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 42
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 20,
+      "hunk_sha256": "bf31f382c7011ead2d713fbd411c87c059eaceb61753f8cdc667d86492d0afe1",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 21,
+      "hunk_sha256": "3aeca0c577739a3fd647672f932ad32dad28ebdea3defa46d6290bcba81d0e4e",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 22,
+      "hunk_sha256": "187b6b44cc42a9b7e30e702c87ccc11e97a74c40f31c34e623fba7fcfd0a3de2",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 23,
+      "hunk_sha256": "d4fbb56ab08a955ee71339866dd6eba8920edcfd6f687026fe933d4693dcca73",
+      "legacy_changed_lines": 10,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 10
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/utils.py",
+      "hunk": 24,
+      "hunk_sha256": "7a66b6eb73fb2ed03bbb423493088cd06933d0e373e746f5c4f7c066b3be7a24",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/utils.py",
+      "hunk": 25,
+      "hunk_sha256": "cf2e75c70d5679add95e33a20343b1f54017f1b29f31519fc7be01666d3b718a",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/utils.py",
+      "hunk": 26,
+      "hunk_sha256": "1c4b9dbcdcc112d15b209a3d7841d72aff0d36d2efd84c49d97f46a9cd6d0cda",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/utils.py",
+      "hunk": 27,
+      "hunk_sha256": "44009a4a36ff5b66c03fc25289dd676c5c13f52a08b005ca2cba1b37833975b9",
+      "legacy_changed_lines": 12,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 12
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/image.py",
+      "hunk": 28,
+      "hunk_sha256": "579115df198b2f94c1b59214a0bed5ad3802429f846f253e43d4983ab5f001af",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/image.py",
+      "hunk": 29,
+      "hunk_sha256": "ae2977311559932de99eb29c4333ec5718bd2d25901473dc891c90d720a4e064",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/lifecycle.py",
+      "hunk": 30,
+      "hunk_sha256": "bda3f53bc11dc4b4d88a404560790173128a2d05d79466c4390f968ce74cfe63",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/lifecycle.py",
+      "hunk": 31,
+      "hunk_sha256": "b736e33dbadb6f41e82b5a8fb316886360faafb08c4206878e5db802339083f9",
+      "legacy_changed_lines": 6,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/container/lifecycle.py",
+      "hunk": 32,
+      "hunk_sha256": "7637ab3a0bdb0cf437de27fa5970d48a1884d7702c4da9a3de2a036c7913ee26",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/vm/vm_devices.py",
+      "hunk": 33,
+      "hunk_sha256": "bf8dfb864c0f158b2d33ab0addd0dd6eb4132fc3de13333b13fdfb4d3030f96c",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/vm/vm_devices.py",
+      "hunk": 34,
+      "hunk_sha256": "e9969386078da5545c96cd117d60839f621e1e0b2fb880b2f5a5dbcbf4f2d61c",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/vm/vm_devices.py",
+      "hunk": 35,
+      "hunk_sha256": "f90ea96a065cc57ad3692f6cb42b8dba0356a83baf083558d9b2586dd769c461",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/vm/vm_devices.py",
+      "hunk": 36,
+      "hunk_sha256": "97a104477e5c0ff11e2c056cce50fcdb0536145274a5c1c719bbb2a9d0cec894",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/utils/libvirt/storage_devices.py",
+      "hunk": 37,
+      "hunk_sha256": "e9932687091d7d7e492233ad43eea3423edd2f23e991a283f99d34b8bf3090c1",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/utils/libvirt/storage_devices.py",
+      "hunk": 38,
+      "hunk_sha256": "5d03bf5c04397ebb1b4ad554ca58ed957595b3af4faf31c5fc7f78af8e651174",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/utils/libvirt/storage_devices.py",
+      "hunk": 39,
+      "hunk_sha256": "e6e4be88db765089b881aae75e7b0f744cf502845317bb9bb9a757aecff1add8",
+      "legacy_changed_lines": 40,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 40
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/zfs/utils.py",
+      "hunk": 40,
+      "hunk_sha256": "90c8640e09337a3ef096b7b2fbb67f3219548c58931be11a448924b4626a88e9",
+      "legacy_changed_lines": 11,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 11
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "truenas_pylibvirt/domain/vm/xml.py",
+      "hunk": 1,
+      "hunk_sha256": "22ee605b218c4efbc70b14af812cdca03f8e070ad05a1a6236135d861aa39267",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "libvirt.patch",
+      "series_change_ids": [
+        "libvirt-qemu-fallback"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "libvirt-qemu-fallback",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "truenas_pylibvirt/domain/vm/xml.py",
+      "hunk": 2,
+      "hunk_sha256": "b9b2581a96392d2f993ad4332bb17a28b86311d0c0e1231956eb22b980931b59",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "libvirt.patch",
+      "series_change_ids": [
+        "libvirt-qemu-fallback"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "libvirt-qemu-fallback",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/import_pool.py",
+      "hunk": 1,
+      "hunk_sha256": "53bc6f728bb08608cde3712cb7d9a170a273c3d2756446acdf2d0b59f0e582e3",
+      "legacy_changed_lines": 6,
+      "legacy_patch": "boot-mount.patch",
+      "series_change_ids": [
+        "boot-pool-user-data-mount"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-pool-user-data-mount",
+          "changed_lines": 6
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/import_pool.py",
+      "hunk": 2,
+      "hunk_sha256": "576d1d84562f5fe18b380291739f8312382a167338dc72b1a1a5eaf03eb15020",
+      "legacy_changed_lines": 168,
+      "legacy_patch": "boot-mount.patch",
+      "series_change_ids": [
+        "boot-pool-user-data-mount"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-pool-user-data-mount",
+          "changed_lines": 169
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/import_pool.py",
+      "hunk": 3,
+      "hunk_sha256": "81d6cc5cc908d93338a9d79e45a177cb81b9809229088edb820db330ace22c50",
+      "legacy_changed_lines": 7,
+      "legacy_patch": "boot-mount.patch",
+      "series_change_ids": [
+        "boot-pool-user-data-mount"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-pool-user-data-mount",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/dataset_info.py",
+      "hunk": 1,
+      "hunk_sha256": "1fa7257b9dcfc70d0fb86acbeeb89ad71c1909232b2276208b9600aaaadd017b",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "zvol-blocksize.patch",
+      "series_change_ids": [
+        "boot-pool-zvol-default"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-pool-zvol-default",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 1,
+      "hunk_sha256": "7fe689b616051eb3fc4a9f4c9f7bec6f2dbcc6be596a4a8be269190741e6084a",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 2,
+      "hunk_sha256": "403d46136e9fecc8200d5c6a010493cf2cda949419c5cf5e9f78c18ec7611724",
+      "legacy_changed_lines": 3,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 3
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 3,
+      "hunk_sha256": "19ad32b7a3d868682c5674b3bb81dd9f797f22ef2b135c09be0db9ec07b18985",
+      "legacy_changed_lines": 44,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 45
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 4,
+      "hunk_sha256": "9282c41e89f9b62f3d2804cfac66830f5dba4b404d8fc048907a307b41d8d00e",
+      "legacy_changed_lines": 21,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 22
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/disk_/availability.py",
+      "hunk": 5,
+      "hunk_sha256": "9ba226b57a558b684404ecbda5ec180f966fad78330682dd03ca1ad2d47c35b2",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v27-rc1",
+      "build": "27.0.0-RC.1",
+      "file": "middlewared/plugins/pool_/export.py",
+      "hunk": 6,
+      "hunk_sha256": "dbd06f10c71e179bb13f64920bc036589b5469f4ba7c89fad181f91905f19719",
+      "legacy_changed_lines": 8,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/async_validators.py",
+      "hunk": 1,
+      "hunk_sha256": "83476d55bc4adc9bea5abc9785a64c16d069d70119a41310b650b95076126532",
+      "legacy_changed_lines": 10,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 10
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/async_validators.py",
+      "hunk": 2,
+      "hunk_sha256": "0362464725ce3fe1a92372197fc819ba3407729e405d2d98a642378c76f2b042",
+      "legacy_changed_lines": 27,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 29
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/async_validators.py",
+      "hunk": 3,
+      "hunk_sha256": "78d6d2adc98face1b0850eb0287e42ccef27353449e49ea70c6c741d99faa5da",
+      "legacy_changed_lines": 34,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 36
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/crud.py",
+      "hunk": 4,
+      "hunk_sha256": "3116b802f72327c360acdf842382a40c65720ca26020af30466ae30c47598c80",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 5,
+      "hunk_sha256": "6d0e638fa2277b1480414307c02b9e283562efada98bb4034ba254455bc8e15e",
+      "legacy_changed_lines": 8,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 6,
+      "hunk_sha256": "919105c564fb559a7dd92c1f765b202e1cc8de5cafb43d77892a116dda4acc61",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 7,
+      "hunk_sha256": "b4326f5e158f9b15f57db1997872cad11f5440036e78b71289894eeafe7322ac",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/dataset.py",
+      "hunk": 8,
+      "hunk_sha256": "64da1c71e68fa815978c8c8d1433e9d8291af2c44bc2b7688eee4b330f94c3e3",
+      "legacy_changed_lines": 8,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/info.py",
+      "hunk": 9,
+      "hunk_sha256": "2da796569123952faef238a92728f7f02dc4a44203524ca3bfde2b4fe5b64933",
+      "legacy_changed_lines": 8,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 9
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/info.py",
+      "hunk": 10,
+      "hunk_sha256": "9143b81bdb79d8aca746e9b9d4752711c3465fc55f9add81690065d4c5f3a793",
+      "legacy_changed_lines": 45,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 46
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/lifecycle.py",
+      "hunk": 11,
+      "hunk_sha256": "3aa069fc360e7e2d614f81f44c56e395b070eae9f78179f0c9e6913faea1a75c",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/lifecycle.py",
+      "hunk": 12,
+      "hunk_sha256": "e9d39b80857fdc8ebe2d05bbaefdfd79676ca27e4edc6c2fc6b25dd9d2952f95",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/lifecycle.py",
+      "hunk": 13,
+      "hunk_sha256": "9fa29ef79739152cb18dee8cf0726816662c07be40dde2a601848e8519a4b993",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/query_pull_images.py",
+      "hunk": 14,
+      "hunk_sha256": "b49404c09eed6b93481a3f4e3607be517db39f06d8861462ec7d9527c68e3e93",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/query_pull_images.py",
+      "hunk": 15,
+      "hunk_sha256": "cbfb9a97cee123623ba909b8a1410e8286cee8060e2cf7ab1ecf2aa728e2b05e",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/utils.py",
+      "hunk": 16,
+      "hunk_sha256": "4038b0f0e486dfa3915f3db2fb7e9f751aae97f80be423cd7f35ebfecfc0a0cd",
+      "legacy_changed_lines": 6,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 6
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/utils.py",
+      "hunk": 17,
+      "hunk_sha256": "7fcdae5e0707a9e721a26615cec258fdbb42e1b771792ab754a1b33e2c911bca",
+      "legacy_changed_lines": 9,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 9
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/container/utils.py",
+      "hunk": 18,
+      "hunk_sha256": "9b2558dcd80caab787cbecadceed589edeaf3142703b718308979703a146ce4a",
+      "legacy_changed_lines": 12,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "container-user-data-storage"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "container-user-data-storage",
+          "changed_lines": 12
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 19,
+      "hunk_sha256": "f987a868266b24fd44ddc98ec57d8f6f4421b21edd5be08286f0944deb0f2d69",
+      "legacy_changed_lines": 7,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 7
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 20,
+      "hunk_sha256": "63be5dcea38a3a530ba1093b6684691a6196fbb4a9684737860e582378230a0b",
+      "legacy_changed_lines": 28,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 31
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 21,
+      "hunk_sha256": "f59625358e1ded94e06d3a6d212f793c451f73a2a0e42baa98b44fb9238f885e",
+      "legacy_changed_lines": 14,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 29
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 22,
+      "hunk_sha256": "aa298915fb554079131a9942ac6d2df72b2e2cac29c3299de392e26fd33357cd",
+      "legacy_changed_lines": 14,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 26
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 23,
+      "hunk_sha256": "f7347d2384e2918d59a9f8cb4cec2ad08e48b2435d425ab067ebd8d966699ca5",
+      "legacy_changed_lines": 13,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 24
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 24,
+      "hunk_sha256": "893f6fa28c4df8c369d6dd7dfa12ed7fbfefca60e5b44ef036478fa458f5cce7",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 13
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/dataset.py",
+      "hunk": 25,
+      "hunk_sha256": "214df0bf4e0a8afabd54d3e6cbba574d372a864d577e4c26492c142665deb11f",
+      "legacy_changed_lines": 23,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 32
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/zfs/utils.py",
+      "hunk": 26,
+      "hunk_sha256": "e82b9cf27a92981eeadf268eb0f3ef06496c295e341d340bb1c539b451a61963",
+      "legacy_changed_lines": 3,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 3
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/zfs/utils.py",
+      "hunk": 27,
+      "hunk_sha256": "9517f8b314f04f19e08d472255af438422d331639d8e87a3f5b663fa0b7c853e",
+      "legacy_changed_lines": 11,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 11
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/utils/libvirt/storage_devices.py",
+      "hunk": 28,
+      "hunk_sha256": "5db6b797f658daa6b0f60b21498f0a6a9d71f7f11d50fdb24a90dcb7bb95d995",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/utils/libvirt/storage_devices.py",
+      "hunk": 29,
+      "hunk_sha256": "16d3c2a21c2878b6e4f167856c245f88e692cef5129e67be8599d3f23129d71b",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "workload-storage-path-guards"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "workload-storage-path-guards",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+      "hunk": 30,
+      "hunk_sha256": "6010d142565b9472080f1b1af0a7ff1b96e819a8c6d6b283a127c132b9db492b",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/dataset_query_utils.py",
+      "hunk": 31,
+      "hunk_sha256": "685f060a1569471e25931202edee8f1f034e6c8859f40dbc566d6c027c17a80c",
+      "legacy_changed_lines": 7,
+      "legacy_patch": "storage.patch",
+      "series_change_ids": [
+        "path-a-dataset-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "path-a-dataset-api",
+          "changed_lines": 7
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/vm/__init__.py",
+      "hunk": 1,
+      "hunk_sha256": "a902e6a993c06a1dd265b2a5fef69a17d51c9b8b9a1d985ee511e7b7de3b8c45",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/vm/__init__.py",
+      "hunk": 2,
+      "hunk_sha256": "7092a8dcaf3417c710ae82d9350843f02258024c4a0464251c2e4f257aaccb2a",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/vm/info.py",
+      "hunk": 3,
+      "hunk_sha256": "ed1e6113be0e4949dd83ba8f9f30d9117e5e971bead3a81e4cbd0a7fa0512843",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/vm/info.py",
+      "hunk": 4,
+      "hunk_sha256": "4fb7648e69da0571adb5cfd215a053035ff2879dbbe44099e3fd81e9997fa388",
+      "legacy_changed_lines": 7,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 7
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/vm/crud.py",
+      "hunk": 5,
+      "hunk_sha256": "ff925419b757d5e5b3722bafe7c50ab57552f8a0a23b9eee27afaa155860ebff",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/vm/crud.py",
+      "hunk": 6,
+      "hunk_sha256": "11dbfa5b83ce54edaca593aeac7dab9d29eafb61812ac60fd6b76dc85bf1e51b",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "middleware.patch",
+      "series_change_ids": [
+        "tcg-virtualization-api"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "tcg-virtualization-api",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/import_pool.py",
+      "hunk": 1,
+      "hunk_sha256": "b0bf59537a49346a41c74ebfd4d7abdc4079eaef94a76a6f4a99c6462f31576d",
+      "legacy_changed_lines": 1,
+      "legacy_patch": "boot-mount.patch",
+      "series_change_ids": [
+        "boot-pool-user-data-mount"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-pool-user-data-mount",
+          "changed_lines": 1
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/import_pool.py",
+      "hunk": 2,
+      "hunk_sha256": "119c56c3de3e6c907f9a12e3bedc28a8a2201b05057eed82ae15c8d6ac5e3885",
+      "legacy_changed_lines": 7,
+      "legacy_patch": "boot-mount.patch",
+      "series_change_ids": [
+        "boot-pool-user-data-mount"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-pool-user-data-mount",
+          "changed_lines": 7
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/disk_/availability.py",
+      "hunk": 1,
+      "hunk_sha256": "f3f213f51c56666a4ce4b326ddf801410479ba303d00dabe64ea51341f66cbbe",
+      "legacy_changed_lines": 4,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 4
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/export.py",
+      "hunk": 2,
+      "hunk_sha256": "4049e53dc089edb7ded40203b37044af1c2ca54c9010cc66ccbcfef68c20ecd8",
+      "legacy_changed_lines": 8,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 8
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 3,
+      "hunk_sha256": "6b626ab8d099882899bf4e182a9df991eb80413e0cb5837389822e4dca706a9c",
+      "legacy_changed_lines": 2,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 2
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 4,
+      "hunk_sha256": "708f1cadbc46fb25e304136529078f78c4fe4c6711cde7d741b171f98beea362",
+      "legacy_changed_lines": 5,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 5
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 5,
+      "hunk_sha256": "89b306da3efffc5a60186b159759efde41af426f5b70e6d863bc32d3393fd80f",
+      "legacy_changed_lines": 44,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 45
+        }
+      ]
+    },
+    {
+      "adapter_id": "v28-nightly-20261029",
+      "build": "28.0.0-MASTER+20261029-175210",
+      "file": "middlewared/plugins/pool_/pool.py",
+      "hunk": 6,
+      "hunk_sha256": "430fd82414b870fda05df156220b38058a13e5ba1929d749747aef749752e5b4",
+      "legacy_changed_lines": 21,
+      "legacy_patch": "ui-pools.patch",
+      "series_change_ids": [
+        "boot-storage-pool-ui"
+      ],
+      "series_change_line_overlap": [
+        {
+          "change_id": "boot-storage-pool-ui",
+          "changed_lines": 22
+        }
+      ]
+    }
+  ],
+  "purpose": "legacy hunk to patchseries Change-Id bridge for frozen gated builds",
+  "runtime_input": false,
+  "schema_version": 1
+}

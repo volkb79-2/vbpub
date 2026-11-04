@@ -2037,7 +2037,13 @@ def test_the_postponement_marker_is_keyed_windowed_and_cleared_by_the_full_lane(
     assert 'TRACKING_ID = "B169"' in body
     assert "operator decision 2026-10-27" in body
     assert "extended by operator on 2026-10-31" in body
-    assert "WINDOW = ((10, 0, 0), (11, 1, 0))" in body
+    assert "extended by operator on 2026-10-31 and" in body and "2026-11-04" in body
+    assert "WINDOW = ((10, 0, 0), (12, 1, 0))" in body
+    # one source: the window text and the refusal message derive from WINDOW
+    assert body.count("(12, 1, 0)") == 1 and "11.1.0" not in body and "12.1.0" not in body.replace(
+        "`< 12.1.0`", ""
+    )
+    assert '"window": WINDOW_TEXT' in body and "{WINDOW_TEXT}" in body
     assert '"result": "provisional"' in body and '"rigor_postponed": "R2"' in body
     assert '"cmru_release_gate_version_bound": transaction_version is not None' in body
     assert "not an R2 pass" in body
@@ -2182,18 +2188,30 @@ def test_the_postponement_marker_records_a_provisional_result_inside_its_window(
 
 
 def test_the_postponement_is_refused_once_the_window_has_closed(tmp_path):
-    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v11.1.0"])
+    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v12.1.0"])
 
     assert proc.returncode != 0
-    assert "valid only below assay 11.1.0" in proc.stderr
+    assert "valid only below assay 12.1.0" in proc.stderr
     assert not marker.exists()
+
+
+def test_an_existing_11_1_0_tag_no_longer_closes_the_window(tmp_path):
+    import json
+
+    proc, marker = _run_postponement(tmp_path, ["assay-v11.1.0"], "12.0.0")
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(marker.read_text(encoding="utf-8"))["window"] == (
+        "assay >= 10.0.0, < 12.1.0"
+    )
 
 
 @pytest.mark.parametrize(
     "prepared_version,allowed",
     [
         ("10.0.0", True), ("10.0.1", True), ("10.1.0", True), ("10.2.0", True),
-        ("10.3.0", True), ("11.0.0", True), ("11.1.0", False), ("9.9.9", False),
+        ("10.3.0", True), ("11.0.0", True), ("11.0.1", True), ("12.0.0", True), ("12.0.9", True),
+        ("11.1.0", True), ("12.1.0", False), ("13.0.0", False), ("9.9.9", False),
     ],
 )
 def test_the_prepared_release_version_must_be_inside_the_postponement_window(
@@ -2206,7 +2224,7 @@ def test_the_prepared_release_version_must_be_inside_the_postponement_window(
     assert (proc.returncode == 0) is allowed, proc.stderr
     assert marker.exists() is allowed
     if not allowed:
-        assert "authorized only for assay >= 10.0.0, < 11.1.0" in proc.stderr
+        assert "authorized only for assay >= 10.0.0, < 12.1.0" in proc.stderr
     if allowed:
         import json
 

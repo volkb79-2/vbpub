@@ -64,6 +64,10 @@ services:
     # absent, unlike every other ciu stack in this estate.
     network_mode: "none"
     restart: unless-stopped
+    # Shutdown drains in-flight verbs and finalizes live sessions (about 9 s
+    # on the normal path); docker's 10 s default would SIGKILL mid-finalize
+    # when a session is wedged. See docs/CONSUMERS.md "Stopping the daemon".
+    stop_grace_period: 30s
     environment:
       CGPROFILE_PROC_ROOT: /hostproc
       CGPROFILE_PID_NAMESPACE_MODE: host

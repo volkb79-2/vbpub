@@ -134,6 +134,14 @@ adjacent commits. This small launch-time race is accepted; after the Git fetch,
 the installer code and released profile are read from the same checked-out
 tree. See the [design rationale](docs/DESIGN-GUIDE.md#private-vm-seed-iso-and-moving-profiles).
 
+The seed ISO can also boot the installer on a self-hosted VM: use a Debian
+Trixie cloud image as the boot disk and attach the seed ISO as a NoCloud data
+CD-ROM. Step-by-step setup for TrueNAS, Proxmox with ZFS storage, and Hyper-V
+is in [the hypervisor consumer guide](docs/CONSUMERS.md#boot-a-debian-cloud-vm-with-the-private-seed-iso).
+The boot-disk/seed split and the reason disk capacity must be chosen explicitly
+are in the [design guide](docs/DESIGN-GUIDE.md#hypervisor-boot-disk-and-nocloud-seed).
+For TrueNAS API-managed VM lifecycle, use [`tnt`](../../truenas/tnt/README.md).
+
 ## Cloud-init cache cleanup policy
 
 The shared config/profile key `cloud_init_cleanup_mode` controls cloud-init
@@ -493,7 +501,7 @@ only, 2 attempts / 10 s timeout, 4xx other than 429 is not retried, after 3 fail
 look like `✅ **netcup-1** (`vmi123`) | run `ab12cd34` | stage1 | done`; a
 failure carries a short redacted log tail as a fenced block. Telegram
 (`telegram_bot_token`/`telegram_chat_id`, `telegram_verbose_progress`) keeps
-working. Both include host facts. See `mattermost-server/CONSUMER.md` for the
+working. Both include host facts. See `voice-screen-share/mattermost-server/CONSUMER.md` for the
 producer contract. The webhook URL is never printed (only its host), is
 redacted in `--debug`/`--debug-raw`, and is not written to `state.json`. An ephemeral controller
 SSH pubkey (`controller_ssh_pubkey`) is installed for external monitoring
@@ -578,9 +586,21 @@ scope, not ongoing config management, so it plausibly still belongs here.
 
 ## Testing
 
-`testing/` — a privileged systemd container for `inuse_partition_editor.py`'s
-real `--commit`/loop-device partition tests (never run real `swapon` there —
-see `testing/README.md`). `testing/vm/` — a genuinely unprivileged QEMU/TCG
-VM harness for anything that needs a real, separate guest kernel (real swap
-activation, eventually the full installer run end-to-end); see
-`testing/vm/README.md` and `testing/vm/DESIGN.md`.
+`testing/` documents the isolation boundary and ordinary mocked tests.
+`testing/vm/` is a genuinely unprivileged QEMU/TCG VM harness for anything
+that needs a real, separate guest kernel (real swap activation and full
+installer acceptance); see the [harness reference](testing/vm/README.md),
+[usage/testing guide](testing/vm/USAGE-TESTING.md), and
+[design rationale](testing/vm/DESIGN.md). The guide also describes a manual
+Geekbench 6 comparison between a four-vCPU TCG guest and a native host run
+pinned to four CPUs. It locks guest egress after download, with an optional narrow Browser
+upload allowlist, and documents host-side per-phase resource profiling; the
+benchmark has a three-hour bound. The free Geekbench binary uploads results
+automatically and needs connectivity to print its score summary, so the guide
+calls out the publication implications for both guest and native runs. See the
+[benchmark design rationale](docs/DESIGN-GUIDE.md#qemu-validation-and-host-cgroup-visibility)
+for the placement, score-comparability, and measurement trade-offs. The
+current procedure uses the cloud-init `case-b` image; Debian's NoCloud image
+needs a separate first-boot credential path (see the guide's [image-choice
+notes](testing/vm/USAGE-TESTING.md#image-choice)). Geekbench reports the guest
+CPU as `QEMU TCG CPU`; it does not pretend to be the physical EPYC host.

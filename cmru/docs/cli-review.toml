@@ -1341,8 +1341,8 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/tarball-
 id = "case:route:entrypoint:cmru/handler/tarball-publish/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:4d11053914c6cebb18ee0ad9b27325799d6b0d06a4a4b9b99e6ba7d1d7e4c9d5"
-rationale = "--prefix, --cwd, --glob and one version source are required."
+reviewed_signature = "sha256:be5a8af7980a8444b9e3ec4fffffd85fde2d4006f0a2fb1c8fa7249a2baded08"
+rationale = "--prefix, --cwd, --glob and one version source are required; --variant, --asset-suffix and --extra-asset are optional."
 invocation = ["handler", "tarball-publish", "--prefix", "demo-v", "--cwd", "missing-dir", "--glob", "*.whl", "--version-file", "VERSION"]
 expected_exit_status = 1
 expected_stdout_contains = ""
@@ -1394,13 +1394,52 @@ id = "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:
 state = "active"
 decision = "accept"
 reviewed_signature = "sha256:cced8256dbf3ee658052065260024116230abf877fc5040b0db4b5cc0c42d87f"
-rationale = "--glob GLOB selects the one source artifact (required for tarballs)."
+rationale = "--glob GLOB selects the one source artifact (required for tarballs); with --variant it selects the pool of per-variant candidates."
 invocation = ["handler", "tarball-publish", "--prefix", "demo-v", "--cwd", "missing-dir", "--glob", "*.whl", "--version-file", "VERSION"]
 expected_exit_status = 1
 expected_stdout_contains = ""
 expected_stderr_contains = "GITHUB_PUSH_PAT is required"
 effects = ["Refuses on the missing credential (exit 1) before any glob is evaluated."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/tarball-publish/option-spelling/--glob/--glob]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--variant/--variant"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1ad0d013787ecafc0a26626bdc61933d56faebebbfaf7a80d6716101fe73d124"
+rationale = "Repeatable --variant NAME[=LABEL] declares one per-interpreter variant asset; --glob then selects the pool of candidate tarballs and the publish is all declared variants or nothing. Variant semantics (partial refusals, retained records) are pinned by tests/test_tarball_variants_publish.py."
+invocation = ["handler", "tarball-publish", "--prefix", "demo-v", "--cwd", "missing-dir", "--glob", "*.tar.xz", "--version-file", "VERSION", "--variant", "py313=CPython 3.13"]
+expected_exit_status = 1
+expected_stdout_contains = ""
+expected_stderr_contains = "GITHUB_PUSH_PAT is required"
+effects = ["Refuses on the missing credential (exit 1); no variant is resolved and nothing is uploaded."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/tarball-publish/option-spelling/--variant/--variant]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--asset-suffix/--asset-suffix"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4e38a31bedf3aa0d9bf077163f8cc0063d1bc03ee655e64515f8e009945530a0"
+rationale = "--asset-suffix SUFFIX is the variant asset extension (default .tar.xz) used to name <prefix>-v<version>-<variant><suffix>; it has no effect without --variant."
+invocation = ["handler", "tarball-publish", "--prefix", "demo-v", "--cwd", "missing-dir", "--glob", "*.tgz", "--version-file", "VERSION", "--variant", "py313", "--asset-suffix", ".tgz"]
+expected_exit_status = 1
+expected_stdout_contains = ""
+expected_stderr_contains = "GITHUB_PUSH_PAT is required"
+effects = ["Refuses on the missing credential (exit 1); no asset name is derived."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/tarball-publish/option-spelling/--asset-suffix/--asset-suffix]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--extra-asset/--extra-asset"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d3562ae0696a849c20a121ada61fd21baa3d729c115559ea51f88b5d6699ba5c"
+rationale = "Repeatable --extra-asset PATH adds a release-level companion (a project's get.py) beside the variant assets; valid only with --variant, a pattern matching nothing is refused."
+invocation = ["handler", "tarball-publish", "--prefix", "demo-v", "--cwd", "missing-dir", "--glob", "*.tar.xz", "--version-file", "VERSION", "--variant", "py313", "--extra-asset", "get.py"]
+expected_exit_status = 1
+expected_stdout_contains = ""
+expected_stderr_contains = "GITHUB_PUSH_PAT is required"
+effects = ["Refuses on the missing credential (exit 1); the companion file is not read."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/tarball-publish/option-spelling/--extra-asset/--extra-asset]"]
 
 [[cases]]
 id = "case:route:entrypoint:cmru/handler/tarball-publish/option-spelling/option:route:entrypoint:cmru/handler/tarball-publish/--log-prefix-time-short/--log-prefix-time-short"
@@ -2103,6 +2142,240 @@ expected_stdout_contains = ""
 expected_stderr_contains = "interactive prompts require both stdin and stdout to be terminals"
 effects = ["Open facts still need a terminal (exit 2); nothing is written."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[init/option-spelling/--yes/--yes]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/check/argument-shape/argument:route:entrypoint:cmru/installer/check/target"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:44fd433e498da7d8653dc0f5fc3ada6c77a11bcb11dab6cd4539d26d743a5485"
+rationale = "The optional target names the ONE project whose installer is rendered in memory and compared with --installer; several selected projects are refused (exit 2)."
+invocation = ["installer", "check", "demo", "--installer", "get.py"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); nothing is rendered or compared."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/check/argument-shape/target]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/check/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a504b18a9b1a7ba2a42722e62331437b1add916451269fe544f5270df946ccdc"
+rationale = "The smallest valid call names the committed installer; the verb is read-only and never writes."
+invocation = ["installer", "check", "--installer", "get.py"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); read-only, nothing is written."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/check/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/check/option-spelling/option:route:entrypoint:cmru/installer/check/--config/--config"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:a0eb4a24168c40be52a7762c39ffa862bc9c68835148cb6cf373fdc454820ee3"
+rationale = "--config selects the template contract; only the two canonical names are accepted."
+invocation = ["installer", "check", "--installer", "get.py", "--config", "missing.toml"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must be named cmru.toml or cmru.orchestration.toml"
+effects = ["Refuses on the file name (exit 2); nothing is rendered."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/check/option-spelling/--config/--config]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/check/option-spelling/option:route:entrypoint:cmru/installer/check/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b0b807a4efccd25e5b7a230ee23868530e65047c9b6047baf3484fe376144ab9"
+rationale = "Library control: --debug-raw lifts diagnostic redaction and warns."
+invocation = ["installer", "check", "--installer", "get.py", "--debug-raw"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the warning, then stops at configuration discovery (exit 2)."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/check/option-spelling/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/check/option-spelling/option:route:entrypoint:cmru/installer/check/--installer/--installer"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:281753425e110b1b3760c0b908db991764d7fac883f1d61f304c20a1baab676b"
+rationale = "--installer FILE names the committed installer compared byte-for-byte with the fresh render; exit 0 identical, exit 1 with an [ERROR] line and a diff capped at 40 lines otherwise."
+invocation = ["installer", "check", "--installer", "get.py"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); the file is not read."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/check/option-spelling/--installer/--installer]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/check/option-spelling/option:route:entrypoint:cmru/installer/check/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ebf2adb2ab26ec86997200ebc7c0a3d0f201f7e35756589cf24f1027d199c085"
+rationale = "Consumer-global presentation option; output only."
+invocation = ["installer", "check", "--installer", "get.py", "--log-prefix-time-short"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Presentation only; stops at configuration discovery (exit 2)."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/check/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/argument-shape/argument:route:entrypoint:cmru/installer/render/target"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b5dd967941a260a420f0b5bdef7127b4f4a08934f46b8e7a66022acbf9308337"
+rationale = "The optional target selects installer templates; several selected projects without --output-dir are refused (exit 2)."
+invocation = ["installer", "render", "demo"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); no installer is rendered."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/argument-shape/target]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/constraint-requires/1"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:047cba01d6702798717d4f31ffdb765b0225e78186de2122769ade082b474981"
+rationale = "Stdout mode writes nothing, so a dry-run preview needs a destination: --dry-run requires --output or --output-dir."
+invocation = ["installer", "render", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--dry-run requires --output or --output-dir"
+effects = ["Refused as a usage error (exit 2); nothing is written."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/constraint-requires/1]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/exclusive-conflict/destination/option:route:entrypoint:cmru/installer/render/--output/option:route:entrypoint:cmru/installer/render/--output-dir"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:479918d8c961b1f1fafd86ca5fc51b0bf9873e474ad4a7c139fb8edacd90c6a2"
+rationale = "--output (one installer) and --output-dir (one per project) are mutually exclusive destinations."
+invocation = ["installer", "render", "--output", "out.py", "--output-dir", "outdir"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with argument"
+effects = ["Refused during argument parsing (exit 2); nothing is written."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/exclusive-conflict/destination/--output/--output-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/exclusive-member/destination/option:route:entrypoint:cmru/installer/render/--output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c45ea514f2e859f98636a515d01bdfd940748f8bce0792c9a7b04169989d6612"
+rationale = "--output FILE writes exactly one selected installer."
+invocation = ["installer", "render", "--output", "out.py"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); out.py is not created."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/exclusive-member/destination/--output]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/exclusive-member/destination/option:route:entrypoint:cmru/installer/render/--output-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9e4f560b832df3016e60a2a5799b88aba34928eef8911a1776b25c7ea7a346f2"
+rationale = "--output-dir DIR writes one installer per selected project."
+invocation = ["installer", "render", "--output-dir", "outdir"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); no directory is created."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/exclusive-member/destination/--output-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:899725379a2e24cbc1fd5916284e87b8a8855c02771d045c361c879a4f6b1c9c"
+rationale = "Omitting both destinations prints ONE project's installer to stdout; the verb never writes unasked."
+invocation = ["installer", "render"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); nothing is rendered."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--config/--config"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:e78ae52e13e199c3cee171ec0a4e6cff159f95f6f8f6128838d39c4fe80e7783"
+rationale = "--config selects the template contract; only the two canonical names are accepted."
+invocation = ["installer", "render", "--config", "missing.toml"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must be named cmru.toml or cmru.orchestration.toml"
+effects = ["Refuses on the file name (exit 2); nothing is rendered."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/option-spelling/--config/--config]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e89a12a979dd319871637334302a6b79d38cfffef7a4736b434ed6229323ad56"
+rationale = "Library control: --debug-raw lifts diagnostic redaction and warns."
+invocation = ["installer", "render", "--debug-raw"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the warning, then stops at configuration discovery (exit 2)."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/option-spelling/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ae65e213992b36ee90697c2f04643e17034b75dd2ef767cb9c8fc1ca14aed961"
+rationale = "With a destination, --dry-run renders and validates the templates and destinations but writes no file."
+invocation = ["installer", "render", "--output", "out.py", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); with a config the preview writes nothing."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/option-spelling/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d0487b2328bc099af40f997fef08ef06eecd0b74b75356dec08e6aae83f7fb49"
+rationale = "Consumer-global presentation option; output only."
+invocation = ["installer", "render", "--log-prefix-time-short"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Presentation only; stops at configuration discovery (exit 2)."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--output-dir/--output-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6af18b4e3de2411c1d9bcceed96d261e433c720a554f2913cb3f3d9dd719e1d3"
+rationale = "Exact spelling of the per-project destination (distinct from --output)."
+invocation = ["installer", "render", "--output-dir", "outdir"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); no directory is created."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/option-spelling/--output-dir/--output-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/installer/render/option-spelling/option:route:entrypoint:cmru/installer/render/--output/--output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d22061d8e50bc52a7c5d0354e6a93b652f46b4238087c95f87e2fa672e92e25e"
+rationale = "Exact spelling of the single-file destination."
+invocation = ["installer", "render", "--output", "out.py"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["Stops at configuration discovery (exit 2); out.py is not created."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[installer/render/option-spelling/--output/--output]"]
 
 [[cases]]
 id = "case:route:entrypoint:cmru/publish/argument-shape/argument:route:entrypoint:cmru/publish/target"

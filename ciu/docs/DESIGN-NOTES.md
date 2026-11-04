@@ -476,7 +476,8 @@ the flag SURVIVES `execve`.** Three arms — baseline `/bin/sleep` → `no`,
 the exec. Repeated against a genuinely static target (`ldd: not a dynamic
 executable`): **`no` unwrapped, `yes` wrapped.** Reproducer and full numbers live
 with the consumer that ran it: dstdns `tools/ksm-optin/ksm-exec-probe.sh` and
-`docs/KSM-OPTIN-MEASUREMENTS.md`.
+`docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6; the former
+`KSM-OPTIN-MEASUREMENTS.md` was merged into it).
 
 So the wrapper is **strictly more general** than the shim: static and dynamic,
 glibc and musl, and with no `-nostdlib` / zero-`DT_NEEDED` constraint on the
@@ -526,7 +527,7 @@ parallel mechanism (§4.1-style: one path, not two).
 **Open, in rough priority order:** how a `wrapper` strategy composes with an
 image's existing entrypoint (probably: refuse rather than override, and say so
 loudly, per the CIU-14/CIU-15 fail-closed lesson); where the wrapper binary
-itself comes from (the same build-and-cache question as CIU-17's `ciu ksm build`
+itself comes from (the same build-and-cache question as CIU-17's `ciu governance ksm`
 — a host-level cache keyed by arch and source hash, so worktrees do not each
 rebuild it); and whether `jvm_heap`/`go_memlimit` belong in governance at all or
 are simply service env, which is a real boundary question and not obviously

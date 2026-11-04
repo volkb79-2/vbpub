@@ -1,0 +1,231 @@
+# ─── Jitsi Meet: web + prosody + jicofo + jvb (docker-jitsi-meet images) ─────
+# Rendered by ciu. Own `internal` network; `web` additionally joins the shared
+# edge network (tls-edge consumer pattern A: one HTTP router, own hostname).
+# JVB publishes its media port on the HOST (UDP); nothing else is published.
+# Service keys are prefixed where they would otherwise become a generic DNS
+# alias on the shared ingress network (`jitsi-web`, not `web`).
+# Resource caps are set per service (shared 8-core host, production game server).
+
+services:
+  prosody:
+    image: {{ jitsi.prosody.image }}:{{ jitsi.prosody.image_tag }}
+    container_name: {{ jitsi.container_prefix }}-prosody
+    hostname: {{ jitsi.container_prefix }}-prosody
+    restart: unless-stopped
+    # stable-11248+: images run as the unprivileged user `s6` (uid 1000), no
+    # capabilities needed; /run and /tmp are tmpfs (upstream compose).
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /run:size=16M,mode=1750,uid=1000,gid=1000,exec
+      - /tmp:size=16M,mode=1777,noexec
+    environment:
+      TZ: "UTC"
+      PUBLIC_URL: "https://{{ jitsi.public_host }}"
+      XMPP_DOMAIN: "{{ jitsi.auth.xmpp_domain }}"
+      ENABLE_AUTH: "{{ '1' if jitsi.auth.enabled else '0' }}"
+      ENABLE_GUESTS: "{{ '1' if jitsi.auth.guests else '0' }}"
+      AUTH_TYPE: "{{ jitsi.auth.type }}"
+      ENABLE_XMPP_WEBSOCKET: "1"
+      JICOFO_AUTH_PASSWORD: "${JITSI_JICOFO_AUTH_PASSWORD}"
+      JVB_AUTH_PASSWORD: "${JITSI_JVB_AUTH_PASSWORD}"
+      JICOFO_COMPONENT_SECRET: "${JITSI_JICOFO_COMPONENT_SECRET}"
+    # The images read these from ENV (above); the file mounts are the S4.17
+    # channel that declares which service consumes which secret.
+    secrets:
+      - jicofo_auth_password
+      - jvb_auth_password
+      - jicofo_component_secret
+    volumes:
+      - {{ jitsi.prosody.hostdir.config }}:/config
+      # stable-11248+: accounts live in /var/lib/prosody/data (config is rendered into /run/prosody/config)
+      - {{ jitsi.prosody.hostdir.data }}:/var/lib/prosody
+    expose:
+      - "5222"
+      - "5280"
+      - "5347"
+    networks:
+      internal:
+        aliases:
+          - xmpp.{{ jitsi.auth.xmpp_domain }}
+    mem_limit: {{ jitsi.prosody.mem_limit }}
+    memswap_limit: {{ jitsi.prosody.mem_swap_limit }}
+    cpus: {{ jitsi.prosody.cpus }}
+    healthcheck:
+      test: ["CMD-SHELL", "prosodyctl --config /run/prosody/config/prosody.cfg.lua status"]
+      interval: {{ jitsi.health.interval }}
+      timeout: {{ jitsi.health.timeout }}
+      retries: {{ jitsi.health.retries }}
+      start_period: {{ jitsi.health.start_period }}
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ jitsi.logging.max_size }}"
+        max-file: "{{ jitsi.logging.max_file }}"
+
+  jicofo:
+    image: {{ jitsi.jicofo.image }}:{{ jitsi.jicofo.image_tag }}
+    container_name: {{ jitsi.container_prefix }}-jicofo
+    hostname: {{ jitsi.container_prefix }}-jicofo
+    restart: unless-stopped
+    depends_on:
+      prosody:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /run:size=32M,mode=1750,uid=1000,gid=1000,exec
+      - /tmp:size=16M,mode=1777,noexec
+    environment:
+      TZ: "UTC"
+      XMPP_DOMAIN: "{{ jitsi.auth.xmpp_domain }}"
+      XMPP_SERVER: "xmpp.{{ jitsi.auth.xmpp_domain }}"
+      ENABLE_AUTH: "{{ '1' if jitsi.auth.enabled else '0' }}"
+      ENABLE_GUESTS: "{{ '1' if jitsi.auth.guests else '0' }}"
+      AUTH_TYPE: "{{ jitsi.auth.type }}"
+      JICOFO_AUTH_PASSWORD: "${JITSI_JICOFO_AUTH_PASSWORD}"
+      JICOFO_COMPONENT_SECRET: "${JITSI_JICOFO_COMPONENT_SECRET}"
+    secrets:
+      - jicofo_auth_password
+      - jicofo_component_secret
+    volumes:
+      - {{ jitsi.jicofo.hostdir.config }}:/config
+    networks:
+      - internal
+    mem_limit: {{ jitsi.jicofo.mem_limit }}
+    memswap_limit: {{ jitsi.jicofo.mem_swap_limit }}
+    cpus: {{ jitsi.jicofo.cpus }}
+    healthcheck:
+      # /about/health is 404 on this image; /about/version answers 200.
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://localhost:8888/about/version"]
+      interval: {{ jitsi.health.interval }}
+      timeout: {{ jitsi.health.timeout }}
+      retries: {{ jitsi.health.retries }}
+      start_period: {{ jitsi.health.start_period }}
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ jitsi.logging.max_size }}"
+        max-file: "{{ jitsi.logging.max_file }}"
+
+  jvb:
+    image: {{ jitsi.jvb.image }}:{{ jitsi.jvb.image_tag }}
+    container_name: {{ jitsi.container_prefix }}-jvb
+    hostname: {{ jitsi.container_prefix }}-jvb
+    restart: unless-stopped
+    depends_on:
+      prosody:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /run:size=32M,mode=1750,uid=1000,gid=1000,exec
+      - /tmp:size=16M,mode=1777,noexec
+    environment:
+      TZ: "UTC"
+      PUBLIC_URL: "https://{{ jitsi.public_host }}"
+      XMPP_DOMAIN: "{{ jitsi.auth.xmpp_domain }}"
+      XMPP_SERVER: "xmpp.{{ jitsi.auth.xmpp_domain }}"
+      JVB_AUTH_PASSWORD: "${JITSI_JVB_AUTH_PASSWORD}"
+      JVB_PORT: "{{ jitsi.jvb.port }}"
+      JVB_ADVERTISE_IPS: "{{ jitsi.public_ip }}"
+      # Colibri REST (/colibri/stats, /colibri/v2/conferences) on the private
+      # http server :8080. `expose`d on the internal network only; never published
+      # (README "Client features" has the curl command).
+      COLIBRI_REST_ENABLED: "{{ 'true' if jitsi.jvb.rest_stats else 'false' }}"
+    secrets:
+      - jvb_auth_password
+    volumes:
+      - {{ jitsi.jvb.hostdir.config }}:/config
+    # Media is published on the HOST. The edge cannot carry it (no UDP
+    # entrypoint for this port, and tls-edge is deliberately not modified).
+    ports:
+      - "{{ jitsi.jvb.port }}:{{ jitsi.jvb.port }}/udp"
+    networks:
+      - internal
+    mem_limit: {{ jitsi.jvb.mem_limit }}
+    memswap_limit: {{ jitsi.jvb.mem_swap_limit }}
+    cpus: {{ jitsi.jvb.cpus }}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://localhost:8080/about/health"]
+      interval: {{ jitsi.health.interval }}
+      timeout: {{ jitsi.health.timeout }}
+      retries: {{ jitsi.health.retries }}
+      start_period: {{ jitsi.health.start_period }}
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ jitsi.logging.max_size }}"
+        max-file: "{{ jitsi.logging.max_file }}"
+
+  jitsi-web:
+    image: {{ jitsi.web.image }}:{{ jitsi.web.image_tag }}
+    container_name: {{ jitsi.container_prefix }}-web
+    hostname: {{ jitsi.container_prefix }}-web
+    restart: unless-stopped
+    depends_on:
+      prosody:
+        condition: service_healthy
+      jvb:
+        condition: service_started
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /run:size=16M,mode=1750,uid=1000,gid=1000,exec
+      - /tmp:size=16M,mode=1777,noexec
+    environment:
+      TZ: "UTC"
+      PUBLIC_URL: "https://{{ jitsi.public_host }}"
+      # TLS is terminated by the edge; this nginx speaks plain HTTP only.
+      DISABLE_HTTPS: "1"
+      ENABLE_HTTP_REDIRECT: "0"
+      XMPP_DOMAIN: "{{ jitsi.auth.xmpp_domain }}"
+      XMPP_SERVER: "xmpp.{{ jitsi.auth.xmpp_domain }}"
+      ENABLE_AUTH: "{{ '1' if jitsi.auth.enabled else '0' }}"
+      ENABLE_GUESTS: "{{ '1' if jitsi.auth.guests else '0' }}"
+      AUTH_TYPE: "{{ jitsi.auth.type }}"
+      ENABLE_XMPP_WEBSOCKET: "1"
+      ENABLE_COLIBRI_WEBSOCKET: "1"
+    # /config (custom-config.js) and /static/theme (theme-dark.css) are mounted
+    # read-only by ciu from the `configfile` sections in ciu.defaults.toml.j2.
+    expose:
+      - "{{ jitsi.web.port }}"
+    networks:
+      - internal
+      - ingress
+    mem_limit: {{ jitsi.web.mem_limit }}
+    memswap_limit: {{ jitsi.web.mem_swap_limit }}
+    cpus: {{ jitsi.web.cpus }}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://localhost:{{ jitsi.web.port }}/"]
+      interval: {{ jitsi.health.interval }}
+      timeout: {{ jitsi.health.timeout }}
+      retries: {{ jitsi.health.retries }}
+      start_period: {{ jitsi.health.start_period }}
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "{{ jitsi.ingress_network }}"
+      traefik.http.routers.{{ jitsi.router_name }}.rule: "Host(`{{ jitsi.public_host }}`)"
+      traefik.http.routers.{{ jitsi.router_name }}.entrypoints: "websecure"
+      traefik.http.services.{{ jitsi.router_name }}.loadbalancer.server.port: "{{ jitsi.web.port }}"
+    logging:
+      driver: json-file
+      options:
+        max-size: "{{ jitsi.logging.max_size }}"
+        max-file: "{{ jitsi.logging.max_file }}"
+
+networks:
+  # Private, stack-owned bridge: prosody/jicofo/jvb are never on the edge network.
+  internal:
+    driver: bridge
+  ingress:
+    external: true
+    name: {{ jitsi.ingress_network }}

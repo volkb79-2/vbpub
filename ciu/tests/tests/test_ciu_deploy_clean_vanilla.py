@@ -255,10 +255,16 @@ def _stub_main_preamble(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(deploy, "build_selection", lambda *a, **k: [{"path": "x"}])
 
 
-def test_cli_clean_help_documents_vanilla():
+def test_cli_clean_help_documents_vanilla(monkeypatch, capsys):
+    import sys
+
     from ciu import cli
 
-    text = cli._VERB_HELP["clean"]
+    monkeypatch.setattr(sys, "argv", ["ciu", "clean", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    text = " ".join(capsys.readouterr().out.split())
     assert "--vanilla" in text
     for name in RESET_FILES:
         assert name in text

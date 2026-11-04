@@ -53,16 +53,16 @@ def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
 
     Mirrors ``assay.toml``'s lane env: ciu's own ``src`` plus the repo-sibling
     sources the suite imports (cmru for the committed-get.py drift guard,
-    cli-extended and worktree as cmru's/ciu's runtime deps). Resolved from this
-    script's location, never the cwd, so an image-installed (older) cmru can not
-    shadow the repo's. Any ambient PYTHONPATH stays after ours.
+    worktree as cmru's/ciu's runtime dep; cli-extended is the released wheel the
+    image installs, never a source path). Resolved from this script's location,
+    never the cwd, so an image-installed (older) cmru can not shadow the repo's.
+    Any ambient PYTHONPATH stays after ours.
     """
     env = dict(os.environ if base is None else base)
     repo = ROOT.parent
     paths = [
         ROOT / "src",
         repo / "cmru" / "src",
-        repo / "libraries" / "cli-extended" / "src",
         repo / "libraries" / "worktree" / "src",
     ]
     parts = [str(p) for p in paths]

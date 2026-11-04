@@ -1,0 +1,10 @@
+.env
+truenas.toml
+.venv/
+# Pre-migration VM state; keep ignored while checkouts may still hold leftovers.
+.vm/
+__pycache__/
+*.py[cod]
+# Fetched inputs belong in <repo root>/downloads/, never beside the sources.
+*.deb
+*.iso

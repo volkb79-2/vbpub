@@ -21,6 +21,10 @@ DOCS = {
     PROJECT / "docs" / "DESIGN-GUIDE.md",
     PROJECT / "docs" / "CONSUMERS.md",
 }
+LINK_DOCS = DOCS | {
+    PROJECT / "testing" / "vm" / "README.md",
+    PROJECT / "testing" / "vm" / "USAGE-TESTING.md",
+}
 CONFIG_KEYS = {item.name for item in fields(Config)}
 
 
@@ -144,8 +148,8 @@ def _heading_slugs(path: Path) -> set[str]:
 
 
 def test_cross_document_heading_anchors_resolve():
-    resolved_docs = {path.resolve() for path in DOCS}
-    for source in DOCS:
+    resolved_docs = {path.resolve() for path in LINK_DOCS}
+    for source in LINK_DOCS:
         text = source.read_text(encoding="utf-8")
         for match in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", text):
             target = match.group(1).split()[0].strip("<>")
