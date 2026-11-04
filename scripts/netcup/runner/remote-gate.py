@@ -101,6 +101,8 @@ def load_hosts(path: str) -> dict:
     for name, row in data["hosts"].items():
         if name not in ALLOWED_HOSTS:
             raise GateError(f"hosts file names {name!r}; only {', '.join(ALLOWED_HOSTS)} are allowed")
+        if not str(row.get("guard", "")).strip() or not row.get("api_check"):
+            raise GateError(f"hosts file: {name} needs a non-empty guard and api_check")
         hosts[name] = Host(name=name, ssh=row["ssh"], api_check=row["api_check"], guard=row["guard"],
                            runner_home=row.get("runner_home", "/home/runner"), cockpit=row.get("cockpit", "mdt-cockpit-runner"),
                            image=row.get("image", "tester-unified:local"))
@@ -123,8 +125,15 @@ def identity(ctx: Ctx, host: Host) -> None:
     ctx.verified.add(host.name)
 
 
+def guarded(host: Host, script: str) -> str:
+    """Remote command text that is fail-closed: the guard runs under `set -e` (so `a; b` guards stop at the first failing
+    test) and the script runs only if the whole guard succeeded."""
+    # a separate `bash -c` (not a subshell): `set -e` is ignored inside a compound command whose status is tested by `&&`
+    return f"bash -c {shlex.quote('set -e' + chr(10) + host.guard)} && {{ {script}\n}}"
+
+
 def remote(ctx: Ctx, host: Host, script: str, stdin_path: Optional[str] = None, timeout: float = 300) -> Result:
-    return ctx.runner.run(host.ssh + [f"{host.guard}; {script}"], stdin_path=stdin_path, timeout=timeout)
+    return ctx.runner.run(host.ssh + [guarded(host, script)], stdin_path=stdin_path, timeout=timeout)
 
 
 def psi_of(ctx: Ctx, host: Host) -> tuple:
@@ -219,6 +228,7 @@ PSI_LIMIT=@@PSI_LIMIT@@
 PSI_WAIT=@@PSI_WAIT@@
 PIDF=/tmp/rg-@@NAME@@.pid
 EXTRA=(@@EXTRA@@)
+LANE_STARTED=0
 rc=70
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 printf '%s\n' "$$" > "$D/pid"
@@ -229,10 +239,19 @@ cancel_lane() {
 }
 # shellcheck disable=SC2329  # invoked from the EXIT trap
 finish() {
-  local names n
+  local n
+  rm -f -- "$D/pid"
   log "cleanup: lane containers of this run, then the throwaway checkout"
-  names=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^run-gate-' | grep -F -- "${SHA:0:12}" | grep -F -- "$LANE" || true)
-  for n in $names; do docker rm -f "$n" >/dev/null 2>&1 && log "removed container $n"; done
+  # Only after the lane started, and only containers whose inspect data references THIS run's unique checkout
+  # directory name (rg-<name>-<sha12>) as a whole path component; removal is by exact name.
+  if (( LANE_STARTED )); then
+    while IFS= read -r n; do
+      [[ -n $n ]] || continue
+      if docker inspect "$n" 2>/dev/null | grep -oE '/rg-[A-Za-z0-9._-]+' | grep -qxF -- "/$CK"; then
+        docker rm -f -- "$n" >/dev/null 2>&1 && log "removed container $n"
+      fi
+    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^run-gate-' || true)
+  fi
   docker exec -u vscode "$COCKPIT" rm -f "$PIDF" 2>/dev/null || true
   if [[ -d $CKDIR && $CK == rg-* && $CKDIR == "$HOME"/checkouts/vbpub/.worktrees/rg-* ]]; then
     docker exec -u vscode "$COCKPIT" rm -rf -- "$CKIN" 2>/dev/null || rm -rf -- "$CKDIR"
@@ -271,6 +290,7 @@ log "checkout $CKDIR at $SHA"
 args=("$LANE" "${EXTRA[@]}")
 [[ -n $BASE_SHA ]] && args+=(--base "$BASE_SHA")
 log "run-gate ${args[*]} (cwd $CKIN/$PROJ)"
+LANE_STARTED=1
 docker exec -u vscode -w "$CKIN/$PROJ" -e RUN_GATE_TESTER_UNIFIED_IMAGE="$IMAGE" -e RUN_GATE_ALLOW_MAIN_CHECKOUT=1 -e ASSAY_GATE_HOST_REPO_ROOT="$HOME/checkouts/vbpub" -e RUN_GATE_PROFILE=off \
   "$COCKPIT" sh -c 'echo $$ > "$1"; shift; exec nice -n 19 /home/vscode/.local/bin/run-gate "$@"' sh "$PIDF" "${args[@]}" > "$D/lane.log" 2>&1 &
 lanepid=$!
@@ -370,6 +390,8 @@ def cmd_run(ctx: Ctx, a: argparse.Namespace) -> int:
 
 def read_exit(ctx: Ctx, host: Host, name: str) -> Optional[int]:
     r = remote(ctx, host, f"cat {shlex.quote(host.runner_home)}/jobs/rg-{name}/EXIT 2>/dev/null; true")
+    if r.rc != 0:  # ssh down or the on-host guard failed: not "still running"
+        raise GateError(f"{host.name}: remote check failed (rc {r.rc}): {(r.err or r.out).strip()[:200]}", 3)
     t = r.out.strip()
     return int(t) if t.lstrip("-").isdigit() else None
 
@@ -378,16 +400,33 @@ def tail_log(ctx: Ctx, host: Host, meta: dict, offset: int, which: str = "job.lo
     rgd = meta["remote_dir"]
     path = f"{host.runner_home}/jobs/rg-{meta['name']}/job.log" if which == "job.log" else f"{rgd}/{which}"
     r = remote(ctx, host, f"tail -c +{offset + 1} {shlex.quote(path)} 2>/dev/null; true")
-    return r.out, offset + len(r.out.encode())
+    if r.rc != 0:
+        raise GateError(f"{host.name}: remote log read failed (rc {r.rc}): {(r.err or r.out).strip()[:200]}", 3)
+    return r.out, offset + len(r.out.encode(errors="replace"))
+
+
+MAX_POLL_FAILURES = 5
+
+
+def poll_once(ctx: Ctx, host: Host, meta: dict, off: int, fails: int, which: str = "job.log") -> tuple:
+    """One bounded-retry poll step -> (done, new_offset, consecutive_failures); raises after MAX_POLL_FAILURES in a row."""
+    try:
+        done = read_exit(ctx, host, meta["name"])
+        chunk, off = tail_log(ctx, host, meta, off, which)
+    except GateError as e:
+        fails += 1
+        if fails >= MAX_POLL_FAILURES:
+            raise GateError(f"giving up after {fails} consecutive failed polls of {meta['name']} on {host.name}: {e}", 3) from None
+        return None, off, fails
+    if chunk:
+        ctx.say(chunk.rstrip("\n"))
+    return (done if done is not None else None), off, 0
 
 
 def follow(ctx: Ctx, host: Host, meta: dict, run_dir: Path, poll: float) -> int:
-    off = 0
+    off, fails, done = 0, 0, None
     while True:
-        done = read_exit(ctx, host, meta["name"])
-        chunk, off = tail_log(ctx, host, meta, off)
-        if chunk:
-            ctx.say(chunk.rstrip("\n"))
+        done, off, fails = poll_once(ctx, host, meta, off, fails)
         if done is not None:
             break
         ctx.sleep(poll)
@@ -409,10 +448,10 @@ def collect(ctx: Ctx, host: Host, meta: dict, run_dir: Path) -> int:
     rc = int(rc_txt) if rc_txt.lstrip("-").isdigit() else exit_marker
     for fname in ("job.log", "lane.log"):
         src = f"{host.runner_home}/jobs/rg-{name}/job.log" if fname == "job.log" else f"{rgd}/lane.log"
-        ctx.runner.run_to_file(host.ssh + [f"{host.guard}; cat {shlex.quote(src)} 2>/dev/null; true"], str(run_dir / fname))
-    ctx.runner.run_to_file(host.ssh + [f"{host.guard}; cat {shlex.quote(rgd)}/lane-detail.log 2>/dev/null; true"], str(run_dir / "lane-detail.log"))
+        ctx.runner.run_to_file(host.ssh + [guarded(host, f"cat {shlex.quote(src)} 2>/dev/null; true")], str(run_dir / fname))
+    ctx.runner.run_to_file(host.ssh + [guarded(host, f"cat {shlex.quote(rgd)}/lane-detail.log 2>/dev/null; true")], str(run_dir / "lane-detail.log"))
     tgz = run_dir / "artifacts.tgz"
-    ctx.runner.run_to_file(host.ssh + [f"{host.guard}; cat {shlex.quote(rgd)}/artifacts.tgz 2>/dev/null; true"], str(tgz))
+    ctx.runner.run_to_file(host.ssh + [guarded(host, f"cat {shlex.quote(rgd)}/artifacts.tgz 2>/dev/null; true")], str(tgz))
     if tgz.exists() and tgz.stat().st_size > 0:
         art = run_dir / "artifacts"
         art.mkdir(exist_ok=True)
@@ -455,13 +494,12 @@ def cmd_logs(ctx: Ctx, a: argparse.Namespace) -> int:
     host, meta, _ = load_meta(ctx, a.id)
     identity(ctx, host)
     which = "lane.log" if a.lane_log else "job.log"
-    off = 0
+    off, fails = 0, 0
     while True:
-        done = read_exit(ctx, host, meta["name"])
-        chunk, off = tail_log(ctx, host, meta, off, which)
-        if chunk:
-            ctx.say(chunk.rstrip("\n"))
+        done, off, fails = poll_once(ctx, host, meta, off, fails, which)
         if not a.follow or done is not None:
+            if not a.follow and fails:
+                raise GateError(f"{host.name}: could not read the log", 3)
             return 0
         ctx.sleep(a.poll)
 
@@ -475,7 +513,10 @@ def cmd_cancel(ctx: Ctx, a: argparse.Namespace) -> int:
     host, meta, _ = load_meta(ctx, a.id)
     identity(ctx, host)
     rgd = shlex.quote(meta["remote_dir"])
-    r = remote(ctx, host, f"test -s {rgd}/pid && kill -TERM \"$(cat {rgd}/pid)\"")
+    # finish() removes the pid file; as a second line of defence the pid is signalled only while its cmdline is this run's job.sh
+    script = (f"test -s {rgd}/pid && p=$(cat {rgd}/pid) && case \"$p\" in ''|*[!0-9]*) false;; esac && "
+              f"tr '\\0' ' ' < /proc/$p/cmdline | grep -qF -- {shlex.quote(meta['remote_dir'] + '/job.sh')} && kill -TERM \"$p\"")
+    r = remote(ctx, host, script)
     ctx.say(f"cancel {meta['name']}: {'SIGTERM sent to the job (it stops the lane, removes its containers and checkout)' if r.rc == 0 else 'job not running'}")
     return 0 if r.rc == 0 else 1
 

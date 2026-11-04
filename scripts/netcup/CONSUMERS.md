@@ -293,7 +293,11 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   `lane-detail.log` (the lane's own log), `artifacts/` (`.assay/verdict*.json`, `progress*.jsonl`, `coverage*.json`, `.run-gate/**/*.log`),
   `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` (read it as a separate
   step); the command exits with the lane's exit code.
-- **Cleanup.** On exit (pass, fail, cancel) the job removes the lane's containers by exact name (`run-gate-*` containing the commit prefix
-  and the lane) and the throwaway checkout; logs stay. `cancel <id>` sends SIGTERM to the job, which stops the lane via its in-cockpit pid.
-- **Limits.** Concurrent runs of the same commit and lane on one host share container name prefixes; run one at a time. R2 campaigns
-  keep using `run-r2-campaign.sh`.
+- **Cleanup.** On exit (pass, fail, cancel) the job removes, by exact name, only `run-gate-*` containers whose `docker inspect` references
+  this run's unique checkout directory `rg-<id>-<sha12>` (and only once the lane started, so a PSI refusal removes nothing), then the
+  throwaway checkout and its pid file; logs stay. Another run's containers are never matched. `cancel <id>` sends SIGTERM to the job
+  only while the recorded pid's cmdline is this run's `job.sh`; the job then stops the lane via its in-cockpit pid.
+- **Guard.** The on-host guard runs as `bash -c 'set -e; <guard>'` and the command runs only if it succeeded (fail-closed); write
+  guard clauses with `&&` or `;`, both stop at the first failing test. A hosts file without a guard or api_check is refused.
+  `status`/`logs -f`/a followed run give up with exit 3 after 5 consecutive failed polls (ssh down, guard failing).
+- **Limits.** R2 campaigns keep using `run-r2-campaign.sh`.

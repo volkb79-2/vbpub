@@ -236,3 +236,113 @@ def test_checkout_lives_under_vbpub_worktrees_and_cleanup_is_scoped(tmp_path):
     assert '"$HOME"/checkouts/vbpub/.worktrees/rg-*' in job  # removal guard only matches our own rg-* dirs
     assert '-e ASSAY_GATE_HOST_REPO_ROOT="$HOME/checkouts/vbpub"' in job
     assert '-w "$CKIN/$PROJ"' in job and "/workspaces/$CK" not in job
+
+
+# ---- review fixes: fail-closed guard, bounded follow, safe cancel, precise container cleanup ----
+
+def _bash(cmd, **kw):
+    return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, **kw)
+
+
+def test_failing_guard_prevents_the_script_from_running_in_real_bash(tmp_path):
+    marker = tmp_path / "ran"
+    for guard in ("test 1 = 2", "test 1 = 2; test 1 = 1", "test 1 = 1; test 1 = 2", "false"):
+        host = rg.Host(name="r1002", ssh=[], api_check=["x"], guard=guard)
+        r = _bash(rg.guarded(host, f"touch {marker}"))
+        assert r.returncode != 0 and not marker.exists(), guard
+    host = rg.Host(name="r1002", ssh=[], api_check=["x"], guard="test 1 = 1; test 2 = 2")
+    assert _bash(rg.guarded(host, f"touch {marker}; true")).returncode == 0 and marker.exists()
+
+
+def test_remote_uses_the_guarded_form_and_hosts_need_a_guard(tmp_path):
+    ctx, _ = ctx_for(tmp_path, [])
+    rg.remote(ctx, ctx.hosts["r1002"], "echo hi")
+    sent = ctx.runner.calls[-1][0][-1]
+    assert sent.startswith("bash -c ") and "guard-r1002" in sent and " && { echo hi" in sent
+    f = tmp_path / "h.json"
+    f.write_text(json.dumps({"hosts": {"r1002": {"ssh": ["ssh"], "api_check": ["x"], "guard": " "}}}))
+    with pytest.raises(rg.GateError):
+        rg.load_hosts(str(f))
+    ex = json.loads((SCRIPT.parent / "remote-gate-hosts.example.json").read_text())["hosts"]["v1001"]["guard"]
+    assert ";" not in ex
+
+
+def test_follow_gives_up_when_ssh_or_guard_keeps_failing(tmp_path):
+    ctx, out = ctx_for(tmp_path, git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, ""))])
+    rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "t6"))
+    ctx.runner.handlers.insert(0, ("/EXIT", rg.Result(255, "", "ssh: connect refused")))
+    sleeps = []
+    ctx.sleep = sleeps.append
+    host, meta, run_dir = rg.load_meta(ctx, "t6")
+    with pytest.raises(rg.GateError) as e:
+        rg.follow(ctx, host, meta, run_dir, 1)
+    assert e.value.code == 3 and "giving up" in str(e.value) and len(sleeps) == rg.MAX_POLL_FAILURES - 1
+
+
+def _cancel_script(tmp_path, pid_text):
+    ctx, _ = ctx_for(tmp_path, [])
+    rgd = tmp_path / "rg" / "t7"
+    rgd.mkdir(parents=True, exist_ok=True)
+    if pid_text is not None:
+        (rgd / "pid").write_text(pid_text)
+    d = tmp_path / "out" / "t7"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "meta.json").write_text(json.dumps({"name": "t7", "host": "r1002", "lane": "suite", "sha": SHA, "remote_dir": str(rgd)}))
+    rg.cmd_cancel(ctx, rg.parser().parse_args(["cancel", "t7"]))
+    return ctx.runner.calls[-1][0][-1].split(" && { ", 1)[1].rsplit("\n}", 1)[0]
+
+
+def test_cancel_never_signals_a_process_that_is_not_this_jobs_script(tmp_path):
+    victim = subprocess.Popen(["sleep", "30"])
+    try:
+        script = _cancel_script(tmp_path, f"{victim.pid}\n")  # reused pid: some unrelated process
+        assert _bash(script).returncode != 0
+        assert victim.poll() is None
+    finally:
+        victim.kill()
+        victim.wait()
+    assert _bash(_cancel_script(tmp_path, None)).returncode != 0  # pid file removed by finish()
+    assert _bash(_cancel_script(tmp_path, "abc\n")).returncode != 0
+
+
+def test_cancel_signals_the_job_whose_cmdline_names_its_job_sh(tmp_path):
+    jobsh = tmp_path / "rg" / "t7" / "job.sh"
+    (tmp_path / "rg" / "t7").mkdir(parents=True)
+    jobsh.write_text("sleep 30\n")
+    p = subprocess.Popen(["bash", str(jobsh)])
+    try:
+        assert _bash(_cancel_script(tmp_path, f"{p.pid}\n")).returncode == 0
+        assert p.wait(timeout=10) == -15
+    finally:
+        if p.poll() is None:
+            p.kill()
+
+
+def test_job_cleanup_removes_only_containers_that_reference_this_run(tmp_path):
+    ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, ""))])
+    rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "t8"))
+    job = (tmp_path / "out" / "t8" / "job.sh").read_text()
+    body = job.split("finish() {", 1)[1].split("\n}\ntrap finish EXIT", 1)[0]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    removed = tmp_path / "removed"
+    (bindir / "docker").write_text(f"""#!/usr/bin/env bash
+case "$1" in
+  ps) printf 'run-gate-mine\\nrun-gate-other\\nrun-gate-prefix\\nunrelated\\n' ;;
+  inspect) case "$2" in
+    run-gate-mine) echo '"Source": "/h/.worktrees/rg-t8-{SHA[:12]}"' ;;
+    run-gate-other) echo '"Source": "/h/.worktrees/rg-t8-{SHA[:12]}-x"' ;;
+    run-gate-prefix) echo '"Source": "/h/.worktrees/rg-t8x-{SHA[:12]}"' ;;
+  esac ;;
+  rm) echo "${{@: -1}}" >> {removed} ;;
+esac
+""")
+    (bindir / "docker").chmod(0o755)
+    d = tmp_path / "D"
+    d.mkdir()
+    script = (f'export PATH={bindir}:$PATH; D={d}; CK=rg-t8-{SHA[:12]}; CKDIR=/nonexistent/x; COCKPIT=c; PIDF=/tmp/p; rc=0\n'
+              f'log() {{ :; }}\nfinish() {{{body}\n}}\n')
+    assert _bash(script + "LANE_STARTED=0; finish").returncode == 0
+    assert not removed.exists()  # lane never started (e.g. PSI refusal): nothing removed
+    assert _bash(script + "LANE_STARTED=1; finish").returncode == 0
+    assert removed.read_text().split() == ["run-gate-mine"]
