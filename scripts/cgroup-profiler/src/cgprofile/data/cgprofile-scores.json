@@ -1,0 +1,6 @@
+{
+  "schema": "cgprofile-scores/1",
+  "table_version": 1,
+  "comment": "Published single-core Geekbench scores keyed by CPU model and Geekbench major. Empty on purpose until entries are sourced; see docs/SCORES-TABLE.md. Never invent a score.",
+  "entries": []
+}

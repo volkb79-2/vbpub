@@ -225,7 +225,7 @@ lane runs; that lock serializes Assay lanes only.
 `--dry-run` previews a transaction without executing `run-tests`, so it cannot
 prove cgroup capacity or lane admission.
 
-### Judgment-fact fragment for the rigor-evidence record: `assay analyze export` (B219)
+### Judgment-fact fragment for the rigor-evidence record: `assay analyze export` (B227)
 
 ```bash
 assay analyze export --verdict .assay/verdict-r2.json [--progress .assay/progress-r2.jsonl] \
@@ -248,7 +248,7 @@ library that owns the fragment schema; the schema is a published contract (vbpub
 | `canary` | the R3 claim: mechanism, targets, mapped outcome; `null` without R3 |
 | `r2` | the R2 claim: candidate counts, the six bucket counts, `score = killed / (killed + survived)` (`null` when nothing was decided), `worker_counts`, `profile.status_counts`, survivors; `null` without R2 |
 
-Since B224 (rigor-evidence A-1a) the fragment also carries three additive keys. They are optional in the schema (a
+Since B228 (rigor-evidence A-1a) the fragment also carries three additive keys. They are optional in the schema (a
 fragment without them reads as "no level above R0 is judged, no declared paths"), and assay always writes them:
 
 | Fragment field | Source |

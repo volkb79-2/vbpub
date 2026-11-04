@@ -2835,6 +2835,32 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `no-parity-evidence`. Scaling repeats a contaminated step once, then ends
     `FAIL`/`scaling-contaminated`.
 
+- `R-55` **Lane inventory with derived rigor: `--list --json` (RG-d).** A
+  separate machine form beside R-01's frozen three-column `--list`. It prints
+  one JSON document `{"schema": "run-gate-list/1", "lanes": [...]}`, rows
+  sorted by name, canonical (sorted keys, 2-space indent). Each row has
+  `name`, `kind`, `environment` (`null` for a sequence), `environments`
+  (the lane's environment, or a sequence's transitive set), `assay_lane`
+  (`null` unless `kind = "assay"`), `members` (a sequence's direct members in
+  order, else `null`), `imported`, and the rigor facts below. Run-gate holds
+  no level table and no policy (R-36); a level is READ:
+  - `kind = "assay"`: `rigor` and `rigor_reachable` are the judge's own,
+    from `assay lanes --json` (sorted, de-duplicated), `rigor_basis`
+    `assay-declared`. One probe serves every lane of the same environment and
+    judge identity. A probe that cannot be answered, or a lane the judge does
+    not declare, gives `rigor: null`, `rigor_reachable: null`, `rigor_basis`
+    `unavailable` and a `rigor_reason`; never an empty list.
+  - `kind = "command"`: `rigor` is `["R0"]`, `rigor_basis`
+    `declared-not-judged`, `rigor_reachable` `null`, whatever the argv runs
+    (an `assay run` inside a command lane is not inferred to be judged).
+  - `kind = "sequence"`: `rigor` is `["R0"]`, `rigor_basis` `sequence`; its
+    members' levels are on the members' rows.
+  `--json` with `--list` resolves an `[assay.import]` inventory (the derived
+  levels of an imported lane are a judge fact) and so, unlike plain `--list`,
+  needs the judge reachable for assay lanes and imports. `--worktree` selects
+  the tree the judge is asked about. Every other verb still refuses `--json`
+  by name.
+
 ## 6. Non-goals (unchanged from CONSUMERS)
 
 No second parser of run-gate documents (`run-gate.toml` and

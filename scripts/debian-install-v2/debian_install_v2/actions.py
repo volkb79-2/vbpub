@@ -67,6 +67,9 @@ _SAFE_COMMANDS = {
     "hostname": {"-f", "-I"},
     "ip": {"-j"},
     # io.cost benchmark's throwaway partition (installer._run_io_benchmark).
+    # Per-host CPU benchmark (installer._run_cpu_benchmark). No --force/--binary/--state-dir:
+    # the installer never re-measures and never redirects the facts directory.
+    "cpu_benchmark.py": {"--major", "--geekbench-version", "--sha256", "--produced-by", "--timeout"},
     "iocost_coef_gen.py": {"--testfile", "--testfile-size-gb", "--duration", "--quiet"},
     "lsblk": {"-no", "-o"},
     "lvremove": {"-y"},

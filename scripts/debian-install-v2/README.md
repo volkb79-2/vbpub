@@ -533,15 +533,20 @@ alongside existing entries, and never treated as temporary controller keys.
 ## Not yet in v2 (v1 had some of this)
 
 `scripts/debian-install/bootstrap.sh` (v1) had a benchmark/adaptive-sizing
-layer v2 has no equivalent of: fio/Geekbench-based benchmarking,
+layer v2 has no equivalent of: fio-based adaptive benchmarking,
 `TEST_ZSWAP_LATENCY`, a "matrix test" that picked how many pre-created swap
 partitions to actually activate based on measured performance (v2's swap
 count is a static config value, never measured), ZRAM support, and multiple
 swap-backing strategies (files-in-root, partitions, zvol). v2's
 `config.py` `UNSUPPORTED_V2_SETTINGS` explicitly rejects a v1 config file
-that still sets `run_geekbench`, `run_ssh_setup`, `swap_ram_solution`,
+that still sets `run_ssh_setup`, `swap_ram_solution`,
 `pre_shrink_root_extra_gb`, or `extend_root` — these were deliberately not
-ported, not merely forgotten.
+ported, not merely forgotten. `run_geekbench` is no longer in that list: it
+is still refused when a v1 file sets it, but with a pointer to its v2
+replacement `run_cpu_benchmark` (`RENAMED_V1_SETTINGS`), described under
+[Host CPU benchmark step](#host-cpu-benchmark-step-run_cpu_benchmark-hb-2).
+The v1 Geekbench scores were never sizing inputs; v2 does not use them to size
+anything either.
 
 The optional io.cost benchmark (`run_io_benchmark`, off by default;
 `io_benchmark_duration_s`, `io_benchmark_max_size_gb`) runs in stage 2 before
@@ -565,6 +570,73 @@ it runs, the tool sets the disk's scheduler to `none` and disables merging
 a hard timeout (the whole process group is killed; an unreapable child stops the
 install), and the artifact's body must match `tools/iocost_coef_gen.py.sha256`.
 See `IO-BENCHMARK-DESIGN.md` for the full flow.
+
+### Host CPU benchmark tool (`tools/cpu_benchmark.py`, HB-1)
+
+One shared stdlib-only tool measures the host CPU ONCE with Geekbench (6 or 7, default 7) and persists it in host state;
+it is pinned by `tools/cpu_benchmark.py.sha256` (same pattern as `iocost_coef_gen.py`) and is used by the installer step
+(HB-2) and by `mdt host-setup cpu-benchmark` (HB-3). Never copy it. Its download, extract and parse logic is lifted from
+the v1 `scripts/debian-install/geekbench_runner.py` (CDN probing for the newest version, safe extract, stdout and
+result-page parsers) and generalised over the major.
+
+- Version: `--geekbench-version x.y.z` (exact) or, without it, the newest `<major>.x.y` found on `cdn.geekbench.com`
+  (`--major`, default 7). With `--sha256 <archive sha256>` the archive is verified before extraction and a mismatch
+  refuses to run (`archive_sha256_verified: true`; the installer passes both pins). Without it the computed sha256 is
+  recorded unverified.
+- Majors are not comparable. The record carries `tool_major` and `baseline_score`; the tool's `BASELINE_SCORE` is per major
+  (GB6 = 2500 on an Intel Core i7-12700; GB7 = 2500 on an AMD Ryzen 7 7700, Lenovo Legion, per public sources; the
+  reference machine names are documentation only and are not stored in the record), and
+  `baseline_for` / `require_same_major` refuse an unknown major or a mix of majors. Output or a result URL of another
+  major than requested is refused.
+- Geekbench 7.1.0 `--help` shows `--cpu` and "no options runs the CPU benchmark"; the tool runs the binary without flags.
+  The GB7 summary score lines could not be verified without running the benchmark, so GB7 stdout fixtures are marked
+  ASSUMED-SHAPE and the result-page fallback is the safety net.
+
+```
+cpu_benchmark.py [--major 7] [--geekbench-version 7.1.0 --sha256 <hex>] [--state-dir DIR] [--force] [--max-psi 25] [--timeout S]
+cpu_benchmark.py --resolve [--state-dir DIR]        # re-read the result page, never runs Geekbench
+```
+
+Files under `--state-dir` (default `/var/lib/mdt/host-facts`):
+
+| File | Mode | Content |
+|---|---|---|
+| `cpu-benchmark.json` | 0644 | `mdt-host-cpu-benchmark/1` |
+| `cpu-benchmark.claim.json` | 0600 | `mdt-host-cpu-benchmark-claim/1`: `result_url`, `claim_url`, `measured_at` |
+
+`mdt-host-cpu-benchmark/1` fields: `tool` (`geekbench`), `tool_version`, `tool_major`, `baseline_score` (per major, 2500 for 6 and 7), `tool_sha256` (archive or binary),
+`archive_sha256_verified`, `measured_at`
+(UTC), `cpu_model`, `cpus_online`, `hypervisor`, `single_core`, `multi_core` (null when not found), `score_source`
+(`stdout` | `result-page` | null), `result_url`, `result_id`, `conditions` (`loadavg1_start`, `psi_cpu_some_avg10_max`,
+`steal_fraction`, `duration_seconds`), `reason` (null, `SCORES_NOT_FOUND`, `RESULT_PAGE_UNAVAILABLE: <error type>`,
+`NO_SCORES_AND_NO_RESULT_URL`), `produced_by`, and `resolved_at` after `--resolve`. Scores come from the CLI output, else
+from the public result page. The claim link exists only in the 0600 file; the tool never prints, logs or stores it
+elsewhere. It refuses when the record exists (unless `--force`), refuses when CPU `some avg10` is above `--max-psi`
+(default 25; host-setup passes a stricter value), and kills the whole process group on `--timeout`. Exit codes: 0 ok,
+2 refused, 3 failed, 4 record written without scores (complete it with `--resolve`).
+
+### Host CPU benchmark step (`run_cpu_benchmark`, HB-2)
+
+`run_cpu_benchmark` (default **on**; `vanilla` profile off) runs the tool above ONCE at the end of stage two: after the
+io.cost step, the swap health gate and before the apt timers are released, so the host is still idle. The installer:
+
+1. checks the tool against `tools/cpu_benchmark.py.sha256` (as for `iocost_coef_gen.py`);
+2. passes BOTH pins, `--geekbench-version` and `--sha256` (archive), from the per-architecture file
+   `tools/cpu_benchmark.pins.json` (shared with `mdt host-setup cpu-benchmark`; x86_64: Geekbench 7.1.0) or the config override pair `cpu_benchmark_geekbench_version`
+   / `cpu_benchmark_sha256` (set together or config load refuses). There is no "newest on the CDN" default in the
+   installer, and an architecture without a pin is `warned`, never run unverified (aarch64 has no verified pin yet);
+3. runs the tool with its 1800 s hard timeout (outer command bound 2700 s) and `--produced-by "debian-install-v2 <version>"`;
+   it never passes `--force`, so a re-install keeps the existing measurement (tool exit 2, `warned`);
+4. records the `cpu_benchmark` step. Tool exit 0 gives `success` with the tool's summary line (scores, CPU, vCPUs, result
+   URL), which is appended to the single `Install complete` milestone. Any failure (no egress, sha256 mismatch,
+   timeout, parse failure, refusal, unpinned architecture) is **advisory**: step `warned`, the install continues.
+   Exit 4 (record written without scores) is `warned` with the later command
+   `mdt host-setup cpu-benchmark --resolve`, which re-reads the result page without re-running.
+
+The claim link only ever lands in the 0600 `cpu-benchmark.claim.json`; the tool redacts it from everything it prints, and
+the step additionally withholds a summary line that mentions a claim. The step needs outbound HTTPS to
+`cdn.geekbench.com` and `browser.geekbench.com`; set `run_cpu_benchmark` false for an air-gapped install. The step is
+idempotent across stage-two resumes (a terminal `cpu_benchmark` step is not repeated).
 
 Still not done: the result is NOT written to `io.cost.model`/`io.cost.qos`
 and io.cost is not enabled; choosing and applying those is a separate,

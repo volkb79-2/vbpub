@@ -281,7 +281,7 @@ def test_resume_restores_config_from_manifest_and_records_success(tmp_path):
     config = Config(
         state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
         telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False,
-        credential_mode="systemd",
+        credential_mode="systemd", run_cpu_benchmark=False,  # the CPU benchmark step is covered in test_cpu_benchmark_step.py
     )
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)

@@ -14192,7 +14192,7 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 **Acceptance.** A recorded strace count for strict and relaxed, and either a note in B209 and the run-gate README ("coordinator durability is unchanged by the preload") or a switch that makes `relaxed` honor the declared per-file table of B209.
 
-## B219 — `assay analyze export`: judgment-fact fragment for the rigor-evidence record (package A-1)
+## B227 — `assay analyze export`: judgment-fact fragment for the rigor-evidence record (package A-1)
 
 **Status: FIXED on branch rigor-a1-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo section 2 and 3.7 and row A-1 (release program `reports/RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md`); schema: vbpub `libraries/rigor-record` (RR-1). `assay analyze export --verdict V [--progress P] --lane L --file assay.toml --expected-commit C [--project N] --out F` verifies the verdict, then writes a `urn:vbpub:rigor-fragment:1` document (kind `assay-lane`). Documented in `docs/CONSUMERS.md`; tests in `analysis/tests/test_analysis_rigor_export.py` use schemas and goldens copied byte-for-byte into `analysis/tests/fixtures/rigor/`. Assay does not import rigor-record.
 
@@ -14200,10 +14200,31 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 **Open follow-up.** A-2 (retire the B169/B170 windows from the assay release gate) is separate. `JUDGE_IDENTITY_LABEL` is a new public name in `assay.mutation`.
 
-## B224 — `assay analyze export`: verified claim set and declared paths in the fragment (package A-1a, additive to B219)
+## B228 — `assay analyze export`: verified claim set and declared paths in the fragment (package A-1a, additive to B227)
 
 **Status: FIXED on branch rigor-a1a-20261105 (2026-11-05, on top of rigor-a1-20261105); not on main, not released.** Design authority: the rigor-evidence memo amendment 2 and row A-1a. The assay-lane fragment gains `claims` (`[{rigor, outcome}]` for each verified computed claim at R0..R3, ordered), `inputs` (`isolation.link_paths`) and `judged_paths` (`judge.source_roots`). Optional keys of `rigor-fragment/1` (no major bump); assay always writes them. `docs/CONSUMERS.md` is the normative text and `analysis/tests/fixtures/rigor/schemas/rigor-fragment-1.json` the canonical schema copy; goldens updated. A consumer derives R1/R2/R3 only from `claims` with outcome `PASS`, never from a non-null section.
 
 **Decisions to review.** (1) `claims` lists a claim whose level was not measured with outcome `ERROR` (the claim exists, its section is `null`), so "not measured" and "absent" stay different; the verdict-level mapping `NO_MEASUREMENT`/`INCONCLUSIVE`/`BUDGET_EXCEEDED` -> `ERROR` is reused. (2) `inputs` is `link_paths` only: `source_roots` and `targets` are project-relative and cannot leave the project, so no out-of-project root exists to list. Object ids are not included (link_paths content is untracked); the consumer adds the names to its judged targets. (3) `judged_paths` is the user-visible "project paths each lane judged" (`judge.source_roots`); the memo only names `inputs`, so this key is an addition. (4) Both lists are read from the raw TOML table, like `config_sha256`, capped at 64 entries.
 
-**Id note.** B219 above is this branch's A-1; `backlog-materialize-20261105` and `fix-assay-mat-20261105` also use B219..B223 for different items, so the A-1 id collides when they merge (renumber one side). B224 is the next id free on every branch.
+**Id note.** B227 and B228 were renumbered from B219 and B224, which collided with `backlog-materialize-20261105` and `fix-assay-mat-20261105` (they use B219..B223 for different items).
+
+## B225 — OpenZFS as a candidate-tree backend (clone per candidate or rollback per worker): evaluated on v1001, not worth building; criteria to reopen
+
+**Status: DECIDED, NOT BUILT (filed 2026-11-05; ids B219-B224 are used on other branches).** Report `zfs-eval-REPORT.md` (vbpub-release-program reports), data in `materialize-experiment-data/results-zfs-*.jsonl`; OpenZFS 2.4.4 (trixie-backports, DKMS, kernel 7.2.11) on pool `zp` (two ex-swap partitions, lz4, ashift 12) on v1001; same harness and tree as B219-B223 (whole vbpub repository, primed index).
+
+**Findings (steady state per candidate, 3 s of tests).** btrfs snapshot primed (a2): 37.2 MB read, materialize 0.31 s, total 3.67 s. ZFS clone per candidate (z1): 0.02 MB with the ARC minimum pinned to the cap or a 1 GiB cap, **36.1 MB with only a 300 MiB cap** (the ARC lost the pack although it held 85 of 300 MiB), materialize 0.44-0.50 s, total 3.9-4.1 s. ZFS rollback per worker (z2): 0.01-0.52 MB, materialize 0.30-0.35 s, rollback 0.11-0.14 s, total 3.76-4.00 s. `cp --reflink` on ZFS: 111 MB read and 8.2 s (worse than today's baseline 6.0 s). Clone plus mount 33 ms and destroy 41 ms per dataset (btrfs snapshot 14 ms, delete 2 ms); 200 mounted clones cost 153 MiB of ARC metadata. Unprivileged `runner` with `zfs allow` can snapshot, rollback a mounted dataset and destroy, but **cannot mount a clone** (Linux needs CAP_SYS_ADMIN).
+
+**Decision.** No ZFS adapter: the one thing it removes over a2 (the 36 MB pack read) is removed on btrfs by B220, and ZFS is not faster per candidate. The B221 overlay and B223 in-place backends already cover the zero-read cases; per-worker rollback (z2) is the ZFS form equal to B223 without tmpfs memory.
+
+**Reopen when.** (a) a workload reads large file bodies per candidate that a primed index cannot avoid (trees of tens of MB of source read by the tests, not only by `git status`), or (b) B223's tmpfs memory (175 MB per worker) is the limiting resource and a per-worker dataset is wanted, or (c) a host already runs ZFS. Then implement cowtree COW-BL-07 and use the z2 form (pre-mounted worker dataset, `zfs rollback -r`), with `zfs_arc_min` pinned to `zfs_arc_max`.
+
+**Acceptance (documentation only).** B219-B223 notes cite this entry as the ZFS comparison; no code change.
+## B226 — `tests/core/test_isolation.py::test_further_external_or_incomplete_topologies_are_refused` hung ~18 minutes on a blocked `git rev-parse --absolute-git-dir` child outside the lane container
+
+**Status: OPEN (investigation, filed 2026-11-05).** Reported by the fix-assay-mat package: a local pytest of `assay/tests/core/test_isolation.py` on the bare devcontainer (not the lane container) stalled at about 43% of the file in this test (parametrized over `alternates-symlink`, `alternates-fifo`, `grafts`, `sha256`, `promisor`, test at line ~1320) with a blocked `git rev-parse --absolute-git-dir` child for about 18 minutes. The registered gate (lane container) was not affected in that run.
+
+**Hypotheses (unmeasured).** (1) The `alternates-fifo` case makes `objects/info/alternates` a FIFO with no writer; any git read of it (the `rev-parse` here, or the test's own setup) blocks on `open()` until a writer appears, so the hang is the hazard itself and the test needs a bounded subprocess timeout or a writer-less open guard. (2) The devcontainer's git environment (safe.directory, a hook, or an inherited `GIT_*` variable) differs from the lane's. Not established which case hung.
+
+**Question to answer first.** Run each parametrized case alone on the bare devcontainer under `timeout 60` and note which one blocks and what the child's `/proc/<pid>/stack`/`wchan` shows (`fifo_open`/`pipe_wait` points to hypothesis 1).
+
+**Acceptance.** The hanging case named; either the test (and the production code path that inspects `alternates`, if it can also block) opens the file non-blocking or with a timeout and refuses `fifo` alternates cleanly, or the lane-only requirement is documented; a regression test that completes in seconds with a bounded timeout.

@@ -888,6 +888,33 @@ process other than the idle daemon chain `rootlesskit` -> `exe` -> `buildkitd` (
 install prints a WARN, keeps the old service and exits 2 until you re-run it with `--restart-buildkitd` at a moment you choose. `mdt-host-check.sh`
 and the reconcile report "restart pending" until the running service matches.
 
+### Per-host CPU benchmark: `install.sh cpu-benchmark` (HB-3)
+
+The host's CPU speed is measured ONCE with Geekbench and persisted in host state, so run-gate/cgpd can normalise
+timings across machines without guessing from a table. Hosts installed by debian-install-v2 get this from its
+`run_cpu_benchmark` step; every other host (the dev host, older r1002/v1001) uses:
+
+```
+sudo ./host-setup/install.sh cpu-benchmark            # measure once (several minutes of full CPU, needs internet)
+sudo ./host-setup/install.sh cpu-benchmark --resolve  # fill in the scores of a partial record, never runs Geekbench
+sudo ./host-setup/install.sh cpu-benchmark --force    # deliberate re-measure (new hardware, resized VM)
+```
+
+- It is the same tool as the installer's, never a second implementation: `scripts/debian-install-v2/tools/cpu_benchmark.py`,
+  pinned by its `.sha256`. `install.sh` verifies the checkout copy against the pin before installing it to
+  `/usr/local/lib/mdt/cpu_benchmark.py`, and the wrapper `/usr/local/sbin/mdt-host-cpu-benchmark.py` verifies it again before
+  every run. The Geekbench version and archive sha256 come from `cpu_benchmark.pins.json` (shared with the installer); an
+  architecture without a pin is refused. A normal `install.sh` run installs the helper but never measures.
+- It refuses when `/var/lib/mdt/host-facts/cpu-benchmark.json` already exists (without `--force`) and while CPU pressure
+  (`some avg10`) is 5 or more, even with `--force`. Run it in a quiet window; a measurement on a busy host would be a wrong number.
+- Files (root-owned): `cpu-benchmark.json` 0644 (scores, CPU model, vCPU count, conditions, result URL) and
+  `cpu-benchmark.claim.json` 0600 (the Geekbench claim link: open it once to attach the result to your account; nothing
+  reads it). The result URL identifies the machine on the public Geekbench page: it never goes into a published record.
+- `mdt-host-check.sh` ("per-host CPU benchmark") is the doctor: OK when the file matches this host, WARN when it is missing,
+  partial (no scores), unreadable, or STALE (the stored `cpu_model` or `cpus_online` differs from the live host after a resize or
+  migration; consumers then fall back to the table), with the command to run. It never measures.
+- Live checks are tracked as MDT-067 (dev host, then r1002 and v1001) and MDT-068 (aarch64 pin).
+
 ### Optional DAMON_STAT policy
 
 The wizard asks whether to disable the kernel-wide `DAMON_STAT` monitor so

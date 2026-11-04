@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -28,6 +29,8 @@ from cli_extended import (
 )
 
 from . import ocr as ocr_module
+from . import storage_state as storage_module
+from .blocked import BlockVerdict, detect as detect_block
 from .diagnostics import DOCTOR_CHECKS, try_load_contract
 from .session import BrowserLease, PwmcpError
 from .user_agent import ResolvedUserAgent, UserAgentError, cdp_override_params, resolve
@@ -35,6 +38,10 @@ from .user_agent import ResolvedUserAgent, UserAgentError, cdp_override_params, 
 DEFAULT_CONTRACT = "http://pwmcp:3000/contract"
 _VERSION_FILE = Path(__file__).resolve().parent / "VERSION"
 EXIT_NOT_INSTALLED = 3
+# `pwmcp inspect` recognised bot protection (a challenge or block page) instead of the target.
+EXIT_BLOCKED = 4
+_BLOCKED_CONTENT_CHARS = 4000
+_PROBE_TIMEOUT_MS = 5000
 
 
 def identity(version_file: Path = _VERSION_FILE) -> CliIdentity:
@@ -115,8 +122,11 @@ class _PageDiagnostics:
         self.failed_requests = 0
         self.statuses: Counter[int] = Counter()
         self.main_status: int | None = None
+        self.document: object | None = None  # the latest main-frame document response
+        self._page: object | None = None
 
     def attach(self, page: object) -> None:
+        self._page = page
         page.on("console", self._console)  # type: ignore[attr-defined]
         page.on("response", self._response)  # type: ignore[attr-defined]
         page.on("requestfailed", self._request_failed)  # type: ignore[attr-defined]
@@ -127,7 +137,13 @@ class _PageDiagnostics:
 
     def _response(self, response: object) -> None:
         status = getattr(response, "status", 0)
-        if status >= 400 and response.request.resource_type != "document":  # type: ignore[attr-defined]
+        request = response.request  # type: ignore[attr-defined]
+        if request.resource_type == "document":
+            # A challenge that resolves itself re-navigates, so the LATEST main-frame document
+            # (not the first response) says what the page is now.
+            if getattr(request, "frame", None) is getattr(self._page, "main_frame", None):
+                self.document = response
+        elif status >= 400:
             self.statuses[status] += 1
 
     def _request_failed(self, _request: object) -> None:
@@ -152,11 +168,75 @@ class _PageDiagnostics:
 class _Attempt:
     """One navigation of ``pwmcp inspect``."""
 
-    def __init__(self, payload: str | bytes, observed_ua: str | None, stable: bool, diagnostics: _PageDiagnostics) -> None:
+    def __init__(
+        self,
+        payload: str | bytes,
+        observed_ua: str | None,
+        stable: bool,
+        diagnostics: _PageDiagnostics,
+        *,
+        blocked: BlockVerdict | None = None,
+        status: int | None = None,
+        final_url: str | None = None,
+        waited_ms: int = 0,
+    ) -> None:
         self.payload = payload
         self.observed_ua = observed_ua
         self.stable = stable
         self.diagnostics = diagnostics
+        self.blocked = blocked
+        self.status = status
+        self.final_url = final_url
+        self.waited_ms = waited_ms
+
+
+def _safe(read: object, default: object) -> object:
+    """A best-effort read of a page that may be mid-navigation or already closed."""
+
+    try:
+        return read()  # type: ignore[operator]
+    except Exception:  # noqa: BLE001 - the probe must never hide the real outcome behind its own failure
+        return default
+
+
+def _blocked_attempt(
+    page: object,
+    diagnostics: _PageDiagnostics,
+    started: float,
+    text: str | None,
+) -> _Attempt | None:
+    """Recognise bot protection on the page as it is NOW; None when it is not recognised.
+
+    ``text`` is the body text when the caller already has it, else it is read here. The status
+    and headers come from the latest main-frame document response.
+    """
+
+    document = diagnostics.document
+    status = getattr(document, "status", None)
+    headers = _safe(lambda: dict(document.headers), {}) if document is not None else {}  # type: ignore[attr-defined]
+    if text is None:
+        text = _safe(lambda: page.locator("body").inner_text(timeout=_PROBE_TIMEOUT_MS), "")  # type: ignore[attr-defined]
+    title = _safe(lambda: page.title(), "")  # type: ignore[attr-defined]
+    frames = _safe(lambda: [frame.url for frame in page.frames], [])  # type: ignore[attr-defined]
+    verdict = detect_block(
+        status=status,
+        headers=headers,  # type: ignore[arg-type]
+        title=title,  # type: ignore[arg-type]
+        text=text,  # type: ignore[arg-type]
+        frames=frames,  # type: ignore[arg-type]
+    )
+    if verdict is None:
+        return None
+    return _Attempt(
+        text[:_BLOCKED_CONTENT_CHARS],  # type: ignore[index]
+        _observed_user_agent(page),
+        True,
+        diagnostics,
+        blocked=verdict,
+        status=status,
+        final_url=_safe(lambda: page.url, None),  # type: ignore[attr-defined,arg-type]
+        waited_ms=int((time.monotonic() - started) * 1000),
+    )
 
 
 def _inspect_once(
@@ -167,10 +247,14 @@ def _inspect_once(
     runtime: CliRuntime,
     *,
     check_stable: bool,
+    storage: storage_module.ScopedState | None = None,
 ) -> _Attempt:
     context_options: dict[str, object] = {"ignore_https_errors": args.ignore_https_errors}
     if active.user_agent is not None:
         context_options["user_agent"] = active.user_agent
+    if storage is not None:
+        # Only the cookies/origins that belong to the target host (see storage_state.py).
+        context_options["storage_state"] = storage.state
     # A fresh context per attempt: the override dies with it, which is the restore.
     context = lease.browser.new_context(**context_options)  # type: ignore[attr-defined]
     try:
@@ -179,12 +263,23 @@ def _inspect_once(
         diagnostics.attach(page)
         if active.user_agent is not None:
             _apply_client_hints(context, page, active.user_agent, runtime)
-        response = page.goto(args.url, wait_until=args.wait_until, timeout=args.timeout_ms)
-        diagnostics.main_status = getattr(response, "status", None)
-        if args.wait_for:
-            page.locator(args.wait_for).filter(visible=True).first.wait_for(
-                state="visible", timeout=args.timeout_ms
-            )
+        started = time.monotonic()
+        try:
+            response = page.goto(args.url, wait_until=args.wait_until, timeout=args.timeout_ms)
+            diagnostics.main_status = getattr(response, "status", None)
+            if diagnostics.document is None:
+                diagnostics.document = response
+            if args.wait_for:
+                page.locator(args.wait_for).filter(visible=True).first.wait_for(
+                    state="visible", timeout=args.timeout_ms
+                )
+        except Exception:
+            # A wait that ends on a challenge page is "blocked", not a generic timeout; any
+            # other failure is re-raised unchanged for the caller's retry/error handling.
+            blocked = _blocked_attempt(page, diagnostics, started, None)
+            if blocked is None:
+                raise
+            return blocked
 
         stable = True
         if args.format in {"text", "snapshot"}:
@@ -194,6 +289,9 @@ def _inspect_once(
                 return page.locator("body").aria_snapshot(timeout=args.timeout_ms)
 
             payload: str | bytes = read()
+            blocked = _blocked_attempt(page, diagnostics, started, payload if args.format == "text" else None)
+            if blocked is not None:
+                return blocked
             if check_stable:
                 # Stable-DOM check: the content must not change over a short settle window.
                 page.wait_for_timeout(_SETTLE_MS)
@@ -207,6 +305,9 @@ def _inspect_once(
                 animations="disabled",
                 timeout=args.timeout_ms,
             )
+            blocked = _blocked_attempt(page, diagnostics, started, None)
+            if blocked is not None:
+                return blocked
         return _Attempt(payload, _observed_user_agent(page), stable, diagnostics)
     finally:
         context.close()
@@ -257,6 +358,18 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
         except UserAgentError as exc:
             raise CliFailure(f"--user-agent is invalid: {exc}") from exc
 
+    # Operator-supplied session (human-in-the-loop): validated and scoped to this URL's host
+    # before connecting; its values never reach a message, only the counts do.
+    storage: storage_module.ScopedState | None = None
+    if args.storage_state:
+        try:
+            storage = storage_module.load_scoped(args.storage_state, args.url)
+        except storage_module.StorageStateError as exc:
+            raise CliFailure(
+                f"--storage-state is unusable: {exc}",
+                hint="see README 'Bot protection' for how a human exports a storage state",
+            ) from exc
+
     output_path = Path(args.output).expanduser() if args.output else None
     image_type = "png"
     if args.format == "screenshot" and output_path is not None:
@@ -292,7 +405,9 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
                 number += 1
                 last = number == attempts
                 try:
-                    attempt = _inspect_once(lease, args, active, image_type, runtime, check_stable=not last)
+                    attempt = _inspect_once(
+                        lease, args, active, image_type, runtime, check_stable=not last, storage=storage
+                    )
                 except PlaywrightError as exc:
                     if last:
                         raise
@@ -311,9 +426,11 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
                 )
             payload, observed_ua = attempt.payload, attempt.observed_ua
             # PWMCP-25 / PWMCP-26: say when the result may be partial (stderr only, stdout unchanged).
-            for note in (attempt.diagnostics.summary(), _small_result_warning(args, payload, sizes)):
-                if note:
-                    runtime.output.emit(LogLevel.WARN, note, force=True)
+            # (A blocked attempt is reported as such below; "small result" would only mislead.)
+            if attempt.blocked is None:
+                for note in (attempt.diagnostics.summary(), _small_result_warning(args, payload, sizes)):
+                    if note:
+                        runtime.output.emit(LogLevel.WARN, note, force=True)
     except (PwmcpError, PlaywrightError, OSError, ValueError) as exc:
         raise CliFailure(
             f"pwmcp inspect failed: {exc}",
@@ -335,9 +452,22 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
             f"user agent: {fields['user_agent']} (source: {fields['user_agent_source']})",
             force=True,
         )
+    # Same transparency for an operator-supplied session: say that one was applied (counts only).
+    if storage is not None:
+        fields["storage_state"] = {"cookies": storage.cookies, "origins": storage.origins}  # type: ignore[assignment]
+        runtime.output.emit(
+            LogLevel.INFO,
+            f"storage state: {storage.cookies} cookies and {storage.origins} origins applied for this host "
+            "(values are never printed)",
+            force=True,
+        )
+    reported = overridden or storage is not None
+
+    if attempt.blocked is not None:
+        _report_blocked(attempt, args, fields if reported else {}, runtime, storage is not None)
 
     if output_path is None:
-        if runtime.json_mode and overridden:
+        if runtime.json_mode and reported:
             runtime.output.primary({"content": payload, **fields})
         else:
             runtime.output.primary(payload)
@@ -351,8 +481,64 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
     except OSError as exc:
         raise CliFailure(f"cannot write {args.format} output to {output_path}: {exc}") from exc
     runtime.output.info(f"wrote {args.format} output to {output_path}")
-    if runtime.json_mode and overridden:
+    if runtime.json_mode and reported:
         runtime.output.primary({"output": str(output_path), "format": args.format, **fields})
+
+
+def _report_blocked(
+    attempt: _Attempt,
+    args: argparse.Namespace,
+    fields: dict[str, object],
+    runtime: CliRuntime,
+    used_storage: bool,
+) -> None:
+    """State, never hide, that the page is bot protection: exit EXIT_BLOCKED, never write ``--output``.
+
+    stdout carries the explanation and the challenge page's text (in ``--json``: ``blocked: true``
+    and the details), so nothing can mistake it for the target. stderr and the exit code say it too.
+    """
+
+    verdict = attempt.blocked
+    assert verdict is not None  # the caller checked; narrows the type
+    where = "in the content field" if runtime.json_mode else "below"
+    message = (
+        f"blocked by bot protection ({verdict.description}); "
+        f"page content {where} is the challenge page, not the target"
+    )
+    waited = f"{attempt.waited_ms / 1000:.1f} s"
+    detail = f"HTTP {attempt.status}" if attempt.status is not None else "no HTTP status"
+    detail += f", signals: {', '.join(verdict.signals)}"
+    if args.wait_for:
+        detail += f"; still blocked after waiting {waited} for {args.wait_for!r}"
+    result: dict[str, object] = {
+        "blocked": True,
+        "provider": verdict.provider,
+        "kind": verdict.kind,
+        "signals": list(verdict.signals),
+        "status": attempt.status,
+        "final_url": attempt.final_url,
+        "waited_ms": attempt.waited_ms,
+        "message": message,
+        "content": attempt.payload,
+        **fields,
+    }
+    if runtime.json_mode:
+        runtime.output.primary_json(result)
+    else:
+        runtime.output.primary(f"{message}\n\n{attempt.payload}")
+    if args.output:
+        runtime.output.emit(LogLevel.WARN, f"--output {args.output} was not written: the result is not the target", force=True)
+    if used_storage:
+        hint = (
+            "the supplied storage state did not get past it: the cookies may have expired or be bound to "
+            "another IP address or user agent; a human must export a fresh one (README 'Bot protection')"
+        )
+    else:
+        hint = (
+            "report this to the user as BLOCKED; do not retry or work around it. A human can open the page "
+            "once and export a storage state for --storage-state (README 'Bot protection')"
+        )
+    raise CliFailure(f"{message} ({detail})", exit_code=EXIT_BLOCKED, hint=hint)
 
 
 _REGION = re.compile(r"^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*$")
@@ -564,7 +750,8 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
     ))
     registry.register(VerbSpec(
         "inspect",
-        description="inspect a rendered webpage through the remote PWMCP browser",
+        description="inspect a rendered webpage through the remote PWMCP browser; exits 4 when the page is bot "
+        "protection (a challenge or block page) instead of the target",
         group=VerbGroup.EXPLORATION.value,
         examples=(
             "pwmcp inspect https://example.com",
@@ -574,6 +761,7 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             "pwmcp inspect https://example.com --wait-for 'h1' --timeout-ms 45000 --retries 3",
             "pwmcp inspect https://self-signed.example --ignore-https-errors",
             "pwmcp inspect https://example.com --user-agent edge-windows",
+            "pwmcp inspect https://example.com --storage-state ./example.state.json",
         ),
         include_progress=False,
         arguments=(ArgumentSpec(
@@ -639,6 +827,14 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
                 "own, or a custom printable-ASCII string; overrides the server-level setting",
                 group="IDENTITY",
                 metavar="PRESET_OR_STRING",
+            ),
+            OptionSpec(
+                ("--storage-state",),
+                "reuse a session a HUMAN exported from their own browser (a Playwright storage-state "
+                "JSON file, mode 0600); only the cookies and origins of the URL's host are applied, "
+                "values are never printed. For pages behind bot protection that a human has cleared",
+                group="IDENTITY",
+                metavar="FILE",
             ),
             OptionSpec(
                 ("--ignore-https-errors",),
