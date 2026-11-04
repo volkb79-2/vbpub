@@ -4,12 +4,27 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.12.2] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=bb1194bbf6bf3ace6fe19132872a2140320e6409 -->
+
+### Added
+- feat(assay): R2 lanes declare jobs_max and run-gate jobs=auto (assay-jobs audit) (fe53428a8)
+
+### Changed
+- nyxloom: session-extract lane takes its base from the request; cap 1500 (7af420ba8)
+
+### Documentation
+- docs: replace stale one-candidate-at-a-time comments (review LOW-1) (a44e2da85)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - `session-extract` R2 lane: the one-time SHA base pin aged into a 1204-candidate plan above the 1203 cap (every attempt exit 4,
   MUTANT_LIMIT_EXCEEDED). The lane now takes `base_source = "request"` (`run-gate --base <previous nyxloom-v* tag> session-extract`;
   `nyxloom-v0.11.1` plans 885 candidates) and the cap is 1500 with a documented rationale in `assay.toml`.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.12.1] - 2026-11-04
 <!-- cmru: generated -->
