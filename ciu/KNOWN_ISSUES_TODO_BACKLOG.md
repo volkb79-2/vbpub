@@ -6020,7 +6020,7 @@ path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.
 **Design.** `clean` removes the stack's own compose networks; the workspace network is kept only when a devcontainer is actually attached to it, else removed with a one-line message.
 
 **Acceptance criteria.** After up + clean in a non-devcontainer bundle, `docker network ls` shows no network whose name carries the project name or the instance id.
-## CIU-168 — a legacy (schema v1) worktree record whose id differs from the path-derived id refuses every `ciu worktree up` / `ciu up`, and the refusals name no remedy
+## CIU-172 — a legacy (schema v1) worktree record whose id differs from the path-derived id refuses every `ciu worktree up` / `ciu up`, and the refusals name no remedy
 
 **Status:** OPEN. Filed 2026-11-04 from dstdns (P220, worktree `p220-test-runner-ui`; ciu 7.19.0). Severity: P2.
 
