@@ -164,7 +164,8 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest",
   "-n", "0", "-q", "--cov=src/nyxloom", "--cov-branch", "--cov-report=json:coverage-session-extract.json"]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }  # cli_extended: the tester-unified image's released wheel (CX-D1), never a source root
 env_passthrough = ["HOME", "PATH", "TERM", "LANG"]
-# Native candidates now run serially so cgroup event deltas remain attributable.
+# Candidates may run concurrently up to jobs_max (assay 11/12 B157 attributes limit events to every
+# overlapping window; the count itself is chosen by run-gate's jobs = "auto").
 # Resume state is tied to the judged commit tree, so this fix's tree change
 # correctly rejudges prior candidates. The previous run processed 293
 # candidates in 7012 seconds; 1203 candidates project to about 8.1 hours.

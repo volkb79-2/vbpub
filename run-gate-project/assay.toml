@@ -116,13 +116,10 @@ base_source = "request"
 # Operators and max_mutants exactly as scripts/cgroup-profiler/
 # assay.toml's [lanes.r2] (handoff §2 C2) — the same four python families.
 # The RG-89 tester-unified lane has one cgroup leaf, even though Assay gives
-# each mutant its own scratch snapshot and pytest basetemp. Its resource event
-# counters cannot attribute an overlapping limit hit to either worker. Keep
-# one candidate active until per-worker cgroups and counter bindings exist;
-# --resume continues an incomplete campaign on the same exact tree.
-# (Superseded by assay 11/12 B157: concurrent windows attribute a limit event
-# to every overlapping window and PASS stays `survived`; the ceiling below is
-# 2 because the suite is docker-adjacent and ~160 s per candidate.)
+# each mutant its own scratch snapshot and pytest basetemp. Since assay 11/12 B157,
+# concurrent windows attribute a limit event to every overlapping window and PASS stays
+# `survived`, so the ceiling below is 2 (the suite is docker-adjacent, ~160 s per
+# candidate). --resume continues an incomplete campaign on the same exact tree.
 # The R2 pytest argv also carries `-x`: one failed behavioral oracle already
 # kills the mutant, so continuing the remaining integration-heavy suite can
 # add no evidence. More importantly, a mutation can break cleanup after an
