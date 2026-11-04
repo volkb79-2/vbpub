@@ -16,6 +16,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - B187: R0 result classification maps the observation status through `contention.observation_input` instead of a hand-written copy.
 - B194: `tools/b110_pilot_select.py --size` below the per-file plus missing-operator minimum falls back to a seeded operator-covering fill; only a size below the operator count is refused.
 - B184: synthetic 10.0.1-shape `crashed` and `budget_exceeded` state fixtures prove the resume rejection for every bucket.
+- Test hygiene: the cold-witness child-pytest tests that rely on plugin autoload now switch off the unrelated entry-point plugins the runner image installs (xdist, anyio, run-gate profile, platformdirs), which made the "pytest-cov only" receipt assertions fail with the current tester image.
 - B196: the copy-on-write adapter no longer imports `cowtree` when `MDT_COW_ROOT` is unset (and `COWTREE_MODE` is `auto` or `off`), so a missing sibling package cannot become an import error before any verdict.
 - B197: a run now collects dead copy-on-write runs (killed by SIGKILL or a container kill) through `cowtree.gc` before opening its own run; collection failure is an advisory.
 - B199: a copy-on-write workspace that fails to close after the measurement finished is reported as `assay: advisory:` and the verdict stands; a leaked snapshot state still refuses.

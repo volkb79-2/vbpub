@@ -13724,7 +13724,7 @@ serial/parallel pair and the v16 refusal.
 
 ## B203 — verdict worker attribution is invocation-local on resume
 
-**Status: IMPLEMENTED on branch fan-assay-b206-20261103 with B208 (2026-11-03), not merged or released.** Every state record stores `worker_count`; the verdict carries `judgment.r2.worker_counts` and `jobs` as the campaign maximum (verdict v18). (Originally filed 2026-11-01.) Native R2 `judgment.r2.jobs` and
+**Status: IMPLEMENTED and merged with main on branch merge-assay-20261104 (2026-11-04); not yet on main, not released (12.0.0).** Every state record stores `worker_count`; the verdict carries `judgment.r2.worker_counts` and `jobs` as the campaign maximum (verdict v18). (Originally filed 2026-11-01.) Native R2 `judgment.r2.jobs` and
 `judgment.r2.attribution` record the current invocation's selection. Resume
 identity intentionally allows a candidate result to be reused at a different
 worker count, while the mutation-state record does not store the count that
@@ -13747,14 +13747,14 @@ differences between runs as suite flakes unless an isolated serial replay reprod
 
 ## B205 — killed candidates do not record the failing test
 
-**Status: IMPLEMENTED on branch fan-assay-b206-20261103 with B208 (2026-11-03), not merged or released.** The first failing test id (first `failed` test event of the owner stream, null when unknown) is in the progress event, the state record and, as `first_failing_test` on every native killed entry, in the v18 verdict. (Originally filed 2026-11-02.) A killed candidate's state record and verdict entry say only FAIL with the suite return
+**Status: IMPLEMENTED and merged with main on branch merge-assay-20261104 (2026-11-04); not yet on main, not released (12.0.0).** The first failing test id (first `failed` test event of the owner stream, null when unknown) is in the progress event, the state record and, as `first_failing_test` on every native killed entry, in the v18 verdict. (Originally filed 2026-11-02.) A killed candidate's state record and verdict entry say only FAIL with the suite return
 code; the first failing test id is not kept, so a false kill cannot be attributed after the fact. Record the failing test id in
 the progress event and the state record now; add it to the verdict as an optional field (or with schema v18).
 
 
 ## B206 — resource numbers come only from the cgprofile observer (no own sampler, explicit NO_MEASUREMENT)
 
-**Status: IMPLEMENTED on branch fan-assay-b206-20261103 (2026-11-03), not merged or released.** Client in `src/assay/observer_windows.py`, written against observer contract 3 as implemented on `fan-cgp-20261103` (golden fixtures copied into `tests/fixtures/observer/`). Choices: windows are opened by the process that spawns the root (window host or coordinator) and the exchange's result travels back as a JSON record; the run-wide policy lives in the coordinator's `ProfileCollector`; `observer.version` is null (the observer socket does not report it); the profile also carries the daemon's `attribution` object; the candidate root is made a child subreaper with `preexec_fn`. Live items not run: design §9 M1 on r1002, and the live cgprofile daemon. (Originally filed 2026-11-03.) Design: `docs/design/RESOURCE-PROFILES.md`
+**Status: IMPLEMENTED and merged with main on branch merge-assay-20261104 (2026-11-04); not yet on main, not released (12.0.0).** Client in `src/assay/observer_windows.py`, written against observer contract 3 as implemented on `fan-cgp-20261103` (golden fixtures copied into `tests/fixtures/observer/`). Choices: windows are opened by the process that spawns the root (window host or coordinator) and the exchange's result travels back as a JSON record; the run-wide policy lives in the coordinator's `ProfileCollector`; `observer.version` is null (the observer socket does not report it); the profile also carries the daemon's `attribution` object; the candidate root is made a child subreaper with `preexec_fn`. Live items not run: design §9 M1 on r1002, and the live cgprofile daemon. (Originally filed 2026-11-03.) Design: `docs/design/RESOURCE-PROFILES.md`
 §2–§4 (cross-tool). Depends on cgprofile CP-39 (observer contract 3, cgprofile 1.2.0). Ships in assay 12.0.0 together
 with B208, after run-gate RG-145/RG-148 (24.4.0, dual reader).
 
@@ -13838,7 +13838,7 @@ unavailable, with no reason. Run-gate sizes `jobs=auto` from them (`assay_progre
 
 ## B207 — two-ended-matching candidate scheduling for parallel native R2 (dispatch-order drain, admission budget)
 
-**Status: IMPLEMENTED on branch fan-assay-sched-20261103 (2026-11-03), not merged or released.** Landed without B206: predictions use `elapsed_seconds` and `peak_rss_bytes` that assay already records, kept in `.schedule-history.v1`; sources 1 and 3-6 of the design list are live, `NO_MEASUREMENT` is reported as a `reason` on `prediction_error` today and becomes the profile's reason with B206. `judgment.r2.schedule` waits for B208. **Update (B206/B208 branch):** predictions now read `wall_seconds` and the profile's `rss_peak_bytes` (history/2; history/1 from 11.x and full profile objects are still read), `prediction_error` carries the profile's reason code, and the verdict carries `judgment.r2.schedule`. Open: the live design §9 M4 A/B on r1002; `candidate_ram` history in run-gate still uses its own estimate until RG-148 passes B. (Originally filed 2026-11-03.)
+**Status: IMPLEMENTED and merged with main on branch merge-assay-20261104 (2026-11-04); not yet on main, not released (12.0.0).** Landed without B206: predictions use `elapsed_seconds` and `peak_rss_bytes` that assay already records, kept in `.schedule-history.v1`; sources 1 and 3-6 of the design list are live, `NO_MEASUREMENT` is reported as a `reason` on `prediction_error` today and becomes the profile's reason with B206. `judgment.r2.schedule` waits for B208. **Update (B206/B208 branch):** predictions now read `wall_seconds` and the profile's `rss_peak_bytes` (history/2; history/1 from 11.x and full profile objects are still read), `prediction_error` carries the profile's reason code, and the verdict carries `judgment.r2.schedule`. Open: the live design §9 M4 A/B on r1002; `candidate_ram` history in run-gate still uses its own estimate until RG-148 passes B. (Originally filed 2026-11-03.)
 
 **Status at filing: OPEN (filed 2026-11-03).** Design §5 (specification, simulation, recommendation). Simulator:
 `docs/design/resource-profiles-sim/sched-sim.py`, with outputs in `sim-*.md` beside it. It can ship in 12.0.0 or 12.1.0, after B206.
@@ -13925,7 +13925,7 @@ Needs run-gate RG-148 to pass B. It is independent of the verdict cut (B208), bu
 
 ## B208 — verdict schema v18 (hard cut): profile and schedule summaries, B203 worker counts, B205 failing test id
 
-**Status: IMPLEMENTED on branch fan-assay-b206-20261103 (2026-11-03), not merged or released.** Verdict v18 with `judgment.r2.profile`, `.schedule`, `.worker_counts` and `first_failing_test`; the analyzer reads a v17 verdict (shape-checked, read-only) and writes analysis schema 3. Open: the cross-repo fixture test in run-gate (the golden v18 verdicts are `tests/fixtures/verdicts/r2_pass.json`, `r2_fail_mutants_survived.json` (partially measured), `r2_pass_with_judgment.json` (parallel, mixed worker counts) and the unmeasured ones). (Originally filed 2026-11-03.) Design §4.2. This is the schema carrier for B203, B205, B206 and B207. Ships as
+**Status: IMPLEMENTED and merged with main on branch merge-assay-20261104 (2026-11-04); not yet on main, not released (12.0.0).** Verdict v18 with `judgment.r2.profile`, `.schedule`, `.worker_counts` and `first_failing_test`; the analyzer reads a v17 verdict (shape-checked, read-only) and writes analysis schema 3. Open: the cross-repo fixture test in run-gate (the golden v18 verdicts are `tests/fixtures/verdicts/r2_pass.json`, `r2_fail_mutants_survived.json` (partially measured), `r2_pass_with_judgment.json` (parallel, mixed worker counts) and the unmeasured ones). (Originally filed 2026-11-03.) Design §4.2. This is the schema carrier for B203, B205, B206 and B207. Ships as
 assay 12.0.0.
 
 **Problem.** B203 needs per-record worker counts in the verdict model. B205 needs the failing test id. B206 and B207
