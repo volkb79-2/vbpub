@@ -50,6 +50,7 @@ Usage
   sudo ./install.sh --with-baseline
   sudo ./install.sh --restart-docker
   sudo ./install.sh --observer-only
+  sudo ./install.sh --cgprofile-only [--force-cgprofile-restart]
   sudo ./install.sh --require-damon-disable   # make a failed DAMON_STAT write fatal
   sudo ./install.sh --confirm-no-disk-swap    # accept that MDT gets no disk swap
   sudo ./install.sh --apply-protection        # write MemoryMin/weights drop-ins for MDT_PROTECTED_UNITS
@@ -101,6 +102,19 @@ Options
                       existing /run/cgprofile control directory to be a
                       real root:docker 0770 directory. Does not run the
                       general host policy workflow.
+  --cgprofile-only    Install, pin or upgrade only the native cgprofile service
+                      (CGPROFILE_* in the installed /etc/mdt/host-setup.env,
+                      MDT-055): the released wheel into /opt/cgprofile/<version>,
+                      /etc/cgprofile/cgpd.toml, cgprofile.slice and cgpd.service,
+                      restarting only on drift and only after live sessions
+                      drained (CGPROFILE_DRAIN_TIMEOUT). Also applies the
+                      /run/cgprofile tmpfiles entry and the observer group. A
+                      full install runs the same step.
+  --force-cgprofile-restart
+                      With the full install or --cgprofile-only: restart the
+                      cgprofile daemon even when live sessions remain at the
+                      drain deadline, naming the sessions it aborts. Never
+                      implied by an environment variable.
   --help              Show this help and exit.
 
 Files and ownership
@@ -231,10 +245,14 @@ OBSERVER_ONLY=0
 REQUIRE_DAMON=0
 CONFIRM_NO_DISK_SWAP=0
 APPLY_PROTECTION=0
+CGPROFILE_ONLY=0
+FORCE_CGPROFILE_RESTART=0
 for arg in "$@"; do
   case "$arg" in
     --wizard) WIZARD=1 ;;
     --observer-only) OBSERVER_ONLY=1 ;;
+    --cgprofile-only) CGPROFILE_ONLY=1 ;;
+    --force-cgprofile-restart) FORCE_CGPROFILE_RESTART=1 ;;
     --with-baseline) WITH_BASELINE=1 ;;
     --reset) RESET=1 ;;
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
@@ -279,6 +297,33 @@ if [ "$OBSERVER_ONLY" = 1 ]; then
   done
   provision_cgprofile_observer /
   exit $?
+fi
+
+if [ "$CGPROFILE_ONLY" = 1 ]; then
+  if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
+    || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
+    || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
+    || [ "$APPLY_PROTECTION" = 1 ]; then
+    echo "ERROR: --cgprofile-only cannot be combined with general host-setup options" >&2
+    exit 2
+  fi
+  [ -f /etc/mdt/host-setup.env ] \
+    || { echo "ERROR: --cgprofile-only needs an installed /etc/mdt/host-setup.env (run the full install first)" >&2; exit 2; }
+  _cgprofile_validator="$HERE/mdt-host-setup-wizard.py"
+  python3 "$_cgprofile_validator" --validate-config /etc/mdt/host-setup.env \
+    --example "$HERE/host-setup.env.example" --meminfo-path /proc/meminfo \
+    || { echo "ERROR: /etc/mdt/host-setup.env failed strict validation; nothing was changed" >&2; exit 2; }
+  for tool in install systemd-sysusers systemd-tmpfiles getent stat cut; do
+    command -v "$tool" >/dev/null 2>&1 \
+      || { echo "ERROR: required host command is unavailable: $tool" >&2; exit 2; }
+  done
+  install -m 0644 "$HERE/units/mdt-cgprofile.conf" /etc/tmpfiles.d/mdt-cgprofile.conf
+  systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf \
+    || { echo "ERROR: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-cgprofile.conf" >&2; exit 1; }
+  provision_cgprofile_observer / || exit $?
+  _cgprofile_args=(--config /etc/mdt/host-setup.env)
+  [ "$FORCE_CGPROFILE_RESTART" = 1 ] && _cgprofile_args+=(--force-restart)
+  exec bash "$HERE/scripts/mdt-cgprofile-install.sh" "${_cgprofile_args[@]}"
 fi
 
 if [ "$RESET" = 1 ] && [ "$WIZARD" != 1 ]; then
@@ -1147,6 +1192,8 @@ install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-build
 install -m 0755 "$HERE/scripts/mdt-psi-guard.py"       /usr/local/sbin/mdt-psi-guard.py
 install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-buildkit-builder.py
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
+# check.sh renders the expected cgpd.toml through the installer's --print-config (MDT-055 drift check).
+install -m 0755 "$HERE/scripts/mdt-cgprofile-install.sh" /usr/local/sbin/mdt-cgprofile-install.sh
 install -m 0644 "$HERE/mdt_capacity.py"                 /usr/local/sbin/mdt_capacity.py
 install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
 install -D -m 0644 "$HERE/etc/profile.d/mdt-buildkit.sh" /etc/profile.d/mdt-buildkit.sh
@@ -1231,6 +1278,20 @@ case "${MDT_PSI_GUARD:-report}" in
   off) systemctl disable --now mdt-psi-guard.service 2>/dev/null || true ;;
   *)   systemctl enable mdt-psi-guard.service
        systemctl restart mdt-psi-guard.service ;;
+esac
+# cgprofile host service (MDT-055): installs and pins the released wheel when CGPROFILE_ENABLE=1, restarts only
+# on drift and only after the live sessions drained (exit 3 = drain refused: the rest of the install still
+# completes and the run exits non-zero at the end, like a pending mdt-buildkitd restart).
+CGPROFILE_RESTART_PENDING=0
+_cgprofile_args=(--config "$CONFIG_PATH")
+[ "$FORCE_CGPROFILE_RESTART" = 1 ] && _cgprofile_args+=(--force-restart)
+_cgprofile_rc=0
+bash "$HERE/scripts/mdt-cgprofile-install.sh" "${_cgprofile_args[@]}" || _cgprofile_rc=$?
+case "$_cgprofile_rc" in
+  0) ;;
+  3) CGPROFILE_RESTART_PENDING=1 ;;
+  *) echo "ERROR: the cgprofile service install failed (exit $_cgprofile_rc, see above); nothing else was rolled back. Fix the named cause and re-run install.sh (or install.sh --cgprofile-only)." >&2
+     exit 2 ;;
 esac
 BUILDKITD_RESTART_PENDING=0
 _bk_active=0; systemctl is-active --quiet mdt-buildkitd.service && _bk_active=1
@@ -1373,6 +1434,10 @@ else
 fi
 if [ "${BUILDKITD_RESTART_PENDING:-0}" = 1 ]; then
   echo "ERROR: mdt-buildkitd.service was not restarted although its unit/config changed (a build may be active); the rest of the install completed. Re-run install.sh --restart-buildkitd when no build is running." >&2
+  exit 2
+fi
+if [ "${CGPROFILE_RESTART_PENDING:-0}" = 1 ]; then
+  echo "ERROR: the cgprofile service was not restarted because live sessions remain (see the sessions listed above); the new version is installed and pending, the rest of the install completed. Re-run install.sh (or install.sh --cgprofile-only) when the sessions are done, or add --force-cgprofile-restart to abort them." >&2
   exit 2
 fi
 if [ "$SCHEDULER_FAILED" = 1 ] || [ "$IOCOST_FAILED" = 1 ]; then

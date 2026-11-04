@@ -495,6 +495,125 @@ check_cgprofile_observer() {
 echo "== cgprofile resource observer (/run/cgprofile/observer, contract 2) =="
 check_cgprofile_observer
 
+# The native cgprofile service (MDT-055). CGPROFILE_ENABLE=1 asserts the pinned install: version directory,
+# MANIFEST digest, `current`, rendered config and unit files with no drift, systemd-analyze verify, the
+# service and slice active, both sockets (the control socket in the control directory's group), and
+# `cgpctl doctor --json` without a `fail` (an `overrides` warning is reported, never asserted against).
+# CGPROFILE_ENABLE=0/absent only discloses what is on the host. The paths are overridable for the tests.
+check_cgprofile_service() {
+  local opt="${CGP_OPT:-/opt/cgprofile}" etc="${CGP_ETC:-/etc/cgprofile}" unit_dir="${CGP_UNIT_DIR:-/etc/systemd/system}"
+  local run_dir="${CGPROFILE_DIR:-/run/cgprofile}" systemctl_bin="${CGP_SYSTEMCTL:-systemctl}"
+  local analyze_bin="${CGP_ANALYZE:-systemd-analyze}" installer="${CGP_INSTALLER:-$(dirname "$0")/mdt-cgprofile-install.sh}"
+  local pin="${CGPROFILE_WHEEL:-}" version digest current venv got json verdict dir_group sock_group unit
+  if [ "${CGPROFILE_ENABLE:-0}" != 1 ]; then
+    if [ -L "$opt/current" ]; then
+      info "cgprofile $(readlink "$opt/current") is installed but CGPROFILE_ENABLE is not 1: host-setup leaves it alone"
+    else
+      info "cgprofile service not managed by host-setup (CGPROFILE_ENABLE is not 1)"
+    fi
+    return 0
+  fi
+  if ! [[ "$pin" =~ ^([0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+_-]*)@sha256:([0-9a-f]{64})$ ]]; then
+    fail "CGPROFILE_ENABLE=1 but CGPROFILE_WHEEL='$pin' is not <version>@sha256:<hex>; fix $CONF and re-run install.sh"
+    return 0
+  fi
+  version="${BASH_REMATCH[1]}"; digest="${BASH_REMATCH[2]}"
+  current="$(readlink "$opt/current" 2>/dev/null || true)"
+  venv="$opt/$version/venv"
+  if [ "$current" = "$version" ]; then
+    ok "$opt/current -> $version (the pin)"
+  else
+    fail "$opt/current points at '${current:-nothing}', the pin is $version -- re-run install.sh (or install.sh --cgprofile-only)"
+    [ -f "$opt/PENDING" ] && warn "a pending version is recorded ($(cat "$opt/PENDING")): the last upgrade was refused at the drain deadline"
+    return 0
+  fi
+  if grep -qx "cgprofile_sha256=$digest" "$opt/$version/MANIFEST" 2>/dev/null; then
+    ok "$opt/$version/MANIFEST records the pinned wheel digest"
+  else
+    fail "$opt/$version/MANIFEST is missing or its cgprofile_sha256 differs from the pin"
+  fi
+  got="$("$venv/bin/cgpd" --version 2>&1 || true)"
+  case "$got" in
+    *"$version"*) ok "installed cgpd reports $version" ;;
+    *) fail "installed cgpd reports '${got:-nothing}', the pin is $version" ;;
+  esac
+  if [ -f "$installer" ]; then
+    if bash "$installer" --config "$CONF" --print-config 2>/dev/null | cmp -s - "$etc/cgpd.toml"; then
+      ok "$etc/cgpd.toml equals the config rendered from host-setup.env"
+    else
+      fail "$etc/cgpd.toml differs from what host-setup.env renders (config drift) -- re-run install.sh"
+    fi
+  else
+    warn "$installer missing -- the config drift check was skipped"
+  fi
+  if "$venv/bin/cgpd" config check --file "$etc/cgpd.toml" >/dev/null 2>&1; then
+    ok "cgpd config check accepts $etc/cgpd.toml"
+  else
+    fail "cgpd config check refuses $etc/cgpd.toml"
+  fi
+  if "$venv/bin/cgpd" unit check --wheel-venv "/opt/cgprofile/current/venv" --config "$etc/cgpd.toml" \
+    --installed "$unit_dir/cgprofile.slice" "$unit_dir/cgpd.service" >/dev/null 2>&1; then
+    ok "cgprofile.slice and cgpd.service equal the wheel's rendered units (no unit drift)"
+  else
+    fail "cgprofile.slice / cgpd.service differ from 'cgpd unit print' (unit drift) -- re-run install.sh"
+  fi
+  if command -v "$analyze_bin" >/dev/null 2>&1; then
+    if "$analyze_bin" verify "$unit_dir/cgprofile.slice" "$unit_dir/cgpd.service" >/dev/null 2>&1; then
+      ok "systemd-analyze verify is clean on both units"
+    else
+      fail "systemd-analyze verify reports problems with cgprofile.slice / cgpd.service"
+    fi
+  else
+    warn "systemd-analyze unavailable -- the unit verification was skipped"
+  fi
+  for unit in cgprofile.slice cgpd.service; do
+    if "$systemctl_bin" is-active --quiet "$unit" 2>/dev/null; then ok "$unit is active"; else fail "$unit is not active"; fi
+  done
+  if [ -S "$run_dir/ctl.sock" ]; then
+    dir_group="$(stat -c '%G' "$run_dir" 2>/dev/null || echo '?')"
+    sock_group="$(stat -c '%G' "$run_dir/ctl.sock" 2>/dev/null || echo '?')"
+    if [ "$dir_group" = "$sock_group" ]; then ok "ctl.sock exists in group $sock_group (the control directory's group)"
+    else fail "ctl.sock group is $sock_group, the control directory's group is $dir_group"; fi
+  else
+    fail "$run_dir/ctl.sock is not a socket -- cgpd is not serving"
+  fi
+  if [ -S "$run_dir/observer/resource-observer.sock" ]; then ok "observer socket exists"; else fail "$run_dir/observer/resource-observer.sock is not a socket"; fi
+  json="$("$venv/bin/cgpctl" doctor --json 2>/dev/null)"
+  if [ -n "$json" ]; then
+    verdict="$(printf '%s' "$json" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+for c in doc["checks"]:
+    if c["status"] == "warn" and c["name"] == "overrides":
+        print("WARN " + c["summary"])
+bad = [c["name"] for c in doc["checks"] if c["status"] == "fail"]
+print("FAIL " + ", ".join(bad) if bad else "PASS")
+' 2>&1)"
+    while read -r kind rest; do
+      case "$kind" in
+        WARN) warn "cgpctl doctor: $rest" ;;
+        FAIL) fail "cgpctl doctor reports failing checks: $rest" ;;
+        PASS) ok "cgpctl doctor reports no failing check" ;;
+        *) fail "cgpctl doctor output was not understood: $kind $rest" ;;
+      esac
+    done <<< "$verdict"
+  else
+    fail "cgpctl doctor produced no answer"
+  fi
+  if json="$("$venv/bin/cgpctl" status --json 2>/dev/null)" && printf '%s' "$json" | python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+sys.exit(0 if doc["daemon"]["version"] == sys.argv[1] and doc["config"].get("last_reload_error") is None else 1)
+' "$version"; then
+    ok "the running daemon reports version $version with config.last_reload_error null"
+  else
+    fail "the running daemon does not report version $version with a clean config (cgpctl status --json)"
+  fi
+}
+
+echo "== cgprofile native service (MDT-055) =="
+check_cgprofile_service
+
 echo "== optional DAMON_STAT host policy =="
 case "${DAMON_STAT_DISABLE_DEFAULT:-}" in
   yes)
