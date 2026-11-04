@@ -255,7 +255,7 @@ done
 log "PSI ok (waited ${waited}s)"
 
 if [[ -n $SEED ]]; then
-  git clone -q --no-checkout "$HOME/checkouts/$SEED" "$CKDIR"
+  git -c init.defaultBranch=main clone -q --no-checkout "$HOME/checkouts/$SEED" "$CKDIR"
 else
   git -c init.defaultBranch=main init -q "$CKDIR"
 fi
