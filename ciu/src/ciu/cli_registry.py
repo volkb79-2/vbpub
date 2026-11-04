@@ -118,9 +118,7 @@ def _tokens_for_arguments(args: argparse.Namespace, arguments: Sequence[Argument
                           remainder: str | None) -> list[str]:
     tokens: list[str] = []
     for spec in arguments:
-        raw = getattr(args, spec.name, None)
-        if raw is None:
-            continue
+        raw = getattr(args, spec.name)
         if isinstance(raw, (list, tuple)):
             if spec.name == remainder:
                 if raw:
@@ -426,10 +424,13 @@ def _host_cli() -> Any:
         include_json=False, include_progress=False, arguments=(name_arg,), options=options,
         handler=adapter(["host", "enroll"], options, (name_arg,), positional_first=True),
         constraints=(
-            Conflicts(("--abort", "--ssh-host"), "--abort removes the pending step-1 key pair"),
-            Requires("--fingerprint", ("--ssh-host",), "a fingerprint only verifies step 2"),
-            Requires("--replace", ("--ssh-host", "--abort"),
-                     "--replace rotates a key at step 2"),
+            *(Conflicts(("--abort", other),
+                        "--abort removes the pending step-1 key pair and takes no other "
+                        "enrollment flag")
+              for other in ("--ssh-host", "--fingerprint", "--replace")),
+            Requires("--fingerprint", ("--ssh-host",),
+                     "a fingerprint only verifies step 2: there is nothing to keyscan "
+                     "without an address"),
         ),
     ))
     return registry.build()
@@ -882,8 +883,6 @@ def build_cli() -> Any:
             Requires("--rollback", ("--thin",), "--rollback needs the --thin activation path"),
             Conflicts(("--layout", "--profile"),
                       "a layout owns the host order and the bundles (S7.5c)"),
-            Conflicts(("--host", "--profile"),
-                      "the remote host's profile is chosen on the remote (S14)"),
         ),
     ))
     down_options = (
@@ -924,6 +923,11 @@ def build_cli() -> Any:
         constraints=(
             Requires("--expected-checkout", ("--identity",),
                      "--expected-checkout qualifies an --identity clean"),
+            *(Conflicts(("--identity", other),
+                        "an --identity clean removes a retired id's resources by exact labels "
+                        "and cannot be combined with ordinary clean options")
+              for other in ("--profile", "--phases", "--ignore-errors", "--vanilla",
+                            "--i-understand-this-is-protected")),
         ),
     ))
     diagnose = (

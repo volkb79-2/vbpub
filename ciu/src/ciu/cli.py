@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .cli_utils import CiuArgumentParser, cli_error, cli_headline, get_cli_version
+from .cli_utils import CiuArgumentParser, cli_error, get_cli_version
 from .config_constants import GLOBAL_CONFIG_DEFAULTS, WORKSPACE_ENV
 
 def _resolve_repo_root_cli(define_root: Path | str | None, start_dir: Path) -> Path:
@@ -109,41 +109,22 @@ def _resolve_worktree_ciu_root_cli(
 def _extract_define_root(rest: list[str]) -> tuple[Path | None, list[str]]:
     """Pull ``--root-folder``/``--root-folder`` out of *rest* first, before any
     other local parsing on one of CIU-54's fixed sites (S1.1): the
-    ``--host`` branches of ``render``/``up``/``down``/``health``, ``up
-    --layout``, ``layouts``, ``host-secrets``, ``ssh``, and (S14.7, CIU-93)
-    ``host``.
+    ``--host`` branches of ``render``/``up``/``down``/``status --gate``, ``up
+    --layout``, ``show layouts``, ``secrets host``, ``ssh``, and (S14.7,
+    CIU-93) ``host``.
 
     Consumed here, NOT left in the returned remainder. Every one of these
     sites either forwards its remainder verbatim into a REMOTE argv
-    (``render``/``up``/``down``/``health --host``'s ``ssh_exec``/
+    (``render``/``up``/``down``/``status --gate --host``'s ``ssh_exec``/
     ``_push_host`` calls, ``ssh``'s ``cmd_argv``) or hands it to a stricter
-    downstream parser (``_parse_layout_argv``'s forbidden-flag guard, whose
-    registered flags deliberately keep distinct second characters so no
-    abbreviation is ambiguous — see its own docstring, and ``_flag_given``'s,
-    on exactly this hazard). A LOCAL ``--root-folder`` value names a path on
-    THIS machine; forwarding it would be nonsensical on the remote side (a
-    foreign local path re-parsed by a remote ``ciu``) and, on the layout
-    side, ``--root-folder``/``--dir`` share second character 'd' — the
-    layout guard's own docstring already flags ``--d`` as "genuinely
-    ambiguous against ``--root-folder PATH``". Extracting it first, with its
-    own single-purpose parser, sidesteps both: nothing survives to leak
-    remotely, and ``_parse_layout_argv`` never has to reason about an 8th
-    registered flag.
+    downstream parser. A LOCAL ``--root-folder`` value names a path on THIS
+    machine; forwarding it would be nonsensical on the remote side (a foreign
+    local path re-parsed by a remote ``ciu``). Extracting it first, with its
+    own single-purpose parser, means nothing survives to leak remotely.
 
-    ``allow_abbrev=False`` is deliberate, not the argparse default: this
-    parser runs BEFORE each site's own flag vocabulary is known to it, so it
-    cannot verify an abbreviation is unambiguous the way a single shared
-    parser can (the way ``dev``/``worktree``/``env``/``secrets``/``check``/
-    ``graph``/plain ``up`` register ``--root-folder`` directly in their OWN
-    one parser). Concretely, on ``up --layout``: ``test_up_layout_refuses_
-    every_abbreviated_forbidden_flag_*_form`` (ciu-P29) pins EVERY
-    abbreviation length of ``--dir``/``--rollback``, down to bare ``--d``/
-    ``--r``, as caught by ``_parse_layout_argv``'s forbidden-flag guard —
-    exactly the prefixes ``--root-folder``/``--root-folder`` would otherwise
-    claim first. Requiring the full flag name (the ``--flag=value`` form is
-    unaffected by ``allow_abbrev`` and still works) means a short abbreviation
-    always falls through to the site's own parser unclaimed, so no existing
-    abbreviation contract anywhere in this module can regress.
+    ``allow_abbrev=False`` keeps the exact-spelling contract of the registry
+    (SPEC S10.4): only the full flag name or its ``--flag=value`` form is
+    consumed.
     """
     import argparse as _ap
 
@@ -252,142 +233,15 @@ def _push_host(
     return "exec", rc
 
 
-# ciu-P29 (hotfix) — the flags `ciu up --layout` refuses to accept. The layout
-# owns host order and bundles, so a companion `--profile` would silently
-# override the exported CIU_SERVICES_PROFILE (S7.5 CLI precedence) on EVERY
-# host in the plan, and `--dir`/`--thin`/`--bootstrap`/`--rollback` have no
-# meaning without a local `--host` push.
-_LAYOUT_FORBIDDEN = (
-    "--profile", "--host", "--dir", "--thin", "--bootstrap", "--rollback",
-)
-
-
-# ciu-P29 (hotfix) — the modifiers that SELECT a verb's code path (S10.4):
-# `--layout` and `--dir` on `up`, `--host` on `up`/`down`/`health`/`render`.
-# No entry may be an argparse prefix of another (they have distinct second
-# characters), or an abbreviation would be claimed by whichever branch happens
-# to be tested first instead of being reported as ambiguous — pinned by
-# test_dispatch_flags_have_distinct_second_characters.
-_DISPATCH_FLAGS = ("--layout", "--host", "--dir")
-
-# Of those, the ones whose ABBREVIATIONS must dispatch too. See _flag_given:
-# this is exactly the set that `deploy.py`'s parser would ALSO accept, i.e.
-# where a fall-through is silent rather than loud.
-_ABBREV_DISPATCH_FLAGS = ("--host",)
-
-
-def _flag_dest(flag: str) -> str:
-    """argparse dest for a long flag, namespaced so registrations never collide."""
-    return "flag_" + flag[2:].replace("-", "_")
-
-
 def _flag_given(argv: list[str], flag: str) -> bool:
     """True when *flag* selects this verb's code path (S10.4).
 
-    Always matches `--flag VALUE` and `--flag=VALUE`. For a flag in
-    `_ABBREV_DISPATCH_FLAGS` it ALSO matches every unambiguous argparse
-    abbreviation, resolved by argparse itself rather than by prefix arithmetic
-    — the same technique :func:`_parse_layout_argv` uses for the layout guard.
-
-    ciu-P29, first pass: every dispatch site was a plain ``flag in argv``
-    membership test, which sees the space form but not the ``=`` form, so
-    `--flag=value` silently took a DIFFERENT code path.
-
-    ciu-P29, second pass (review REJECT): exact-or-`=` was still not enough,
-    and the reason is worth stating because it is NOT symmetric across the
-    three dispatch modifiers. What a fall-through COSTS depends entirely on
-    what `deploy.py`'s parser does with the leftover token:
-
-    * `--layout` and `--dir` do not exist there at all. `--lay x` and
-      `--di=/srv` are `unrecognized arguments`; `--d /srv` is `ambiguous
-      option: --d could match --deploy, --dry-run, --root-folder`. Every
-      abbreviation fails LOUDLY, exit 2, nothing deployed.
-    * `--host` DOES exist there — declared at deploy.py:3592 for the help text
-      and read by NOTHING. So `--hos=edge-a` and `--ho edge-a` parse CLEANLY,
-      `args.host` is silently discarded, and the run becomes a LOCAL deploy of
-      the active profile while the operator believes they pushed to a remote
-      host. Exit 0, no warning, zero hosts contacted.
-
-    Hence `--host` alone is abbreviation-aware here. `--layout`/`--dir` stay
-    exact-or-`=` deliberately: they have no such gap, and widening them would
-    INVENT a divergence rather than close one — locally `--d /srv` would become
-    `--dir`, while downstream `--d` is genuinely ambiguous against
-    `--root-folder PATH`, a different path-taking flag. A loud error is the
-    correct answer there, and it is what already happens.
-
-    The premise this asymmetry rests on is not left to a comment:
-    `test_dispatch_abbreviation_premise_against_the_real_deploy_parser` pins it
-    against the REAL `deploy.parse_args`, so if `deploy.py` ever grows a
-    `--dir`/`--layout`, or stops accepting `--hos`, that test fails rather than
-    this docstring quietly going stale.
+    The registry (``cli_registry``) has already validated every spelling: option
+    prefixes are refused there and the mode exclusions (``--layout`` vs ``--host``/
+    ``--dir``/``--profile``, ``--thin`` needs ``--host``) are declared constraints, so
+    this router only needs the exact ``--flag VALUE`` / ``--flag=VALUE`` forms.
     """
-    if any(a == flag or a.startswith(flag + "=") for a in argv):
-        return True
-    if flag not in _ABBREV_DISPATCH_FLAGS:
-        return False
-    import argparse as _ap
-
-    # Register ALL the dispatch modifiers, not just *flag*: an abbreviation
-    # that is ambiguous BETWEEN modifiers then stays ambiguous (argparse exits
-    # 2, loudly) instead of being silently claimed by whichever branch is
-    # tested first. None is ambiguous today — see _DISPATCH_FLAGS.
-    # nargs="?"/const=True keeps a bare `--host` from raising `expected one
-    # argument` HERE; the branch's own parser still owns that error, exactly as
-    # it did before this predicate existed.
-    p = CiuArgumentParser(add_help=False)
-    for candidate in _DISPATCH_FLAGS:
-        p.add_argument(candidate, dest=_flag_dest(candidate),
-                       nargs="?", const=True, default=None)
-    opts, _remaining = p.parse_known_args(argv)
-    return getattr(opts, _flag_dest(flag)) is not None
-
-
-def _parse_layout_argv(rest: list[str]) -> tuple[str | None, list[str], list[str]]:
-    """Resolve `ciu up --layout`'s argv the way the REMOTE parser will.
-
-    Returns ``(layout, remaining, forbidden)`` where *forbidden* names the
-    resolved `_LAYOUT_FORBIDDEN` flags the operator actually supplied.
-
-    ciu-P29 (hotfix): the previous guard compared each leftover token against a
-    denylist of EXACT spellings (``a == flag or a.startswith(flag + "=")``).
-    ``deploy.parse_args`` builds its ``ArgumentParser`` without passing
-    ``allow_abbrev=False``, i.e. with argparse's default ``allow_abbrev=True``,
-    so the REMOTE parser happily resolves ``--prof=core`` to ``--profile``.
-    An abbreviated spelling therefore walked past the local denylist, was
-    forwarded verbatim in the remote argv, and silently overrode the layout's
-    per-host ``CIU_SERVICES_PROFILE`` with one CLI profile on every host.
-
-    The fix is to stop hand-rolling the match: register the forbidden long
-    options on a local parser with the SAME ``allow_abbrev`` semantics the
-    remote uses and let argparse itself resolve the spelling before the guard
-    looks. Every abbreviation length is covered by construction, not by
-    enumeration, and the resolved flags are CONSUMED here rather than left in
-    *remaining*, so nothing survives to be forwarded even in principle.
-
-    ``nargs="?"`` + ``const=True`` on each forbidden flag is what makes the
-    guard total: a value-taking flag supplied with no value (``--profile`` last
-    in argv) and a store-true-style flag supplied with one (``--thin=1``) both
-    reach the guard instead of dying first inside argparse with a raw
-    ``expected one argument`` / ``ignored explicit argument`` message.
-    """
-    import argparse as _ap
-
-    # allow_abbrev is left at argparse's default (True) ON PURPOSE: it is the
-    # setting deploy.parse_args runs with, so an abbreviation resolves here
-    # exactly as it would on the remote. The six forbidden flags plus --layout
-    # have distinct second characters (l/p/h/d/t/b/r), so no abbreviation of
-    # one is ambiguous against another.
-    p = CiuArgumentParser(add_help=False)
-    p.add_argument("--layout", dest="layout", default=None)
-    for flag in _LAYOUT_FORBIDDEN:
-        p.add_argument(flag, dest=_flag_dest(flag),
-                       nargs="?", const=True, default=None)
-    opts, remaining = p.parse_known_args(rest)
-    forbidden = [
-        flag for flag in _LAYOUT_FORBIDDEN
-        if getattr(opts, _flag_dest(flag)) is not None
-    ]
-    return opts.layout, remaining, forbidden
+    return any(a == flag or a.startswith(flag + "=") for a in argv)
 
 
 def _env_generate(rest: list[str]) -> int:
@@ -1699,23 +1553,11 @@ def _host(rest: list[str]) -> int:
     repo_root = _resolve_repo_root_deploy(define_root)
     config = _load_remote_config(repo_root)
     try:
+        # The registry already refuses --abort with any other enrollment flag and
+        # --fingerprint without --ssh-host (declared Conflicts/Requires).
         if opts.abort:
-            if opts.ssh_host or opts.fingerprint or opts.replace:
-                print(
-                    "[S14.7] --abort removes a pending key pair and takes no other "
-                    "enrollment flags.",
-                    file=sys.stderr,
-                )
-                return 2
             return enroll_abort(repo_root, opts.name)
-        if opts.ssh_host or opts.fingerprint:
-            if not opts.ssh_host:
-                print(
-                    "[S14.7] --fingerprint is a step-2 flag and needs --ssh-host "
-                    "ADDR; there is nothing to keyscan without an address.",
-                    file=sys.stderr,
-                )
-                return 2
+        if opts.ssh_host:
             return enroll_step2(
                 repo_root, opts.name,
                 config=config,
@@ -1787,11 +1629,10 @@ def _legacy_dispatch(raw: list[str]) -> None:
     rest = raw[1:]
 
     if verb == "env":
-        if rest and rest[0] == "generate":
+        # The registry guarantees the action is `generate` or `print`.
+        if rest[0] == "generate":
             raise SystemExit(_env_generate(rest[1:]))
-        if rest and rest[0] == "print":
-            raise SystemExit(_env_print(rest[1:]))
-        raise SystemExit(2)
+        raise SystemExit(_env_print(rest[1:]))
 
     elif verb == "iops-baseline":
         raise SystemExit(_iops_baseline(rest))
@@ -1850,39 +1691,19 @@ def _legacy_dispatch(raw: list[str]) -> None:
     elif verb == "up":
         if _flag_given(rest, "--layout"):
             # S7.5c — push-deploy a named host→bundles plan. The layout owns
-            # host order and bundles, so --host/--profile are excluded: a
+            # host order and bundles, so --host/--dir/--profile/--thin/
+            # --bootstrap/--rollback are refused by the registered verb's
+            # declared constraints (cli_registry) before this code runs: a
             # passthrough --profile would silently override the exported
             # CIU_SERVICES_PROFILE (S7.5 CLI precedence).
             #
-            # B2 (review, ciu-P10 checkpoint C) fixed the `--profile=core`
-            # equals form and added the four unguarded flags. ciu-P29 closes
-            # the level BELOW that: the denylist still compared EXACT
-            # spellings, while the remote parser it forwards into runs with
-            # argparse's default allow_abbrev=True, so `--prof=core` resolved
-            # remotely and silently overrode every host's bundles. The check
-            # is now argparse's own resolution rather than a hand-rolled
-            # string match — see _parse_layout_argv.
-            #
-            # ciu-P45 (CIU-54): --root-folder is extracted BEFORE
-            # _parse_layout_argv sees `rest` at all, rather than registered
-            # on that parser directly — --root-folder and --dir share second
-            # character 'd' (see _extract_define_root's own docstring), and
-            # _parse_layout_argv's forbidden-flag set is deliberately kept to
-            # distinct second characters.
+            # ciu-P45 (CIU-54): --root-folder is extracted first (see
+            # _extract_define_root); the layout name is the only value left to read.
             define_root, rest = _extract_define_root(rest)
-            layout_name, remaining, forbidden = _parse_layout_argv(rest)
-            if forbidden:
-                print(
-                    "[S7.5c] --layout is mutually exclusive with --host and "
-                    "--profile (and with --dir/--thin/--bootstrap/--rollback, "
-                    "which only apply to the --host push path) — the layout "
-                    "owns the host order and the bundles. Refused: "
-                    + ", ".join(forbidden)
-                    + " (abbreviated and `=` spellings resolve to the same "
-                      "flag on the remote, so they are refused here too).",
-                    file=sys.stderr,
-                )
-                raise SystemExit(2)
+            layout_parser = CiuArgumentParser(add_help=False)
+            layout_parser.add_argument("--layout", dest="layout", default=None)
+            layout_opts, remaining = layout_parser.parse_known_args(rest)
+            layout_name = layout_opts.layout
             repo_root = _resolve_repo_root_deploy(define_root)
             config = _load_remote_config(repo_root)
             from .deploy_pkg.layouts import resolve_layout
@@ -1948,9 +1769,8 @@ def _legacy_dispatch(raw: list[str]) -> None:
                 # Docker-optional push→activate path (S14.6). Pushes an artifact
                 # to bundle_dir, then runs the project's shell activation contract
                 # (bootstrap|apply|health|rollback) — no Docker/Python on target.
-                if opts.bootstrap and opts.rollback:
-                    print("[ERROR] --bootstrap and --rollback are mutually exclusive.", file=sys.stderr)
-                    raise SystemExit(2)
+                # (--bootstrap/--rollback exclusivity and their need for --thin are
+                # declared constraints of the registered verb.)
                 from .activate import run_thin_up
                 try:
                     rc = run_thin_up(
@@ -1966,11 +1786,6 @@ def _legacy_dispatch(raw: list[str]) -> None:
                     print(f"[ERROR] {exc}", file=sys.stderr)
                     raise SystemExit(2)
                 raise SystemExit(rc)
-
-            # --bootstrap/--rollback only apply to the --thin activation contract.
-            if opts.bootstrap or opts.rollback:
-                print("[ERROR] --bootstrap/--rollback require --thin (the docker-optional activation path).", file=sys.stderr)
-                raise SystemExit(2)
 
             # B3 (review): the ONE push implementation, shared with the
             # `--layout` loop above — behavior here is unchanged (same
@@ -2040,14 +1855,9 @@ def _legacy_dispatch(raw: list[str]) -> None:
             parser.add_argument("--identity", metavar="OLD_ID")
             parser.add_argument("-y", "--yes", action="store_true")
             parser.add_argument("--expected-checkout", metavar="PATH")
-            opts, remaining = parser.parse_known_args(rest)
-            if remaining:
-                print(
-                    "[ERROR] --identity cannot be combined with ordinary clean "
-                    f"options: {' '.join(remaining)}",
-                    file=sys.stderr,
-                )
-                raise SystemExit(2)
+            # Strict parse: the registry declares `--identity` as conflicting with every
+            # ordinary clean option, so anything left over is a usage error here too.
+            opts = parser.parse_args(rest)
             repo_root = _resolve_repo_root_deploy(define_root)
             from .deploy import action_clean_identity
             raise SystemExit(
@@ -2168,10 +1978,7 @@ def _legacy_dispatch(raw: list[str]) -> None:
         p.add_argument("--no-prebuild", dest="no_prebuild", action="store_true")
         p.add_argument("--root-folder", dest="define_root",
                        type=Path, default=None, metavar="PATH")
-        opts = p.parse_args(rest)
-        if not opts.stack:
-            cli_error("ciu dev: missing <stack>. Run 'ciu dev --help'.")
-            raise SystemExit(2)
+        opts = p.parse_args(rest)  # the registry requires <stack>
         repo_root = _resolve_repo_root_cli(opts.define_root, Path.cwd())
         raise SystemExit(run_dev(
             opts.stack,
@@ -2199,21 +2006,8 @@ def _legacy_dispatch(raw: list[str]) -> None:
         p.add_argument("--list", action="store_true", default=False)
         p.add_argument("--path", dest="path_name", default=None)
         p.add_argument("-y", "--yes", action="store_true", default=False)
-        opts, _ = p.parse_known_args(rest)
-        if opts.host is None:
-            print(
-                "ciu host-secrets <host> [--materialize | --list | --path <name>] "
-                "[-y]  (S14.3a)",
-                file=sys.stderr,
-            )
-            raise SystemExit(2)
-        modes = [opts.materialize, opts.list, opts.path_name is not None]
-        if sum(1 for m in modes if m) != 1:
-            print(
-                "[S14.3a] choose exactly one of --materialize, --list, --path <name>.",
-                file=sys.stderr,
-            )
-            raise SystemExit(2)
+        # The registry requires <host> and exactly one of --materialize/--list/--path.
+        opts = p.parse_args(rest)
         repo_root = _resolve_repo_root_deploy(define_root)
         from .hosts import get_host_secrets
         try:
@@ -2277,7 +2071,7 @@ def _legacy_dispatch(raw: list[str]) -> None:
         from .deploy import main as deploy_main
         raise SystemExit(deploy_main(["--graph"] + rest))
 
-    elif verb == "ssh":
+    else:  # "ssh": the registry only hands over registered verbs, and ssh is the last
         # Parse: ciu ssh <host> [--admin] [-- cmd...]
         import argparse as _ap
         from .hosts import get_host
@@ -2297,10 +2091,7 @@ def _legacy_dispatch(raw: list[str]) -> None:
         # never from cmd_argv, which is the literal remote command and must
         # pass through untouched even if it happens to contain that spelling.
         define_root, ssh_rest = _extract_define_root(ssh_rest)
-        opts = p.parse_args(ssh_rest)
-        if not opts.host:
-            cli_error("ciu ssh: missing <host>. Run 'ciu ssh --help'.")
-            raise SystemExit(2)
+        opts = p.parse_args(ssh_rest)  # the registry requires <host>
         # Resolve repo root (S1.1, CIU-54)
         repo_root = _resolve_repo_root_deploy(define_root)
         config = _load_remote_config(repo_root)
@@ -2317,18 +2108,6 @@ def _legacy_dispatch(raw: list[str]) -> None:
             interactive=interactive,
             admin=opts.admin,
         ))
-
-    else:
-        if verb == "-d" and rest:
-            print(cli_headline(), file=sys.stderr)
-            print(
-                f"ciu: '-d' is not a verb. Did you mean: ciu up --dir {rest[0]!r}?",
-                file=sys.stderr,
-            )
-        else:
-            print(cli_headline(), file=sys.stderr)
-            print(f"ciu: unknown verb '{verb}'. Run 'ciu' for usage.", file=sys.stderr)
-        raise SystemExit(2)
 
 
 if __name__ == "__main__":
