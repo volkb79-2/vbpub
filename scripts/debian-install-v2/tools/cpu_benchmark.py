@@ -53,10 +53,11 @@ TOOL = "geekbench"
 # DEFAULT_MAJOR: the newest major found on the CDN (7.0.0 and 7.1.0 verified 2026-11-04, `geekbench7 --help` read).
 SUPPORTED_MAJORS = (6, 7)
 DEFAULT_MAJOR = 7
-# Score of the Geekbench baseline machine per major (x_ref = x * single_core / baseline). GB6: 2500 (Core i7-12700, memo
-# 4.4). GB7: NOT VERIFIED, deliberately None -- the normaliser must refuse a GB7 record until the constant is confirmed
-# from Primate Labs documentation; a guessed constant would silently skew every normalised time.
-BASELINE_SCORE: dict[int, int | None] = {6: 2500, 7: None}
+# Score of the Geekbench baseline (reference) machine per major (x_ref = x * single_core / baseline). Documentation only,
+# not stored in the record: GB6 = 2500 on an Intel Core i7-12700; GB7 = 2500 on an AMD Ryzen 7 7700 (Lenovo Legion),
+# confirmed by the controller 2026-11-05 from public sources (letsdatascience, hwbusters, xenospectrum, notebookcheck,
+# signal65). Equal constants do not make the majors comparable: records of different majors are never mixed.
+BASELINE_SCORE: dict[int, int | None] = {6: 2500, 7: 2500}
 DEFAULT_STATE_DIR = "/var/lib/mdt/host-facts"
 RESULT_NAME = "cpu-benchmark.json"
 CLAIM_NAME = "cpu-benchmark.claim.json"

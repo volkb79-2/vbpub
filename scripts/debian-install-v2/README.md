@@ -579,8 +579,9 @@ result-page parsers) and generalised over the major.
   refuses to run (`archive_sha256_verified: true`; the installer passes both pins). Without it the computed sha256 is
   recorded unverified.
 - Majors are not comparable. The record carries `tool_major` and `baseline_score`; the tool's `BASELINE_SCORE` is per major
-  (GB6 = 2500; GB7 = null, NOT VERIFIED, so a GB7 record cannot be normalised until its constant is confirmed), and
-  `baseline_for` / `require_same_major` refuse an unknown baseline or a mix of majors. Output or a result URL of another
+  (GB6 = 2500 on an Intel Core i7-12700; GB7 = 2500 on an AMD Ryzen 7 7700, Lenovo Legion, per public sources; the
+  reference machine names are documentation only and are not stored in the record), and
+  `baseline_for` / `require_same_major` refuse an unknown major or a mix of majors. Output or a result URL of another
   major than requested is refused.
 - Geekbench 7.1.0 `--help` shows `--cpu` and "no options runs the CPU benchmark"; the tool runs the binary without flags.
   The GB7 summary score lines could not be verified without running the benchmark, so GB7 stdout fixtures are marked
@@ -598,7 +599,7 @@ Files under `--state-dir` (default `/var/lib/mdt/host-facts`):
 | `cpu-benchmark.json` | 0644 | `mdt-host-cpu-benchmark/1` |
 | `cpu-benchmark.claim.json` | 0600 | `mdt-host-cpu-benchmark-claim/1`: `result_url`, `claim_url`, `measured_at` |
 
-`mdt-host-cpu-benchmark/1` fields: `tool` (`geekbench`), `tool_version`, `tool_major`, `baseline_score` (per major, null when unverified), `tool_sha256` (archive or binary),
+`mdt-host-cpu-benchmark/1` fields: `tool` (`geekbench`), `tool_version`, `tool_major`, `baseline_score` (per major, 2500 for 6 and 7), `tool_sha256` (archive or binary),
 `archive_sha256_verified`, `measured_at`
 (UTC), `cpu_model`, `cpus_online`, `hypervisor`, `single_core`, `multi_core` (null when not found), `score_source`
 (`stdout` | `result-page` | null), `result_url`, `result_id`, `conditions` (`loadavg1_start`, `psi_cpu_some_avg10_max`,

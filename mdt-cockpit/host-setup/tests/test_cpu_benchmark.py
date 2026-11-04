@@ -347,7 +347,7 @@ class Gb7Tests(Base):
         self.assertEqual(env.downloads, ["https://cdn.geekbench.com/Geekbench-7.1.1-Linux.tar.gz"])
         rec = self.record()
         self.assertEqual((rec["tool_major"], rec["tool_version"], rec["result_url"]), (7, "7.1.0", GB7_URL))
-        self.assertIsNone(rec["baseline_score"])  # GB7 baseline is unverified: None, not a guess
+        self.assertEqual(rec["baseline_score"], 2500)  # GB7 reference machine scores 2500 (documented in the tool)
         self.assertFalse(rec["archive_sha256_verified"])
         self.assertEqual(rec["tool_sha256"], hashlib.sha256(_tarball7()).hexdigest())
 
@@ -396,11 +396,12 @@ class Gb7Tests(Base):
 
 class BaselineTests(unittest.TestCase):
     def test_baselines_are_per_major(self):
-        self.assertEqual(CB.BASELINE_SCORE, {6: 2500, 7: None})
+        self.assertEqual(CB.BASELINE_SCORE, {6: 2500, 7: 2500})
         self.assertEqual(CB.baseline_for({"tool_major": 6}), 2500)
+        self.assertEqual(CB.baseline_for({"tool_major": 7}), 2500)
 
-    def test_unverified_or_unknown_baseline_is_refused(self):
-        for rec in ({"tool_major": 7}, {"tool_major": 5}, {}):
+    def test_unknown_major_has_no_baseline(self):
+        for rec in ({"tool_major": 5}, {"tool_major": 8}, {"tool_major": "7"}, {}):
             with self.assertRaises(CB.BenchmarkError):
                 CB.baseline_for(rec)
 
