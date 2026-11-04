@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+- TNT-56: the fake server's `zpool.scrub.run` validates its payload strictly (exactly `pool_name`, `scan_type`, `action`, `threshold`), so payload drift fails offline.
+- TNT-58: `docs/CONSUMERS.md` and `docs/LIVE-TESTING.md` no longer name private hosts or lock paths (`TNT_LIVE_HOST_LOCK` is an operator-chosen file); the host-name test now scans every `docs/*.md`.
+- TNT-59: the `artifacts/vm-lab/` placeholder (README plus `.gitignore`) is committed, and a test pins that no tnt source relocates VM state.
+
+### Added
+- TNT-60: `tnt vm device list/update/delete`. Updates and deletes are reviewed plans with a device drift probe; disk changes need a stopped VM; delete keeps the backing zvol unless `--zvol` (or `--raw-file`) is given and the data is named in a second typed confirmation (`--confirm-second`). The fake server keeps `vm.devices` consistent on update and delete.
+- TNT-61: `tnt vm disk-image-size`, `tnt vm disk-import` and `tnt files put`. Import creates a new zvol disk on a stopped VM (autostart off), runs `vm.device.convert` as a tracked job, then sets the boot order; a failed conversion keeps the device and zvol and says not to start the VM. `files put` uploads a sha256-verified file from the repository `downloads/` folder through the API upload endpoint and never overwrites. The import and upload methods are probed at runtime and refused with a clear message where the host does not list them (vanilla v27); they are not reported as capability gaps.
+
 <!-- cmru: release history -->
 
 ## [0.2.0] - 2026-11-01

@@ -339,6 +339,25 @@ def refusal_for(method: Any, params: Iterable[Any] = (), state: SafetyState | No
         if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
             return f"disk {disk} reports no usable size: wipe is refused"
         return None
+    if name == "vm.device.convert":
+        if (len(args) != 1 or not isinstance(args[0], Mapping) or set(args[0]) != {"source", "destination"}
+                or not isinstance(args[0]["source"], str) or not args[0]["source"].startswith("/mnt/")
+                or not isinstance(args[0]["destination"], str) or not args[0]["destination"].startswith("/dev/zvol/")):
+            return "vm.device.convert is limited to one /mnt/ image source and one /dev/zvol/ destination"
+    if name == "filesystem.put":
+        if (len(args) != 2 or not isinstance(args[0], str) or not args[0].startswith("/mnt/")
+                or not isinstance(args[1], Mapping) or set(args[1]) != {"mode"}
+                or not isinstance(args[1]["mode"], int) or isinstance(args[1]["mode"], bool)):
+            return "filesystem.put is limited to one new /mnt/ destination file with an explicit mode"
+    if name == "vm.device.delete":
+        if (len(args) != 2 or isinstance(args[0], bool) or not isinstance(args[0], int)
+                or not isinstance(args[1], Mapping) or set(args[1]) != {"force", "raw_file", "zvol"}
+                or any(not isinstance(value, bool) for value in args[1].values())):
+            return "vm.device.delete takes a device id and exactly the boolean options force, raw_file and zvol"
+    if name == "vm.device.update":
+        if (len(args) != 2 or isinstance(args[0], bool) or not isinstance(args[0], int)
+                or not isinstance(args[1], Mapping) or not args[1]):
+            return "vm.device.update takes a device id and a non-empty field mapping"
     if name in POOL_ID_METHODS:
         return _pool_id_refusal(name, args, state)
     if name in POOL_NAME_METHODS:
