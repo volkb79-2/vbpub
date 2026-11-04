@@ -4954,7 +4954,7 @@ into the runtime dependency closure.
 ### Package boundary (A-478)
 
 `assay analyze` lives in its own top-level package, `assay_analysis`
-(`analysis/src/assay_analysis/`: `cli.py`, `evidence.py`, `plan_estimate.py`), shipped in the same
+(`analysis/src/assay_analysis/`: `cli.py`, `evidence.py`, `plan_estimate.py`, `rigor_export.py`), shipped in the same
 wheel and zipapp as `assay`. Analysis reads evidence and never judges: it
 never decides ACCEPT or REJECT, and it was 317 of the 3,760 B105 mutation
 candidates, so scoring it as judge code inflated the judge's own cost without

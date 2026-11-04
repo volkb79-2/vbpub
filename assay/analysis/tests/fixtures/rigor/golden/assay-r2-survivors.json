@@ -1,0 +1,272 @@
+{
+  "canary": null,
+  "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "coverage": null,
+  "judge": {
+    "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "judge_identity": "assay-judge-identity/14",
+    "verdict_schema": "urn:assay:schema:verdict:18",
+    "version": "12.0.0"
+  },
+  "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "kind": "assay-lane",
+  "lane": "assay-r2",
+  "outcome": "FAIL",
+  "project": "cgroup-profiler",
+  "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "r2": {
+    "buckets": {
+      "budget_exceeded": 3,
+      "crashed": 2,
+      "equivalent": 0,
+      "hung": 2,
+      "killed": 519,
+      "survived": 31
+    },
+    "campaign": {
+      "completed_at": "2026-11-04T17:30:00Z",
+      "started_at": "2026-11-04T08:00:00Z"
+    },
+    "candidates": {
+      "executed": 557,
+      "resumed": 0,
+      "total": 557
+    },
+    "profile_status_counts": {
+      "MEASURED": 40,
+      "NO_MEASUREMENT": 0,
+      "PARTIAL": 517
+    },
+    "score": 0.9436,
+    "survivors": {
+      "listed": [
+        {
+          "candidate_id": "cand-0000",
+          "first_failing_test": "tests/test_mod.py::test_case[0]",
+          "line": 10,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        },
+        {
+          "candidate_id": "cand-0001",
+          "first_failing_test": null,
+          "line": 11,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod1.py"
+        },
+        {
+          "candidate_id": "cand-0002",
+          "first_failing_test": "tests/test_mod.py::test_case[2]",
+          "line": 12,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod2.py"
+        },
+        {
+          "candidate_id": "cand-0003",
+          "first_failing_test": null,
+          "line": 13,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        },
+        {
+          "candidate_id": "cand-0004",
+          "first_failing_test": "tests/test_mod.py::test_case[4]",
+          "line": 14,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod1.py"
+        },
+        {
+          "candidate_id": "cand-0005",
+          "first_failing_test": null,
+          "line": 15,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod2.py"
+        },
+        {
+          "candidate_id": "cand-0006",
+          "first_failing_test": "tests/test_mod.py::test_case[6]",
+          "line": 16,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        },
+        {
+          "candidate_id": "cand-0007",
+          "first_failing_test": null,
+          "line": 17,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod1.py"
+        },
+        {
+          "candidate_id": "cand-0008",
+          "first_failing_test": "tests/test_mod.py::test_case[8]",
+          "line": 18,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod2.py"
+        },
+        {
+          "candidate_id": "cand-0009",
+          "first_failing_test": null,
+          "line": 19,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        },
+        {
+          "candidate_id": "cand-0010",
+          "first_failing_test": "tests/test_mod.py::test_case[10]",
+          "line": 20,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod1.py"
+        },
+        {
+          "candidate_id": "cand-0011",
+          "first_failing_test": null,
+          "line": 21,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod2.py"
+        },
+        {
+          "candidate_id": "cand-0012",
+          "first_failing_test": "tests/test_mod.py::test_case[12]",
+          "line": 22,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        },
+        {
+          "candidate_id": "cand-0013",
+          "first_failing_test": null,
+          "line": 23,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod1.py"
+        },
+        {
+          "candidate_id": "cand-0014",
+          "first_failing_test": "tests/test_mod.py::test_case[14]",
+          "line": 24,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod2.py"
+        },
+        {
+          "candidate_id": "cand-0015",
+          "first_failing_test": null,
+          "line": 25,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        },
+        {
+          "candidate_id": "cand-0016",
+          "first_failing_test": "tests/test_mod.py::test_case[16]",
+          "line": 26,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod1.py"
+        },
+        {
+          "candidate_id": "cand-0017",
+          "first_failing_test": null,
+          "line": 27,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod2.py"
+        },
+        {
+          "candidate_id": "cand-0018",
+          "first_failing_test": "tests/test_mod.py::test_case[18]",
+          "line": 28,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        },
+        {
+          "candidate_id": "cand-0019",
+          "first_failing_test": null,
+          "line": 29,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod1.py"
+        },
+        {
+          "candidate_id": "cand-0020",
+          "first_failing_test": "tests/test_mod.py::test_case[20]",
+          "line": 30,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod2.py"
+        },
+        {
+          "candidate_id": "cand-0021",
+          "first_failing_test": null,
+          "line": 31,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        },
+        {
+          "candidate_id": "cand-0022",
+          "first_failing_test": "tests/test_mod.py::test_case[22]",
+          "line": 32,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod1.py"
+        },
+        {
+          "candidate_id": "cand-0023",
+          "first_failing_test": null,
+          "line": 33,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod2.py"
+        },
+        {
+          "candidate_id": "cand-0024",
+          "first_failing_test": "tests/test_mod.py::test_case[24]",
+          "line": 34,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        },
+        {
+          "candidate_id": "cand-0025",
+          "first_failing_test": null,
+          "line": 35,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod1.py"
+        },
+        {
+          "candidate_id": "cand-0026",
+          "first_failing_test": "tests/test_mod.py::test_case[26]",
+          "line": 36,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod2.py"
+        },
+        {
+          "candidate_id": "cand-0027",
+          "first_failing_test": null,
+          "line": 37,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        },
+        {
+          "candidate_id": "cand-0028",
+          "first_failing_test": "tests/test_mod.py::test_case[28]",
+          "line": 38,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod1.py"
+        },
+        {
+          "candidate_id": "cand-0029",
+          "first_failing_test": null,
+          "line": 39,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod2.py"
+        },
+        {
+          "candidate_id": "cand-0030",
+          "first_failing_test": "tests/test_mod.py::test_case[30]",
+          "line": 40,
+          "operator": "python:compare-swap",
+          "path": "src/cgprofile/mod0.py"
+        }
+      ],
+      "sidecar_sha256": null,
+      "total": 31
+    },
+    "worker_counts": {
+      "1": 557
+    }
+  },
+  "reason": "SURVIVORS_OPEN",
+  "schema": "urn:vbpub:rigor-fragment:1",
+  "verdict_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "verified": true
+}

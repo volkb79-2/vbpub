@@ -612,6 +612,7 @@ def test_the_wheel_holds_all_packages_their_schemas_and_no_tests(built):
         "assay_analysis/cli.py",
         "assay_analysis/evidence.py",
         "assay_analysis/plan_estimate.py",
+        "assay_analysis/rigor_export.py",
         "assay/schemas/analysis-archive.schema.json",
         "assay/schemas/analysis-campaign.schema.json",
         "assay/schemas/analysis-receipt.schema.json",

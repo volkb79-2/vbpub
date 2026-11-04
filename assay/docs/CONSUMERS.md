@@ -225,6 +225,52 @@ lane runs; that lock serializes Assay lanes only.
 `--dry-run` previews a transaction without executing `run-tests`, so it cannot
 prove cgroup capacity or lane admission.
 
+### Judgment-fact fragment for the rigor-evidence record: `assay analyze export` (B219)
+
+```bash
+assay analyze export --verdict .assay/verdict-r2.json [--progress .assay/progress-r2.jsonl] \
+  --lane r2 --file assay.toml --expected-commit "$REVIEW_HEAD" [--project NAME] --out rigor/r2.assay.json
+```
+
+The command first runs the same verification as `assay analyze verdict` (schema, internal consistency, expected
+commit, no `--allow-dirty` override) and then writes one `urn:vbpub:rigor-fragment:1` document of kind `assay-lane`.
+It reads the verdict and, optionally, the lane file and progress file. It never runs a lane and never imports the
+library that owns the fragment schema; the schema is a published contract (vbpub `libraries/rigor-record`).
+
+| Fragment field | Source |
+|---|---|
+| `project`, `project_tree` | `--project` (default: lower-cased name of the lane file's directory); `git rev-parse <commit>:<project dir>` (the root tree when the lane file is at the repository root) |
+| `lane`, `judged_commit`, `verdict_sha256` | the verdict's lane and commit; sha256 of the verdict file bytes |
+| `outcome`, `reason` | the lane outcome mapped to `PASS`, `FAIL` or `ERROR` (`NO_MEASUREMENT`, `INCONCLUSIVE` and `BUDGET_EXCEEDED` are `ERROR`); the verdict `reason_code`, `null` exactly when the outcome is `PASS` |
+| `config_sha256` | sha256 of the canonical JSON of the lane file's `schema_version` and the `[lanes.<lane>]` table |
+| `judge` | `judge_provenance` (version and wheel or zipapp digest), `assay-judge-identity/N`, `urn:assay:schema:verdict:N`. A verdict without `judge_provenance` (a source checkout or an editable install) is refused |
+| `coverage` | the R1 claim: line percentage, branch percentage, floors, excluded line count. Branch percentage is 0 with a floor of 0 when the coverage format cannot report branches. `null` when R1 was not judged |
+| `canary` | the R3 claim: mechanism, targets, mapped outcome; `null` without R3 |
+| `r2` | the R2 claim: candidate counts, the six bucket counts, `score = killed / (killed + survived)` (`null` when nothing was decided), `worker_counts`, `profile.status_counts`, survivors; `null` without R2 |
+
+Rules a consumer can rely on:
+
+- **No resource numbers.** Memory, CPU, IO and time distributions belong to the lane runner; the fragment carries only
+  `profile_status_counts` from the verdict.
+- **Survivors** are sorted by file, line and candidate id. Each carries the `first_failing_test` of the closest killed
+  mutant in the same file (smaller line wins a tie), or `null` when that mutant has none or its test id cannot be
+  represented. Up to 500 are listed; with more, `listed` holds the first 500 and the full list is written next to the
+  fragment as `<out>.survivors.json` (canonical JSON, its sha256 in `survivors.sidecar_sha256`).
+- **`--progress`** is read only for the newest run at the judged commit: `campaign.started_at` is the run header's
+  start, `campaign.completed_at` the last event's `emitted_at`, and `candidates.resumed` the sum of `resume` events
+  (capped at `executed`). Without it, `campaign` is `null` and `resumed` is 0.
+- **Archived verdicts are refused.** A verdict older than the current schema fails with `VERDICT_SCHEMA_ARCHIVED`
+  (exit 1, no file); the record assembler reports the lane as an error with that reason.
+- **Output** is canonical JSON (sorted keys, 2-space indent, final newline), at most 256 KiB, and never overwrites an
+  existing file. Every string in it matches the schema's closed patterns; a value that does not (for example a judge
+  version with a local build suffix) is refused rather than emitted.
+- The command prints a JSON summary (`fragment`, `fragment_sha256`, `outcome`, `reason`, and the sidecar path and
+  digest when one was written) and exits 1 on any refusal.
+
+Assay's tests carry byte copies of the schemas and two golden fragments under `analysis/tests/fixtures/rigor/`.
+After a schema change in rigor-record, refresh them with a plain file copy and rerun
+`analysis/tests/test_analysis_rigor_export.py`.
+
 ### Cold-witness R2 (B114)
 
 Cold-witness mode is an explicit opt-in for the supported native Python pytest

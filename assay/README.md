@@ -133,6 +133,8 @@ assay analyze report --expected-commit "$REVIEW_HEAD" \
 assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json \
   --coverage .assay/coverage-r2.json --command-exit 0
+assay analyze export --verdict .assay/verdict-r2.json --progress .assay/progress-r2.jsonl \
+  --lane r2 --file assay.toml --expected-commit "$REVIEW_HEAD" --out rigor/r2.assay.json
 ```
 
 Set `REVIEW_HEAD` to the full Git commit agreed with the controller and

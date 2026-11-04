@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- `assay analyze export` (B219, rigor-evidence package A-1): verifies a verdict and writes its judgment-fact fragment (`urn:vbpub:rigor-fragment:1`, kind `assay-lane`: outcome, R1 coverage, R3 canary, R2 counts, score and survivors, no resource numbers). Verdict schema 18 only (older verdicts fail with `VERDICT_SCHEMA_ARCHIVED`); more than 500 survivors go to a `<out>.survivors.json` sidecar. Verdict schema unchanged. See `docs/CONSUMERS.md`.
+- `assay.mutation.JUDGE_IDENTITY_LABEL`: public name of the judge identity label (`assay-judge-identity/14`), used by the export. The identity digest itself is unchanged.
+
 <!-- cmru: release history -->
 
 ## [12.0.0] - 2026-11-04
