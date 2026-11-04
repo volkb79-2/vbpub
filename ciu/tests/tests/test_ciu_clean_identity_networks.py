@@ -705,6 +705,32 @@ def test_clean_removes_tagged_project_networks_of_a_stack_outside_the_selection(
     assert sorted(fake.networks) == ["proj-environment-other_default", "unrelated_default"]
 
 
+def test_kept_network_that_vanished_is_not_announced(monkeypatch, tmp_path, capsys):
+    """CIU-171: the `kept:` line is printed only while the kept network still exists."""
+    repo_root = _main_repo(tmp_path)
+    fake = FakeDocker(networks={"proj-abc123-network": [{"id": "cid-dev", "name": "dstdns-devcontainer-vb"}]})
+    monkeypatch.setattr(deploy, "_network_exists", lambda _net: False)
+
+    assert _run_clean(monkeypatch, repo_root, fake) == 0
+
+    assert "kept:" not in capsys.readouterr().out
+
+
+def test_tagged_sweep_never_removes_a_kept_workspace_network(monkeypatch, tmp_path):
+    """CIU-171: a kept workspace network whose name also carries the tagged prefix is
+    skipped by the tagged sweep (it is already decided), not removed."""
+    _write_facts(tmp_path, network="proj-env-keepme-network")
+    (tmp_path / "apps" / "vault").mkdir(parents=True)
+    fake = FakeDocker(
+        networks={"proj-env-keepme-network": [{"id": "cid-dev", "name": "dstdns-devcontainer-vb"}]},
+        network_labels={"proj-env-keepme-network": "proj-env-keepme"},
+    )
+
+    assert _run_clean(monkeypatch, tmp_path, fake) == 0
+
+    assert sorted(fake.networks) == ["proj-env-keepme-network"]
+
+
 def test_tagged_project_network_listing_daemon_failure_is_an_error(monkeypatch):
     monkeypatch.setattr(deploy.procutil, "docker", lambda *a, **k: _proc(1, "", "daemon down"))
     with pytest.raises(ValueError, match="docker network ls failed for prefix 'proj-env-'"):
