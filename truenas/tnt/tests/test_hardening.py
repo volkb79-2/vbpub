@@ -101,10 +101,25 @@ def test_version_parsing_accepts_v27_shapes():
 
 
 def test_docs_do_not_name_private_hosts():
-    banned = ("r1002", "v1001", "nano1", "netcup")
-    for rel in ("BACKLOG.md", "README.md", "CHANGES.md", "docs/DESIGN.md", "docs/ACTION-MATRIX.snapshot.md", "pyproject.toml"):
+    banned = ("r1002", "v1001", "nano1", "netcup", "/home/vscode", "vbpub-release-program", ".lock ")
+    docs = sorted(path.relative_to(ROOT).as_posix() for path in (ROOT / "docs").glob("*.md"))
+    assert {"docs/CONSUMERS.md", "docs/LIVE-TESTING.md", "docs/DESIGN.md"} <= set(docs)
+    for rel in ("BACKLOG.md", "README.md", "CHANGES.md", "pyproject.toml", *docs):
         text = (ROOT / rel).read_text().lower()
         assert not [b for b in banned if b in text], rel
+
+
+def test_vm_lab_placeholder_is_committed_and_no_script_relocates_vm_state():
+    lab = ROOT / "artifacts" / "vm-lab"
+    assert (lab / "README.md").is_file()
+    assert (lab / ".gitignore").read_text().split() == ["*", "!.gitignore", "!README.md"]
+    # tnt keeps VM state only inside artifacts/vm-lab/: no source or script names another VM location, and no
+    # environment variable relocates it.
+    sources = [*sorted((ROOT / "src").rglob("*.py")), *sorted((ROOT / "tests" / "live").glob("*.py"))]
+    for path in sources:
+        text = path.read_text()
+        assert "vm-lab" not in text and "VM_LAB" not in text.upper().replace("-", "_"), path
+        assert "TNT_VM" not in text, path
 
 
 def test_gate_has_a_coverage_floor():
