@@ -25,6 +25,8 @@ FRAGMENT_SCHEMA = "urn:vbpub:rigor-fragment:1"
 MAX_LISTED_SURVIVORS = 500
 MAX_FRAGMENT_BYTES = 256 * 1024
 MAX_CANARY_TARGETS = 50
+MAX_LISTED_PATHS = 64
+LEVELS = ("R0", "R1", "R2", "R3")
 
 _SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$")
 _PROJECT = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -96,6 +98,31 @@ def project_identity(lane_file: Path, commit: str, project: str | None) -> tuple
 
 def _claims(document: dict) -> dict:
     return {claim["rigor"]: claim for claim in document["claims"]}
+
+
+def claim_set(document: dict) -> list[dict]:
+    """A-1a: ``[{rigor, outcome}]`` for every verified computed claim at R0..R3, ordered by level.
+
+    Only a claim assay itself verified is listed (an unverified one is absent, never listed as failing); R4 is outside
+    the fragment's level vocabulary and is not carried. This list, and nothing else, is what a consumer may read as
+    "this lane's verdict proves level X".
+    """
+    return [{"rigor": claim["rigor"], "outcome": _outcome(claim["status"])}
+            for claim in sorted(document["claims"], key=lambda c: c["rigor"])
+            if claim["rigor"] in LEVELS and claim.get("verified_by_assay") is True]
+
+
+def lane_paths(lane_file: Path, lane: str) -> tuple[list[str], list[str]]:
+    """A-1a: ``(inputs, judged_paths)`` as the lane file declares them.
+
+    ``inputs`` is ``isolation.link_paths`` (repository-top-relative, out-of-project by construction); ``judged_paths``
+    is ``judge.source_roots`` (project-relative). Both are sorted and checked against the schema's path grammar.
+    """
+    declared = tomllib.loads(lane_file.read_text(encoding="utf-8"))["lanes"][lane]
+    inputs = declared.get("isolation", {}).get("link_paths", [])
+    roots = declared.get("judge", {}).get("source_roots", [])
+    return (sorted(_checked(_RELPATH, path, "link_paths entry") for path in inputs),
+            sorted(_checked(_RELPATH, path, "source_roots entry") for path in roots))
 
 
 def _coverage(document: dict, claim: dict | None):
@@ -234,6 +261,10 @@ def build_fragment(verdict: Path, expected_commit: str, lane: str, lane_file: Pa
                          "(run the lane with an installed assay wheel or zipapp)")
     claims = _claims(document)
     name, tree = project_identity(lane_file, document["commit"], project)
+    config_sha256 = lane_config_sha256(lane_file, lane)  # refuses a lane the file does not declare
+    inputs, judged_paths = lane_paths(lane_file, lane)
+    if max(len(inputs), len(judged_paths)) > MAX_LISTED_PATHS:
+        raise ValueError(f"a lane declaring more than {MAX_LISTED_PATHS} paths cannot be represented in a rigor fragment")
     r2, sidecar = _r2(document, claims.get("R2"), _progress(progress, document["commit"]) if progress else None)
     fragment = {
         "schema": FRAGMENT_SCHEMA,
@@ -245,7 +276,7 @@ def build_fragment(verdict: Path, expected_commit: str, lane: str, lane_file: Pa
         "outcome": _outcome(document["outcome"]),
         "reason": _reason(document["outcome"], document.get("reason_code")),
         "verdict_sha256": artifact["sha256"],
-        "config_sha256": lane_config_sha256(lane_file, lane),
+        "config_sha256": config_sha256,
         "verified": True,
         "judge": {
             "version": _checked(_SEMVER, provenance["version"], "judge version"),
@@ -256,6 +287,9 @@ def build_fragment(verdict: Path, expected_commit: str, lane: str, lane_file: Pa
         "coverage": _coverage(document, claims.get("R1")),
         "canary": _canary(claims.get("R3")),
         "r2": r2,
+        "claims": claim_set(document),
+        "inputs": inputs,
+        "judged_paths": judged_paths,
     }
     return fragment, sidecar
 

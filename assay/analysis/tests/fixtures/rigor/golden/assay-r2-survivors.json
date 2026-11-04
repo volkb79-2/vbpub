@@ -1,7 +1,18 @@
 {
   "canary": null,
+  "claims": [
+    {
+      "outcome": "PASS",
+      "rigor": "R0"
+    },
+    {
+      "outcome": "FAIL",
+      "rigor": "R2"
+    }
+  ],
   "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
   "coverage": null,
+  "inputs": [],
   "judge": {
     "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "judge_identity": "assay-judge-identity/14",
@@ -9,6 +20,9 @@
     "version": "12.0.0"
   },
   "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "judged_paths": [
+    "src"
+  ],
   "kind": "assay-lane",
   "lane": "assay-r2",
   "outcome": "FAIL",

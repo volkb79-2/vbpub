@@ -248,6 +248,18 @@ library that owns the fragment schema; the schema is a published contract (vbpub
 | `canary` | the R3 claim: mechanism, targets, mapped outcome; `null` without R3 |
 | `r2` | the R2 claim: candidate counts, the six bucket counts, `score = killed / (killed + survived)` (`null` when nothing was decided), `worker_counts`, `profile.status_counts`, survivors; `null` without R2 |
 
+Since B224 (rigor-evidence A-1a) the fragment also carries three additive keys. They are optional in the schema (a
+fragment without them reads as "no level above R0 is judged, no declared paths"), and assay always writes them:
+
+| Fragment field | Source |
+|---|---|
+| `claims` | the verified claim set: `[{rigor, outcome}]`, one per computed claim of the verdict that `verified_by_assay` marks, ordered R0..R3, `outcome` mapped as above. **The only source of R1, R2 and R3 for a consumer:** a section (`coverage`, `canary`, `r2`) is never evidence of a level on its own, and a claim whose level was not measured is listed with outcome `ERROR` while its section is `null`. An unverified claim is absent. R4 is outside this vocabulary and not carried. A consumer reads "the verdict proves level L" as: `L` is in `claims` with outcome `PASS` |
+| `inputs` | the lane's declared out-of-project inputs: `isolation.link_paths`, repository-top-relative, sorted (`[]` when none). Names only: the linked content is outside the verdict's identity, so a consumer that matches results by tree identity adds these paths to the judged targets |
+| `judged_paths` | the project-relative paths the lane judges: `judge.source_roots`, sorted (`[]` for a lane without a judge) |
+
+This section and `analysis/tests/fixtures/rigor/schemas/rigor-fragment-1.json` are the normative text and the canonical
+copy of the `assay-lane` fragment; consumers vendor the schema from here.
+
 Rules a consumer can rely on:
 
 - **No resource numbers.** Memory, CPU, IO and time distributions belong to the lane runner; the fragment carries only
@@ -267,9 +279,9 @@ Rules a consumer can rely on:
 - The command prints a JSON summary (`fragment`, `fragment_sha256`, `outcome`, `reason`, and the sidecar path and
   digest when one was written) and exits 1 on any refusal.
 
-Assay's tests carry byte copies of the schemas and two golden fragments under `analysis/tests/fixtures/rigor/`.
-After a schema change in rigor-record, refresh them with a plain file copy and rerun
-`analysis/tests/test_analysis_rigor_export.py`.
+Assay's tests carry the schemas and two golden fragments under `analysis/tests/fixtures/rigor/`. The `assay-lane` part
+of `rigor-fragment-1.json` is assay's to change (additively); the shared `rigor-common-1.json` and the `run-gate-lane`
+part are copies of their owners' files. Rerun `analysis/tests/test_analysis_rigor_export.py` after any change.
 
 ### Cold-witness R2 (B114)
 

@@ -65,6 +65,17 @@ def violations(document: dict) -> list[str]:
         return found
     if (document["outcome"] == "PASS") != (document["reason"] is None):
         found.append("reason is null exactly when the outcome is PASS")
+    claims = document.get("claims")
+    if claims is not None:
+        levels = [claim["rigor"] for claim in claims]
+        found += [message for ok, message in [
+            (levels == sorted(set(levels)), "claims must be unique and ordered by level"),
+            (document["coverage"] is None or "R1" in levels, "coverage section without an R1 claim"),
+            (document["canary"] is None or "R3" in levels, "canary section without an R3 claim"),
+            (document["r2"] is None or "R2" in levels, "r2 section without an R2 claim"),
+            (document["inputs"] == sorted(document["inputs"]), "inputs must be sorted"),
+            (document["judged_paths"] == sorted(document["judged_paths"]), "judged_paths must be sorted"),
+        ] if not ok]
     r2 = document["r2"]
     if r2 is not None:
         cand, buckets, surv = r2["candidates"], r2["buckets"], r2["survivors"]

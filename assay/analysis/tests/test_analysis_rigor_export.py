@@ -110,6 +110,7 @@ def test_the_contract_checker_walks_lists_and_scalars():
     document = copy.deepcopy(golden("assay-r2-survivors"))
     document["r2"]["campaign"] = None
     document["canary"] = {"mechanism": "uncovered-line", "targets": ["a.py", "b.py"], "outcome": "PASS"}
+    document["claims"].append({"rigor": "R3", "outcome": "PASS"})
     assert violations(document) == []
     document["canary"]["targets"][1] = "x/tmp/y.py"
     assert any("privacy" in message for message in violations(document))
@@ -570,6 +571,91 @@ def test_the_project_tree_is_the_tree_at_the_judged_commit_not_the_checkout(worl
     _git(world.repo, "commit", "-q", "-m", "later")
     after = world.fragment(world.verdict("r1_pass"), out=world.out_dir / "after.json")["project_tree"]
     assert before == after
+
+
+# ---- A-1a: verified claims and declared paths ------------------------------------------------------------------
+def _claim(rigor, status="PASS", verified=True):
+    return {"rigor": rigor, "status": status, "verified_by_assay": verified}
+
+
+def test_an_all_level_lane_exports_four_claims_in_level_order():
+    document = {"claims": [_claim("R3"), _claim("R1", "FAIL"), _claim("R0"), _claim("R2", "INCONCLUSIVE")]}
+    assert rigor_export.claim_set(document) == [
+        {"rigor": "R0", "outcome": "PASS"}, {"rigor": "R1", "outcome": "FAIL"},
+        {"rigor": "R2", "outcome": "ERROR"}, {"rigor": "R3", "outcome": "PASS"}]
+
+
+def test_an_unverified_claim_and_a_level_outside_the_vocabulary_are_absent():
+    document = {"claims": [_claim("R0"), _claim("R1", verified=False), _claim("R4")]}
+    assert rigor_export.claim_set(document) == [{"rigor": "R0", "outcome": "PASS"}]
+    assert rigor_export.claim_set({"claims": []}) == []
+
+
+@pytest.mark.parametrize("fixture,levels", [
+    ("r0_pass", ["R0"]), ("r1_pass", ["R0", "R1"]), ("r2_pass", ["R0", "R2"]), ("r3_pass", ["R0", "R3"]),
+    ("r1_no_measurement_empty_coverage", ["R0", "R1"])])
+def test_the_fragment_lists_exactly_the_claims_the_verdict_carries(world, fixture, levels):
+    fragment = world.fragment(world.verdict(fixture))
+    assert violations(fragment) == []
+    assert [claim["rigor"] for claim in fragment["claims"]] == levels
+    # a section is present only under its claim, and a claim can exist without its section (R1 not measured)
+    assert (fragment["coverage"] is not None) <= ("R1" in levels)
+
+
+def test_a_non_passing_claim_is_listed_with_its_outcome_not_dropped(world):
+    fragment = world.fragment(world.verdict("r1_no_measurement_empty_coverage"))
+    assert fragment["claims"] == [{"rigor": "R0", "outcome": "PASS"}, {"rigor": "R1", "outcome": "ERROR"}]
+
+
+def test_link_paths_appear_as_sorted_inputs_and_source_roots_as_judged_paths(world):
+    world.lane_file.write_text(
+        LANE_FILE + '\n[lanes.package.isolation]\nlink_paths = ["a/node_modules", "vendor"]\n'
+        '\n[lanes.package.judge]\nsource_roots = ["src", "lib/core"]\n', encoding="utf-8")
+    fragment = world.fragment(world.verdict("r0_pass"))
+    assert violations(fragment) == []
+    assert fragment["inputs"] == ["a/node_modules", "vendor"]
+    assert fragment["judged_paths"] == ["lib/core", "src"]
+
+
+def test_a_lane_without_isolation_or_judge_tables_has_empty_path_lists(world):
+    fragment = world.fragment(world.verdict("r0_pass"))
+    assert fragment["inputs"] == [] and fragment["judged_paths"] == []
+
+
+def test_declared_paths_the_schema_cannot_hold_are_refused(world):
+    world.lane_file.write_text(LANE_FILE + '\n[lanes.package.isolation]\nlink_paths = ["a b"]\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="link_paths"):
+        world.export(world.verdict("r0_pass"))
+
+
+def test_too_many_declared_paths_are_refused(world, monkeypatch):
+    monkeypatch.setattr(rigor_export, "MAX_LISTED_PATHS", 0)
+    world.lane_file.write_text(LANE_FILE + '\n[lanes.package.isolation]\nlink_paths = ["vendor"]\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="more than 0 paths"):
+        world.export(world.verdict("r0_pass"))
+
+
+@pytest.mark.parametrize("mutate,needle", [
+    (lambda d: d.update(claims=[{"rigor": "R2", "outcome": "FAIL"}, {"rigor": "R0", "outcome": "PASS"}]), "ordered"),
+    (lambda d: d.update(claims=[{"rigor": "R0", "outcome": "PASS"}]), "r2 section without"),
+    (lambda d: d.update(inputs=["z", "a"]), "inputs must be sorted"),
+    (lambda d: d.update(judged_paths=["z", "a"]), "judged_paths must be sorted"),
+    (lambda d: d["claims"][0].update(rigor="R4"), "rigor"),
+    (lambda d: d["claims"][0].update(extra=1), "extra"),
+    (lambda d: d.update(inputs=["/home/x"]), "inputs"),
+])
+def test_the_contract_checker_names_each_a1a_violation(mutate, needle):
+    document = copy.deepcopy(golden("assay-r2-survivors"))
+    mutate(document)
+    found = violations(document)
+    assert found and any(needle in message for message in found), found
+
+
+def test_a_pre_a1a_fragment_without_the_new_keys_still_validates():
+    document = copy.deepcopy(golden("assay-r2-survivors"))
+    for key in ("claims", "inputs", "judged_paths"):
+        del document[key]
+    assert violations(document) == []
 
 
 # ---- the command line ------------------------------------------------------------------------------------------

@@ -30,7 +30,33 @@
         "judge": {"$ref": "rigor-common-1.json#/$defs/judge"},
         "coverage": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/coverage"}]},
         "canary": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/canary"}]},
-        "r2": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/assay_r2"}]}
+        "r2": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/assay_r2"}]},
+        "claims": {
+          "description": "A-1a. The verified claim set: one entry per computed claim the verdict carries (all verified_by_assay), ordered R0..R3. The only source of R1, R2 and R3. Absent in a pre-A-1a fragment: read every level above R0 as not-judged.",
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rigor", "outcome"],
+            "properties": {
+              "rigor": {"type": "string", "enum": ["R0", "R1", "R2", "R3"]},
+              "outcome": {"$ref": "rigor-common-1.json#/$defs/outcome"}
+            }
+          }
+        },
+        "inputs": {
+          "description": "A-1a. The lane's declared out-of-project inputs: isolation.link_paths (repository-top-relative, sorted). Names only; their content is outside the identity.",
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "rigor-common-1.json#/$defs/relpath"}
+        },
+        "judged_paths": {
+          "description": "A-1a. The project-relative paths the lane judges: judge.source_roots, sorted. Empty for a lane without a judge.",
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "rigor-common-1.json#/$defs/relpath"}
+        }
       }
     },
     "coverage": {
