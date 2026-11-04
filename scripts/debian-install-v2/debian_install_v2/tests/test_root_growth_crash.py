@@ -259,8 +259,10 @@ def test_real_root_growth_after_table_ahead_of_kernel(tmp_path, monkeypatch):
         installer._grow_root_to_plan()
 
         assert int(sh("blockdev", "--getsz", part)) == target
-        blocks = int(sh("sh", "-c", f"dumpe2fs -h {part} 2>/dev/null | awk '/^Block count:/ {{print $3}}'"))
-        assert abs(blocks * 4096 - target * 512) <= 2 * 1048576
+        # a 100 MiB mkfs picks 1 KiB blocks, so read the block size instead of assuming 4096
+        fs_bytes = int(sh("sh", "-c", f"dumpe2fs -h {part} 2>/dev/null | "
+                                      "awk '/^Block count:/ {c=$3} /^Block size:/ {s=$3} END {print c*s}'"))
+        assert abs(fs_bytes - target * 512) <= 2 * 1048576, fs_bytes
         assert steps[-1] == ("root_resize", "success")
     finally:
         subprocess.run(["umount", str(mnt)], check=False)
