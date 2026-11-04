@@ -21,6 +21,27 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Changed (BREAKING: CLI surface; no aliases)
+- ciu adopts `libraries/cli-extended` (CIU-114): every verb, argument and option is registered once in `ciu.cli_registry`; help, errors, `--json`, `--yes`, `--dry-run`, `--traceback`, exact option spellings, the surface manifest (`docs/cli-surface.json`) and the reviewed catalog derive from it. The hand-written dispatcher, `_USAGE`/`_VERB_HELP`, per-verb help interception and the `--host`/`--layout`/`--dir` abbreviation routing (SPEC S10.4) are gone. Every decision is in `docs/CLI-SURFACE-DECISIONS-20261104.md`.
+- Short options are gone (the library has long options only): `-y` is `--yes`, `-d` is `--dir`, `-f` is `--file`, `-h` is rejected (`--help`). Option prefixes (`--prof`, `--hos`) are usage errors, exit 2.
+- Renamed (v8 S18 names, no alias): `health` -> `status --gate`, `health --preflight` -> `status --preflight`; `profiles` -> `show profiles`; `layouts` -> `show layouts` (both gain `--json`); `ksm build` -> `governance ksm`; `iops-baseline` -> `governance iops-baseline`; `capabilities` -> `schema capabilities`; `migration-check` -> `migrate --check`; `host-secrets HOST` -> `secrets host HOST`.
+- Removed: bare `ciu env` (the deprecated `ciu.env` dump; use `ciu env print`), `up --check` (use `ciu check`), `provenance --force` (use `--ignore-mismatch`), `graph --format json` (use `graph --json`), the undeclared `up` engine flags `--update-cert-permission`, `--auto-connect-network`, `--generate-env`. `resolve` always emits its JSON document.
+- Version: `CliIdentity.resolve` (installed metadata and/or the build-time `_version.py`, which must agree). No literal fallback: a source tree that was neither built nor installed exits 3 instead of printing `unknown`; `ciu.__version__` is gone.
+- A usage or configuration diagnostic leads with its `[ERROR]` line, followed by the headline and the verb's usage; help screens still begin with the headline.
+- Exit codes stay 0/1/2/3 (SPEC S10.3); 4 (contention) and 5 (remote failure) are reserved for v8 and never emitted. An unexpected exception is one `[ERROR]` line with exit 1 and `--traceback` shows the stack (CIU-140 class).
+
+### Added
+- `ciu doctor` (docker, compose, buildx, git, ssh tools, CIU root, skills) and `ciu skills install|uninstall|check|list`; the agent skills now ship as package data (`ciu/src/ciu/skills`, previously `.claude/skills`). Run `ciu skills install` after every upgrade (the mdt finalize step already does).
+- `ciu show profiles|layouts --json`, `ciu graph --json`, `ciu --log-prefix-time-short`/`--ksm`/`--no-ksm` as registry globals, declared constraints for the mode flags (`--layout` vs `--host`/`--dir`/`--profile`, `--thin` needs `--host`, `clean --identity` vs ordinary options).
+- New runtime dependency `cli-extended>=0.5.0` (a released wheel; install it first, as `get.py` already hoists it).
+
+### Adoption / Migration Notes
+- Scripts: replace `-y` with `--yes`, `secrets ... -d` with `--dir`, and the renamed/removed verbs above (`git grep` for your own callers; the vbpub tree is already swept). dstdns migrates later.
+- Safe to ignore: output of every verb is unchanged except where listed; the implementation behind each verb is the same code.
+- Needs action if you parse help or error text: help is now generated (wording changed) and diagnostics lead with `[ERROR]`.
+
 ## [7.19.0] - 2026-11-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=1852853efc14b6491f5eec3e3ee81199fbf51ec0 -->

@@ -1,15 +1,15 @@
 ---
 name: ciu-cli
-description: Core ciu (Container Infrastructure Utility) verbs beyond worktree lifecycle — env, render, up/down/clean, health, diagnose, status, bake, provenance. Use whenever you'd otherwise reach for docker/docker compose/buildx directly in a ciu-managed repo. See the separate ciu-stack skill for the worktree/multi-instance lifecycle.
+description: Core ciu (Container Infrastructure Utility) verbs beyond worktree lifecycle — env, render, up/down/clean, status (report, health gate, preflight), diagnose, check, graph, bake, provenance, doctor. Use whenever you'd otherwise reach for docker/docker compose/buildx directly in a ciu-managed repo. See the separate ciu-stack skill for the worktree/multi-instance lifecycle.
 ---
 
-> **Tool versions as of last verified update (2026-09-17):** ciu `7.13.2`
-> (`ciu --help` for the authoritative verb list; this build has no
-> `--version` flag — `ciu` with no args prints the version in its banner).
-> Re-verify against `ciu --help` / `ciu <verb> --help` if a flag below
-> errors; ciu's own help text is generous and current — this skill exists so
-> an agent doesn't have to spend a round-trip discovering it, not to replace
-> it as the source of truth.
+> `ciu help [verb]` / `ciu <verb> --help` is the authoritative, generated
+> grammar (every verb is registered with cli-extended); this skill exists so an
+> agent doesn't spend a round-trip discovering it, not to replace it. Options are
+> EXACT long spellings: there are no short options (`--yes`, never `-y`; `--dir`,
+> never `-d`) and no prefix abbreviations. Machine output is `--json` where a verb
+> offers it. `ciu doctor` checks the environment; `ciu skills check` tells you when
+> this skill is stale (re-run `ciu skills install` after every ciu upgrade).
 
 > **MANDATE.** ciu is THE orchestration interface for any ciu-managed repo
 > (a consuming project's own AGENTS.md may state this explicitly too —
@@ -21,9 +21,9 @@ description: Core ciu (Container Infrastructure Utility) verbs beyond worktree l
 >   `stack:*:healthy` provisioning-preflight ref reliable across a phase
 >   boundary.
 > - **Never** hand-`docker compose down`/`rm -f`/`docker volume rm` a
->   ciu-managed stack — use `ciu down`/`ciu clean` (with `--clean-only-*`
->   flags for a narrower cleanup) so ciu's own bookkeeping (leases, labels,
->   the worktree registry) stays consistent with what's actually running.
+>   ciu-managed stack — use `ciu down`/`ciu clean` so ciu's own bookkeeping
+>   (leases, labels, the worktree registry) stays consistent with what's
+>   actually running.
 > - **Never** hardcode a container/network/project name (`myrepo-dev-postgres`)
 >   — read it from `ciu env print`, or `scripts/config_helper.py`
 >   in a consuming repo. A hardcoded name breaks the moment `INSTANCE_ID`
@@ -37,7 +37,6 @@ description: Core ciu (Container Infrastructure Utility) verbs beyond worktree l
 ## Environment identity — read it, never hardcode it
 
 ```bash
-ciu env                       # human-readable KEY=VALUE dump (read-only)
 ciu env generate              # (re)generate ciu.env + ciu.instance.generated.toml from system state
 eval "$(ciu env print)"       # the shell-integration form: export KEY='value' lines
 ```
@@ -50,9 +49,8 @@ correct source for a container/network name; a value that has an
 authoritative source here and gets hardcoded anyway is exactly the
 "shadowing default" hazard (a project's own defaults-and-fallbacks policy,
 if it has one — dstdns's is AGENTS.md §4.2a). `ciu.env` itself is a
-legacy write-only export as of ciu 7.7.0 — a `source ciu.env` still works
-this release (identical key set) but is deprecated; prefer `eval "$(ciu env
-print)"` in anything new.
+legacy write-only export as of ciu 7.7.0; the bare `ciu env` dump was removed
+in 7.20 — use `ciu env print`.
 
 ## Stack lifecycle
 
@@ -60,15 +58,18 @@ print)"` in anything new.
 docker buildx bake all-services --load     # build-before-deploy (never `--build`/`compose build`)
 ciu up --deploy --healthcheck              # deploy full stack + wait for real health
 ciu up --profile <name>                    # deploy a named host profile
-ciu up --dir <path>                        # bare sub-stack form only — --deploy/--healthcheck are NOT
-                                            # valid here (errors "unrecognized arguments")
+ciu up --dir <path> [--deploy] [--healthcheck]   # one stack directory (engine mode)
+ciu up --dry-run                           # render + validate, do not call Docker
 ciu down [--profile NAME]                  # stop stack, PRESERVE volumes
-ciu clean [--clean-only-{config,containers,images,volumes,secrets}]
+ciu clean --yes                            # remove containers + volumes + rendered artifacts
 ciu status [--profile NAME] [--json]       # per-stack compose project, containers, health (read-only)
-ciu diagnose [--project NAME] [--logs N] [--json]   # explain common failures (read-only)
-ciu status --gate [--profile NAME]         # health gate check (exit status is the verdict)
+ciu status --gate [--profile NAME]         # health gate (exit status is the verdict; replaces `ciu health`)
 ciu status --preflight [--strict]          # probe images for missing healthcheck tools
+ciu diagnose [--project NAME] [--logs N] [--json]   # explain common failures (read-only)
 ```
+
+A `[deploy] protected = true` instance additionally needs
+`--i-understand-this-is-protected` with `--yes` for `down`/`clean` (CIU-105).
 
 ## Authoring / discovery (no deploy)
 
@@ -78,7 +79,8 @@ ciu show profiles             # list available host profiles (--json too)
 ciu show layouts              # list declared deploy layouts (--json too)
 ciu check [--profile NAME] [--live] [--json]   # validate the config pipeline, no deploy
 ciu graph [--format mermaid|dot | --json]      # render the dependency graph, no deploy
-ciu schema capabilities [--json]                # versioned, closed capability allowlist (D-009)
+ciu schema capabilities [--json]               # versioned, closed capability allowlist (D-009)
+ciu migrate --check [--json]                   # stale artifacts left by an older ciu
 ```
 
 ## Evidence
@@ -99,13 +101,15 @@ result).
 ```bash
 ciu bake [targets ...] [--profile NAME] [--no-cache]   # docker buildx bake --load
 ciu dev <stack> [--profile NAME]                        # a stack's live dev loop (HMR)
+ciu governance ksm [--force]                            # build the KSM shim (S15.17)
 ```
 
 ## Secrets
 
 ```bash
-ciu secrets list [-d PATH]
-ciu secrets reset [--name N] [-y]
+ciu secrets list [--dir PATH]
+ciu secrets reset [--dir PATH] [--name N] [--yes]
+ciu secrets host <host> (--materialize | --list | --path NAME)   # pre-Vault host secrets (S14.3a)
 ```
 
 ## Remote (requires a `.ciu.hosts.toml`)
@@ -113,7 +117,15 @@ ciu secrets reset [--name N] [-y]
 ```bash
 ciu host enroll <name> [...]
 ciu ssh <host> [--admin] [-- cmd...]
-ciu up/down/health --host <name> [selection flags]
+ciu up/down --host <name> [selection flags]
+ciu status --gate --host <name> [--thin]
+```
+
+## Environment check
+
+```bash
+ciu doctor [--check NAME] [--json]     # docker, compose, buildx, git, ssh tools, CIU root, skills
+ciu skills check                       # exit 1 unless the installed skills match this ciu
 ```
 
 ## Worktree / multi-instance lifecycle

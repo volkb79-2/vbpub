@@ -65,10 +65,10 @@ Status column is filled as commits land.
 | # | Change | Old -> new | Rationale | Blast (vbpub/dstdns, from the plan) | Status |
 |---|---|---|---|---|---|
 | C4 | doctor + skills | new `ciu doctor`, `ciu skills install\|uninstall\|check\|list` | free from the library; v8 S18 already names both; skills move to package data (AC-19) | none | adoption commit |
-| C5 | status absorbs health | `ciu health [--preflight [--strict]] [--host H --thin]` -> `ciu status --gate`, `ciu status --preflight [--strict]`, `ciu status --gate --host H --thin` | v8 parity (S18 "status absorbs health") | 0/10 | pending |
-| C6 | show absorbs profiles+layouts | `ciu profiles` -> `ciu show profiles`; `ciu layouts` -> `ciu show layouts` (both gain `--json`) | v8 parity; fixes the CIU-109 smell (listing verb vs writer) | 0/35 | pending |
-| C7 | governance / schema / migrate | `ksm build` -> `governance ksm-build`; `iops-baseline` -> `governance iops-baseline`; `capabilities` -> `schema capabilities`; `migration-check` -> `migrate --check` | v8 parity, all ~0 external use | ~0 | pending |
-| C8 | secrets absorbs host-secrets | `host-secrets HOST --materialize\|--list\|--path N` -> `secrets host HOST ...` | v8 parity | 0/0 | pending |
+| C5 | status absorbs health | `ciu health [--preflight [--strict]] [--host H --thin]` -> `ciu status --gate`, `ciu status --preflight [--strict]`, `ciu status --gate --host H --thin` | v8 parity (S18 "status absorbs health") | 0/10 | done (commit "status absorbs health") |
+| C6 | show absorbs profiles+layouts | `ciu profiles` -> `ciu show profiles`; `ciu layouts` -> `ciu show layouts` (both gain `--json`) | v8 parity; fixes the CIU-109 smell (listing verb vs writer) | 0/35 | done (commit "show absorbs profiles and layouts") |
+| C7 | governance / schema / migrate | `ksm build` -> `governance ksm`; `iops-baseline` -> `governance iops-baseline`; `capabilities` -> `schema capabilities`; `migration-check` -> `migrate --check` (`--check` mandatory in v7) | v8 parity (S18: `governance ksm \| iops-baseline`, `schema`, `migrate [--check]`), all ~0 external use | ~0 | done (commit "governance, schema, migrate, secrets host") |
+| C8 | secrets absorbs host-secrets | `host-secrets HOST --materialize\|--list\|--path N` -> `secrets host HOST ...` | v8 parity | 0/0 | done (same commit as C7) |
 | C11 | remove bare `env` | see F8 | deprecated since CIU-75 | small | adoption commit |
 | C12 | confirmation / dry-run honesty | `down`/`clean` keep the `[deploy] protected = true` gate (CIU-105: `--yes` AND `--i-understand-this-is-protected`), now declared as a first-class option; library `--yes` replaces `-y`; `--dry-run` is library-owned on `up` | closes CIU-105 for flagged instances without a new prompt for ordinary scripts (`clean` has 18/255 callers; an unconditional prompt would break them) | `clean` 18/255 | adoption commit (declaration); CIU-162/CIU-103 NOT in scope (they are implementation side effects, not grammar) |
 | C13 | `ciu run` (CIU-141) | **not added** | not in v8 S18; collides with `gate` lanes | - | deferred to v8 (`gate exec`/`run`) |
@@ -94,11 +94,72 @@ Open design points inside the voluntary changes (decided, flagged for veto):
 - CQ5 `ciu run`: deferred to v8.
 - CQ6 v8 sign-off: still pending. This branch does not edit v8 semantics except the exit-table note.
 
-## 5. Callers swept (filled by the sweep commits)
+## 5. Callers swept
 
-See the commit log of the branch; each sweep commit message lists the grep patterns.
+Patterns grepped over the whole monorepo (`git grep`, docs, skills, scripts, tests, internal subprocess spawns,
+`.claude/skills`, mdt-cockpit, nyxloom, voice-screen-share, scripts/netcup): `ciu .* -y`, `secrets .* -d`,
+`ciu (health|profiles|layouts|ksm|iops-baseline|capabilities|migration-check|host-secrets)`, bare `ciu env`,
+`up .*--check`, `graph .*--format json`, `provenance .*--force`, `worktree add`, `"-m", "ciu.cli"` spawns.
 
-## 6. Adoption checklist status
+- Internal spawns fixed: `worktree.py` (`clean -y` -> `--yes`, three sites), the remote `health` command
+  (`ciu health` -> `ciu status --gate`).
+- Docs/skills/READMEs fixed: ciu docs (README, CIU, CIU-DEPLOY, CONFIG, CONSUMERS, DESIGN-GUIDE, DESIGN-NOTES,
+  FEATURES, MIGRATION-V2, SPEC), ciu skills (now `ciu/src/ciu/skills`), `ciu/test-repo/README.md`,
+  `nyxloom/.claude/skills/nyxloom-merge-p`, `nyxloom/ntfy/README.md`, `mdt-cockpit/docs/BTRFS-COW-OPTIONS.md`,
+  voice-screen-share (jitsi, fluxer, mattermost x4 files, mattermore).
+- `worktree add` (CQ4): the vbpub hits are `git worktree add` (git, not ciu); no ciu caller exists in vbpub. dstdns
+  is not touched (it migrates later); when it does: `git grep -n 'ciu worktree add'` and verify its ciu version.
+- Left alone on purpose: historical records (`CHANGES.md` history, `KNOWN_ISSUES_TODO_BACKLOG.md` bodies, reports,
+  `nyxloom-trove/archive`, `ciu8` design docs): they describe what was true when written.
+- Not found anywhere outside ciu: scripts/netcup/runner and mdt-cockpit scripts do not invoke the changed verbs.
 
-Filled at the end of the branch (audit output, surface check, test results): see `ciu/CHANGES.md` [Unreleased]
-and the report `ciu-clix-REPORT.md`.
+## 6. Adoption checklist status (AC-01..AC-25), audit at branch tip
+
+`cli-extended audit`: 13 pass, 2 manual, 0 fail.
+- AC-01 identity (`CliIdentity.resolve`, no literal fallback), AC-04, AC-05, AC-07 (no `configure` callbacks),
+  AC-10 (`unexpected_exceptions="report"`), AC-16/17/18 (manifest + spec region + 669-case reviewed catalog,
+  `surface check` passes, syntax complete), AC-19 (skills packaged, validated), AC-20 (`doctor`), AC-22 (pytest
+  plugin enabled), AC-24 (`cli-extended>=0.5.0`), AC-25 (no library source on any path: assay.toml and
+  run-ciu-tests.py dropped it).
+- AC-08 (manual): the one hidden option is `env generate --identity-only`, internal plumbing for the worktree
+  allocator (recorded in `cli_registry._env_cli`).
+- AC-12 (manual): 17 mutating verbs have neither `--yes` nor `--dry-run`. Each one is either idempotent and
+  non-destructive (`env generate`, `render`, `init`, `worktree create|ensure|adopt|lease|refork|up`,
+  `governance ksm|iops-baseline`, `bake`, `host enroll` step 1), interactive by nature (`ssh`, `dev`, `exec`,
+  `worktree exec`) or already confirms itself (`secrets host --materialize` prompts unless `--yes`, `host enroll`
+  step 2 asks for the fingerprint). The destructive verbs all have `--yes`: `down`, `clean`, `secrets reset`,
+  `worktree rm|branches|reap`; `up`/`worktree reap` have `--dry-run`. Revisit: whether `render`/`init` should
+  take the library `--dry-run`.
+- AC-21: `assert_cli_contract` against a real launcher (test_ciu_cli_review_cases.py).
+- AC-23: not applicable (no per-project subprocess wrapper was replaced; the 22 test files that shell out keep
+  their own helpers; follow-up).
+- AC-02/03/06/09/11/13/14/15 are `manual` rows in the checklist: AC-03 holds (every verb is registered; the
+  internal implementation parsers remain behind the adapters, see D-ARCH), AC-06 holds for the declared
+  constraints, AC-09 (`SelectorList`) is NOT used (profile lists stay comma strings parsed by the
+  implementation), AC-11/13/14/15: domain failures stay printed by the implementation layer (`[ERROR] ...`
+  + exit code), prompts stay the implementation's (`runtime.confirm` is not wired into `up`/`clean`), and the
+  implementation still prints directly instead of `runtime.output`; revisit when the internal parsers go.
+
+## 7. Further decisions made while building (for review)
+
+- D-HEADLINE: a usage/config diagnostic now leads with `[ERROR] ...`, then the CIU headline and usage (the library's
+  block order); help screens still begin with the headline. SPEC S10.1 rewritten; tests adapted.
+- D-GLOBALS: `--root-folder` stays a per-verb option (only on verbs that accept it); `--log-prefix-time-short`,
+  `--ksm`, `--no-ksm` are registry globals.
+- D-VOCAB: `show profiles` keeps the v7 word "profiles" (v8's S18 calls the same thing `show bundles`); the rename
+  belongs to the v8 vocabulary change, not to this surface adoption.
+- D-REMAINDER: `exec`, `ssh` and `worktree exec` take their command after `--` as a registered remainder argument;
+  the child argv is passed through byte for byte.
+- D-NO-COMPLETION: cli-extended 0.5.0 provides no shell-completion generator (SPEC mentions it only as a category),
+  so there is nothing to adopt; no completion script was invented.
+- D-CATALOG: the reviewed catalog (669 rows) is a characterization generated by `tools/gen-cli-review-catalog.py`
+  from the exported surface; each row runs through the real registry in a sandbox (implementation recorded, nothing
+  executed). It pins grammar, not semantics. A semantic LLM review of the high-risk verbs (`clean`, `down`, `up`,
+  `worktree rm`) with `cli-extended surface pack` is still to do. Revisit: whether that review is required before
+  release.
+- D-INSTALLER: `ciu/cmru.toml` lists `vendor/cli_extended-*.whl` before ciu's wheel and `cmru.orchestration.toml`
+  gives ciu a `depends_on = ["cli-extended"]` release edge; `get.py` was re-rendered (one-line diff). The release
+  bundle that `get.py install` consumes (CIU-99: not built yet) must carry the cli-extended wheel.
+- D-TESTENV: the tester image installs cli-extended but not ciu; `tests/conftest.py` provides a throw-away
+  `ciu-0.0.0+tests` dist-info (on `sys.path` and `PYTHONPATH`) so `CliIdentity.resolve` finds a version. Without it
+  the CLI exits 3 by design.
