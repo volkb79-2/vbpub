@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from lib import targets as t
+from cgprofile import targets as t
 from tests.conftest import cgroup_files, write_cgroup
 
 

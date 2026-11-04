@@ -27,7 +27,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from lib import metrics, summary
+from cgprofile import metrics, summary
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "contract"
 FRAMES_DIR = FIXTURES / "frames"

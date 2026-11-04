@@ -62,7 +62,7 @@ from . import (
     placement as placement_mod,
     resource_observer as resource_observer_mod,
 )
-from .version import runtime_version
+from .version import installed_version, runtime_version
 
 CONTRACT_VERSION = 1
 RESOURCE_OBSERVER_CONTRACT_VERSION = (
@@ -72,7 +72,7 @@ RESOURCE_OBSERVER_CONTRACT_VERSION = (
 # `resource-limits`; `RESOURCE_OBSERVER_CONTRACT_VERSION` stays 2 for 1.x so a
 # contract-2 client sees no difference.
 RESOURCE_OBSERVER_CONTRACTS = (2, 3)
-CGPROFILE_VERSION = runtime_version("0.0.0-dev")
+CGPROFILE_VERSION = runtime_version(installed_version())
 
 DEFAULT_SOCKET_PATH = "/run/cgprofile/ctl.sock"
 DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH = (
@@ -108,8 +108,8 @@ MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES = 4096
 # extra configuration to find its own venv inside the built image; a test
 # overrides both via the constructor to point at whatever interpreter the
 # test environment actually has the report deps installed in.
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEFAULT_REPORT_SCRIPT = os.path.join(_PROJECT_ROOT, "cgprofile.py")
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_REPORT_SCRIPT = os.path.join(_PROJECT_ROOT, "src", "cgprofile", "cli", "legacy.py")
 DEFAULT_REPORT_PYTHON = os.path.join(_PROJECT_ROOT, "venv", "bin", "python")
 DEFAULT_REPORT_TIMEOUT = 120.0
 
@@ -858,13 +858,13 @@ class SessionServer:
     def _manifest_for(self, sess: _Session, *, status: str) -> Dict[str, Any]:
         started_epoch = self._parse_iso_epoch(sess.started_at)
         ended_epoch = self._parse_iso_epoch(sess.ended_at) if sess.ended_at else None
-        # CP-7 (C3): lazy, mirroring `cgprofile.py`'s own `cmd_serve` lazy
-        # import of `lib.serve` — `cgprofile.py` is the top-level script
+        # CP-7 (C3): lazy, mirroring `cli/legacy.py`'s own `cmd_serve` lazy
+        # import of `cgprofile.serve` — `legacy` is the CLI module
         # (never imported at this module's top level, so this stays a
         # one-directional dependency at call time only), and `_limits_snapshot`
         # is its own helper (the exact shape `cmd_collect` already writes)
         # rather than a duplicate reimplementation here.
-        import cgprofile as cg_module
+        from .cli import legacy as cg_module
         return {
             "session": sess.session_id,
             "status": status,

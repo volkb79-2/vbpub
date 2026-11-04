@@ -13,10 +13,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import cgprofile as cg  # noqa: E402
-from lib import access  # noqa: E402
-from lib import serve as serve_lib  # noqa: E402
-from lib import targets  # noqa: E402
+from cgprofile.cli import legacy as cg  # noqa: E402
+from cgprofile import access  # noqa: E402
+from cgprofile import serve as serve_lib  # noqa: E402
+from cgprofile import targets  # noqa: E402
 
 
 def _tree(tmp_path: Path, *, own: str, memory_max: Optional[str], slice_name="cgprofile.slice"):

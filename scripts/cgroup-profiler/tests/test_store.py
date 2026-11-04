@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from lib import store
+from cgprofile import store
 
 RUN_ID_RE = re.compile(r"^run-\d{8}-\d{6}-[0-9a-f]{8}$")
 

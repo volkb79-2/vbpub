@@ -40,9 +40,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
-import cgprofile as cg
-from lib import damon as damon_mod, limits as limits_mod, serve, summary, targets as targets_mod
-from lib import damon as damon_mod, serve, store, summary, targets as targets_mod
+from cgprofile.cli import legacy as cg
+from cgprofile import damon as damon_mod, limits as limits_mod, serve, summary, targets as targets_mod
+from cgprofile import damon as damon_mod, serve, store, summary, targets as targets_mod
 from tests.conftest import cgroup_files, write_cgroup
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "contract"
@@ -50,7 +50,7 @@ FRAMES_DIR = FIXTURES / "frames"
 # RG-55 v1.1 (P6 C5 onward): contract §8's own goldens, kept separate from
 # the v1 `fixtures/contract/` tree per the P6 handoff's naming.
 RG55_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rg55"
-_CGPROFILE_PY = str(Path(__file__).resolve().parents[1] / "cgprofile.py")
+_CGPROFILE_PY = str(Path(__file__).resolve().parents[1] / "src" / "cgprofile" / "cli" / "legacy.py")
 _HAS_REPORT_DEPS = (
     importlib.util.find_spec("pandas") is not None
     and importlib.util.find_spec("plotly") is not None
@@ -1023,9 +1023,9 @@ def test_cli_serve_gates_slice_flag_reaches_session_server(monkeypatch):
 
     monkeypatch.setattr(serve, "SessionServer", _FakeServer)
     monkeypatch.setattr(serve, "daemon_slice_bounded", lambda *_a: True)  # Sol B4
-    monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
+    monkeypatch.setattr("cgprofile.access.have_host_cgroup_view", lambda root: True)
     monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
-    monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
+    monkeypatch.setattr("cgprofile.access.have_host_proc_view", lambda root: True)
     rc = cg.main(["serve", "--gates-slice", "dev-gates-from-cli.slice"])
     assert rc == 0
     assert captured["gates_slice_name"] == "dev-gates-from-cli.slice"
@@ -1043,9 +1043,9 @@ def test_cli_serve_gates_slice_defaults_to_dev_gates(monkeypatch):
 
     monkeypatch.setattr(serve, "SessionServer", _FakeServer)
     monkeypatch.setattr(serve, "daemon_slice_bounded", lambda *_a: True)  # Sol B4
-    monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
+    monkeypatch.setattr("cgprofile.access.have_host_cgroup_view", lambda root: True)
     monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
-    monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
+    monkeypatch.setattr("cgprofile.access.have_host_proc_view", lambda root: True)
     rc = cg.main(["serve"])
     assert rc == 0
     assert captured["gates_slice_name"] == "dev-gates.slice"
@@ -1674,7 +1674,7 @@ class TestDamonSeriesInReport:
     _HOT_BYTES = [157286400, 188743680, 230686720, 199229440, 178257920]
 
     def test_analysis_series_carries_the_exact_frame_hot_bytes(self, monkeypatch, tmp_path):
-        from lib import analyze, store as store_mod
+        from cgprofile import analyze, store as store_mod
 
         _run_full_lifecycle("container-shared", monkeypatch, tmp_path)
         rundir = store_mod.RunDir(str(tmp_path / "sessions"), run_id=SESSION_ID, create=False)
@@ -1696,7 +1696,7 @@ class TestDamonSeriesInReport:
         `r0-r1` lane this package ever ran named it as the one uncovered
         line in `lib/analyze.py`."""
         import pandas as pd
-        from lib import analyze, store as store_mod
+        from cgprofile import analyze, store as store_mod
 
         rundir = store_mod.RunDir(str(tmp_path / "sessions"), run_id="s-x", create=True)
         rundir.append("damon", {"hot": 1, "warm": 2, "cold": 3, "idle": 4})
@@ -1706,7 +1706,7 @@ class TestDamonSeriesInReport:
         # damon="off" -> _create_session_locked never touches damon.jsonl
         # at all (`if damon_bytes is not None` in `_on_session_sample`) --
         # the CP-6 backlog's own "absent file -> no figure, no error" case.
-        from lib import analyze, store as store_mod
+        from cgprofile import analyze, store as store_mod
 
         root = tmp_path / "cgroup"
         write_cgroup(root, "", cgroup_files())
@@ -1743,7 +1743,7 @@ class TestDamonSeriesInReport:
         assert "damon" not in analysis.groups()
 
     def test_rendered_html_figure_json_carries_the_hot_trace_values(self, monkeypatch, tmp_path):
-        from lib import analyze, report_html, store as store_mod
+        from cgprofile import analyze, report_html, store as store_mod
 
         _run_full_lifecycle("container-shared", monkeypatch, tmp_path)
         rundir = store_mod.RunDir(str(tmp_path / "sessions"), run_id=SESSION_ID, create=False)
@@ -1777,7 +1777,7 @@ def test_session_loop_error_finalizes_the_session_as_aborted(simple_server, monk
     def boom(self, should_stop, on_sample, on_topology):
         raise RuntimeError("synthetic session failure")
 
-    monkeypatch.setattr("lib.sampler.Sampler.run", boom)
+    monkeypatch.setattr("cgprofile.sampler.Sampler.run", boom)
     simple_server._session_loop(sess)
     assert sess.finished is True
     assert sess.error == "synthetic session failure"
@@ -1870,7 +1870,7 @@ class TestManifestLimitsTable:
         # `effective()` resolves `protection_mode="strict"`, matching this
         # estate's real default per the `soulmask-memory-pressure-findings`
         # memory note).
-        from lib import analyze
+        from cgprofile import analyze
 
         root = tmp_path / "cgroup"
         write_cgroup(root, "", cgroup_files())

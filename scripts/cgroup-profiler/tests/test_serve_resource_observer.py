@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from lib import serve
+from cgprofile import serve
 
 
 def _request(verb="resource-limits", *, contract=2, **args):

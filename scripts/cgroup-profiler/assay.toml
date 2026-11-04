@@ -41,7 +41,7 @@ unsafe_symlink_omissions = [
 
 [lanes.r2.judge]
 language = "python"
-source_roots = ["lib"]
+source_roots = ["src/cgprofile"]
 # The comparison scope is caller-selected. After the provisional P1 merge,
 # origin/main contains the daemon changes and would yield a truthful but empty
 # changed-lines campaign. The controller supplies the recorded pre-wave base

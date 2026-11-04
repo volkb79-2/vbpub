@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from lib import caps, damon
+from cgprofile import caps, damon
 
 
 class FakeSysfsInterface:
@@ -508,8 +508,9 @@ def test_module_import_degrades_cleanly_when_damon_analysis_is_absent():
     ``available()`` must reflect that without raising. Restores the real
     binding afterwards so every other test in this file keeps working.
     """
-    real_module = sys.modules.get("damon_analysis")
-    sys.modules["damon_analysis"] = None   # forces ImportError on the next import
+    name = "cgprofile._damon.damon_analysis"
+    real_module = sys.modules.get(name)
+    sys.modules[name] = None   # forces ImportError on the next import
     try:
         importlib.reload(damon)
         assert damon.SysfsInterface is None
@@ -517,19 +518,10 @@ def test_module_import_degrades_cleanly_when_damon_analysis_is_absent():
         assert damon.available() is False
     finally:
         if real_module is not None:
-            sys.modules["damon_analysis"] = real_module
+            sys.modules[name] = real_module
         else:
-            sys.modules.pop("damon_analysis", None)
+            sys.modules.pop(name, None)
         importlib.reload(damon)   # restore real bindings for the rest of the suite
-
-
-def test_reimporting_skips_a_duplicate_sys_path_insert():
-    # The module-scope guard only inserts _DAMON_ANALYSIS_LIB once; prove the
-    # "already present" branch is exercised too, not just implied by the
-    # very first import order at collection time.
-    assert damon._DAMON_ANALYSIS_LIB in sys.path   # true ever since the first import
-    importlib.reload(damon)
-    assert damon._DAMON_ANALYSIS_LIB in sys.path
 
 
 # ── DamonTarget / DamonSession construction-time validation ────────────────

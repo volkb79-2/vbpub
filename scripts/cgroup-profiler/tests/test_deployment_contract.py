@@ -251,7 +251,7 @@ def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
         "{{ cgprofile.daemon.socket_dir }}"
     ) not in compose
     assert "AttachProcessesToUnit" in compose
-    assert "lib.placement.CgroupWriteGuard" in compose
+    assert "cgprofile.placement.CgroupWriteGuard" in compose
     assert "--cgroupns=host" not in gate_script
     assert "--pid=host" not in gate_script
     assert "--net=host" not in gate_script
@@ -340,7 +340,7 @@ def _dist_name(requirement: str) -> str:
 
 def _missing_from_lock(requirements: list, lock_text: str) -> list:
     """Top-level distributions in ``requirements`` with no ``name==`` lock line.
-    The project's own extras self-reference (``cgroup-profiler[report]``) is not
+    The project's own extras self-reference (``cgprofile[report]``) is not
     a third-party distribution and is skipped."""
     locked = {
         _dist_name(line.split("==", 1)[0])
@@ -348,7 +348,7 @@ def _missing_from_lock(requirements: list, lock_text: str) -> list:
         if "==" in line and not line.lstrip().startswith("#")
     }
     wanted = {_dist_name(r) for r in requirements}
-    wanted.discard("cgroup-profiler")
+    wanted.discard("cgprofile")
     return sorted(wanted - locked)
 
 

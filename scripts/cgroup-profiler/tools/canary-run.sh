@@ -77,7 +77,7 @@ echo "cgroup-profiler gate canaries"
 # 1. The counter-reset rule. A cgroup recreated mid-run resets its counters;
 #    reporting the negative delta would put a spike in the chart that never
 #    happened. This is the single most repeated invariant in the package.
-canary counter-reset-negative lib/util.py \
+canary counter-reset-negative src/cgprofile/util.py \
   '    if cur < prev:
         return None' \
   '    if False:
@@ -86,7 +86,7 @@ canary counter-reset-negative lib/util.py \
 
 # 2. "Absent is not zero." A missing file must read as None, never 0 — the
 #    difference between "unlimited" and "zero" is load-bearing everywhere.
-canary absent-reads-as-zero lib/util.py \
+canary absent-reads-as-zero src/cgprofile/util.py \
   '    except (OSError, ValueError):
         return None' \
   '    except (OSError, ValueError):
@@ -95,7 +95,7 @@ canary absent-reads-as-zero lib/util.py \
 
 # 3. Effective limits must walk the ancestor chain. Reporting only the leaf's
 #    own declaration is the exact mistake this tool exists to correct.
-canary limits-ignore-ancestors lib/util.py \
+canary limits-ignore-ancestors src/cgprofile/util.py \
   '    present = [v for v in values if v is not None]
     return min(present) if present else None' \
   '    present = [v for v in values if v is not None]
@@ -104,14 +104,14 @@ canary limits-ignore-ancestors lib/util.py \
 
 # 4. systemd slice names encode their hierarchy. Treating the name as a flat
 #    path silently profiles the wrong cgroup — or nothing at all.
-canary slice-hierarchy-flattened lib/targets.py \
+canary slice-hierarchy-flattened src/cgprofile/targets.py \
   '    parts = stem.split("-")' \
   '    parts = [stem]' \
   tests/test_targets.py::TestSliceNaming::test_nested_slice_expands_to_every_ancestor
 
 # 5. Containers that appear after the profiler starts are the whole point of
 #    follow mode: a gate spawns its containers mid-run.
-canary follow-children-disabled lib/targets.py \
+canary follow-children-disabled src/cgprofile/targets.py \
   '            if target.follow_children:' \
   '            if False:' \
   tests/test_targets.py::TestMembership::test_follow_children_picks_up_a_container_that_appears_later
@@ -119,7 +119,7 @@ canary follow-children-disabled lib/targets.py \
 # 6. A run directory with no manifest is a run that cannot be analysed. The
 #    naive "add .jsonl if missing" rule rewrote manifest.json and produced
 #    exactly that, silently.
-canary manifest-renamed-to-jsonl lib/store.py \
+canary manifest-renamed-to-jsonl src/cgprofile/store.py \
   '        return None if os.path.splitext(name)[1] else name' \
   '        return name' \
   tests/test_store.py::test_non_stream_filenames_keep_their_own_extension
@@ -129,7 +129,7 @@ canary manifest-renamed-to-jsonl lib/store.py \
 #    buffers, sometimes by seconds, and a mark timestamped at arrival time
 #    would be systematically late relative to the 250ms sample series it
 #    exists to be correlated against — silently wrong on every real run.
-canary log-timestamp-uses-arrival-time lib/logtail.py \
+canary log-timestamp-uses-arrival-time src/cgprofile/logtail.py \
   '        when = epoch if epoch is not None else time.time()' \
   '        when = time.time()' \
   tests/test_logtail.py::TestHandleLine::test_literal_match_emits_a_mark_with_the_logs_own_timestamp

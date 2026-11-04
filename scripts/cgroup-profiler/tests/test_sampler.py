@@ -14,7 +14,7 @@ import math
 
 import pytest
 
-from lib.sampler import Sampler, SamplerConfig, activity_score
+from cgprofile.sampler import Sampler, SamplerConfig, activity_score
 from tests.conftest import SUBJECT, cg_metrics
 
 
@@ -234,14 +234,14 @@ class TestIoBytesRate:
     `activity_score`'s normalisation into hitting exact edge values."""
 
     def test_device_with_no_baseline_is_skipped(self):
-        from lib.sampler import _io_bytes_rate
+        from cgprofile.sampler import _io_bytes_rate
         # A disk attached mid-run: present in cur, absent from prev.
         prev_io = {}
         cur_io = {"254:0": {"rbytes": 1024, "wbytes": 2048}}
         assert _io_bytes_rate(prev_io, cur_io, 1.0) is None
 
     def test_device_with_both_counters_reset_contributes_nothing(self):
-        from lib.sampler import _io_bytes_rate
+        from cgprofile.sampler import _io_bytes_rate
         # The device was recreated (or its counters wrapped): both rbytes
         # and wbytes go backwards. Neither is measurable, so the device is
         # exactly as if it were never sampled, not a huge negative rate.
@@ -250,7 +250,7 @@ class TestIoBytesRate:
         assert _io_bytes_rate(prev_io, cur_io, 1.0) is None
 
     def test_one_device_reset_does_not_hide_another_device_that_is_fine(self):
-        from lib.sampler import _io_bytes_rate
+        from cgprofile.sampler import _io_bytes_rate
         prev_io = {
             "254:0": {"rbytes": 1_000_000, "wbytes": 2_000_000},  # will reset
             "8:0": {"rbytes": 0, "wbytes": 0},

@@ -1,5 +1,5 @@
 # Keep the build context to what the image actually needs (Dockerfile only
-# COPYs cgprofile.py, pyproject.toml, lib/, docs/, cgprofile, requirements-report.txt) — everything
+# COPYs src/, pyproject.toml, docs/, cgprofile, requirements-report.txt) — everything
 # below is test/gate/dev-only state that must never end up baked into
 # `cgprofile:local`.
 .git

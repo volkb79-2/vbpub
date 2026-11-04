@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from lib import proc_stat
+from cgprofile import proc_stat
 
 
 def test_split_after_comm_uses_last_parenthesis_after_comm():

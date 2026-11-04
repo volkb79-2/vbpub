@@ -30,32 +30,31 @@ import fcntl
 import os
 import signal
 import stat
-import sys
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from . import util
 
-# The reuse library lives in a sibling top-level script package, not a
-# dependency of this one — see the module docstring. The checkout might
-# simply not be present (a partial clone, a differently-laid-out host), so
-# this import is guarded and nothing above this module fails to import
-# because of it; callers must check available() before doing anything real.
-_DAMON_ANALYSIS_LIB = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "damon-analysis", "lib")
-)
+# The reuse library is VENDORED inside this package as
+# ``cgprofile._damon.damon_analysis`` (a byte-identical copy of
+# ``scripts/damon-analysis/lib/damon_analysis.py``; ``tests/test_damon_vendor.py``
+# fails when the two differ), so a wheel carries it and nothing is located by
+# a relative path. The import stays guarded: nothing above this module fails
+# to import because of it, and callers must check available() before doing
+# anything real.
+#
+# ``_DAMO_BIN`` is a checkout-only diagnostic (``damo_usable``): the sibling
+# venv's ``damo`` script. In an installed wheel it simply does not exist.
 _DAMO_BIN = os.path.normpath(
     os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        "..", "..", "damon-analysis", "venv", "bin", "damo",
+        "..", "..", "..", "damon-analysis", "venv", "bin", "damo",
     )
 )
 
 try:
-    if _DAMON_ANALYSIS_LIB not in sys.path:
-        sys.path.insert(0, _DAMON_ANALYSIS_LIB)
-    from damon_analysis import Classifier, KDAMONDS_DIR, SysfsInterface  # type: ignore
+    from ._damon.damon_analysis import Classifier, KDAMONDS_DIR, SysfsInterface  # type: ignore
 except Exception:
     SysfsInterface = None  # type: ignore[assignment]
     Classifier = None  # type: ignore[assignment]

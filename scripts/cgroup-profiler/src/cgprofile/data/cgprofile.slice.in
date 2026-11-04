@@ -1,0 +1,13 @@
+# cgprofile.slice: the protective top-level slice of the cgprofile daemon.
+# Template shipped inside the cgprofile wheel; `cgpd unit print` renders it
+# (package 3). Values are the NATIVE-DEPLOYMENT.md section 4.1 proposals and
+# are final only after the section 4.3 measurements.
+[Unit]
+Description=cgprofile daemon slice (protected, bounded)
+
+[Slice]
+MemoryMin=128M
+MemoryHigh=768M
+MemoryMax=1G
+CPUWeight=100
+IOWeight=50

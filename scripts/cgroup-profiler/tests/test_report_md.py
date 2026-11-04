@@ -5,8 +5,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
-from lib import report_md
-from lib.model import Analysis, Event, Proposal, Series
+from cgprofile import report_md
+from cgprofile.model import Analysis, Event, Proposal, Series
 
 
 class TestRender:

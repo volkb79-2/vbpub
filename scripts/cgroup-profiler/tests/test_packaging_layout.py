@@ -1,0 +1,182 @@
+"""cgprofile 2.0 package 1: the wheel/package layout (CP-46).
+
+These tests pin the facts the wheel depends on: one importable `cgprofile`
+package under `src/` (no top-level `lib`), the two console scripts and their
+interim behaviour, the version resolution, the package data, and the
+pyproject/cmru facts a release needs.
+"""
+
+from __future__ import annotations
+
+import importlib
+import importlib.metadata
+from pathlib import Path
+import tomllib
+
+import pytest
+
+from cgprofile import version
+from cgprofile.cli import cgpctl, cgpd, legacy
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PACKAGE_DIR = PROJECT_ROOT / "src" / "cgprofile"
+
+
+def _pyproject() -> dict:
+    return tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+
+# ── layout ──────────────────────────────────────────────────────────────────
+
+def test_there_is_no_top_level_lib_package():
+    assert not (PROJECT_ROOT / "lib").exists()
+    assert not (PROJECT_ROOT / "cgprofile.py").exists()
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("lib.serve")
+
+
+def test_the_package_lives_under_src_and_is_the_one_imported():
+    assert Path(importlib.import_module("cgprofile").__file__).resolve().parent == PACKAGE_DIR
+    assert (PACKAGE_DIR / "cli" / "legacy.py").is_file()
+    assert (PACKAGE_DIR / "_damon" / "__init__.py").is_file()
+
+
+@pytest.mark.parametrize("name", ["cgpd.service.in", "cgpd.toml.default", "cgprofile.slice.in"])
+def test_package_data_files_exist_and_are_not_empty(name):
+    assert (PACKAGE_DIR / "data" / name).stat().st_size > 0
+
+
+# ── version resolution ──────────────────────────────────────────────────────
+
+def test_installed_version_reports_the_distribution_metadata(monkeypatch):
+    seen = []
+
+    def fake(name):
+        seen.append(name)
+        return "2.0.0"
+
+    monkeypatch.setattr(importlib.metadata, "version", fake)
+    assert version.installed_version() == "2.0.0"
+    assert seen == ["cgprofile"]
+
+
+def test_installed_version_falls_back_to_the_source_tree_marker(monkeypatch):
+    def missing(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", missing)
+    assert version.installed_version() == version.SOURCE_TREE_VERSION == "0.0.0-dev"
+
+
+# ── console script stubs ────────────────────────────────────────────────────
+
+@pytest.fixture
+def fixed_version(monkeypatch):
+    monkeypatch.setattr(cgpctl, "installed_version", lambda: "9.9.9")
+    monkeypatch.setattr(cgpd, "installed_version", lambda: "9.9.9")
+
+
+@pytest.fixture
+def delegated(monkeypatch):
+    calls = []
+
+    def fake_main(argv):
+        calls.append(list(argv))
+        return 7
+
+    monkeypatch.setattr(legacy, "main", fake_main)
+    return calls
+
+
+def test_cgpctl_version(capsys, fixed_version):
+    assert cgpctl.main(["--version"]) == 0
+    assert capsys.readouterr().out == "cgpctl 9.9.9\n"
+
+
+def test_cgpd_version(capsys, fixed_version):
+    assert cgpd.main(["--version"]) == 0
+    assert capsys.readouterr().out == "cgpd 9.9.9\n"
+
+
+@pytest.mark.parametrize("argv", [[], ["-h"], ["--help"]])
+def test_cgpctl_usage(capsys, argv):
+    assert cgpctl.main(argv) == 0
+    assert capsys.readouterr().out == cgpctl._USAGE
+
+
+@pytest.mark.parametrize("argv", [[], ["-h"], ["--help"]])
+def test_cgpd_usage(capsys, argv):
+    assert cgpd.main(argv) == 0
+    assert capsys.readouterr().out == cgpd._USAGE
+
+
+def test_cgpctl_delegates_socket_verbs_as_ctl(delegated):
+    assert cgpctl.main(["status", "--json"]) == 7
+    assert delegated == [["ctl", "status", "--json"]]
+
+
+def test_cgpctl_delegates_mark_unchanged(delegated):
+    assert cgpctl.main(["mark", "phase-1"]) == 7
+    assert delegated == [["mark", "phase-1"]]
+
+
+def test_cgpd_run_is_the_serve_verb(delegated):
+    assert cgpd.main(["run", "--socket-dir", "/x"]) == 7
+    assert delegated == [["serve", "--socket-dir", "/x"]]
+
+
+def test_cgpd_refuses_an_unknown_verb(capsys, delegated):
+    assert cgpd.main(["bogus"]) == 2
+    captured = capsys.readouterr()
+    assert "unknown verb 'bogus'" in captured.err
+    assert captured.out == ""
+    assert delegated == []
+
+
+def test_the_stubs_read_sys_argv_when_called_without_arguments(monkeypatch, capsys, fixed_version):
+    monkeypatch.setattr("sys.argv", ["cgpctl", "--version"])
+    assert cgpctl.main() == 0
+    monkeypatch.setattr("sys.argv", ["cgpd", "--version"])
+    assert cgpd.main() == 0
+    assert capsys.readouterr().out == "cgpctl 9.9.9\ncgpd 9.9.9\n"
+
+
+# ── pyproject and cmru facts ────────────────────────────────────────────────
+
+def test_pyproject_wheel_facts():
+    data = _pyproject()
+    project = data["project"]
+    assert project["name"] == "cgprofile"
+    assert project["dynamic"] == ["version"]
+    assert "version" not in project
+    assert project["dependencies"] == ["cli-extended>=0.5.1"]
+    assert project["scripts"] == {
+        "cgpctl": "cgprofile.cli.cgpctl:main",
+        "cgpd": "cgprofile.cli.cgpd:main",
+    }
+    assert data["tool"]["setuptools"]["packages"]["find"] == {"where": ["src"]}
+    assert data["tool"]["setuptools"]["package-data"] == {"cgprofile": ["data/*"]}
+    scm = data["tool"]["setuptools_scm"]
+    assert scm["root"] == "../.."
+    assert "cgprofile-v" in scm["tag_regex"]
+    assert "fallback_version" not in scm
+
+
+def test_cmru_declares_the_wheel_beside_the_image():
+    config = tomllib.loads((PROJECT_ROOT / "cmru.toml").read_text(encoding="utf-8"))
+    project = config["project"]
+    assert project["id"] == "cgroup-profiler"
+    assert project["artifacts"] == ["oci-image", "wheel"]
+    assert project["scm_dist"] == "cgprofile"
+    assert config["project"]["release"]["artifact_dirs"] == ["dist"]
+    build = [c["argv"] for c in config["steps"]["build"]["commands"]]
+    push = [c["argv"] for c in config["steps"]["push"]["commands"]]
+    assert ["cmru", "handler", "wheel-build", "--cwd", "."] in build
+    assert ["python3", "build-push.py", "--build"] in build
+    assert ["cmru", "handler", "wheel-publish", "--prefix", "cgprofile", "--cwd", "."] in push
+    assert ["python3", "build-push.py", "--push"] in push
+
+
+def test_the_legacy_entry_runs_from_the_checkout_root():
+    # SELF is what the helper-subprocess tests and the bash shim exec.
+    assert Path(legacy.SELF).resolve() == PACKAGE_DIR / "cli" / "legacy.py"

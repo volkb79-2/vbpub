@@ -29,7 +29,7 @@ An untagged local image is explicitly identified as `0.0.0-dev`. Help, usage,
 missing-argument, unknown-argument,
 and configuration diagnostics at every subcommand depth begin with the
 matching `CGPROFILE <version> — cgroup resource profiler` headline. Normal
-profiling output is unchanged. The shell shim and `cgprofile.py` therefore
+profiling output is unchanged. The shell shim and `src/cgprofile/cli/legacy.py` therefore
 expose the same top-level compatibility option.
 
 RG-55 integrations use the installed Run-Gate wheel and its SemVer identity;
@@ -397,7 +397,7 @@ see the consumer note for the live probe and safe host procedure.
   report <session> --json` — the same interactive `report.html` a
   `cgprofile run`/`attach` session produces, rendered by the image's own
   venv (the daemon process itself never imports pandas/plotly — see
-  `lib/serve.py`'s `handle_report`). May take longer than 30 s on a long
+  `src/cgprofile/serve.py`'s `handle_report`). May take longer than 30 s on a long
   session; run-gate itself never calls this verb.
 - **Retention:** `--keep-sessions 200 --keep-days 14` by default (`serve`
   CLI flags) — the newest N finished sessions are kept, older ones dropped

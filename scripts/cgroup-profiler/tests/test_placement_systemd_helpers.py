@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from lib import placement
+from cgprofile import placement
 
 
 def _completed(stdout: str = "", *, code: int = 0) -> subprocess.CompletedProcess[str]:
@@ -741,11 +741,11 @@ def test_default_pid_readers_delegate_to_the_target_resolvers(tmp_path, monkeypa
     )
     calls = []
     monkeypatch.setattr(
-        "lib.targets.cgroup_of_pid",
+        "cgprofile.targets.cgroup_of_pid",
         lambda pid, root, proc: calls.append(("cgroup", pid, root, proc)) or "/found.scope",
     )
     monkeypatch.setattr(
-        "lib.targets.pids_in_cgroup",
+        "cgprofile.targets.pids_in_cgroup",
         lambda cg, root, proc: calls.append(("pids", cg, root, proc)) or [7, 8],
     )
     (tmp_path / "proc" / "71").mkdir(parents=True)

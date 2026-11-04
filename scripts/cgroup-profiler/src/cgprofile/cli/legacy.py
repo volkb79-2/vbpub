@@ -40,17 +40,25 @@ import sys
 import time
 from urllib.parse import quote
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-import tomllib
 
-HERE = os.path.dirname(os.path.realpath(__file__))
-with open(os.path.join(HERE, "pyproject.toml"), "rb") as _project_file:
-    _source_version = tomllib.load(_project_file)["project"]["version"]
-sys.path.insert(0, HERE)
+# The checkout root: this file is <root>/src/cgprofile/cli/legacy.py. The 1.x
+# standalone modes (helper container, bash shim, report venv) only exist in a
+# checkout or the 1.x image, never in an installed wheel, and package 2
+# deletes them; the wheel's console scripts reach this module only for the
+# daemon-backed verbs, which never read HERE.
+HERE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
+SRC = os.path.join(HERE, "src")
+# The legacy self-invocation target: the helper container and the collector
+# child re-run this very file by path (python3 <SELF> _collect ...).
+SELF = os.path.join(SRC, "cgprofile", "cli", "legacy.py")
+# Run as a script (python3 .../legacy.py) sys.path[0] is this directory, not
+# the source root, so name the package's parent explicitly.
+sys.path.insert(0, SRC)
 
-from lib import access, targets as targets_mod, util  # noqa: E402
-from lib.version import runtime_version  # noqa: E402
+from cgprofile import access, targets as targets_mod, util  # noqa: E402
+from cgprofile.version import installed_version, runtime_version  # noqa: E402
 
-__version__ = runtime_version(_source_version)
+__version__ = runtime_version(installed_version())
 
 READY_FILE = "collector.ready"
 STOP_FILE = "collector.stop"
@@ -131,7 +139,7 @@ def _require_reporting_deps() -> None:
 
 
 def _load_store():
-    from lib import store
+    from cgprofile import store
 
     return store
 
@@ -340,13 +348,13 @@ def cmd_collect(args: argparse.Namespace) -> int:
     pandas, plotly, or anything else outside the standard library — see
     DESIGN.md §1.
     """
-    from lib import caps as caps_mod
-    from lib import events as events_mod
-    from lib import limits as limits_mod
-    from lib import metrics as metrics_mod
-    from lib import phases as phases_mod
-    from lib import sampler as sampler_mod
-    from lib import store as store_mod
+    from cgprofile import caps as caps_mod
+    from cgprofile import events as events_mod
+    from cgprofile import limits as limits_mod
+    from cgprofile import metrics as metrics_mod
+    from cgprofile import phases as phases_mod
+    from cgprofile import sampler as sampler_mod
+    from cgprofile import store as store_mod
 
     run = store_mod.RunDir(os.path.dirname(args.run_dir), os.path.basename(args.run_dir),
                            create=True)
@@ -444,7 +452,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
     damon_session = None
     if args.damon:
-        from lib import damon as damon_mod
+        from cgprofile import damon as damon_mod
 
         if damon_mod.available():
             pids = [t.pid for t in all_targets if t.pid]
@@ -602,7 +610,7 @@ def _launch_helper(run_path: str, collect_args: List[str],
     spec_args = {}
     helper_collect_args = list(collect_args)
     if damon:
-        from lib import damon as damon_mod
+        from cgprofile import damon as damon_mod
 
         try:
             lock_path = damon_mod.prepare_registry_lock_file()
@@ -628,7 +636,7 @@ def _launch_helper(run_path: str, collect_args: List[str],
         access.docker_bin(),
         *docker_args,
         "python3",
-        os.path.join(HERE, "cgprofile.py"),
+        SELF,
         "_collect",
         *helper_collect_args,
     ]
@@ -719,7 +727,7 @@ def _parse_log_tail_spec(spec: str) -> Tuple[str, Optional[str]]:
 
 
 def _collect_log_patterns(args: argparse.Namespace):
-    from lib import logtail as logtail_mod
+    from cgprofile import logtail as logtail_mod
 
     patterns = []
     for path in getattr(args, "log_match_file", None) or []:
@@ -745,7 +753,7 @@ def _start_log_tailers(args: argparse.Namespace, run_path: str) -> List[object]:
     specs = getattr(args, "log_tail", None) or []
     if not specs:
         return []
-    from lib import logtail as logtail_mod
+    from cgprofile import logtail as logtail_mod
 
     patterns = _collect_log_patterns(args)
     if not patterns:
@@ -786,7 +794,7 @@ def _start_run(args: argparse.Namespace):
 
     if mode == "direct":
         child = subprocess.Popen(
-            [sys.executable, os.path.join(HERE, "cgprofile.py"), "_collect", *collect_args],
+            [sys.executable, SELF, "_collect", *collect_args],
             stdout=sys.stderr, stderr=sys.stderr,
         )
     else:
@@ -831,7 +839,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     """Wrapper mode: profile the lifetime of a command, phase-marked."""
     if not args.command:
         _err("nothing to run — put the command after `--`")
-    from lib import phases as phases_mod
+    from cgprofile import phases as phases_mod
 
     run, child = _start_run(args)
     tailers = _start_log_tailers(args, run.path)
@@ -900,7 +908,7 @@ def cmd_attach(args: argparse.Namespace) -> int:
 
 def cmd_mark(args: argparse.Namespace) -> int:
     """Emit a phase mark. Callable from anywhere sharing the run directory."""
-    from lib import phases as phases_mod
+    from cgprofile import phases as phases_mod
 
     run_path = args.run_dir or os.environ.get("CGPROFILE_RUN_DIR")
     if not run_path:
@@ -917,8 +925,8 @@ def cmd_mark(args: argparse.Namespace) -> int:
 
 def _report(run_path: str, args: argparse.Namespace) -> None:
     _require_reporting_deps()
-    from lib import analyze, report_html, report_md
-    from lib import store as store_mod
+    from cgprofile import analyze, report_html, report_md
+    from cgprofile import store as store_mod
 
     run = store_mod.RunDir(os.path.dirname(run_path), os.path.basename(run_path), create=False)
     analysis = analyze.build(run)
@@ -955,7 +963,7 @@ def cmd_targets(args: argparse.Namespace) -> int:
                                        getattr(args, "helper_cgroup_parent", None))
         helper_name = f"cgprofile-targets-{os.getpid()}-{time.time_ns()}"
         command = [access.docker_bin(), *spec.docker_args(name=helper_name), "python3",
-                   os.path.join(HERE, "cgprofile.py"), "targets", "--mode", "direct"]
+                   SELF, "targets", "--mode", "direct"]
         for item in specs:
             command += ["--target", item]
         child = _start_named_helper(command, helper_name, spec.image)
@@ -965,7 +973,7 @@ def cmd_targets(args: argparse.Namespace) -> int:
                                        default_follow=args.follow_children)
     if not resolved:
         _err("nothing resolved")
-    from lib import limits as limits_mod
+    from cgprofile import limits as limits_mod
 
     flags = limits_mod.mount_flags()
     membership = targets_mod.Membership(resolved, root=access.CGROUP_ROOT,
@@ -1062,7 +1070,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             "resolve to the daemon's PID namespace "
             "(RG55-INTERFACE-CONTRACT.md §5)"
         )
-    from lib import serve as serve_mod
+    from cgprofile import serve as serve_mod
 
     # Sol B4: Docker/systemd auto-create an uninstalled `cgprofile.slice`
     # with no limits, and the daemon would appear governed while running

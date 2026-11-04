@@ -10,8 +10,8 @@ from typing import Dict, Iterable, List
 
 import pytest
 
-import cgprofile as cg
-from lib import serve, summary
+from cgprofile.cli import legacy as cg
+from cgprofile import serve, summary
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = (ROOT / "README.md", ROOT / "docs" / "DESIGN-GUIDE.md", ROOT / "docs" / "CONSUMERS.md")

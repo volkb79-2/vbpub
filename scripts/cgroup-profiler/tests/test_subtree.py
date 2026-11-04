@@ -13,7 +13,7 @@ from typing import Dict, Iterable, List, Optional
 
 import pytest
 
-from lib import subtree
+from cgprofile import subtree
 
 
 # ── fake /proc + cgroup.procs builders ──────────────────────────────────────

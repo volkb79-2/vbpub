@@ -24,7 +24,7 @@ The 1.x CLI is a 1762-line argparse program with 17 verbs, a bash shim, helper m
 Contract: `docs/CGPCTL-SPEC.md` sections 1, 2 and 4. Branch `cgp2-2-cgpctl-20261104`; adopts CP-17 for the client half.
 
 - `CliRegistry` grammar for the verbs in the spec: `status`, `host`, `sessions`, `show`, `start`, `stop`, `watch`, `report`, `prune`, `run`, `mark`,
-  `doctor`, `config show`, `skills`. `CliIdentity`, `unexpected_exceptions="report"`, `CliFailure` for domain failures, `register_doctor` with the
+  `doctor`, `config show|set|reset` (set and reset are root-only on the daemon; acceptance list in CP-50), `skills`. `CliIdentity`, `unexpected_exceptions="report"`, `CliFailure` for domain failures, `register_doctor` with the
   spec checks, `register_skills_verbs(package="cgprofile")`; rewrite the skill for the new surface.
 - Socket resolution `--socket` > `CGPCTL_SOCKET` > `/run/cgprofile/ctl.sock`; empty env is a usage error.
 - Exit codes 0/1/2/3/130 and the cause tags, with the mapping of daemon error codes in spec section 1; `--json` shapes per spec section 2.3.

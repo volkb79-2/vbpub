@@ -47,8 +47,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
-import cgprofile as cg
-from lib import damon as damon_mod, serve
+from cgprofile.cli import legacy as cg
+from cgprofile import damon as damon_mod, serve
 from tests.conftest import cgroup_files, write_cgroup
 
 RG55_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rg55"

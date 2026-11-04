@@ -13,7 +13,7 @@ from typing import Any, Dict
 
 import pytest
 
-from lib import caps
+from cgprofile import caps
 
 
 def read(path: Path) -> str:

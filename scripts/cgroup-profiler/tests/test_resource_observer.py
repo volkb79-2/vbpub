@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from lib import resource_observer
+from cgprofile import resource_observer
 
 
 GATES = "/dev.slice/dev-gates.slice"

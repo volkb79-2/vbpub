@@ -23,7 +23,7 @@ from typing import Any, Dict, Optional
 
 import pytest
 
-from lib.events import Detector, DetectorConfig
+from cgprofile.events import Detector, DetectorConfig
 from tests.conftest import OBSERVER, SUBJECT
 
 
@@ -83,12 +83,12 @@ class TestPrivateRateHelpers:
     not dead weight."""
 
     def test_rate_returns_none_for_non_positive_dt(self):
-        from lib.events import _rate
+        from cgprofile.events import _rate
         assert _rate(1.0, 2.0, 0.0) is None
         assert _rate(1.0, 2.0, -1.0) is None
 
     def test_rfd_per_s_returns_none_for_non_positive_dt(self):
-        from lib.events import _rfd_per_s
+        from cgprofile.events import _rfd_per_s
         memstat = {"workingset_refault_anon": 100, "zswpin": 10}
         assert _rfd_per_s(memstat, memstat, 0.0) is None
         assert _rfd_per_s(memstat, memstat, -1.0) is None

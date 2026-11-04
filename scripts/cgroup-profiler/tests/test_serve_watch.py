@@ -35,9 +35,9 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-import cgprofile as cg
-from lib import damon as damon_mod, liveness, serve
-from lib import store as store_mod, summary as summary_mod
+from cgprofile.cli import legacy as cg
+from cgprofile import damon as damon_mod, liveness, serve
+from cgprofile import store as store_mod, summary as summary_mod
 from tests.conftest import cgroup_files, write_cgroup
 
 CONTAINER_ID = "c" * 64

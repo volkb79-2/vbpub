@@ -18,7 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pytest
 
-from lib import observer_windows, serve
+from cgprofile import observer_windows, serve
 
 PAGE = os.sysconf("SC_PAGE_SIZE")
 TICK = os.sysconf("SC_CLK_TCK")
@@ -1024,7 +1024,7 @@ def test_dropping_a_window_twice_is_harmless_and_old_tombstones_are_evicted(worl
 
 
 def test_peer_validation_of_the_window_binding_itself(world):
-    from lib import resource_observer
+    from cgprofile import resource_observer
 
     base = dict(proc_root=str(world.proc), cgroup_root=str(world.cg),
                 mountinfo_path=str(world.proc / "self" / "mountinfo"),
@@ -1041,7 +1041,7 @@ def test_peer_validation_of_the_window_binding_itself(world):
 
 
 def test_process_cgroup_and_namespace_readers_refuse_what_they_cannot_prove(world):
-    from lib import resource_observer
+    from cgprofile import resource_observer
 
     proc = str(world.proc)
     assert resource_observer.process_cgroup_path(proc, 5000, 0) == resource_observer.PurePosixPath(LEAF)

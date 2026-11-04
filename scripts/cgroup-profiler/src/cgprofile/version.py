@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
 import re
 import subprocess
@@ -9,6 +10,10 @@ import tomllib
 from pathlib import Path
 
 VERSION_ENV = "CGPROFILE_VERSION"
+DISTRIBUTION = "cgprofile"
+# What an uninstalled source tree reports. A wheel carries the scm-derived
+# release version instead; there is deliberately no literal in pyproject.toml.
+SOURCE_TREE_VERSION = "0.0.0-dev"
 _PRERELEASE_ID = r"(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
 _SEMVER = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -16,6 +21,21 @@ _SEMVER = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 )
 _GIT_OBJECT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+
+def installed_version() -> str:
+    """The installed distribution's version, or the source-tree marker.
+
+    The wheel's metadata version is derived from the ``cgprofile-v`` tag by
+    setuptools-scm at build time, so ``cgpctl --version``, ``cgpd --version``
+    and the release tag agree. Run from a checkout (the gate binds the source
+    via PYTHONPATH, nothing is installed) there is no metadata and the
+    ``0.0.0-dev`` marker is reported.
+    """
+    try:
+        return importlib.metadata.version(DISTRIBUTION)
+    except importlib.metadata.PackageNotFoundError:
+        return SOURCE_TREE_VERSION
 
 
 def runtime_version(default: str) -> str:
