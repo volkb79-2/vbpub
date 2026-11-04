@@ -1351,6 +1351,10 @@ tests (host-setup/README.md "Memory of the dedicated-dev role"). Open:
    (psi-guard stage 2 on dev.slice itself, `memory.reclaim`) was not built. Measure whether MemoryHigh plus the OOM order is enough under 4-5 parallel mdt-cockpit gates.
 3. psi-guard `enforce` was never validated live on the test hosts (it ships `report`); its CPU `some` 25% signal on docker.service may fire in a CPU-saturated lane burst.
 4. Measure the zswap pool (`max_pool_percent` 25) against a real overcommit run before changing it.
+5. Unmeasured: `io.max` on dev.slice throttles the swap-out of dev pages; reclaim waiting on a throttled device may stall other cgroups (priority inversion). Measure
+   host memory PSI and `kswapd` behaviour in an overcommit run with the IO caps in force.
+6. The memory.swap.max of dev.slice is `SwapTotal - 512M` (MDT_HOST_SWAP_MARGIN), not derived from `DEV_HOST_MEMORY_KEEP`; the two formulas differ (documented, not unified).
+Review fixes (2026-11-05): ssh no longer gets an OOM drop-in (F1), default keep 1G with floors (F2/F5), bounds documented without a memory.max backstop claim (F3), `0` pins mean omit (F4), stale drop-ins removed and mode 0644 (F6).
 
 ## MDT-069 - `mdt-psi-guard.py` writes `cpu.weight` and thereby silently resets `cpu.idle` on the dev slices (2026-11-05)
 

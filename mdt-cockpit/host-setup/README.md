@@ -1135,7 +1135,7 @@ until then run the calibration by hand on the test hosts.
 
 The test hosts are planned for overcommit: the 4 GiB gates tier and the 5-8 GiB background tiers held a 1-1.75 GiB cmru lane or a 4 GiB mdt-cockpit test
 behind an artificial ceiling long before the host was short of memory. On `HOST_ROLE=dedicated-dev` the whole of RAM plus disk swap belongs to the dev
-tier, minus what the host keeps (`DEV_HOST_MEMORY_KEEP`, default 512M; not named `*_RESERVE_*` because the 2026-11 rename guard refuses those keys).
+tier, minus what the host keeps (`DEV_HOST_MEMORY_KEEP`, default 1G, minimum 256M; it must cover the host's own working set, see below; not named `*_RESERVE_*` because the 2026-11 rename guard refuses those keys).
 `shared-prod` and an empty role keep sections 2.4 and 3 of the env file exactly as configured; nothing below applies to them.
 
 | control | shared-prod | dedicated-dev |
@@ -1147,17 +1147,31 @@ tier, minus what the host keeps (`DEV_HOST_MEMORY_KEEP`, default 512M; not named
 | tier MemoryLow / MemoryMin | as configured | as configured: this is the protection between tiers (e.g. the IDE, BuildKit) |
 | tier MemorySwapMax | `DEV_SWAP_CASCADE_PCT`% of dev.slice's | equal to dev.slice's |
 | `system.slice` | untouched | MemoryLow = `DEV_HOST_MEMORY_KEEP` |
-| host services (`DEV_HOST_PROTECTED_UNITS`: ssh, docker, containerd, cgpd, mdt-psi-guard, journald, oomd) | untouched | OOMScoreAdjust=-900 drop-in (never weakening a unit that already has a lower value, e.g. containerd -999) |
+| host services (`DEV_HOST_PROTECTED_UNITS`: docker, containerd, cgpd, mdt-psi-guard, journald, oomd; never ssh) | untouched | OOMScoreAdjust=-900 drop-in (never weakening a unit that already has a lower value, e.g. containerd -999); a unit that leaves the list loses its drop-in on the next install |
 | mdt-psi-guard signals | `MDT_PROTECTED_UNITS` + host memory `full` | the same plus the host services above |
 
-Note on `memory.max`: the kernel's `memory.max` counts RAM only, swap has its own `memory.swap.max`. `MemTotal + SwapTotal - keep` is therefore the
-combined overcommit ceiling and the leak backstop; the limit that actually keeps RAM for the host is dev.slice MemoryHigh (above it the kernel reclaims the tier into
-zswap and disk swap, throttling it, instead of taking the host's pages) together with `system.slice` MemoryLow. Per-container ceilings stay where a launcher
-sets them (`docker run --memory`, cmru's `CMRU_TESTER_*`); the docker-scope backstop (7.1) is untouched.
+Sizing the keep: `DEV_HOST_MEMORY_KEEP` must cover the host's own working set (dockerd, containerd, journald, cgpd, page cache). Measured on both test hosts:
+`system.slice` memory.current 1.0-1.1 GB, hence the 1G default; `mdt-host-check.sh` warns when the measured `system.slice` memory.current exceeds the keep.
+Pins have floors: a keep below 256M, a `DEV_MEMORY_HIGH`/`DEV_MEMORY_MAX` pin below 256M, or a non-size is refused (the install exits 2 before changing anything);
+a `0` pin (like `-`) omits the directive, the same meaning `0` has in the shared validators.
+
+What bounds the dev tier (and what does not). `memory.max` is NOT a leak backstop: the kernel's `memory.max` counts RAM (and the zswap pool charged to the cgroup)
+only, physical RAM caps that, so `MemTotal + SwapTotal - keep` can never be reached on these hosts; it is kept as the documented combined figure, not as a limit that acts.
+The limits that act, in the order a growing dev tier meets them: (1) dev.slice MemoryHigh = RAM - keep: allocation is throttled (sleeps up to 2 s per event) while
+the kernel reclaims the tier into zswap and disk swap; thrashing and slow lanes come BEFORE any kill. (2) `memory.swap.max` of dev.slice (the tiers share it): when swap is
+used up MemoryHigh can no longer reclaim, the tier stays throttled but keeps allocating. (3) systemd-oomd can act earlier (gates: memory pressure 75%, background: pressure and swap;
+interactive is never a target). (4) With free RAM at zero the global kernel OOM killer runs and takes the largest dev-tier process (host services carry -900). Open and
+unmeasured (MDT-072): `io.max` on dev.slice throttles the swap-out of dev pages, and reclaim that waits on a throttled device can stall other cgroups too (priority
+inversion); watch `memory` PSI on the host, not only the lane. Per-container ceilings stay where a launcher sets them (`docker run --memory`, cmru's `CMRU_TESTER_*`);
+the docker-scope backstop (7.1) is untouched.
+
+ssh is deliberately not protected: sshd restores the OOM score it started with into every login session, so `OOMScoreAdjust=-900` on `ssh.service` would make every login
+shell, IDE server and manual process -900 after the next sshd restart (the sshd listener already runs at -1000). `DEV_HOST_PROTECTED_UNITS` refuses ssh/sshd names, and
+install.sh removes a stale `ssh.service.d/50-mdt-dedicated-dev.conf` an earlier version rendered. Drop-ins are mode 0644.
 
 OOM behaviour: when RAM and swap are genuinely exhausted the dev tier is killed first. In order: (1) reclaim takes dev pages before the host's
 (system.slice MemoryLow, dev.slice MemoryHigh); (2) systemd-oomd kills inside dev-gates / dev-background on sustained pressure (`*_OOM_PRESSURE_LIMIT`, 75%),
-dev-interactive is never an oomd target; (3) the kernel OOM killer prefers any dev-tier process because the host services carry -900. A killed lane is an
+dev-interactive is never an oomd target; (3) the kernel OOM killer prefers any dev-tier process because the host services carry -900 (thrash from step 1 comes before any kill). A killed lane is an
 infrastructure event (its history record survives), never a product verdict. The install lowers a running service's score in place; nothing is restarted.
 
 zswap (read on v1001/r1002, 2026-11-05: zstd, `max_pool_percent` 25, `accept_threshold_percent` 90, shrinker on, writeback `yes` on every tier) already suits

@@ -271,6 +271,17 @@ if [ -d "$DEV_PATH" ]; then
     _sl_low="$(cat "$CG/system.slice/memory.low" 2>/dev/null)"
     if [ -n "$_sl_low" ] && [ "$_sl_low" != 0 ]; then ok "system.slice memory.low=$_sl_low (host memory protected from the dev tier)"
     else warn "system.slice memory.low is 0: the host's own memory is not protected from the dev tier (re-run install.sh)"; fi
+    # The keep must cover the host's working set (README "Sizing the keep"): above it the host's pages are reclaimable.
+    _keep_b="$(printf '%s\n' "${_ded_mem:-}" | sed -n 's/^DEDICATED_MEM_KEEP=//p')"
+    _sys_cur="$(cat "$CG/system.slice/memory.current" 2>/dev/null)"
+    if [ -n "$_keep_b" ] && [ -n "$_sys_cur" ]; then
+      if [ "$_sys_cur" -gt "$_keep_b" ] 2>/dev/null; then
+        warn "system.slice memory.current=$_sys_cur exceeds DEV_HOST_MEMORY_KEEP=$_keep_b: the part above the keep is reclaimable by the dev tier and can thrash; raise DEV_HOST_MEMORY_KEEP and re-run install.sh"
+      else ok "system.slice memory.current=$_sys_cur is within DEV_HOST_MEMORY_KEEP=$_keep_b"; fi
+    fi
+    if [ -e /etc/systemd/system/ssh.service.d/50-mdt-dedicated-dev.conf ]; then
+      fail "ssh.service.d/50-mdt-dedicated-dev.conf exists: sshd would hand OOMScoreAdjust=-900 to every login session after its next restart; re-run install.sh (it removes the file)"
+    fi
   fi
   # dev.slice's own MemoryZSwapWriteback is a safety anchor only (its FILE
   # value does not cascade to children — see units/dev.slice.in), but its

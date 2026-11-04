@@ -72,7 +72,7 @@ MODES = ("off", "report", "enforce")
 # the pressure the HOST feels, not by a constant limit. Same default list as mdt_capacity.DEDICATED_PROTECTED_UNITS_DEFAULT
 # (a test keeps the two equal); DEV_HOST_PROTECTED_UNITS overrides it, `-` = none.
 DEDICATED_HOST_UNITS = (
-    "ssh.service docker.service containerd.service cgpd.service mdt-psi-guard.service "
+    "docker.service containerd.service cgpd.service mdt-psi-guard.service "
     "systemd-journald.service systemd-oomd.service"
 )
 

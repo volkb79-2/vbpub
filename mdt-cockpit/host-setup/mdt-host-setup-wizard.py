@@ -796,6 +796,10 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
             child = parse_size_to_kib(values.get(child_key, "")) if _memory_value_configured(values.get(child_key, "")) else 0
             if not child:
                 continue
+            if (not parent and field == "MemoryLow" and values.get("HOST_ROLE", "") == "dedicated-dev"
+                    and not values.get(parent_key, "").strip()):
+                # dedicated-dev derives dev.slice MemoryLow as the sum of the tiers' values (mdt_capacity.dedicated_memory)
+                continue
             if not parent and field in ("MemoryMin", "MemoryLow"):
                 warnings.append(
                     f"{slice_name} {field} ({child_key}={values[child_key]}) has no configured "
@@ -2049,7 +2053,7 @@ def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str]
             out("Remedy: run `iobench calibrate` (libraries/iobench/docs/CONSUMERS.md section 2; debian-install-v2 runs it at install time) before applying, or pin the four DEV_IO_*_MAX values at the IO caps step. Without one of the two the install refuses.")
         out("Memory on this role (MDT-TESTHOST-MEM): dev.slice MemoryMax = RAM + swap - the host's share, MemoryHigh = RAM - the host's share; the tiers' own MemoryHigh/MemoryMax (asked later) are IGNORED, so no tier is tighter than dev.slice. The host's services get MemoryLow and an OOM-score drop-in, so the dev tier is killed first.")
         keep = walk_key(
-            "Memory kept for the host (a size such as 512M)",
+            "Memory kept for the host (a size of at least 256M, default 1G; must cover system.slice memory.current)",
             "DEV_HOST_MEMORY_KEEP",
             cfg_current,
             example_defaults,

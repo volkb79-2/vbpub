@@ -1146,6 +1146,7 @@ if [ "$MDT_DEDICATED_MEM" = 1 ]; then
   mkdir -p "$MDT_SYSTEMD_DIR/system.slice.d"
   printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[Slice]" "MemoryLow=${MDT_DEDICATED_KEEP}" \
     > "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
+  chmod 0644 "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
   echo "host protection: system.slice MemoryLow=${MDT_DEDICATED_KEEP}B ($MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN)"
   for _ded_unit in $MDT_DEDICATED_PROTECTED_UNITS; do
     _ded_file="$MDT_SYSTEMD_DIR/$_ded_unit.d/$MDT_DED_DROPIN"
@@ -1163,17 +1164,29 @@ if [ "$MDT_DEDICATED_MEM" = 1 ]; then
     mkdir -p "$MDT_SYSTEMD_DIR/$_ded_unit.d"
     printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[Service]" "OOMScoreAdjust=-900" \
       > "$_ded_file"
+    chmod 0644 "$_ded_file"
     MDT_DED_LIVE_UNITS="$MDT_DED_LIVE_UNITS $_ded_unit"
     echo "host protection: $_ded_unit OOMScoreAdjust=-900 ($_ded_file)"
   done
-else
-  while IFS= read -r _ded_old; do
-    [ -n "$_ded_old" ] || continue
-    rm -f -- "$_ded_old"
-    rmdir -- "$(dirname -- "$_ded_old")" 2>/dev/null || true
-    echo "host protection: removed $_ded_old (HOST_ROLE is not dedicated-dev)"
-  done < <(find "$MDT_SYSTEMD_DIR" -maxdepth 2 -type f -path "*.d/$MDT_DED_DROPIN" 2>/dev/null)
 fi
+# Remove the files this block owns that the current configuration no longer wants: every one when the role is
+# not dedicated-dev, otherwise those of units that left DEV_HOST_PROTECTED_UNITS (or never belonged there,
+# e.g. the ssh drop-in an earlier version rendered: sshd would hand -900 to every login session). The
+# system.slice file stays on the role.
+while IFS= read -r _ded_old; do
+  [ -n "$_ded_old" ] || continue
+  _ded_old_dir="$(basename -- "$(dirname -- "$_ded_old")")"
+  if [ "$MDT_DEDICATED_MEM" = 1 ]; then
+    [ "$_ded_old_dir" = system.slice.d ] && continue
+    case " $MDT_DED_LIVE_UNITS " in *" ${_ded_old_dir%.d} "*) continue ;; esac
+    _ded_why="the unit is not in DEV_HOST_PROTECTED_UNITS (or is already protected harder)"
+  else
+    _ded_why="HOST_ROLE is not dedicated-dev"
+  fi
+  rm -f -- "$_ded_old"
+  rmdir -- "$(dirname -- "$_ded_old")" 2>/dev/null || true
+  echo "host protection: removed $_ded_old ($_ded_why)"
+done < <(find "$MDT_SYSTEMD_DIR" -maxdepth 2 -type f -path "*.d/$MDT_DED_DROPIN" 2>/dev/null)
 
 if [ -n "${IO_SD_DEV:-}" ]; then
   if [ "$(_mdt_host_role)" = dedicated-dev ]; then

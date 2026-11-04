@@ -14,15 +14,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Added
 - host-setup `HOST_ROLE=dedicated-dev` memory (MDT-TESTHOST-MEM; the memory half of MDT-TESTHOST-IO; shared-prod and an empty role are unchanged): the
-  whole of RAM plus disk swap belongs to the dev tier minus `DEV_HOST_MEMORY_KEEP` (new key, default 512M, validated; not named `*_RESERVE_*`, which the
+  whole of RAM plus disk swap belongs to the dev tier minus `DEV_HOST_MEMORY_KEEP` (new key, default 1G, minimum 256M, validated; not named `*_RESERVE_*`, which the
   2026-11 rename guard refuses). `dev.slice` MemoryMax = `MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - keep`, MemoryHigh = `MemTotal - MDT_EXCLUDED_RAM - keep`
   (the RAM the tier may hold; above it the kernel reclaims into zswap/swap), MemoryLow = the sum of the tiers' MemoryLow; explicit `DEV_MEMORY_*` pins win per value.
   The tiers' MemoryHigh/MemoryMax are ignored (named at every install) and a tier's MemorySwapMax equals dev.slice's, so no tier is tighter than dev.slice;
   tier MemoryLow/MemoryMin, weights and oomd stay as the protection. The host is protected: `system.slice` MemoryLow = keep and an `OOMScoreAdjust=-900` drop-in
-  (never weakening a lower existing value such as containerd -999; running services are lowered in place, nothing restarted) on `DEV_HOST_PROTECTED_UNITS`, so the dev tier is
+  (never ssh: sshd hands its score to every login session, and an ssh drop-in an earlier version rendered is removed; never weakening a lower existing value such as containerd -999; units that leave the list lose their drop-in; running services are lowered in place, nothing restarted) on `DEV_HOST_PROTECTED_UNITS`, so the dev tier is
   killed first; `mdt-psi-guard` also watches those units on this role (its thresholds were reviewed: stall fractions plus a 256M floor, unchanged), and
   `mdt-host-check.sh` verifies the derived values and "no tier ceiling". New wizard prompts under the host role; zswap policy reviewed and unchanged. Hermetic tests in
-  `host-setup/tests/test_testhost_mem.py`; backlog MDT-072.
+  `host-setup/tests/test_testhost_mem.py`; backlog MDT-072. `memory.max` is documented as unreachable (no leak-backstop claim): MemoryHigh throttling, swap.max, oomd, then the global OOM killer bound the tier.
 - `install.sh cpu-benchmark [--force|--resolve]` (HB-3, `mdt host-setup cpu-benchmark`): measures the host CPU once with the shared
   sha256-pinned `cpu_benchmark.py` (Geekbench version and archive sha256 per architecture from `cpu_benchmark.pins.json`), via the
   installed wrapper `mdt-host-cpu-benchmark.py`; refuses to re-measure without `--force` and while CPU PSI `some avg10` is 5 or more;

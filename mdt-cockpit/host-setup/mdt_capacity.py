@@ -339,23 +339,34 @@ def tier_swap_bytes(swap_mdt: int, cascade_pct: int) -> int:
 # --------------------------------------------- HOST_ROLE=dedicated-dev memory (MDT-TESTHOST-MEM)
 #
 # Not named *_RESERVE_*: every such key is refused by the 2026-11 rename guard above.
-DEDICATED_MEMORY_KEEP_DEFAULT = "512M"
+# Plain 1G, not derived from the host at install time: the two test hosts measured 1.0-1.1 GB of
+# system.slice memory.current (dockerd, containerd, journald, cgpd, page cache), so 1G covers that working
+# set. A host whose system.slice is larger must raise DEV_HOST_MEMORY_KEEP; mdt-host-check.sh warns when
+# the measured system.slice memory.current exceeds the keep.
+DEDICATED_MEMORY_KEEP_DEFAULT = "1G"
+DEDICATED_MEMORY_KEEP_MIN = 256 * 1024 * 1024
+# A pinned dev.slice MemoryHigh/MemoryMax below this stalls the whole dev tier (every allocation throttled).
+DEDICATED_MEMORY_PIN_MIN = 256 * 1024 * 1024
 # Host services the dedicated-dev role protects from the dev tier (OOMScoreAdjust drop-in, the
 # PSI guard's pressure signals).  docker/containerd are protected too, so a dev-tier OOM victim is
 # never the daemon that supervises the containers.
 DEDICATED_PROTECTED_UNITS_DEFAULT = (
-    "ssh.service docker.service containerd.service cgpd.service mdt-psi-guard.service "
+    "docker.service containerd.service cgpd.service mdt-psi-guard.service "
     "systemd-journald.service systemd-oomd.service"
 )
+# NEVER in the list: sshd restores the OOM score it started with into every login session it forks, so an
+# OOMScoreAdjust drop-in on ssh makes all interactive processes unkillable (review F1). The listener
+# already protects itself (-1000). Same for the socket-activated names.
+DEDICATED_FORBIDDEN_UNITS = frozenset({"ssh.service", "sshd.service", "ssh.socket", "sshd.socket", "ssh", "sshd"})
 DEDICATED_OOM_SCORE_ADJUST = -900
 
 
 def validate_host_memory_keep(value: str) -> str | None:
-    """DEV_HOST_MEMORY_KEEP: a positive size (K/M/G/T suffix or bytes), never 0 or empty."""
+    """DEV_HOST_MEMORY_KEEP: a size of at least 256M (K/M/G/T suffix or bytes); 0 and empty are refused."""
     parsed = parse_size_bytes(value) if value.strip() else None
-    if parsed is None or parsed <= 0:
+    if parsed is None or parsed < DEDICATED_MEMORY_KEEP_MIN:
         return (
-            f"{value!r} is not a valid host memory size: use a positive size such as 512M or 1G "
+            f"{value!r} is not a valid host memory size: use a size of at least 256M such as 1G "
             "(the RAM+swap kept for the host itself on HOST_ROLE=dedicated-dev; 0 and empty are refused)"
         )
     return None
@@ -386,8 +397,9 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
     """dev.slice limits for a sole-tenant dev/test host planned for overcommit.
 
     MemoryMax = MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - DEV_HOST_MEMORY_KEEP
-    (the combined RAM+swap ceiling; the kernel's memory.max itself counts RAM only, so on an
-    overcommitted host it is the leak backstop, never the first limit hit).
+    (a combined RAM+swap figure; the kernel's memory.max counts RAM (and zswap) only, which physical RAM
+    caps, so on these hosts it is NOT reachable and is no leak backstop: the bounds that act are MemoryHigh
+    throttling, memory.swap.max, oomd and finally the global OOM killer; see README).
     MemoryHigh = MemTotal - MDT_EXCLUDED_RAM - DEV_HOST_MEMORY_KEEP: the RAM the dev tier may hold; above
     it the kernel reclaims the tier into zswap/swap instead of taking pages from the host.
     An explicit DEV_MEMORY_HIGH / DEV_MEMORY_MAX is a pin and wins per value; `-` omits it.
@@ -422,8 +434,12 @@ def dedicated_memory(values: dict[str, str], *, mem_total: int, swap_total: int)
             return None, "omitted (-)"
         if raw:
             parsed = parse_size_bytes(raw)
-            if parsed is None or parsed <= 0:
-                raise CapacityError(f"{key}={raw!r} is not a positive size")
+            if parsed is None:
+                raise CapacityError(f"{key}={raw!r} is not a size (use a size such as 6G, `-` or 0 to omit)")
+            if parsed == 0:  # the shared validators' "0 = none": same as `-`
+                return None, "omitted (0)"
+            if key != "DEV_MEMORY_LOW" and parsed < DEDICATED_MEMORY_PIN_MIN:
+                raise CapacityError(f"{key}={raw!r} is below 256M, which would stall the whole dev tier; use a larger size, `-` or 0")
             return parsed, f"pin {key}={raw}"
         return derived, "derived"
 
@@ -451,12 +467,22 @@ def validate_host_protected_units(value: str) -> str | None:
     """DEV_HOST_PROTECTED_UNITS: empty (the default list), `-` (none) or space-separated unit names."""
     if value.strip() in ("", "-"):
         return None
+    forbidden = sorted(set(value.split()) & DEDICATED_FORBIDDEN_UNITS)
+    if forbidden:
+        return (
+            f"{' '.join(forbidden)} cannot be protected with OOMScoreAdjust: sshd hands its own score to every login "
+            "session it forks, so the whole interactive tier would become unkillable (the sshd listener already "
+            "runs at -1000)"
+        )
     return validate_units(value)
 
 
 def dedicated_protected_units(values: dict[str, str]) -> list[str]:
     """The host services of HOST_ROLE=dedicated-dev (empty value = the default list; `-` = none)."""
     raw = (values.get("DEV_HOST_PROTECTED_UNITS", "") or "").strip()
+    error = validate_host_protected_units(raw)
+    if error:
+        raise CapacityError(f"DEV_HOST_PROTECTED_UNITS: {error}")
     if raw == "-":
         return []
     return (raw or DEDICATED_PROTECTED_UNITS_DEFAULT).split()
@@ -1003,6 +1029,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.cmd == "dedicated-memory":
         try:
             mem = dedicated_memory(values, mem_total=total, swap_total=swap)
+            protected = dedicated_protected_units(values)
         except CapacityError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
@@ -1013,7 +1040,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"DEDICATED_MEM_LOW_SOURCE={mem.low_source}")
         print(f"DEDICATED_MEM_HIGH_SOURCE={mem.high_source}")
         print(f"DEDICATED_MEM_MAX_SOURCE={mem.max_source}")
-        print(f"DEDICATED_PROTECTED_UNITS={' '.join(dedicated_protected_units(values))}")
+        print(f"DEDICATED_PROTECTED_UNITS={' '.join(protected)}")
         return 0
     try:
         cap = derive_from_config(values, mem_total=total, swap_total=swap, nproc=args.nproc)
