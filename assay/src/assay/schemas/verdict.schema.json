@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:17",
-  "title": "assay verdict artifact v17",
+  "$id": "urn:assay:schema:verdict:18",
+  "title": "assay verdict artifact v18",
   "description": "One verdict, one lane, one commit. Computed R0-R4 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.attempts[i].target against judgment.r3.targets[i]), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks. It also does not own the BYTE bound on claim.detail -- maxLength counts characters, so the document's bound is satisfied by every legal artifact and the real one is enforced in the model and the verifier (A-428).",
   "type": "object",
   "required": [

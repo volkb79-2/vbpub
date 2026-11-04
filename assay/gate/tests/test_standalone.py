@@ -975,7 +975,12 @@ def _assert_complete(real: dict, expected: dict) -> None:
         filtered["judgment"]["r2"] = {
             k: v for k, v in r2.items() if k != "budget_per_candidate_derived_s"
         }
-    assert filtered == expected
+    import difflib  # TEMPDEBUG
+    _diff = "\n".join(difflib.unified_diff(  # TEMPDEBUG
+        json.dumps(expected, indent=1, sort_keys=True, default=str).splitlines(),  # TEMPDEBUG
+        json.dumps(filtered, indent=1, sort_keys=True, default=str).splitlines(),  # TEMPDEBUG
+        "expected", "actual", lineterm="", n=2))  # TEMPDEBUG
+    assert filtered == expected, "ARTIFACT-DIFF\n" + _diff  # TEMPDEBUG
 
 
 def test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wheel(
