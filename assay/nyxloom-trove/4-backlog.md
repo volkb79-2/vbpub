@@ -14153,7 +14153,7 @@ so the 3-worker wall clock was only 1.35 times faster than the serial run on the
 **Questions to answer first (no fix is assumed).** (1) Is the btrfs path a subvolume snapshot per worker, or a per-file reflink/copy of the tree? (2) How much of the
 phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durable`)? (3) Does materialization scale with file count (dstdns versus a 300-file project)?
 **Acceptance.** A measured breakdown of the phase for the three cases and, if per-file work dominates, a design note; the fix is a separate package. Pairs with run-gate RG-154 (pilot).
-## B213 — `assay plan <lane>` crashes with a TypeError on an ingested-mutation lane (`max_mutants` is None)
+## B215 — `assay plan <lane>` crashes with a TypeError on an ingested-mutation lane (`max_mutants` is None)
 
 **Status:** OPEN. Filed 2026-11-04 from dstdns (P220, `ui_apierror_r2`; assay 9.0.0). Severity: P3 (no verdict affected; blocks plan-based budgeting of ingested lanes).
 
