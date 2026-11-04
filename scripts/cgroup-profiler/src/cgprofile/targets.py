@@ -1,0 +1,841 @@
+"""Target resolution: turn what a human types into cgroup paths to sample.
+
+Accepted spec forms (``--target`` may be repeated):
+
+    cgroup:/dev.slice/dev-background.slice   an absolute cgroup v2 path
+    slice:dev-background.slice               a systemd slice, name expanded
+    container:<name|id|prefix>               a Docker container
+    label:<key>=<value>                      every container matching a label
+    pid:<n>                                  the cgroup owning that PID
+    self                                     the cgroup this process is in
+
+A bare argument with no ``scheme:`` prefix is treated as ``container:`` when it
+matches a running container and as ``cgroup:``/``slice:`` otherwise, so the
+common cases need no prefix.
+
+Two rules shape this module:
+
+*Names are resolved where the resolver lives.*  Only the outer process has the
+Docker socket, so container names become container **ids** before anything is
+handed to the helper; ids are then located by scanning the cgroup tree, which
+needs no Docker at all.  That keeps the sampling side dependency-free and lets
+it keep working if the Docker daemon is restarted mid-run.
+
+*Membership is re-evaluated, never frozen.*  A gate spawns containers after the
+profiler starts; those must be picked up.  A target marked ``follow_children``
+rescans its subtree on every discovery tick, and appearances/disappearances are
+reported so they can be logged as events.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import posixpath
+import re
+import subprocess
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from urllib.parse import unquote
+
+from . import access, proc_stat, util
+from .access import CGROUP_ROOT, PROC_ROOT, docker_bin
+
+_HELPER_PID_OPTION = "_cgprofile_pid"
+_CONTAINER_ID = util.CONTAINER_ID_PATTERN
+# Both cgroup drivers docker can be configured with: systemd names the leaf
+# "docker-<id>.scope", cgroupfs names it plain "<id>" under a "docker" parent.
+_SCOPE_RES = (
+    re.compile(rf"(?:docker|crio|containerd|libpod)-(?P<id>{_CONTAINER_ID})\.scope"),
+    re.compile(rf"(?P<id>{_CONTAINER_ID})"),
+)
+
+
+class TargetError(ValueError):
+    """A target spec that cannot be resolved to anything on this host."""
+
+
+@dataclass
+class Target:
+    """One thing being watched, plus how it was asked for."""
+
+    key: str                      # stable id used in the data files
+    cgroup: str                   # absolute cgroup v2 path ("/dev.slice/...")
+    label: str                    # human display name
+    kind: str                     # cgroup | slice | container | pid | self
+    spec: str                     # the original spec text
+    follow_children: bool = False
+    pid: Optional[int] = None     # set for pid: targets — enables /proc sampling
+    container_id: Optional[str] = None
+    metrics: Optional[Set[str]] = None  # None == every metric group
+    role: str = "subject"         # subject | observer
+
+    def abs_path(self, root: str = CGROUP_ROOT) -> str:
+        return os.path.join(root, self.cgroup.lstrip("/"))
+
+    def exists(self, root: str = CGROUP_ROOT) -> bool:
+        return os.path.isdir(self.abs_path(root))
+
+
+# ── systemd slice naming ────────────────────────────────────────────────────
+
+def slice_to_path(name: str) -> str:
+    """``dev-background.slice`` → ``/dev.slice/dev-background.slice``.
+
+    systemd encodes the hierarchy in the unit name with ``-`` as the separator,
+    so every prefix is an ancestor slice. ``-.slice`` is the root.
+    """
+    name = name.strip()
+    if not name.endswith(".slice"):
+        name += ".slice"
+    if name == "-.slice":
+        return "/"
+    stem = name[: -len(".slice")]
+    if not stem:
+        raise TargetError(f"not a usable slice name: {name!r}")
+    parts = stem.split("-")
+    # systemd never produces an empty hierarchy component: a literal "-" in a
+    # unit name is escaped as `\x2d`, so `a--b`, `-a` and `a-` are typos, not
+    # slices. Expanding them would nest a phantom `a-.slice` level and point
+    # the sampler at a cgroup that cannot exist. A "/" cannot be in a unit
+    # name either (that is a cgroup path, the `cgroup:` scheme).
+    if any(not part for part in parts) or "/" in stem:
+        raise TargetError(f"not a usable slice name: {name!r}")
+    path = ""
+    for index in range(1, len(parts) + 1):
+        path += "/" + "-".join(parts[:index]) + ".slice"
+    return path
+
+
+def path_to_slice(cgroup: str) -> Optional[str]:
+    """Inverse of :func:`slice_to_path` for paths that are slices."""
+    leaf = os.path.basename(cgroup.rstrip("/"))
+    return leaf if leaf.endswith(".slice") else None
+
+
+# ── docker lookups (outer process only) ─────────────────────────────────────
+
+def _docker_json(*args: str) -> Optional[list]:
+    binary = docker_bin()
+    if not binary:
+        return None
+    try:
+        result = subprocess.run(
+            [binary, *args], capture_output=True, text=True, timeout=30, check=False
+        )
+    except subprocess.TimeoutExpired:
+        # A hung Docker daemon is "cannot resolve", the same answer as a
+        # missing CLI -- not a traceback out of target parsing.
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def resolve_container(ref: str) -> Tuple[str, str]:
+    """``(full_id, display_name)`` for a container name, id, or id prefix.
+
+    ``--type container`` pins the lookup to containers: a bare ``docker
+    inspect`` answers for ANY object with that name or id (an image, volume
+    or network called ``gate`` would return its own ``Id``, which is not a
+    cgroup anywhere), and the ambiguity is silent. Only an exact, single
+    ``docker inspect`` of the one reference ever runs -- no listing.
+    """
+    # `--` so a reference that begins with `-` can never be read as a flag.
+    data = _docker_json("inspect", "--type", "container", "--", ref)
+    if not data or not isinstance(data, list) or not isinstance(data[0], dict):
+        raise TargetError(
+            f"no container matches {ref!r} (docker inspect found nothing). "
+            "Check `docker ps` — a stopped container has no cgroup to sample."
+        )
+    info = data[0]
+    full_id = info.get("Id")
+    if not util.is_container_id(full_id):
+        raise TargetError(
+            f"docker inspect returned no usable 64-hex container id for {ref!r}"
+        )
+    return full_id, str(info.get("Name", ref)).lstrip("/")
+
+
+def resolve_label(selector: str) -> List[Tuple[str, str]]:
+    """Every running container carrying ``key=value``."""
+    binary = docker_bin()
+    if not binary:
+        raise TargetError("docker CLI not found — label: targets need it")
+    result = subprocess.run(
+        [binary, "ps", "--filter", f"label={selector}", "--format", "{{.ID}}\t{{.Names}}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise TargetError(f"docker ps failed: {result.stderr.strip() or 'unknown error'}")
+    out: List[Tuple[str, str]] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        cid, _, name = line.partition("\t")
+        full, display = resolve_container(cid.strip())
+        out.append((full, display or name.strip()))
+    if not out:
+        raise TargetError(f"no running container carries label {selector!r}")
+    return out
+
+
+# ── cgroup tree lookups (no docker needed) ──────────────────────────────────
+
+def cgroup_of_pid(
+    pid: int, root: str = CGROUP_ROOT, proc_root: str = PROC_ROOT,
+) -> Optional[str]:
+    """Read the cgroup v2 path for ``pid`` through the selected proc view.
+
+    ``/proc/<pid>/cgroup`` paths are relative to this reader's cgroup
+    namespace, even when ``proc_root`` is the host-proc bind. Derive that
+    namespace's host-tree root by locating this process's namespace-local PID
+    in the mounted cgroup tree and comparing that membership with its local
+    ``/proc/self/cgroup`` path; then normalize the target path there.
+    """
+    namespace_root = _cgroup_namespace_root(root, proc_root)
+    if namespace_root is None:
+        return None
+    return _cgroup_path_for_pid(pid, root, proc_root, namespace_root)
+
+
+def _cgroup_path_for_pid(
+    pid: int, root: str, proc_root: str, namespace_root: str,
+) -> Optional[str]:
+    text = util.read_text(os.path.join(proc_root, str(pid), "cgroup"))
+    if not text:
+        return None
+    proc_path = _unified_cgroup_path(text)
+    if proc_path is None or not proc_path.startswith("/"):
+        return None
+    components = [] if proc_path == "/" else proc_path.split("/")[1:]
+    if any(part in ("", ".") for part in components):
+        return None
+    resolved = posixpath.normpath(posixpath.join(namespace_root, proc_path.lstrip("/")))
+    if not os.path.isdir(os.path.join(root, resolved.lstrip("/"))):
+        return None
+    return resolved
+
+
+def pids_in_cgroup(
+    cgroup: str, root: str = CGROUP_ROOT, proc_root: str = PROC_ROOT,
+) -> List[int]:
+    """List process IDs in one cgroup, preserving the selected PID view.
+
+    When the current PID namespace cannot represent host tasks, they may be
+    rendered as PID 0 in ``cgroup.procs``. With an explicit host-proc view,
+    resolve process membership through ``/proc/<pid>/cgroup`` against the
+    reader's cgroup-derived namespace root instead. Otherwise use visible
+    ``cgroup.procs`` entries, discarding zero placeholders.
+    """
+    if not cgroup.startswith("/"):
+        return []
+    components = [] if cgroup == "/" else cgroup[1:].split("/")
+    if any(part in ("", ".", "..") for part in components):
+        return []
+    target = posixpath.normpath(cgroup)
+
+    if access.have_host_proc_view(proc_root):
+        namespace_root = _cgroup_namespace_root(root, proc_root)
+        if namespace_root is None:
+            return []
+        try:
+            entries = os.listdir(proc_root)
+        except OSError:
+            return []
+        out: List[int] = []
+        for name in entries:
+            if not name.isdigit():
+                continue
+            pid = int(name)
+            if pid <= 0:
+                continue
+            resolved = _cgroup_path_for_pid(pid, root, proc_root, namespace_root)
+            if resolved is None:
+                continue
+            if resolved == target:
+                out.append(pid)
+        return sorted(out)
+
+    from .summary import read_cgroup_pids
+
+    return read_cgroup_pids(os.path.join(root, cgroup.lstrip("/")))
+
+
+def _unified_cgroup_path(text: str) -> Optional[str]:
+    for line in text.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[0] == "0":
+            return parts[2] or "/"
+    return None
+
+
+def proc_namespace_numbers(pid: int, proc_root: str = PROC_ROOT) -> Optional[Tuple[int, ...]]:
+    """Return NSpid values ordered from the proc view to the innermost PID namespace."""
+    text = util.read_text(os.path.join(proc_root, str(pid), "status"))
+    if not text:
+        return None
+    for line in text.splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key == "NSpid":
+            try:
+                values = [int(item) for item in value.split()]
+            except ValueError:
+                return None
+            return tuple(values) if values and all(item > 0 for item in values) else None
+    return None
+
+
+def pid_namespace_number(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]:
+    """Return a process's innermost NSpid value from the selected proc view."""
+    values = proc_namespace_numbers(pid, proc_root)
+    return values[-1] if values else None
+
+
+def proc_start_time_ticks(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]:
+    """Read field 22 of proc stat, robust to spaces/parentheses in comm."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    text = util.read_text(os.path.join(proc_root, str(pid), "stat"))
+    if not text:
+        return None
+    # The proc directory and stat field 1 must identify the same process.
+    # The command name can contain parentheses, so locate only its final
+    # closing delimiter after checking the fixed PID/opening prefix.
+    prefix = f"{pid} ("
+    if not text.startswith(prefix):
+        return None
+    parsed = proc_stat.split_after_comm(text)
+    if parsed is None:
+        return None
+    _, fields = parsed
+    # fields[0] is stat field 3 (state); starttime is field 22.
+    if len(fields) <= 19:
+        return None
+    try:
+        value = int(fields[19])
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _resolve_helper_pid(
+    container_id: str,
+    cgroup: str,
+    encoded_identity: str,
+    options: Dict[str, str],
+    spec: str,
+    follow: bool,
+    metrics: Optional[Set[str]],
+    role: str,
+    root: str,
+    proc_root: str,
+) -> Target:
+    """Resolve the caller's PID identity inside the helper's proc view.
+
+    Candidate enumeration is restricted to positive PIDs whose authoritative
+    cgroup membership resolves to the selected target cgroup. Namespace inode,
+    namespace-local PID, and start-time facts then identify one exact process.
+    """
+    try:
+        namespace_inode, namespace_pid, start_ticks, cgroup_namespace_inode = (
+            int(part) for part in encoded_identity.split(":"))
+    except (TypeError, ValueError) as exc:
+        raise TargetError("helper PID identity is malformed") from exc
+    if (
+        namespace_inode <= 0 or namespace_pid <= 0 or start_ticks < 0
+        or cgroup_namespace_inode <= 0
+    ):
+        raise TargetError("helper PID identity contains an invalid process fact")
+
+    matches: List[int] = []
+    for candidate in pids_in_cgroup(cgroup, root, proc_root):
+        before = proc_start_time_ticks(candidate, proc_root)
+        if before != start_ticks:
+            continue
+        if access.namespace_inode(candidate, "pid", proc_root) != namespace_inode:
+            continue
+        if access.namespace_inode(candidate, "cgroup", proc_root) != cgroup_namespace_inode:
+            continue
+        if pid_namespace_number(candidate, proc_root) != namespace_pid:
+            continue
+        if cgroup_of_pid(candidate, root, proc_root) != cgroup:
+            continue
+        # Refuse a PID that exited and was reused while its proc facts were read.
+        if proc_start_time_ticks(candidate, proc_root) != before:
+            continue
+        matches.append(candidate)
+
+    if len(matches) != 1:
+        state = "not found" if not matches else "ambiguous"
+        raise TargetError(
+            f"helper could not establish a unique proc identity for the selected PID "
+            f"in cgroup {cgroup}: mapping {state}"
+        )
+
+    label = options.get("as") or f"pid-{namespace_pid}"
+    return Target(
+        key=_key_for(cgroup, label), cgroup=cgroup, label=label, kind="pid",
+        spec=spec, follow_children=follow, pid=matches[0],
+        container_id=container_id, metrics=metrics, role=role,
+    )
+
+
+def _cgroup_namespace_root(root: str, proc_root: str = PROC_ROOT) -> Optional[str]:
+    """Map this process's cgroup-namespace root into the mounted host tree.
+
+    Use our PID in the local PID namespace. The helper's private PID namespace
+    cannot identify host tasks in ``cgroup.procs`` (they appear as PID 0), but
+    its own namespace-local PID is visible in its container leaf and gives us
+    the absolute host-tree path for the cgroup-namespace root.
+    """
+    self_pid = os.getpid()
+    if self_pid <= 0:
+        return None
+    actual_path = _cgroup_path_for_visible_pid(self_pid, root)
+    own_text = util.read_text("/proc/self/cgroup")
+    visible_path = _unified_cgroup_path(own_text) if own_text else None
+    if actual_path is None or visible_path is None or not visible_path.startswith("/"):
+        return None
+    visible_parts = [] if visible_path == "/" else visible_path.split("/")[1:]
+    if any(part in ("", ".", "..") for part in visible_parts):
+        return None
+    if visible_path == "/":
+        return actual_path
+    if actual_path == visible_path:
+        return "/"
+    if actual_path.endswith(visible_path):
+        prefix = actual_path[: -len(visible_path)]
+        # ``visible_path`` begins with the separator at the boundary, so the
+        # remaining prefix is already an absolute cgroup path; it need not
+        # itself end with another slash (e.g. /host/worker minus /worker).
+        return prefix.rstrip("/") or "/"
+    return None
+
+
+def _cgroup_path_for_visible_pid(pid: int, root: str) -> Optional[str]:
+    """Find one visible PID in ``cgroup.procs`` and return its host-tree path."""
+    matches: List[str] = []
+    walk_errors: List[OSError] = []
+
+    def remember_walk_error(exc: OSError) -> None:
+        if not isinstance(exc, FileNotFoundError):
+            walk_errors.append(exc)
+
+    for dirpath, _dirnames, filenames in os.walk(root, onerror=remember_walk_error):
+        if "cgroup.procs" not in filenames:
+            continue
+        try:
+            with open(os.path.join(dirpath, "cgroup.procs"), encoding="utf-8") as fh:
+                members = fh.read()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            walk_errors.append(exc)
+            continue
+        if str(pid) not in members.split():
+            continue
+        relative = os.path.relpath(dirpath, root)
+        matches.append("/" if relative == "." else "/" + relative.replace(os.sep, "/"))
+    if walk_errors or len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def find_container_cgroup(container_id: str, root: str = CGROUP_ROOT) -> Optional[str]:
+    """Locate a container's leaf cgroup by scanning the tree for its id.
+
+    Scans rather than composing ``CgroupParent + scope`` because the two
+    cgroup drivers name the leaf differently and because a container may have
+    been placed under a slice the caller does not know about — the tree is the
+    ground truth, the inspect output is a claim about it.
+    """
+    walk_errors: List[OSError] = []
+    for dirpath, dirnames, _ in os.walk(root, onerror=walk_errors.append):
+        for name in dirnames:
+            for pattern in _SCOPE_RES:
+                match = pattern.fullmatch(name)
+                if match and match.group("id") == container_id:
+                    full = os.path.join(dirpath, name)
+                    return "/" + os.path.relpath(full, root)
+        # Container scopes are never more than a few levels deep; walking the
+        # whole tree costs little, but prune the leaf scopes' own children
+        # (each holds no further containers) to keep it cheap on a busy host.
+        # An empty result here is the correct prune-everything outcome (every
+        # sibling was a scope) — it must not fall back to the unfiltered list.
+        dirnames[:] = [d for d in dirnames if not d.endswith(".scope")]
+    if walk_errors:
+        # os.walk otherwise turns an unreadable root or branch into the same
+        # empty traversal as a healthy tree with no matching container.
+        # A daemon start must surface this as indeterminate (ctl exit 3), not
+        # certify `target-not-found` (exit 2) from an incomplete search.
+        raise OSError(
+            f"cannot search container cgroups under {root}: {walk_errors[0]}"
+        ) from walk_errors[0]
+    return None
+
+
+def list_children(cgroup: str, root: str = CGROUP_ROOT) -> List[str]:
+    """Immediate child cgroups of ``cgroup`` (absolute cgroup paths)."""
+    base = os.path.join(root, cgroup.lstrip("/"))
+    try:
+        entries = sorted(os.listdir(base))
+    except OSError:
+        return []
+    out = []
+    for entry in entries:
+        if os.path.isdir(os.path.join(base, entry)):
+            out.append(os.path.join("/" + cgroup.strip("/"), entry) if cgroup != "/" else "/" + entry)
+    return out
+
+
+def walk_subtree(cgroup: str, root: str = CGROUP_ROOT, max_depth: int = 4) -> List[str]:
+    """Every descendant cgroup of ``cgroup``, bounded in depth.
+
+    The depth bound is a guard, not a preference: a runaway hierarchy (systemd
+    user sessions, nested containers) can be thousands of cgroups deep, and a
+    profiler that tries to sample all of them at 4 Hz becomes the load it was
+    sent to measure.
+    """
+    out: List[str] = []
+    base_depth = len([p for p in cgroup.strip("/").split("/") if p])
+    stack = [cgroup]
+    while stack:
+        current = stack.pop()
+        for child in list_children(current, root):
+            depth = len([p for p in child.strip("/").split("/") if p]) - base_depth
+            out.append(child)
+            if depth < max_depth:
+                stack.append(child)
+    return sorted(out)
+
+
+# ── spec parsing ────────────────────────────────────────────────────────────
+
+def _split_spec(spec: str) -> Tuple[str, str]:
+    scheme, sep, rest = spec.partition(":")
+    if not sep:
+        return ("", spec)
+    if scheme in ("cgroup", "slice", "container", "containerid", "label", "pid", "self"):
+        return (scheme, rest)
+    return ("", spec)
+
+
+#: Every option word the ``@`` suffix grammar knows. The split below only
+#: treats a suffix as options when EVERY item's key is one of these; this is
+#: what lets a ``@`` inside a real cgroup name survive (see `_parse_options`).
+OPTION_KEYS = frozenset({
+    "follow", "nofollow", "metrics", "as", "role", "subpath", _HELPER_PID_OPTION,
+})
+
+
+def _parse_options(rest: str) -> Tuple[str, Dict[str, str]]:
+    """Split ``value@opt=a,opt=b`` into value and options.
+
+    Grammar: the options are the text after the LAST ``@``, and only when
+    every comma-separated item there has a key in :data:`OPTION_KEYS`.
+    Otherwise there are no options and the whole text is the value --
+    ``@`` is a legal character in a cgroup name, and systemd's own user
+    manager lives in ``/user.slice/user-N.slice/user@N.service``, so
+    splitting at the first ``@`` truncated that path to ``.../user`` and
+    read ``N.service`` as an option. Consequences of "last ``@``":
+
+    * ``/a@follow@follow`` is the path ``/a@follow`` with ``follow`` set;
+    * ``/a@x@follow`` is the path ``/a@x`` with ``follow`` set;
+    * ``/a@follow@`` (empty suffix) is the path ``/a@follow`` with NO
+      options -- the escape for a name whose last segment happens to be an
+      option word.
+    """
+    value, sep, opts = rest.rpartition("@")
+    if not sep:
+        return rest.strip(), {}
+    items = [item for item in opts.split(",") if item]
+    if any(item.partition("=")[0].strip() not in OPTION_KEYS for item in items):
+        return rest.strip(), {}
+    options: Dict[str, str] = {}
+    for item in items:
+        key, _, val = item.partition("=")
+        options[key.strip()] = val.strip() or "1"
+    return value.strip(), options
+
+
+def parse_target(
+    spec: str,
+    root: str = CGROUP_ROOT,
+    default_follow: bool = False,
+    role: str = "subject",
+    proc_root: str = PROC_ROOT,
+) -> List[Target]:
+    """Resolve one ``--target`` spec into one or more concrete targets."""
+    scheme, rest = _split_spec(spec)
+    value, options = _parse_options(rest)
+    helper_pid_identity = options.pop(_HELPER_PID_OPTION, None)
+    if helper_pid_identity is not None and scheme != "containerid":
+        raise TargetError(f"{_HELPER_PID_OPTION} is reserved for helper PID targets")
+
+    follow = default_follow
+    if "follow" in options:
+        follow = options["follow"] not in ("0", "no", "false")
+    if "nofollow" in options:
+        follow = False
+    metrics = None
+    if "metrics" in options:
+        metrics = {m.strip() for m in options["metrics"].split("+") if m.strip()}
+    label_override = options.get("as")
+    role = options.get("role", role)
+
+    def make(cgroup: str, label: str, kind: str, **extra) -> Target:
+        return Target(
+            key=_key_for(cgroup, label),
+            cgroup=cgroup,
+            label=label_override or label,
+            kind=kind,
+            spec=spec,
+            follow_children=follow,
+            metrics=metrics,
+            role=role,
+            **extra,
+        )
+
+    if scheme == "self" or (not scheme and value == "self"):
+        try:
+            visible_pid = int(os.path.basename(os.readlink(os.path.join(proc_root, "self"))))
+        except (OSError, ValueError) as exc:
+            raise TargetError(f"cannot resolve current PID through proc root {proc_root!r}") from exc
+        own = cgroup_of_pid(visible_pid, root, proc_root)
+        if not own or own == "/":
+            raise TargetError(
+                "self: resolved to the namespace root — this process cannot see "
+                "its own host cgroup. Name the container explicitly instead."
+            )
+        return [make(own, util.short_label(own), "self")]
+
+    if scheme == "pid":
+        try:
+            pid = int(value)
+        except ValueError as exc:
+            raise TargetError(f"pid: needs a number, got {value!r}") from exc
+        cgroup = cgroup_of_pid(pid, root, proc_root)
+        if not cgroup:
+            raise TargetError(f"pid {pid} has no readable cgroup (already exited?)")
+        comm = util.read_text(os.path.join(proc_root, str(pid), "comm")) or str(pid)
+        return [make(cgroup, f"{comm}[{pid}]", "pid", pid=pid)]
+
+    if scheme == "label":
+        out = []
+        for cid, name in resolve_label(value):
+            cgroup = find_container_cgroup(cid, root)
+            if not cgroup:
+                continue
+            out.append(make(cgroup, name, "container", container_id=cid))
+        if not out:
+            raise TargetError(f"label {value!r} matched containers but none has a cgroup here")
+        return out
+
+    if scheme == "containerid":
+        # Already-resolved form, produced by the outer process and handed to the
+        # helper. The helper has the host cgroup tree but no Docker socket, so
+        # it must be able to locate a container without asking the daemon.
+        if not util.is_container_id(value):
+            raise TargetError(f"containerid: needs a hex container id, got {value!r}")
+        container_cgroup = find_container_cgroup(value, root)
+        if not container_cgroup:
+            raise TargetError(f"container {value[:12]} has no cgroup under {root}")
+        encoded_subpath = options.get("subpath")
+        cgroup = container_cgroup
+        if encoded_subpath is not None:
+            subpath = unquote(encoded_subpath)
+            if not subpath.startswith("/"):
+                raise TargetError("containerid subpath must be absolute within its cgroup namespace")
+            components = [] if subpath == "/" else subpath[1:].split("/")
+            if any(part in ("", ".", "..") for part in components):
+                raise TargetError("containerid subpath contains an unsafe path component")
+            if components:
+                cgroup = posixpath.join(container_cgroup, *components)
+            if not os.path.isdir(os.path.join(root, cgroup.lstrip("/"))):
+                raise TargetError(
+                    f"container {value[:12]} subpath {subpath!r} has no cgroup under {root}"
+                )
+        if helper_pid_identity is not None:
+            return [_resolve_helper_pid(
+                value, cgroup, helper_pid_identity, options, spec, follow,
+                metrics, role, root, proc_root,
+            )]
+        return [make(cgroup, label_override or value[:12], "container", container_id=value)]
+
+    if scheme == "container":
+        cid, name = resolve_container(value)
+        cgroup = find_container_cgroup(cid, root)
+        if not cgroup:
+            raise TargetError(
+                f"container {name} ({cid[:12]}) has no cgroup under {root} — "
+                "it may have exited, or the explicit host proc/cgroup views "
+                "do not include its cgroup."
+            )
+        return [make(cgroup, name, "container", container_id=cid)]
+
+    if scheme == "slice":
+        if "@" in value:
+            # A slice unit name cannot contain '@' (templates are services),
+            # so this is an option typo that `_parse_options` left in the name.
+            raise TargetError(
+                f"slice: name {value!r} contains '@': a slice unit name cannot; "
+                f"probably a misspelt option after '@' (known options: "
+                f"{', '.join(sorted(OPTION_KEYS - {_HELPER_PID_OPTION}))})"
+            )
+        cgroup = slice_to_path(value)
+        return [make(cgroup, value, "slice")]
+
+    if scheme == "cgroup":
+        cgroup = _canonical_cgroup_path(value)
+        if not rest.rstrip().endswith("@"):  # trailing '@' = explicit no-options escape
+            _refuse_misspelt_option(value, cgroup, root)
+        return [make(cgroup, util.short_label(cgroup), "cgroup")]
+
+    # No scheme: infer. A running container name is the friendliest reading,
+    # then a slice unit name, then a raw path.
+    if not value.startswith("/"):
+        if docker_bin():
+            try:
+                return parse_target(f"container:{rest}", root, default_follow, role, proc_root)
+            except TargetError:
+                pass
+        if value.endswith(".slice") or _looks_like_slice(value):
+            return parse_target(f"slice:{rest}", root, default_follow, role, proc_root)
+    return parse_target(f"cgroup:{rest}", root, default_follow, role, proc_root)
+
+
+_OPTION_LOOKING = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*(=[^,@/]*)?(,[A-Za-z][A-Za-z0-9_-]*(=[^,@/]*)?)*$")
+
+
+def _refuse_misspelt_option(value: str, cgroup: str, root: str) -> None:
+    """A ``cgroup:`` value whose last ``@``-segment looks like an option but is
+    not a known one, and whose cgroup does not exist, is a probable typo
+    (`/a@follo`): the option grammar left it in the name, so say so now
+    instead of sampling a nonexistent cgroup forever. A cgroup that exists
+    (`user@1000.service`) is never refused."""
+    _, sep, tail = value.rpartition("@")
+    if not sep or not _OPTION_LOOKING.match(tail):
+        return
+    if os.path.isdir(os.path.join(root, cgroup.lstrip("/"))):
+        return
+    raise TargetError(
+        f"no cgroup {cgroup!r}; the last '@' segment {tail!r} looks like a "
+        f"misspelt option (known: {', '.join(sorted(OPTION_KEYS - {_HELPER_PID_OPTION}))}); "
+        f"to name a cgroup that really ends in '@{tail}', add a trailing '@'"
+    )
+
+
+def _canonical_cgroup_path(value: str) -> str:
+    """``cgroup:`` text -> one canonical absolute cgroup path, or a refusal.
+
+    ``Target.abs_path`` joins this onto the cgroup root, so a ``..``
+    component would walk the sampler (and a ``@follow`` subtree scan) OUT of
+    the mounted tree -- `cgroup:/../..@follow` from a helper would happily
+    list four levels of the host filesystem looking for `memory.current`.
+    Empty and ``.`` components are collapsed rather than refused: they name
+    the same cgroup, and the canonical spelling is what membership
+    de-duplication and the JSONL keys must agree on.
+    """
+    text = value.strip()
+    # Refuse on the RAW components: normpath folds `/../../etc` into `/etc`
+    # and `/a/../b` into `/b`, which is a silent rewrite of what the caller
+    # typed, not the refusal this contract wants.
+    if any(part == ".." for part in text.split("/")):
+        raise TargetError(f"cgroup: path must not contain '..': {value!r}")
+    # lstrip first: POSIX normpath keeps exactly two leading slashes as
+    # significant, so "/" + "/x" would otherwise come back as "//x".
+    return posixpath.normpath("/" + text.lstrip("/"))
+
+
+def _looks_like_slice(value: str) -> bool:
+    return bool(re.match(r"^[A-Za-z0-9_.-]+$", value)) and "/" not in value
+
+
+def _key_for(cgroup: str, label: str) -> str:
+    """A short stable key for a target, unique within a run."""
+    stem = re.sub(r"[^A-Za-z0-9]+", "-", label).strip("-").lower() or "target"
+    return stem[:48]
+
+
+def resolve_all(
+    specs: Sequence[str],
+    root: str = CGROUP_ROOT,
+    default_follow: bool = False,
+    role: str = "subject",
+    proc_root: str = PROC_ROOT,
+) -> List[Target]:
+    """Resolve every spec, de-duplicating by cgroup path."""
+    seen: Dict[str, Target] = {}
+    errors: List[str] = []
+    for spec in specs:
+        try:
+            for target in parse_target(spec, root, default_follow, role, proc_root):
+                existing = seen.get(target.cgroup)
+                if existing is None:
+                    key = target.key
+                    suffix = 2
+                    used = {t.key for t in seen.values()}
+                    while target.key in used:
+                        target.key = f"{key}-{suffix}"
+                        suffix += 1
+                    seen[target.cgroup] = target
+                else:
+                    # Same cgroup named twice: keep the stronger request.
+                    existing.follow_children = existing.follow_children or target.follow_children
+                    if target.metrics is None:
+                        existing.metrics = None
+                    elif existing.metrics is not None:
+                        existing.metrics |= target.metrics
+        except TargetError as exc:
+            errors.append(f"{spec}: {exc}")
+    if errors and not seen:
+        raise TargetError("; ".join(errors))
+    for message in errors:
+        # Partial failure is survivable — say so loudly and keep the rest.
+        print(f"[cgprofile] target skipped — {message}", flush=True)
+    return list(seen.values())
+
+
+@dataclass
+class Membership:
+    """The concrete cgroup set derived from targets, refreshed as things move."""
+
+    targets: List[Target]
+    root: str = CGROUP_ROOT
+    max_depth: int = 4
+    _paths: Dict[str, Target] = field(default_factory=dict)
+
+    def refresh(self) -> Tuple[List[str], List[str]]:
+        """Recompute the sampled set. Returns ``(appeared, disappeared)``."""
+        current: Dict[str, Target] = {}
+        for target in self.targets:
+            if target.exists(self.root):
+                current[target.cgroup] = target
+            if target.follow_children:
+                for child in walk_subtree(target.cgroup, self.root, self.max_depth):
+                    current.setdefault(child, target)
+        appeared = sorted(set(current) - set(self._paths))
+        disappeared = sorted(set(self._paths) - set(current))
+        self._paths = current
+        return appeared, disappeared
+
+    def paths(self) -> List[str]:
+        return sorted(self._paths)
+
+    def owner(self, cgroup: str) -> Optional[Target]:
+        return self._paths.get(cgroup)
+
+    def label_for(self, cgroup: str) -> str:
+        owner = self._paths.get(cgroup)
+        if owner and owner.cgroup == cgroup:
+            return owner.label
+        if owner:
+            return f"{owner.label}/{util.short_label(cgroup, keep=1)}"
+        return util.short_label(cgroup)

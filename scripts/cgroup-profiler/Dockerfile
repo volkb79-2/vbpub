@@ -71,26 +71,15 @@ LABEL org.opencontainers.image.title="cgprofile" \
 WORKDIR /opt/cgprofile
 
 COPY --from=builder /opt/cgprofile/venv /opt/cgprofile/venv
-COPY cgprofile.py ./cgprofile.py
 COPY pyproject.toml ./pyproject.toml
-COPY lib/ ./lib/
+COPY src/ ./src/
 COPY docs/ ./docs/
 COPY cgprofile ./cgprofile
-# lib/damon.py imports Classifier/KDAMONDS_DIR/SysfsInterface from the
-# SIBLING `scripts/damon-analysis/lib/damon_analysis.py` (pure Python, no
-# `damo` CLI dependency — that module's own docstring explains the split),
-# resolved relative to lib/damon.py's own location as `../../damon-analysis/
-# lib`. Since the build context here is `scripts/cgroup-profiler/` alone,
-# that sibling has to arrive as a SEPARATE named build context (`--build-
-# context damon_analysis=../damon-analysis`, wired in docker-bake.hcl) —
-# without this, damon_mod.available() is unconditionally False inside the
-# image regardless of what the host kernel actually exposes (verified
-# live: `/sys/kernel/mm/damon/admin/kdamonds` was writable in the
-# container, but `ctl version` reported DAMON unavailable before this
-# fix). Landing at /opt/damon-analysis/lib/damon_analysis.py so
-# `os.path.join(dirname(damon.py), "..", "..", "damon-analysis", "lib")`
-# (damon.py: /opt/cgprofile/lib/damon.py) resolves to it unmodified.
-COPY --from=damon_analysis lib/damon_analysis.py /opt/damon-analysis/lib/damon_analysis.py
+# The DAMON library (Classifier/KDAMONDS_DIR/SysfsInterface, pure Python) is
+# vendored inside the package as cgprofile._damon.damon_analysis since
+# cgprofile 2.0 package 1, so it arrives with `src/` above; the named
+# `damon_analysis` build context that used to deliver the sibling checkout's
+# copy is no longer read by this Dockerfile.
 RUN chmod +x ./cgprofile \
     && find . -name '__pycache__' -type d -prune -exec rm -rf {} + \
     && ln -s /opt/cgprofile/cgprofile /usr/local/bin/cgprofile

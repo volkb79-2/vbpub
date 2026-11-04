@@ -34,9 +34,10 @@ import tempfile
 from pathlib import Path
 from typing import Iterator
 
-from lib.version import resolve_build_identity, resolve_cmru_release_identity
-
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE / "src"))
+
+from cgprofile.version import resolve_build_identity, resolve_cmru_release_identity  # noqa: E402
 
 # The Dockerfile reads scripts/damon-analysis/lib/damon_analysis.py via a
 # second, named buildx context (docker-bake.hcl's `contexts` block) — any

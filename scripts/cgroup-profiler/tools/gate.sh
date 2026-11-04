@@ -63,7 +63,7 @@ if command -v git >/dev/null 2>&1 && git -C "$project_dir" rev-parse --git-dir >
   untracked="$(cd "$project_dir" && git ls-files --others --exclude-standard --directory \
                  -- . 2>/dev/null | grep -E '\.(py|sh|toml)$' || true)"
   ignored_src="$(cd "$project_dir" && git ls-files --others --ignored --exclude-standard \
-                   -- . 2>/dev/null | grep -E '^(lib|tools)/.*\.(py|sh)$' || true)"
+                   -- . 2>/dev/null | grep -E '^(src|tools)/.*\.(py|sh)$' || true)"
   if [ -n "$ignored_src" ]; then
     printf 'gate: source files are IGNORED by git and would not be committed:\n' >&2
     while IFS= read -r ignored_path; do
@@ -290,7 +290,7 @@ cid="$(docker run -d --name "$container_name" \
   --mount "$(docker_bind_mount "$host_worktree" "$worktree")" \
   "${git_common_mount[@]}" \
   -w "$worktree/$project_rel" \
-  -e PYTHONPATH="$worktree/$project_rel" \
+  -e PYTHONPATH="$worktree/$project_rel/src:$worktree/$project_rel" \
   -e PYTHONDONTWRITEBYTECODE=1 \
   "$image" \
   bash -c "set -euo pipefail

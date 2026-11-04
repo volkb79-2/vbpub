@@ -50,7 +50,7 @@ services:
     # private in every namespace. Host observations are explicit mounts:
     # proc is read-only; cgroup v2 is writable only
     # because opt-in P6 placement creates guarded rg-* leaves and moves lane
-    # pids. lib.placement.CgroupWriteGuard enforces the D-25 whitelist before
+    # pids. cgprofile.placement.CgroupWriteGuard enforces the D-25 whitelist before
     # every cgroup write. Privilege is also retained for DAMON sysfs; serve
     # refuses --cap and confines its other writes to session storage and its
     # own kdamonds.

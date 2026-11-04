@@ -17,21 +17,24 @@
 # (report included) stays on system python here regardless of verb.
 set -euo pipefail
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# The 1.x implementation lives in the package since cgprofile 2.0 package 1;
+# the legacy module adds <root>/src to sys.path itself when run by path.
+script="$here/src/cgprofile/cli/legacy.py"
 
 case "${1:-}" in
   _collect|mark|serve|ctl)
-    exec python3 "$here/cgprofile.py" "$@"
+    exec python3 "$script" "$@"
     ;;
 esac
 
 if [[ "${1:-}" == "--version" ]]; then
-  exec python3 "$here/cgprofile.py" "$@"
+  exec python3 "$script" "$@"
 fi
 
 if [[ -x "$here/venv/bin/python" ]]; then
-  exec "$here/venv/bin/python" "$here/cgprofile.py" "$@"
+  exec "$here/venv/bin/python" "$script" "$@"
 fi
 
 echo "cgprofile: venv not built — run $here/setup.sh once, then retry." >&2
 echo "           (\`cgprofile mark\` and the collector work without it.)" >&2
-exec python3 "$here/cgprofile.py" "$@"
+exec python3 "$script" "$@"

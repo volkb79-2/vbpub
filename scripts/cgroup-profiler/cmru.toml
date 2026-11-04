@@ -30,7 +30,10 @@ id = "cgroup-profiler"
 description = "cgprofile — cgroup/DAMON resource profiler: a wrap/attach CLI for ad hoc use, and the RG-55 host daemon run-gate talks to per lane"
 template_revision = 4
 prefix = "cgprofile-v"
-artifacts = ["oci-image"]
+artifacts = ["oci-image", "wheel"]
+# cgprofile 2.0 package 1: the wheel is the primary artifact (CP-46); the OCI
+# image stays until the ciu deployment is retired (package 9).
+scm_dist = "cgprofile"
 
 [project.version]
 strategy = "scm"
@@ -39,6 +42,7 @@ bump = "conventional"
 [project.release]
 git_tag = true
 build_step = "build"
+artifact_dirs = ["dist"]
 
 # SSOT pointer, dogfooding run-gate-project's own convention: the release
 # gate IS this project's own two run-gate lanes, not a duplicated pytest
@@ -61,12 +65,14 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
+  { label = "cgprofile: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
   { label = "cgprofile: build daemon image", argv = ["python3", "build-push.py", "--build"], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
+  { label = "cgprofile: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "cgprofile", "--cwd", "."], cwd = "." },
   { label = "cgprofile: push daemon image", argv = ["python3", "build-push.py", "--push"], cwd = "." },
   { label = "cgprofile: publish tagged release notes", argv = ["cmru", "handler", "oci-image-release", "--prefix", "cgprofile", "--image", "ghcr.io/volkb79-2/cgprofile", "--cwd", "."], cwd = "." },
 ]

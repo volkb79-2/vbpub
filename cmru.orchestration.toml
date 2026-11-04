@@ -20,7 +20,7 @@ registry = ["ghcr.io"]
 #
 #   cli-extended <- none  (declared release order)
 #   tnt <- cli-extended  (declared release order)
-#   cgroup-profiler <- none  (declared release order)
+#   cgroup-profiler <- cli-extended  (declared release order)
 #   run-gate-project <- cgroup-profiler  (declared release order)
 #   cmru <- cli-extended, run-gate-project  (declared release order)
 #   ciu <- none  (declared release order)
@@ -32,15 +32,16 @@ registry = ["ghcr.io"]
 #   tls-edge <- none  (declared release order)
 #   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
-#   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
-#     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
+#   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project  (declared release order)
+#     consumes first-party wheels: cli-extended, ciu, cmru, topos, run-gate-project, nyxloom
 #   tester-base <- none  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
-#   L0: cli-extended, cgroup-profiler, ciu, assay, topos, tls-edge, tester-base
-#   L1: tnt, run-gate-project, nyxloom, pwmcp, iobench
-#   L2: cmru
-#   L3: modern-debian-tools-python-debug, mdt-cockpit
+#   L0: cli-extended, ciu, assay, topos, tls-edge, tester-base
+#   L1: tnt, cgroup-profiler, nyxloom, pwmcp, iobench
+#   L2: run-gate-project
+#   L3: cmru
+#   L4: modern-debian-tools-python-debug, mdt-cockpit
 #
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
@@ -254,7 +255,9 @@ depends_on = ["cgroup-profiler"]
 # The release uses the source-built CMRU controller and has no CMRU wheel edge.
 [orchestration.project.cgroup-profiler]
 config = "scripts/cgroup-profiler/cmru.toml"
-depends_on = []
+# cli-extended: the cgprofile wheel requires it (pyproject [project.dependencies]),
+# so the release preflight demands the declaration.
+depends_on = ["cli-extended"]
 
 [cleanup]
 release_tag_prefixes = ["*"]
