@@ -50,3 +50,5 @@ After CP-46. Parallel with CP-48 (the export op it consumes is faked until CP-48
 ## Updates
 
 **2026-11-04** — Package 2 progress (cgp2-pkg2 branch feat-cgp2-pkg2-20261104): cgpctl, ctlwire, direct mode, fake-daemon goldens, the cli-extended surface (docs/CLI-SPEC.md, cli-review.toml 171 cases, contract and audit tests) and the removal of the 1.x client surface are done at 100 percent coverage. Still open: run --target/--observe/--cap (run profiles self@follow only), the contract-2 daemon verbs (package 3) that sessions/show/start/prune/config need, and the 1.x collector sections of README/ATTACH-GUIDE/DESIGN/CONSUMERS (package 4 docs sweep, CP-49). Stays open.
+
+**2026-11-04** — Package 3 landed the contract-2 daemon verbs (`sessions`, `show`, `start`, `prune`, `config`, `export`; branch feat-cgp2-pkg3-20261104, see CP-48). Still open: `run --target/--observe/--cap`, `cgroup:` / `slice:` start targets (CP-55) and the package 4 docs sweep (CP-49). Stays open.

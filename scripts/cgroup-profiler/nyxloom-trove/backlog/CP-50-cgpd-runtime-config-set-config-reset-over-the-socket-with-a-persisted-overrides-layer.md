@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-50
 title: "cgpd runtime settings over the socket: config-set / config-reset with a persisted overrides layer, audit log and doctor shadow warning"
-status: open
+status: fixed
 type: "feature"
 component: "daemon"
 context_estimate: "medium"
@@ -50,3 +50,7 @@ acceptance list.
 ## Dependencies and order
 
 After CP-46. Lands inside CP-47 / CP-48; blocks the release and the host-setup package (MDT-055 needs `doctor` shadow warnings in `check.sh`).
+
+## Updates
+
+**2026-11-04** FIXED, daemon half (cgp2 package 3: 994ecb972 daemon_config, 1c7df3d53 / d9347fe21 `config`, `config-set`, `config-reset` verbs with the persisted overrides layer, bef71678a `cgpd config check` / `reload [--reset-overrides]`). The cgpctl half was package 2.

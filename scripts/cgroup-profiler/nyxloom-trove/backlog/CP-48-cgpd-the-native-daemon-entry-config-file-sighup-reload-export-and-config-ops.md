@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-48
 title: "cgpd: the native daemon entry, /etc/cgprofile/cgpd.toml with SIGHUP reload, ctl contract 2 ops, session ownership, unit renderer (plan package 3)"
-status: open
+status: fixed
 type: "feature"
 component: "daemon"
 context_estimate: "large"
@@ -47,3 +47,7 @@ Contract: `docs/CGPCTL-SPEC.md` section 3, `docs/PROTOCOL.md` section 10, `docs/
 ## Dependencies and order
 
 After CP-46. Parallel with CP-47. Blocks the release and the host-setup package (MDT-055).
+
+## Updates
+
+**2026-11-04** FIXED in cgp2 package 3 (branch feat-cgp2-pkg3-20261104): 994ecb972 daemon_config, 1c7df3d53 / d9347fe21 contract-2 plumbing (negotiation, ownership, config verbs, gc arguments, status states, report removed), 837194e67 `export`, bef71678a `cgpd` entry (run, seven preflight checks, config check, reload, SIGHUP, single-daemon guard), 5f8dd91f2 unit renderer and `cgpd unit print/check`, 3f0e314b4 retirements (`_ctl_reference`, legacy serve/report, `CGPROFILE_ALLOW_UIDS`, Dockerfile entrypoint). Deviations: `cgpd run` is an explicit verb (cli-extended has no no-argument default); `transports.exec` is `false` at contract 1 and absent at contract 2 (PROTOCOL 10.1 controller decision). Open follow-ups: CP-54 (the 1.x ciu container stack no longer starts), CP-55 (`cgroup:` / `slice:` observe targets).
