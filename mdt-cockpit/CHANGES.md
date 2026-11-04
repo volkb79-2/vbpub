@@ -5,6 +5,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- host-setup installs and pins the cgprofile host service from the released wheel (MDT-055): `scripts/mdt-cgprofile-install.sh`
+  builds `/opt/cgprofile/<version>/venv` from the sha256-pinned `cgprofile` and `cli-extended` wheels (`pip --no-index`),
+  renders `/etc/cgprofile/cgpd.toml` and the two units through `cgpd config check` / `cgpd unit print`, restarts only on drift and
+  only after the live sessions drained (`CGPROFILE_DRAIN_TIMEOUT`, default 10 minutes; refusal exits 3 with the sessions named;
+  `--force-cgprofile-restart` overrides), reloads for config-only changes, keeps the two newest versions. New optional
+  `host-setup.env` keys `CGPROFILE_ENABLE`, `CGPROFILE_WHEEL`, `CGPROFILE_CLI_EXTENDED_WHEEL`, `CGPROFILE_WHEEL_SOURCE`,
+  `CGPROFILE_DRAIN_TIMEOUT`, `CGPROFILE_GATES_SLICE`, `CGPROFILE_OBSERVE_SLICES`, `CGPROFILE_ALLOW_UIDS` with strict validators;
+  `install.sh --cgprofile-only`; `mdt-host-check.sh` asserts the pin, MANIFEST, config and unit drift, `systemd-analyze verify`,
+  sockets and groups, `cgpctl doctor` and the daemon version. Fake-root tests never touch a live daemon.
+- The cockpit image carries the `cgpctl` client: `cgprofile` joins `pip/wheels.list` and every first-party wheel table, the
+  `report` extra stays out of the closure, `SKILLS_CLIS` gains `cgpctl` and the estate dependency graph declares the edge
+  (MDT-048).
 - docs: the README names every staged tool and the apt utilities it had omitted (`bat`, `rg`, `rga`, `yq`, `gh`, `grpcurl`,
   `consul`, `vault`, `awscli`, `b2`, `hadolint`, `grype`, `cdebug`, `shellcheck`, `ncdu`, `httpie`, `w3m`, `sshfs`, `skopeo`,
   `minisign`, `sqlite3`, `strace`, `gdb`, sysstat, `iotop`), with a docs-in-sync test (MDT-042).

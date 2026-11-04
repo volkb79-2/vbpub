@@ -142,8 +142,11 @@ are ignored; additional active directives fail the check. It points back to
 this command when provisioning is missing. It also refuses if
 `/run/cgprofile` is missing, a symlink, or not `root:docker 0770`. Run it from the Docker host; the
 [host-escape consumer guidance](#host-commands-from-an-mdt-devcontainer)
-shows how to run host commands from the cockpit. Deploy the daemon through the
-supported CIU consumer workflow after the observer directory exists.
+shows how to run host commands from the cockpit. Deploy the daemon with
+`sudo ./install.sh --cgprofile-only` (or the full install) once `CGPROFILE_ENABLE=1` and the wheel pins are set in
+`/etc/mdt/host-setup.env`: host-setup installs and pins the released cgprofile wheel as the native `cgpd.service`
+(MDT-055; the host-setup README "Install, pin and upgrade the cgprofile service" has the keys, the drain and the
+checks). The cockpit image carries the `cgpctl` client wheel (MDT-048) and nothing of the daemon's `report` extra.
 
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount

@@ -705,6 +705,57 @@ comments and blank lines but rejects additional active directives. The
 and [consumer procedure](../docs/CONSUMERS.md#cgprofile-resource-observer-host-setup)
 cover the daemon deployment that follows.
 
+### Install, pin and upgrade the cgprofile service
+
+host-setup installs and pins the cgprofile daemon `cgpd` from the RELEASED wheel as a native systemd service
+(`cgpd.service` in `cgprofile.slice`); the ciu container deployment is retired after one release (MDT-055,
+design: `scripts/cgroup-profiler/docs/NATIVE-DEPLOYMENT.md`). Nothing runs from a checkout and nothing is
+installed into a system interpreter. The keys are section 8 of `host-setup.env.example` and are optional
+in an older `/etc/mdt/host-setup.env` (absent means "not managed"):
+
+| Key | Meaning |
+|---|---|
+| `CGPROFILE_ENABLE` | `1` installs and updates the service; `0` leaves an existing install alone (`mdt-host-check.sh` reports it) |
+| `CGPROFILE_WHEEL` | `<version>@sha256:<hex>` of `cgprofile-<version>-py3-none-any.whl`; refused when empty while enabled |
+| `CGPROFILE_CLI_EXTENDED_WHEEL` | the same pin for the only dependency, `cli_extended-<version>-py3-none-any.whl` (the venv is built with `pip --no-index`) |
+| `CGPROFILE_WHEEL_SOURCE` | empty = the vbpub GitHub release downloads, an `https://` base laid out like them, or an absolute directory holding both files (air-gapped) |
+| `CGPROFILE_DRAIN_TIMEOUT` | upgrade drain deadline, default `10m` |
+| `CGPROFILE_GATES_SLICE`, `CGPROFILE_OBSERVE_SLICES`, `CGPROFILE_ALLOW_UIDS` | rendered into `/etc/cgprofile/cgpd.toml` as `gates_slice`, `observe_slices`, `allow_uids` |
+
+```bash
+sudo ./install.sh --cgprofile-only                 # just this step (needs an installed, valid host-setup.env)
+sudo ./install.sh --cgprofile-only --force-cgprofile-restart
+sudo mdt-host-check.sh
+```
+
+What a run does, in order:
+
+1. Verifies the pins' sha256 of both wheels BEFORE anything is unpacked, builds
+   `/opt/cgprofile/<version>/venv` (`pip --no-index`), checks `cgpd --version` against the pin and writes `MANIFEST`
+   (wheel names, sha256, time). A version directory is immutable: the same version with another digest is refused.
+2. Renders `/etc/cgprofile/cgpd.toml` from the keys above (only keys the pinned version supports; the
+   version-to-keys table is in the installer) and validates it with the new venv's `cgpd config check`; renders
+   `cgprofile.slice` and `cgpd.service` with `cgpd unit print`. A refusal here changes nothing live.
+3. Computes drift (version, config, units). No drift: nothing is restarted. A config-only change is
+   `systemctl reload cgpd` and keeps `/var/lib/cgprofile/overrides.toml` (host-setup never writes it).
+4. Version or service-unit drift on a RUNNING daemon: waits up to `CGPROFILE_DRAIN_TIMEOUT` for
+   `cgpctl sessions --state live` to be empty (read-only; no session is stopped). Still busy at the deadline:
+   the old daemon and `current` stay, the live sessions are printed, `/opt/cgprofile/PENDING` records the
+   version, and the run exits non-zero (the rest of a full install still completes). `--force-cgprofile-restart`
+   proceeds and names the sessions it aborts.
+5. Flips `/opt/cgprofile/current` atomically, installs the units, `daemon-reload`, enables and
+   starts/restarts, then waits (30 s) until `cgpctl status --json` reports the pinned version and a null
+   `config.last_reload_error`. `/usr/local/bin/cgpctl` links to the current venv's client. The two newest
+   version directories and `current` are kept.
+
+Rollback is an upgrade to the previous pin: the old directory is still there, so no download happens and the same
+drain and restart path runs. `mdt-host-check.sh` asserts, when `CGPROFILE_ENABLE=1`: `current` and `MANIFEST` equal
+the pin, `cgpd --version`, no config drift (re-rendered from `host-setup.env`), `cgpd config check`, no unit
+drift (`cgpd unit check`), `systemd-analyze verify`, both units active, `ctl.sock` in the control directory's
+group, the observer socket, `cgpctl doctor --json` without a `fail` (an `overrides` warning is shown, not
+asserted against) and the daemon's reported version. The group of the control directory is still `docker` until
+the `mdt-docker` regroup (MDT-053) lands; the check follows whatever group the directory has.
+
 Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks nine numbered steps, each printed as
 `-- [n/9] title --` (the same grouping as the sections of `host-setup.env.example`, with the IO caps last because
 they wait for the optional benchmark):

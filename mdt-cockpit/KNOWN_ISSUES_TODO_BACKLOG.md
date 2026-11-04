@@ -1165,7 +1165,14 @@ fallback): the devcontainer, both templates, the r1002 runner start script and i
 
 ## MDT-055 - host-setup installs and pins the cgprofile host service from the released wheel (2026-11-04)
 
-**Status:** OPEN. Depends on CP-41/CP-42 (wheel release and `host-unit`) and the MDT-048 distribution decision (now made). Interim
+**Status:** IMPLEMENTED 2026-11-04 on branch `mdt-cgp-native-20261104` (fake-root tests in `host-setup/tests/test_cgprofile_install.py`;
+smoke and release lanes in the package report); the live installs are the ops package (NC-05, r1002 first, then the shared host).
+Built against cgprofile 2.0.0 (`cgpd unit print|check`, `cgpd config check`, `cgpctl sessions|status|doctor --json`), not the
+`cgprofile host-unit --print` command named in the design below, which became `cgpd unit print`. Deviations from the design text
+below: the second pin `CGPROFILE_CLI_EXTENDED_WHEEL` (the venv is built `--no-index`), `CGPROFILE_WHEEL_SOURCE`, the drain
+(`CGPROFILE_DRAIN_TIMEOUT`, `--force-cgprofile-restart`), and the fact that host-setup does NOT stop the 1.x ciu container (the 2.0 daemon's single-daemon guard refuses
+a second daemon on the socket, so `ciu down` first, as the migration section of NATIVE-DEPLOYMENT.md says).
+Original text follows. Depends on CP-41/CP-42 (wheel release and `host-unit`) and the MDT-048 distribution decision (now made). Interim
 (RG-55 C option): until the wheel exists the ciu deployment of `cgprofile-host-daemon` stays, with the gates slice rendered from
 host config instead of hand edits (NC-06).
 
