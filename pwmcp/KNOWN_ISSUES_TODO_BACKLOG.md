@@ -645,3 +645,13 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 ## PWMCP-30 — `inspect --main-only` readability extraction and `--user-agent` documentation stance (PW-G/PW-E, F7/F9)
 
 **Status:** OPEN. Severity: P3. `--main-only` drops cookie banners and login chrome (about 3 KB of boilerplate in `innerText`). Document that a user agent preset is not a general fix for flaky renders (measured: it only shifted the odds); consider rotating the default only on a 403-on-assets signal.
+
+## PWMCP-31 — the released bundle's client cannot be installed by a consumer without a cli-extended source (dstdns test-runner rebuild fails)
+
+**Status:** OPEN. Filed 2026-11-04 from dstdns (P220 image build; dstdns@ed07ca19 base). Severity: P2 (blocks every consumer image rebuild that tracks `pwmcp-latest`).
+
+**Observed.** dstdns `tools/test-runner/Dockerfile` installs the client with `tools/test-runner/install-pwmcp-client.py`, which runs `pip install playwright==<contract pin> <bundle>/client`. With `pwmcp-v1.64.0-r4` (the current `pwmcp-latest`) that fails: `ERROR: Could not find a version that satisfies the requirement cli-extended>=0.3.0 (from pwmcp-client) (from versions: none)`. `cli-extended` is published on GitHub Releases only (`cli-extended-latest` -> `cli_extended-0.5.1-py3-none-any.whl`), the bundle ships no wheelhouse, and `bundle/client/requirements-runtime.txt` only repeats the floor. The previous release (1.63.0-r2, still inside dstdns's running runner) had no such dependency, so the break appeared with PWMCP-02 and is invisible until a consumer image is rebuilt.
+
+**Fix direction.** Make the consumer install recipe part of the bundle: either ship the cli-extended wheel (and its checksum) inside the bundle and have the documented install command use `--find-links <bundle>/wheels`, or document the exact `--find-links`/release URL a consumer must add, with a consumer-side test in the release gate that installs the bundle into a clean image with no index access beyond PyPI. The dstdns side (`install-pwmcp-client.py` passes no find-links) is the consumer half and is reported separately in the dstdns P220 report.
+
+**Acceptance.** A clean `python:3.14-slim` image can install the released bundle's client with the command the bundle README documents, and the release gate fails when it cannot.
