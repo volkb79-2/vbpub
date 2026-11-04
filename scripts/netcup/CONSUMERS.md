@@ -253,3 +253,44 @@ the prior deployment and supplying `--replace-state` to the next `start`.
 See [README](README.md#unattended-restore-iso-workflow) for the feature
 overview and [DESIGN-GUIDE](DESIGN-GUIDE.md#restore-iso-lifecycle) for the
 two-stage lifecycle rationale.
+
+## Remote gate (run a lane on a test host)
+
+`runner/remote-gate.py` runs one registered Run-Gate lane on a dedicated test host instead of the shared controller
+host (whose CPU PSI is high when many agents gate in parallel and which also serves production). stdlib Python, all
+process execution behind an injectable `Runner` (tests: `tests/test_remote_gate.py`, fake runner, no network).
+
+```bash
+remote-gate run <v1001|r1002|auto> <worktree-path> <lane> [--project-dir DIR] [--base REF] [--name ID] [--detach]
+            [--wait-psi SECONDS] [--out-dir DIR] [-- extra run-gate args]
+remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
+```
+
+- **Host table.** `--hosts-file` / `$REMOTE_GATE_HOSTS` / `~/.config/remote-gate/hosts.json` (gitignored; template
+  `runner/remote-gate-hosts.example.json`): per host the pinned-known-hosts ssh argv (runner user, `StrictHostKeyChecking=yes`), the
+  provider identity check command and the on-host guard. Only `r1002` and `v1001` are accepted anywhere (hard allowlist in code).
+- **Host choice.** `auto` reads CPU and memory PSI `some avg10` over ssh on both hosts and takes the one with the lower max;
+  if both exceed 25 it refuses (exit 75) and prints both readings. The Netcup identity check runs before any ssh/scp write and the
+  on-host guard (hostname, server id) prefixes every remote command.
+- **Source.** The worktree must have a clean tracked tree (untracked files are ignored); commit first with
+  `git commit --only -- <paths>` (agents do anyway). HEAD is shipped as a thin git bundle against the closest commit the host already
+  has under `~/checkouts` (no bundle if the host already has HEAD), checksum-verified, then checked out detached as a throwaway
+  checkout `~/checkouts/rg-<id>-<sha12>` (visible as `/workspaces/rg-<id>-<sha12>` in the cockpit). A dirty tree is refused rather than
+  patched in: one commit id is what the verdict is about.
+- **Run.** A detached host job (`run-job rg-<id>`, `~/rg/<id>/` and `~/jobs/rg-<id>/{job.log,EXIT}`) waits until PSI is <= 25
+  (`--wait-psi`, default 900 s, else exit 75, verdict `PSI_REFUSED`), then runs `nice -n 19 run-gate <lane> [--base SHA] [extra]` in the
+  `mdt-cockpit-runner` container from the project dir (default: the worktree path's own subdirectory) with
+  `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` (the checkout is a throwaway clone) and `RUN_GATE_TESTER_UNIFIED_IMAGE=tester-unified:local`.
+  The caller follows it, or `--detach` returns at once; the job survives the caller (`status`, `logs -f`, `collect` later).
+- **What runs.** The cockpit's `run-gate` wheel and the host's `tester-unified:local` image; both are printed as `header:` lines in
+  `job.log`. Refresh: v1001 `docker load` of a built tester-unified plus a tag `:local`, then `pip install` the wheel in the cockpit
+  (`setup-cockpit-tools.sh`); do not change tools on a host while an R2 campaign there may resume (r1002 currently carries run-gate 24.3.0,
+  see the host board).
+- **Results**, copied to `<out-dir>/<id>/` (default `/home/vscode/vbpub-release-program-20261027/remote-gates`): `job.log`, `lane.log`,
+  `lane-detail.log` (the lane's own log), `artifacts/` (`.assay/verdict*.json`, `progress*.jsonl`, `coverage*.json`, `.run-gate/**/*.log`),
+  `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` (read it as a separate
+  step); the command exits with the lane's exit code.
+- **Cleanup.** On exit (pass, fail, cancel) the job removes the lane's containers by exact name (`run-gate-*` containing the commit prefix
+  and the lane) and the throwaway checkout; logs stay. `cancel <id>` sends SIGTERM to the job, which stops the lane via its in-cockpit pid.
+- **Limits.** Concurrent runs of the same commit and lane on one host share container name prefixes; run one at a time. R2 campaigns
+  keep using `run-r2-campaign.sh`.
