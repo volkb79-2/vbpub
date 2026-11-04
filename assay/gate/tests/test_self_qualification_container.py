@@ -4175,6 +4175,60 @@ def test_runner_cancellation_stops_and_removes_its_owned_container(
     assert any(call[:2] == ["rm", CONTAINER_ID] for call in calls)
 
 
+def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
+    tmp_path: Path, committed_worktree: Path
+):
+    """TP-02 / FL-03: ordering invariant of the launcher's cleanup.
+
+    When a background client (the log follower) has already ended as the
+    cancellation arrives, bash cannot reliably reap it by a blocking
+    `wait <pid>`: the only child that could wake that wait is a still-running
+    client, so a cleanup that waits for the ended one BEFORE it has killed the
+    docker-wait client hangs forever (reproduced on v1001 under CPU contention
+    and in a plain bash model, 8 of 40 runs). Whichever client ends first, the
+    cleanup must therefore deliver SIGKILL to every client before its first
+    `wait`. The launcher runs under `bash -x` so the order is read from its own
+    trace, not from timing.
+    """
+    env, trace = launch_env(tmp_path, mode="blocked-wait")
+    env["PS4"] = "+TRACE "
+    ready_path = Path(env["DOCKER_WAIT_READY"])
+    os.mkfifo(ready_path)
+    ready_fd = os.open(ready_path, os.O_RDWR | os.O_NONBLOCK)
+    proc = subprocess.Popen(
+        ["bash", "-x", str(SCRIPT), str(committed_worktree), "self-qualification-preflight"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        readable, _, _ = select.select([ready_fd], [], [], 120)
+        if not readable:
+            pytest.fail("launcher did not reach docker wait")
+        assert os.read(ready_fd, 64) == b"ready\n"
+        proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=120)
+    finally:
+        os.close(ready_fd)
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate(timeout=5)
+
+    assert proc.returncode == 143, (stdout, stderr)
+    lines = [line[len("+TRACE "):] for line in stderr.splitlines() if line.startswith("+TRACE ")]
+    wait_client = re.search(r"^wait_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
+    log_client = re.search(r"^log_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
+    cleanup_start = lines.index("cleanup")
+    first_wait = next(
+        index for index in range(cleanup_start, len(lines))
+        if re.fullmatch(r"wait \d+", lines[index])
+    )
+    before_first_wait = lines[cleanup_start:first_wait]
+    for client in (log_client, wait_client):
+        assert f"kill -KILL -- -{client}" in before_first_wait, (client, before_first_wait)
+
+
 def test_host_workspace_override_must_match_findmnt_workspace_bind(
     tmp_path: Path, committed_worktree: Path
 ):

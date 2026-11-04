@@ -388,13 +388,20 @@ reconcile_owned_id() {
   container_id="$name_id"
 }
 
-stop_process_group() {
+signal_process_group() {
   local pid="$1"
   [[ -n "$pid" ]] || return 0
   kill -TERM -- "-$pid" >/dev/null 2>&1 || true
   # The timeout client and its Docker child share this private session. A
   # second signal prevents a client ignoring TERM from outliving cleanup.
   kill -KILL -- "-$pid" >/dev/null 2>&1 || true
+  # Also the client itself, in case it has not yet created its own session.
+  kill -KILL -- "$pid" >/dev/null 2>&1 || true
+}
+
+reap_process() {
+  local pid="$1"
+  [[ -n "$pid" ]] || return 0
   wait "$pid" >/dev/null 2>&1 || true
 }
 
@@ -402,9 +409,17 @@ cleanup() {
   local result=$? cleanup_failed=0 running stop_status
   trap - EXIT INT TERM
 
-  stop_process_group "$launch_pid"
-  stop_process_group "$log_pid"
-  stop_process_group "$wait_pid"
+  # Signal EVERY background client before waiting for any. When a client has
+  # already ended as the cancellation arrives (its status consumed while the
+  # cancelled `wait` was interrupted), bash cannot reap it by a blocking
+  # `wait <pid>`; the only child that could wake that wait is a still-running
+  # client, so waiting before killing the others hangs cleanup forever.
+  signal_process_group "$launch_pid"
+  signal_process_group "$log_pid"
+  signal_process_group "$wait_pid"
+  reap_process "$launch_pid"
+  reap_process "$log_pid"
+  reap_process "$wait_pid"
 
   if ((launch_attempted)); then
     if reconcile_owned_id; then

@@ -23,6 +23,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 <!-- cmru: source-end=506744371ccb24276854b2f6d3e1e5f774f614d1 -->
 
 ### Fixed
+- `tools/self-qualification-container.sh` (FL-03 / TP-02): a cancellation (SIGTERM) that arrived while the launcher blocked on `docker wait` could leave its cleanup hanging forever, so the registered lane failed `test_runner_cancellation_stops_and_removes_its_owned_container` with a 60 s timeout and the owned container was never stopped. Cleanup waited for the already-ended log follower before it had killed the still-running docker-wait client; bash cannot always reap an ended child by a blocking `wait <pid>` when its status was consumed while the cancelled `wait` was interrupted, and the only child that could wake that wait was the one cleanup had not yet killed. Cleanup now signals every background client (group and the client itself) first and reaps afterwards. Regression test `test_cancellation_cleanup_signals_every_client_before_it_waits_for_any` reads the order from the launcher's own `bash -x` trace.
 - fix(assay): scheduler integration tests ignore the ambient observer socket (64ff04a77)
 - fix(assay): cold-witness autoload tests ignore unrelated runner-image plugins; merge status in backlog/CHANGES (33bea83cd)
 - fix(assay): extend the B169 R2 postponement window to below 12.1.0 (operator D1, 2026-11-04) (48d7ba544)
