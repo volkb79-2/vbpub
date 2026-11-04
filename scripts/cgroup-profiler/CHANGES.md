@@ -18,15 +18,39 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   `docs/cli-review.toml` (171 cases run against a fake daemon by `tests/test_cli_review_cases.py`), `tests/test_cgpctl_contract.py`
   (`assert_cli_contract`, `surface check`, `cli-extended audit` with no `fail`).
 - The agent skill is `src/cgprofile/skills/cgpctl/SKILL.md`, installed with `cgpctl skills install`.
+- `cgpd`, the native daemon entry on cli-extended (CP-48, CP-50, cgprofile 2.0 package 3): `cgpd run` with seven preflight checks, `config check
+  [--file]`, `reload [--reset-overrides]` and SIGHUP reload, a single-daemon guard (`probe_daemon`: version and pid from SO_PEERCRED).
+  `run` is an explicit verb: cli-extended has no no-argument default, so the unit's ExecStart is `cgpd run` (CGPCTL-SPEC 3.1 says "default
+  verb"; the spec sweep is package 4).
+- `src/cgprofile/daemon_config.py`: the `cgpd.toml` settings schema, loader, reload and the persisted runtime overrides layer.
+- Ctl contract 2 in the daemon (PROTOCOL section 10): negotiation through `version`, session ownership per peer uid, `config`, `config-set` and
+  `config-reset`, `gc` with `dry_run`, `keep` and `keep_days` (CP-52), `status --state`, and the streaming `export` verb (own slot class,
+  `O_NOFOLLOW`, retention skips an exporting session). Contract-1 goldens stay byte-identical except the changes listed under Removed and Changed.
+- `cgpd unit print [--unit --install-root --wheel-venv]` and `cgpd unit check [--installed PATH ...]` (`src/cgprofile/unitfiles.py`); golden
+  units `tests/fixtures/units/{cgprofile.slice,cgpd.service}`; the service template gains the venv ExecStart token, RestartSteps,
+  RestartMaxDelaySec and StartLimit*.
+- Contract-2 goldens (`config*`, `config-set*`, `config-reset*`, `version-c2*`, `status-c2*`, `export-*`) under `tests/fixtures/rg55/socket/`.
+
+### Fixed
+- `tests/test_serve.py` accept-loop flake: the crash injection is keyed on the request (CP-53).
 
 ### Removed
 - The 1.x client surface (CP-47): `cgprofile run/attach/mark/targets/doctor/ctl`, the bash shim `./cgprofile`, `setup.sh`, helper-container mode,
-  the placement probe and the `docker logs` tailers (`logtail.py`). `src/cgprofile/cli/legacy.py` keeps only `_collect`, `serve` and the
-  `report --run-dir` subprocess the contract-1 daemon's `report` verb still runs; package 3 moves them. The frozen 1.x ctl client is kept as
-  `tests/_ctl_reference.py` for the contract-1 daemon goldens until package 3 retires it.
+  the placement probe and the `docker logs` tailers (`logtail.py`). `src/cgprofile/cli/legacy.py` keeps only `_collect`.
+- Package 3 (CP-48): `tests/_ctl_reference.py` (users moved to `ctlwire` and a wire oracle in the tests), the legacy `serve` and `report`
+  entries, `serve.parse_allow_uids` and the `CGPROFILE_ALLOW_UIDS` variable (a stale value is refused at start; the access list is `allow_uids`
+  in `cgpd.toml`), and the 1.x `serve` flags.
+- The contract-2 `report` verb: a daemon at contract 2 answers `report-removed` (render with `cgpctl report`, which exports and renders locally).
+  The contract-1 golden is renamed `report-removed-{request,response}.json`.
+- The `exec` carrier: `transports.exec` is `false` at contract 1 and absent at contract 2 (PROTOCOL 10.1 controller decision; a deviation from
+  the 1.x literal `true`).
 
 ### Changed
-- The image entrypoint is `python3 /opt/cgprofile/src/cgprofile/cli/legacy.py serve` (the `cgprofile` symlink and `COPY cgprofile` are gone), so
+- The `peer-refused` text is now "peer uid N is not in allow_uids". Refusals and busy lines sent before the request parses are stamped contract 1.
+- The 1.x ciu container stack (`ciu.compose.yml.j2`, `ciu.defaults.toml.j2`, `CGPROFILE_PID_NAMESPACE_MODE` / `CGPROFILE_ALLOW_UIDS`, `--sessions`
+  flags) no longer starts: the Dockerfile entrypoint is `python3 -m cgprofile.cli.cgpd` with `CMD ["run"]`. Migration is CP-54; the cgroup/slice
+  observe targets of PROTOCOL 10.4 are not served yet (CP-55).
+- (Superseded by the cgpd entrypoint above.) The image entrypoint is `python3 /opt/cgprofile/src/cgprofile/cli/legacy.py serve` (the `cgprofile` symlink and `COPY cgprofile` are gone), so
   `docker exec cgprofile-host-daemon cgprofile ctl ...` no longer works: consumers use `cgpctl` over the socket (CONSUMERS.md migration table).
   The 6th canary of `canary-run.sh` replaced the logtail canary (7 to 6).
 - `cgpctl watch` prints the terminal `end` line with the daemon's `reason`.

@@ -1,0 +1,9 @@
+{
+  "verb": "config-set",
+  "args": {
+    "key": "keep_days",
+    "value": 8,
+    "persist": true
+  },
+  "contract": 2
+}

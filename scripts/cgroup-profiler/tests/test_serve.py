@@ -40,9 +40,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
-import _ctl_reference as cg  # frozen 1.x contract-1 client (package 3 retires it)
 from cgprofile.cli import legacy as cg_real
-from cgprofile import damon as damon_mod, limits as limits_mod, serve, summary, targets as targets_mod
+from cgprofile import ctlwire, daemon_config, damon as damon_mod, limits as limits_mod, serve, summary, targets as targets_mod
 from cgprofile import damon as damon_mod, serve, store, summary, targets as targets_mod
 from tests.conftest import cgroup_files, write_cgroup
 
@@ -578,27 +577,6 @@ class TestStatusStopReport:
         assert resp["already_stopped"] is True
         assert resp["summary"]["session"] == session_id
 
-    def test_report_unknown_session(self, simple_server):
-        resp = simple_server._dispatch(_wire("report", session="s-20260101T000000Z-abcd"))
-        assert resp["error"]["code"] == "unknown-session"
-
-    def test_report_is_unavailable_with_no_report_python(self, simple_server):
-        # RW-14: `simple_server` (like a real dev checkout with no
-        # `./setup.sh` run yet) has no `venv/bin/python` on disk, so
-        # `SessionServer.__init__`'s own discovery resolves `report_python`
-        # to `None` — `handle_report` must refuse cleanly (exit-2 shape),
-        # never crash trying to exec a path that does not exist.
-        assert simple_server.report_python is None
-        start_resp = simple_server._dispatch(_start_req())
-        session_id = start_resp["session"]
-        sess = simple_server._sessions[session_id]
-        sess.stop_event.set()
-        sess.thread.join(timeout=5.0)
-        simple_server._dispatch(_wire("stop", session=session_id))
-        resp = simple_server._dispatch(_wire("report", session=session_id))
-        assert resp["ok"] is False
-        assert resp["error"]["code"] == "report-unavailable"
-
     def test_version_shape(self, simple_server):
         resp = simple_server._dispatch(_wire("version"))
         assert resp["ok"] is True
@@ -654,146 +632,22 @@ class TestHandleReportRealRender:
         server._dispatch(_wire("stop", session=session_id))
         return server, session_id
 
-    def test_report_script_explicit_arg_is_used_as_is(self, tmp_path):
-        # Same shape of bug as report_python above but for `report_script or
-        # DEFAULT_REPORT_SCRIPT` -- an explicit value must win, and (unlike
-        # report_python) an explicit value is truthy, so a broken `or`->`and`
-        # here would silently overwrite it with DEFAULT_REPORT_SCRIPT instead
-        # of merely falling through.
-        server = serve.SessionServer(
-            sessions_dir=str(tmp_path / "sessions"), report_script="/custom/report.py",
+    @pytest.mark.parametrize("contract", [1, 2])
+    def test_report_is_removed_at_both_contracts(self, tmp_path, contract):
+        # PROTOCOL 10.1/10.2: a 1.x client that still sends `report` is told
+        # with the additive `report-removed` code, stamped with ITS contract.
+        server, session_id = self._stopped_session(tmp_path)
+        resp = server._dispatch(
+            {"verb": "report", "args": {"session": session_id}, "contract": contract}
         )
-        assert server.report_script == "/custom/report.py"
-        assert server.report_script != serve.DEFAULT_REPORT_SCRIPT
-
-    def test_report_python_explicit_arg_is_used_as_is(self, tmp_path):
-        # An explicitly-passed report_python= must win outright, never fall
-        # through to the DEFAULT_REPORT_PYTHON auto-discovery branch -- this
-        # is the one assertion neither the "no venv" nor the "built venv"
-        # discovery tests make directly (both only ever observe the
-        # discovered value's downstream EFFECT, via a real `report` call).
-        server = serve.SessionServer(
-            sessions_dir=str(tmp_path / "sessions"), report_python=sys.executable,
-        )
-        assert server.report_python == sys.executable
-
-    def test_report_python_defaults_to_the_built_venv_when_present(self, tmp_path, monkeypatch):
-        # The other branch of SessionServer.__init__'s discovery — a fresh
-        # checkout with no built venv (this worktree's own actual state) is
-        # exercised by every other test in this class via an explicit
-        # report_python=; this pins the "found it" branch, which this
-        # checkout cannot exercise for real without running ./setup.sh.
-        real_access = os.access
-
-        def fake_access(path, mode):
-            if path == serve.DEFAULT_REPORT_PYTHON:
-                return True
-            return real_access(path, mode)
-
-        monkeypatch.setattr(serve.os, "access", fake_access)
-        server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
-        assert server.report_python == serve.DEFAULT_REPORT_PYTHON
-
-    @pytest.mark.skipif(not _HAS_REPORT_DEPS, reason="pandas/plotly not installed here")
-    def test_renders_a_real_interactive_html_report(self, tmp_path):
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
-        )
-        resp = server._dispatch(_wire("report", session=session_id))
-        assert resp["ok"] is True, resp
-        html = Path(resp["path"]).read_text()
-        # A real render, never the old hand-rolled stub: plotly's own figure
-        # div and inlined JS, never a bare <pre>{json}</pre> dump.
-        assert "cgp-figure" in html
-        assert "Plotly.newPlot" in html
-        assert "<pre>" not in html
-
-    def test_report_failed_surfaces_the_subprocess_stderr_tail(self, tmp_path, monkeypatch):
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
-        )
-        seen_kwargs: Dict[str, Any] = {}
-
-        def fake_run(command, **kwargs):
-            seen_kwargs.update(kwargs)
-            return subprocess.CompletedProcess(
-                command, returncode=1, stdout="", stderr="boom\nlast line\n"
-            )
-
-        monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch(_wire("report", session=session_id))
         assert resp["ok"] is False
-        assert resp["error"]["code"] == "report-failed"
-        assert resp["error"]["message"] == "last line"
-        # capture_output/text must both be True -- a real real subprocess
-        # run with either False would not give `proc.stdout`/`.stderr` as
-        # captured strings at all (None, or inherited fds, or bytes), which
-        # the mocked fake_run above cannot itself catch since it ignores
-        # kwargs entirely.
-        assert seen_kwargs["capture_output"] is True
-        assert seen_kwargs["text"] is True
-
-    def test_report_failed_surfaces_stdout_when_stderr_is_empty(self, tmp_path, monkeypatch):
-        # `(proc.stderr or proc.stdout or "")` has TWO `or`s -- a stderr-
-        # truthy fixture (the sibling test above) can only ever exercise
-        # the FIRST one, short-circuiting before the second is evaluated.
-        # This drives stderr empty/stdout non-empty specifically to reach
-        # the second `or`, whose own `or`->`and` mutant collapses straight
-        # to "" (stdout and "" is always falsy) regardless of real content.
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
+        assert resp["contract"] == contract
+        assert resp["error"]["code"] == "report-removed"
+        assert resp["error"]["message"] == (
+            "the daemon no longer renders reports; export the session with "
+            "contract 2 and render locally (cgpctl report <session>)"
         )
-
-        def fake_run(command, **kwargs):
-            return subprocess.CompletedProcess(
-                command, returncode=1, stdout="from stdout\nlast stdout line\n", stderr="",
-            )
-
-        monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch(_wire("report", session=session_id))
-        assert resp["error"]["code"] == "report-failed"
-        assert resp["error"]["message"] == "last stdout line"
-
-    def test_report_failed_with_no_output_at_all_names_the_exit_code(self, tmp_path, monkeypatch):
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
-        )
-
-        def fake_run(command, **kwargs):
-            return subprocess.CompletedProcess(command, returncode=7, stdout="", stderr="")
-
-        monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch(_wire("report", session=session_id))
-        assert resp["error"]["code"] == "report-failed"
-        assert resp["error"]["message"] == "report subprocess exited 7"
-
-    def test_report_failed_when_exit_0_but_no_file_was_written(self, tmp_path, monkeypatch):
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
-        )
-
-        def fake_run(command, **kwargs):
-            return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch(_wire("report", session=session_id))
-        assert resp["ok"] is False
-        assert resp["error"]["code"] == "report-failed"
-
-    def test_report_times_out(self, tmp_path, monkeypatch):
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
-            report_timeout=0.01,
-        )
-
-        def fake_run(command, **kwargs):
-            raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs.get("timeout", 0.01))
-
-        monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch(_wire("report", session=session_id))
-        assert resp["ok"] is False
-        assert resp["error"]["code"] == "report-failed"
-        assert "timed out" in resp["error"]["message"]
+        assert not (tmp_path / "sessions" / session_id / "report.html").exists()
 
 
 # ── host snapshot, exact reproduction of host-v1.json ──────────────────
@@ -1009,47 +863,25 @@ def test_gates_slice_name_is_configurable(tmp_path):
     assert snapshot["gates_slice"]["cgroup"] == "/dev.slice/dev-altgates.slice"
 
 
-def test_cli_serve_gates_slice_flag_reaches_session_server(monkeypatch):
-    # cmd_serve's own plumbing (cgprofile.py) -- proves the CLI flag is not
-    # dead: a mismatch here is invisible to every _host_snapshot-level test
-    # above, which all construct SessionServer directly.
-    captured: Dict[str, Any] = {}
-
-    class _FakeServer:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def serve_forever(self):
-            return None
-
-    monkeypatch.setattr(serve, "SessionServer", _FakeServer)
-    monkeypatch.setattr(serve, "daemon_slice_bounded", lambda *_a: True)  # Sol B4
-    monkeypatch.setattr("cgprofile.access.have_host_cgroup_view", lambda root: True)
-    monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
-    monkeypatch.setattr("cgprofile.access.have_host_proc_view", lambda root: True)
-    rc = cg_real.main(["serve", "--gates-slice", "dev-gates-from-cli.slice"])
-    assert rc == 0
-    assert captured["gates_slice_name"] == "dev-gates-from-cli.slice"
+def test_gates_slice_setting_reaches_the_session_server(tmp_path):
+    # The cgpd plumbing: the `gates_slice` setting (cgpd.toml) reaches both
+    # the server attribute and the window registry (tests/test_cgpd.py covers
+    # the CLI half).
+    settings = daemon_config.Settings(
+        str(tmp_path / "cgpd.toml"), overrides_path=str(tmp_path / "ov.toml"))
+    (tmp_path / "cgpd.toml").write_text('gates_slice = "dev-gates-from-cfg.slice"\n')
+    settings.load()
+    server = serve.SessionServer(
+        settings=settings, sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+    )
+    assert server.gates_slice_name == "dev-gates-from-cfg.slice"
+    assert server.windows.gates_slice_name == "dev-gates-from-cfg.slice"
 
 
-def test_cli_serve_gates_slice_defaults_to_dev_gates(monkeypatch):
-    captured: Dict[str, Any] = {}
-
-    class _FakeServer:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-        def serve_forever(self):
-            return None
-
-    monkeypatch.setattr(serve, "SessionServer", _FakeServer)
-    monkeypatch.setattr(serve, "daemon_slice_bounded", lambda *_a: True)  # Sol B4
-    monkeypatch.setattr("cgprofile.access.have_host_cgroup_view", lambda root: True)
-    monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
-    monkeypatch.setattr("cgprofile.access.have_host_proc_view", lambda root: True)
-    rc = cg_real.main(["serve"])
-    assert rc == 0
-    assert captured["gates_slice_name"] == "dev-gates.slice"
+def test_gates_slice_defaults_to_dev_gates(tmp_path):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    assert server.gates_slice_name == "dev-gates.slice"
 
 
 # ── restart recovery ─────────────────────────────────────────────────────
@@ -1393,7 +1225,10 @@ class TestRetention:
             clock=lambda: EPOCH_START,
         )
         resp = server._dispatch(_wire("gc"))
-        assert resp == {"ok": True, "contract": 1, "removed": ["s-20260101T000000Z-aaaa"], "kept": 0}
+        assert resp == {
+            "ok": True, "contract": 1, "removed": ["s-20260101T000000Z-aaaa"], "kept": 0,
+            "dry_run": False,
+        }
 
     def test_retention_with_no_sessions_dir_yet(self, tmp_path):
         # __init__ always creates sessions_dir, so the only way _run_retention
@@ -3358,15 +3193,6 @@ def test_stop_with_a_malformed_session_id(simple_server):
     assert resp["error"]["message"] == "no session 'not-a-session-id' is live or on record"
 
 
-def test_report_with_a_malformed_session_id(simple_server):
-    resp = simple_server._dispatch(_wire("report", session="not-a-session-id"))
-    assert resp["error"]["code"] == "unknown-session"
-    # handle_report's fallback message is worded entirely differently
-    # ("no finished session ... on record", no "is live or", no repr) --
-    # an `or` -> `and` mutant on the first guard falls through to it.
-    assert resp["error"]["message"] == "no session 'not-a-session-id' is live or on record"
-
-
 # ── socket plumbing: stale files, unlink failures, short reads, accept() ──
 
 def test_bind_removes_a_stale_socket_node(tmp_path):
@@ -3458,11 +3284,11 @@ def test_handle_connection_survives_an_unhandled_dispatch_exception(tmp_path, mo
     # the failure must be visible on stderr, not silently swallowed.
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
 
-    def _boom(req):
+    def _boom(req, *_peer):
         raise ValueError("synthetic unanticipated handler bug")
 
     monkeypatch.setattr(server, "_dispatch", _boom)
-    conn = _FakeConn([_wire_bytes("version")])
+    conn =_FakeConn([_wire_bytes("version")])
     server._handle_connection(conn)
     assert conn.closed is True
     assert conn.sent == []  # no reply at all — never a malformed one
@@ -3482,7 +3308,7 @@ def test_handle_connection_dispatch_exception_flushes_stderr_immediately(tmp_pat
     # -- spy on the real `print(...)` call's kwargs instead.
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
 
-    def _boom(req):
+    def _boom(req, *_peer):
         raise ValueError("synthetic unanticipated handler bug")
 
     monkeypatch.setattr(server, "_dispatch", _boom)
@@ -3505,28 +3331,36 @@ def test_accept_loop_survives_a_handler_bug_and_keeps_serving(tmp_path, monkeypa
     # propagate the exception and die — a second, healthy connection must
     # still be served afterward.
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
-    calls = {"n": 0}
     real_dispatch = server._dispatch
 
-    def _flaky(req):
-        calls["n"] += 1
-        if calls["n"] == 1:
+    # CP-53: each connection runs on its own handler thread (CP-33), so the
+    # order in which the two requests reach `_dispatch` is not the order they
+    # were accepted. The crash is keyed on the request itself, never on a call
+    # counter, and the accept loop is not allowed to end (which flips the
+    # daemon to "shutting down" and answers late requests `busy`) until both
+    # connections have been closed by their handlers.
+    def _flaky(req, *peer):
+        if req["args"].get("crash"):
             raise ValueError("synthetic unanticipated handler bug")
-        return real_dispatch(req)
+        return real_dispatch(req, *peer)
 
     monkeypatch.setattr(server, "_dispatch", _flaky)
 
     conns = [
-        _FakeConn([_wire_bytes("version")]),
+        _FakeConn([_wire_bytes("version", crash=True)]),
         _FakeConn([_wire_bytes("version")]),
     ]
 
     class _FakeSock:
         def __init__(self, conns):
             self._conns = list(conns)
+            self._all = list(conns)
 
         def accept(self):
             if not self._conns:
+                deadline = time.monotonic() + 10.0
+                while not all(c.closed for c in self._all) and time.monotonic() < deadline:
+                    time.sleep(0.005)
                 raise OSError("no more fake connections")
             return self._conns.pop(0), ("fake",)
 
@@ -3818,34 +3652,42 @@ def test_real_socket_does_not_dispatch_unterminated_start_request(
         assert not thread.is_alive()
 
 
+def _wire_call(socket_path: str, verb: str, **args: Any) -> Dict[str, Any]:
+    """One contract-1 request over the shipped wire client, the raw document."""
+    return ctlwire.roundtrip(socket_path, verb, args or None, 1)
+
+
+def _start_wire_args(**over: Any) -> Dict[str, Any]:
+    args: Dict[str, Any] = {
+        "target": f"containerid:{SIMPLE_CONTAINER_ID}", "scope": "container", "token": None,
+        "interval": 1.0, "meta": {}, "progress_stream": None, "idle_bound": None,
+        "ceiling": None, "on_stall": None, "place": False, "memory_high": None,
+        "memory_max": None, "cpu_weight": None,
+    }
+    args.update(over)
+    return args
+
+
 @pytest.mark.parametrize(
     ("daemon_default", "damon_option"),
-    [("off", []), ("on", ["--damon", "off"])],
+    [("off", {}), ("on", {"damon": "off"})],
     ids=["omitted-uses-daemon-default", "explicit-choice-overrides-default"],
 )
 def test_ctl_start_optional_damon_round_trips_over_real_socket(
-    simple_server, tmp_path, capsys, daemon_default, damon_option,
+    simple_server, tmp_path, daemon_default, damon_option,
 ):
     socket_path = str(tmp_path / "ctl.sock")
     simple_server.socket_path = socket_path
     simple_server.accept_timeout = 0.05
     simple_server.damon_default = daemon_default
-    argv = [
-        "ctl", "start", "--socket", socket_path,
-        "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
-        "--scope", "container", *damon_option, "--meta", "{}",
-    ]
     thread = _start_ready_socket_server(simple_server)
     try:
-        assert cg.main(argv) == 0
-        output = capsys.readouterr().out.splitlines()
-        assert len(output) == 1
-        response = json.loads(output[0])
+        response = _wire_call(socket_path, "start", **_start_wire_args(**damon_option))
         assert response["ok"] is True
         assert response["contract"] == 1
         assert response["damon"] == "off"
         assert response["reused"] is False
-        assert cg.main(["ctl", "stop", response["session"], "--socket", socket_path]) == 0
+        assert _wire_call(socket_path, "stop", session=response["session"])["ok"] is True
     finally:
         simple_server.request_shutdown()
         thread.join(timeout=60.0)
@@ -3863,322 +3705,35 @@ def test_real_socket_distinguishes_absent_target_from_unreadable_cgroup_tree(
         sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
         cgroup_root=str(complete_root), damon_default="off", accept_timeout=0.05,
     )
-    argv = [
-        "ctl", "start", "--socket", socket_path,
-        "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
-        "--scope", "container", "--meta", "{}",
-    ]
     thread = _start_ready_socket_server(server)
     try:
-        assert cg.main(argv) == 2
-        absent = capsys.readouterr()
-        absent_response = json.loads(absent.out)
-        assert absent_response["contract"] == 1
-        assert absent_response["error"]["code"] == "target-not-found"
+        absent = _wire_call(socket_path, "start", **_start_wire_args())
+        assert absent["ok"] is False and absent["contract"] == 1
+        assert absent["error"]["code"] == "target-not-found"
 
+        # An unreadable cgroup tree is a daemon fault: the connection drops
+        # with no answer (the server logs the bug), which the shipped client
+        # reports as an unusable-answer failure, exit 3.
         server.cgroup_root = str(missing_root)
-        assert cg.main(argv) == 3
-        indeterminate = capsys.readouterr()
-        assert indeterminate.out == ""
-        assert "could not reach the daemon" in indeterminate.err
-        assert "cannot search container cgroups" in indeterminate.err
+        with pytest.raises(ctlwire.WireFailure) as caught:
+            _wire_call(socket_path, "start", **_start_wire_args())
+        assert caught.value.exit_code == 3
+        assert "cannot search container cgroups" in capsys.readouterr().err
 
-        assert cg.main(["ctl", "version", "--socket", socket_path]) == 0
-        healthy = capsys.readouterr()
-        assert json.loads(healthy.out)["contract"] == 1
+        assert _wire_call(socket_path, "version")["contract"] == 1
     finally:
         server.request_shutdown()
         thread.join(timeout=60.0)
         assert not thread.is_alive()
 
 
-@pytest.mark.parametrize("reply", [
-    b'{"ok": true, "contract": 2, "cgprofile": "1.0.0", "daemon": {}}\n',
-    b'[]\n',
-    b'{"contract": 1, "cgprofile": "1.0.0", "daemon": {}}\n',
-])
-def test_ctl_rejects_wrong_major_list_and_missing_ok_fake_socket(tmp_path, reply, capsys):
-    # This fake Unix peer isolates the CLI acceptance gate from the live
-    # daemon. A reachable socket is not sufficient evidence of a compatible
-    # contract response.
-    socket_path = str(tmp_path / "ctl.sock")
-    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    peer.bind(socket_path)
-    peer.listen(1)
-
-    def serve_reply():
-        try:
-            conn, _ = peer.accept()
-            with conn:
-                conn.recv(65536)
-                conn.sendall(reply)
-        finally:
-            peer.close()
-
-    thread = threading.Thread(target=serve_reply, daemon=True)
-    thread.start()
-    try:
-        args = cg.build_parser().parse_args(["ctl", "--socket", socket_path, "version"])
-        assert cg.cmd_ctl(args) == 3
-        captured = capsys.readouterr()
-        assert captured.out == ""
-        assert "invalid response" in captured.err
-    finally:
-        thread.join(timeout=5.0)
-
-
-def _ctl_response_fixture(verb: str) -> Dict[str, Any]:
-    if verb == "version":
-        name = "version-v1.json"
-    elif verb == "start":
-        name = "start-v1.json"
-    elif verb == "status":
-        name = "status-v1.json"
-    elif verb == "host":
-        name = "host-v1.json"
-    elif verb == "stop":
-        name = "stop-v1.json"
-    else:
-        raise AssertionError(f"no fixture for {verb}")
-    return json.loads((FIXTURES / name).read_text())
-
-
-def _ctl_args(verb: str) -> Any:
-    argv = ["ctl", "--socket", "/tmp/unused-cgprofile-test.sock", verb]
-    if verb == "start":
-        argv += [
-            "--target", f"containerid:{SIMPLE_CONTAINER_ID}",
-            "--scope", "container", "--meta", "{}",
-        ]
-    elif verb in ("stop", "report"):
-        argv.append("s-20260912T101500Z-9f01")
-    return cg.build_parser().parse_args(argv)
-
-
-def _run_ctl_with_response(monkeypatch, capsys, verb: str, response: Any):
-    monkeypatch.setattr(cg, "_ctl_roundtrip", lambda *args: response)
-    result = cg.cmd_ctl(_ctl_args(verb))
-    return result, capsys.readouterr()
-
-
-@pytest.mark.parametrize("verb,response", [
-    ("status", "session"),
-    ("report", "report"),
-    ("gc", "gc"),
-])
-def test_ctl_accepts_the_remaining_contract_success_shapes(monkeypatch, capsys, verb, response):
-    if response == "session":
-        valid = _ctl_response_fixture("status")
-        valid["session"] = valid.pop("sessions")[0]
-    elif response == "report":
-        valid = {"ok": True, "contract": 1, "path": "/sessions/s-1/report.html"}
-    else:
-        valid = {"ok": True, "contract": 1, "removed": [], "kept": 0}
-
-    rc, captured = _run_ctl_with_response(monkeypatch, capsys, verb, valid)
-
-    assert rc == 0
-    assert json.loads(captured.out) == valid
-    assert captured.err == ""
-
-
-@pytest.mark.parametrize("verb,mutator", [
-    ("version", lambda response: response.pop("cgprofile")),
-    ("report", lambda response: response.pop("path")),
-    ("gc", lambda response: response.pop("removed")),
-])
-def test_ctl_rejects_success_responses_missing_required_fields(
-    monkeypatch, capsys, verb, mutator,
-):
-    if verb == "version":
-        response = _ctl_response_fixture(verb)
-    elif verb == "report":
-        response = {"ok": True, "contract": 1, "path": "/report.html"}
-    else:
-        response = {"ok": True, "contract": 1, "removed": [], "kept": 0}
-    mutator(response)
-
-    rc, captured = _run_ctl_with_response(monkeypatch, capsys, verb, response)
-
-    assert rc == 3
-    assert captured.out == ""
-    assert "invalid response" in captured.err
-
-
-@pytest.mark.parametrize("response", [
-    {"ok": False, "contract": 1, "error": {}},
-    {"ok": True, "contract": 1, "cgprofile": "1.0.0", "daemon": []},
-    {
-        "ok": True, "contract": 1, "cgprofile": "1.0.0",
-        "daemon": {
-            "name": "", "started_at": "now", "damon": "off",
-            "damon_default": "off", "sessions_live": 0, "max_sessions": 0,
-        },
-    },
-    {
-        "ok": True, "contract": 1, "cgprofile": "",
-        "daemon": {
-            "name": "cgprofile-host-daemon", "started_at": "now", "damon": "off",
-            "damon_default": "off", "sessions_live": 0, "max_sessions": 0,
-        },
-    },
-    {
-        "ok": True, "contract": 1, "cgprofile": "1.0.0",
-        "daemon": {
-            "name": "cgprofile-host-daemon", "started_at": "now", "damon": "off",
-            "damon_default": "off", "sessions_live": -1, "max_sessions": 0,
-        },
-    },
-])
-def test_ctl_fails_closed_on_invalid_version_payloads(monkeypatch, capsys, response):
-    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "version", response)
-
-    assert rc == 3
-    assert captured.out == ""
-    assert "invalid response" in captured.err
-
-
-@pytest.mark.parametrize("observer", [
-    {"contract": 0, "path": "/run/observer.sock", "listening": True},
-    {"contract": True, "path": "/run/observer.sock", "listening": True},
-    {"contract": 2, "path": "/run/observer.sock", "listening": "yes"},
-])
-def test_ctl_fails_closed_on_invalid_resource_observer_metadata(
-    monkeypatch, capsys, observer,
-):
-    response = _ctl_response_fixture("version")
-    response["resource_observer"] = observer
-
-    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "version", response)
-
-    assert rc == 3
-    assert captured.out == ""
-    assert "invalid response" in captured.err
-
-
-def test_ctl_validator_falls_through_only_for_an_unknown_internal_verb():
-    # `build_parser()` exposes only the closed ctl vocabulary, but this
-    # direct envelope check keeps the validator's final dispatch branch
-    # honest if an internal caller ever supplies a new verb first.
-    assert cg._validate_ctl_response("unknown-test-verb", {"ok": True, "contract": 1}) is None
-
-
-@pytest.mark.parametrize("field,value", [
-    ("at", None),
-    ("loadavg", {}),
-    ("meminfo", []),
-    ("slices", []),
-])
-def test_ctl_fails_closed_on_invalid_host_payloads(monkeypatch, capsys, field, value):
-    response = _ctl_response_fixture("host")
-    if value is None:
-        response["host"].pop(field)
-    else:
-        response["host"][field] = value
-
-    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "host", response)
-
-    assert rc == 3
-    assert captured.out == ""
-    assert "invalid response" in captured.err
-
-
-@pytest.mark.parametrize("mutator", [
-    lambda entry: entry.pop("session"),
-    lambda entry: entry.__setitem__("scope", "host"),
-    lambda entry: entry.__setitem__("elapsed_seconds", "2"),
-    lambda entry: entry.__setitem__("elapsed_seconds", float("nan")),
-    lambda entry: entry.__setitem__("target", []),
-])
-def test_ctl_fails_closed_on_invalid_status_session_entries(monkeypatch, capsys, mutator):
-    response = _ctl_response_fixture("status")
-    response["session"] = response.pop("sessions")[0]
-    mutator(response["session"])
-
-    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "status", response)
-
-    assert rc == 3
-    assert captured.out == ""
-    assert "invalid response" in captured.err
-
-
-@pytest.mark.parametrize("sessions", [
-    {},
-    [{}],
-])
-def test_ctl_fails_closed_on_invalid_status_session_lists(monkeypatch, capsys, sessions):
-    response = _ctl_response_fixture("status")
-    response["sessions"] = sessions
-
-    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "status", response)
-
-    assert rc == 3
-    assert captured.out == ""
-    assert "invalid response" in captured.err
-
-
-@pytest.mark.parametrize("mutator", [
-    lambda response: response.__setitem__("scope", "host"),
-    lambda response: response.__setitem__("damon", "maybe"),
-    lambda response: response.__setitem__("damon", 1),
-    lambda response: response.__setitem__("reused", 1),
-    lambda response: response.__setitem__("interval_seconds", 0.1),
-    lambda response: response.__setitem__("interval_seconds", float("nan")),
-    lambda response: response["target"].__setitem__("pids_at_start", "3"),
-    lambda response: response["target"].__setitem__("pids_at_start", -1),
-])
-def test_ctl_fails_closed_on_invalid_start_payloads(monkeypatch, capsys, mutator):
-    response = _ctl_response_fixture("start")
-    mutator(response)
-
-    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "start", response)
-
-    assert rc == 3
-    assert captured.out == ""
-    assert "invalid response" in captured.err
-
-
-@pytest.mark.parametrize("mutator", [
-    lambda response: response.__setitem__("already_stopped", 1),
-    lambda response: response["summary"].__setitem__("schema", 2),
-    lambda response: response.__setitem__("session_dir", ""),
-    lambda response: response.__setitem__("series", []),
-    lambda response: response["series"].__setitem__("damon", 1),
-])
-def test_ctl_fails_closed_on_invalid_stop_payloads(monkeypatch, capsys, mutator):
-    response = _ctl_response_fixture("stop")
-    mutator(response)
-
-    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "stop", response)
-
-    assert rc == 3
-    assert captured.out == ""
-    assert "invalid response" in captured.err
-
-
-@pytest.mark.parametrize("removed,kept", [
-    ("not-a-list", 0),
-    ([1], 0),
-    ([], "0"),
-    ([], -1),
-])
-def test_ctl_fails_closed_on_invalid_gc_payloads(monkeypatch, capsys, removed, kept):
-    response = {"ok": True, "contract": 1, "removed": removed, "kept": kept}
-
-    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "gc", response)
-
-    assert rc == 3
-    assert captured.out == ""
-    assert "invalid response" in captured.err
-
-
-# ── CLI golden round-trip: `cgprofile ctl` over a real socket (C5) ────────
+# ── golden round-trip over a real socket (C5) ──────────────────────────────
 #
 # Reuses the exact frame sequence `_run_full_lifecycle` drives synchronously
 # (single-threaded, no socket at all) — this suite instead runs the SAME
 # five frames through a REAL background sampling thread and a REAL
-# accept-loop thread, with `cgprofile ctl` (`cg.main`, this package's actual
-# CLI entry point) as the client under test, because that is the only way
+# accept-loop thread, with the shipped wire client (`cgprofile.ctlwire`,
+# what `cgpctl` uses) as the client under test, because that is the only way
 # to prove the wire protocol works end to end rather than merely that
 # `_dispatch()` does (the handoff's own read-list item 5 asks for exactly
 # this). `ctl status` needs to land *mid-session* (frame 2, matching
@@ -4279,19 +3834,16 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         # These exact values (not just any well-formed meta) because
         # status-v1.json's fixture echoes them back verbatim in the "meta"
         # block of the mid-session status snapshot below.
-        meta = json.dumps({
+        meta = {
             "lane": "rg55-fixture-lane", "project": "run-gate-project",
             "worktree": "/workspaces/vbpub",
             "commit": "0123456789abcdef0123456789abcdef01234567",
             "run_gate_revision": 41, "kind": "command", "expected": None,
-        })
-        rc = cg.main([
-            "ctl", "--socket", socket_path, "start",
-            "--target", f"containerid:{CONTAINER_ID}", "--scope", "container-shared",
-            "--damon", "on", "--interval", "1.0", "--meta", meta,
-        ])
-        start_out = json.loads(capsys.readouterr().out)
-        assert rc == 0
+        }
+        start_out = _wire_call(socket_path, "start", **_start_wire_args(
+            target=f"containerid:{CONTAINER_ID}", scope="container-shared",
+            damon="on", interval=1.0, meta=meta))
+        assert start_out["ok"] is True
         # RG-55 C8 (§8.3): `start` gained `placement`. This lifecycle never
         # passes `--place`, so the value is the union's OTHER arm — `null`,
         # "never asked", distinct from a refusal block carrying a
@@ -4305,9 +3857,8 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         lockstep.sess = server._sessions[SESSION_ID]
 
         # -- version, while exactly one session is live --
-        rc = cg.main(["ctl", "--socket", socket_path, "version"])
-        version_out = json.loads(capsys.readouterr().out)
-        assert rc == 0
+        version_out = _wire_call(socket_path, "version")
+        assert version_out["ok"] is True
         # RG-55 C6: `version` gained §8.6's `transports` block. Same
         # "assert the new key exactly, strip it, then compare the rest
         # byte-identically to the UNTOUCHED v1 golden" treatment C5 gave
@@ -4315,7 +3866,7 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         # byte-identical"). `listening` is true here because this test
         # reached the daemon over that very socket.
         assert version_out["transports"] == {
-            "exec": True,
+            "exec": False,
             "socket": {"path": socket_path, "listening": True,
                        "allow_uids": [], "peer_cred": True},
         }
@@ -4326,15 +3877,17 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
             "listening": True,
         }
         version_out.pop("transports")
+        # 2.0 additions (PROTOCOL 10.1), stripped like `transports` above.
+        assert version_out.pop("contracts") == [1, 2]
+        assert version_out["daemon"].pop("version") == serve.CGPROFILE_VERSION
         version_out.pop("resource_observer")
         assert _canon(version_out) == _canon(json.loads((FIXTURES / "version-v1.json").read_text()))
 
         # -- status, paused mid-session at frame 2 --
         assert lockstep.tick_done.wait(timeout=5.0)
         clock_box["t"] = EPOCH_START + 2.0
-        rc = cg.main(["ctl", "--socket", socket_path, "status"])
-        status_out = json.loads(capsys.readouterr().out)
-        assert rc == 0
+        status_out = _wire_call(socket_path, "status")
+        assert status_out["ok"] is True
         # RG-55 C5: `handle_status`'s own embedded "host" block is the SAME
         # `_host_snapshot()` the "host" verb returns, so it gains the same
         # two keys -- none of these frames ship `dev-gates.slice` or
@@ -4372,9 +3925,8 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         # -- stop, once the session has run to completion (frame 4) --
         lockstep.sess.thread.join(timeout=5.0)
         clock_box["t"] = EPOCH_END
-        rc = cg.main(["ctl", "--socket", socket_path, "stop", SESSION_ID])
-        stop_out = json.loads(capsys.readouterr().out)
-        assert rc == 0
+        stop_out = _wire_call(socket_path, "stop", session=SESSION_ID)
+        assert stop_out["ok"] is True
         golden_stop = json.loads((FIXTURES / "stop-v1.json").read_text())
         # session_dir is this test's own tmp_path, never the production
         # default the fixture was hand-written against — asserted precisely,
@@ -4402,9 +3954,8 @@ def test_cli_error_v1_unknown_session(tmp_path, capsys):
     accept_thread.start()
     try:
         _wait_for_socket(socket_path)
-        rc = cg.main(["ctl", "--socket", socket_path, "status", "s-20260912T090000Z-0000"])
-        out = json.loads(capsys.readouterr().out)
-        assert rc == 2
+        out = _wire_call(socket_path, "status", session="s-20260912T090000Z-0000")
+        assert out["ok"] is False
         assert _canon(out) == _canon(json.loads((FIXTURES / "error-v1.json").read_text()))
     finally:
         server.request_shutdown()
@@ -4423,9 +3974,8 @@ def test_cli_host_v1(tmp_path, capsys):
     accept_thread.start()
     try:
         _wait_for_socket(socket_path)
-        rc = cg.main(["ctl", "--socket", socket_path, "host"])
-        out = json.loads(capsys.readouterr().out)
-        assert rc == 0
+        out = _wire_call(socket_path, "host")
+        assert out["ok"] is True
         # RG-55 C5: same "strip the two new v1.1 keys, compare the rest
         # byte-identically to the untouched v1 golden" treatment as
         # test_host_snapshot_matches_host_v1 above (this test drives the
@@ -4942,11 +4492,11 @@ def test_cp33_a_long_verb_does_not_delay_another_verb(tmp_path):
     entered, release = threading.Event(), threading.Event()
     real = server._dispatch
 
-    def dispatch(req):
+    def dispatch(req, *peer):
         if req.get("verb") == "host":
             entered.set()
             release.wait(timeout=30.0)
-        return real(req)
+        return real(req, *peer)
 
     server._dispatch = dispatch
     slow: List[Dict[str, Any]] = []
@@ -4970,11 +4520,11 @@ def test_cp33_verbs_over_the_handler_cap_are_busy_and_the_slot_is_returned(tmp_p
     entered, release = threading.Event(), threading.Event()
     real = server._dispatch
 
-    def dispatch(req):
+    def dispatch(req, *peer):
         if req.get("verb") == "host":
             entered.set()
             release.wait(timeout=30.0)
-        return real(req)
+        return real(req, *peer)
 
     server._dispatch = dispatch
     slow: List[Dict[str, Any]] = []
@@ -4994,47 +4544,10 @@ def test_cp33_verbs_over_the_handler_cap_are_busy_and_the_slot_is_returned(tmp_p
         _stop_running(server, thread)
 
 
-def test_cp33_report_has_its_own_cap_and_never_starves_other_verbs(tmp_path):
-    server, thread = _running(tmp_path, max_control_handlers=1, max_report_jobs=1)
-    entered, release = threading.Event(), threading.Event()
-    real = server._dispatch
-
-    def dispatch(req):
-        if req.get("verb") == "report":
-            entered.set()
-            release.wait(timeout=30.0)
-            return {"ok": True, "contract": 1}
-        return real(req)
-
-    server._dispatch = dispatch
-    slow: List[Dict[str, Any]] = []
-    worker = threading.Thread(
-        target=lambda: slow.append(_ask(server.socket_path, "report", session="s")),
-        daemon=True,
-    )
-    try:
-        worker.start()
-        assert entered.wait(timeout=10.0)
-        # The one report slot is taken: a second report is busy ...
-        second = _ask(server.socket_path, "report", session="s")
-        assert second["ok"] is False and second["error"]["code"] == "busy"
-        assert "reports" in second["error"]["message"]
-        # ... but the shared handler pool (cap 1) is untouched.
-        assert _ask(server.socket_path)["ok"] is True
-        release.set()
-        worker.join(timeout=10.0)
-        assert slow[0]["ok"] is True
-        third = _ask(server.socket_path, "report", session="s")
-        assert third["ok"] is True                       # the report slot came back
-    finally:
-        release.set()
-        _stop_running(server, thread)
-
-
 def test_cp33_a_failing_handler_returns_its_slot(tmp_path):
     server, thread = _running(tmp_path, max_control_handlers=1)
 
-    def dispatch(_req):
+    def dispatch(_req, *_peer):
         raise RuntimeError("handler bug")
 
     real = server._dispatch

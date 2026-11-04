@@ -76,18 +76,6 @@ def fixed_version(monkeypatch):
     monkeypatch.setattr(cgpd, "installed_version", lambda: "9.9.9")
 
 
-@pytest.fixture
-def delegated(monkeypatch):
-    calls = []
-
-    def fake_main(argv):
-        calls.append(list(argv))
-        return 7
-
-    monkeypatch.setattr(legacy, "main", fake_main)
-    return calls
-
-
 def test_cgpctl_version(capsys, fixed_version):
     assert cgpctl.main(["--version"]) == 0
     assert capsys.readouterr().out == "cgpctl 9.9.9\n"
@@ -96,25 +84,6 @@ def test_cgpctl_version(capsys, fixed_version):
 def test_cgpd_version(capsys, fixed_version):
     assert cgpd.main(["--version"]) == 0
     assert capsys.readouterr().out == "cgpd 9.9.9\n"
-
-
-@pytest.mark.parametrize("argv", [[], ["-h"], ["--help"]])
-def test_cgpd_usage(capsys, argv):
-    assert cgpd.main(argv) == 0
-    assert capsys.readouterr().out == cgpd._USAGE
-
-
-def test_cgpd_run_is_the_serve_verb(delegated):
-    assert cgpd.main(["run", "--socket-dir", "/x"]) == 7
-    assert delegated == [["serve", "--socket-dir", "/x"]]
-
-
-def test_cgpd_refuses_an_unknown_verb(capsys, delegated):
-    assert cgpd.main(["bogus"]) == 2
-    captured = capsys.readouterr()
-    assert "unknown verb 'bogus'" in captured.err
-    assert captured.out == ""
-    assert delegated == []
 
 
 def test_the_stubs_read_sys_argv_when_called_without_arguments(monkeypatch, capsys, fixed_version):
@@ -163,7 +132,7 @@ def test_cmru_declares_the_wheel_beside_the_image():
 
 
 def test_the_legacy_entry_runs_from_the_checkout_root():
-    # SELF is what the daemon image entrypoint and the report subprocess exec.
+    # SELF is the path the collector child (direct mode) is exec'd by.
     assert Path(legacy.SELF).resolve() == PACKAGE_DIR / "cli" / "legacy.py"
 
 

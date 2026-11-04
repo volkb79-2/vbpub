@@ -10,7 +10,6 @@ from typing import Dict, Iterable, List
 
 import pytest
 
-import _ctl_reference as cg  # frozen 1.x contract-1 client (package 3 retires it)
 from cgprofile import serve, summary
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,13 +34,25 @@ def _anchors(path: Path) -> List[str]:
     return [_slug(match) for match in re.findall(r"^#{1,6}\s+(.+?)\s*$", path.read_text(), re.MULTILINE)]
 
 
+def _assert_version_example(example: Dict) -> None:
+    """The contract-1 `version` shape the adopter documents show."""
+    assert example.get("ok") is True
+    assert isinstance(example.get("cgprofile"), str) and example["cgprofile"]
+    daemon = example.get("daemon")
+    assert isinstance(daemon, dict)
+    for key in ("name", "started_at", "damon", "damon_default"):
+        assert isinstance(daemon.get(key), str) and daemon[key], key
+    for key in ("sessions_live", "max_sessions"):
+        assert type(daemon.get(key)) is int and daemon[key] >= 0, key
+
+
 def test_every_adopter_document_json_example_uses_the_shipped_contract_loader():
     for path in DOCS:
         examples = list(_json_examples(path))
         assert examples, f"{path}: expected a current-schema JSON example"
         for example in examples:
             assert example.get("contract") == serve.CONTRACT_VERSION
-            cg._validate_ctl_response("version", example)
+            _assert_version_example(example)
         assert summary.SCHEMA == 1
 
 

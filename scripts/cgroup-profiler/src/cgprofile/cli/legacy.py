@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
-"""The collector and the daemon entry points shared by cgpd and ``cgpctl run``.
+"""The collector child shared by ``cgpctl run`` (direct mode) and the daemon.
 
-What remains of the 1.x ``cgprofile`` CLI after package 2 (cgpctl):
+What remains of the 1.x ``cgprofile`` CLI:
 
     legacy.py _collect --run-dir DIR --target …    the collector child (direct mode)
-    legacy.py serve    …                           the daemon (``cgpd`` delegates here)
-    legacy.py report   --run-dir DIR --html-only   the daemon's report-tier subprocess
 
-The user-facing client is ``cgpctl`` (``cgprofile.cli.cgpctl``); the 1.x
-``run``/``attach``/``mark``/``targets``/``doctor``/``ctl`` verbs, the helper
-container, the log tailers, the bash shim and ``setup.sh`` are gone. Package 3
-(daemon contract-2 verbs) moves ``serve`` out of here and retires this module.
+The daemon is ``cgpd`` (``cgprofile.cli.cgpd``) and the user-facing client is
+``cgpctl`` (``cgprofile.cli.cgpctl``); the 1.x ``serve`` and ``report``
+subcommands, ``run``/``attach``/``mark``/``targets``/``doctor``/``ctl``, the
+helper container, the log tailers, the bash shim and ``setup.sh`` are gone
+(2.0.0).
 
 The collector (``_collect``) is standard library only: it must never import
-pandas or plotly (DESIGN.md section 1). The daemon's ``report`` verb renders a
-finished session by running this file's ``report`` subcommand under the report
-tier's interpreter.
+pandas or plotly (DESIGN.md section 1).
 """
 
 from __future__ import annotations
@@ -48,14 +45,6 @@ STOP_FILE = "collector.stop"
 DONE_FILE = "collector.done"
 DEFAULT_OUT = os.path.join(HERE, "runs")
 
-# RG55-INTERFACE-CONTRACT.md §1.8 — kept as literals here (rather than
-# imported from lib.serve) so `build_parser()` never has to import that
-# module just to read a default; `lib.serve.DEFAULT_SOCKET_PATH` /
-# `DEFAULT_SESSIONS_DIR` are the same two values (a test asserts the two
-# stay in sync, a drift guard, not a second source of truth).
-DEFAULT_CTL_SOCKET = "/run/cgprofile/ctl.sock"
-DEFAULT_CGPROFILE_SESSIONS = "/var/lib/cgprofile/sessions"
-
 
 # ── small helpers ───────────────────────────────────────────────────────────
 
@@ -66,18 +55,6 @@ def _err(message: str, code: int = 2) -> "NoReturn":  # type: ignore[valid-type]
 
 def _note(message: str) -> None:
     print(f"[cgprofile] {message}", file=sys.stderr, flush=True)
-
-
-def _require_reporting_deps() -> None:
-    """Fail with the fix, not with a traceback, when the report tier is missing."""
-    try:
-        import pandas  # noqa: F401
-        import plotly  # noqa: F401
-    except ImportError:
-        _err(
-            "reporting needs pandas and plotly (the report tier's interpreter); "
-            "the collected data is safe — re-run `report --run-dir <dir>` once they are installed."
-        )
 
 
 def _limits_snapshot(limits_mod, eff) -> Dict[str, object]:
@@ -326,140 +303,17 @@ class _nullcontext:
         return False
 
 
-# ── report tier (run by the daemon's `report` verb) ─────────────────────────
-
-def cmd_report(args: argparse.Namespace) -> int:
-    """Render a finished run directory's reports (needs pandas and plotly)."""
-    _require_reporting_deps()
-    from cgprofile import analyze, report_html, report_md
-    from cgprofile import store as store_mod
-
-    run_path = args.run_dir
-    run = store_mod.RunDir(os.path.dirname(run_path), os.path.basename(run_path), create=False)
-    analysis = analyze.build(run)
-    wrote = []
-    if not args.md_only:
-        wrote.append(report_html.render(
-            analysis, os.path.join(run_path, "report.html"), plotlyjs=args.plotlyjs))
-    if not args.html_only:
-        wrote.append(report_md.render(analysis, run_path))
-    for path in wrote:
-        print(path)
-    return 0
-
-
-# ── daemon ──────────────────────────────────────────────────────────────────
-
-def cmd_serve(args: argparse.Namespace) -> int:
-    """Run the profiling daemon. Refuses `--cap` structurally (this parser
-    defines no such flag — see build_parser()'s `serve_parser`) and refuses
-    to start unless its deployment explicitly selects the host PID namespace
-    and host proc/cgroup mounts expose the observations run-gate needs. The
-    cgroup namespace remains private (RG55-INTERFACE-CONTRACT.md §5).
-    """
-    if not access.have_host_cgroup_view(access.CGROUP_ROOT):
-        _err(
-            "serve needs the host cgroup v2 tree explicitly bind-mounted at "
-            f"{access.CGROUP_ROOT}; keep the cgroup namespace private "
-            "(RG55-INTERFACE-CONTRACT.md §5)"
-        )
-    if os.environ.get(access.PID_NAMESPACE_MODE_ENV) != "host":
-        _err(
-            "serve is the daemon-only host-PID mode: set "
-            f"{access.PID_NAMESPACE_MODE_ENV}=host and deploy the daemon with "
-            "the host PID namespace; workload, helper, gate, and test "
-            "containers must remain private (RG55-INTERFACE-CONTRACT.md §5)"
-        )
-    if not access.have_host_proc_view(access.PROC_ROOT):
-        _err(
-            "serve needs the host /proc tree explicitly bind-mounted read-only "
-            "and CGPROFILE_PROC_ROOT set to that mount; with "
-            f"{access.PID_NAMESPACE_MODE_ENV}=host, PID 1 in that view must "
-            "resolve to the daemon's PID namespace "
-            "(RG55-INTERFACE-CONTRACT.md §5)"
-        )
-    from cgprofile import serve as serve_mod
-
-    # Sol B4: Docker/systemd auto-create an uninstalled `cgprofile.slice`
-    # with no limits, and the daemon would appear governed while running
-    # unbounded. Refuse to serve unless the slice is provably bounded.
-    if not serve_mod.daemon_slice_bounded(access.CGROUP_ROOT, access.PROC_ROOT):
-        problem = serve_mod.daemon_slice_problem(access.CGROUP_ROOT, access.PROC_ROOT)
-        _err(
-            f"serve refuses to run: {serve_mod.DAEMON_SLICE_NAME} does not "
-            f"provably contain this daemon: {problem}. A missing unit makes "
-            "systemd auto-create an implicit slice with no limits (zero, "
-            "'max', unreadable and non-numeric memory.max are all refused; "
-            "zero is refused because a slice that can hold no memory is a "
-            "misconfiguration, not containment). Install infra/cgprofile.slice "
-            "on the Docker host (sudo cp infra/cgprofile.slice "
-            "/etc/systemd/system/ && sudo systemctl daemon-reload), verify "
-            "`systemctl show cgprofile.slice --property=LoadState,MemoryMax`, "
-            "then recreate the daemon container (its cgroup parent is chosen "
-            "at creation). LoadState itself cannot be read from inside the "
-            "container (CIU-150)"
-        )
-    observe_slices = tuple(
-        name for name in (s.strip() for s in args.observe_slices.split(",")) if name
-    ) if args.observe_slices else ()
-    # A slice name that cannot expand to a cgroup path (`a--b`, `-a`, one
-    # with a `/`) is refused at start: `ctl host` expands every observed
-    # slice and the gates slice on every call, and a late TargetError there
-    # would surface as a daemon fault (ctl exit 3) on every `host`/`status`.
-    for name in (*observe_slices, args.gates_slice):
-        try:
-            targets_mod.slice_to_path(name)
-        except targets_mod.TargetError as exc:
-            _err(f"--observe-slices/--gates-slice: {exc}")
-    # §8.1's socket-carrier uid allowlist. Deliberately environment-only
-    # (the compose template passes it through): it is a DEPLOYMENT trust
-    # decision, not a per-invocation one, and an operator who narrows access
-    # must not have it silently ignored — a malformed value refuses to start
-    # rather than falling back to "everyone the socket mode allows".
-    try:
-        allow_uids = serve_mod.parse_allow_uids(os.environ.get(serve_mod.ALLOW_UIDS_ENV))
-    except ValueError as exc:
-        _err(str(exc))
-    server = serve_mod.SessionServer(
-        sessions_dir=args.sessions,
-        socket_path=args.socket,
-        damon_default=args.damon_default,
-        interval=args.interval,
-        keep_sessions=args.keep_sessions,
-        keep_days=args.keep_days,
-        observe_slices=observe_slices,
-        max_sessions=args.max_sessions,
-        gates_slice_name=args.gates_slice,
-        allow_uids=allow_uids,
-    )
-    try:
-        # 0, or 3 when the control socket was lost and could not be rebound
-        # (CP-31): non-zero so `restart: unless-stopped` recreates the daemon.
-        return server.serve_forever() or 0
-    except serve_mod.ControlSocketError as exc:
-        # CP-34: a non-socket node or a live peer at the socket path.
-        _err(f"serve refuses to start: {exc.strerror}")
-
-
 # ── parser ──────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cgprofile-legacy",
-        description="Collector child, daemon entry and report subprocess; "
-                    "the user client is `cgpctl`.",
+        description="The collector child; the daemon is `cgpd`, the user client `cgpctl`.",
     )
     parser.add_argument(
         "--version", action="version", version=f"cgprofile {__version__}"
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
-
-    report_parser = sub.add_parser("report", help="render reports for a finished run")
-    report_parser.add_argument("--run-dir", required=True)
-    report_parser.add_argument("--html-only", action="store_true")
-    report_parser.add_argument("--md-only", action="store_true")
-    report_parser.add_argument("--plotlyjs", choices=("inline", "directory"), default="inline")
-    report_parser.set_defaults(func=cmd_report)
 
     collect_parser = sub.add_parser("_collect", help=argparse.SUPPRESS)
     collect_parser.add_argument("--run-dir", required=True)
@@ -474,36 +328,6 @@ def build_parser() -> argparse.ArgumentParser:
     collect_parser.add_argument("--damon", action="store_true")
     collect_parser.add_argument("--caps", default=None)
     collect_parser.set_defaults(func=cmd_collect)
-
-    serve_parser = sub.add_parser(
-        "serve", help="run the profiling daemon (RG55-INTERFACE-CONTRACT.md)"
-    )
-    # Deliberately no `--cap` flag: argparse itself rejects it, which is what
-    # "serve refuses --cap" means structurally.
-    serve_parser.add_argument("--sessions", default=DEFAULT_CGPROFILE_SESSIONS,
-                              help=f"sessions directory (default {DEFAULT_CGPROFILE_SESSIONS})")
-    serve_parser.add_argument("--socket", default=DEFAULT_CTL_SOCKET,
-                              help=f"control socket path (default {DEFAULT_CTL_SOCKET})")
-    serve_parser.add_argument("--damon-default", choices=("on", "off"), default="on",
-                              help="DAMON state a `start` with no --damon inherits")
-    serve_parser.add_argument("--interval", type=float, default=1.0,
-                              help="sampling cadence in seconds, fixed for a session's "
-                                   "whole lifetime (default 1.0)")
-    serve_parser.add_argument("--keep-sessions", type=int, default=200)
-    serve_parser.add_argument("--keep-days", type=int, default=14)
-    serve_parser.add_argument("--observe-slices", default="",
-                              help="comma-separated extra *.slice names for `ctl host`; a name "
-                                   "that is not a usable slice unit name (empty hierarchy "
-                                   "component such as a--b, or a /) refuses to start, exit 2 "
-                                   "(since 1.1.0; under a compose restart policy that is a "
-                                   "restart loop until the flag is fixed)")
-    serve_parser.add_argument("--max-sessions", type=int, default=16)
-    serve_parser.add_argument("--gates-slice", default="dev-gates.slice",
-                              help="mdt's admission-capacity slice C8 places leaves under "
-                                   "(RG55-INTERFACE-CONTRACT.md §8.3/§8.5; default "
-                                   "dev-gates.slice); an unusable unit name refuses to start "
-                                   "(exit 2), same as --observe-slices")
-    serve_parser.set_defaults(func=cmd_serve)
     return parser
 
 

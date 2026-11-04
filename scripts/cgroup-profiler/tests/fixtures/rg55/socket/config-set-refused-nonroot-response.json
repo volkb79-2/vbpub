@@ -1,0 +1,8 @@
+{
+  "ok": false,
+  "contract": 2,
+  "error": {
+    "code": "peer-refused",
+    "message": "set is allowed to uid 0 only (peer uid 1000)"
+  }
+}

@@ -2,5 +2,6 @@
   "ok": true,
   "contract": 1,
   "removed": [],
-  "kept": 2
+  "kept": 2,
+  "dry_run": false
 }

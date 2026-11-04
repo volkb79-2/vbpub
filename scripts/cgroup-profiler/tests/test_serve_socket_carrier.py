@@ -8,22 +8,20 @@ Four things are proven here, in rising cost:
   than silently read as a different, valid-looking request. That refusal is
   what makes "one shape, no compatibility branch" a checkable claim.
 * **Who may talk to it.** `SO_PEERCRED` on every accepted connection: uid 0
-  always (that is how the exec carrier arrives), everyone the socket mode
-  already admitted when no allowlist is configured, and only the listed
-  uids when `CGPROFILE_ALLOW_UIDS` is set — an unreadable credential is
-  refused in that last case, never waved through.
+  always, everyone the socket mode already admitted when no allowlist is
+  configured, and only the listed uids when `allow_uids` is set — an
+  unreadable credential is refused in that last case, never waved through.
 * **The permissions the daemon re-asserts at every start** (§8.1 "belt and
   braces"): `0770` on the directory, `root:<the directory's own gid>` and
   `0660` on the socket, and ONE INFO line when the directory is still
-  `root:root` (host-setup not installed — the socket is root-only, the exec
-  carrier is unaffected, and the daemon serves on regardless).
-* **Both carriers carry the same documents.** Every verb is run over the
-  socket carrier (a plain stdlib client, as P5 will write) and over the
-  exec carrier (the in-image `ctl` client invoked in-process against the
-  same socket — exactly what `docker exec … cgprofile ctl` runs) against
-  ONE serve loop, and the JSON is diffed. The socket-carrier documents are
-  also frozen as `fixtures/rg55/socket/<verb>-{request,response}.json`,
-  which is what P5 codes its client against.
+  `root:root` (host-setup not installed — the socket is root-only and the
+  daemon serves on regardless).
+* **Documents are stable.** Every verb is run over the socket carrier (a
+  plain stdlib client, as P5 wrote) against ONE serve loop, for two
+  sessions, and the JSON is diffed. The first session's documents are also
+  frozen as `fixtures/rg55/socket/<verb>-{request,response}.json`, which is
+  what the run-gate socket client is coded against. (The 1.x exec carrier
+  that used to be the diff's other half was removed in 2.0, PROTOCOL 10.2.)
 
 Determinism (the goldens depend on it): a fixed wall clock, fixed session
 ids, a per-thread counting sampler clock, a fake cgroup/proc tree, DAMON
@@ -47,8 +45,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
-import _ctl_reference as cg  # frozen 1.x contract-1 client (package 3 retires it)
-from cgprofile.cli import legacy as cg_real
 from cgprofile import damon as damon_mod, serve
 from tests.conftest import cgroup_files, write_cgroup
 
@@ -80,6 +76,9 @@ REGEN_ENV = "CGPROFILE_REGEN_SOCKET_GOLDENS"
 # untagged development build (whose runtime identity is 0.0.0-dev).
 FIXTURE_CGPROFILE_VERSION = "1.0.0"
 VERBS = ("version", "host", "start", "status", "stop", "report", "gc")
+#: golden file stem per verb when it differs: `report` is answered with the
+#: contract-1 `report-removed` error (PROTOCOL 10.7).
+GOLDEN_STEM = {"report": "report-removed"}
 # §8.2's streaming verb answers MANY lines on one connection, so its
 # response golden is the ARRAY of those lines rather than one object —
 # see the fixtures README.
@@ -221,19 +220,6 @@ def _fake_roots(tmp_path: Path) -> tuple:
     return root, proc
 
 
-def _stub_report_script(tmp_path: Path) -> str:
-    """A report tier that writes the file and nothing else — the real one
-    needs pandas/plotly, which this suite must not require to freeze the
-    `report` response SHAPE."""
-    script = tmp_path / "stub_report.py"
-    script.write_text(
-        "import os, sys\n"
-        "run_dir = sys.argv[sys.argv.index('--run-dir') + 1]\n"
-        "open(os.path.join(run_dir, 'report.html'), 'w').write('<html>stub</html>')\n"
-    )
-    return str(script)
-
-
 def _wait_for_socket(server: serve.SessionServer, thread: threading.Thread) -> None:
     # SessionServer assigns _sock only after bind() AND listen() succeed.  Wait
     # on that state instead of connecting a synthetic client: an extra
@@ -256,8 +242,8 @@ def _normalize(doc: Any, *, sessions_dir: str, socket_path: str,
 
 def _raw_socket_request(socket_path: str, req: Dict[str, Any]) -> Dict[str, Any]:
     """The socket carrier as a THIRD-PARTY client writes it (P5's own
-    client is stdlib `socket` too) — deliberately not `cg._ctl_roundtrip`,
-    so the parity diff compares two independent implementations."""
+    client is stdlib `socket` too) — deliberately not `ctlwire`, so the
+    goldens come from an implementation independent of the shipped client."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(10.0)
         client.connect(socket_path)
@@ -301,28 +287,26 @@ class _StreamReader:
                 self.buffer += chunk
 
 
-def _ctl_argv(verb: str, socket_path: str, session: Optional[str] = None,
-              token: Optional[str] = None) -> List[str]:
-    argv = ["ctl", "--socket", socket_path, verb]
-    if verb == "start":
-        argv += [
-            "--target", f"containerid:{CONTAINER_ID}", "--scope", "container-shared",
-            "--damon", "off", "--interval", "1.0", "--meta", json.dumps(META),
-        ]
-        if token is not None:
-            argv += ["--token", token]
-    elif session is not None:
-        argv += [session]
-    return argv
-
-
 def _request_for(verb: str, socket_path: str, session: Optional[str] = None,
                  token: Optional[str] = None) -> Dict[str, Any]:
-    """The §8.1 request built by the REFERENCE TRANSLATOR (§8.1 rule 2) —
-    the in-image `ctl` client's own `_ctl_request`, driven through the real
-    argument parser, never a hand-written dict."""
-    argv = _ctl_argv(verb, socket_path, session=session, token=token)
-    return cg._ctl_request(cg.build_parser().parse_args(argv))
+    """The §8.1 request a socket-carrier client writes for `verb`: the shape
+    the retired 1.x in-image `ctl` translator produced, kept here as the
+    wire oracle (the request goldens must stay byte-identical)."""
+    if verb == "start":
+        args: Dict[str, Any] = {
+            "target": f"containerid:{CONTAINER_ID}", "scope": "container-shared",
+            "token": token, "damon": "off", "interval": 1.0, "meta": META,
+            "progress_stream": None, "idle_bound": None, "ceiling": None,
+            "on_stall": None, "place": False, "memory_high": None, "memory_max": None,
+            "cpu_weight": None,
+        }
+    elif verb == "watch":
+        args = {"session": session, "watch_interval": 30}
+    elif verb in ("status", "stop", "report"):
+        args = {"session": session}
+    else:
+        args = {}
+    return {"verb": verb, "args": args, "contract": 1}
 
 
 def _force_stalled(server: serve.SessionServer, session_id: str) -> None:
@@ -341,19 +325,19 @@ def _force_stalled(server: serve.SessionServer, session_id: str) -> None:
 
 
 class _Scenario:
-    """Runs every verb over BOTH carriers against ONE serve loop.
+    """Runs every verb twice against ONE serve loop (a first and a second
+    session on separate connections).
 
     Call order is chosen so each verb is asked at a point where the answer
-    is identical for both carriers: `version`/`host`/`gc` are idempotent;
+    is identical both times: `version`/`host`/`gc` are idempotent;
     `status` is asked twice back to back while exactly one session is live;
-    `start`/`stop`/`report` get one session PER CARRIER (a second `start`
-    with the same token would legitimately answer `reused: true`), and the
-    second session's id/token are rewritten to the first's before the diff.
+    `start`/`stop`/`report` get one session EACH (a second `start` with the
+    same token would legitimately answer `reused: true`), and the second
+    session's id/token are rewritten to the first's before the diff.
     """
 
-    def __init__(self, tmp_path: Path, monkeypatch: Any, capsys: Any) -> None:
+    def __init__(self, tmp_path: Path, monkeypatch: Any) -> None:
         self.tmp_path = tmp_path
-        self.capsys = capsys
         self.sessions_dir = str(tmp_path / "sessions")
         self.socket_path = str(tmp_path / "run" / "ctl.sock")
         observer_dir = tmp_path / "observer"
@@ -369,13 +353,12 @@ class _Scenario:
             cgroup_root=str(root), proc_root=str(proc),
             clock=lambda: EPOCH_START, sampler_clock=_per_thread_counting_clock(),
             sampler_sleep=self.barrier, session_id_fn=lambda: next(ids),
-            accept_timeout=0.05, report_python=sys.executable,
-            report_script=_stub_report_script(tmp_path),
+            accept_timeout=0.05,
         )
         self.barrier.server = self.server
         self.thread = threading.Thread(target=self.server._accept_loop, daemon=True)
         self.socket_docs: Dict[str, Dict[str, Any]] = {}
-        self.exec_docs: Dict[str, Dict[str, Any]] = {}
+        self.second_docs: Dict[str, Dict[str, Any]] = {}
 
     def __enter__(self) -> "_Scenario":
         self.thread.start()
@@ -392,13 +375,13 @@ class _Scenario:
         req = _request_for(verb, self.socket_path, **kw)
         return self._record(self.socket_docs, verb, req, _raw_socket_request(self.socket_path, req))
 
-    def _over_exec(self, verb: str, **kw: Any) -> Dict[str, Any]:
+    def _over_second(self, verb: str, **kw: Any) -> Dict[str, Any]:
+        """The same verb for the SECOND session on a fresh connection; the
+        diff against the first session's document proves the daemon answers
+        identically per session (the exec carrier that used to be the
+        second half of this parity is gone, PROTOCOL 10.2)."""
         req = _request_for(verb, self.socket_path, **kw)
-        self.capsys.readouterr()
-        rc = cg.main(_ctl_argv(verb, self.socket_path, **kw))
-        resp = json.loads(self.capsys.readouterr().out)
-        assert rc == (0 if resp.get("ok") else 2), (verb, rc, resp)
-        return self._record(self.exec_docs, verb, req, resp)
+        return self._record(self.second_docs, verb, req, _raw_socket_request(self.socket_path, req))
 
     def _record(self, into: Dict[str, Dict[str, Any]], verb: str,
                 req: Dict[str, Any], resp: Dict[str, Any]) -> Dict[str, Any]:
@@ -417,33 +400,27 @@ class _Scenario:
     def run(self) -> None:
         for verb in ("version", "host"):
             self._over_socket(verb)
-            self._over_exec(verb)
+            self._over_second(verb)
 
-        started = self._over_socket("start", token=TOKEN_A)
+        started =self._over_socket("start", token=TOKEN_A)
         assert started["ok"] is True and started["session"] == SESSION_ID, started
         self.barrier.release_start(SESSION_ID)
         assert self.barrier.event_for(SESSION_ID).wait(timeout=10.0)
 
-        # Exactly one session live, one sample taken: both carriers must see
-        # the identical listing.
+        # Exactly one session live, one sample taken: both connections must
+        # see the identical listing.
         self._over_socket("status")
-        self._over_exec("status")
+        self._over_second("status")
 
         # The single-session form uses the same contract timestamp as the
-        # listing. Exercise the shipped CLI against the live socket: a raw
-        # response without top-level `at` used to be accepted by the server
-        # but rejected by its own reference translator with exit 3.
+        # listing (a raw response without top-level `at` used to be accepted
+        # by the server but rejected by the 1.x client with exit 3).
         specific_req = _request_for("status", self.socket_path, session=SESSION_ID)
         specific_socket = _raw_socket_request(self.socket_path, specific_req)
-        self.capsys.readouterr()
-        specific_rc = cg.main(_ctl_argv("status", self.socket_path, session=SESSION_ID))
-        specific_exec = json.loads(self.capsys.readouterr().out)
-        assert specific_rc == 0
-        assert specific_exec == specific_socket
-        assert specific_exec["at"] == "2026-09-12T10:15:00Z"
-        assert specific_exec["session"]["session"] == SESSION_ID
+        assert specific_socket["at"] == "2026-09-12T10:15:00Z"
+        assert specific_socket["session"]["session"] == SESSION_ID
 
-        started_b = self._over_exec("start", token=TOKEN_B)
+        started_b = self._over_second("start", token=TOKEN_B)
         assert started_b["session"] == SESSION_ID_2, started_b
         self.barrier.release_start(SESSION_ID_2)
         assert self.barrier.event_for(SESSION_ID_2).wait(timeout=10.0)
@@ -482,26 +459,26 @@ class _Scenario:
                                    socket_path=self.socket_path,
                                    observer_socket_path=self.observer_socket_path),
         }
-        self._over_exec("stop", session=SESSION_ID_2)
+        self._over_second("stop", session=SESSION_ID_2)
         self._over_socket("report", session=SESSION_ID)
-        self._over_exec("report", session=SESSION_ID_2)
+        self._over_second("report", session=SESSION_ID_2)
         self._over_socket("gc")
-        self._over_exec("gc")
+        self._over_second("gc")
 
 
 def _rewrite_second_session(doc: Any) -> Any:
-    """The exec carrier drives the SECOND session (a carrier cannot start
-    the same token twice without legitimately answering `reused: true`), so
-    its id and token are rewritten to the first's before the diff. Nothing
-    else is touched — every other byte must already match."""
+    """The scenario drives a SECOND session (starting the same token twice
+    would legitimately answer `reused: true`), so its id and token are
+    rewritten to the first's before the diff. Nothing else is touched —
+    every other byte must already match."""
     text = json.dumps(doc)
     return json.loads(text.replace(SESSION_ID_2, SESSION_ID).replace(TOKEN_B, TOKEN_A))
 
 
 @pytest.fixture
-def scenario(tmp_path, monkeypatch, capsys):
+def scenario(tmp_path, monkeypatch):
     monkeypatch.setattr(serve, "CGPROFILE_VERSION", FIXTURE_CGPROFILE_VERSION)
-    with _Scenario(tmp_path, monkeypatch, capsys) as sc:
+    with _Scenario(tmp_path, monkeypatch) as sc:
         sc.run()
         yield sc
 
@@ -609,7 +586,7 @@ class TestWireShape:
             sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
             accept_timeout=0.05, request_line_timeout=0.4,
         )
-        server.handle_stop = lambda _args: server._error_response(
+        server.handle_stop = lambda _args, *_ctx: server._error_response(
             "unknown-session", "no session"
         )
         thread = threading.Thread(target=server._accept_loop, daemon=True)
@@ -696,7 +673,7 @@ class TestWireShape:
         wire = _wire_bytes("version")
         assert wire.endswith(b"\n")
         conn = _AdvancingConn([wire[:-2], wire[-2:]])
-        server._dispatch = lambda _request: pytest.fail(
+        server._dispatch = lambda _request, *_peer: pytest.fail(
             "a request completed at the deadline was dispatched"
         )
 
@@ -801,9 +778,10 @@ class TestWireShape:
 
     def test_refuses_a_foreign_contract_major(self, tmp_path):
         server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
-        resp = server._dispatch({"verb": "version", "args": {}, "contract": 2})
+        resp = server._dispatch({"verb": "version", "args": {}, "contract": 3})
         assert resp["error"]["code"] == "bad-argument"
-        assert "contract 2" in resp["error"]["message"]
+        assert "contract 3" in resp["error"]["message"]
+        assert resp["contract"] == 1
 
     def test_boolean_is_not_the_integer_contract_version(self, tmp_path):
         server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
@@ -847,30 +825,6 @@ class TestWireShape:
 
 # ── §8.1: peer credentials ──────────────────────────────────────────────
 
-class TestParseAllowUids:
-    def test_unset_and_empty_mean_no_allowlist(self):
-        assert serve.parse_allow_uids(None) is None
-        assert serve.parse_allow_uids("") is None
-        assert serve.parse_allow_uids("  ") is None
-
-    def test_parses_a_list_and_drops_duplicates(self):
-        assert serve.parse_allow_uids("0, 1000 ,1003,1000") == [0, 1000, 1003]
-
-    def test_a_malformed_entry_raises(self):
-        with pytest.raises(ValueError) as exc_info:
-            serve.parse_allow_uids("1000,vscode")
-        assert "vscode" in str(exc_info.value)
-
-    @pytest.mark.parametrize("value", [",,", "1000,", ",1000", "1000,,1001"])
-    def test_empty_entries_in_a_configured_list_raise(self, value):
-        with pytest.raises(ValueError, match="empty entries"):
-            serve.parse_allow_uids(value)
-
-    def test_a_negative_uid_raises(self):
-        with pytest.raises(ValueError):
-            serve.parse_allow_uids("-1")
-
-
 class TestPeerCredentials:
     def _server(self, tmp_path, **kw):
         return serve.SessionServer(sessions_dir=str(tmp_path / "sessions"), **kw)
@@ -894,7 +848,7 @@ class TestPeerCredentials:
         assert conn.reply() == {
             "ok": False, "contract": 1,
             "error": {"code": "peer-refused",
-                      "message": "peer uid 1234 is not in CGPROFILE_ALLOW_UIDS"},
+                      "message": "peer uid 1234 is not in allow_uids"},
         }
         assert conn.closed is True
 
@@ -1040,82 +994,6 @@ class TestPeerCredentials:
             thread.join(timeout=5.0)
 
 
-class TestServeCliAllowUids:
-    @pytest.fixture(autouse=True)
-    def _daemon_pid_namespace_mode(self, monkeypatch):
-        monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
-        # Sol B4: `serve` refuses an unbounded cgprofile.slice; these tests
-        # are about the allowlist, so the slice is provably bounded here.
-        monkeypatch.setattr(serve, "daemon_slice_bounded", lambda *_a: True)
-
-    def _serve_argv(self, tmp_path):
-        return ["serve", "--sessions", str(tmp_path / "sessions"),
-                "--socket", str(tmp_path / "ctl.sock")]
-
-    def test_the_environment_reaches_the_server(self, tmp_path, monkeypatch):
-        captured: Dict[str, Any] = {}
-        monkeypatch.setenv(serve.ALLOW_UIDS_ENV, "0,1000")
-        monkeypatch.setattr(cg.access, "have_host_cgroup_view", lambda _root: True)
-        monkeypatch.setattr(cg.access, "have_host_proc_view", lambda _root: True)
-
-        class _FakeServer:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-            def serve_forever(self):
-                return None
-
-        monkeypatch.setattr(serve, "SessionServer", _FakeServer)
-        assert cg_real.main(self._serve_argv(tmp_path)) == 0
-        assert captured["allow_uids"] == [0, 1000]
-
-    def test_an_unset_environment_is_no_allowlist(self, tmp_path, monkeypatch):
-        captured: Dict[str, Any] = {}
-        monkeypatch.delenv(serve.ALLOW_UIDS_ENV, raising=False)
-        monkeypatch.setattr(cg.access, "have_host_cgroup_view", lambda _root: True)
-        monkeypatch.setattr(cg.access, "have_host_proc_view", lambda _root: True)
-
-        class _FakeServer:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-            def serve_forever(self):
-                return None
-
-        monkeypatch.setattr(serve, "SessionServer", _FakeServer)
-        assert cg_real.main(self._serve_argv(tmp_path)) == 0
-        assert captured["allow_uids"] is None
-
-    def test_a_malformed_environment_refuses_to_start(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setenv(serve.ALLOW_UIDS_ENV, "1000,,1001")
-        monkeypatch.setattr(cg.access, "have_host_cgroup_view", lambda _root: True)
-        monkeypatch.setattr(cg.access, "have_host_proc_view", lambda _root: True)
-        monkeypatch.setattr(
-            serve, "SessionServer",
-            lambda **kw: pytest.fail("the daemon must not start with a bad allowlist"),
-        )
-        with pytest.raises(SystemExit) as exc_info:
-            cg_real.main(self._serve_argv(tmp_path))
-        assert exc_info.value.code == 2
-        assert "CGPROFILE_ALLOW_UIDS" in capsys.readouterr().err
-
-    @pytest.mark.parametrize("value", [",,", "1000,"])
-    def test_empty_environment_entries_refuse_to_start(
-        self, tmp_path, monkeypatch, capsys, value
-    ):
-        monkeypatch.setenv(serve.ALLOW_UIDS_ENV, value)
-        monkeypatch.setattr(cg.access, "have_host_cgroup_view", lambda _root: True)
-        monkeypatch.setattr(cg.access, "have_host_proc_view", lambda _root: True)
-        monkeypatch.setattr(
-            serve, "SessionServer",
-            lambda **kw: pytest.fail("the daemon must not start with a bad allowlist"),
-        )
-        with pytest.raises(SystemExit) as exc_info:
-            cg_real.main(self._serve_argv(tmp_path))
-        assert exc_info.value.code == 2
-        assert "CGPROFILE_ALLOW_UIDS" in capsys.readouterr().err
-
-
 # ── §8.1: the permissions asserted at every start ───────────────────────
 
 class TestSocketPermissions:
@@ -1247,7 +1125,7 @@ class TestVersionTransports:
             sessions_dir=str(tmp_path / "sessions"), socket_path="/run/cgprofile/ctl.sock",
         )
         assert server.handle_version({})["transports"] == {
-            "exec": True,
+            "exec": False,
             "socket": {"path": "/run/cgprofile/ctl.sock", "listening": False,
                        "allow_uids": [], "peer_cred": True},
         }
@@ -1290,8 +1168,8 @@ def test_socket_goldens_are_the_live_documents(scenario):
     codes the run-gate socket client against."""
     for verb in VERBS:
         docs = scenario.socket_docs[verb]
-        _check_golden(f"{verb}-request.json", docs["request"])
-        _check_golden(f"{verb}-response.json", docs["response"])
+        _check_golden(f"{GOLDEN_STEM.get(verb, verb)}-request.json", docs["request"])
+        _check_golden(f"{GOLDEN_STEM.get(verb, verb)}-response.json", docs["response"])
 
 
 def test_every_verb_is_covered_by_a_golden():
@@ -1302,10 +1180,15 @@ def test_every_verb_is_covered_by_a_golden():
     # C7: `watch` is a verb the daemon answers but NOT through `_dispatch`
     # (it streams, `_handle_connection` hands it to its own thread), so it
     # is listed separately and covered by its own goldens.
-    assert set(STREAMING) == set(serve.STREAMING_VERBS)
+    # Contract 2's `export` streams too; its goldens (request + NDJSON
+    # stream) are produced and checked by tests/test_serve_export.py.
+    assert set(STREAMING) | {"export"} == set(serve.STREAMING_VERBS)
+    assert _golden("export-request.json").is_file()
+    assert _golden("export-response.ndjson").is_file()
     for verb in VERBS + STREAMING:
-        assert _golden(f"{verb}-request.json").is_file()
-        assert _golden(f"{verb}-response.json").is_file()
+        stem = GOLDEN_STEM.get(verb, verb)
+        assert _golden(f"{stem}-request.json").is_file()
+        assert _golden(f"{stem}-response.json").is_file()
 
 
 def test_watch_request_golden_is_unchanged_by_its_implementation(scenario):
@@ -1382,17 +1265,18 @@ def test_watch_asked_of_the_single_response_path_is_not_streaming(tmp_path):
     assert "watch" in resp["error"]["message"]
 
 
-def test_both_carriers_carry_identical_documents(scenario):
-    """§8.1 rule 1: "every verb, response, error code and the `contract`
-    field are IDENTICAL on both carriers — a consumer may diff them". This
-    is that diff, against ONE serve loop."""
+def test_a_second_session_gets_identical_documents(scenario):
+    """Every verb, response, error code and the `contract` field are the
+    same for a second session on a fresh connection (ids and tokens aside).
+    The old "both carriers identical" diff reduced to its meaningful half:
+    the exec carrier is gone (PROTOCOL 10.2)."""
     assert set(scenario.socket_docs) == set(VERBS)
-    assert set(scenario.exec_docs) == set(VERBS)
+    assert set(scenario.second_docs) == set(VERBS)
     for verb in VERBS:
-        over_socket = scenario.socket_docs[verb]
-        over_exec = _rewrite_second_session(scenario.exec_docs[verb])
-        assert over_exec["request"] == over_socket["request"], f"{verb}: request differs"
-        assert over_exec["response"] == over_socket["response"], f"{verb}: response differs"
+        first = scenario.socket_docs[verb]
+        second = _rewrite_second_session(scenario.second_docs[verb])
+        assert second["request"] == first["request"], f"{verb}: request differs"
+        assert second["response"] == first["response"], f"{verb}: response differs"
 
 
 def test_the_scenario_actually_exercised_a_session(scenario):
@@ -1406,4 +1290,8 @@ def test_the_scenario_actually_exercised_a_session(scenario):
     stop = scenario.socket_docs["stop"]["response"]
     assert stop["already_stopped"] is False
     assert stop["summary"]["schema"] == 1
-    assert scenario.socket_docs["report"]["response"]["path"].endswith("/report.html")
+    # `report` is removed (PROTOCOL 10.1): its golden is the contract-1
+    # `report-removed` answer a 2.x daemon gives a 1.x client.
+    report = scenario.socket_docs["report"]["response"]
+    assert report["ok"] is False and report["contract"] == 1
+    assert report["error"]["code"] == "report-removed"

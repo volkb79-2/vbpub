@@ -1,9 +1,14 @@
 {
   "ok": true,
   "contract": 1,
+  "contracts": [
+    1,
+    2
+  ],
   "cgprofile": "1.0.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
+    "version": "1.0.0",
     "started_at": "2026-09-12T10:15:00Z",
     "damon": "available",
     "damon_default": "on",
@@ -11,7 +16,7 @@
     "max_sessions": 16
   },
   "transports": {
-    "exec": true,
+    "exec": false,
     "socket": {
       "path": "/run/cgprofile/ctl.sock",
       "listening": true,

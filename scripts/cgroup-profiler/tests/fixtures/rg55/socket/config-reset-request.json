@@ -1,0 +1,7 @@
+{
+  "verb": "config-reset",
+  "args": {
+    "key": "keep_days"
+  },
+  "contract": 2
+}

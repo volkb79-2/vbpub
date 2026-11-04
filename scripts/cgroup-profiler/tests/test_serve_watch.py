@@ -35,8 +35,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-import _ctl_reference as cg  # frozen 1.x contract-1 client (package 3 retires it)
-from cgprofile import damon as damon_mod, liveness, serve
+from cgprofile import ctlwire, damon as damon_mod, liveness, serve
 from cgprofile import store as store_mod, summary as summary_mod
 from tests.conftest import cgroup_files, write_cgroup
 
@@ -940,46 +939,21 @@ class TestEdges:
         server._watch_connection(_BrokenConn(), {"session": None, "watch_interval": 30})
         assert seen.get("flush") is True
 
-    def test_a_blank_line_in_a_stream_is_skipped_by_the_client(self, tmp_path, capsys):
-        # Nothing the daemon writes produces one, but `_ctl_stream` is the
-        # consumer-side reference and must not print or parse an empty line.
-        socket_path = str(tmp_path / "fake.sock")
-        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server_sock.bind(socket_path)
-        server_sock.listen(1)
-
-        def serve_once() -> None:
-            conn, _ = server_sock.accept()
-            with conn:
-                conn.recv(65536)
-                conn.sendall(b"\n\n" + json.dumps(
-                    {"contract": 1, "event": "end", "session": SESSION_ID,
-                     "at": "2026-09-12T10:15:00Z", "reason": "stopped"}
-                ).encode("utf-8") + b"\n")
-        thread = threading.Thread(target=serve_once, daemon=True)
-        thread.start()
-        try:
-            rc = cg.main(["ctl", "--socket", socket_path, "watch", SESSION_ID])
-        finally:
-            thread.join(timeout=5.0)
-            server_sock.close()
-        assert rc == 0
-        assert [line for line in capsys.readouterr().out.splitlines() if line == ""] == []
 
 
-class TestWatchOverExec:
-    """The exec carrier: `cgprofile ctl watch` holds the connection open and
-    forwards each line with a flush (§8.2 "one long-lived docker exec whose
-    stdout the consumer reads line by line")."""
+class TestWatchThroughTheShippedClient:
+    """`cgprofile.ctlwire.watch_lines`, the client `cgpctl watch` uses,
+    against a real streaming daemon (its fault handling is covered by
+    tests/test_ctlwire.py)."""
 
-    def test_ctl_watch_forwards_every_line_and_exits_0(self, streaming_server, capsys):
+    def test_the_client_reads_every_line_until_the_one_end(self, streaming_server):
         server = streaming_server
         server._dispatch({"verb": "start", "args": _start_args(), "contract": 1})
         sess = server._sessions[SESSION_ID]
         result: Dict[str, Any] = {}
 
         def run() -> None:
-            result["rc"] = cg.main(["ctl", "--socket", server.socket_path, "watch", SESSION_ID])
+            result["lines"] = list(ctlwire.watch_lines(server.socket_path, SESSION_ID, None))
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
@@ -988,98 +962,26 @@ class TestWatchOverExec:
         time.sleep(0.2)
         server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
         thread.join(timeout=15.0)
-        assert result.get("rc") == 0
-        lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line]
-        events = [line["event"] for line in lines]
+        events = [line["event"] for line in result["lines"]]
         assert events.count("end") == 1
         assert events.count("verdict") == 1
         assert events.count("reading") >= 2
-        assert lines[-1]["event"] == "end"
+        assert events[-1] == "end"
 
-    @pytest.mark.parametrize("ending", [b"", b'{"event":"end"'])
-    def test_a_watch_disconnected_before_a_complete_end_is_exit_3(
-        self, tmp_path, capsys, ending,
-    ):
-        socket_path = str(tmp_path / "truncated.sock")
-        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server_sock.bind(socket_path)
-        server_sock.listen(1)
+    def test_an_unknown_session_is_a_single_refusal(self, streaming_server):
+        with pytest.raises(ctlwire.WireFailure) as caught:
+            list(ctlwire.watch_lines(streaming_server.socket_path, "s-20260912T000000Z-0000", None))
+        assert caught.value.code == "unknown-session" and caught.value.exit_code == 2
 
-        def serve_once() -> None:
-            conn, _ = server_sock.accept()
-            with conn:
-                conn.recv(65536)
-                conn.sendall(
-                    b'{"contract":1,"event":"reading","session":"s-test"}\n' + ending
-                )
+    def test_the_interval_travels_verbatim(self, streaming_server):
+        seen: List[Dict[str, Any]] = []
+        original = streaming_server._watch_prepare
 
-        thread = threading.Thread(target=serve_once, daemon=True)
-        thread.start()
-        try:
-            rc = cg.main(["ctl", "--socket", socket_path, "watch", SESSION_ID])
-        finally:
-            thread.join(timeout=60.0)  # suite failsafe, not a verdict clock
-            server_sock.close()
-        assert rc == 3
-        assert json.loads(capsys.readouterr().out.splitlines()[0])["event"] == "reading"
+        def spy(args):
+            seen.append(dict(args))
+            return original(args)
 
-    def test_two_end_events_are_a_transport_fault(self, tmp_path):
-        socket_path = str(tmp_path / "duplicate-end.sock")
-        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server_sock.bind(socket_path)
-        server_sock.listen(1)
-
-        def serve_once() -> None:
-            conn, _ = server_sock.accept()
-            with conn:
-                conn.recv(65536)
-                end = json.dumps({"contract": 1, "event": "end", "session": SESSION_ID})
-                conn.sendall((end + "\n" + end + "\n").encode())
-
-        thread = threading.Thread(target=serve_once, daemon=True)
-        thread.start()
-        try:
-            rc = cg.main(["ctl", "--socket", socket_path, "watch", SESSION_ID])
-        finally:
-            thread.join(timeout=60.0)
-            server_sock.close()
-        assert rc == 3
-
-    def test_an_unknown_session_over_exec_is_one_line_and_exit_2(self, streaming_server, capsys):
-        rc = cg.main([
-            "ctl", "--socket", streaming_server.socket_path, "watch", "s-20260912T000000Z-0000",
-        ])
-        assert rc == 2
-        out = [line for line in capsys.readouterr().out.splitlines() if line]
-        assert len(out) == 1
-        assert json.loads(out[0])["error"]["code"] == "unknown-session"
-
-    def test_an_unreachable_daemon_is_exit_3(self, tmp_path, capsys):
-        rc = cg.main(["ctl", "--socket", str(tmp_path / "nope.sock"), "watch", SESSION_ID])
-        assert rc == 3
-        assert capsys.readouterr().out == ""
-
-    def test_the_watch_request_is_built_by_the_reference_translator(self):
-        args = cg.build_parser().parse_args(["ctl", "watch", SESSION_ID])
-        assert cg._ctl_request(args) == {
-            "verb": "watch", "args": {"session": SESSION_ID, "watch_interval": 30},
-            "contract": 1,
-        }
-        args = cg.build_parser().parse_args(
-            ["ctl", "watch", SESSION_ID, "--watch-interval", "12.5"]
-        )
-        assert cg._ctl_request(args)["args"]["watch_interval"] == 12.5
-
-    def test_the_start_policy_options_are_forwarded_verbatim(self):
-        args = cg.build_parser().parse_args([
-            "ctl", "start", "--target", f"containerid:{CONTAINER_ID}",
-            "--scope", "container-shared", "--meta", json.dumps(META),
-            "--progress-stream", "/run/lane/p.ndjson", "--idle-bound", "auto",
-            "--ceiling", "900", "--on-stall", "kill",
-        ])
-        req = cg._ctl_request(args)
-        assert req["args"]["progress_stream"] == "/run/lane/p.ndjson"
-        # Verbatim: the strings the caller typed, for the daemon to judge.
-        assert req["args"]["idle_bound"] == "auto"
-        assert req["args"]["ceiling"] == "900"
-        assert req["args"]["on_stall"] == "kill"
+        streaming_server._watch_prepare = spy
+        with pytest.raises(ctlwire.WireFailure):
+            list(ctlwire.watch_lines(streaming_server.socket_path, "s-20260912T000000Z-0000", 12.5))
+        assert seen == [{"session": "s-20260912T000000Z-0000", "watch_interval": 12.5}]

@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-52
 title: "PROTOCOL contract 2 gc has no dry_run / keep / keep_days arguments, but CGPCTL-SPEC prune needs them (daemon half belongs to package 3)"
-status: open
+status: fixed
 type: "feature"
 component: "serve"
 priority: 2
@@ -34,3 +34,7 @@ where a dry run removes nothing; a non-root peer's candidates are restricted to 
 
 A dry run leaves the sessions directory byte-identical; a non-owner peer never sees or removes another uid's session; over-maximum
 arguments return `bad-argument`.
+
+## Updates
+
+**2026-11-04** FIXED in 1c7df3d53 / d9347fe21 (cgp2 package 3): contract-2 `gc` takes `dry_run`, `keep`, `keep_days`, is owner-scoped, and rejects over-maximum arguments with `bad-argument`.
