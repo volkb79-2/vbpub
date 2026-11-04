@@ -43,7 +43,7 @@ tls-edge by construction; `tests/test_isolation.py` pins that.
 ```bash
 cd /workspaces/vbpub
 ciu env generate --root-folder voice-screen-share/mattermore     # creates this project's OWN network
-ciu up --dir voice-screen-share/mattermore -y --dry-run --root-folder voice-screen-share/mattermore
+ciu up --dir voice-screen-share/mattermore --yes --dry-run --root-folder voice-screen-share/mattermore
 ```
 
 Status: rendered and validated only (`ciu up --dry-run`: render, secrets, governance, leak

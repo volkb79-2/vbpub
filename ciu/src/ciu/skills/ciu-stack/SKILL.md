@@ -87,7 +87,7 @@ flock "/tmp/${REPO_NAME}-${INSTANCE_ID}-testrunner.lock" \
 
 ## Teardown
 
-`ciu worktree rm <name> -y` from main (runs `ciu clean`, then removes the
+`ciu worktree rm <name> --yes` from main (runs `ciu clean`, then removes the
 checkout). Check `git status --short` first if the instance might hold
 deliberate scratch edits worth keeping. For a Mode-B stack, teardown must
 resolve BOTH volume prefixes (`<branch>-<instance>-*` AND bare `<branch>-*`)

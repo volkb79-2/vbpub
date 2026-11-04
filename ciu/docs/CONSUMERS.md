@@ -373,7 +373,7 @@ Only one branch name is accepted, `all` is refused, and `-y` does not imply
 consent. For example:
 
 ```console
-ciu worktree rm pkg-under-test -y --discard-changes pkg-under-test
+ciu worktree rm pkg-under-test --yes --discard-changes pkg-under-test
 ```
 
 CIU rechecks these paths after cleanup and refuses if a new tracked or
@@ -440,7 +440,7 @@ checkout's reported branch is `feature/api-retry`, rerun the named checkout
 with that exact branch value:
 
 ```console
-ciu worktree rm pkg-under-test -y --root-escalation feature/api-retry
+ciu worktree rm pkg-under-test --yes --root-escalation feature/api-retry
 ```
 
 If the failure document printed a retry command, use that command so the
@@ -504,9 +504,9 @@ merged-protected:
       ignored .assay [protected] 4 file(s), 8192 bytes
 ```
 
-Survey only — nothing is removed. `-y` removes `prunable` branches and keeps
+Survey only — nothing is removed. `--yes` removes `prunable` branches and keeps
 `merged-protected` branches with a named skip reason. To authorize one
-protected branch, name it exactly: `ciu worktree branches -y
+protected branch, name it exactly: `ciu worktree branches --yes
 --discard-protected-state feat/assay`. The option is repeatable for separate
 exact branch names; it accepts no glob or `all`. A failed ignored-state
 enumeration is `merged-ignored-unknown`, never an empty inventory, and is
@@ -605,9 +605,9 @@ unattributable and are NEVER reaped ...
 **See the exact commands, then run them.**
 
 ```bash
-ciu worktree reap -y --dry-run          # prints, executes nothing
-ciu worktree reap -y                    # reaps the four provable categories
-ciu worktree reap -y --category orphaned  # narrow it further
+ciu worktree reap --yes --dry-run          # prints, executes nothing
+ciu worktree reap --yes                    # reaps the four provable categories
+ciu worktree reap --yes --category orphaned  # narrow it further
 ```
 
 What the categories guarantee:
@@ -624,7 +624,7 @@ What the categories guarantee:
   selection. There is no flag anywhere that forces them, because those
   categories mean exactly that no proof of ownership exists. Your unrelated
   compose projects on the same host land here and are safe.
-- **A surviving checkout is disposed of by `ciu clean -y` run inside it**,
+- **A surviving checkout is disposed of by `ciu clean --yes` run inside it**,
   never by a bare `docker rm`: `clean` knows the rendered config, the `vol-*`
   host directories and the privileged removal helper. If that clean fails,
   reap reports it and stops — it does not second-guess it.
@@ -884,12 +884,12 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
 ## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
 
 ```console
-$ ciu clean -y                      # in a managed worktree instance
+$ ciu clean --yes                   # in a managed worktree instance
 [INFO] Removed 2 network(s): myapp-abc123-network, myapp-dev-vault_default
 [SUCCESS] clean complete
 $ docker network ls | grep myapp-abc123   # → nothing; zero identity objects remain
 
-$ ciu clean -y                      # in the MAIN workspace (no instance record)
+$ ciu clean --yes                   # in the MAIN workspace (no instance record)
 [INFO] kept: myapp-abc123-network (workspace network of the main workspace (devcontainer residence))
 [SUCCESS] clean complete (kept: myapp-abc123-network)
 ```
@@ -923,7 +923,7 @@ removed like any other stack's:
 ```console
 $ ciu up --dir vendor/vault --shipped
 [INFO] [S8.7] deploy.project_name/environment_tag not set — shipped stack uses the workspace-identity compose project 'myapp-abc123-vault'
-$ ciu clean -y
+$ ciu clean --yes
 [INFO] Removing 2 container(s): myapp-abc123-vault-vault-1, myapp-abc123-vault-vault-init
 [SUCCESS] clean complete
 ```
@@ -948,7 +948,7 @@ exactly where they are — that has always been true and does not change. When
 you want a workspace back at freshly-CLONED state, ask for it explicitly:
 
 ```console
-$ ciu clean --vanilla -y
+$ ciu clean --vanilla --yes
 [SUCCESS] clean complete
 [INFO] --vanilla: removed ciu.global.toml, ciu.env, ciu.global.instance.toml.j2, ciu.instance.generated.toml
 ```
@@ -1229,7 +1229,7 @@ actually proves something:
 $ ciu env generate
 $ rm ciu.env
 $ ciu status --json | head -3        # still names your compose projects
-$ ciu clean -y                       # still finds and removes your network
+$ ciu clean --yes                    # still finds and removes your network
 ```
 
 That one is weaker than it looks — CIU regenerates the export it no longer
@@ -1620,9 +1620,9 @@ CIU-84 — so does everything ahead of it in the orchestrator: `ciu check
 --json`'s stdout is now the JSON document and nothing else (verified with
 `json.loads` on the full captured stdout, not a substring check), so a plain
 `ciu check --json | jq` works without skipping any leading `[INFO]` lines.
-The same fix applies to `ciu graph --format json`'s orchestrator-level
+The same fix applies to `ciu graph --json`'s orchestrator-level
 prose; `action_graph`'s own internal notes/errors are a narrower, still-open
-gap (CIU-86) — `ciu graph --format json` piped straight into `jq` can still
+gap (CIU-86) — `ciu graph --json` piped straight into `jq` can still
 see a stray line on its error/empty-graph paths, though not on the common
 "the graph rendered cleanly" path.
 

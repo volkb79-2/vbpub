@@ -34,7 +34,7 @@ renders.
 ```bash
 cd /workspaces/vbpub
 ciu env generate --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server   # first time only; also creates the instance network
-ciu up --dir voice-screen-share/mattermost-server -y
+ciu up --dir voice-screen-share/mattermost-server --yes
 ```
 
 (The flag is `--root-folder`; ciu 7.15 has no `--define-root`. This root declares
@@ -445,7 +445,7 @@ The public endpoint is already enabled. `expose_public = true` adds the
 Mattermost service to `ingress_public`, installs its HTTPS router labels, and
 sets `SiteURL` to `https://mattermost.gstammtisch.dchive.de`. To make the
 service private again, change that value to `false` and run the supported
-`ciu up --dir voice-screen-share/mattermost-server -y` workflow. That removes the edge route and
+`ciu up --dir voice-screen-share/mattermost-server --yes` workflow. That removes the edge route and
 restores the internal `SiteURL`; it also makes the service unavailable to
 clients outside the host. Account provisioning is independent of this network
 switch. Calls additionally needs the edge's TCP and UDP media route; see the
@@ -601,7 +601,7 @@ ciu down --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
 docker rm <container_prefix>-mattermost <container_prefix>-mattermost-db   # no -v: named volumes survive
 
 # 2. let ciu create the hostdirs with the right ownership
-ciu up --dir voice-screen-share/mattermost-server -y --dry-run --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
+ciu up --dir voice-screen-share/mattermost-server --yes --dry-run --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
 
 # 3. copy the data in, then RE-ASSERT the ownership `cp -a` clobbers.
 #    `cp -a /from/. /to/` copies the SOURCE directory's own owner/mode onto
@@ -618,7 +618,7 @@ docker run --rm -v "$P":/t alpine:3.20 sh -c '
 
 # 4. real up, then verify BOTH data and governance — a recreate is exactly
 #    where governance silently drops (P106's own lesson).
-ciu up --dir voice-screen-share/mattermost-server -y --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
+ciu up --dir voice-screen-share/mattermost-server --yes --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
 docker exec <container_prefix>-mattermost-db sh -c \
   'PGPASSWORD=$(cat /run/secrets/postgres_password) psql -U mmuser -d mattermost -tAc \
    "select (select count(*) from users), (select count(*) from teams), (select count(*) from channels), (select count(*) from posts)"'
@@ -648,7 +648,7 @@ own first.
 #    and a line naming intake_pat as NOT minted. This is also the first live
 #    exercise of the ` (private)` channel-name parse -- if `channel list`
 #    drifted, the hook refuses here, before anything is widened.
-ciu up --dir voice-screen-share/mattermost-server -y --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
+ciu up --dir voice-screen-share/mattermost-server --yes --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
 docker exec <container_prefix>-mattermost mmctl --local channel list nyxloom   # expect `intake (private)`
 docker exec <container_prefix>-mattermost mmctl --local channel users list nyxloom:intake --all
 
@@ -662,7 +662,7 @@ docker exec <container_prefix>-mattermost mmctl --local channel users list nyxlo
 # doesn't have the feature enabled yet and this command exits rc=1. That is
 # expected -- no token or secret file is written on this refusal -- and the
 # very next (real) `ciu up` proceeds normally once the container recreates.
-ciu up --dir voice-screen-share/mattermost-server -y --dry-run --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
+ciu up --dir voice-screen-share/mattermost-server --yes --dry-run --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
 # ciu's rendered compose output is `ciu.compose.yml` at the stack root (S8.5)
 # -- NOT the hand-maintained `docker-compose.yml` fallback beside it, which
 # receives no ciu overlay and is not what `ciu up` deploys.
@@ -670,7 +670,7 @@ grep ENABLEUSERACCESSTOKENS voice-screen-share/mattermost-server/ciu.compose.yml
 
 # 2. Real up. The container RECREATES (an env change), so re-verify governance
 #    in the same breath -- a recreate is exactly where it silently drops.
-ciu up --dir voice-screen-share/mattermost-server -y --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
+ciu up --dir voice-screen-share/mattermost-server --yes --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server
 docker inspect <container_prefix>-mattermost \
   --format '{{.Name}} {{.HostConfig.CgroupParent}} {{.HostConfig.Memory}} {{.HostConfig.NanoCpus}}'
 
@@ -682,7 +682,7 @@ docker inspect <container_prefix>-mattermost \
 #    verdicts are never read from a pipe tail).
 docker exec <container_prefix>-mattermost mmctl --local token list nyxloom-intake
 ls -l voice-screen-share/mattermost-server/.ciu/secrets/intake_pat          # 0440, non-empty
-ciu up --dir voice-screen-share/mattermost-server -y --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server \
+ciu up --dir voice-screen-share/mattermost-server --yes --root-folder /workspaces/vbpub/voice-screen-share/mattermost-server \
   >/tmp/p109-reup.log 2>&1; echo "ciu up rc=$?"           # rc MUST be 0
 grep tokens_minted /tmp/p109-reup.log                     # expect tokens_minted=[]
 docker exec <container_prefix>-mattermost mmctl --local token list nyxloom-intake   # still exactly ONE

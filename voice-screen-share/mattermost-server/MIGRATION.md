@@ -38,7 +38,7 @@ bash $S/migrate-to-voice-screen-share.sh --apply              # phase 1: mv stat
 ciu env generate --root-folder $S                             # new instance id, network, fresh generated files
 bash $S/migrate-to-voice-screen-share.sh --copy-named-volumes --dry-run
 bash $S/migrate-to-voice-screen-share.sh --copy-named-volumes # phase 2: named volumes -> new prefix
-ciu up --dir $S -y --dry-run --root-folder $S                 # review, then the real up
+ciu up --dir $S --yes --dry-run --root-folder $S                 # review, then the real up
 ```
 
 Verify: `ls -ld $S/vol-postgres-data` (owner uid 70, mode 700, unchanged), `ls -l $S/.ciu/secrets`,

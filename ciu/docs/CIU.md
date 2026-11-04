@@ -25,16 +25,16 @@ ciu up --dir infra/redis-core --dry-run
 ciu up --dir infra/redis-core
 
 # 5. Inspect the secrets table (names, directives, store paths — never values)
-ciu secrets list -d infra/redis-core       # [S4.25]
+ciu secrets list --dir infra/redis-core    # [S4.25]
 
 # 6. Rotate a local secret (deletes its store file)
-ciu secrets reset -d infra/redis-core --name redis_password   # [S4.25]
+ciu secrets reset --dir infra/redis-core --name redis_password   # [S4.25]
 
 # 7. Full reset — containers + volumes + rendered files (keeps secrets)
-ciu up --dir infra/redis-core --reset -y   # [S6.4; one stack]
+ciu up --dir infra/redis-core --reset --yes   # [S6.4; one stack]
 
 # 8. Reset everything including secret store files
-ciu secrets reset -d infra/redis-core -y   # [S4.25; after the reset]
+ciu secrets reset --dir infra/redis-core --yes   # [S4.25; after the reset]
 ```
 
 ---
@@ -69,13 +69,13 @@ selected by the active/explicit profile; it deliberately has no `--dir` flag.
 |---|---|
 | `ciu env generate` · `ciu env print` | `--root-folder PATH` |
 | `ciu render` | `--profile NAME`, `--root-folder PATH` |
-| `ciu up` | `--profile NAME` \| `--dir PATH` \| `--layout NAME`; `--phases N,M`, `--dry-run`, `-y`, `--ignore-errors`, `--no-preflight`; remote: `--host NAME`, `--thin`, `--bootstrap`, `--rollback` |
-| `ciu clean` | `--profile NAME`, `-y`, `--ignore-errors`, `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.instance.toml.j2` / `ciu.instance.generated.toml`) |
-| `ciu secrets list\|reset` | `-d PATH`; `reset` also accepts `--name N`, `-y` |
+| `ciu up` | `--profile NAME` \| `--dir PATH` \| `--layout NAME`; `--phases N,M`, `--dry-run`, `--yes`, `--ignore-errors`, `--no-preflight`; remote: `--host NAME`, `--thin`, `--bootstrap`, `--rollback` |
+| `ciu clean` | `--profile NAME`, `--yes`, `--ignore-errors`, `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.instance.toml.j2` / `ciu.instance.generated.toml`) |
+| `ciu secrets list\|reset\|host` | `--dir PATH`; `reset` also accepts `--name N`, `--yes`; `host HOST (--materialize \| --list \| --path NAME)` |
 | `ciu check` | `--profile NAME`, `--phases N,M`, `--live` (also probe live state) |
-| `ciu graph` | `--format mermaid\|dot\|json`, `--profile NAME`, `--phases N,M` |
-| `ciu worktree <action>` | `create LOGICAL --prefix P --feature F [--json]`; `adopt LOGICAL PATH [--json]`; `ensure LOGICAL [--json]`; `rm LOGICAL -y [--force] [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [-y] [--json]`; `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` |
-| `ciu provenance` | `--ignore-mismatch` (alias `--force`), `--no-preflight`, `--json`, `--root-folder PATH` |
+| `ciu graph` | `--format mermaid\|dot` or `--json`, `--profile NAME`, `--phases N,M` |
+| `ciu worktree <action>` | `create LOGICAL --prefix P --feature F [--json]`; `adopt LOGICAL PATH [--json]`; `ensure LOGICAL [--json]`; `rm LOGICAL --yes [--force] [--json]`; `list [--json]`; `inspect LOGICAL [--json]`; `branches [--base REF] [--yes] [--json]`; `up LOGICAL`; `exec LOGICAL [--target ALIAS] -- ARGV...` |
+| `ciu provenance` | `--ignore-mismatch`, `--no-preflight`, `--json`, `--root-folder PATH` |
 | `ciu schema capabilities` | `--json` |
 
 For a single-stack dry run use `ciu up --dir <stack> --dry-run`. With that

@@ -2416,7 +2416,7 @@ calls ahead of dispatch (active-profile / action-dispatch prose) route to
 stderr instead of stdout too, so the JSON document really is the only thing
 on stdout, matching this section's opening promise and `_emit_check_report`'s
 own docstring; `ciu check --json | jq` no longer sees a leading `[INFO]`
-line. `ciu graph --format json` (S13.5) shares the same orchestrator-level
+line. `ciu graph --json` (S13.5) shares the same orchestrator-level
 fix. `--live`'s own probe layer (`provisioning.probe_ref`) had a second,
 independent leak of the identical shape — two deprecation `[WARN]` notices
 printed unconditionally to stdout — also closed by CIU-84, unconditionally
@@ -2529,7 +2529,7 @@ A secret-shaped `[state]` key is deliberately **not** a rule here: S3.4a's
 `state-secrets` stage already refuses it unconditionally, regardless of the
 artifact's age, so a migration rule for it would be pure duplication.
 
-- **S13.5** `ciu graph [--format mermaid|dot|json] [--profile NAME] [--phases N,M]`
+- **S13.5** `ciu graph [--format mermaid|dot | --json] [--profile NAME] [--phases N,M]`
   — renders the requires/provides dependency graph to STDOUT (no deploy). Edges
   go consumer → provider (the stack whose `provides` contains the ref). A
   requirement that nobody provides is drawn dashed to an `UNPROVIDED` sentinel so
@@ -5287,7 +5287,7 @@ three categories mean precisely that no proof of ownership exists.
 Per group, in strict order, aborting that group on the first failure:
 
 1. **If the checkout still exists and carries a `[ciu.instance.generated]`
-   table, delegate to `ciu clean -y` in that checkout** and stop there.
+   table, delegate to `ciu clean --yes` in that checkout** and stop there.
    (`ciu.env`'s readability until CIU-75; S3.1c clause 6 moved the signal with
    the source, because `clean` now derives BOTH its identity network and its
    identity compose project from that table.) `clean` is authoritative:
@@ -5578,7 +5578,7 @@ Scope is self-selecting, and the non-refusals are as normative as the refusal:
   dev-loop deploy and be disabled permanently, and a rule nobody can keep
   enforces nothing.
 
-`--ignore-mismatch` (alias `--force`) downgrades the refusal to a warning.
+`--ignore-mismatch` downgrades the refusal to a warning.
 `--no-preflight` is an explicit break-glass bypass: it prints an informational
 line, returns 0, and performs no configuration, Git, or Docker access. It cannot
 be combined with `--json`, because the command then produced no provenance

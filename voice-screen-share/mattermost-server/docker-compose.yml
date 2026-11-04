@@ -1,6 +1,6 @@
 # ─── PRE-RENDERED from ciu.compose.yml.j2 (defaults) — keep in sync ─────────
 # Plain-compose FALLBACK only. The PRIMARY, supported deploy path is
-# `ciu up --dir voice-screen-share/mattermost-server -y` (see README.md): that is the path
+# `ciu up --dir voice-screen-share/mattermost-server --yes` (see README.md): that is the path
 # that applies the governance overlay. This file exists for the case ntfy's
 # sibling documents — a stale workspace ciu.env — and carries ABSOLUTE
 # PHYSICAL host paths, because compose here runs against the HOST docker

@@ -25,7 +25,7 @@ description: Core ciu (Container Infrastructure Utility) verbs beyond worktree l
 >   flags for a narrower cleanup) so ciu's own bookkeeping (leases, labels,
 >   the worktree registry) stays consistent with what's actually running.
 > - **Never** hardcode a container/network/project name (`myrepo-dev-postgres`)
->   — read it from `ciu env` / `ciu env print`, or `scripts/config_helper.py`
+>   — read it from `ciu env print`, or `scripts/config_helper.py`
 >   in a consuming repo. A hardcoded name breaks the moment `INSTANCE_ID`
 >   changes (a new worktree, a rebuilt devcontainer).
 > - **Never** grep `docker ps`/`docker inspect` output to guess whether a
@@ -77,7 +77,7 @@ ciu render                    # render ciu.global.toml from the Jinja2 template
 ciu show profiles             # list available host profiles (--json too)
 ciu show layouts              # list declared deploy layouts (--json too)
 ciu check [--profile NAME] [--live] [--json]   # validate the config pipeline, no deploy
-ciu graph [--format mermaid|dot|json]          # render the dependency graph, no deploy
+ciu graph [--format mermaid|dot | --json]      # render the dependency graph, no deploy
 ciu schema capabilities [--json]                # versioned, closed capability allowlist (D-009)
 ```
 
