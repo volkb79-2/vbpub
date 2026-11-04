@@ -206,6 +206,24 @@ host-independent resource summary per lane (distributions of runtime and memory,
 reference benchmark score, never by host name). Assay and Run-Gate produce the data; the release tool only
 attaches it. Raw campaign data stays outside the repository.
 
+## Tests never depend on host load or speed; limits are host-owned (MANDATORY, estate-wide, operator 2026-11-04)
+
+**A test result must not depend on host load, timing or performance.** Real conditions are arbitrary; the
+test hosts (`r1002`, `v1001`) are fresh modern Debian with Docker, so "it only fails on that host" is never an
+explanation. A failure that appears under load, on one host, or "sometimes" is a defect of the test or the
+tool: find the ROOT CAUSE (race, SIGPIPE under `pipefail`, fixed sleep or timeout, ordering, shared state,
+unbounded wait) and fix it; reruns and "inconclusive" labels are not a resolution. The only exception is a test
+that is genuinely about a hardware or kernel property; it carries an in-repo comment and a backlog id stating
+why it must deviate, and what it checks instead of speed.
+
+**Resource limits belong to the host, not to repository files.** In-repo lane files may state what a lane
+needs (an estimate or hint); they never encode the limits of the machine they happen to run on. Hosts are
+planned for overcommit by design (zswap, swap, KSM): the hot working set is far below the nominal maximum, so
+`dev.slice`/`dev-gates.slice` memory ceilings come from host policy (`HOST_ROLE`, about RAM plus swap minus a
+small host reserve on test hosts), and parallelism is sized to the host's CPU and memory pressure, not to a
+per-lane constant. When a tool needs a limit, it asks the host policy. Pressure (PSI) and heavy swapping are
+the signals that bound work.
+
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
 > **A default is legitimate only when it is a policy choice that is correct in
