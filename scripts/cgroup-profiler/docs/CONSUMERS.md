@@ -1,19 +1,17 @@
 # cgroup-profiler consumers
 
-The supported operator front door is the repository shell shim:
+The supported operator front door is the `cgpctl` console script of the wheel:
 
 ```bash
-./cgprofile --version
-# cgprofile 0.1.0
+cgpctl --version
+# cgpctl 2.0.0
 ```
 
-The probe prints one identity line and exits 0. In a source checkout it uses
-`pyproject.toml`; a built image reports the CMRU release version embedded as
-`CGPROFILE_VERSION` (for example, the combined RG-55 first release, `1.0.0`).
-The shim routes `--version` directly to `cgprofile.py`, so this check does not
-require the analysis/reporting venv. Help, usage, and configuration diagnostics at every subcommand depth
-begin with the matching CGPROFILE headline as line 1; normal profiling output
-is unchanged. Use
+The probe prints one identity line and exits 0; it needs neither the daemon nor
+the `report` extra. The version is the installed wheel's (an untagged build is
+`0.0.0-dev`). Help, usage and error output at every depth begin with the
+matching identity headline (cli-extended contract, `docs/CLI-SPEC.md`). The 1.x
+shim `./cgprofile` and `./setup.sh` are removed. Use
 `ATTACH-GUIDE.md` for the complete gate integration recipe.
 
 ## Build or publish the daemon image
@@ -452,18 +450,17 @@ context only: on a shared host they are high for reasons unrelated to the lane.
 
 ## Resolve a target from a cockpit
 
-In helper mode, `self` means the invoking container. The caller resolves its
-Docker ID before launching the private-namespace helper, which then finds the
-container in the read-only host cgroup tree:
+Helper mode and `targets` are removed in 2.0. A caller resolves its own container
+to a Docker ID and lets the daemon resolve the target:
 
 ```bash
-./cgprofile targets --mode helper --target self
-./cgprofile targets --mode helper --target "pid:$$"
+cgpctl start --target "container:$NAME" --dry-run    # prints the resolved request, starts nothing
 ```
 
-The helper never interprets its own namespace-local PID as a host PID. This is
-important because host processes appear as PID `0` in `cgroup.procs` when read
-from a private PID namespace; container identity must come from the ID lookup.
+(`cgpctl` resolves `container:NAME` through the docker CLI client-side;
+`containerid:<64hex>` needs no docker call.) Container identity comes from the ID
+lookup, never from a namespace-local PID: host processes appear as PID `0` in
+`cgroup.procs` when read from a private PID namespace.
 For `pid:N`, the caller verifies that the process shares its cgroup namespace
 and carries the PID/cgroup namespace identities, namespace-local PID, process
 start time, and relative cgroup path under the caller's container ID. The

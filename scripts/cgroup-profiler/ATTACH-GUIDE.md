@@ -14,37 +14,41 @@ reports; whether a run was acceptable stays the calling gate's decision.
 ## 0. Once per host
 
 ```bash
-cd /workspaces/vbpub/scripts/cgroup-profiler
-./setup.sh          # builds venv/ from pinned requirements
-./cgprofile doctor  # what this process can reach
+pip install 'cgprofile[report]'   # cgpctl; the report extra renders reports locally
+cgpctl doctor                      # socket, group, versions, observer dir, report extra
 ```
 
-`doctor` tells you whether the profiler can see the host cgroup tree directly
-or will re-execute itself inside a privileged helper container. From a
-devcontainer it is always the latter, and that is fine — it is the normal path.
+`doctor` names what this process can reach and the exact fix for what it cannot
+(for example the group that owns the daemon's socket). `cgpctl run` and
+`cgpctl mark` need no daemon; every other verb talks to the host daemon's socket
+(`--socket`, `$CGPCTL_SOCKET`, else `/run/cgprofile/ctl.sock`).
+
+> **2.0 migration note.** Sections 1-3 below are updated to `cgpctl`. Sections 5-7
+> still describe the 1.x short-lived collector (`--cap`, `--observe`,
+> `--damon`, `@follow` sampling costs); that collector's client surface was
+> removed in 2.0 and those sections are being rewritten with the daemon verbs
+> (backlog CP-47/CP-49, package 4).
 
 ---
 
 ## 1. Wrap the gate (no gate changes)
 
-The simplest useful form. Profile the gate, and watch a production container
-for collateral damage while it runs:
+The simplest useful form. Profile the gate locally (direct mode, needs the host
+cgroup view):
 
 ```bash
-./cgprofile run \
-  --target  slice:dev-gates.slice@follow \
-  --observe container:b87c0a5b-2387-4a1c-8863-ff23e6800a1d \
+cgpctl run --phase gate --propagate-exit \
   -- ../../shared-ramdisk-depot-manager/tools/gate.sh
 ```
 
-- `--target` is what you are profiling. `@follow` matters here: a gate spawns
-  its containers *after* the profiler starts, and without it you would sample
-  the slice but not the containers that appear inside it.
-- `--observe` is the neighbour you are checking for damage. Observers are
-  sampled and correlated but never treated as the subject, and they are what
-  drives the `victim_pressure` events.
-- The wrapped command's exit code becomes `cgprofile`'s exit code, so this
-  drops into an existing script without changing its semantics.
+- `cgpctl run` profiles the wrapped command itself (target `self@follow`: the
+  command and the containers it spawns afterwards). Choosing another `--target`
+  and `--observe` neighbours for `run` is not available in 2.0 yet (CP-47 open
+  item); use the daemon (`cgpctl start --target ...`, section 2) for that.
+- With `--propagate-exit` the wrapped command's exit code becomes `cgpctl`'s exit
+  code, so this drops into an existing script without changing its semantics;
+  without it `cgpctl run` exits 0 and prints the run directory and the command's
+  status.
 
 Where the gates on this host actually live:
 
@@ -65,31 +69,32 @@ under `dev-background.slice` when needed.
 ## 2. Attach to something already running
 
 ```bash
-./cgprofile attach --target container:my-service -d 300
-./cgprofile attach --target slice:dev-gates.slice@follow --until-file /tmp/gate.done
+cgpctl start --target container:my-service          # prints the session id
+cgpctl watch s-20261104T101500Z-9f01                 # stream readings until it ends
+cgpctl stop s-20261104T101500Z-9f01                  # finalize; prints the summary
+cgpctl report s-20261104T101500Z-9f01                # export from the daemon and render locally
 ```
 
-`--until-file` is the clean way to bound a run whose length you do not know:
-the gate touches the file when it finishes, and the profiler stops.
+`attach` no longer exists: a daemon session replaces it, bounded by `stop` (or
+the daemon's stall policy: `--idle-bound`, `--ceiling`, `--on-stall`). `start`,
+`sessions`, `show`, `prune` and `config` need a daemon speaking contract 2
+(package 3); against today's contract-1 daemon they answer `contract-unsupported`.
 
 ---
 
 ## 3. Phase marks — the optional upgrade
 
 Marks are what turn a flat timeline into "startup / warm-up / job A / idle".
-`cgprofile run` exports two variables into the wrapped command's environment:
-
-| variable | meaning |
-|---|---|
-| `CGPROFILE_RUN_DIR` | the run directory; the mark channel lives here |
-| `CGPROFILE_MARK` | absolute path to the `cgprofile` entry point |
+`cgpctl run` exports `CGPROFILE_RUN_DIR` (the run directory; the mark channel
+lives there) into the wrapped command's environment and puts the directory of
+`cgpctl` first on its `PATH`.
 
 So a gate that wants to label its own phases does:
 
 ```bash
-"$CGPROFILE_MARK" mark "restoring fixture db"
-"$CGPROFILE_MARK" mark "running suite"
-"$CGPROFILE_MARK" mark "teardown complete" --kind event
+cgpctl mark "restoring fixture db"
+cgpctl mark "running suite"
+cgpctl mark "teardown complete" --kind event
 ```
 
 `--kind phase` (the default) opens a new phase and closes the previous one.
@@ -98,26 +103,25 @@ So a gate that wants to label its own phases does:
 Guard it so the gate still runs unprofiled:
 
 ```bash
-mark() { [ -n "${CGPROFILE_MARK:-}" ] && "$CGPROFILE_MARK" mark "$@" || true; }
+mark() { [ -n "${CGPROFILE_RUN_DIR:-}" ] && cgpctl mark "$@" || true; }
 mark "building image"
 ```
 
-`cgprofile mark` needs neither the venv nor the host cgroup tree — it appends
-one line to a file. That is why it works from inside a gate container.
+`cgpctl mark` needs no daemon and no host cgroup tree — it appends one line to
+a file. That is why it works from inside a gate container.
 
 ### Marking from inside a container
 
 The mark channel is a file in the run directory, so a container only needs that
-directory bind-mounted and the profiler's own path visible:
+directory bind-mounted and `cgpctl` installed (it needs nothing else for `mark`):
 
 ```bash
 docker run --rm \
   --cgroup-parent="$CGROUP_PARENT_DEV_GATES" \
   -v "$CGPROFILE_RUN_DIR:$CGPROFILE_RUN_DIR" \
   -e CGPROFILE_RUN_DIR \
-  -v /workspaces/vbpub/scripts/cgroup-profiler:/cgprofile:ro \
   my-gate-image \
-  sh -c '/cgprofile/cgprofile mark "suite start"; run-the-suite'
+  sh -c 'cgpctl mark "suite start"; run-the-suite'   # cgpctl installed in my-gate-image
 ```
 
 Appends are a single `write()` under `O_APPEND`, so several containers marking
@@ -225,7 +229,7 @@ then resolves the container id with `docker inspect --format '{{.Id}}'`
 and calls:
 
 ```bash
-docker exec cgprofile-host-daemon cgprofile ctl start \
+cgpctl start \
   --target "containerid:$CONTAINER_ID" \
   --scope container \
   --token "$TOKEN" \

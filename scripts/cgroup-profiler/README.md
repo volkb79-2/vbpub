@@ -11,26 +11,23 @@ production game server lose its anonymous pages?"** — so profiling a subject
 while observing a victim is a first-class mode, not a workaround.
 
 ```bash
-./setup.sh                      # once
-./cgprofile --version           # source checkout: cgprofile 0.1.0
-./cgprofile doctor              # what can I reach?
+pip install cgprofile           # the wheel provides cgpctl (and cgpd)
+cgpctl --version                # cgpctl <version>
+cgpctl doctor                   # what can I reach?
 
-./cgprofile run \
-  --target  slice:dev-gates.slice@follow \
-  --observe container:b87c0a5b-2387-4a1c-8863-ff23e6800a1d \
-  -- ./gate.sh
+cgpctl run --phase gate -- ./gate.sh      # profile one command locally (direct mode)
+cgpctl start --target slice:dev-gates.slice@follow    # or ask the host daemon to profile a target
 ```
 
-`./cgprofile --version` is the documented operator identity probe. In a source
-checkout it uses the `pyproject.toml` version; a built image embeds the exact
-CMRU release version as `CGPROFILE_VERSION`, so the CLI and daemon identify
-the same release (for example, the combined RG-55 first release, `1.0.0`).
-An untagged local image is explicitly identified as `0.0.0-dev`. Help, usage,
-missing-argument, unknown-argument,
-and configuration diagnostics at every subcommand depth begin with the
-matching `CGPROFILE <version> — cgroup resource profiler` headline. Normal
-profiling output is unchanged. The shell shim and `src/cgprofile/cli/legacy.py` therefore
-expose the same top-level compatibility option.
+`cgpctl --version` is the documented operator identity probe. It prints the
+installed wheel version (derived from the `cgprofile-vX.Y.Z` release tag; an
+untagged build is `0.0.0-dev`). `cgpctl` is built on cli-extended: help, usage
+and error output at every depth begin with the matching identity headline, and
+the reviewed command surface is [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md). The 1.x
+bash shim `./cgprofile`, `./setup.sh` and the `cgprofile run/attach/targets/doctor`
+subcommands are gone; the mapping is in [`docs/CONSUMERS.md`](docs/CONSUMERS.md)
+(migration table). `cgpctl run` currently profiles the wrapped command itself
+(`self@follow`); `--target`/`--observe` for `run` are tracked as CP-47.
 
 RG-55 integrations use the installed Run-Gate wheel and its SemVer identity;
 copied `run-gate.py` scripts are not a supported consumer. See the

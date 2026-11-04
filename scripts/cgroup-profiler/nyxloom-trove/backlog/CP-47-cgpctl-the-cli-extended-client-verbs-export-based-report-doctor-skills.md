@@ -46,3 +46,7 @@ Contract: `docs/CGPCTL-SPEC.md` sections 1, 2 and 4. Branch `cgp2-2-cgpctl-20261
 ## Dependencies and order
 
 After CP-46. Parallel with CP-48 (the export op it consumes is faked until CP-48 lands; integration test at the merge).
+
+## Updates
+
+**2026-11-04** — Package 2 progress (cgp2-pkg2 branch feat-cgp2-pkg2-20261104): cgpctl, ctlwire, direct mode, fake-daemon goldens, the cli-extended surface (docs/CLI-SPEC.md, cli-review.toml 171 cases, contract and audit tests) and the removal of the 1.x client surface are done at 100 percent coverage. Still open: run --target/--observe/--cap (run profiles self@follow only), the contract-2 daemon verbs (package 3) that sessions/show/start/prune/config need, and the 1.x collector sections of README/ATTACH-GUIDE/DESIGN/CONSUMERS (package 4 docs sweep, CP-49). Stays open.

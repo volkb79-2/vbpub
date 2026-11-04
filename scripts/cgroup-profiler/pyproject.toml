@@ -53,7 +53,8 @@ test = [
 ]
 
 [project.scripts]
-# Package 1 stubs; packages 2 (cgpctl) and 3 (cgpd) replace the bodies.
+# cgpctl is the cli-extended client (package 2); cgpd is still a stub over
+# `legacy serve` until package 3 replaces it.
 cgpctl = "cgprofile.cli.cgpctl:main"
 cgpd = "cgprofile.cli.cgpd:main"
 
@@ -64,7 +65,7 @@ where = ["src"]
 # renders (package 3) and the documented default config. The skill joins in
 # package 2. Nothing else is shipped as data.
 [tool.setuptools.package-data]
-cgprofile = ["data/*"]
+cgprofile = ["data/*", "skills/*/SKILL.md"]
 
 # Version comes from the git tag `cgprofile-vX.Y.Z` minted by the cmru release
 # transaction, resolved against the enclosing checkout (this project lives two
@@ -76,6 +77,17 @@ cgprofile = ["data/*"]
 root = "../.."
 tag_regex = "^cgprofile-v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+(?:[a-zA-Z0-9.+-]*)?)$"
 git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "cgprofile-v*"]
+
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "cgpctl"
+factory = "cgprofile.cli.cgpctl:build_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/CLI-SPEC.md"
+findings = "docs/cli-review-findings.toml"
 
 [tool.coverage.run]
 branch = true

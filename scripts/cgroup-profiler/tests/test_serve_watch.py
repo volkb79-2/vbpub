@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from cgprofile.cli import legacy as cg
+import _ctl_reference as cg  # frozen 1.x contract-1 client (package 3 retires it)
 from cgprofile import damon as damon_mod, liveness, serve
 from cgprofile import store as store_mod, summary as summary_mod
 from tests.conftest import cgroup_files, write_cgroup

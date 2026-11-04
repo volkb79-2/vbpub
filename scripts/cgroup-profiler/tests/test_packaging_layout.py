@@ -99,25 +99,9 @@ def test_cgpd_version(capsys, fixed_version):
 
 
 @pytest.mark.parametrize("argv", [[], ["-h"], ["--help"]])
-def test_cgpctl_usage(capsys, argv):
-    assert cgpctl.main(argv) == 0
-    assert capsys.readouterr().out == cgpctl._USAGE
-
-
-@pytest.mark.parametrize("argv", [[], ["-h"], ["--help"]])
 def test_cgpd_usage(capsys, argv):
     assert cgpd.main(argv) == 0
     assert capsys.readouterr().out == cgpd._USAGE
-
-
-def test_cgpctl_delegates_socket_verbs_as_ctl(delegated):
-    assert cgpctl.main(["status", "--json"]) == 7
-    assert delegated == [["ctl", "status", "--json"]]
-
-
-def test_cgpctl_delegates_mark_unchanged(delegated):
-    assert cgpctl.main(["mark", "phase-1"]) == 7
-    assert delegated == [["mark", "phase-1"]]
 
 
 def test_cgpd_run_is_the_serve_verb(delegated):
@@ -155,7 +139,8 @@ def test_pyproject_wheel_facts():
         "cgpd": "cgprofile.cli.cgpd:main",
     }
     assert data["tool"]["setuptools"]["packages"]["find"] == {"where": ["src"]}
-    assert data["tool"]["setuptools"]["package-data"] == {"cgprofile": ["data/*"]}
+    assert data["tool"]["setuptools"]["package-data"] == {
+        "cgprofile": ["data/*", "skills/*/SKILL.md"]}
     scm = data["tool"]["setuptools_scm"]
     assert scm["root"] == "../.."
     assert "cgprofile-v" in scm["tag_regex"]
@@ -178,5 +163,11 @@ def test_cmru_declares_the_wheel_beside_the_image():
 
 
 def test_the_legacy_entry_runs_from_the_checkout_root():
-    # SELF is what the helper-subprocess tests and the bash shim exec.
+    # SELF is what the daemon image entrypoint and the report subprocess exec.
     assert Path(legacy.SELF).resolve() == PACKAGE_DIR / "cli" / "legacy.py"
+
+
+def test_the_one_x_shell_shim_setup_script_and_logtail_are_gone():
+    assert not (PROJECT_ROOT / "cgprofile").exists()
+    assert not (PROJECT_ROOT / "setup.sh").exists()
+    assert not (PACKAGE_DIR / "logtail.py").exists()

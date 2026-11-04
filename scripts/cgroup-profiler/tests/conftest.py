@@ -26,6 +26,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# the reviewed CLI cases (docs/cli-review.toml) are tied to their tests by this plugin (cli-extended audit AC-22)
+pytest_plugins = ["cli_extended.pytest_plugin"]
+
 from cgprofile.model import Analysis, Event, Phase, Proposal, Series  # noqa: E402
 
 

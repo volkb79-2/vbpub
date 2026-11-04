@@ -290,7 +290,7 @@ cid="$(docker run -d --name "$container_name" \
   --mount "$(docker_bind_mount "$host_worktree" "$worktree")" \
   "${git_common_mount[@]}" \
   -w "$worktree/$project_rel" \
-  -e PYTHONPATH="$worktree/$project_rel/src:$worktree/$project_rel" \
+  -e PYTHONPATH="$worktree/$project_rel/src:$worktree/$project_rel:$worktree/libraries/cli-extended/src" \
   -e PYTHONDONTWRITEBYTECODE=1 \
   "$image" \
   bash -c "set -euo pipefail

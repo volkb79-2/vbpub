@@ -10,7 +10,7 @@ from typing import Dict, Iterable, List
 
 import pytest
 
-from cgprofile.cli import legacy as cg
+import _ctl_reference as cg  # frozen 1.x contract-1 client (package 3 retires it)
 from cgprofile import serve, summary
 
 ROOT = Path(__file__).resolve().parents[1]

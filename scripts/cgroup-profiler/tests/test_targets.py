@@ -142,65 +142,6 @@ class TestProcIdentityParsing:
 
         assert t.proc_start_time_ticks(123, str(tmp_path / "proc")) == 0
 
-    def test_helper_identity_accepts_zero_start_time(self, monkeypatch):
-        cgroup = "/target.scope"
-        monkeypatch.setattr(t, "pids_in_cgroup", lambda *_args: [51001])
-        monkeypatch.setattr(t, "proc_start_time_ticks", lambda *_args: 0)
-        monkeypatch.setattr(
-            t.access,
-            "namespace_inode",
-            lambda _pid, namespace, _proc_root: 11 if namespace == "pid" else 22,
-        )
-        monkeypatch.setattr(t, "pid_namespace_number", lambda *_args: 4242)
-        monkeypatch.setattr(t, "cgroup_of_pid", lambda *_args: cgroup)
-
-        resolved = t._resolve_helper_pid(
-            "a" * 64,
-            cgroup,
-            "11:4242:0:22",
-            {},
-            "containerid:test",
-            False,
-            None,
-            "subject",
-            "/sys/fs/cgroup",
-            "/proc",
-        )
-
-        assert resolved.pid == 51001
-
-    @pytest.mark.parametrize(
-        "stat_contents",
-        [
-            pytest.param(
-                "junk) " + " ".join(["S", *("0" for _ in range(18)), "77"]) + "\n",
-                id="missing-open-delimiter",
-            ),
-            pytest.param(
-                "999 (worker) " + " ".join(["S", *("0" for _ in range(18)), "77"]) + "\n",
-                id="wrong-pid",
-            ),
-        ],
-    )
-    def test_helper_identity_refuses_malformed_stat_with_matching_other_facts(
-        self, tmp_path: Path, monkeypatch, stat_contents: str,
-    ):
-        proc_root = tmp_path / "proc"
-        process = proc_root / "51001"
-        process.mkdir(parents=True)
-        (process / "stat").write_text(stat_contents)
-        cgroup = "/target.scope"
-        monkeypatch.setattr(t, "pids_in_cgroup", lambda *_args: [51001])
-        monkeypatch.setattr(t.access, "namespace_inode", lambda *_args: 11)
-        monkeypatch.setattr(t, "pid_namespace_number", lambda *_args: 4242)
-        monkeypatch.setattr(t, "cgroup_of_pid", lambda *_args: cgroup)
-
-        with pytest.raises(t.TargetError, match="mapping not found"):
-            t._resolve_helper_pid(
-                "a" * 64, cgroup, "11:4242:77:11", {}, "containerid:test",
-                False, None, "subject", "/sys/fs/cgroup", str(proc_root),
-            )
-
 
 class TestSliceNaming:
     def test_nested_slice_expands_to_every_ancestor(self):
@@ -1199,6 +1140,12 @@ class TestWalk:
 
     def test_find_container_cgroup_missing(self, cgroup_root: Path):
         assert t.find_container_cgroup("f" * 64, str(cgroup_root)) is None
+
+    def test_find_container_cgroup_unreadable_root_is_indeterminate(self, tmp_path: Path):
+        # os.walk swallows an unreadable root into an empty traversal; that must
+        # surface as an error, not as "no such container".
+        with pytest.raises(OSError, match="cannot search container cgroups"):
+            t.find_container_cgroup("f" * 64, str(tmp_path / "missing"))
 
     def test_find_container_cgroup_rejects_scope_name_with_trailing_newline(
         self, tmp_path: Path,
