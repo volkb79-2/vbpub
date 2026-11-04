@@ -34,15 +34,23 @@ from cgprofile.model import Analysis, Event, Phase, Proposal, Series  # noqa: E4
 
 # ── machine facts: never read the live host (CP-1) ──────────────────────────
 @pytest.fixture(autouse=True)
-def _no_live_host_facts(monkeypatch, tmp_path_factory):
+def _no_live_host_facts():
     """A daemon built without explicit paths would read the real
     /var/lib/mdt/host-facts/cpu-benchmark.json and the real /sys, so goldens
-    would depend on the machine running them."""
+    would depend on the machine running them.
+
+    Deliberately NOT built on the `monkeypatch` fixture: that instance is
+    shared with the test and is undone after `tmp_path` teardown, so a test
+    that patches `os.lstat` would still be patched while pytest removes its
+    tmp dir.
+    """
     from cgprofile import machine
 
-    empty = str(tmp_path_factory.mktemp("no-host-facts"))
-    monkeypatch.setattr(machine, "DEFAULT_BENCHMARK_PATH", empty + "/cpu-benchmark.json")
-    monkeypatch.setattr(machine, "DEFAULT_SYS_ROOT", empty + "/sys")
+    saved = (machine.DEFAULT_BENCHMARK_PATH, machine.DEFAULT_SYS_ROOT)
+    machine.DEFAULT_BENCHMARK_PATH = "/nonexistent-cgprofile-test/cpu-benchmark.json"
+    machine.DEFAULT_SYS_ROOT = "/nonexistent-cgprofile-test/sys"
+    yield
+    machine.DEFAULT_BENCHMARK_PATH, machine.DEFAULT_SYS_ROOT = saved
 
 
 # ── non-daemon thread leak safety net (RW-48) ───────────────────────────────
