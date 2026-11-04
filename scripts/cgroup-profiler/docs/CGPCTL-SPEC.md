@@ -297,7 +297,7 @@ or touch the socket.
 
 | Verb | Summary |
 |---|---|
-| `run` | The default verb and the unit's `ExecStart`. Loads the config, runs the preflight, binds both sockets, serves until SIGTERM. |
+| `run` | Explicit, never a default verb (`cgpd` without a verb prints usage and exits 2); the unit's `ExecStart` is `cgpd run`. Loads the config, runs the preflight, binds both sockets, serves until SIGTERM. |
 | `unit print [--wheel-venv PATH] [--install-root PATH]` | Prints `cgprofile.slice` and `cgpd.service` rendered from the template in the wheel, with the CP-42 limits. Nothing is read from a checkout. |
 | `unit check [--installed PATH ...]` | Compares installed unit files with the rendered output; exit 2 on drift, naming the first differing line. |
 | `config check [--file PATH]` | Validates the file (unknown keys, types, ranges, slice names, uid list) without starting anything. Exit 0 valid, 2 invalid. |

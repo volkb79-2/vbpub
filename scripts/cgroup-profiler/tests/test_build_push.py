@@ -281,13 +281,11 @@ def test_bake_file_uses_development_defaults_without_ambient_release_variables()
     assert "${CGPROFILE_VERSION}" not in bake
 
 
-def test_release_identity_handoff_is_documented_on_all_consumer_surfaces():
+def test_release_identity_handoff_is_documented_in_the_design_guide():
+    # The README and CONSUMERS describe the native wheel; the image-release
+    # identity rules live in the design guide until the image is retired.
     root = PROJECT
-    documents = (
-        root / "README.md",
-        root / "docs" / "DESIGN-GUIDE.md",
-        root / "docs" / "CONSUMERS.md",
-    )
+    documents = (root / "docs" / "DESIGN-GUIDE.md",)
     for path in documents:
         text = path.read_text(encoding="utf-8")
         assert "CMRU_RELEASE_COMMIT" in text, path

@@ -394,34 +394,27 @@ DAMON off:
 VM_RUNNER=debian-install-vm-harness-REPLACE_WITH_PRINTED_FINGERPRINT
 RUNNER_ID="$(docker inspect --format '{{.Id}}' "$VM_RUNNER")"
 PROFILE_META='{"lane":"manual-geekbench-tcg","project":"debian-install-v2","worktree":"manual","commit":null,"run_gate_revision":0,"kind":"command","expected":null}'
-PROFILE_START="$(docker exec cgprofile-host-daemon cgprofile ctl start \
+PROFILE_START="$(cgpctl start \
   --target "containerid:$RUNNER_ID" --scope container --damon off \
   --interval 5.0 --meta "$PROFILE_META" --json)"
 PROFILE_SESSION="$(printf '%s' "$PROFILE_START" | python3 -c 'import json,sys; print(json.load(sys.stdin)["session"])')"
 printf 'cgprofile session: %s\n' "$PROFILE_SESSION"
 ```
 
-After Geekbench and the guest have stopped, finish and render the profile:
+After Geekbench and the guest have stopped, finish the session and render the
+profile on the client (the report extra must be installed):
 
 ```bash
-docker exec cgprofile-host-daemon cgprofile ctl stop "$PROFILE_SESSION" --json
-SESSION_DIR="/var/lib/cgprofile/sessions/$PROFILE_SESSION"
-docker exec cgprofile-host-daemon cgprofile report \
-  --run-dir "$SESSION_DIR" --out-dir "$SESSION_DIR" --md-only
+cgpctl stop "$PROFILE_SESSION" --json
 PROFILE_ARTIFACTS="$REPO_ROOT/scripts/debian-install-v2/artifacts/vm-lab/cgprofile-$PROFILE_SESSION"
 mkdir -p "$PROFILE_ARTIFACTS"
-docker cp "cgprofile-host-daemon:$SESSION_DIR/report.md" "$PROFILE_ARTIFACTS/report.md"
-docker cp "cgprofile-host-daemon:$SESSION_DIR/charts" "$PROFILE_ARTIFACTS/charts"
-docker cp "cgprofile-host-daemon:$SESSION_DIR/summary.json" "$PROFILE_ARTIFACTS/summary.json"
-docker cp "cgprofile-host-daemon:$SESSION_DIR/manifest.json" "$PROFILE_ARTIFACTS/manifest.json"
-docker cp "cgprofile-host-daemon:$SESSION_DIR/samples.jsonl.gz" "$PROFILE_ARTIFACTS/samples.jsonl.gz"
+cgpctl report "$PROFILE_SESSION" --out "$PROFILE_ARTIFACTS" --md-only
 ```
 
-Use the offline `cgprofile report` renderer after stopping; the daemon-backed
-`ctl report` can time out after the session stops. In this host setup, HTML
-rendering was killed with exit 137 under the profiler container's 1 GiB memory
-limit, while `--md-only` succeeded. Keep `report.md` beside its `charts/`
-directory so the relative chart links work.
+`cgpctl report` exports the stored session and renders it locally, so the
+daemon never renders. Rendering HTML can need more memory than a small
+container offers; `--md-only` is the light form. Keep `report.md` beside its
+`charts/` directory so the relative chart links work.
 
 This profile describes the whole host-side runner cgroup—QEMU and its
 supporting processes—not individual processes inside Debian. It can still give

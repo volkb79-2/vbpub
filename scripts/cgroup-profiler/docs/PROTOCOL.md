@@ -1,6 +1,6 @@
 # cgprofile daemon protocol — the wire, verb by verb
 
-**Scope.** How a consumer talks to `cgprofile serve`. The authority for the
+**Scope.** How a consumer talks to `cgpd`. The authority for the
 CONTENT of every response is `RG55-INTERFACE-CONTRACT.md` (§2 the verbs, §3
 the Summary, §7 the computation rules, §8 the v1.1 amendment, §9 the native
 R2 observer); this file is
@@ -12,26 +12,24 @@ Started in RG-55 P6 C6 (socket carrier); `watch` (§8.2) and the stall policy
 (§8.4) landed in C7, placement (§8.3) in C8. Every verb, every `args` name
 and every error code below is live.
 
-> **Planned change (cgprofile 2.0.0).** Sections 1 to 9 describe the wire as shipped in 1.x and stay
-> accurate for every 1.x daemon. Section 10 specifies **ctl contract 2** (the `export`, `config`, `config-set`
-> and `config-reset` operations, the removal of `report` and of the exec carrier, session ownership) and how 1.x and 2.x
-> peers recognise each other. The command-line half is [`CGPCTL-SPEC.md`](CGPCTL-SPEC.md).
+> **Contracts.** The control socket speaks **ctl contract 2** (the `export`, `config`, `config-set` and
+> `config-reset` operations, session ownership; section 10) and, for older consumers, **contract 1**
+> (sections 1 to 9). The daemon serves both; a request without a `contract` field is contract 1. Section 10
+> also says how peers recognise each other. The command-line half is [`CGPCTL-SPEC.md`](CGPCTL-SPEC.md).
 
-## 1. Two carriers, one protocol (§8.1, design D-30)
+## 1. One carrier: the Unix socket (§8.1, design D-30)
 
-| carrier | how a request travels | who is authorised |
-|---|---|---|
-| `exec` (default, permanent) | `docker exec cgprofile-host-daemon cgprofile ctl <verb> … --json` — the in-image client connects to the socket from inside and prints ONE JSON document on stdout | anyone who can use the docker socket; arrives inside the daemon as uid 0 |
-| `socket` (opt-in) | connect to `/run/cgprofile/ctl.sock` (bind-mounted to the same path on the host) and write ONE request line; the daemon answers with one line and closes | the group that owns the directory — the `docker` group, per mdt host-setup's `mdt-cgprofile.conf` — plus, when `CGPROFILE_ALLOW_UIDS` is set, only those uids |
+The control protocol travels over one carrier. Connect to the control socket (`/run/cgprofile/ctl.sock` by
+default, the `ctl_socket` key of `cgpd.toml`) and write ONE request line; the daemon answers with one line and
+closes. The only exception is `watch`, which streams. `cgpctl` is the reference client: whatever its
+`ctlwire` module builds for a given command line is what any other consumer should send. The frozen bytes
+are in `tests/fixtures/rg55/socket/<verb>-request.json`.
 
-Every verb, response, error code and the `contract` field are identical on
-both carriers. A consumer may diff them; `tests/test_serve_socket_carrier.py`
-does exactly that on every verb, against one serve loop.
-
-The in-image `ctl` client is the **reference translator**: whatever
-`cgprofile.py`'s `_ctl_request()` builds for a given command line is what a
-socket-carrier consumer should send. The frozen bytes are in
-`tests/fixtures/rg55/socket/<verb>-request.json`.
+| aspect | rule |
+|---|---|
+| who may connect | the group that owns `/run/cgprofile` (the directory's mode and group, set by the host's tmpfiles rule), plus the `allow_uids` list of `cgpd.toml` when it is non-empty (section 4) |
+| who is root-equivalent | uid 0 is always allowed |
+| there is no fallback | a caller without access to the socket has no other path to the daemon; `cgpctl doctor` names the remedy |
 
 ## 2. The request line
 
@@ -154,36 +152,35 @@ move, so leaf counters are not total RSS and leaf `memory.max` is not a hard
 cap on all memory already resident in the lane. See the resource-accounting
 note in `docs/CONSUMERS.md` and the rationale in `docs/DESIGN-GUIDE.md`.
 
-## 4. Authorisation on the socket carrier (§8.1)
+## 4. Authorisation on the socket (§8.1)
 
-1. The host directory's mode and group decide who may connect at all. mdt
-   host-setup ships `mdt-cgprofile.conf` (`d /run/cgprofile 0770 root docker
-   -`); the daemon only **re-asserts** `0770` on the directory and
+1. The host directory's mode and group decide who may connect at all. The
+   host's tmpfiles rule creates `/run/cgprofile` as `0770 root:<ctl group>`;
+   the daemon only **re-asserts** `0770` on the directory and
    `root:<that directory's gid>` `0660` on the socket at every start. It
    never chooses the group itself (RW-35(b), RW-37).
-2. A `root:root` directory (host-setup not installed) means the socket is
-   root-only. The daemon logs one INFO line and keeps serving — the exec
-   carrier is unaffected.
-3. `CGPROFILE_ALLOW_UIDS` (comma-separated uids, compose env) adds an
-   `SO_PEERCRED` check: uid 0 is always allowed, listed uids are allowed,
-   everything else gets
+2. A `root:root` directory (no host provisioning) means the socket is
+   root-only. The daemon logs one INFO line and keeps serving.
+3. The `allow_uids` key of `cgpd.toml` (an array of uids; runtime-tunable by
+   uid 0, `CGPCTL-SPEC.md` section 3.5) adds an `SO_PEERCRED` check: uid 0 is
+   always allowed, listed uids are allowed, everything else gets
    `{"ok": false, "contract": 1, "error": {"code": "peer-refused", "message": …}}`
    and the connection closes. Unreadable peer credentials are refused when
    an allowlist is configured (fail closed) and served when none is
-   (nothing to check against). A malformed allowlist refuses to start the
-   daemon.
+   (nothing to check against). A malformed list refuses to load the
+   configuration; the daemon reads no `CGPROFILE_ALLOW_UIDS` variable.
 
 ## 5. `version.transports` (§8.6)
 
 ```json
-"transports": {"exec": true,
+"transports": {"exec": false,
                "socket": {"path": "/run/cgprofile/ctl.sock", "listening": true,
                           "allow_uids": [], "peer_cred": true}}
 ```
 
 `allow_uids` is `[]` when none is configured. `listening` reflects the real
-listener. `exec` is `true` by construction — the exec carrier is permanent
-(§8.1 rule 5), not probed.
+listener. At contract 1 the `exec` key is kept for old readers and is `false`:
+there is no second carrier. A contract-2 reply omits it (section 10.1).
 
 The additive `resource_observer` field reports the distinct observer listener:
 
@@ -200,8 +197,9 @@ R2 consumers still fail closed when their configured endpoint is unavailable.
 ## 6. Errors
 
 Response shape is always
-`{"ok": false, "contract": 1, "error": {"code": "<kebab-code>", "message": "…"}}`,
-exit code 2 over the exec carrier (§1.3). Codes: `bad-argument`,
+`{"ok": false, "contract": 1, "error": {"code": "<kebab-code>", "message": "…"}}`
+(the `contract` field echoes the request's). `cgpctl` maps codes to exit
+codes in `CGPCTL-SPEC.md` section 1. Codes: `bad-argument`,
 `target-not-found`, `too-many-sessions`, `unknown-session`,
 `report-unavailable`, `report-failed`, `stop-incomplete` (a `stop` whose
 sampling worker did not exit within 10 s: the session is NOT finalized, keeps
@@ -252,7 +250,7 @@ an explicitly opted-in Assay R2 container, so daemon restarts replace the
 socket inode at a path an existing container can still resolve. The listener is served
 by the existing daemon and accepts no control operation, including `start`,
 `stop`, or placement. Its socket mode uses the dedicated observer directory
-group and the `CGPROFILE_ALLOW_UIDS` policy; Run-Gate forwards the observed
+group and the `allow_uids` policy; Run-Gate forwards the observed
 socket GID as a supplementary group. Observer lanes also declare per-container
 memory and PID ceilings and refuse arbitrary extra mounts. A read-only mount of `ctl.sock`
 is not equivalent and is prohibited for this use.
@@ -300,7 +298,7 @@ Contract 3 adds two verbs to the observer socket of section 8. It is additive:
 contract-2 client sees no difference, and `version.resource_observer` reports
 `"contract": 2` with `"contracts": [2, 3]`. The same framing rules apply: one
 request line of at most 4096 bytes including the newline, one connection, a
-five-second deadline, `SO_PEERCRED` required, the `CGPROFILE_ALLOW_UIDS`
+five-second deadline, `SO_PEERCRED` required, the `allow_uids`
 policy. Contract-3 replies, including errors, carry `"contract": 3`; a
 contract-2 request cannot reach the window verbs, and a contract-3 request
 cannot reach `resource-limits`.

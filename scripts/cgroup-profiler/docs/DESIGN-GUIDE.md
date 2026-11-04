@@ -6,15 +6,14 @@ feature list is in [`README.md`](../README.md); worked adoption belongs in
 
 ## Daemon safety and placement
 
-The managed `cgprofile-host-daemon` is the one deliberate host-PID-namespace
-exception: DAMON sysfs resolves `pid_target` in the writer's active PID
-namespace, and a read-only `/hostproc` bind alone does not change that
-namespace. The daemon still keeps a private cgroup namespace, has no network,
-and receives no Docker socket. Workload, helper, gate, and test containers
-remain private in every namespace. `serve` requires the explicit
-`CGPROFILE_PID_NAMESPACE_MODE=host` setting and verifies that the selected
-host-proc PID namespace is the one it runs in; the helper's default remains
-`private`.
+`cgpd.service` is a native systemd service and runs in the host PID and
+cgroup namespaces. That is what DAMON sysfs needs: it resolves `pid_target`
+in the writer's active PID namespace. The service has no Docker socket and
+uses no Docker API. Workload, gate, and test containers remain private in
+every namespace. At start `cgpd run` always verifies that the proc root it
+samples belongs to the PID namespace it runs in and refuses to serve
+otherwise; there is no mode switch. State lives in `/var/lib/cgprofile`
+(see [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md)).
 
 Host PID mode makes host PID numbers addressable to DAMON sysfs; it is
 necessary for this `pid_target` path but not sufficient for a valid DAMON
@@ -151,7 +150,7 @@ The detailed metric-source and disclosure rules are in the
 [`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 
 The daemon's host system bus is separate from the consumer control socket. The
-cockpit receives only the cgprofile ctl surface; it does not need the system
+cockpit receives only the cgprofile control socket; it does not need the system
 bus. P1 and P6 introduced the observer and opt-in placement capabilities in
 separate implementation tranches. RW-434 settles their combined tree as the
 first 1.0.0 release, including the system-bus manager bridge and writable host
@@ -211,25 +210,15 @@ monopolize every control verb or grow request memory without limit. After a
 `watch` request is accepted, its stream has no server-side timeout; silence
 between readings is normal.
 
-The daemon and one-shot helper use different PID modes. The daemon joins only
-the host PID namespace; its cgroup namespace stays private. The helper keeps
-private PID/cgroup namespaces and binds host `/proc` read-only at `/hostproc`,
-selected through `CGPROFILE_PROC_ROOT`; its host cgroup bind is read-only
-because it does not perform daemon placement. In daemon mode, the selected
-host-proc PID-namespace identity must equal the daemon's. In helper mode, the
-existing broader-proc-view check remains: PID 1 in the selected proc view
-must belong to a namespace distinct from the helper's. Container names,
-labels, and helper-mode `self` are resolved on the Docker-aware caller to full
-container IDs; the daemon locates those IDs in its explicit host cgroup view.
-The daemon's PID check is a consistency check between its configured proc view
-and local namespace, not an independent attestation that the procfs bind is
-the host's. The managed CIU Compose service provides the deployment fact with
-`pid: "host"` and an explicit host `/proc` bind.
-The required `/run/cgprofile` socket directory uses Compose's long bind form
-with `create_host_path: false`: if host-setup has not created the source,
-deployment must fail instead of Docker manufacturing an empty host directory
-that hides the missing prerequisite and leaves the daemon writing sockets to
-the wrong place.
+The daemon runs natively in the host PID and cgroup namespaces and samples
+the real `/proc` and `/sys/fs/cgroup`; its pid-namespace identity check
+(configured proc root versus its own namespace) is a consistency check that
+is always on. Container names, labels, and `self` are resolved on the
+client side (`cgpctl`, which may call `docker inspect`) to full container
+IDs; the daemon locates those IDs in its host cgroup view. The `/run/cgprofile`
+socket directory is created by the host's tmpfiles rule, never by the unit,
+and its group is adopted by `stat`; if it is missing the service fails to
+start instead of creating a directory that hides the missing prerequisite.
 The daemon is not a general capability-changing tool: it has no capability
 mutation option, imports no `TempCaps`, and has no Docker socket. It writes its
 session volume and the DAMON admin sysfs state required for observation, in
@@ -247,19 +236,17 @@ the session directory remain separate intended write surfaces.
 
 ### Private namespaces and host views
 
-`self` in helper mode means the container that invoked the CLI, not the
-short-lived helper. The driver resolves its own full Docker ID before
-re-exec; the helper can then locate that container by its cgroup leaf without
-guessing from `/proc/self/cgroup`. A caller-visible `pid:N` is accepted only
-when its cgroup namespace matches the caller's. The caller carries the PID-
-and cgroup-namespace inodes, namespace-local PID, process start time, and
-namespace-relative cgroup path under the caller container ID. In the
-helper's host `/proc` view, the resolver matches those facts and exact cgroup
-membership, rechecks the process start time, and requires exactly one match
-before returning the helper-visible PID for proc sampling and DAMON. A
-mismatched namespace, changed or unavailable identity, unsafe path, or
-ambiguous match is a refusal, not a guess from a numeric PID. See the worked
-command in
+`cgpctl` runs in the caller's namespaces, which may be a private container.
+`self` means the container that invoked the CLI; the client resolves its own
+full Docker ID rather than guessing from `/proc/self/cgroup`. A caller-visible
+`pid:N` is accepted only when its cgroup namespace matches the caller's. The
+client carries the PID- and cgroup-namespace inodes, namespace-local PID,
+process start time, and namespace-relative cgroup path under the caller
+container ID. The daemon, in its host `/proc` view, matches those facts and
+exact cgroup membership, rechecks the process start time, and requires exactly
+one match before using the host PID for proc sampling and DAMON. A mismatched
+namespace, changed or unavailable identity, unsafe path, or ambiguous match is
+a refusal, not a guess from a numeric PID. See the worked command in
 [`CONSUMERS.md`](CONSUMERS.md#resolve-a-target-from-a-cockpit).
 
 ### Native R2 resource observation is data-only, not a broker
@@ -356,13 +343,11 @@ same exact-tree campaign after a budget stop. A limit event from any other
 process in the tester cgroup still makes a candidate inconclusive, so the
 tester lane must not launch unrelated work there during R2.
 
-The short-lived helper-placement probe runs under the injected interactive
-slice only after confirming that it matches the cockpit container's actual
-Docker parent. It asks host systemd for `LoadState`, `FragmentPath`, and
-`ControlGroup` over a read-only DBus socket mount and confirms the host cgroup
-directory exists. This is necessary because an unknown slice can be silently
-materialized as a transient unit; checking only for a cgroup directory would
-certify the unsafe state the probe is meant to catch.
+Docker and systemd accept any `cgroup_parent` and auto-create an uninstalled
+slice as a transient unit; checking only for a cgroup directory would certify
+that unsafe state. A client-side placement check therefore asks host systemd
+for `LoadState`, `FragmentPath`, and `ControlGroup` and confirms the host
+cgroup directory exists before it trusts a slice name.
 
 The long-running daemon applies the same trust principle before placement
 and before claiming `host.gates_slice.present`: it verifies the expected
@@ -444,10 +429,8 @@ between a check and a sysfs write atomic. cgprofile closes its own
 cross-process race with an advisory `flock` on the host-shared
 `/run/cgprofile/damon.lock`: a one-shot collector holds the lock for its full
 session, while daemon-pool reserve/release/restore operations take it around
-the registry transaction. This serializes the daemon and cgprofile helper
+the registry transaction. This serializes the daemon and one-shot collector
 processes without making one-shot profiling wait behind another DAMON run.
-The privileged helper bind-mounts this single lock file at
-`/tmp/cgprofile-damon.lock`; it does not receive `/run/cgprofile/ctl.sock`.
 When a daemon pool already occupies the registry, a one-shot collector takes
 the lock, observes the nonempty table, and declines DAMON without changing
 ordinary sampling.
@@ -467,10 +450,11 @@ identity is still proven as pool-owned. During a session, target recommits
 rebuild the exact array, preventing a shrinking subtree or reused slot from
 continuing to watch former lane PIDs.
 
-The one-shot `run`/`attach` collector follows the same nonzero-baseline refusal
-and optional-evidence rule. A startup or later collection error closes only
-DAMON, writes ordinary samples and the normal finished manifest, and lets the
-wrapped command run to completion. In particular, `cgprofile run` must not
+The one-shot collector (`cgpctl run`, `cgpctl attach`) follows the same
+nonzero-baseline refusal and optional-evidence rule. A startup or later
+collection error closes only DAMON, writes ordinary samples and the normal
+finished manifest, and lets the wrapped command run to completion. In
+particular, `cgpctl run` must not
 wait for DAMON before launching the user's command or let a missing optional
 series alter its verdict.
 
@@ -597,13 +581,13 @@ CMRU clears ambient release-pair values from non-artifact steps. The pair is
 source-consistency metadata, not an authentication token or proof of CMRU
 provenance, so the supported publication workflow remains `cmru release`.
 
-Deployment verification checks two identities. `ctl version --json` confirms
-the daemon's software version and advertised protocol capabilities; the
-running container's `org.opencontainers.image.revision` label binds its image
-to source. Compare that label with the commit peeled from the pinned
-`cgprofile-v<version>` release tag after CIU brings up the service. The
-[consumer recipe](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu) checks
-the source label on the image actually used by `cgprofile-host-daemon`.
+Deployment verification checks the wheel identity: the version in the wheel's
+installed metadata, `cgpd --version`, `cgpctl --version`, and the `version`
+control verb must agree with the pinned `cgprofile-v<version>` release tag, and
+the wheel's sha256 must match the release sidecar
+([`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md) section 3.2). While the release
+also publishes an OCI image, its `org.opencontainers.image.revision` label
+binds that image to the commit peeled from the same tag.
 
 The Bake file itself uses a literal development version and tag instead of
 importing environment variables; it supplies no Git revision default. The
@@ -627,23 +611,20 @@ label. CMRU's push step selects only the release target. This keeps developer
 convenience from widening the release's external writes. CMRU owns the
 protected tag/commit handoff; consumers must invoke `cmru release` instead of
 manually exporting either value.
-The pasteable CIU pin and verification command live in
-[`CONSUMERS.md`](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
+Install, pin and verification live in
+[`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md).
 
-## Release checklist for 1.2.0
+## Release checklist
 
-- Run `cmru release` with `--set-version 1.2.0`. `cmru.toml` uses
-  `bump = "conventional"`, and most commits of this release are not
-  conventional-typed, so the computed bump would be 1.1.1. Check the version
-  in the `--dry-run` output before the real run.
-- After the image is published, bump `tag = "1.1.0"` in `ciu.toml.j2` to the
-  new release (contract 3 and the CP-31/CP-33/CP-34 fixes exist only in 1.2.0),
-  then deploy it.
-- R2 (mutation) is not part of the release gate and was waived for 1.2.0
-  (CP-30 stays open); say so in the release notes.
-- Confirm the PyPI upload time of `coverage` 7.16.2 is at least 14 days before
-  the tag.
-- Daemon deployments set `stop_grace_period: 30s` (the ciu template does).
+- Run `cmru release` and check the computed version in the `--dry-run` output
+  before the real run: `cmru.toml` uses `bump = "conventional"`, and commits
+  that are not conventional-typed under-count the bump.
+- R2 (mutation) is not part of the release gate; if no full-source R2 verdict
+  exists for the tree, say so in the release notes.
+- Confirm every dependency version adopted by the release is at least 14 days
+  past its upload time.
+- Installs follow [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md): the wheel is
+  the deployed artifact and `cgpd.service` drains before restart.
 
 ## The GitHub Release body for the published image
 
@@ -754,25 +735,23 @@ completion.
 ## The daemon proves the slice it is in, not a slice by name
 
 Docker and systemd accept any `cgroup_parent` and auto-create an uninstalled
-slice without limits, so a daemon whose compose file names `cgprofile.slice`
-can still run unbounded next to production workloads. `serve` therefore refuses
-to start unless the cgroup it is actually running in, derived from the host
-proc view (`/proc/<host pid>/cgroup` normalized through the cgroup-namespace
-root, the same path derivation placement uses), is under the top-level
-`cgprofile.slice` and that slice's `memory.max` is a finite positive integer.
-A bounded `cgprofile.slice` that merely exists while the container was created
-under another parent, or a nested look-alike, does not pass (name for object).
+slice without limits, so a service whose unit names `cgprofile.slice` can
+still run unbounded next to production workloads if the slice file is absent.
+`cgpd run` therefore refuses to start unless the cgroup it is actually running
+in, derived from `/proc/<pid>/cgroup` (the same path derivation placement
+uses), is under the top-level `cgprofile.slice` and that slice's `memory.max`
+is a finite positive integer. A bounded `cgprofile.slice` that merely exists
+while the process runs under another parent, or a nested look-alike, does not
+pass (name for object).
 Zero is refused: it is finite but a slice that can hold no memory is a
 misconfiguration, and `read_int` folds `max`, empty, unreadable and garbage
 into one "not a number" outcome, so the message names every cause.
 
-Rejected alternatives: reading `LoadState` from inside the container (the
-daemon has no view of `/etc/systemd/system` or the host systemd, so it cannot
-be proven there); a flag to run unbounded anyway (the point is that unbounded
-must not look governed). The pre-creation Docker-host `LoadState=loaded` probe
-remains the complete fix and is CIU-150, outside the 1.1.0 window. The
-refusal runs after container creation, so on `restart: unless-stopped` a host
-without the unit crash-loops; that loud failure is intended.
+Rejected alternative: a flag to run unbounded anyway (the point is that
+unbounded must not look governed). The refusal runs after the unit starts, so
+under the unit's restart policy a host without the slice crash-loops; that
+loud failure is intended, and `cgpd unit check` plus `cgpctl doctor` report
+the missing or drifted slice before it comes to that.
 
 ### A wedged worker has a bounded way out
 

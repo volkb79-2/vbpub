@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-49
 title: "Estate docs sweep for the cgpctl names, plus the CP-45 README overview and docs-sync test (plan package 5)"
-status: open
+status: fixed
 type: "docs"
 component: "docs"
 context_estimate: "small"
@@ -40,3 +40,12 @@ edited) is the "DOCS SWEEP checklist" in `docs/CONSUMERS.md`, produced by `git g
 ## Dependencies and order
 
 After CP-47 and CP-48; before the release (plan package 6).
+
+## Updates
+
+**2026-11-04** FIXED in cgp2 package 5 (branch feat-cgp2-pkg5-20261104): cgprofile docs (ATTACH-GUIDE, PROTOCOL, DESIGN, DESIGN-GUIDE, CONSUMERS with the
+migration table, README) rewritten to the native cgpctl/cgpd model; estate rows done: mdt-cockpit and modern-debian-tools-python-debug host-setup README
+and check.sh wording, devcontainer template comments, `.devcontainer/devcontainer.json`, ciu SPEC-V8 and the testing-gate proposal examples,
+debian-install-v2 usage guide and design guide. `tests/test_docs_sync.py` greps the live documents for the removed names (the migration table is the
+only place that names them). Left for their owners: `docs/RG55-INTERFACE-CONTRACT.md` (mirror of the run-gate canonical file), run-gate-project
+docs and code (socket-only package), compose/ciu files and the image build (package 9), historical records.

@@ -11,272 +11,105 @@ production game server lose its anonymous pages?"** — so profiling a subject
 while observing a victim is a first-class mode, not a workaround.
 
 ```bash
-pip install cgprofile           # the wheel provides cgpctl (and cgpd)
+pip install cgprofile           # the wheel provides cgpctl (client) and cgpd (daemon)
 cgpctl --version                # cgpctl <version>
 cgpctl doctor                   # what can I reach?
 
-cgpctl run --phase gate -- ./gate.sh      # profile one command locally (direct mode)
-cgpctl start --target slice:dev-gates.slice@follow    # or ask the host daemon to profile a target
+cgpctl run --phase gate -- ./gate.sh                   # profile one command locally (direct mode)
+cgpctl start --target slice:dev-gates.slice            # or ask the host daemon to profile a target
 ```
 
 `cgpctl --version` is the documented operator identity probe. It prints the
 installed wheel version (derived from the `cgprofile-vX.Y.Z` release tag; an
-untagged build is `0.0.0-dev`). `cgpctl` is built on cli-extended: help, usage
-and error output at every depth begin with the matching identity headline, and
-the reviewed command surface is [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md). The 1.x
-bash shim `./cgprofile`, `./setup.sh` and the `cgprofile run/attach/targets/doctor`
-subcommands are gone; the mapping is in [`docs/CONSUMERS.md`](docs/CONSUMERS.md)
-(migration table). `cgpctl run` currently profiles the wrapped command itself
-(`self@follow`); `--target`/`--observe` for `run` are tracked as CP-47.
+untagged build is `0.0.0-dev`). `cgpctl` and `cgpd` are built on cli-extended:
+help, usage and error output at every depth begin with the matching identity
+headline, and the reviewed command surface is [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md).
+The 1.x commands map to `cgpctl` verbs in the
+[migration table](docs/CONSUMERS.md#migration-table-1x-command-to-cgpctl-verb).
 
-RG-55 integrations use the installed Run-Gate wheel and its SemVer identity;
-copied `run-gate.py` scripts are not a supported consumer. See the
-[design rationale](docs/DESIGN-GUIDE.md#run-gate-is-an-installed-semver-consumer)
-and [adoption steps](docs/CONSUMERS.md#attach-a-run-gate-lane).
+## Product overview
 
-The Dockerfile requires explicit `CGPROFILE_VERSION` and `GIT_REVISION` build
-arguments and fails before package installation when either is absent. The
-Bake file uses a literal development version and tag, but has no fabricated
-revision fallback. `build-push.py` resolves version and commit together and
-supplies both as per-target overrides. For release, version
-and commit come from CMRU's exact candidate tag and commit pair. An ambient
-`CGPROFILE_VERSION` cannot label an untagged checkout as a release. The tagged working tree must also be
-clean so the image source matches that tag. During `cmru release`, CMRU passes
-protected `CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` values to the build and
-push steps; it clears ambient values from other project steps. The wrapper
-verifies that `HEAD` and the local tag both match that commit, then builds from
-a temporary worktree at the verified commit. The pair proves source
-consistency; it is not an authentication token or proof of CMRU provenance.
-Invoke `cmru release` for publication and do not hand-write the pair. An
-untagged local build through `build-push.py --build` requires clean cgprofile
-and DAMON source contexts, uses `0.0.0-dev` with its checked revision, and
-builds from a temporary tree at that commit. A bare Bake invocation has no
-revision value and the Dockerfile refuses before installing packages. See the
-[release identity design](docs/DESIGN-GUIDE.md#release-identity), then verify a
-deployed image's version and OCI source revision against the release tag using
-the [CIU deployment guide](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
+### 1. What it is
 
-A CMRU release also publishes a **GitHub Release body** for `cgprofile-v<version>`: it
-opens with the exact pull instruction (`docker pull ghcr.io/volkb79-2/cgprofile:<version>`)
-and then carries that version's dated section of `CHANGES.md`, including any pending
-`[Unreleased]` and migration notes, which CMRU folds into the tagged candidate. It is written
-by `cmru handler oci-image-release`, the **last command** of the push step, so it runs only
-after `build-push.py --push` has pushed the image; it writes release metadata only and never
-builds or pushes. `cmru release --dry-run` previews that exact body, and CMRU refuses a
-misconfigured handler before any release side effect. See the
-[design](docs/DESIGN-GUIDE.md#the-github-release-body-for-the-published-image) and the
-[pasteable preview](docs/CONSUMERS.md#preview-the-github-release-body).
+Two programs from one wheel. `cgpd` is the always-on host daemon, a native
+systemd service that samples cgroups, owns DAMON, stores sessions, and answers
+a Unix-socket protocol. `cgpctl` is the client: it talks to the daemon, renders
+reports, and also profiles one command locally without any daemon. There is no
+container, no Docker use by the daemon, and no helper image. Normative
+documents: [`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) (command line),
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md) (wire), [`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md)
+(install), [`DESIGN.md`](DESIGN.md) (architecture).
 
-- **`ATTACH-GUIDE.md`** — how to wrap or attach this to a gate in any repo.
-  Start there if you want to use it.
-- **`DESIGN.md`** — architecture and module contracts. Start there if you want
-  to change it.
-- **`docs/CONSUMERS.md`** — pasteable operator probes and adoption notes.
-- **[`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#daemon-safety-and-placement)**
-  — why the always-on daemon owns only its measured state and how its contract
-  stays fail-closed.
-- **[`docs/CONSUMERS.md`](docs/CONSUMERS.md)** — pasteable daemon and run-gate
-  adoption examples.
+### 2. Commands
 
-P1's registered mutation lane takes its changed-lines base from the gate
-request. Supply the recorded comparison commit with `--base` for `r2` and the
-full `gate`, and inspect the Assay plan before a long run. Native R2 runs one
-mutant at a time because its resource event counters belong to the shared
-tester cgroup; an incomplete 24-hour window resumes on the same exact tree.
-See the
-[`design rationale`](docs/DESIGN-GUIDE.md#mutation-comparison-base) and
-[`exact commands`](docs/CONSUMERS.md#run-the-p1-review-gates).
-CMRU's release gate runs only `r0-r1` and `r3`; the complete Run-Gate `gate`
-lane also includes the 24-hour `r2` campaign. The initial 1.0.0 release has no
-completed full-source R2 verdict. See
-[release qualification](docs/DESIGN-GUIDE.md#release-qualification-and-the-full-r2-gate).
+`cgpctl [--socket PATH] [--json] <verb>`; the full table, flags, JSON shapes
+and exit codes are in [`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 2.
 
-## Verbs
-
-| verb | mode | what |
-|---|---|---|
-| `run -- <command>` | wrapper | wrap and profile one command |
-| `attach` | attach | profile something already running |
-| `mark <name>` | either | record a phase boundary from anywhere sharing the run dir |
-| `report [--run-dir D]` | either | re-render `report.html`/`report.md` for a finished run |
-| `targets [--target …]` | either | resolve target specs and print, without sampling |
-| `doctor` | either | what can this process reach? venv/DAMON/access summary |
-| `serve` | daemon | run the RG-55 daemon (PID 1 in `cgprofile-host-daemon`) |
-| `ctl <verb>` | daemon | talk to a running `serve` over its control socket — see "Running the daemon" below |
-
-The first six are the collector/report CLI (`ATTACH-GUIDE.md`); `serve`/`ctl`
-are RG-55's always-on daemon mode, a separate thing entirely — it never
-spawns a collector, and run-gate talks to it instead of to `run`/`attach`.
-Every daemon session records sample zero at start. A no-token start is always a
-new session (subject to `--max-sessions`); only the same non-null token is
-idempotent. A token scopes its roots to exact-token processes directly in the
-selected cgroup; their descendants remain attributed if they move elsewhere.
-DAMON capacity is pre-reserved in one write before its first monitor starts.
-Linux rebuilds the entire shared kdamond table on every `nr_kdamonds` write,
-so cgprofile refuses DAMON when that table is already nonempty—even if the
-existing monitor is stopped—rather than erase another tool's staged
-configuration. An observed replacement of an owned sysfs slot is quarantined
-and never reused or removed. cgprofile's one-shot collectors and daemon pool
-coordinate through a host-shared advisory lock; helper containers receive
-only the lock-file bind, not the daemon control socket. This does not serialize
-unrelated privileged DAMON tools. DAMON setup, collection, or cleanup failure
-only disables that optional series; ordinary profiling and the wrapped
-command continue. See the
-[design rationale](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
-The one-shot collector follows the same zero-baseline and optional-evidence
-rules: it still becomes ready and launches the wrapped command if DAMON cannot
-start or later stops collecting.
-The daemon control contract is major version 1, and `ctl` refuses
-to print a response whose object, major, `ok`, or verb-specific shape is not
-valid.
-
-## What you get
-
-| file | |
+| verb | what |
 |---|---|
-| `report.html` | interactive: zoom, pan, hover crosshair across every series, phase bands, event markers, resolution selector. One self-contained file, no server, no network. |
-| `report.md` + `charts/` | static twin for pasting into a ledger or a PR |
-| `samples.jsonl` | raw samples, for your own analysis |
-| `events.jsonl` | what the profiler flagged, with the numbers behind each one |
-| `manifest.json` | targets, host facts, and the effective-limit snapshot |
+| `status` | daemon and client versions, contracts, uptime, slots, settings in effect |
+| `host` | host facts: load, memory, pressure, observed slices, gates slice, DAMON |
+| `sessions` | one row per session; `--state live\|done\|all`, `--mine` |
+| `show` | live counters of a live session, the summary of a finished one |
+| `start` | start a daemon session on a container, cgroup or slice; `--target`, `--scope`, `--place`, `--on-stall`, `--dry-run` |
+| `stop` | stop and finalize a session; prints the summary |
+| `watch` | stream readings until the session ends; `--watch-interval` |
+| `report` | export a stored session and render it locally; `--out`, `--html-only`, `--md-only`; `--run-dir` renders a standalone `run` result |
+| `prune` | apply retention now; `--keep`, `--keep-days`, `--dry-run`, `--yes` |
+| `run` | profile one command locally, direct mode only; `--phase`, `--out-dir` |
+| `mark` | append a phase mark to the current run; stdlib-only, callable from inside a gate |
+| `doctor` | diagnose the install, the socket, the caller and the daemon; `--check` |
+| `config` | `config show`, `config set KEY VALUE [--persist]`, `config reset` (uid 0 for the last two) |
+| `skills` | install, check, list or remove the packaged agent skill |
 
-## The parts worth knowing about
+`cgpd [--config PATH] <verb>` is root-only for `run` and read-only otherwise
+([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
 
-**Effective limits, not declared ones.** A container's `memory.max` is rarely
-the number that binds it. The profiler walks the ancestor chain and reports
-which cgroup actually imposes each ceiling. It also reports `memory.min` and
-`memory.low` twice — once as they hold *without* `memory_recursiveprot`, once
-as they would hold with it — because a mount missing that flag silently
-discards protection an ancestor declared, and nothing else on the host tells
-you.
+| verb | what |
+|---|---|
+| `run` | explicit service entrypoint: preflight, bind both sockets, serve until SIGTERM |
+| `unit` | `unit print` renders `cgprofile.slice` and `cgpd.service` from the wheel; `unit check` reports drift |
+| `config` | `config check` validates the config file without starting anything |
+| `reload` | signal the running daemon to reload; `--reset-overrides` also drops runtime overrides |
 
-**Adaptive sampling.** 250 ms while anything is moving, backing off to 2 s when
-quiet, snapping back to hot on any event. Designed to be run on a host that is
-already short of memory: the collector is standard-library only, holds no
-series in memory, and does all analysis after the run.
+Daemon configuration is one TOML file, `/etc/cgprofile/cgpd.toml`, plus uid-0
+runtime overrides. A missing file means all defaults. Unknown keys are refused.
 
-**Phases three ways.** Explicit marks (`cgprofile mark "restoring db"`, callable
-from inside a gate container), wrapper-derived boundaries for gates that know
-nothing about the tool, and changepoint detection over the series so unlabelled
-regime shifts still get timestamped.
+| key | default | change applies |
+|---|---|---|
+| `sessions_dir` | `/var/lib/cgprofile/sessions` | restart |
+| `ctl_socket` | `/run/cgprofile/ctl.sock` | restart |
+| `observer_socket` | `/run/cgprofile/observer/resource-observer.sock` | restart |
+| `damon_lock` | `/run/cgprofile/damon.lock` | restart |
+| `proc_root` | `/proc` | restart |
+| `busctl` | `busctl` | restart |
+| `export_max_bytes` | `268435456` | reload |
+| `max_exports` | `4` | reload |
+| `max_watchers` | `32` | reload |
+| `interval` | `1.0` | reload |
+| `damon_default` | `"on"` | reload |
+| `keep_sessions` | `200` | reload |
+| `keep_days` | `14` | reload |
+| `max_sessions` | `16` | reload |
+| `observe_slices` | `[]` | reload |
+| `gates_slice` | `"dev-gates.slice"` | reload |
+| `allow_uids` | `[]` | reload |
 
-**Runs from a devcontainer.** The profiler re-executes itself inside a
-privileged helper with private PID/cgroup namespaces and explicit read-only
-bind mounts of host `/proc` and cgroup v2. The helper uses the host proc mount
-for process details; it does not join either host namespace, and you do not
-need a host install. Container targets are resolved to Docker IDs by the
-caller before re-exec; in helper mode `self` means the invoking container,
-not the short-lived helper. For `pid:N`, the caller carries the PID- and
-cgroup-namespace identities, namespace-local PID, process start time, and
-relative cgroup path. The helper matches those facts against processes in
-that container subpath and requires exactly one live match; it then uses the
-PID visible in its host `/proc` view for process sampling and DAMON. Missing,
-changed, or ambiguous identity is a refusal, never a guess from the caller's
-numeric PID. This avoids treating caller PIDs as visible in the helper's
-private PID namespace, where `cgroup.procs` cannot identify them. Before the
-helper starts, a bounded probe
-asks host systemd to confirm that both the configured
-placement slice and the cockpit's injected interactive slice are loaded, not
-transient, and have instantiated cgroups. The probe uses the local
-`tester-unified:local` image (override with
-`CGPROFILE_PLACEMENT_PROBE_IMAGE` if you provide a compatible local image with
-`systemctl`); missing verification evidence refuses helper launch.
-See [the design guide](docs/DESIGN-GUIDE.md#private-namespaces-and-host-views)
-for the namespace rationale and [the consumer guide](docs/CONSUMERS.md#resolve-a-target-from-a-cockpit)
-for a working helper-mode command.
+### 3. Sockets
 
-**Nothing at run time.** Report dependencies are pinned in
-`requirements-report.txt` and built once by `./setup.sh`. The lock retains the
-existing install set; `pyproject.toml` remains the dependency source of truth.
-No code path installs, downloads, or fetches while profiling — that would add
-exactly the load the tool exists to measure.
+| socket | mode and group | speaks |
+|---|---|---|
+| `/run/cgprofile/ctl.sock` | directory `0770 root:<ctl group>`, socket `0660`, group adopted from the directory | control protocol: ctl contract 2, contract 1 for older consumers ([`docs/PROTOCOL.md`](docs/PROTOCOL.md)) |
+| `/run/cgprofile/observer/resource-observer.sock` | directory `0751 root:cgprofile-observer` | observer contracts 2 and 3: peer-bound resource counters and measurement windows ([`docs/PROTOCOL.md`](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)) |
 
-## Running the daemon
-
-RG-55 added a second, always-on mode: a host daemon that run-gate (or anyone
-else) talks to over a Unix socket instead of spawning a collector per lane.
-The daemon alone uses the host PID namespace, allowing DAMON sysfs to resolve
-host `pid_target` values; it keeps a private cgroup namespace, has no network,
-and receives no Docker socket. Workload, helper, gate, and test containers
-remain private. The daemon exposes its existing control protocol on
-`/run/cgprofile/ctl.sock` and a distinct, observer-only
-`/run/cgprofile/observer/resource-observer.sock` for explicitly opted-in native R2
-lanes. Host setup provisions its parent as `root:cgprofile-observer` mode
-`0751`; this dedicated group is separate from `docker`. Other users can
-traverse the known socket path for preflight but cannot list or connect to it.
-That second listener
-accepts only a peer-bound resource-counter query; it is not a broker and
-provides no control or placement operation. Run-Gate mounts the observer
-directory read-only into the selected tester container, never `ctl.sock`.
-The directory bind keeps the socket reachable across daemon restarts. Observer
-lanes declare their own memory and PID ceilings and cannot add arbitrary host
-mounts.
-It verifies that all peer threads share capability state and cannot bypass
-cgroup control permissions. It accepts one newline-terminated JSON request
-of at most 4096 bytes including the newline, with a five-second absolute deadline.
-See [the observer protocol](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)
-and [adoption steps](docs/CONSUMERS.md#native-r2-resource-observer).
-Observer contract 2 returns regular event counters, effective local event
-counters, and the cgroup2 mount's event modes; the daemon's general control
-protocol remains contract 1. The resource observer refuses a host mount using
-`pids_localevents`: that mode counts failed forks in the cgroup where the
-process tried to fork, even when an ancestor's `pids.max` rejected it, so it
-cannot attribute enforcement to the right cgroup. `memory_localevents` remains
-supported with the candidate-subgroup check described in the protocol. The
-resource observer accepts contract 2 (`resource-limits`) and contract 3
-(`window-open` and `window-close`, per-subject measurement windows in
-process-tree or cgroup mode, see
-[the observer protocol](docs/PROTOCOL.md#9-observer-contract-3-measurement-windows)
-and [consumer rules](docs/CONSUMERS.md#measurement-windows-observer-contract-3));
-contract-1 observer requests receive an explicit unsupported-contract refusal.
-It also receives a read-only host `/proc` bind and an
-explicitly writable host cgroup-v2 view for opt-in P6 placement. The host
-system-bus socket is mounted only into the daemon; the read-only bind does not
-make systemd RPCs read-only. The daemon uses systemd's `AttachProcessesToUnit`
-for identity-checked placement and survivor restoration because systemd owns
-the delegated scope lifecycle, not because the daemon lacks host PID access.
-`CgroupWriteGuard` limits intended cgroupfs writes to the placement whitelist,
-and each move is verified through `/hostproc`. If survivors cannot be
-enumerated or restored, the daemon reports the exact cgroup path and leaves
-the lane leaf in place rather than hiding stranded processes. The one-shot
-helper keeps private namespaces and its cgroup view read-only. The daemon also
-writes session storage and DAMON sysfs during normal operation. Host PID mode
-adds process-table visibility and PID-operation authority; the application
-checks and write guard do not contain arbitrary code execution in this
-privileged daemon. Stall policy never signals numeric PIDs. See the
-[trust boundary](docs/DESIGN-GUIDE.md#daemon-safety-and-placement). At startup,
-the daemon compares PID 1 in `/hostproc` with its own PID namespace; this is a
-consistency check, not host authentication. The managed CIU Compose service is
-the deployment authority: it selects `pid: "host"` and binds the host's
-`/proc` at `/hostproc`. Its Compose configuration lives in the
-`scripts/cgroup-profiler/` standalone CIU root;
-`RG55-INTERFACE-CONTRACT.md` is the full wire contract.
-Before the first CMRU release, the managed CIU root has no image override and
-uses the local development default. Build it and start the stack for
-pre-release checks. From the repository root, run:
-
-```bash
-cd scripts/cgroup-profiler
-python3 build-push.py --build
-ciu up --profile host
-docker exec cgprofile-host-daemon cgprofile ctl version --json
-docker exec cgprofile-host-daemon cgprofile ctl status --json
-```
-
-After CMRU publishes `cgprofile-v1.0.0`, add the published image pin to
-`ciu.toml.j2` as shown in the
-[published-image deployment steps](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu),
-then, from that same project directory, run `ciu up --profile host` and verify the
-daemon identity.
-The release pin is not usable before its GHCR manifest exists.
-
-The daemon's version response is contract major 1:
+The control socket is one carrier: there is no `exec` carrier. A version reply
+looks like this (the `cgprofile` field is the installed version):
 
 ```json
 {
   "ok": true,
   "contract": 1,
-  "cgprofile": "1.0.0",
+  "cgprofile": "2.0.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
     "started_at": "2026-09-12T10:15:00Z",
@@ -294,231 +127,159 @@ The daemon's version response is contract major 1:
 }
 ```
 
-The observer field identifies the separate contract-2 endpoint used by opted-
-in native R2 lanes. Its version is independent of the control protocol's
-contract major 1.
+`damon: "available"` is a capability probe, not proof that the kernel accepted
+a monitoring context; see the
+[design guide](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness)
+and the [troubleshooting note](docs/CONSUMERS.md#host-damon_stat-exclusivity).
 
-In this response, `damon: "available"` is a capability probe: the DAMON
-analysis library loaded and its admin sysfs interface is visible. It does not
-mean the kernel accepted a configured monitoring context. Check each session's
-`start` result and persisted series; details are in the
-[design guide](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness).
-One possible host-level refusal is an active, mutually exclusive kernel DAMON
-consumer such as `DAMON_STAT`; see the
-[consumer troubleshooting note](docs/CONSUMERS.md#host-damon_stat-exclusivity).
-`DAMON_STAT` is a simplified, system-wide physical-memory statistics module;
-cgprofile instead uses the generic DAMON sysfs interface to target the
-profiled process(es) and collect per-session access regions. Linux makes
-these DAMON consumers exclusive, so an enabled `DAMON_STAT` can leave ordinary
-cgprofile sampling healthy while its DAMON series is unavailable. Debian does
-not define one invariant runtime default: the installed kernel build controls
-it. The RG-55 host's kernel config sets `CONFIG_DAMON_STAT_ENABLED_DEFAULT=y`;
-see the consumer note for the live probe and safe host procedure.
+### 4. Consumers
 
-- **One daemon per host, deliberately.** `deploy.environment_tag = "host"`
-  (not `$INSTANCE_ID` like every other ciu stack in this estate) — the
-  container name is the fixed literal `cgprofile-host-daemon`. A second
-  worktree running `ciu up --dir .` collides on that name and refuses to
-  start a sibling, on purpose: the daemon owns the host's DAMON facility and
-  observes host proc/cgroup state through explicit mounts, which cannot be
-  meaningfully duplicated. The daemon joins the host PID namespace, while its
-  cgroup namespace remains private.
-- **`--network none`, no docker socket inside the container.** The control
-  surface is `/run/cgprofile/ctl.sock`, reached with `docker exec
-  cgprofile-host-daemon cgprofile ctl <verb> --json` from anywhere with
-  docker access to that container. `ctl`'s own client-side timeout is 25 s;
-  see the contract §1.3/§1.5 for run-gate's own per-verb timeouts.
-- **Two carriers, one protocol** (contract §8.1, design D-30). That same
-  socket is also bind-mounted to the host at `/run/cgprofile`, so a
-  consumer that cannot (or should not) use the docker socket speaks the
-  protocol directly:
+* **Run-Gate** starts, watches and stops sessions per lane over the control
+  socket, and mounts only the observer directory into a native-R2 tester
+  container, never `ctl.sock`. Integrations use the installed Run-Gate wheel and
+  its SemVer identity; copied `run-gate.py` scripts are not a supported
+  consumer. See the
+  [design rationale](docs/DESIGN-GUIDE.md#run-gate-is-an-installed-semver-consumer)
+  and [adoption steps](docs/CONSUMERS.md#attach-a-run-gate-lane).
+* **Assay** reads event counters through the observer socket
+  ([adoption](docs/CONSUMERS.md#native-r2-resource-observer)).
+* **mdt host-setup** installs, pins, upgrades and checks the service
+  ([`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md) section 6).
+* **Devcontainers and cockpits** install `cgpctl` and bind the control socket
+  directory; [`ATTACH-GUIDE.md`](ATTACH-GUIDE.md) is the operator walk-through.
 
-  ```bash
-  # the exec carrier (default, unchanged, always available)
-  docker exec cgprofile-host-daemon cgprofile ctl version --json
-  # the socket carrier: one request line, one response line
-  printf '{"verb": "version", "args": {}, "contract": 1}\n' \
-    | socat - UNIX-CONNECT:/run/cgprofile/ctl.sock
-  ```
+### 5. Access
 
-  Every verb, response, error code and the `contract` field are identical
-  on both — `docs/PROTOCOL.md` documents each verb's `args` names, and
-  `tests/fixtures/rg55/socket/` freezes a request/response pair per verb.
-  On `start`, omitting `--damon` uses the daemon's configured default; a
-  socket request must omit `damon` too, because explicit `damon: null` is
-  invalid.
-  A complete request line including its newline is limited to 1 MiB and
-  must arrive within 25 seconds; trickle bytes do not extend the deadline.
-  Oversized lines receive `bad-argument`, and an incomplete line is closed
-  without dispatch. `watch` has no timeout after its initial request line.
-  - **Host prerequisite:** the directory `/run/cgprofile` on the host is
-    created by mdt host-setup's tmpfiles.d entry `mdt-cgprofile.conf`
-    (`d /run/cgprofile 0770 root docker -`). The daemon Compose service
-    refuses a missing bind source rather than creating an empty directory.
-    **That entry decides who may
-    use the control socket carrier: members of the `docker` group** — the same
-    principals who can already `docker exec` into the daemon, which is why
-    the two carriers have the same trust boundary. The daemon re-asserts
-    `0770` on the directory and `root:<the directory's own gid>` `0660` on
-    the socket at every start; it never picks the group itself. Host setup
-    separately creates `/run/cgprofile/observer` as `0751
-    root:cgprofile-observer` with systemd-sysusers; other users can traverse
-    its known socket path for preflight but cannot list or connect. The daemon sets only the
-    observer socket to that group's GID and does not widen this directory.
-  - **Without host-setup** the directory is `root:root`, the socket ends up
-    root-only, and the daemon logs one INFO line saying so (`docker logs
-    cgprofile-host-daemon`). Nothing breaks: the exec carrier is unaffected
-    and stays the default.
-  - **`CGPROFILE_ALLOW_UIDS`** (optional, compose env, comma-separated
-    uids) narrows the socket carrier further: `SO_PEERCRED` on every
-    connection, uid 0 always allowed (that is how the exec carrier
-    arrives), everyone else refused with `{"ok": false, …, "error":
-    {"code": "peer-refused", …}}`. Unset = no uid restriction beyond the
-    socket's group mode. A malformed value refuses to start the daemon
-    rather than silently widening access.
+The ctl directory's group decides who may connect; the daemon identifies every
+peer by `SO_PEERCRED`. `allow_uids` narrows that group further (uid 0 is always
+allowed), and an access change is uid 0 only
+([`docs/PROTOCOL.md`](docs/PROTOCOL.md#4-authorisation-on-the-socket-81)).
+Sessions are owned by the uid that started them; other uids see them but only
+uid 0 stops them. The observer socket is reached by members of
+`cgprofile-observer`, which grants nothing on the control socket. Off an mdt
+host with no groups set up, the sockets are root-only.
 
-- **Target lookup reports what was established.** A complete cgroup-tree
-  search with no matching container returns `target-not-found` (ctl exit 2).
-  If the host cgroup bind cannot be searched, `ctl` exits 3 as a daemon
-  fault; that result does not establish that the container is absent. See
-  [the contract boundary](docs/DESIGN-GUIDE.md#contract-boundary) for why
-  the daemon uses the host tree as its identity source.
-- **Sessions live in the named volume** `cgprofile-sessions`, mounted at
-  `/var/lib/cgprofile/sessions` — `ctl stop <session>`'s response names the
-  exact `session_dir` and the series files inside it (`samples.jsonl.gz`,
-  `events.jsonl`, `host.jsonl`, `manifest.json`, `summary.json`, plus
-  `damon.jsonl` only when actual DAMON samples were persisted). `ciu down`
-  preserves the volume; `ciu clean`/`--reset`
-  removes it, same as every other named volume in this estate.
-- **Rendering a report:** `docker exec cgprofile-host-daemon cgprofile ctl
-  report <session> --json` — the same interactive `report.html` a
-  `cgprofile run`/`attach` session produces, rendered by the image's own
-  venv (the daemon process itself never imports pandas/plotly — see
-  `src/cgprofile/serve.py`'s `handle_report`). May take longer than 30 s on a long
-  session; run-gate itself never calls this verb.
-- **Retention:** `--keep-sessions 200 --keep-days 14` by default (`serve`
-  CLI flags) — the newest N finished sessions are kept, older ones dropped
-  on every `stop`, or on demand via `ctl gc --json`. A live session is
-  never pruned. A finished session with an incomplete placement recovery
-  journal is also preserved until restoration is verified, even when those
-  retention limits are exceeded.
-- **`cgprofile.slice` (D-29) — the daemon's own containment.** An OPERATOR
-  step, once per host, **before** the first `ciu up` on that host: see
-  `infra/README.md` (`sudo cp infra/cgprofile.slice
-  /etc/systemd/system/ && sudo systemctl daemon-reload`). Not installed →
-  `serve` REFUSES to start (exit 2): systemd would auto-create an unbounded
-  slice and the daemon would look governed while running unlimited. The
-  daemon's OWN cgroup must be under `cgprofile.slice`, whose `memory.max` must
-  be finite and positive (unlimited, zero, empty, unreadable and non-numeric are
-  all refused); with `restart: unless-stopped` a host without the unit
-  crash-loops. Pre-creation `LoadState` proof is CIU-150, not in 1.1.0.
-  `ctl host` reports the actual `daemon_slice.memory_min_bytes` and
-  `memory_high_bytes` (a zero or null floor means no memory reservation).
-  This is a
-  DIFFERENT slice from the gates slice below — one bounds the daemon
-  itself, the other is where placed lanes live.
-- **Liveness/watch policy (D-27, contract §8.2/§8.4) — `start` options.**
-  `--progress-stream <regular file path as the lane sees it>` (read through
-  `/proc/<pid>/root/<path>`; FIFOs, devices, and unfinished lines are
-  ignored),
-  `--idle-bound auto|<seconds>` (`auto` =
-  `max(300, 3 x cadence hint)`), `--ceiling auto|<seconds>` (`auto` = `3 x
-  meta.expected.duration_s`, else none), `--on-stall kill|report` (default
-  `report`). An unparsable value is `bad-policy` — the session is not
-  started. `kill` uses only an exact cgroup boundary: `scope=container` may
-  kill the target container cgroup when its ID is proven by the runtime leaf
-  name beneath the verified gates slice and `cgroup.events` confirms it is
-  populated; `scope=container-shared` requires a
-  token and an explicit, successfully verified `--place` leaf. The daemon
-  never signals numeric PIDs or falls back to them. If the requested boundary
-  cannot be established, `start` returns `bad-policy`; an empty or unreadable
-  target or a runtime kill refusal is recorded as `reported`, never `killed`.
-  `docker exec cgprofile-host-daemon cgprofile ctl watch
-  <session> --json` streams `reading`/`verdict`/`end` lines on either
-  carrier (the one verb where more than one response crosses the wire per
-  connection — `docs/PROTOCOL.md` §1's documented exception) until the
-  session ends; `--watch-interval` (default 30 s, clamped [5, 300])
-  controls the `reading` cadence. A disconnected watch without its terminal
-  `end` exits 3. `ctl status`/`ctl stop` also carry the
-  current `liveness`/`watch` blocks for a session that was never watched
-  with `ctl watch` directly.
-- **Placement (D-20/D-25/D-31, contract §8.3) — `start --place`.** Creates a
-  systemd-owned transient `rg-profile-<token>.scope` directly beneath the
-  verified gates slice, then a cgprofile-owned `rg-<token>` leaf below that
-  scope. The default gates slice is `dev-gates.slice` under `dev.slice`;
-  mdt host-setup supplies its authored unit, and `serve --gates-slice <name>`
-  selects another one. systemd retains ownership of the slice and scope
-  boundary; cgprofile owns only the per-lane leaf. The daemon permits placement
-  only when systemd verifies the expected loaded, non-transient slice and the
-  slice has finite positive memory and CPU ceilings; a directory alone is not
-  proof. It moves the token's processes into the leaf, restores identity-checked
-  survivors to their recorded original units on `stop`, removes the leaf, and
-  retires the empty transient scope. A failed or ambiguous restore preserves
-  the leaf and recovery record. `--memory-high <bytes>`, `--memory-max
-  <bytes>` (refused as `place-refused:over-slice` above the gates slice's own
-  ceiling), and `--cpu-weight <1-10000>` set leaf controls; applied values are
-  always READ BACK from the kernel, never echoed. Host refusals leave profiling
-  available but the lane unplaced. A scope-name collision is refused, never
-  adopted or cleaned up. This normally leaves profiling available; if the same
-  request requires shared-scope `--on-stall kill`, the daemon rejects it before
-  creating a session because there is no verified kill boundary. Run-gate
-  requests that policy only when its existing resource plan already requested
-  placement; otherwise its local watchdog remains verdict authority. A
-  one-process origin unit may be refused as
-  `place-refused:origin-scope-would-empty`: systemd retires an empty source
-  scope, leaving no exact unit for stop-time restoration. Membership that
-  cannot be established is refused as `place-refused:identity-unavailable`.
-  A malformed cap value is `bad-argument` (exit 2, no session) — the client
-  typed it wrong, not the host.
-- **Placement memory is charge-based, not total RSS.** After successful
-  placement, cgroup memory counters and the leaf's `memory.high`/`memory.max`
-  describe charges attributed to that cgroup. Moving an already-running
-  process does not transfer charges for pages it faulted earlier, so these
-  numbers are not total process RSS and the leaf limit is not a hard cap on all
-  memory already resident in the lane. See the detailed accounting notes in
-  [`docs/CONSUMERS.md`](docs/CONSUMERS.md#resource-accounting-with-placement).
-- **Daemon host-PID view and explicit host mounts.** The daemon alone uses
-  the host PID namespace so DAMON sysfs can resolve host `pid_target` values;
-  its cgroup namespace remains private. The one-shot helper, workload, gate,
-  and test containers remain private in both namespaces. Host `/proc` is
-  explicitly bound read-only; the daemon receives a writable host cgroup-v2
-  bind because opt-in placement creates `rg-*` leaves and moves lane
-  processes. D-25's whitelist is an application-level guard on normal code
-  paths, not an OS-enforced boundary against arbitrary code execution in the
-  privileged daemon. For placement, host systemd owns delegated-scope
-  lifecycle and identity-checked `AttachProcessesToUnit` moves; the daemon
-  records and verifies each move and restoration against its host-proc view.
-  Unresolvable or unrestored survivors keep the leaf and recovery record.
-  The daemon never signals numeric PIDs. DAMON retains its separately mounted
-  sysfs write surface. The consumer-facing socket does not expose systemd
-  D-Bus to the cockpit. Host-PID mode increases process-table visibility and
-  PID-operation authority; these application checks do not contain a
-  compromised privileged daemon. The rationale and deferred broker option are in the
-  [RG-55 placement design](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
-  P1 and P6 were implemented in separate work tranches, but RW-434 settles
-  their combined tree as the first 1.0.0 release; 1.1.0 carries no new
-  placement capability — its changes are the Sol-review fixes, the slice
-  guard, the additive `swapev`/`memev_h` sample groups and the `swap_fail`
-  event listed in `CHANGES.md`. These are operational
-  authority paths, not kernel-enforced containment. `ciu up` remains the
-  managed lifecycle, with no alternate host-namespace launcher.
+### 6. Protection
+
+`cgpd.service` runs inside a memory-bounded `cgprofile.slice`, and refuses to
+start when its cgroup is not under that slice
+([`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#the-daemon-proves-the-slice-it-is-in-not-a-slice-by-name)).
+Optional placement puts a lane into a delegated scope beneath the gates slice;
+`cgroup.kill` is written only for an exact container cgroup proven beneath that
+slice, or an exact placed leaf, and the daemon never signals a numeric PID
+([`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#daemon-safety-and-placement)).
+The service restarts on failure, and an upgrade drains live sessions before the
+restart ([`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md) section 5).
+
+### 7. Install
+
+The wheel is the deployed artifact: host-setup installs it into a versioned
+directory under `/opt/cgprofile`, renders the units with `cgpd unit print`, and
+flips a `current` pointer; nothing runs from a checkout. Steps, variables,
+upgrade and rollback are in [`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md).
+Release identity (wheel version, tag, checksum) is described in the
+[release identity design](docs/DESIGN-GUIDE.md#release-identity).
+
+A CMRU release also publishes a **GitHub Release body** for `cgprofile-v<version>`: it
+opens with the exact pull instruction (`docker pull ghcr.io/volkb79-2/cgprofile:<version>`)
+and then carries that version's dated section of `CHANGES.md`, including any pending
+`[Unreleased]` and migration notes, which CMRU folds into the tagged candidate. It is written
+by `cmru handler oci-image-release`, the **last command** of the push step, so it runs only
+after `build-push.py --push` has pushed the image; it writes release metadata only and never
+builds or pushes. `cmru release --dry-run` previews that exact body, and CMRU refuses a
+misconfigured handler before any release side effect. See the
+[design](docs/DESIGN-GUIDE.md#the-github-release-body-for-the-published-image) and the
+[pasteable preview](docs/CONSUMERS.md#preview-the-github-release-body).
+
+## Where to read next
+
+- **[`ATTACH-GUIDE.md`](ATTACH-GUIDE.md)** — how to profile a gate in any repo.
+  Start there if you want to use it.
+- **[`DESIGN.md`](DESIGN.md)** — architecture and module contracts. Start there
+  if you want to change it.
+- **[`docs/CONSUMERS.md`](docs/CONSUMERS.md)** — pasteable probes and adoption
+  steps for the daemon and Run-Gate.
+- **[`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#daemon-safety-and-placement)**
+  — why the always-on daemon owns only its measured state and how its contract
+  stays fail-closed.
+
+Native R2 takes its changed-lines base from the gate request. Supply the
+recorded comparison commit with `--base` for `r2` and the full `gate`, and
+inspect the Assay plan before a long run. Native R2 runs one mutant at a time
+because its resource event counters belong to the shared tester cgroup; an
+incomplete 24-hour window resumes on the same exact tree. See the
+[design rationale](docs/DESIGN-GUIDE.md#mutation-comparison-base) and the
+[exact commands](docs/CONSUMERS.md#run-the-p1-review-gates). CMRU's release gate
+runs only `r0-r1` and `r3`; the complete Run-Gate `gate` lane also includes the
+24-hour `r2` campaign. There is no completed full-source R2 verdict for the
+current tree. See
+[release qualification](docs/DESIGN-GUIDE.md#release-qualification-and-the-full-r2-gate).
+
+## What you get
+
+| file | |
+|---|---|
+| `report.html` | interactive: zoom, pan, hover crosshair across every series, phase bands, event markers, resolution selector. One self-contained file, no server, no network. |
+| `report.md` + `charts/` | static twin for pasting into a ledger or a PR |
+| `samples.jsonl` | raw samples, for your own analysis |
+| `events.jsonl` | what the profiler flagged, with the numbers behind each one |
+| `manifest.json` | targets, host facts, and the effective-limit snapshot |
+
+A daemon session stores `samples.jsonl.gz`, `events.jsonl`, `host.jsonl`,
+`manifest.json`, `summary.json`, and `damon.jsonl` only when DAMON samples were
+persisted; `cgpctl report ID` renders them locally from an `export`, so the
+daemon process never imports the report libraries.
+
+## The parts worth knowing about
+
+**Effective limits, not declared ones.** A container's `memory.max` is rarely
+the number that binds it. The profiler walks the ancestor chain and reports
+which cgroup actually imposes each ceiling. It also reports `memory.min` and
+`memory.low` twice — once as they hold *without* `memory_recursiveprot`, once
+as they would hold with it — because a mount missing that flag silently
+discards protection an ancestor declared, and nothing else on the host tells
+you.
+
+**Adaptive sampling.** 250 ms while anything is moving, backing off to 2 s when
+quiet, snapping back to hot on any event. Designed to be run on a host that is
+already short of memory: the collector is standard-library only, holds no
+series in memory, and does all analysis after the run.
+
+**Phases three ways.** Explicit marks (`cgpctl mark "restoring db"`, callable
+from inside a gate container), wrapper-derived boundaries for gates that know
+nothing about the tool, and changepoint detection over the series so unlabelled
+regime shifts still get timestamped.
+
+**Targets resolve on the client.** `cgpctl start --target container:NAME`
+resolves a name to a full container ID with `docker inspect` when the Docker
+CLI is reachable; otherwise use `containerid:`, `cgroup:` or `slice:`. `self`
+means the container that invoked the CLI. `pid:N` carries the caller's
+namespace identity and process start time, and the daemon accepts exactly one
+live match or refuses; it never guesses from a numeric PID
+([design](docs/DESIGN-GUIDE.md#private-namespaces-and-host-views)).
+
+**Nothing at run time.** The report dependencies live in the optional `report`
+extra of the wheel. No code path installs, downloads, or fetches while
+profiling — that would add exactly the load the tool exists to measure.
+
+**DAMON is optional evidence.** Setup, collection or cleanup failure disables
+only the DAMON series; ordinary profiling and the wrapped command continue. The
+one-shot collector and the daemon pool coordinate through a host-shared advisory
+lock, which does not serialize unrelated privileged DAMON tools
+([design](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness)).
 
 ## Relationship to the neighbours
 
-- `scripts/damon-analysis/` — DAMON working-set analysis. `--damon` reuses its
-  `SysfsInterface` and `Classifier` to add a hot/warm/cold breakdown alongside
-  the counters.
+- `scripts/damon-analysis/` — DAMON working-set analysis. The wheel vendors the
+  `SysfsInterface` and `Classifier` it uses to add a hot/warm/cold breakdown
+  alongside the counters.
 - `modern-debian-tools-python-debug/host-setup/` — owns the host's dev-tier
   slice governance (`dev-interactive`, `dev-background`, `dev-gates`,
-  `dev-buildkitd`). This
-  tool measures those tiers; it does not manage them. Proposals in the report
-  are phrased as changes to *that* configuration.
-- `/usr/local/sbin/soulmask-zswap-monitor.sh` — live production health. The
-  `rfz/s`, `rfd/s` and `rff/s` definitions here are deliberately identical, so
-  the two can be read side by side.
+  `dev-buildkitd`). This tool measures those tiers; it does not manage them.
+  Proposals in the report are phrased as changes to *that* configuration.
 
 ## Requirements
 
-Linux with cgroup v2, Python 3.11+, and either root on the host or a Docker
-socket to launch the helper. `./setup.sh` builds the venv (pandas, plotly,
-matplotlib, ruptures, scipy) used only for analysis and reporting.
+Linux with cgroup v2 and Python 3.11+. The daemon needs root and systemd; the
+client needs only the socket's group, or nothing for `run`, `mark` and
+`report --run-dir`.

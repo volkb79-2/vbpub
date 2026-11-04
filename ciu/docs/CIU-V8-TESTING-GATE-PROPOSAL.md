@@ -375,8 +375,8 @@ Shortcomings: the profiler daemon finds a lane's processes by the literal enviro
 
 **Roles (D-651 Q4, D-652 Q6).** Three parties take part, and only ciu decides.
 - **The cgroup-profiler daemon measures and serves data. It decides nothing.**
-  - *What it is.* A host singleton (`cgprofile-host-daemon`) in its own `cgprofile.slice`. Its PID and cgroup namespaces are private; host `/proc` is mounted read-only at `/hostproc`, and host cgroup v2 is mounted for observation and guarded placement. It has no network and no docker socket (RG-55 contract §5; design D-29..D-32).
-  - *How it is reached.* It speaks contract 1 over two carriers: `docker exec cgprofile-host-daemon cgprofile ctl <verb> --json`, and the socket `/run/cgprofile/ctl.sock` (v1.1 §8.1).
+  - *What it is.* A host singleton (`cgpd.service`) in its own `cgprofile.slice`. It runs natively in the host PID and cgroup namespaces, observes host cgroup v2, and performs guarded placement. It uses no docker socket (RG-55 contract §5; design D-29..D-32).
+  - *How it is reached.* It speaks contract 1 (and contract 2 to `cgpctl`) over one carrier, the socket `/run/cgprofile/ctl.sock`, with `cgpctl <verb> --json` as the client.
   - *What it serves.* Per-session live usage and summaries (`start`/`status`/`stop`), including the DAMON hot/warm/cold/idle classification of the lane's memory (contract §3 `damon`; the series are on disk as `damon.jsonl` and charted by `ctl report`, CP-6). A host snapshot with memory PSI, the `memory.max` of every `dev.slice` child, and the gates slice (`ctl host`, §2.4/§8.5). Liveness verdicts (`watch`, §8.2/§8.4). On request, per-lane placement (§8.3).
   - *Why ciu needs it.* It is the only vantage that sees the slices and the only source of warm working sets. From the devcontainer, where every gate starts, `/proc/self/cgroup` reads `0::/` and `/sys/fs/cgroup/dev.slice` is absent (live probe 2026-10-03).
   - *Running it is the operator's choice* (D-653 Q16). ciu works without it; see "Without the daemon" below.

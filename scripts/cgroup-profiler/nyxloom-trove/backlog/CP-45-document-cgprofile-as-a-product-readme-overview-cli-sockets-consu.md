@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-45
 title: "Document cgprofile as a product: README overview of what it is, CLI, sockets, consumers, access and daemon protection"
-status: open
+status: fixed
 type: "docs"
 component: "docs"
 context_estimate: "small"
@@ -55,3 +55,10 @@ Write after CP-42 and CP-43 settle the facts (protection and groups); the CLI an
   drops the exec carrier and names ctl contract 2 (`PROTOCOL.md` section 10); install part 7 points at `docs/NATIVE-DEPLOYMENT.md`.
 - Delivery moves into CP-49 (plan package 5) so it is written once, after the CLI and daemon exist; the docs-sync test additionally compares the
   README verb list with the `cgpctl --help` surface and the config key table with `cgpd config check`'s key set.
+
+## Updates
+
+**2026-11-04** FIXED in cgp2 package 5 (branch feat-cgp2-pkg5-20261104): the README "Product overview" has the seven parts, each linking its normative
+document. `tests/test_docs_sync.py` compares the README verb tables with the `cgpctl` and `cgpd` cli-extended registries (names and documented flags),
+the config-key table with the `daemon_config` schema (keys, defaults, reload versus restart), and the socket paths and the `cgprofile-observer` group
+with `ctlwire`, PROTOCOL.md and NATIVE-DEPLOYMENT.md, with a mutation self-test per comparison.
