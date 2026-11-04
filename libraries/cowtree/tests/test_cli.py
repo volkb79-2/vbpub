@@ -7,6 +7,7 @@ import sys
 import pytest
 from cowtree import cli
 from cowtree.detect import Area, Capabilities
+from cowtree.provision import LevelUnavailable
 from cowtree.errors import CacheBusy, KeyMissing, TreeInvalid, Unrepairable, BackendFailed, CowError, LeaseHeld, PathRefused, RootInvalid, SpaceRefused
 from cowtree.gc import GcItem
 
@@ -49,6 +50,7 @@ def test_detect_cli_off_and_valid_area(monkeypatch, tmp_path, capsys):
         (KeyMissing("missing"), 9),
         (TreeInvalid("bad"), 10),
         (Unrepairable("dir"), 11),
+        (LevelUnavailable("none"), 12),
     ],
 )
 def test_detect_cli_maps_typed_errors_to_distinct_statuses(monkeypatch, capsys, error, status):
@@ -147,39 +149,48 @@ def test_main_returns_unknown_command_status_if_parser_is_extended(monkeypatch):
     assert cli.main([]) == 2
 
 
-def _cache_env(tmp_path, monkeypatch):
+def _cache_env(tmp_path):
     root = tmp_path / "tree-cache"
     root.mkdir(mode=0o770)
-    monkeypatch.setenv("MDT_TREE_CACHE_ROOT", str(root))
     from cowtree.cache import Cache
     cache = Cache(str(root))
     cache.ensure("a" * 16, lambda tree: open(tree + "/f", "w").write("x"))
-    return cache
+    return str(root)
 
 
-def test_cache_cli_without_root_is_a_logged_noop(monkeypatch, capsys):
-    monkeypatch.delenv("MDT_TREE_CACHE_ROOT", raising=False)
-    for argv, out in ((["cache", "survey"], "no shared cache\n"), (["cache", "gc", "--json"], "[]\n")):
-        assert cli.main(argv) == 0
-        output, error = capsys.readouterr()
-        assert output == out and "MDT_TREE_CACHE_ROOT is not set" in error
-
-
-def test_cache_cli_survey_gc_verify(tmp_path, monkeypatch, capsys):
-    _cache_env(tmp_path, monkeypatch)
-    assert cli.main(["cache", "survey"]) == 0
+def test_cache_cli_survey_gc_verify(tmp_path, capsys):
+    root = _cache_env(tmp_path)
+    assert cli.main(["cache", "survey", "--root", root]) == 0
     assert "kind=key" in capsys.readouterr().out
-    assert cli.main(["cache", "survey", "--json"]) == 0
+    assert cli.main(["cache", "survey", "--root", root, "--json"]) == 0
     assert json.loads(capsys.readouterr().out)[0]["files"] == 1
-    assert cli.main(["cache", "verify", "a" * 16]) == 0
+    assert cli.main(["cache", "verify", "--root", root, "a" * 16]) == 0
     assert "digest: " in capsys.readouterr().out
-    assert cli.main(["cache", "verify", "a" * 16, "--shallow", "--json"]) == 0
+    assert cli.main(["cache", "verify", "--root", root, "a" * 16, "--shallow", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["ok"] is True
-    assert cli.main(["cache", "verify", "b" * 16, "--json"]) == 9
+    assert cli.main(["cache", "verify", "--root", root, "b" * 16, "--json"]) == 9
     assert json.loads(capsys.readouterr().err)["error"] == "key-missing"
-    assert cli.main(["cache", "gc"]) == 0
+    assert cli.main(["cache", "gc", "--root", root]) == 0
     assert "a" * 16 + ": kept: idle" in capsys.readouterr().out
-    assert cli.main(["cache", "gc", "--json"]) == 0
+    assert cli.main(["cache", "gc", "--root", root, "--json"]) == 0
     assert json.loads(capsys.readouterr().out)[0]["status"] == "kept"
-    assert cli.main(["cache", "gc", "--idle", "0"]) == 0
+    assert cli.main(["cache", "gc", "--root", root, "--idle", "0"]) == 0
     assert "removed" in capsys.readouterr().out
+
+
+def test_cache_cli_requires_explicit_root(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["cache", "gc"])
+
+
+def test_probe_cli_reports_level_and_failure(tmp_path, capsys):
+    copy = tmp_path / "copy"
+    copy.mkdir(mode=0o770)
+    assert cli.main(["probe", "--copy-dir", str(copy), "--level", "D"]) == 0
+    out = capsys.readouterr().out
+    assert "level: D (requested D)" in out and "  D: ok" in out
+    assert cli.main(["probe", "--copy-dir", str(copy), "--json", "--shared-root", str(copy), "--overlay-via", "mount"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["level"] in ("B", "C", "D") and report["checks"]["A"]
+    assert cli.main(["probe", "--json"]) == 12
+    assert json.loads(capsys.readouterr().err)["error"] == "level-unavailable"

@@ -37,6 +37,7 @@ guide](DESIGN-GUIDE.md#cli-exit-statuses).
 | 9 | `key-missing` | The shared-cache key is not published |
 | 10 | `tree-invalid` | A published tree no longer matches its manifest |
 | 11 | `unrepairable` | An overlay entry cannot be repaired from the template |
+| 12 | `level-unavailable` | No provisioning level is usable (or the pinned one is not) |
 
 ZFS uses the reflink backend when block cloning is available; cowtree does not
 provide a native ZFS dataset backend.
@@ -54,31 +55,72 @@ subvolumes. GC reads
 refuses to write larger manifests. See the [ownership
 rules](DESIGN-GUIDE.md#ownership-and-identity).
 
-## Shared keyed trees and overlay slots
+## Shared keyed trees and provisioning levels
 
-Beside disposable runs, cowtree owns the generic mechanism for **publishing,
-leasing and cleaning up keyed read-only trees** in a host-configured shared
-root (AD2-3; ownership split in the parallelisation addendum 2 section 2). It
-still knows nothing about git, assay, lanes or Docker; it never mounts. The
-roots come only from `MDT_TREE_CACHE_ROOT` and `MDT_TREE_UPPER_ROOT` set by
-host policy. `shared_roots()` returns `None` when the cache root is unset (the
-caller decides whether to fall back to a copy and logs its own WARNING) and
-raises `RootInvalid` when it is set but unusable; an unset upper root means no
-overlay slots (`overlay_ready` is false).
+Beside disposable runs, cowtree provides **standalone** provisioning of
+per-worker trees: publish a keyed read-only tree once, lease it, give each
+worker a private writable copy of it, and clean up. No tool is required by
+another: the library reads no environment variables, knows no slice, host
+policy, run-gate or mdt-cockpit, and never mounts anything itself unless you
+hand it a runner. Everything is plain configuration (`Settings`); host
+policies are translated by adapters (below).
+
+### Levels (what each needs)
+
+`decide(Settings(...))` probes the host and picks the best usable level;
+`Decision.report()` returns the probe result for every level and the chosen
+one (log it). `level="A"`..`"D"` pins a level: a pinned level that is not
+usable raises `level-unavailable` instead of degrading silently. With
+`auto` and nothing configured there is no hidden default: it raises.
+
+| Level | Mechanism | Needs (all explicit in `Settings`) |
+| --- | --- | --- |
+| A | one shared read-only tree plus a per-worker overlay | `shared_root` and `upper_root` (writable directories on one filesystem each) and either a usable docker socket (`overlay_via="docker"`, `docker_socket`) or the `mount` capability (`overlay_via="mount"`, CAP_SYS_ADMIN) |
+| B | per-worker copy inside a tmpfs | `tmpfs_dir` on a tmpfs, for example `/dev/shm` |
+| C | per-worker reflink clone | `clone_dir` on a reflink-capable filesystem (probed with a real FICLONE) |
+| D | per-worker plain copy | `copy_dir`, any writable directory |
+
+Every level hands each worker a private writable directory whose initial
+content has the same manifest digest as the published tree
+(`Provisioner.verify_worker`), so verdict-relevant semantics do not depend on
+the level; only memory and speed do (A shares inodes and page cache, B-D copy).
+Level A is observed through the container (`slot.mount_argv(dst)`, or `slot.path`
+in mount mode), so `verify_worker` is for B-D.
+
+### Standalone third-party quickstart
+
+No vbpub knowledge needed. `pip install` your project (cowtree is stdlib only), then:
 
 ```python
-from cowtree import Cache, shared_roots, create_worker, worker_volume, remove_token
+from cowtree import Provisioner, Settings, decide
 
-roots = shared_roots()                       # None -> caller falls back
-cache = Cache(roots.cache_root)
-pub = cache.ensure(key, build, owner="lane-7")   # key = caller's content hash; lease taken atomically
-dirs = create_worker(roots.upper_root, token, 0, cache, key)
-vol = worker_volume(dirs, cache, key, f"rg-tslot-{token}-w0")
-argv = vol.mount_argv("/work/w0")            # --mount type=volume,volume-driver=local,"volume-opt=o=lowerdir=..."
-...
-remove_token(roots.upper_root, token)        # after the container and volume are removed
-pub.lease.release()
+settings = Settings(                      # level="auto": best usable of A, B, C, D
+    shared_root="/var/cache/mytool/trees", upper_root="/var/cache/mytool/uppers",
+    docker_socket="/var/run/docker.sock",  # level A (omit all three to skip it)
+    tmpfs_dir="/dev/shm",                  # level B
+    clone_dir="/var/cache/mytool/clone",   # level C
+    copy_dir="/var/cache/mytool/copy",     # level D
+)
+print(decide(settings).report())           # probe result and chosen level
+
+prov = Provisioner(settings)               # prov.level is the chosen level
+key = "sha256-of-your-inputs"              # you supply the content/identity hash
+prov.publish(key, lambda tree_dir: populate(tree_dir))   # built once, atomically
+slot = prov.worker("run-42", 0, key)       # private writable tree per worker
+use(slot.path)                             # levels B-D (level A: slot.mount_argv("/work/w0") for docker run)
+prov.cleanup("run-42")                     # release workers; then `prov.gc(idle_seconds=3600)` now and then
 ```
+
+The same pieces are available separately: `Cache` (publish / lease / verify /
+gc), `overlay_volume` / `worker_volume` / `create_worker` / `reuse_worker` /
+`reset_worker` / `repair_entry` / `upper_full` (the overlay recipe), and the CLI:
+
+```console
+cowtree probe --shared-root D --upper-root U --docker-socket S --tmpfs-dir /dev/shm --copy-dir C
+cowtree cache survey|gc|verify --root D
+```
+
+### Behaviour of the pieces
 
 - **Publish.** `ensure(key, build)` takes an exclusive flock on `.locks/<key>`,
   builds into `<key>.tmp-<token>/tree`, writes the `COMPLETE` verification
@@ -95,28 +137,38 @@ pub.lease.release()
   `lease(key, owner, pid=N)` records an external holder judged by pid plus start
   time, and a holder in another boot or pid namespace is conservatively kept
   alive. `release()` / the context manager removes the lease.
-- **GC policy** (`cowtree cache gc --idle SECONDS`, one global GC lock, each
-  key under its own exclusive lock taken without waiting): scratch and
+- **GC policy** (`cowtree cache gc --root D --idle SECONDS`, one global GC lock,
+  each key under its own exclusive lock taken without waiting): scratch and
   incomplete keys are removed; dead leases are pruned; a key with a live
   lease, idle below the threshold, or named by any `/proc/self/mountinfo` row
   (a bind of it or below, or an overlay `lowerdir=`/`upperdir=`/`workdir=`) is
   kept; anything else is renamed to scratch and removed by exact path. Foreign
-  entries are never touched. `cowtree cache survey` and `cowtree cache verify`
-  are read-only.
-- **Overlay recipe.** `overlay_volume` / `worker_volume` build the measured M-2
+  entries are never touched.
+- **Overlay recipe (level A).** `worker_volume` builds the measured
   `docker volume create --driver local --opt type=overlay --opt device=overlay
   --opt o=lowerdir=...,upperdir=...,workdir=...,redirect_dir=on,xino=auto`
-  and the equivalent CSV-quoted `--mount ... volume-opt=o=...` argument. Every
-  path and option is validated against injection; the lower must be a published
-  key's tree. `redirect_dir=on` requires a root mount (never `userxattr`);
-  the upper is created with the lower root's mode and owner (they become the
-  merged root's); a marker pins each upper to one key and `reuse_worker`
-  refuses another; removal falls back to a helper container when the root-owned
-  work dir blocks `rmtree`.
+  and the CSV-quoted `--mount ... volume-opt=o=...` argument (and the plain
+  `mount -t overlay` form). Paths and options are validated against injection;
+  the lower must be a published key's tree. `redirect_dir=on` requires a root
+  mount (never `userxattr`); the upper is created with the lower root's mode and
+  owner (they become the merged root's); a marker pins each upper to one key and
+  `reuse_worker` refuses another; removal falls back to a helper container when
+  the root-owned work dir blocks `rmtree`.
 - **Repair.** `repair_entry(template, merged, rel)` restores one changed file
   or symlink (bytes, mode, mtime) or removes an added one, and raises
   `unrepairable` for directory-level changes; `reset_worker` rebuilds a bad
-  upper from nothing; `upper_full` implements the 80 % tmpfs degrade check.
+  upper; `upper_full` implements the 80 % tmpfs degrade check.
+
+### Adapters (host policy lives outside the library)
+
+`cowtree.adapters.mdt_settings(env)` is the one place that names the
+mdt-cockpit host contract: `MDT_TREE_CACHE_ROOT` becomes `shared_root`,
+`MDT_TREE_UPPER_ROOT` becomes `upper_root`, `MDT_TREE_DOCKER_SOCKET` the socket
+(default `/var/run/docker.sock`). Placing a populate helper in a cgroup slice
+(`CGROUP_PARENT_DEV_CACHE`) is the caller's job. The host timer runs
+`cowtree cache gc --root "$MDT_TREE_CACHE_ROOT"`. (The older `Run` API still
+reads `MDT_COW_ROOT`/`COWTREE_MODE`; that is the legacy adapter surface, see
+COW-BL-09.)
 
 See the [consumer guide](CONSUMERS.md) for copyable examples and the
 [specification](SPEC.md) for operation semantics. The package is embedded in

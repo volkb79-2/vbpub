@@ -43,6 +43,10 @@ def run_argv(argv: Sequence[str]) -> int:
     return subprocess.run(list(argv), check=False).returncode
 
 
+def _prefix(docker: str | Sequence[str]) -> list[str]:
+    return [docker] if isinstance(docker, str) else list(docker)
+
+
 def _safe_path(path: str, label: str) -> str:
     if not normalized_absolute(path) or _SAFE_PATH.fullmatch(path) is None:
         raise PathRefused(f"{label} must be an absolute normalized path of [A-Za-z0-9_./@+=-]: {path!r}")
@@ -65,15 +69,20 @@ class OverlayVolume:
             f"redirect_dir={self.redirect_dir},xino={self.xino}"
         )
 
-    def create_argv(self, docker: str = "docker") -> list[str]:
-        """``docker volume create`` form (create once, mount by name)."""
+    def create_argv(self, docker: str | Sequence[str] = "docker") -> list[str]:
+        """``docker volume create`` form (create once, mount by name). *docker* may be a prefix such as
+        ``["docker", "--host", "unix:///run/docker.sock"]``."""
         return [
-            docker, "volume", "create", "--driver", "local", "--opt", "type=overlay", "--opt", "device=overlay",
+            *_prefix(docker), "volume", "create", "--driver", "local", "--opt", "type=overlay", "--opt", "device=overlay",
             "--opt", f"o={self.options}", self.name,
         ]
 
-    def remove_argv(self, docker: str = "docker") -> list[str]:
-        return [docker, "volume", "rm", self.name]
+    def remove_argv(self, docker: str | Sequence[str] = "docker", *, force: bool = False) -> list[str]:
+        return [*_prefix(docker), "volume", "rm", *(["-f"] if force else []), self.name]
+
+    def mount_command(self, target: str, mount: str = "mount") -> list[str]:
+        """The plain-``mount`` form of the same overlay (needs CAP_SYS_ADMIN)."""
+        return [mount, "-t", "overlay", "overlay", "-o", self.options, _safe_path(target, "target")]
 
     def mount_arg(self, destination: str) -> str:
         """The ``--mount`` CSV value; the comma-bearing ``o=`` field is quoted per CSV rules."""
@@ -179,12 +188,20 @@ def worker_volume(dirs: WorkerDirs, cache: Cache, key: str, name: str, **options
     return overlay_volume(name, cache.require_complete(key), dirs.upper, dirs.work, **options)
 
 
-def _cleanup_argv(base: str, image: str, docker: str = "docker") -> list[str]:
+def _cleanup_argv(base: str, image: str, docker: str | Sequence[str] = "docker") -> list[str]:
     _safe_path(base, "worker base")
-    return [docker, "run", "--rm", "--mount", f"type=bind,src={base},dst=/x", image, "rm", "-rf", "/x/u", "/x/w"]
+    return [*_prefix(docker), "run", "--rm", "--mount", f"type=bind,src={base},dst=/x", image, "rm", "-rf", "/x/u", "/x/w"]
 
 
-def remove_worker(upper_root: str, token: str, index: int, *, runner: Runner = run_argv, image: str | None = None) -> None:
+def remove_worker(
+    upper_root: str,
+    token: str,
+    index: int,
+    *,
+    runner: Runner = run_argv,
+    image: str | None = None,
+    docker: str | Sequence[str] = "docker",
+) -> None:
     """Remove one slot by exact path. The volume must already be removed (a mounted upper must not change).
     When the unprivileged removal is refused (root-owned overlay work dir), the helper container of the verified
     recipe is run once through *runner* and the removal retried."""
@@ -199,7 +216,7 @@ def remove_worker(upper_root: str, token: str, index: int, *, runner: Runner = r
     except PermissionError as exc:
         if image is None:
             raise BackendFailed("remove-worker", exc.errno, dirs.base, "permission denied and no cleanup image") from exc
-    status = runner(_cleanup_argv(dirs.base, image))
+    status = runner(_cleanup_argv(dirs.base, image, docker))
     if status != 0:
         raise BackendFailed("remove-worker", None, dirs.base, f"cleanup helper exited {status}")
     try:
@@ -208,7 +225,14 @@ def remove_worker(upper_root: str, token: str, index: int, *, runner: Runner = r
         raise BackendFailed("remove-worker", exc.errno, dirs.base, str(exc)) from exc
 
 
-def remove_token(upper_root: str, token: str, *, runner: Runner = run_argv, image: str | None = None) -> None:
+def remove_token(
+    upper_root: str,
+    token: str,
+    *,
+    runner: Runner = run_argv,
+    image: str | None = None,
+    docker: str | Sequence[str] = "docker",
+) -> None:
     """Remove every slot of one run token, then the token directory itself."""
     base = os.path.join(upper_root, validate_name(token))
     if not os.path.isdir(base) or os.path.islink(base):
@@ -216,7 +240,7 @@ def remove_token(upper_root: str, token: str, *, runner: Runner = run_argv, imag
     for name in sorted(os.listdir(base)):
         match = re.fullmatch(r"w([0-9]+)", name)
         if match:
-            remove_worker(upper_root, token, int(match.group(1)), runner=runner, image=image)
+            remove_worker(upper_root, token, int(match.group(1)), runner=runner, image=image, docker=docker)
     try:
         os.rmdir(base)
     except OSError as exc:

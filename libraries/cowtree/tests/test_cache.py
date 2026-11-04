@@ -11,7 +11,7 @@ import time
 
 import pytest
 from cowtree import cache as cache_module
-from cowtree.cache import Cache, SharedRoots, _lease_state, mount_holders, shared_roots, tree_manifest, validate_key
+from cowtree.cache import Cache, _lease_state, mount_holders, tree_manifest, validate_key
 from cowtree.errors import BackendFailed, CacheBusy, KeyMissing, PathRefused, RootInvalid, TreeInvalid
 
 KEY = "a" * 16
@@ -42,44 +42,22 @@ def test_validate_key():
             validate_key(bad)
 
 
-def test_shared_roots(tmp_path):
-    assert shared_roots({}) is None
-    assert shared_roots({"MDT_TREE_CACHE_ROOT": ""}) is None
-    cache_dir = tmp_path / "c"
-    upper_dir = tmp_path / "u"
-    cache_dir.mkdir(mode=0o770)
-    upper_dir.mkdir(mode=0o770)
-    roots = shared_roots({"MDT_TREE_CACHE_ROOT": str(cache_dir)})
-    assert roots == SharedRoots(str(cache_dir), None) and not roots.overlay_ready
-    roots = shared_roots({"MDT_TREE_CACHE_ROOT": str(cache_dir), "MDT_TREE_UPPER_ROOT": str(upper_dir)})
-    assert roots.overlay_ready
-    os.environ["MDT_TREE_CACHE_ROOT"] = str(cache_dir)
-    try:
-        assert shared_roots().cache_root == str(cache_dir)
-    finally:
-        del os.environ["MDT_TREE_CACHE_ROOT"]
-
-
-def test_shared_roots_refuses_invalid(tmp_path):
+def test_cache_refuses_invalid_roots(tmp_path):
     with pytest.raises(RootInvalid):
-        shared_roots({"MDT_TREE_CACHE_ROOT": "relative"})
+        Cache("relative")
     target = tmp_path / "t"
     target.mkdir()
     link = tmp_path / "l"
     link.symlink_to(target)
     with pytest.raises(RootInvalid, match="symlinks"):
-        shared_roots({"MDT_TREE_CACHE_ROOT": str(link)})
+        Cache(str(link))
     with pytest.raises(RootInvalid):
-        shared_roots({"MDT_TREE_CACHE_ROOT": str(tmp_path / "missing")})
+        Cache(str(tmp_path / "missing"))
     open_dir = tmp_path / "w"
     open_dir.mkdir()
     open_dir.chmod(0o777)
     with pytest.raises(RootInvalid, match="world-writable"):
-        shared_roots({"MDT_TREE_CACHE_ROOT": str(open_dir)})
-    good = tmp_path / "g"
-    good.mkdir(mode=0o770)
-    with pytest.raises(RootInvalid):
-        shared_roots({"MDT_TREE_CACHE_ROOT": str(good), "MDT_TREE_UPPER_ROOT": "rel"})
+        Cache(str(open_dir))
 
 
 def test_ensure_publishes_atomically_and_reuses(tmp_path):

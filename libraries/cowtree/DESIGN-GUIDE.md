@@ -129,7 +129,8 @@ Argparse reserves status `2` for syntax and usage errors. Cowtree maps each
 `CowError.code` to a separate nonzero status so a configured but invalid root
 cannot be mistaken for malformed command syntax: `cow` → `1`, `root-invalid`
 → `3`, `space` → `4`, `path` → `5`, `backend` → `6`, `lease` → `7`,
-`busy` → `8`, `key-missing` → `9`, `tree-invalid` → `10` and `unrepairable` → `11`.
+`busy` → `8`, `key-missing` → `9`, `tree-invalid` → `10`, `unrepairable` → `11` and
+`level-unavailable` → `12`.
 The generic `cow` status `1` is also the fallback for an unknown subclass code.
 
 Default `gc` scans only the configured area's run directory. Plain-mode runs

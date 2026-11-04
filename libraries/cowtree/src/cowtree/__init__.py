@@ -1,13 +1,9 @@
 """Small stdlib-only copy-on-write workspace adapter."""
 from .cache import (
-    ENV_CACHE_ROOT,
-    ENV_UPPER_ROOT,
     Cache,
     CacheGcItem,
     Lease,
     Published,
-    SharedRoots,
-    shared_roots,
     validate_key,
 )
 from .detect import ENV_MODE, ENV_ROOT, Area, Capabilities, detect
@@ -36,14 +32,20 @@ from .overlay import (
     upper_full,
     worker_volume,
 )
+from .provision import Decision, LevelUnavailable, Probes, Provisioner, Settings, WorkerSlot, decide
 from .run import Run, open_run
 from .space import SpaceEstimate
 
 API_VERSION = 1
 
 __all__ = [
-    "ENV_CACHE_ROOT",
-    "ENV_UPPER_ROOT",
+    "Decision",
+    "LevelUnavailable",
+    "Probes",
+    "Provisioner",
+    "Settings",
+    "WorkerSlot",
+    "decide",
     "Cache",
     "CacheBusy",
     "CacheGcItem",
@@ -51,7 +53,6 @@ __all__ = [
     "Lease",
     "OverlayVolume",
     "Published",
-    "SharedRoots",
     "TreeInvalid",
     "Unrepairable",
     "WorkerDirs",
@@ -62,7 +63,6 @@ __all__ = [
     "repair_entry",
     "reset_worker",
     "reuse_worker",
-    "shared_roots",
     "upper_full",
     "validate_key",
     "worker_volume",

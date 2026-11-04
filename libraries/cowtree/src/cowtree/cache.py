@@ -1,6 +1,6 @@
 """Keyed read-only tree cache: atomic publish, leases, and holder-checked garbage collection.
 
-Layout under an explicitly configured root (never a hidden default)::
+Layout under an explicitly configured root (a plain directory path; no environment or host policy is read here)::
 
     <root>/<key>/tree/             published content (read-only by mount policy, optionally chmod-sealed)
     <root>/<key>/COMPLETE          verification manifest (JSON, digest over every entry)
@@ -32,8 +32,6 @@ from .errors import BackendFailed, CacheBusy, KeyMissing, PathRefused, RootInval
 from .paths import _unescape_mount_field, normalized_absolute, require_directory
 from .run import _owner_identity, _pid_starttime, _utc_now
 
-ENV_CACHE_ROOT = "MDT_TREE_CACHE_ROOT"
-ENV_UPPER_ROOT = "MDT_TREE_UPPER_ROOT"
 COMPLETE_FORMAT = "cowtree-tree/1"
 LEASE_FORMAT = "cowtree-lease/1"
 
@@ -58,18 +56,6 @@ def _read_mountinfo() -> str:
         return handle.read()
 
 
-@dataclass(frozen=True)
-class SharedRoots:
-    """The host-policy roots. ``upper_root`` None means no overlay slots on this host."""
-
-    cache_root: str
-    upper_root: str | None
-
-    @property
-    def overlay_ready(self) -> bool:
-        return self.upper_root is not None
-
-
 def _checked_root(path: str, label: str) -> str:
     if not normalized_absolute(path):
         raise RootInvalid(f"{label} must be an absolute, normalized path without NUL")
@@ -79,24 +65,6 @@ def _checked_root(path: str, label: str) -> str:
     if info.st_mode & 0o002:
         raise RootInvalid(f"{label} must not be world-writable")
     return path
-
-
-def shared_roots(env: dict[str, str] | None = None) -> SharedRoots | None:
-    """Read the roots from explicit host-policy env keys.
-
-    Returns None when the cache root is unset or empty: the caller decides whether to fall back (typically
-    copying the tree) and should log one WARNING. A set but invalid root raises ``RootInvalid`` instead of
-    degrading silently.
-    """
-    source = os.environ if env is None else env
-    cache = source.get(ENV_CACHE_ROOT, "")
-    if not cache:
-        return None
-    upper = source.get(ENV_UPPER_ROOT, "")
-    return SharedRoots(
-        _checked_root(cache, ENV_CACHE_ROOT),
-        _checked_root(upper, ENV_UPPER_ROOT) if upper else None,
-    )
 
 
 # ---------------------------------------------------------------- manifest
