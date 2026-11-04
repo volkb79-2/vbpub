@@ -472,6 +472,7 @@ targets = [
   "analysis/src/assay_analysis/cli.py",
   "analysis/src/assay_analysis/evidence.py",
   "analysis/src/assay_analysis/plan_estimate.py",
+  "analysis/src/assay_analysis/rigor_export.py",
 ]
 fail_under = 100.0
 allow_excluded = false
@@ -520,6 +521,7 @@ targets = [
   "analysis/src/assay_analysis/cli.py",
   "analysis/src/assay_analysis/evidence.py",
   "analysis/src/assay_analysis/plan_estimate.py",
+  "analysis/src/assay_analysis/rigor_export.py",
 ]
 fail_under = 100.0
 allow_excluded = false

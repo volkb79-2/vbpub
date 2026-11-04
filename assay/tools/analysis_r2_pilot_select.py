@@ -38,6 +38,7 @@ TARGETS = (
     f"{SOURCE_ROOT}/cli.py",
     f"{SOURCE_ROOT}/evidence.py",
     f"{SOURCE_ROOT}/plan_estimate.py",
+    f"{SOURCE_ROOT}/rigor_export.py",
 )
 OPERATORS = (
     "python:compare-swap",
@@ -82,6 +83,7 @@ def _lane_targets(repo_root: Path, commit: str) -> tuple[str, ...]:
         "analysis/src/assay_analysis/cli.py",
         "analysis/src/assay_analysis/evidence.py",
         "analysis/src/assay_analysis/plan_estimate.py",
+        "analysis/src/assay_analysis/rigor_export.py",
     ]:
         raise common.SelectionError(f"committed {LANE} target inventory changed")
     if mutation.get("operators") != list(OPERATORS):

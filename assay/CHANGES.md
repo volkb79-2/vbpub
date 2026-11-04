@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- `assay analyze export` (B227, rigor-evidence package A-1): verifies a verdict and writes its judgment-fact fragment (`urn:vbpub:rigor-fragment:1`, kind `assay-lane`: outcome, R1 coverage, R3 canary, R2 counts, score and survivors, no resource numbers). Verdict schema 18 only (older verdicts fail with `VERDICT_SCHEMA_ARCHIVED`); more than 500 survivors go to a `<out>.survivors.json` sidecar. Verdict schema unchanged. See `docs/CONSUMERS.md`.
+- `assay analyze export` fragment gains `claims` (the verified claim set `[{rigor, outcome}]`, R0..R3, the only source of R1/R2/R3 for a consumer), `inputs` (`isolation.link_paths`) and `judged_paths` (`judge.source_roots`) (B228, rigor-evidence A-1a). Additive: optional keys of `rigor-fragment/1`, no major bump, verdict schema unchanged. `docs/CONSUMERS.md` is now the normative text and the canonical schema copy of the assay-lane fragment.
+- `assay.mutation.JUDGE_IDENTITY_LABEL`: public name of the judge identity label (`assay-judge-identity/14`), used by the export. The identity digest itself is unchanged.
 ### Changed
 - B219: the sealed snapshot template's Git index is refreshed once before sealing (`update-index --refresh`), so `git status` in a copy-on-write clone validates by `lstat` instead of hashing the whole worktree for every candidate (measured on a 7.6k-file repository: 173.6 MB to 37.2 MB read and 2.31 s to 0.33 s materialize per candidate). A clone that does not preserve inode numbers or timestamps still hashes and stays correct.
 - B220: under `verify_clone = "tiered"` the child closure limits are computed from totals recorded when the seed was prepared plus the objects the replacement adds (commit, trees on the path, new blob) with one `cat-file --batch-check`, instead of two `rev-list --objects` walks over the whole pack per candidate. The limits fire at the same thresholds; a path containing a newline, a repository prepared without base facts, and `verify_clone = "full"` keep the full walk.

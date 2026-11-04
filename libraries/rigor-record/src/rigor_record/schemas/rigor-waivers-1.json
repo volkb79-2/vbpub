@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vbpub:rigor-waivers:1",
+  "title": "rigor-waivers/1",
+  "description": "The parsed form of <project>/rigor/waivers.toml (tomllib output). Lane waivers expire by version; survivor dispositions match one assay candidate id exactly.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema"],
+  "properties": {
+    "schema": {"const": "urn:vbpub:rigor-waivers:1"},
+    "lane": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["lane", "level", "reason", "expires_before"],
+        "properties": {
+          "lane": {"$ref": "rigor-common-1.json#/$defs/lane"},
+          "level": {"type": "string", "enum": ["R0", "R1", "R3"]},
+          "reason": {"$ref": "rigor-common-1.json#/$defs/short_reason"},
+          "plan_item": {"$ref": "rigor-common-1.json#/$defs/identifier"},
+          "expires_before": {"$ref": "rigor-common-1.json#/$defs/semver"}
+        }
+      }
+    },
+    "survivor": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["candidate_id", "disposition", "reason", "reviewed_by"],
+        "properties": {
+          "candidate_id": {"$ref": "rigor-common-1.json#/$defs/identifier"},
+          "disposition": {"type": "string", "enum": ["equivalent", "accepted"]},
+          "reason": {"$ref": "rigor-common-1.json#/$defs/short_reason"},
+          "reviewed_by": {"$ref": "rigor-common-1.json#/$defs/role"}
+        }
+      }
+    }
+  }
+}

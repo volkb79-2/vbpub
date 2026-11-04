@@ -1,0 +1,45 @@
+# rigor-record release contract -- parsed ONLY by cmru. Tags `rigor-record-v*`; a stdlib-only wheel
+# and its sha256 go to GitHub Releases only, never PyPI.
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+RIGOR_RECORD_RELEASE_NOTES = "## rigor-record wheel\n\nStdlib-only interchange layer for the vbpub rigor-evidence record: the `rigor-fragment/1`, `rigor-record/1` and `rigor-waivers/1` JSON Schemas, a schema and semantic validator, the nearest-rank distribution and Geekbench normalisation rules, and the privacy lint every published record must pass. See `libraries/rigor-record/SPEC.md`.\n\n**Read before using**\n- This release is the schema and validator foundation (package RR-1). Assembly, rendering, sync and the CLI arrive in later packages (RR-2..RR-5).\n- Producers vendor the schemas and golden fixtures; they do not import this wheel at run time.\n\n**Install (wheel)**\n```bash\npython -m pip install --no-index ./<wheel-file>\n```"
+
+[project]
+id = "rigor-record"
+description = "rigor-record -- rigor-evidence interchange schemas, validator and privacy lint"
+template_revision = 4
+prefix = "rigor-record-v"
+artifacts = ["wheel"]
+scm_dist = "rigor-record"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "rigor-record: r0-r1 (unit + 100% branch coverage)", argv = ["run-gate", "r0-r1"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "rigor-record: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "rigor-record: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "rigor-record", "--cwd", ".", "--notes-env", "RIGOR_RECORD_RELEASE_NOTES"], cwd = "." },
+]

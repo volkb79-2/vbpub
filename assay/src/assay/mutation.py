@@ -301,6 +301,10 @@ _STATE_RESOURCE_STARTUP_KEYS = frozenset({"to_session_start", "to_first_test"})
 #: cache misses.
 _JUDGE_DIGEST_LABEL = "assay-judge-identity/14"
 
+#: The public name of the label above, for consumers that state which judge identity a result was produced under
+#: (`assay analyze export`). One value, so the exported identity can never drift from the digest's own label.
+JUDGE_IDENTITY_LABEL = _JUDGE_DIGEST_LABEL
+
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
 #: `schema_version` or its `judge_sha256` says it was produced by something
