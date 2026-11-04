@@ -74,15 +74,14 @@ COPY --from=builder /opt/cgprofile/venv /opt/cgprofile/venv
 COPY pyproject.toml ./pyproject.toml
 COPY src/ ./src/
 COPY docs/ ./docs/
-COPY cgprofile ./cgprofile
 # The DAMON library (Classifier/KDAMONDS_DIR/SysfsInterface, pure Python) is
 # vendored inside the package as cgprofile._damon.damon_analysis since
 # cgprofile 2.0 package 1, so it arrives with `src/` above; the named
 # `damon_analysis` build context that used to deliver the sibling checkout's
 # copy is no longer read by this Dockerfile.
-RUN chmod +x ./cgprofile \
-    && find . -name '__pycache__' -type d -prune -exec rm -rf {} + \
-    && ln -s /opt/cgprofile/cgprofile /usr/local/bin/cgprofile
+# The bash shim `cgprofile` is gone (package 2); the daemon starts from the
+# package module directly (package 3 moves it to the `cgpd` console script).
+RUN find . -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 # `/var/lib/cgprofile/sessions` is the contract's own default (§1.8) and
 # the named volume's mount point (see the C7 ciu stack) — created here so
@@ -95,4 +94,4 @@ RUN mkdir -p /var/lib/cgprofile/sessions
 # (/run/cgprofile/ctl.sock, never a TCP port) and the daemon's own
 # network_mode is "none" (RG55-INTERFACE-CONTRACT.md §5) — there is
 # nothing to publish.
-ENTRYPOINT ["cgprofile", "serve"]
+ENTRYPOINT ["python3", "/opt/cgprofile/src/cgprofile/cli/legacy.py", "serve"]

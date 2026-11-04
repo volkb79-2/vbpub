@@ -47,7 +47,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
-from cgprofile.cli import legacy as cg
+import _ctl_reference as cg  # frozen 1.x contract-1 client (package 3 retires it)
+from cgprofile.cli import legacy as cg_real
 from cgprofile import damon as damon_mod, serve
 from tests.conftest import cgroup_files, write_cgroup
 
@@ -1065,7 +1066,7 @@ class TestServeCliAllowUids:
                 return None
 
         monkeypatch.setattr(serve, "SessionServer", _FakeServer)
-        assert cg.main(self._serve_argv(tmp_path)) == 0
+        assert cg_real.main(self._serve_argv(tmp_path)) == 0
         assert captured["allow_uids"] == [0, 1000]
 
     def test_an_unset_environment_is_no_allowlist(self, tmp_path, monkeypatch):
@@ -1082,7 +1083,7 @@ class TestServeCliAllowUids:
                 return None
 
         monkeypatch.setattr(serve, "SessionServer", _FakeServer)
-        assert cg.main(self._serve_argv(tmp_path)) == 0
+        assert cg_real.main(self._serve_argv(tmp_path)) == 0
         assert captured["allow_uids"] is None
 
     def test_a_malformed_environment_refuses_to_start(self, tmp_path, monkeypatch, capsys):
@@ -1094,7 +1095,7 @@ class TestServeCliAllowUids:
             lambda **kw: pytest.fail("the daemon must not start with a bad allowlist"),
         )
         with pytest.raises(SystemExit) as exc_info:
-            cg.main(self._serve_argv(tmp_path))
+            cg_real.main(self._serve_argv(tmp_path))
         assert exc_info.value.code == 2
         assert "CGPROFILE_ALLOW_UIDS" in capsys.readouterr().err
 
@@ -1110,7 +1111,7 @@ class TestServeCliAllowUids:
             lambda **kw: pytest.fail("the daemon must not start with a bad allowlist"),
         )
         with pytest.raises(SystemExit) as exc_info:
-            cg.main(self._serve_argv(tmp_path))
+            cg_real.main(self._serve_argv(tmp_path))
         assert exc_info.value.code == 2
         assert "CGPROFILE_ALLOW_UIDS" in capsys.readouterr().err
 

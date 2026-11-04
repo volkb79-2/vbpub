@@ -40,7 +40,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
-from cgprofile.cli import legacy as cg
+import _ctl_reference as cg  # frozen 1.x contract-1 client (package 3 retires it)
+from cgprofile.cli import legacy as cg_real
 from cgprofile import damon as damon_mod, limits as limits_mod, serve, summary, targets as targets_mod
 from cgprofile import damon as damon_mod, serve, store, summary, targets as targets_mod
 from tests.conftest import cgroup_files, write_cgroup
@@ -1026,7 +1027,7 @@ def test_cli_serve_gates_slice_flag_reaches_session_server(monkeypatch):
     monkeypatch.setattr("cgprofile.access.have_host_cgroup_view", lambda root: True)
     monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
     monkeypatch.setattr("cgprofile.access.have_host_proc_view", lambda root: True)
-    rc = cg.main(["serve", "--gates-slice", "dev-gates-from-cli.slice"])
+    rc = cg_real.main(["serve", "--gates-slice", "dev-gates-from-cli.slice"])
     assert rc == 0
     assert captured["gates_slice_name"] == "dev-gates-from-cli.slice"
 
@@ -1046,7 +1047,7 @@ def test_cli_serve_gates_slice_defaults_to_dev_gates(monkeypatch):
     monkeypatch.setattr("cgprofile.access.have_host_cgroup_view", lambda root: True)
     monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
     monkeypatch.setattr("cgprofile.access.have_host_proc_view", lambda root: True)
-    rc = cg.main(["serve"])
+    rc = cg_real.main(["serve"])
     assert rc == 0
     assert captured["gates_slice_name"] == "dev-gates.slice"
 
@@ -1828,7 +1829,7 @@ class TestManifestLimitsTable:
         # Independently recomputed (not read back off `sess`) so a mutant
         # that made `_manifest_for` write a stale/cached value would still
         # be caught by this assertion.
-        expected = cg._limits_snapshot(limits_mod, limits_mod.effective(
+        expected = cg_real._limits_snapshot(limits_mod, limits_mod.effective(
             sess.cgroup, simple_server.cgroup_root, limits_mod.mount_flags(
                 proc_root=simple_server.proc_root
             ),

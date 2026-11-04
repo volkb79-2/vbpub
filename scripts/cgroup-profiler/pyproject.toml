@@ -53,7 +53,8 @@ test = [
 ]
 
 [project.scripts]
-# Package 1 stubs; packages 2 (cgpctl) and 3 (cgpd) replace the bodies.
+# cgpctl is the cli-extended client (package 2); cgpd is still a stub over
+# `legacy serve` until package 3 replaces it.
 cgpctl = "cgprofile.cli.cgpctl:main"
 cgpd = "cgprofile.cli.cgpd:main"
 

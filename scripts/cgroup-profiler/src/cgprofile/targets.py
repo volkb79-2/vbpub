@@ -35,13 +35,12 @@ import posixpath
 import re
 import subprocess
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import unquote
 
 from . import access, proc_stat, util
 from .access import CGROUP_ROOT, PROC_ROOT, docker_bin
 
-_HELPER_PID_OPTION = "_cgprofile_pid"
 _CONTAINER_ID = util.CONTAINER_ID_PATTERN
 # Both cgroup drivers docker can be configured with: systemd names the leaf
 # "docker-<id>.scope", cgroupfs names it plain "<id>" under a "docker" parent.
@@ -292,12 +291,6 @@ def proc_namespace_numbers(pid: int, proc_root: str = PROC_ROOT) -> Optional[Tup
     return None
 
 
-def pid_namespace_number(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]:
-    """Return a process's innermost NSpid value from the selected proc view."""
-    values = proc_namespace_numbers(pid, proc_root)
-    return values[-1] if values else None
-
-
 def proc_start_time_ticks(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]:
     """Read field 22 of proc stat, robust to spaces/parentheses in comm."""
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
@@ -323,68 +316,6 @@ def proc_start_time_ticks(pid: int, proc_root: str = PROC_ROOT) -> Optional[int]
     except ValueError:
         return None
     return value if value >= 0 else None
-
-
-def _resolve_helper_pid(
-    container_id: str,
-    cgroup: str,
-    encoded_identity: str,
-    options: Dict[str, str],
-    spec: str,
-    follow: bool,
-    metrics: Optional[Set[str]],
-    role: str,
-    root: str,
-    proc_root: str,
-) -> Target:
-    """Resolve the caller's PID identity inside the helper's proc view.
-
-    Candidate enumeration is restricted to positive PIDs whose authoritative
-    cgroup membership resolves to the selected target cgroup. Namespace inode,
-    namespace-local PID, and start-time facts then identify one exact process.
-    """
-    try:
-        namespace_inode, namespace_pid, start_ticks, cgroup_namespace_inode = (
-            int(part) for part in encoded_identity.split(":"))
-    except (TypeError, ValueError) as exc:
-        raise TargetError("helper PID identity is malformed") from exc
-    if (
-        namespace_inode <= 0 or namespace_pid <= 0 or start_ticks < 0
-        or cgroup_namespace_inode <= 0
-    ):
-        raise TargetError("helper PID identity contains an invalid process fact")
-
-    matches: List[int] = []
-    for candidate in pids_in_cgroup(cgroup, root, proc_root):
-        before = proc_start_time_ticks(candidate, proc_root)
-        if before != start_ticks:
-            continue
-        if access.namespace_inode(candidate, "pid", proc_root) != namespace_inode:
-            continue
-        if access.namespace_inode(candidate, "cgroup", proc_root) != cgroup_namespace_inode:
-            continue
-        if pid_namespace_number(candidate, proc_root) != namespace_pid:
-            continue
-        if cgroup_of_pid(candidate, root, proc_root) != cgroup:
-            continue
-        # Refuse a PID that exited and was reused while its proc facts were read.
-        if proc_start_time_ticks(candidate, proc_root) != before:
-            continue
-        matches.append(candidate)
-
-    if len(matches) != 1:
-        state = "not found" if not matches else "ambiguous"
-        raise TargetError(
-            f"helper could not establish a unique proc identity for the selected PID "
-            f"in cgroup {cgroup}: mapping {state}"
-        )
-
-    label = options.get("as") or f"pid-{namespace_pid}"
-    return Target(
-        key=_key_for(cgroup, label), cgroup=cgroup, label=label, kind="pid",
-        spec=spec, follow_children=follow, pid=matches[0],
-        container_id=container_id, metrics=metrics, role=role,
-    )
 
 
 def _cgroup_namespace_root(root: str, proc_root: str = PROC_ROOT) -> Optional[str]:
@@ -531,7 +462,7 @@ def _split_spec(spec: str) -> Tuple[str, str]:
 #: treats a suffix as options when EVERY item's key is one of these; this is
 #: what lets a ``@`` inside a real cgroup name survive (see `_parse_options`).
 OPTION_KEYS = frozenset({
-    "follow", "nofollow", "metrics", "as", "role", "subpath", _HELPER_PID_OPTION,
+    "follow", "nofollow", "metrics", "as", "role", "subpath",
 })
 
 
@@ -575,10 +506,6 @@ def parse_target(
     """Resolve one ``--target`` spec into one or more concrete targets."""
     scheme, rest = _split_spec(spec)
     value, options = _parse_options(rest)
-    helper_pid_identity = options.pop(_HELPER_PID_OPTION, None)
-    if helper_pid_identity is not None and scheme != "containerid":
-        raise TargetError(f"{_HELPER_PID_OPTION} is reserved for helper PID targets")
-
     follow = default_follow
     if "follow" in options:
         follow = options["follow"] not in ("0", "no", "false")
@@ -662,11 +589,6 @@ def parse_target(
                 raise TargetError(
                     f"container {value[:12]} subpath {subpath!r} has no cgroup under {root}"
                 )
-        if helper_pid_identity is not None:
-            return [_resolve_helper_pid(
-                value, cgroup, helper_pid_identity, options, spec, follow,
-                metrics, role, root, proc_root,
-            )]
         return [make(cgroup, label_override or value[:12], "container", container_id=value)]
 
     if scheme == "container":
@@ -687,7 +609,7 @@ def parse_target(
             raise TargetError(
                 f"slice: name {value!r} contains '@': a slice unit name cannot; "
                 f"probably a misspelt option after '@' (known options: "
-                f"{', '.join(sorted(OPTION_KEYS - {_HELPER_PID_OPTION}))})"
+                f"{', '.join(sorted(OPTION_KEYS))})"
             )
         cgroup = slice_to_path(value)
         return [make(cgroup, value, "slice")]
@@ -727,7 +649,7 @@ def _refuse_misspelt_option(value: str, cgroup: str, root: str) -> None:
         return
     raise TargetError(
         f"no cgroup {cgroup!r}; the last '@' segment {tail!r} looks like a "
-        f"misspelt option (known: {', '.join(sorted(OPTION_KEYS - {_HELPER_PID_OPTION}))}); "
+        f"misspelt option (known: {', '.join(sorted(OPTION_KEYS))}); "
         f"to name a cgroup that really ends in '@{tail}', add a trailing '@'"
     )
 

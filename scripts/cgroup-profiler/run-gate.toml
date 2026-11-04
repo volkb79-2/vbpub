@@ -88,7 +88,7 @@ pids = 8192
 cpus = "3"
 
 # Proves the gate REJECTS known-bad code — this project's own
-# tools/canary-run.sh (7 real canaries, built by a prior session). Runs
+# tools/canary-run.sh (6 real canaries, built by a prior session). Runs
 # inside tester-unified (see file header) since the script itself does not
 # launch a container and needs $TESTER_VENV's report-tier deps.
 [lanes.r3]
