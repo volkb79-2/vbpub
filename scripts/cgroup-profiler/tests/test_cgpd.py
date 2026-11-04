@@ -308,6 +308,18 @@ class TestRun:
         assert os.environ["CGPROFILE_DAMON_LOCK_PATH"].endswith("/damon.lock")
         assert os.environ["CGPROFILE_BUSCTL"] == "busctl"
 
+    def test_allow_uids_come_from_the_config_not_the_environment(self, cli, wired):
+        with open(wired.config, "a") as fh:
+            fh.write("allow_uids = [0, 1000]\n")
+        assert cli("--config", wired.config, "run")[0] == 0
+        assert StubServer.built[0].kwargs["settings"].get("allow_uids") == [0, 1000]
+
+    def test_a_stale_allow_uids_variable_refuses_to_start(self, cli, wired, monkeypatch):
+        monkeypatch.setenv("CGPROFILE_ALLOW_UIDS", "0,1000")
+        code, _out, err = cli("--config", wired.config, "run")
+        assert code == 2 and "CGPROFILE_ALLOW_UIDS is no longer read; set allow_uids in" in err
+        assert StubServer.built == []
+
     def test_a_lost_socket_exit_code_is_returned(self, cli, wired):
         StubServer.result = 3
         assert cli("--config", wired.config, "run")[0] == 3

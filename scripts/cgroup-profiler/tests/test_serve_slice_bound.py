@@ -1,10 +1,11 @@
-"""Sol B4 -- `cgprofile serve` refuses to run unless the slice the daemon is
+"""Sol B4 -- `cgpd run` refuses to run unless the slice the daemon is
 ACTUALLY IN (derived from its own cgroup, not looked up by name) is bounded.
 Kept apart from test_cgprofile.py, which needs the report tier's pandas/plotly
 stack; this check is collector-tier only."""
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -13,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cgprofile.cli import legacy as cg  # noqa: E402
+from cgprofile.cli import cgpd  # noqa: E402
 from cgprofile import access  # noqa: E402
 from cgprofile import serve as serve_lib  # noqa: E402
 from cgprofile import targets  # noqa: E402
@@ -78,38 +79,42 @@ class TestDaemonSliceProblem:
         assert "host PID" in serve_lib.daemon_slice_problem(str(root), "/proc")
 
 
-class TestServeRefusesAnUnboundedDaemonSlice:
+class TestCgpdRefusesAnUnboundedDaemonSlice:
+    """The real `daemon_slice_problem` behind cgpd's preflight check 4."""
+
     def _prep(self, monkeypatch, tmp_path):
         monkeypatch.setattr(access, "CGROUP_ROOT", str(tmp_path / "cgroup"))
-        monkeypatch.setattr(access, "have_host_cgroup_view", lambda r: True)
-        monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "host")
-        monkeypatch.setattr(access, "have_host_proc_view", lambda proc: True)
+        monkeypatch.setattr(os, "geteuid", lambda: 0)
+        monkeypatch.setattr(access, "local_namespace_inode", lambda name: 7)
+        monkeypatch.setattr(access, "namespace_inode", lambda pid, name, root=None: 7)
         monkeypatch.setattr(
             serve_lib, "SessionServer",
             lambda **kwargs: pytest.fail("must not construct a server"),
         )
+        config = tmp_path / "cgpd.toml"
+        config.write_text("")
+        monkeypatch.setattr(cgpd, "OVERRIDES_PATH", str(tmp_path / "overrides.toml"))
+        return str(config)
 
     def test_refusal_names_zero_and_why_and_the_install_step(
-        self, monkeypatch, tmp_path, capsys, own_cgroup,
+        self, monkeypatch, tmp_path, own_cgroup,
     ):
         _tree(tmp_path, own="", memory_max="0\n")
         own_cgroup("/cgprofile.slice/docker-abc.scope")
-        self._prep(monkeypatch, tmp_path)
-        with pytest.raises(SystemExit) as exc_info:
-            cg.cmd_serve(cg.build_parser().parse_args(["serve"]))
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert "zero is refused because" in err
-        assert "misconfiguration, not containment" in err
-        assert "infra/cgprofile.slice" in err and "CIU-150" in err
+        config = self._prep(monkeypatch, tmp_path)
+        with pytest.raises(cgpd.CliFailure) as caught:
+            cgpd.preflight(config, True, {})
+        assert caught.value.exit_code == 2
+        text = str(caught.value)
+        assert "zero is refused because" in text
+        assert "misconfiguration, not containment" in text
 
     def test_wrong_parent_refuses_even_with_a_bounded_named_slice(
-        self, monkeypatch, tmp_path, capsys, own_cgroup,
+        self, monkeypatch, tmp_path, own_cgroup,
     ):
         _tree(tmp_path, own="", memory_max="1073741824\n")
         own_cgroup("/system.slice/docker-abc.scope")
-        self._prep(monkeypatch, tmp_path)
-        with pytest.raises(SystemExit) as exc_info:
-            cg.cmd_serve(cg.build_parser().parse_args(["serve"]))
-        assert exc_info.value.code == 2
-        assert "not under cgprofile.slice" in capsys.readouterr().err
+        config = self._prep(monkeypatch, tmp_path)
+        with pytest.raises(cgpd.CliFailure) as caught:
+            cgpd.preflight(config, True, {})
+        assert "not under cgprofile.slice" in str(caught.value)

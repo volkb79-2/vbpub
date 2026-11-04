@@ -130,44 +130,9 @@ STREAMING_VERBS = frozenset({"watch", "export"})
 # `mdt-cgprofile.conf`, NOT this daemon — the daemon only re-asserts).
 SOCKET_DIR_MODE = 0o770
 SOCKET_MODE = 0o660
-# Comma-separated uid allowlist (§8.1). Unset/empty = no uid restriction
-# beyond the socket's own group mode (docker-group trust, D-30).
-ALLOW_UIDS_ENV = "CGPROFILE_ALLOW_UIDS"
-
-
-def parse_allow_uids(raw: Optional[str]) -> Optional[List[int]]:
-    """Parse `CGPROFILE_ALLOW_UIDS` ("0,1000,1003") into a uid list.
-
-    `None`/empty/whitespace → `None`, meaning "no uid allowlist" (§8.1's
-    default: authorisation is the socket's group mode alone). A malformed
-    entry raises `ValueError` — `cgprofile serve` turns that into a refusal
-    to start, because silently ignoring a misspelled allowlist would widen
-    access exactly where the operator asked to narrow it.
-    """
-    if raw is None:
-        return None
-    text = raw.strip()
-    if not text:
-        return None
-    uids: List[int] = []
-    for part in text.split(","):
-        item = part.strip()
-        if not item:
-            raise ValueError(
-                f"{ALLOW_UIDS_ENV} must be a comma-separated list of uids; "
-                "empty entries are not allowed"
-            )
-        try:
-            uid = int(item, 10)
-        except ValueError:
-            raise ValueError(
-                f"{ALLOW_UIDS_ENV} must be a comma-separated list of uids, got {item!r}"
-            ) from None
-        if uid < 0:
-            raise ValueError(f"{ALLOW_UIDS_ENV} uid must not be negative, got {uid}")
-        if uid not in uids:
-            uids.append(uid)
-    return uids or None
+# The uid allowlist (§8.1) is the `allow_uids` setting (cgpd.toml, runtime
+# `config-set`). Empty = no uid restriction beyond the socket's own group mode
+# (docker-group trust, D-30).
 
 
 def _placement_block(sess: "_Session") -> Optional[Dict[str, Any]]:
@@ -3690,7 +3655,7 @@ class SessionServer:
                 named = "unavailable" if uid is None else str(uid)
                 resp = self._error_response(
                     "peer-refused",
-                    f"peer uid {named} is not in {ALLOW_UIDS_ENV}",
+                    f"peer uid {named} is not in allow_uids",
                 )
                 conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
                 return

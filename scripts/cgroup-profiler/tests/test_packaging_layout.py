@@ -132,7 +132,7 @@ def test_cmru_declares_the_wheel_beside_the_image():
 
 
 def test_the_legacy_entry_runs_from_the_checkout_root():
-    # SELF is what the daemon image entrypoint and the report subprocess exec.
+    # SELF is the path the collector child (direct mode) is exec'd by.
     assert Path(legacy.SELF).resolve() == PACKAGE_DIR / "cli" / "legacy.py"
 
 

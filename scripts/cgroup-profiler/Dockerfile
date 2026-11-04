@@ -79,8 +79,8 @@ COPY docs/ ./docs/
 # cgprofile 2.0 package 1, so it arrives with `src/` above; the named
 # `damon_analysis` build context that used to deliver the sibling checkout's
 # copy is no longer read by this Dockerfile.
-# The bash shim `cgprofile` is gone (package 2); the daemon starts from the
-# package module directly (package 3 moves it to the `cgpd` console script).
+# The bash shim `cgprofile` is gone (package 2); the daemon starts as
+# `python3 -m cgprofile.cli.cgpd run` (the `cgpd` console script's module).
 RUN find . -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 # `/var/lib/cgprofile/sessions` is the contract's own default (§1.8) and
@@ -94,4 +94,11 @@ RUN mkdir -p /var/lib/cgprofile/sessions
 # (/run/cgprofile/ctl.sock, never a TCP port) and the daemon's own
 # network_mode is "none" (RG55-INTERFACE-CONTRACT.md §5) — there is
 # nothing to publish.
-ENTRYPOINT ["python3", "/opt/cgprofile/src/cgprofile/cli/legacy.py", "serve"]
+# 2.0: the daemon is `cgpd run` (config file, no flags, no CGPROFILE_* daemon
+# environment). This image path is superseded by the native wheel deployment
+# (docs/NATIVE-DEPLOYMENT.md); a container run needs cli-extended on the
+# image's python path and a mounted /etc/cgprofile/cgpd.toml, which the 1.x
+# ciu stack does not provide (backlog CP-54).
+ENV PYTHONPATH=/opt/cgprofile/src
+ENTRYPOINT ["python3", "-m", "cgprofile.cli.cgpd"]
+CMD ["run"]

@@ -53,8 +53,8 @@ test = [
 ]
 
 [project.scripts]
-# cgpctl is the cli-extended client (package 2); cgpd is still a stub over
-# `legacy serve` until package 3 replaces it.
+# cgpctl is the cli-extended client, cgpd the cli-extended daemon entry
+# (config file, unit renderer, reload).
 cgpctl = "cgprofile.cli.cgpctl:main"
 cgpd = "cgprofile.cli.cgpd:main"
 
