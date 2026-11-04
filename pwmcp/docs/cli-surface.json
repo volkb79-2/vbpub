@@ -370,6 +370,19 @@
       "signature": "sha256:5386ba97182a8024aa8b87a6593f035ca4e402aee75c9d78cfe0247229c6cf41"
     },
     {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--storage-state/--storage-state",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--storage-state"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--storage-state",
+        "spelling": "--storage-state"
+      },
+      "signature": "sha256:e438db3e13a9e70885413e45fbfd16a23ff9ece6eff884ba66fbb6d50fa08a9b"
+    },
+    {
       "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--timeout-ms/--timeout-ms",
       "kind": "option-spelling",
       "members": [
@@ -2190,6 +2203,42 @@
           "type": null
         },
         {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--storage-state",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "reuse a session a HUMAN exported from their own browser (a Playwright storage-state JSON file, mode 0600); only the cookies and origins of the URL's host are applied, values are never printed. For pages behind bot protection that a human has cleared",
+          "dest": "storage_state",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--storage-state"
+          ],
+          "help_group": "IDENTITY",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--storage-state",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
           "action": "argparse._StoreTrueAction",
           "before_nested_subcommand": false,
           "canonical": "--ignore-https-errors",
@@ -2245,7 +2294,7 @@
       "confirmation": false,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "inspect a rendered webpage through the remote PWMCP browser",
+      "description": "inspect a rendered webpage through the remote PWMCP browser; exits 4 when the page is bot protection (a challenge or block page) instead of the target",
       "group": "EXPLORATION",
       "id": "route:entrypoint:pwmcp/inspect",
       "kind": "invocation",
@@ -2287,7 +2336,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "inspect a rendered webpage through the remote PWMCP browser",
+      "summary": "inspect a rendered webpage through the remote PWMCP browser; exits 4 when the page is bot protection (a challenge or block page) instead of the target",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

@@ -199,6 +199,7 @@ _BOOL_FIELDS = {
     "RUN_KSM": "run_ksm",
     "ZSWAP_SHRINKER_ENABLED": "zswap_shrinker_enabled",
     "IOCOST_ENABLED": "iocost_enabled",
+    "RUN_CPU_BENCHMARK": "run_cpu_benchmark",
     "RUN_OOMD_CONFIG": "run_oomd_config",
     "RUN_FSTRIM": "run_fstrim",
     "RUN_DOCKER_CLEANUP": "run_docker_cleanup",
@@ -356,6 +357,9 @@ _SPARSE_PATHS = (
     "/scripts/debian-install-v2/debian_install_v2/vendor/000*.patch",
     "/scripts/debian-install-v2/tools/iocost_coef_gen.py",
     "/scripts/debian-install-v2/tools/iocost_coef_gen.py.sha256",
+    "/scripts/debian-install-v2/tools/cpu_benchmark.py",
+    "/scripts/debian-install-v2/tools/cpu_benchmark.py.sha256",
+    "/scripts/debian-install-v2/tools/cpu_benchmark.pins.json",
     "/scripts/debian-install-v2/profiles/*.jsonc",
 )
 

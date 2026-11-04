@@ -54,6 +54,7 @@ Usage
   sudo ./install.sh --require-damon-disable   # make a failed DAMON_STAT write fatal
   sudo ./install.sh --confirm-no-disk-swap    # accept that MDT gets no disk swap
   sudo ./install.sh --apply-protection        # write MemoryMin/weights drop-ins for MDT_PROTECTED_UNITS
+  sudo ./install.sh cpu-benchmark [--force|--resolve]   # measure this host's CPU ONCE (Geekbench)
   sudo ./install.sh --help
 
 Options
@@ -115,6 +116,18 @@ Options
                       cgprofile daemon even when live sessions remain at the
                       drain deadline, naming the sessions it aborts. Never
                       implied by an environment variable.
+  cpu-benchmark       Stand-alone subcommand: measure this host's CPU ONCE with Geekbench
+                      (the same sha256-pinned tool the debian-install-v2 installer uses;
+                      Geekbench version and archive sha256 are pinned per architecture) and
+                      persist it under /var/lib/mdt/host-facts/ (cpu-benchmark.json 0644;
+                      the Geekbench claim link only in the 0600 cpu-benchmark.claim.json).
+                      Needs outbound HTTPS to cdn.geekbench.com and browser.geekbench.com and
+                      takes the CPU for several minutes: run it in a quiet window. Refuses
+                      when a measurement exists (--force re-measures deliberately) and while
+                      CPU pressure (some avg10) is 5 or more. --resolve fills in scores of a
+                      partial record from its public result page without running Geekbench.
+                      `mdt-host-check.sh` reports a missing, partial or STALE measurement
+                      (CPU model or vCPU count changed since it was taken).
   --help              Show this help and exit.
 
 Files and ownership
@@ -236,6 +249,27 @@ provision_cgprofile_observer() {
   echo "cgprofile observer directory ready: $observer_directory (root:$observer_gid 0751)"
 }
 
+# HB-3: install the per-host CPU benchmark helper. The measuring tool is the ONE shared
+# scripts/debian-install-v2/tools/cpu_benchmark.py, pinned by its .sha256 (verified here against the
+# checkout BEFORE it is copied, and again by the wrapper before every run); the pins file carries the
+# Geekbench archive version + sha256 per architecture, shared with the debian-install-v2 installer step.
+install_cpu_benchmark_helper() {
+  local tools="$HERE/../../scripts/debian-install-v2/tools"
+  local f
+  for f in cpu_benchmark.py cpu_benchmark.py.sha256 cpu_benchmark.pins.json; do
+    [ -f "$tools/$f" ] || { echo "ERROR: $tools/$f is missing from this checkout" >&2; return 1; }
+  done
+  (cd "$tools" && sha256sum --check --status cpu_benchmark.py.sha256) \
+    || { echo "ERROR: $tools/cpu_benchmark.py does not match cpu_benchmark.py.sha256; refusing to install it" >&2; return 1; }
+  install -d -m 0755 /usr/local/lib/mdt
+  install -m 0755 "$tools/cpu_benchmark.py"        /usr/local/lib/mdt/cpu_benchmark.py
+  install -m 0644 "$tools/cpu_benchmark.py.sha256" /usr/local/lib/mdt/cpu_benchmark.py.sha256
+  install -m 0644 "$tools/cpu_benchmark.pins.json" /usr/local/lib/mdt/cpu_benchmark.pins.json
+  install -m 0755 "$HERE/scripts/mdt-host-cpu-benchmark.py" /usr/local/sbin/mdt-host-cpu-benchmark.py
+}
+
+CPU_BENCHMARK=0
+CPU_BENCHMARK_ARGS=()
 WITH_BASELINE=0
 RESET=0
 AUTO_RESTART_DOCKER=0
@@ -249,6 +283,8 @@ CGPROFILE_ONLY=0
 FORCE_CGPROFILE_RESTART=0
 for arg in "$@"; do
   case "$arg" in
+    cpu-benchmark) CPU_BENCHMARK=1 ;;
+    --force|--resolve) CPU_BENCHMARK_ARGS+=("$arg") ;;
     --wizard) WIZARD=1 ;;
     --observer-only) OBSERVER_ONLY=1 ;;
     --cgprofile-only) CGPROFILE_ONLY=1 ;;
@@ -281,6 +317,23 @@ _pid1_comm=$(cat /proc/1/comm 2>/dev/null || true)
 if [ "$_pid1_comm" != systemd ] || [ ! -d /run/systemd/system ]; then
   echo "ERROR: host-setup/install.sh requires systemd as PID 1 and /run/systemd/system; run it on the Docker host" >&2
   exit 2
+fi
+
+if [ "${#CPU_BENCHMARK_ARGS[@]}" -gt 0 ] && [ "$CPU_BENCHMARK" != 1 ]; then
+  echo "ERROR: ${CPU_BENCHMARK_ARGS[*]} only applies to the cpu-benchmark subcommand" >&2
+  exit 2
+fi
+if [ "$CPU_BENCHMARK" = 1 ]; then
+  if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
+    || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
+    || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
+    || [ "$APPLY_PROTECTION" = 1 ] || [ "$OBSERVER_ONLY" = 1 ] || [ "$CGPROFILE_ONLY" = 1 ]; then
+    echo "ERROR: cpu-benchmark cannot be combined with general host-setup options" >&2
+    exit 2
+  fi
+  install_cpu_benchmark_helper || exit 2
+  # No exec/set -e surprises: the helper's own exit code (0 ok, 2 refused, 3 failed, 4 partial) is the result.
+  exec python3 /usr/local/sbin/mdt-host-cpu-benchmark.py cpu-benchmark "${CPU_BENCHMARK_ARGS[@]}"
 fi
 
 if [ "$OBSERVER_ONLY" = 1 ]; then
@@ -1200,6 +1253,10 @@ install -m 0755 "$HERE/../../scripts/debian-install-v2/tools/iocost_coef_gen.py"
 # the ONE plausibility definition shared with debian-install-v2's iocost-calibrate.sh
 install -m 0644 "$HERE/../../scripts/debian-install-v2/tools/iocost_plausibility.py" \
   /usr/local/lib/mdt/iocost_plausibility.py
+# Per-host CPU benchmark helper (HB-3): installed (and re-pinned) with every install so
+# mdt-host-check.sh can report the persisted measurement. It NEVER measures here: running
+# Geekbench is the deliberate `install.sh cpu-benchmark` act.
+install_cpu_benchmark_helper
 install -m 0755 "$HERE/scripts/mdt-slice-memory-min-low-audit.py"     /usr/local/sbin/mdt-slice-memory-min-low-audit.py
 install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-buildkit-guard.py
 install -m 0755 "$HERE/scripts/mdt-psi-guard.py"       /usr/local/sbin/mdt-psi-guard.py

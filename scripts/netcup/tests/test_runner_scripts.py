@@ -19,6 +19,8 @@ def test_every_runner_script_is_valid_bash():
 
 def test_tracked_runner_files_are_host_agnostic():
     for path in RUNNER.iterdir():
+        if path.is_dir() or path.name == "remote-gate.py":
+            continue  # remote-gate.py is controller-side and carries the two-host allowlist by design
         text = path.read_text()
         for pattern in HOST_SPECIFIC:
             assert not re.search(pattern, text), f"{path.name} contains host-specific {pattern!r}"

@@ -281,3 +281,5 @@ def test_the_gate_lanes_set_no_opt_out_and_judge_the_sidecar() -> None:
         assert "containers/ocr/ocr_service.py" in lanes[name]["judge"]["targets"]
         assert "client/src/pwmcp_client/ocr.py" in lanes[name]["judge"]["targets"]
         assert "client/src/pwmcp_client/user_agent.py" in lanes[name]["judge"]["targets"]
+        assert "client/src/pwmcp_client/blocked.py" in lanes[name]["judge"]["targets"]
+        assert "client/src/pwmcp_client/storage_state.py" in lanes[name]["judge"]["targets"]

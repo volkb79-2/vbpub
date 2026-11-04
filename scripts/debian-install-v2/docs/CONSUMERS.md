@@ -239,6 +239,14 @@ the moving-profile contract and the documented bootstrap handoff race.
 For a local QEMU first-boot acceptance test and non-secret guest checks, see
 the [VM usage/testing guide](../testing/vm/USAGE-TESTING.md).
 
+Consumers of the per-host measurement read `/var/lib/mdt/host-facts/cpu-benchmark.json`
+(`mdt-host-cpu-benchmark/1`, written by the installer step `run_cpu_benchmark` or by
+`mdt host-setup cpu-benchmark`; see the README). Accept it only when `cpu_model` and
+`cpus_online` equal the live values, treat a different `tool_major` as a different scale,
+and never copy `result_url` or the claim file into a published record (a Geekbench result
+id identifies the machine). The old v1 `run_geekbench` config key stays rejected; its
+replacement is `run_cpu_benchmark`.
+
 For a native-versus-TCG Geekbench 6 comparison, run the VM harness from a
 root host shell in a physical checkout (not from the devcontainer) and
 explicitly select the built-in `system.slice` parent:

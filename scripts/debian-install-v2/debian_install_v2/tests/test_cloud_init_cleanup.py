@@ -166,6 +166,7 @@ def _stage2_harness(*, fail_before_cleanup: bool = False):
     installer._configure_cgroup2_flags = lambda: events.append("cgroup2")
     installer._activate_swap_partitions = lambda: events.append("activate-swap")
     installer._health_gate_swap_devices = lambda: events.append("swap-health")
+    installer._run_cpu_benchmark = lambda: events.append("cpu-benchmark")
     installer._release_apt_timers = lambda: events.append("apt-timers")
     installer._cleanup_cloud_init_cache = lambda: events.append("cloud-init-cleanup")
     return installer, events

@@ -1885,10 +1885,17 @@ that is not a git work tree refuses (ERROR, exit 2) — never a quiet fallback t
 invoking checkout's store, which would hand you tree A's medians under tree
 B's name.
 
-**`--json` is honored by `history` and `footprint` (RG-55) only.** Every
-other verb refuses it by name rather than printing its human form anyway
-(`--list` is already a
-machine table).
+**`--json` is honored by `history`, `footprint`, `status` and `--list`.** Every
+other verb refuses it by name rather than printing its human form anyway.
+Plain `--list` stays the three-column table. `--list --json` (R-55) is the
+lane inventory for consumers that need levels: per lane `kind`,
+`environments`, `assay_lane`, `members` (a sequence) and the derived `rigor`.
+For an assay lane `rigor` is what `assay lanes --json` declares, so it asks the
+judge (and resolves an `[assay.import]`); a `command` lane is `["R0"]` with
+basis `declared-not-judged` even when its argv runs `assay run`; a sequence is
+`["R0"]` and lists `members`. When the judge cannot answer, `rigor` is `null`
+with a `rigor_reason`, never `[]`. To count R1/R2/R3 for a lane, move it to
+`kind = "assay"`.
 
 ### Consume it
 

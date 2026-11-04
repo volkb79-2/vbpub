@@ -56,6 +56,14 @@ def _canon(doc: Dict[str, Any]) -> str:
     return json.dumps(doc, sort_keys=True, indent=2)
 
 
+#: What the daemon reports on the fixture frames (no cpuinfo, no host record).
+NO_FACTS_MACHINE = {
+    "schema": "machine/1", "cpu_model": None, "cpus_online": None, "cpus_available": None,
+    "hypervisor": None, "smt": None, "speed": None,
+    "speed_reason": "NO_HOST_MEASUREMENT_AND_MODEL_NOT_IN_TABLE",
+}
+
+
 def _new_accumulator(scope: str, *, damon_enabled: bool = True, token=None) -> summary.SummaryAccumulator:
     return summary.SummaryAccumulator(
         session="s-20260912T101500Z-9f01",
@@ -71,6 +79,7 @@ def _new_accumulator(scope: str, *, damon_enabled: bool = True, token=None) -> s
         damon_enabled=damon_enabled,
         damon_kdamond=1,
         damon_thresholds=THRESHOLDS,
+        machine=NO_FACTS_MACHINE,
     )
 
 
