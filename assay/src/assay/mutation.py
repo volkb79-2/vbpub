@@ -130,6 +130,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
+    Final,
     Iterable,
     Iterator,
     Literal,
@@ -149,6 +150,7 @@ from .errors import AssayError, LaneConfigError, Outcome, ReasonCode
 from .guards import is_finite_positive, is_int_at_least, is_nonempty_str, is_strict_int
 from .isolation import SnapshotRepository, netstring
 from .mutation_parsers.model import IngestedMutationReport
+from .r2_command import transform_argv
 from .mutation_witness import (
     ReceiptCapture,
     ReceiptFacts,
@@ -1514,6 +1516,44 @@ def _tool_version() -> str:
     return __version__ if isinstance(__version__, str) else ""
 
 
+#: (WP1) The candidate-only command transform behind
+#: ``judge.mutation.candidate_fail_fast``. Folded into the judge identity.
+CANDIDATE_FAIL_FAST_ID: Final = "assay-candidate-fail-fast/1"
+CANDIDATE_FAIL_FAST_APPENDED: Final[tuple[str, ...]] = ("-x", "-p", "no:pytest_cov")
+
+
+def candidate_fail_fast_plan(
+    plan: "CommandPlan", *, extra: Sequence[str] = ()
+) -> "CommandPlan":
+    """(WP1) Return *plan* as a CANDIDATE runs it under ``candidate_fail_fast``.
+
+    The recognized pytest-cov options are removed (the shared
+    :func:`assay.r2_command.transform_argv`, which REFUSES any coverage option
+    it cannot remove without guessing) and ``-x -p no:pytest_cov`` is appended,
+    so a mutant stops at its first failing test and pays no coverage cost. The
+    baseline never goes through this function. *extra* is appended last and
+    exists only for the collect-only preflight.
+    """
+    declared = transform_argv(plan.argv_declared)
+    appended = (
+        *transform_argv(plan.argv_appended),
+        *CANDIDATE_FAIL_FAST_APPENDED,
+        *extra,
+    )
+    # Assay's own tokens are not the lane's CLI-appended argv, so they must not
+    # trip the `allow_argv_append` consent check (`cli_argv_appended` scopes it).
+    cli_only = (
+        plan.argv_appended if plan.cli_argv_appended is None else plan.cli_argv_appended
+    )
+    return _dataclass_replace(
+        plan,
+        argv_declared=declared,
+        argv_appended=appended,
+        argv_effective=declared + appended,
+        cli_argv_appended=cli_only,
+    )
+
+
 def judge_sha256(
     *,
     tree_sha256: str,
@@ -1528,6 +1568,7 @@ def judge_sha256(
     coverage_hook_fingerprint_sha256: str | None = None,
     coverage_runtime_fingerprint_sha256: str | None = None,
     equivalence_ledger_sha256: str | None = None,
+    candidate_fail_fast: bool = False,
 ) -> str:
     """(B088) Return the identity of what JUDGES a mutant.
 
@@ -1646,6 +1687,13 @@ def judge_sha256(
             equivalence_ledger_sha256,
         )
     )
+    if candidate_fail_fast:
+        # (WP1) Candidate runs stop at the first failing test and skip
+        # coverage collection, so they judge a different command than the
+        # declared one. Folded ONLY when on: every pre-WP1 identity (and every
+        # record resumed under it) is byte-identical.
+        parts.append(netstring(CANDIDATE_FAIL_FAST_ID))
+        parts.extend(netstring(token) for token in CANDIDATE_FAIL_FAST_APPENDED)
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -3801,6 +3849,9 @@ def run_mutation(
     #: admission budget, class factors and operator prediction medians.
     #: Only dispatch ORDER and admission depend on it, never a result.
     schedule: _schedule.ScheduleOptions | None = None,
+    #: (WP1) ``judge.mutation.candidate_fail_fast``: candidate commands (never
+    #: the baseline) stop at the first failing test and skip coverage.
+    candidate_fail_fast: bool = False,
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -4309,6 +4360,7 @@ def run_mutation(
                     else None
                 ),
                 equivalence_ledger_sha256=equivalence_ledger_sha256,
+                candidate_fail_fast=candidate_fail_fast,
             )
             if state_root is not None
             else None
@@ -4479,6 +4531,7 @@ def run_mutation(
             coverage_facts=coverage_facts,
             manifest_node_ids=manifest_node_ids,
             schedule=schedule,
+            candidate_fail_fast=candidate_fail_fast,
         )
 
         if resumed_records:
@@ -4736,6 +4789,7 @@ def _execute_mutation_jobs(
     coverage_facts: ReceiptFacts | None = None,
     manifest_node_ids: Sequence[str] = (),
     schedule: _schedule.ScheduleOptions | None = None,
+    candidate_fail_fast: bool = False,
 ) -> tuple[Mutation, bool]:
 
     if job_list:
@@ -4789,6 +4843,14 @@ def _execute_mutation_jobs(
             "receipt plugin"
         )
     candidate_reuse = dict(reuse_witnesses or {}) if witness_capture_active else {}
+
+    def _candidate_plan(base: CommandPlan) -> CommandPlan:
+        # (WP1) Applied at execution, AFTER the witness decisions above were
+        # made on the declared command: the receipt plugin is sound under -x
+        # (a failed call ends the started prefix), and the baseline never
+        # reaches here.
+        return candidate_fail_fast_plan(base) if candidate_fail_fast else base
+
     attempt_receipts: dict[tuple[int, str], Mapping[str, Any] | None] = {}
     worker_index_lock = threading.Lock()
     worker_indices: dict[int, int] = {}
@@ -4873,7 +4935,7 @@ def _execute_mutation_jobs(
         replacement_bytes = job.site.apply(original_bytes)
         materialize_timeout = deadline.remaining()
         started_monotonic = time.monotonic()
-        attempt_plan = plan
+        attempt_plan = _candidate_plan(plan)
         active_injection = witness_injection
         if cold_witness and variant == "declared":
             active_injection = declared_injection
@@ -4950,7 +5012,7 @@ def _execute_mutation_jobs(
                     if witness_capture_active and active_injection is not None:
                         receipt_capture = ReceiptCapture()
                         attempt_plan = _make_witness_attempt_plan(
-                            active_injection.plan,
+                            _candidate_plan(active_injection.plan),
                             receipt_fd=receipt_capture.write_fd,
                             target_node_id=target_node_id,
                             cold=cold,

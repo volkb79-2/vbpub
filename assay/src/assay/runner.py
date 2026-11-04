@@ -1238,6 +1238,63 @@ def _consume_result_report(
         return None
 
 
+def _resolve_candidate_fail_fast(
+    declared: bool, *, cold_witness: bool, diagnostics: Any
+) -> bool:
+    """(WP1) Whether this run applies the lane's ``candidate_fail_fast``.
+
+    A ``--cold-witness`` run already stops each candidate at its first verified
+    failure under a stricter proof, so the key is ignored there (announced on
+    *diagnostics* when there is one) and stays out of that run's identity.
+    """
+    if declared and cold_witness and diagnostics is not None:
+        print(
+            "assay: judge.mutation.candidate_fail_fast is ignored under "
+            "--cold-witness, which already stops each candidate at its first "
+            "verified failure",
+            file=diagnostics,
+        )
+    return declared and not cold_witness
+
+
+def _candidate_fail_fast_preflight(
+    *,
+    prepared: Any,
+    plan: CommandPlan,
+    deadline: "LaneDeadline",
+    process_runner: ProcessRunner,
+    clock: Clock,
+) -> None:
+    """(WP1) Refuse the lane if its candidate command is not a working pytest run.
+
+    Every nonzero exit is a ``killed`` mutant, so an option conflict (for
+    example ``addopts = --cov`` once ``-p no:pytest_cov`` removes the plugin)
+    would turn the whole sweep into false kills. This runs the candidate
+    command once, collect-only, on the UNMUTATED snapshot, and requires exit 0.
+    """
+    ff_plan = mutation.candidate_fail_fast_plan(
+        plan, extra=("--collect-only", "-q")
+    )
+    with prepared.materialize(timeout=deadline.remaining()) as snapshot:
+        outcome = execute_plan(
+            ff_plan,
+            cwd=snapshot.project_root,
+            timeout=deadline.remaining(),
+            process_runner=process_runner,
+            clock=clock,
+        )
+    if outcome.outcome is not Outcome.PASS:
+        raise AssayError(
+            "judge.mutation.candidate_fail_fast: the candidate command "
+            f"({' '.join(ff_plan.argv_effective)}) did not collect the "
+            f"unmutated suite ({outcome.outcome.value}, exit {outcome.returncode}); every candidate "
+            "would be a false kill. Fix the pytest configuration (an addopts "
+            "entry that needs pytest-cov is the usual cause) or drop the key",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.BAD_LANE_CONFIG,
+        )
+
+
 def execute_plan(
     plan: CommandPlan,
     *,
@@ -5465,10 +5522,31 @@ def _run_prepared_lane(
                             f"of lane time: {exc}"
                         ) from exc
                     raise
+            # (WP1) `candidate_fail_fast` is the lane's opt-in to candidate-only
+            # `-x` and no coverage. A cold-witness run already stops at the
+            # first verified failure under its own no-coverage command, so the
+            # lane key is not applied there (and stays out of the identity).
+            candidate_fail_fast = _resolve_candidate_fail_fast(
+                lane.judge.mutation.candidate_fail_fast,
+                cold_witness=cold_witness,
+                diagnostics=diagnostics,
+            )
+            if candidate_fail_fast:
+                _candidate_fail_fast_preflight(
+                    prepared=prepared,
+                    # The baseline's own plan and runner: the liveness runner
+                    # is per-candidate machinery, and the plugin needs the
+                    # events path the baseline plan already carries.
+                    plan=baseline_plan,
+                    deadline=deadline,
+                    process_runner=lane_process_runner,
+                    clock=clock,
+                )
             try:
                 mutation_result = mutation.run_mutation(
                     baseline=result,
                     prepared=prepared,
+                    candidate_fail_fast=candidate_fail_fast,
                     plan=r2_plan if cold_witness else plan,
                     deadline=deadline,
                     targets=targets,

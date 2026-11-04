@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- WP1: new lane key `judge.mutation.candidate_fail_fast` (opt-in, native pytest lanes): candidate commands, never the baseline, drop their pytest-cov options and gain `-x -p no:pytest_cov`, so a killed mutant stops at its first failing test and pays no coverage cost. A collect-only preflight on the unmutated snapshot refuses a candidate command that cannot collect (every nonzero exit would otherwise be a false kill). The transform is folded into `judge_sha256` only when on (turning it on or off invalidates resume records; all existing identities are unchanged), is ignored under `--cold-witness`, and leaves the failed-call witness active.
+
 ### Changed
 - B219: the sealed snapshot template's Git index is refreshed once before sealing (`update-index --refresh`), so `git status` in a copy-on-write clone validates by `lstat` instead of hashing the whole worktree for every candidate (measured on a 7.6k-file repository: 173.6 MB to 37.2 MB read and 2.31 s to 0.33 s materialize per candidate). A clone that does not preserve inode numbers or timestamps still hashes and stays correct.
 - B220: under `verify_clone = "tiered"` the child closure limits are computed from totals recorded when the seed was prepared plus the objects the replacement adds (commit, trees on the path, new blob) with one `cat-file --batch-check`, instead of two `rev-list --objects` walks over the whole pack per candidate. The limits fire at the same thresholds; a path containing a newline, a repository prepared without base facts, and `verify_clone = "full"` keep the full walk.
