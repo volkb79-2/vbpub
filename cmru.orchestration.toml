@@ -263,21 +263,7 @@ depends_on = ["cli-extended"]
 [cleanup]
 release_tag_prefixes = ["*"]
 keep_release_tags = ["ciu-latest", "cmru-latest", "pwmcp-latest"]
-# KI-117: "*" is refused (GHCR lists owner-wide, other repositories publish under
-# this account). Only the packages vbpub publishes are named.
-ghcr_packages = [
-  "cgprofile",
-  "mdt-cockpit-devcontainer",
-  "modern-debian-tools-python-debug",
-  "modern-debian-tools-python-debug-php85-vsc-devcontainer",
-  "modern-debian-tools-python-debug-vsc-devcontainer",
-  "modern-debian-tools-python-debug-vsc-devcontainer-dev",
-  "nyxloom-agent",
-  "nyxloomd",
-  "pwmcp",
-  "pwmcp-ocr",
-  "tester-base",
-]
+ghcr_packages = ["*"]
 ghcr_delete_packages = ["modern-debian-tools-python-debug-vsc-devcontainer-dev"]
 
 [versions]

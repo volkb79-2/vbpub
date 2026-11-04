@@ -56,7 +56,7 @@ depends_on = []
 [cleanup]
 release_tag_prefixes = ["*"]
 keep_release_tags = ["example-wheel-latest"]
-ghcr_packages = ["example-wheel"]   # explicit names only; "*" is refused (KI-117)
+ghcr_packages = ["*"]
 ghcr_delete_packages = []
 
 [versions]
