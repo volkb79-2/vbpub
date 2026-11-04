@@ -52,13 +52,13 @@ def test_ksm_verb_turns_build_refusal_into_a_cli_error(tmp_path, monkeypatch, ca
 
 
 def test_main_rejects_conflicting_ksm_overrides(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["ciu", "ksm", "--ksm", "--no-ksm"])
+    monkeypatch.setattr(sys, "argv", ["ciu", "governance", "ksm", "--ksm", "--no-ksm"])
 
     with pytest.raises(SystemExit) as exc:
         cli.main()
 
     assert exc.value.code == 2
-    assert "mutually exclusive" in capsys.readouterr().err
+    assert "not allowed with" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -67,23 +67,27 @@ def test_main_rejects_conflicting_ksm_overrides(monkeypatch, capsys):
 )
 def test_main_passes_one_ksm_override_to_the_chosen_verb(monkeypatch, flag, expected):
     seen: list[list[str]] = []
-    monkeypatch.setattr(sys, "argv", ["ciu", "ksm", flag])
+    monkeypatch.setattr(sys, "argv", ["ciu", "governance", "ksm", flag])
     monkeypatch.setattr(cli, "_ksm", lambda rest: seen.append(rest) or 0)
 
     with pytest.raises(SystemExit) as exc:
         cli.main()
 
     assert exc.value.code == 0
-    assert seen == [[]]
+    assert seen == [["build"]]
     assert cli.os.environ[governance.KSM_ENV_VAR] == expected
 
 
 @pytest.mark.parametrize(
-    ("verb", "handler"),
-    [("ksm", "_ksm"), ("worktree", "_worktree"), ("provenance", "_provenance")],
+    ("argv", "handler"),
+    [
+        (["governance", "ksm"], "_ksm"),
+        (["worktree", "list"], "_worktree"),
+        (["provenance"], "_provenance"),
+    ],
 )
-def test_main_dispatches_each_new_public_verb(monkeypatch, verb, handler):
-    monkeypatch.setattr(sys, "argv", ["ciu", verb])
+def test_main_dispatches_each_new_public_verb(monkeypatch, argv, handler):
+    monkeypatch.setattr(sys, "argv", ["ciu", *argv])
     monkeypatch.setattr(cli, handler, lambda rest: 7)
 
     with pytest.raises(SystemExit) as exc:

@@ -503,8 +503,13 @@ class TestCliStatusWiring:
             cli.main()
         assert exc.value.code == 7
 
-    def test_status_is_listed_in_top_level_usage(self):
-        assert "status [--profile NAME] [--json]" in cli._USAGE
+    def test_status_is_listed_in_top_level_usage(self, monkeypatch, capsys):
+        monkeypatch.setattr(sys, "argv", ["ciu"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert any(line.lstrip().startswith("status ") for line in out.splitlines())
 
     def test_status_has_its_own_verb_scoped_help(self, monkeypatch, capsys):
         monkeypatch.setattr(sys, "argv", ["ciu", "status", "--help"])

@@ -1154,8 +1154,8 @@ class TestRenderedInstaller:
             pytest.fail(
                 "cmru is not importable, so the committed ciu/get.py cannot be "
                 "checked against a fresh render; put ../cmru/src (and "
-                "../libraries/cli-extended/src, ../libraries/worktree/src) on "
-                f"PYTHONPATH: {exc}"
+                "../libraries/worktree/src) on PYTHONPATH and install the released "
+                f"cli-extended wheel: {exc}"
             )
 
         template = getattr(getpy, "_TEMPLATE_PATH", None)
@@ -1321,14 +1321,15 @@ class TestHostVerbDispatch:
         assert _cli(monkeypatch, [
             "host", "enroll", "rs1002", "--abort", "--ssh-host", "a",
         ]) == 2
-        assert "takes no other enrollment flags" in capsys.readouterr().err
+        # Declared as a Conflicts rule on the registered verb (library message).
+        assert "--abort" in capsys.readouterr().err
 
     def test_fingerprint_without_ssh_host_is_refused(self, repo, monkeypatch, capsys):
         monkeypatch.setenv("REPO_ROOT", str(repo))
         assert _cli(monkeypatch, [
             "host", "enroll", "rs1002", "--fingerprint", "SHA256:x",
         ]) == 2
-        assert "needs --ssh-host" in capsys.readouterr().err
+        assert "--fingerprint requires --ssh-host" in capsys.readouterr().err
 
     def test_an_enroll_error_exits_2_with_the_tagged_message(
         self, repo, monkeypatch, capsys
@@ -1369,9 +1370,9 @@ class TestHostVerbDispatch:
     def test_verb_help_is_the_host_block_not_the_top_level_usage(
         self, monkeypatch, capsys
     ):
-        assert _cli(monkeypatch, ["host", "--help"]) == 0
-        out = capsys.readouterr().out
-        assert "ciu host enroll <name>" in out
+        assert _cli(monkeypatch, ["host", "enroll", "--help"]) == 0
+        out = " ".join(capsys.readouterr().out.split())
+        assert "ciu host enroll" in out
         assert "CIU_SSH_INSECURE_TOFU is never set by this verb" in out
 
     def test_the_verb_never_sets_the_tofu_escape_hatch(

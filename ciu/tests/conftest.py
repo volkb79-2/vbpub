@@ -81,6 +81,12 @@ import pytest
 # test's own assertions.
 _REAL_SUBPROCESS_RUN = subprocess.run
 
+# The reviewed CLI catalog (docs/cli-review.toml, AC-17/AC-22): at collection the library's plugin
+# fails the session unless every active catalog row links a collected test through
+# ``@pytest.mark.cli_case``. A focused run of a few test files must pass ``--cli-case-partial``
+# (the full gate and the full suite need no flag).
+pytest_plugins = ["cli_extended.pytest_plugin"]
+
 CIU_TEST_SUITE_ENV = "CIU_TEST_SUITE"
 
 # Mechanism 1, at import time: collection-time module bodies and any `ciu`
@@ -131,6 +137,9 @@ _AMBIENT_ENV_VARS = (
     "PUBLIC_FQDN",
     "CIU_EXIT_ON",
     "CIU_KSM",
+    # Set process-wide by the registered ``--log-prefix-time-short`` global; a leaked "1" would
+    # prefix every later diagnostic with a wall-clock time.
+    "CIU_LOG_PREFIX_TIME_SHORT",
 )
 
 

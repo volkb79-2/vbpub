@@ -511,7 +511,7 @@ class TestCliThinDispatch:
         monkeypatch.setattr(act, "run_activation",
                             lambda host_cfg, verb, *, config, repo_root, bundle_dir, remaining=None:
                             captured.update(verb=verb, bundle_dir=bundle_dir, remaining=remaining) or 0)
-        monkeypatch.setattr(sys, "argv", ["ciu", "health", "--host", "web", "--thin"])
+        monkeypatch.setattr(sys, "argv", ["ciu", "status", "--gate", "--host", "web", "--thin"])
         with pytest.raises(SystemExit) as exc:
             cli_mod.main()
         assert exc.value.code == 0
@@ -528,8 +528,8 @@ class TestCliThinDispatch:
                             lambda host, argv, *, config, repo_root: exec_calls.append(argv[0]) or 0)
         monkeypatch.setattr(act, "run_activation",
                             lambda *a, **k: pytest.fail("thin health must not run without --thin"))
-        monkeypatch.setattr(sys, "argv", ["ciu", "health", "--host", "web"])
+        monkeypatch.setattr(sys, "argv", ["ciu", "status", "--gate", "--host", "web"])
         with pytest.raises(SystemExit) as exc:
             cli_mod.main()
         assert exc.value.code == 0
-        assert exec_calls[0] == "ciu health"
+        assert exec_calls[0] == "ciu status --gate"

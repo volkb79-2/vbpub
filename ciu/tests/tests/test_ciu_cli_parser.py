@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu.engine import parse_arguments, _build_secrets_subparser  # noqa: E402
 from ciu import cli, dev, worktree  # noqa: E402
+from ciu.cli_registry import build_cli  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -183,30 +184,39 @@ class TestPerVerbHelp:
     def test_clean_help_shows_clean_options_not_legacy(self, capsys, monkeypatch):
         out = self._help_out(capsys, monkeypatch, ["clean", "--help"])
         assert "ciu clean" in out
-        assert "--ignore-errors" in out and "-y" in out
+        assert "--ignore-errors" in out and "--yes" in out
         # The legacy ciu-deploy argparse surface must NOT leak through.
         assert "--deploy" not in out
         assert "--stop" not in out
 
-    def test_short_flag_also_works(self, capsys, monkeypatch):
-        out = self._help_out(capsys, monkeypatch, ["up", "-h"])
+    def test_short_help_flag_is_rejected(self, capsys, monkeypatch):
+        """The registry has long options only: `-h` is not a spelling of `--help`."""
+        monkeypatch.setattr(sys, "argv", ["ciu", "up", "-h"])
+        with pytest.raises(SystemExit) as exc:
+            cli.main()
+        assert exc.value.code == 2
+        assert "unrecognized" in capsys.readouterr().err.lower()
+
+    def test_up_help_lists_the_shared_actions(self, capsys, monkeypatch):
+        out = self._help_out(capsys, monkeypatch, ["up", "--help"])
         assert "ciu up" in out and "--dir" in out
-        # `--stop` replaces `--deploy` as this assertion's leak sentinel:
-        # CIU-68 found that `--deploy`/`--healthcheck` being undiscoverable
-        # from `ciu up --help` was itself a defect, so the curated text now
-        # lists them ON PURPOSE. `--stop` remains a legacy ciu-deploy action
-        # flag that must not leak through.
+        # `--stop` is a legacy ciu-deploy action flag that must not leak through;
+        # CIU-68: `--deploy`/`--healthcheck` are discoverable ON PURPOSE.
         assert "--stop" not in out
         assert "--deploy" in out and "--healthcheck" in out
 
     def test_every_verb_has_a_help_entry(self):
-        # Every dispatchable verb (except the bare top-level) is covered.
+        # Every public verb is registered, so help is generated for each of them.
         expected = {
-            "env", "render", "profiles", "up", "down", "clean",
-            "health", "diagnose", "bake", "dev", "secrets", "iops-baseline",
-            "check", "graph", "ssh",
+            "env", "render", "show", "up", "down", "clean",
+            "status", "diagnose", "bake", "dev", "secrets", "governance",
+            "check", "graph", "ssh", "migrate", "schema", "doctor", "skills",
         }
-        assert expected <= set(cli._VERB_HELP)
+        registered = {verb.name for verb in build_cli().registered_verbs}
+        assert expected <= registered
+        # The renamed-away spellings are gone, not aliased.
+        assert not ({"health", "profiles", "layouts", "ksm", "iops-baseline",
+                     "capabilities", "migration-check", "host-secrets"} & registered)
 
     @pytest.mark.parametrize(
         "verb, expected_text",
@@ -226,53 +236,52 @@ class TestPerVerbHelp:
         assert out.splitlines()[0].startswith("CIU ")
         assert "Container Infrastructure Utility" in out.splitlines()[0]
 
-    def test_env_generate_help_is_not_intercepted(self):
-        # `env generate --help` must fall through to its own argparse help.
-        assert cli._wants_verb_help("env", ["generate", "--help"]) is False
-        # but `env --help` IS the verb's help
-        assert cli._wants_verb_help("env", ["--help"]) is True
+    def test_env_generate_help_is_its_own_screen(self, capsys, monkeypatch):
+        out = self._help_out(capsys, monkeypatch, ["env", "generate", "--help"])
+        assert "ciu env generate" in out and "--root-folder" in out
+        # a bare group prints the group's verbs
+        out = self._help_out(capsys, monkeypatch, ["env", "--help"])
+        assert "generate" in out and "print" in out
 
-    def test_health_help_lists_preflight(self, capsys, monkeypatch):
-        out = self._help_out(capsys, monkeypatch, ["health", "--help"])
-        assert "--preflight" in out and "--strict" in out
+    def test_status_help_lists_the_absorbed_health_modes(self, capsys, monkeypatch):
+        out = self._help_out(capsys, monkeypatch, ["status", "--help"])
+        assert "--gate" in out and "--preflight" in out and "--strict" in out
 
     def test_iops_baseline_help_shows_own_options(self, capsys, monkeypatch):
-        out = self._help_out(capsys, monkeypatch, ["iops-baseline", "--help"])
-        assert "ciu iops-baseline" in out
+        out = self._help_out(capsys, monkeypatch, ["governance", "iops-baseline", "--help"])
+        assert "ciu governance iops-baseline" in out
         assert "--path" in out and "--runtime" in out and "--force" in out
-        assert "saturating" in out.lower()
+        assert "saturating" in " ".join(out.lower().split())
         assert "--deploy" not in out
 
     @pytest.mark.parametrize("argv", [["--help"], ["worktree", "--help"]])
-    def test_worktree_help_teaches_managed_lifecycle_and_exact_base(
-        self, capsys, monkeypatch, argv
-        ):
-        """Both public help surfaces must make the managed workflow usable."""
+    def test_worktree_help_lists_the_managed_lifecycle(self, capsys, monkeypatch, argv):
+        """Both public help surfaces make the managed workflow discoverable."""
         out = self._help_out(capsys, monkeypatch, argv)
-        help_text = " ".join(out.split())
+        assert "worktree" in out
+        if argv == ["worktree", "--help"]:
+            for verb in ("create", "ensure", "adopt", "up", "exec", "rm", "inspect", "lease",
+                         "refork", "branches", "reap", "list"):
+                assert verb in out, verb
 
+    def test_worktree_create_help_teaches_exact_base_and_no_deploy(self, capsys, monkeypatch):
+        out = self._help_out(capsys, monkeypatch, ["worktree", "create", "--help"])
+        text = " ".join(out.split())
         for guidance in (
-            "worktree create LOGICAL [--base REF]",
-            "--profile P1,P2",
-            "exact commit SHA",
-            "does NOT deploy",
-            "ensure",
-            "idempotent",
-            "existing unmanaged linked checkout",
-            "adopt LOGICAL PATH",
-            "worktree up LOGICAL",
-            "worktree exec LOGICAL [--target ALIAS] -- ARGV...",
-            "worktree rm LOGICAL",
-            "--keep-branch | --delete-branch",
-            "--discard-protected-state BRANCH",
-            "keeps unmerged branch tips by default",
+            "LOGICAL", "--base REF", "--profile P1,P2", "exact commit SHA", "does NOT deploy",
             'ciu worktree create pkg-under-test --base "$(git rev-parse HEAD)" --json',
-            "ciu worktree inspect pkg-under-test",
-            "ciu worktree up pkg-under-test",
-            "ciu worktree exec pkg-under-test -- pytest -q",
-            "ciu worktree rm pkg-under-test -y",
         ):
-            assert guidance in help_text, guidance
+            assert guidance in text, guidance
+
+    def test_worktree_rm_help_teaches_branch_safety(self, capsys, monkeypatch):
+        out = self._help_out(capsys, monkeypatch, ["worktree", "rm", "--help"])
+        text = " ".join(out.split())
+        for guidance in (
+            "--keep-branch | --delete-branch", "--discard-protected-state BRANCH",
+            "keeps an unmerged branch tip by default",
+            "ciu worktree rm pkg-under-test --yes",
+        ):
+            assert guidance in text, guidance
 
 
 class TestIopsBaselineVerb:
@@ -295,7 +304,7 @@ class TestIopsBaselineVerb:
         monkeypatch.setattr(gov, "run_iops_baseline", fake_run)
         code = self._run(
             monkeypatch,
-            ["iops-baseline", "--path", "/tmp/x.env", "--runtime", "5", "--force"],
+            ["governance", "iops-baseline", "--path", "/tmp/x.env", "--runtime", "5", "--force"],
         )
         assert code == 0
         assert calls["args"] == (Path("/tmp/x.env"), 5, True)
@@ -309,20 +318,21 @@ class TestIopsBaselineVerb:
 
         import ciu.governance as gov
         monkeypatch.setattr(gov, "run_iops_baseline", fake_run)
-        code = self._run(monkeypatch, ["iops-baseline"])
+        code = self._run(monkeypatch, ["governance", "iops-baseline"])
         assert code == 0
         assert calls["args"] == (None, 10, False)
 
     def test_nonpositive_runtime_exits_2(self, monkeypatch, capsys):
-        code = self._run(monkeypatch, ["iops-baseline", "--runtime", "0"])
+        code = self._run(monkeypatch, ["governance", "iops-baseline", "--runtime", "0"])
         assert code == 2
         assert capsys.readouterr().err.splitlines()[0].startswith("CIU ")
 
-    def test_init_invalid_project_name_uses_headline(self, monkeypatch):
+    def test_init_invalid_project_name_uses_headline(self, monkeypatch, capsys):
         monkeypatch.setattr(sys, "argv", ["ciu", "init", "--project-name", "BAD"])
         with pytest.raises(SystemExit) as exc:
             cli.main()
-        assert str(exc.value).splitlines()[0].startswith("CIU ")
+        assert exc.value.code == 1
+        assert capsys.readouterr().err.splitlines()[0].startswith("CIU ")
 
 
 class TestLocalCliDispatch:
@@ -340,23 +350,15 @@ class TestLocalCliDispatch:
             cli.main()
         return exc.value.code
 
-    def test_env_show_walks_up_and_filters_comments_and_blank_lines(
-        self, monkeypatch, tmp_path, capsys
-    ):
-        workspace = tmp_path / "workspace"
-        nested = workspace / "one" / "two"
-        nested.mkdir(parents=True)
-        (workspace / "ciu.env").write_text("# generated\n\nREPO_ROOT=/repo\n KEY=kept\n")
-        monkeypatch.chdir(nested)
-
-        assert self._run(monkeypatch, ["env"]) == 0
-        assert capsys.readouterr().out.splitlines() == ["REPO_ROOT=/repo", " KEY=kept"]
-
-    def test_env_show_without_file_is_informative_and_fails(self, monkeypatch, tmp_path, capsys):
+    def test_bare_env_is_a_group_not_the_removed_ciu_env_dump(self, monkeypatch, tmp_path, capsys):
+        """C11/F8: the deprecated `ciu env` dump is gone; `env` is the generate|print group."""
+        (tmp_path / "ciu.env").write_text("REPO_ROOT=/repo\n")
         monkeypatch.chdir(tmp_path)
 
-        assert self._run(monkeypatch, ["env"]) == 1
-        assert "No ciu.env found" in capsys.readouterr().err
+        assert self._run(monkeypatch, ["env"]) == 0
+        captured = capsys.readouterr()
+        assert "REPO_ROOT" not in captured.out
+        assert "generate" in captured.out and "print" in captured.out
 
     def test_env_generate_forwards_explicit_root_and_cwd(self, monkeypatch, tmp_path):
         import ciu.deploy as deploy
@@ -374,7 +376,7 @@ class TestLocalCliDispatch:
         assert seen["args"] == (Path("/repo"), tmp_path)
 
     def test_iops_runtime_rejects_negative_values(self, monkeypatch, capsys):
-        assert self._run(monkeypatch, ["iops-baseline", "--runtime", "-1"]) == 2
+        assert self._run(monkeypatch, ["governance", "iops-baseline", "--runtime", "-1"]) == 2
         assert "positive integer" in capsys.readouterr().err
 
     def test_diagnose_validates_log_range_before_handler(self, monkeypatch, capsys):
@@ -414,12 +416,13 @@ class TestLocalCliDispatch:
         ("verb", "rest", "expected"),
         [
             ("render", ["--profile", "prod"], ["--render-toml", "--profile", "prod"]),
-            ("profiles", [], ["--list-profiles"]),
-            ("clean", ["-y"], ["--clean", "-y"]),
+            ("show", ["profiles"], ["--list-profiles"]),
+            ("clean", ["--yes"], ["--clean", "--yes"]),
             ("check", ["--live"], ["--check", "--live"]),
-            ("graph", ["--format", "json"], ["--graph", "--format", "json"]),
-            ("health", [], ["--healthcheck"]),
-            ("health", ["--preflight", "--strict"], ["--preflight", "--strict"]),
+            ("graph", ["--json"], ["--graph", "--format", "json"]),
+            ("graph", ["--format", "dot"], ["--graph", "--format", "dot"]),
+            ("status", ["--gate"], ["--healthcheck"]),
+            ("status", ["--preflight", "--strict"], ["--preflight", "--strict"]),
         ],
     )
     def test_local_verbs_map_to_the_documented_handler_argv(
@@ -433,6 +436,16 @@ class TestLocalCliDispatch:
         assert self._run(monkeypatch, [verb, *rest]) == 6
         assert seen == [expected]
 
-    def test_unknown_dash_d_gives_the_actionable_migration_hint(self, monkeypatch, capsys):
+    def test_dash_d_is_not_a_verb_and_is_not_aliased(self, monkeypatch, capsys):
+        """The flat `ciu -d DIR` form is not a public surface and has no alias (F5)."""
         assert self._run(monkeypatch, ["-d", "services/demo"]) == 2
-        assert "ciu up --dir 'services/demo'" in capsys.readouterr().err
+        err = capsys.readouterr().err.lower()
+        assert "unrecognized" in err or "invalid choice" in err
+
+    def test_abbreviated_spellings_are_usage_errors(self, monkeypatch, capsys):
+        """F5: option prefixes are not accepted; nothing reaches the implementation layer."""
+        import ciu.deploy as deploy
+
+        monkeypatch.setattr(deploy, "main", lambda argv: pytest.fail("must not dispatch"))
+        assert self._run(monkeypatch, ["up", "--prof", "core"]) == 2
+        assert "--prof" in capsys.readouterr().err

@@ -16,7 +16,7 @@ def test_health_summary_pending_emits_operator_guidance(capsys):
     output = capsys.readouterr().out
     assert "pending: app-prod-api, app-prod-worker" in output
     assert "docker logs app-prod-api" in output
-    assert "ciu health --preflight" in output
+    assert "ciu status --preflight" in output
 
 
 def test_health_summary_without_pending_omits_pending_guidance(capsys):
@@ -27,7 +27,7 @@ def test_health_summary_without_pending_omits_pending_guidance(capsys):
     output = capsys.readouterr().out
     assert "healthy: app-prod-api" in output
     assert "docker logs" not in output
-    assert "ciu health --preflight" not in output
+    assert "ciu status --preflight" not in output
 
 
 def test_render_toml_empty_selection_reports_no_work(monkeypatch, capsys, tmp_path: Path):

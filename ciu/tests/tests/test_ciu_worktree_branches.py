@@ -1377,7 +1377,7 @@ def test_cli_json_prune_exits_nonzero_on_partial_real_subprocess(repo, tmp_path)
     assert _git(["merge", "--no-ff", "-m", "m", "fix/tracked"], repo).returncode == 0
 
     res = _run_ciu(
-        ["worktree", "branches", "-y", "--json", "--root-folder", str(repo)], repo
+        ["worktree", "branches", "--yes", "--json", "--root-folder", str(repo)], repo
     )
 
     assert res.returncode == 1, res.stderr
@@ -1400,7 +1400,7 @@ def test_cli_json_prune_and_survey_exit_zero_when_not_partial_real_subprocess(re
     assert json.loads(survey.stdout)["status"] == "survey"
 
     pruned = _run_ciu(
-        ["worktree", "branches", "-y", "--json", "--root-folder", str(repo)], repo
+        ["worktree", "branches", "--yes", "--json", "--root-folder", str(repo)], repo
     )
     assert pruned.returncode == 0, pruned.stderr
     doc = json.loads(pruned.stdout)

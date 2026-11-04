@@ -270,7 +270,11 @@ def cli_env(monkeypatch, tmp_path):
 
 
 def _run(monkeypatch, argv):
+    """Run the CLI; the former top-level ``host-secrets`` verb is ``secrets host`` (C8)."""
     from ciu import cli
+    if argv[:1] == ["host-secrets"]:
+        argv = ["secrets", "host", *argv[1:]]
+    argv = ["--yes" if token == "-y" else token for token in argv]
     monkeypatch.setattr(sys, "argv", ["ciu", *argv])
     with pytest.raises(SystemExit) as exc:
         cli.main()
@@ -353,14 +357,16 @@ def test_cli_materialize_unknown_host_exits_2(cli_env, monkeypatch, capsys):
 
 def test_cli_requires_host(cli_env, monkeypatch, capsys):
     assert _run(monkeypatch, ["host-secrets", "--list"]) == 2
-    assert "host-secrets <host>" in capsys.readouterr().err
+    assert "HOST" in capsys.readouterr().err
 
 
 def test_cli_requires_exactly_one_mode(cli_env, monkeypatch, capsys):
+    """The registry declares the three modes as one required exclusive group."""
     assert _run(monkeypatch, ["host-secrets", "devbox"]) == 2
-    assert "exactly one of --materialize, --list, --path" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "--materialize" in err and "--list" in err and "--path" in err
     assert _run(monkeypatch, ["host-secrets", "devbox", "--list", "--materialize"]) == 2
-    assert "exactly one of --materialize, --list, --path" in capsys.readouterr().err
+    assert "not allowed with" in capsys.readouterr().err
 
 
 def test_up_host_with_secrets_does_not_materialize(cli_env, monkeypatch, capsys, tmp_path):

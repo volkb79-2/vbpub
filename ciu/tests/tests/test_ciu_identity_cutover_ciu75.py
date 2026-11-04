@@ -323,29 +323,6 @@ def test_generate_warns_once_that_ciu_env_is_now_write_only(
     assert INSTANCE_GENERATED_FACTS in out
 
 
-def test_env_show_nudges_on_stderr_and_keeps_stdout_parseable(
-    monkeypatch, tmp_path, capsys
-):
-    """`ciu env` is the legacy READ path. It keeps working and keeps its
-    stdout exactly the key=value stream a consumer may be parsing; the
-    deprecation notice goes to stderr, where it cannot break that parse."""
-    from ciu import cli
-
-    _hermetic_generate(monkeypatch, tmp_path)
-    capsys.readouterr()
-    monkeypatch.chdir(tmp_path)
-
-    assert cli._env_show() == 0
-
-    captured = capsys.readouterr()
-    assert "LEGACY WRITE-ONLY export" in captured.err
-    assert 'eval "$(ciu env print)"' in captured.err
-    assert captured.out
-    for line in captured.out.splitlines():
-        assert line.startswith("export ") or "=" in line
-        assert "[WARN]" not in line
-
-
 # ---------------------------------------------------------------------------
 # O3 — the cutover: every fact-reading site, with the legacy export broken
 # ---------------------------------------------------------------------------
