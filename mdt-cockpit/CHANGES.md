@@ -148,6 +148,81 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-626f9034d12e] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=626f9034d12e092ce5b8437e9d904c4128bdd5ea -->
+
+### Added
+- feat(mdt-cockpit): install.sh cpu-benchmark subcommand, mdt-host-check CPU benchmark doctor section, wizard/README text, backlog MDT-066..068 (HB-3) (a8e5081b1)
+- feat(host-benchmark): Geekbench 7 baseline 2500 (Ryzen 7 7700 reference), per-major baselines kept (HB-1) (cbda960d5)
+- feat(host-benchmark): generalise cpu_benchmark over the Geekbench major (6/7), CDN version discovery, per-major baselines (HB-1) (c251c43a4)
+- feat(host-benchmark): shared Geekbench 6 CPU benchmark tool, measured once per host (HB-1) (76ab4ba1d)
+- feat(mdt-cockpit): HOST_ROLE=dedicated-dev sizes dev.slice from measured iobench caps, no static fallback (MDT-TESTHOST-IO) (2040f561a)
+- feat(netcup): generic runner scripts under scripts/netcup/runner; file r1002 reinstall findings (5498092cd)
+- feat(mdt-cockpit): release Python version is a top-level input (LATEST_KNOWN_PYTHON env overrides the bake default) (b2c63bd87)
+
+### Fixed
+- fix(mdt-cockpit): drop the Dockerfile pre-fetch of the build's own versioned manifest (404 failed the 20261104 release) (f19c3e088)
+- fix(mdt-cockpit): append the nano defaults to /etc/nanorc instead of include (nano rejects set in included files) (77b164cf3)
+- fix(mdt-cockpit): shellcheck-clean measured-caps reset (8e2990be5)
+- fix(mdt-cockpit): shellcheck clean for the measured-caps loader (48b1abdee)
+- fix(mdt-cockpit): release runs smoke and image-runtime-built; bake wires the AI CLI switches; waivers expire (MDT-060/032, MDT-012, MDT-035, MDT-015) (814c45e5e)
+- fix(mdt-cockpit): PWMCP join reads the shipped instance identity; fix CHANGES reconcile claim; renumber duplicate backlog ids MDT-032/033 to MDT-060/061 (d1981a718)
+- fix(mdt): prepare CMRU env before local-dev tag checks (030bc97bb)
+
+### Changed
+- Merge branch 'rigor-hb23-20261105' (12df2ddb4)
+- Merge branch 'rigor-hb1-20261105' (b434a9b1f)
+- Merge branch 'backlog-findings-20261105' (300a24578)
+- Merge branch 'mdt-nanorc-20261105' (713f1d814)
+- backlog: CP-57 (doctor caller-group fails for root), MDT-062 (cgprofile 1.x container cutover) (bff860d9b)
+- host-setup docs, CHANGES and backlog statuses for MDT-055 / MDT-048 (ba601c9e5)
+- host-setup: install, pin and upgrade the native cgprofile service from the released wheel (MDT-055) (3d7f087ab)
+- mdt-cockpit: cockpit image carries the cgprofile wheel (cgpctl client), report extra excluded (MDT-048) (b13f21674)
+- mdt-cockpit host-setup: docker API socket check (MDT-037), inotify never lowered (MDT-038), install synopsis/observer preflight (MDT-039), bounded cgroup reads + killpg tests (MDT-022), keep caps on transient device loss (MDT-019) (7af159fbe)
+- mdt-cockpit: build inputs bind-mounted not COPYed (MDT-061), paginated aged-latest resolvers (MDT-036), PWMCP installer 404 hint (MDT-040) (418058aea)
+- mdt-cockpit: test_release_flow finds the wizard's sibling module without PYTHONPATH (release lane was RED) (567c7e8c0)
+- mdt-cockpit: smoke lane budget 2m -> 6m (outgrown; the release flow now runs it) (85a844e4a)
+- Merge branch 'backlog-platform-20261104' (e69a27940)
+- mdt-cockpit backlog: mdt-docker group, image/templates, cgprofile host service, oci-layout bases, shim check, remote runner docs (MDT-053..059) (a6e056c5d)
+- Merge branch 'fan-wheels-fix-20261103' (c250b6609)
+- Merge branch 'fan-pwmcpnet-fix-20261103' (115825022)
+- mdt-cockpit: warn on dev.slice MemoryMax vs RAM_MDT and no disk swap in install/check, revert the dev.slice MemoryLow proposal, VM old-key refusal step (MDT-033 F4, F5, F8) (53f7a7349)
+- mdt-cockpit: psi-guard counters keyed by path, vanished source releases, events bounded; drop the vacuous reconcile skip (MDT-033 F2, F3, F6) (c27cc28df)
+- mdt-cockpit: --apply-protection never lowers protection, refuses without MDT_EXCLUDED_RAM, shows old->new (MDT-033 F1, F9) (ba27b7683)
+- mdt-cockpit: CoW migration needs chattr -i and ordering; devcontainer.json nits; mdt help name; watcher comment (4b55bcdd2)
+- mdt-cockpit: pwmcp network join selects this workspace's stack by exact name (F1), inspect --type container (F2), docker ps failure is a warning (F3) (ba95b8df8)
+- mdt-cockpit: skills step bounded, warn-once, crash-aware; live docs name /opt/mdt/venv (368f57788)
+- Merge branch 'fan-mdt033-20261103' (83c0eb844)
+- mdt-cockpit: mdt-psi-guard, the PSI control signal for the protected units (MDT-033.e) (bfdc37cee)
+- mdt-cockpit: finalize joins a recreated devcontainer to the running PWMCP stack network (6d89b6fc4)
+- mdt-cockpit: host-setup names the capacity unavailable to MDT (MDT-033 a-d) (e811fd40e)
+- Merge branch 'mdt-image-wheels-20261103' (4e18dea64)
+- mdt-cockpit: finalize installs the first-party CLIs' agent skills into a fresh home (3c5c3a0a1)
+- mdt-cockpit: add run-gate to the image's first-party wheels; file MDT-048 (cgprofile ships no wheel) (c5938f3b0)
+- Merge branch 'r1002-mdt-fixes-20261103' (0cd520954)
+- mdt-cockpit: raise inotify watch limit to 1M (shared by all devcontainers of one user) (0aa7b2df7)
+- Merge branch 'devcontainer-reconcile-20261103' (fec43bd21)
+- refactor(mdt-cockpit): reconcile the three devcontainer.json files; name mdt-cockpit-<user>-<repo> (7a60ded0b)
+- refactor(mdt-cockpit): rename default CoW root /srv/devcontainers-cow to /srv/mdt-cockpit-cow (b4c8898fa)
+
+### Documentation
+- docs(mdt-cockpit): file MDT-071, host-setup cannot express no IO limit on dedicated-dev (dd6e5367b)
+- docs(mdt-cockpit): file MDT-069 (psi-guard resets cpu.idle) and MDT-070 (Geekbench result page Cloudflare-blocked) (6ec5054d2)
+- docs: mdt host-setup, templates and workspace comments name the native profiler service (a4929b53e)
+- docs(mdt-cockpit): README tool inventory (MDT-042), release inputs (MDT-046), host-neutral design doc (MDT-041), backlog closes and MDT-060/061 renumber references (7ee7530e2)
+- docs(ciu): sweep callers of the adoption's forced spellings across the monorepo (bfb2a0b07)
+- docs(mdt-cockpit): keep the old-name guard green (reword MDT-033 note) (af47617f4)
+- docs(mdt-cockpit): file MDT-044..047 (CoW host setup, Python variants, release inputs, installer Docker restart) (0a2fd38c3)
+- docs(mdt-cockpit): MDT-033 final design (three excluded-from-MDT inputs, disk swap only, no aliases) (2ef29fff1)
+
+### Testing
+- test(mdt-cockpit): nano rc check uses a stdlib pty helper (script has no pty on a pipe); cgprofile wheel is checked through cgpctl and cgpd (626f9034d)
+- test(mdt-cockpit): the nano rc test quits via Ctrl-X with a 120 s failsafe (runtime lane forbids scenario timeouts under 120 s) (3cc39b32d)
+- test(mdt-cockpit): nano rc-error check runs the editor on a pty with a control (36603e338)
+- test: isolate prepare_project_environment env in mdt-cockpit test; add cmru-side unit test (ba500e561)
+- test(mdt-cockpit): isolate fill prevention test from host disk state (6f669fa26)
+
 ## [source-c08b5b89f8a9] - 2026-11-03
 <!-- cmru: generated -->
 <!-- cmru: source-end=c08b5b89f8a97919b7913dda7259884a8c953145 -->
