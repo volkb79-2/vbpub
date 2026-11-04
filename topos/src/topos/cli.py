@@ -672,15 +672,19 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             return 0
     if not args.once and not args.json:
-        collector = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args))  # type: ignore[arg-type]
-        ui_code = _run_ui(
-            live_frame_stream(collector),
-            config=config,
-            cgroup_root=args.cgroup_root,
-            smoke=args.ui_smoke,
-            profile=args.profile,
-            source_label="LIVE",
-        )
+        try:
+            collector = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args))  # type: ignore[arg-type]
+            ui_code = _run_ui(
+                live_frame_stream(collector),
+                config=config,
+                cgroup_root=args.cgroup_root,
+                smoke=args.ui_smoke,
+                profile=args.profile,
+                source_label="LIVE",
+            )
+        except ContainerResolveError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
         if ui_code == 0:
             return 0
         print("textual is not installed; use --once --json or install UI dependencies", file=sys.stderr)

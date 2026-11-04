@@ -232,6 +232,13 @@ FIELD_LIST_BLOCK_MAP: dict[str, str] = {
     "governance": "governance",
 }
 
+# Alternate spellings accepted by the field-list selector, resolved to the
+# canonical family token before lookup (B-024). The block-owner name
+# ("network") is the natural thing to type for the "net" family.
+FIELD_LIST_FAMILY_ALIASES: dict[str, str] = {
+    "network": "net",
+}
+
 # Verify every listed metric name exists in REGISTRY
 for _group_name, _metric_names in METRIC_GROUPS.items():
     for _name in _metric_names:
@@ -264,6 +271,7 @@ def parse_metrics_selector(selector: str) -> tuple[frozenset[str], frozenset[str
     unknown: list[str] = []
 
     for token in tokens:
+        token = FIELD_LIST_FAMILY_ALIASES.get(token, token)
         if token in METRIC_GROUPS:
             kept_metrics.update(METRIC_GROUPS[token])
             if token in FIELD_LIST_BLOCK_MAP:

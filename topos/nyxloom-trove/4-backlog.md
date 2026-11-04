@@ -13,7 +13,7 @@ items:
     component: ui-tests
     context_estimate: small
   - id: B-003
-    title: "Outside the declared [dev] gate, P75 subprocess smoke tests should explain/skip a missing MCP extra cleanly"
+    title: "[FIXED 2026-11-04 (0be7631fd)] Outside the declared [dev] gate, P75 subprocess smoke tests should explain/skip a missing MCP extra cleanly"
     type: bugfix
     component: mcp-tests
     folds_into: F022
@@ -128,13 +128,13 @@ items:
     folds_into: F033
     context_estimate: medium
   - id: B-023
-    title: "Give live TUI/recording selector resolution the same typed clean exit as --once"
+    title: "[FIXED 2026-11-04 (0be7631fd)] Give live TUI/recording selector resolution the same typed clean exit as --once"
     type: bugfix
     component: cli-selectors
     folds_into: F014
     context_estimate: small
   - id: B-024
-    title: "Accept 'network' as an alias for 'net' (may instead be a configured query/profile vocabulary alias)"
+    title: "[FIXED 2026-11-04 (0be7631fd)] Accept 'network' as an alias for 'net' (may instead be a configured query/profile vocabulary alias)"
     type: feature
     component: cli-selectors
     folds_into: F014
@@ -175,7 +175,7 @@ items:
     folds_into: F028
     context_estimate: medium
   - id: B-031
-    title: "[Folds into the shared query/frontend contract] MCP limit schema should be integer while bool remains rejected"
+    title: "[FIXED 2026-11-04 (0be7631fd)] MCP limit schema should be integer while bool remains rejected"
     type: bugfix
     component: mcp
     folds_into: F028
@@ -266,7 +266,7 @@ items:
     component: test-infra
     context_estimate: medium
   - id: B-047
-    title: "4 tests (test_record.py::test_cli_version_reports_package_version, test_acceptance.py::{test_run_smoke_json_fixture_root,test_subprocess_smoke_json,test_run_steady_json_small_samples}) hardcode package version '0.1.0'; setuptools_scm now resolves a live dev version off the newest topos-v* tag (topos-v0.2.1), making topos-suite exit 1 on a clean main checkout -- confirmed pre-existing/unrelated to any in-flight package (P93 port-forward control run against main tip 3dd08b12 in the tester-unified gate container)"
+    title: "[FIXED 2026-11-04 (0be7631fd)] 4 tests (test_record.py::test_cli_version_reports_package_version, test_acceptance.py::{test_run_smoke_json_fixture_root,test_subprocess_smoke_json,test_run_steady_json_small_samples}) hardcode package version '0.1.0'; setuptools_scm now resolves a live dev version off the newest topos-v* tag (topos-v0.2.1), making topos-suite exit 1 on a clean main checkout -- confirmed pre-existing/unrelated to any in-flight package (P93 port-forward control run against main tip 3dd08b12 in the tester-unified gate container)"
     type: bugfix
     component: test-infra
     context_estimate: small

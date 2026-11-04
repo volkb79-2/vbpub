@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import fixture_root, SRC
+from conftest import fixture_root, requires_mcp, SRC
+
+import topos
 
 # Paths used in multiple tests
 FIXTURE_CGROUP = fixture_root() / "cgroupfs" / "gstammtisch"
@@ -64,7 +66,7 @@ def test_run_smoke_json_fixture_root() -> None:
 
     result = run_smoke(cgroup_root=FIXTURE_CGROUP)
     assert result.ok is True
-    assert result.version == "0.1.0"
+    assert result.version == topos.__version__
     assert len(result.checks) == 4  # collect, serialize, source_labels, replay
     assert result.checks[0].name == "collect"
     assert result.checks[0].ok is True
@@ -253,7 +255,7 @@ def test_subprocess_smoke_json() -> None:
     assert cp.returncode == 0, f"stderr={cp.stderr}"
     obj = json.loads(cp.stdout)
     assert obj["ok"] is True
-    assert obj["version"] == "0.1.0"
+    assert obj["version"] == topos.__version__
 
 
 def test_subprocess_smoke_text() -> None:
@@ -331,7 +333,7 @@ def test_run_steady_json_small_samples() -> None:
         interval_s=0,
     )
     assert result.ok is True
-    assert result.version == "0.1.0"
+    assert result.version == topos.__version__
     assert result.samples_requested == 2
     assert result.samples_completed == 2
     assert result.threshold_errors == []
@@ -1025,6 +1027,7 @@ def test_terminate_process_already_dead() -> None:
     _terminate_process(proc)  # must not raise
 
 
+@requires_mcp
 def test_mcp_smoke_contains_daemon_start_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1208,6 +1211,7 @@ def _listening_unix_socket(path: Path):
     return sock
 
 
+@requires_mcp
 def test_mcp_smoke_terminates_the_daemon_when_the_session_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1240,6 +1244,7 @@ def test_mcp_smoke_terminates_the_daemon_when_the_session_raises(
     assert any(c.name == "mcp_session" and c.ok is False for c in result.checks)
 
 
+@requires_mcp
 def test_mcp_smoke_reports_a_daemon_that_dies_before_serving(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1393,6 +1398,7 @@ def test_mcp_smoke_no_daemon_yields_checks() -> None:
         )
 
 
+@requires_mcp
 def test_subprocess_mcp_smoke_json_no_daemon() -> None:
     """``mcp-smoke --json`` with a non-existent socket exits 1 (checks fail)."""
     cp = _run_mcp_smoke(

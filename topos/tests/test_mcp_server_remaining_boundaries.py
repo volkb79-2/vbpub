@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from conftest import requires_mcp
 
 from topos.daemon.client import (
     DaemonConnectError,
@@ -119,6 +120,7 @@ def test_run_reraises_an_unrelated_optional_import_failure(monkeypatch: pytest.M
         McpServer(Client()).run()
 
 
+@requires_mcp
 def test_run_treats_a_clean_server_interrupt_as_success(monkeypatch: pytest.MonkeyPatch) -> None:
     registered: list[threading.Event] = []
 
