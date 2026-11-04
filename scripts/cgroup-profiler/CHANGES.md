@@ -8,6 +8,67 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [2.0.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=4892657ea01c60031735fecb8f2bcb4751091926 -->
+
+### Added
+- feat(cgprofile): package 1 of 2.0, src/cgprofile wheel layout (CP-46) (1913c055d)
+
+### Fixed
+- fix(run-gate): RG-154 probe cowtree from the pinned pyz, name cheap_clone_reason; RG-155 assay lane budget in header; CP-56 canary tar race (vbpub canary-run.sh) (fc0ac39c9)
+- fix(cgprofile): serve reaches _limits_snapshot via cli.legacy, not the package (CP-46) (6edeb3c50)
+
+### Changed
+- Merge branch 'fix-cgp-rel-20261104' (4892657ea)
+- cgprofile: 2.0.0 ships the wheel only; retire the OCI image from the release contract (CP-44, CP-54) (4ac559f9b)
+- Merge branch 'fix-rg-154-20261104' (cf087adc8)
+- cgprofile tests: image-recipe doc pins follow the native docs (df34b22d7)
+- cgprofile: CHANGES [Unreleased] and backlog statuses for package 5 (CP-45, CP-49) (6e86c5c79)
+- cgprofile: CP-45 docs-sync test and removed-name grep (CP-49) (b75ba12d6)
+- cgprofile docs: DESIGN and PROTOCOL residual daemon wording (35a04df67)
+- cgprofile docs: CONSUMERS to the native service, migration table (CP-49) (146e9f18a)
+- cgprofile docs: README product overview (CP-45), cgpd run explicit in CGPCTL-SPEC 3.1 (9e56cd6c8)
+- cgprofile docs: DESIGN-GUIDE slice-proof section native (9362fa446)
+- cgprofile docs: DESIGN-GUIDE to the native service (11ecea78e)
+- cgprofile docs: DESIGN DAMON notes; package 5 continuation brief (6279e4ad7)
+- cgprofile docs: DESIGN to the native model (55ccc2eb5)
+- cgprofile docs: ATTACH-GUIDE and PROTOCOL to the native cgpctl/cgpd model (6924a2fb0)
+- cgprofile: cover the bare-uid peer fallback in _handle_connection (be7b29391)
+- cgprofile: CHANGES [Unreleased] and backlog statuses for package 3, file CP-54 and CP-55 (0e44dbaf6)
+- cgprofile: retire tests/_ctl_reference.py and the legacy serve/report shims, Dockerfile entrypoint to cgpd, report-removed goldens (CP-48) (3f0e314b4)
+- cgprofile: cgpd unit print/check, the unit renderer, template restart steps and venv parameter, golden units (CP-48) (5f8dd91f2)
+- cgprofile: cgpd cli-extended entry (run with the seven preflight checks, config check, reload, SIGHUP reload, single-daemon guard) (CP-48, CP-50) (bef71678a)
+- cgprofile: the export streaming verb (PROTOCOL 10.3), contract-2 hand-off, own slot class, retention skip, goldens (CP-48) (837194e67)
+- cgprofile: tests and contract-2 goldens for the cgpd serve plumbing (negotiation, ownership, gc, status states, config verbs, settings apply) (d9347fe21)
+- cgprofile: ctl contract 2 plumbing in cgpd serve (negotiation, ownership, config verbs, gc args, status states), report removed, exec carrier false (CP-48, CP-50, CP-52) (1c7df3d53)
+- cgprofile: fix the CP-53 flake, the accept-loop test keys its crash on the request and waits for both handler threads (a6b354d4a)
+- cgprofile: daemon_config, the cgpd settings schema, file loader, reload and runtime overrides (CP-48, CP-50) (994ecb972)
+- cgprofile: keep the wheel-install test clear of the audit's no-path-hacks heuristic (AC-25) (345eb363e)
+- cgprofile: the wheel-install test builds cli-extended from the checkout offline so the clean venv can import it (89fe40601)
+- cgprofile: CHANGES [Unreleased] for cgpctl and the 1.x client removal; CP-47 progress note, INDEX regenerated (5be5f584d)
+- cgprofile docs: README, ATTACH-GUIDE sections 0-3 and 8, CONSUMERS front door and target resolution describe cgpctl; the 1.x collector sections stay marked for the package-4 docs sweep (48bda4fd6)
+- cgpctl: cli-extended surface (pyproject config, CLI-SPEC.md, manifest, 171 reviewed cases against the fake daemon, contract and audit tests); watch prints the end line's reason and the fake daemon no longer sends an ack line the real one never sends (9a3ed21f5)
+- cgprofile: delete the 1.x client surface (run/attach/mark/targets/doctor/ctl, helper container, log tailers, bash shim, setup.sh); legacy.py keeps only _collect, serve and the report subprocess; frozen 1.x ctl client kept as tests/_ctl_reference.py for the contract-1 daemon goldens (package 3 retires it) (4f5aa66d1)
+- cgprofile: tests for direct mode (100 percent) (1ce82ba96)
+- cgprofile: cgpctl tests against a fake daemon (100 percent of cgpctl.py); show falls back from live to stored; probe cached on the Namespace; stop takes --yes (61e2fb966)
+- cgprofile: tests for ctlwire (100 percent) (31fa96441)
+- cgprofile: cgpctl show reads finished summaries via export; file CP-52 (gc args) and CP-53 (flaky accept-loop test) (ae4ad0908)
+- wip(cgprofile): package 2 checkpoint 2, cgpctl registry, direct run, skill move (untested) (73a9e4fbb)
+- wip(cgprofile): package 2 checkpoint, ctlwire client module (untested) (b1da96ca9)
+- Merge branch 'feat-cgp2-pkg1-20261104' (53885072c)
+- refactor(cgprofile): remove lib/ and cgprofile.py, superseded by src/cgprofile (CP-46) (0cb4b8eeb)
+
+### Documentation
+- docs(cgprofile): runtime config-set/config-reset with a persisted overrides layer (CP-50) (7dc73f794)
+
+### Testing
+- test(cgprofile): layout, DAMON-sync and clean-venv wheel-install tests (CP-46) (850b668c5)
+- test(cgprofile): convert the suite to the cgprofile package, add layout, DAMON-sync and clean-venv wheel tests (CP-46) (1f890d756)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - Release contract (CP-44, CP-54): cgprofile 2.0.0 ships the wheel only. `cmru.toml` now declares `artifacts = ["wheel"]`; the
   daemon-image build, the image push and the `oci-image-release` handler are removed (the handler would have overwritten the
@@ -70,8 +131,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - Gate: `tools/gate.sh` puts `libraries/cli-extended/src` on `PYTHONPATH` because the gate image carries cli-extended 0.5.0 while the pin is `>=0.5.1`.
 - Notes: `cgpctl show` falls back from live to stored; `stop` asks for confirmation only when uid 0 stops a session owned by another uid (`--yes` skips it); `prune`
   previews with a dry-run `gc` and refuses (exit 2) to delete without `--yes` when stdin is not a terminal (the `gc` dry-run arguments are CP-52).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [1.2.0] - 2026-11-04
 <!-- cmru: generated -->
