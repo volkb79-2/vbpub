@@ -122,6 +122,7 @@ __all__ = [
     "SNAPSHOT_HISTORIES",
     "SNAPSHOT_SELECTIONS",
     "VERIFY_CLONE_MODES",
+    "MATERIALIZE_MODES",
     "find_lane_file",
     "lane_validation_warnings",
     "load_lane_file",
@@ -253,10 +254,22 @@ SNAPSHOT_HISTORIES: frozenset[str] = frozenset({"shallow", "full"})
 # check is identical in both modes.
 VERIFY_CLONE_MODES: frozenset[str] = frozenset({"tiered", "full"})
 
+# B223: how a candidate's tree is materialized.  ``cow`` (default) is the
+# per-candidate copy-on-write clone; ``tmpfs-worker`` gives each mutation
+# worker one memory-backed tree that is populated once and restored in place
+# after every candidate, falling back to ``cow`` whenever the tmpfs is
+# unavailable or too small.  Verdict inputs are identical in both.
+MATERIALIZE_MODES: frozenset[str] = frozenset({"cow", "tmpfs-worker"})
+DEFAULT_TMPFS_ROOT = "/dev/shm"
+DEFAULT_TMPFS_MAX_MIB = 1024
+
 _ISOLATION_FIELDS: tuple[str, ...] = (
     "snapshot_selection",
     "snapshot_history",
     "verify_clone",
+    "materialize",
+    "tmpfs_root",
+    "tmpfs_max_mib",
     "unsafe_symlink_omissions",
     # (B041(b), schema v9) paths symlinked IN from the invoking checkout.
     "link_paths",
@@ -1167,9 +1180,42 @@ class IsolationConfig:
     #: Declared by the lane only when it is not the default, so a lane that
     #: never mentions it keeps an unchanged declaration.
     verify_clone: str = "tiered"
+    #: (B223) ``cow`` (default) or ``tmpfs-worker``; see
+    #: :data:`MATERIALIZE_MODES`.  ``tmpfs_root`` is the memory-backed
+    #: directory worker trees live under and ``tmpfs_max_mib`` bounds one
+    #: tree; both are declared only when not the default.
+    materialize: str = "cow"
+    tmpfs_root: str = DEFAULT_TMPFS_ROOT
+    tmpfs_max_mib: int = DEFAULT_TMPFS_MAX_MIB
 
     def __post_init__(self) -> None:
         where = "IsolationConfig"
+        if (
+            not isinstance(self.materialize, str)
+            or self.materialize not in MATERIALIZE_MODES
+        ):
+            raise LaneConfigError(
+                f"{where}: 'materialize' must be one of "
+                f"{sorted(MATERIALIZE_MODES)}, got {self.materialize!r}"
+            )
+        if (
+            not isinstance(self.tmpfs_root, str)
+            or not self.tmpfs_root.startswith("/")
+            or ".." in self.tmpfs_root.split("/")
+        ):
+            raise LaneConfigError(
+                f"{where}: 'tmpfs_root' must be an absolute path without "
+                f"'..', got {self.tmpfs_root!r}"
+            )
+        if (
+            isinstance(self.tmpfs_max_mib, bool)
+            or not isinstance(self.tmpfs_max_mib, int)
+            or self.tmpfs_max_mib < 1
+        ):
+            raise LaneConfigError(
+                f"{where}: 'tmpfs_max_mib' must be a positive integer, got "
+                f"{self.tmpfs_max_mib!r}"
+            )
         if (
             not isinstance(self.verify_clone, str)
             or self.verify_clone not in VERIFY_CLONE_MODES
@@ -1279,6 +1325,12 @@ class IsolationConfig:
             declared["link_paths"] = list(self.link_paths)
         if self.verify_clone != "tiered":
             declared["verify_clone"] = self.verify_clone
+        if self.materialize != "cow":
+            declared["materialize"] = self.materialize
+        if self.tmpfs_root != DEFAULT_TMPFS_ROOT:
+            declared["tmpfs_root"] = self.tmpfs_root
+        if self.tmpfs_max_mib != DEFAULT_TMPFS_MAX_MIB:
+            declared["tmpfs_max_mib"] = self.tmpfs_max_mib
         return declared
 
 
@@ -2121,6 +2173,20 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
                 f"{where}: 'isolation.verify_clone' must be one of "
                 f"{sorted(VERIFY_CLONE_MODES)}, got {verify_clone!r}"
             )
+    materialize = "cow"
+    if "materialize" in value:
+        materialize = _as_str(value["materialize"], where, "isolation.materialize")
+        if materialize not in MATERIALIZE_MODES:
+            raise LaneConfigError(
+                f"{where}: 'isolation.materialize' must be one of "
+                f"{sorted(MATERIALIZE_MODES)}, got {materialize!r}"
+            )
+    tmpfs_root = DEFAULT_TMPFS_ROOT
+    if "tmpfs_root" in value:
+        tmpfs_root = _as_str(value["tmpfs_root"], where, "isolation.tmpfs_root")
+    tmpfs_max_mib = DEFAULT_TMPFS_MAX_MIB
+    if "tmpfs_max_mib" in value:
+        tmpfs_max_mib = value["tmpfs_max_mib"]
     # (B041(b)/A-366) Read BEFORE the selection fork and passed to both
     # branches: `link_paths` is independent of `snapshot_selection`, and
     # reading it inside one branch is how a key silently becomes legal under
@@ -2151,6 +2217,9 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
             snapshot_history_declared=snapshot_history_declared,
             link_paths=link_paths,
             verify_clone=verify_clone,
+            materialize=materialize,
+            tmpfs_root=tmpfs_root,
+            tmpfs_max_mib=tmpfs_max_mib,
         )
     if not has_omissions:
         raise LaneConfigError(
@@ -2168,6 +2237,9 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
         snapshot_history_declared=snapshot_history_declared,
         link_paths=link_paths,
         verify_clone=verify_clone,
+        materialize=materialize,
+        tmpfs_root=tmpfs_root,
+        tmpfs_max_mib=tmpfs_max_mib,
     )
 
 

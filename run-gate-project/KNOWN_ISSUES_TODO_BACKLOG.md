@@ -7616,3 +7616,7 @@ only the reattach test, run 4 PASSED R0 and R1 (2875 passed). `test_clean_sessio
 without evidence of the bytes. **Diagnostic landed:** the `unparsable response` profiling warning now names the response length and its first 60 characters, so the next occurrence names
 the cause. No product defect is claimed. **Next step:** when either test fails again in a lane, read the warning (reattach) or add `faulthandler`/`py-spy` output to the inner session
 (clean-session) before changing code; treat a differing result between runs under load as inconclusive.
+
+## RG-163 — no lane key for the container's shm/tmpfs size, which Assay's `isolation.materialize = "tmpfs-worker"` (B223) needs
+
+**Status:** OPEN, 2026-11-05 (filed from assay-tmpfs-20261105). The lane container is started with `--memory`, `--cpus`, `--pids-limit` and mounts but no `--shm-size` / `--tmpfs`, so `/dev/shm` is Docker's default 64 MiB, below one worker tree (about 175 MB for a 7.6k-file repository). Assay falls back to clone materialization with one stderr advisory when the directory is too small, so nothing fails, but the option has no effect. **Fix shape:** an optional `resources.shm_size` (and/or `resources.tmpfs = ["/path:size"]`) lane key passed as `--shm-size` / `--tmpfs ...:rw,exec,size=N`, validated against `resources.memory` (tmpfs pages are charged to the container). Until then a measuring run can pass the flag through a wrapper.
