@@ -167,7 +167,9 @@ class Contract:
         # `nano --version/--help` exit before reading any rc file, so run the editor itself on a pty
         # (`script`, stdin at EOF so it quits) and read the transcript. The control run proves the
         # check can fail: a bad user rc must show nano's "Error in ..." line.
-        run = "script -qec 'timeout 3 nano /tmp/probe.txt' /tmp/nano.out </dev/null >/dev/null 2>&1; "
+        # Ctrl-X is fed after a second so nano quits by itself; `timeout 120` is only the failsafe
+        # (the runtime lane forbids scenario timeouts under 120 s, test_runtime_lane.py).
+        run = "(sleep 1; printf '\\030') | script -qec 'timeout 120 nano /tmp/probe.txt' /tmp/nano.out >/dev/null 2>&1; "
         clean = self.box("printf 'x\\n' > /tmp/probe.txt; " + run + "grep -a -c -E 'Error in|not allowed|Mistakes in' /tmp/nano.out || true")
         self.assertEqual(clean.stdout.strip().splitlines()[-1], "0", clean.output)
         control = self.box(
