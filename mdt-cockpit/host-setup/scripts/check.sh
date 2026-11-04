@@ -255,6 +255,34 @@ if [ -d "$DEV_PATH" ]; then
   printf '  %-14s %s\n' io.bfq.weight "$(cat "$DEV_PATH/io.bfq.weight" 2>/dev/null)"
   _cpu_quota_check dev.slice DEV_CPU_QUOTA
   _swap_max_check dev.slice DEV_SWAP_MAX
+  if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+    # HOST_ROLE=dedicated-dev (MDT-TESTHOST-MEM): the derived values, read through the one implementation.
+    if _ded_mem=$(python3 "$_CAPACITY_PY" dedicated-memory "$CONF" --meminfo /proc/meminfo 2>&1); then
+      for prop_label in "memory.high:DEDICATED_MEM_HIGH" "memory.max:DEDICATED_MEM_MAX"; do
+        prop="${prop_label%%:*}"; want="$(printf '%s\n' "$_ded_mem" | sed -n "s/^${prop_label#*:}=//p")"
+        eff="$(cat "$DEV_PATH/$prop" 2>/dev/null)"
+        [ -n "$want" ] || want=max
+        if [ "$eff" = "$want" ]; then ok "dev.slice $prop=$eff matches the HOST_ROLE=dedicated-dev derivation"
+        else fail "dev.slice $prop=$eff but the HOST_ROLE=dedicated-dev derivation says $want (DEV_HOST_MEMORY_KEEP / pins). Re-run install.sh."; fi
+      done
+    else
+      warn "HOST_ROLE=dedicated-dev memory derivation failed: $_ded_mem"
+    fi
+    _sl_low="$(cat "$CG/system.slice/memory.low" 2>/dev/null)"
+    if [ -n "$_sl_low" ] && [ "$_sl_low" != 0 ]; then ok "system.slice memory.low=$_sl_low (host memory protected from the dev tier)"
+    else warn "system.slice memory.low is 0: the host's own memory is not protected from the dev tier (re-run install.sh)"; fi
+    # The keep must cover the host's working set (README "Sizing the keep"): above it the host's pages are reclaimable.
+    _keep_b="$(printf '%s\n' "${_ded_mem:-}" | sed -n 's/^DEDICATED_MEM_KEEP=//p')"
+    _sys_cur="$(cat "$CG/system.slice/memory.current" 2>/dev/null)"
+    if [ -n "$_keep_b" ] && [ -n "$_sys_cur" ]; then
+      if [ "$_sys_cur" -gt "$_keep_b" ] 2>/dev/null; then
+        warn "system.slice memory.current=$_sys_cur exceeds DEV_HOST_MEMORY_KEEP=$_keep_b: the part above the keep is reclaimable by the dev tier and can thrash; raise DEV_HOST_MEMORY_KEEP and re-run install.sh"
+      else ok "system.slice memory.current=$_sys_cur is within DEV_HOST_MEMORY_KEEP=$_keep_b"; fi
+    fi
+    if [ -e /etc/systemd/system/ssh.service.d/50-mdt-dedicated-dev.conf ]; then
+      fail "ssh.service.d/50-mdt-dedicated-dev.conf exists: sshd would hand OOMScoreAdjust=-900 to every login session after its next restart; re-run install.sh (it removes the file)"
+    fi
+  fi
   # dev.slice's own MemoryZSwapWriteback is a safety anchor only (its FILE
   # value does not cascade to children — see units/dev.slice.in), but its
   # ENFORCEMENT does: a 0 here silently disables writeback for the whole
@@ -283,6 +311,12 @@ if [ -d "$GATES_PATH" ]; then
     prop="${prop_label%%:*}"; var="${prop_label#*:}"
     eff="$(cat "$GATES_PATH/$prop" 2>/dev/null)"
     cfg="${!var:-}"
+    if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+      # HOST_ROLE=dedicated-dev (MDT-TESTHOST-MEM): a tier carries NO memory ceiling of its own; dev.slice is the bound.
+      if [ "$eff" = max ]; then ok "dev-gates.slice $prop=max (HOST_ROLE=dedicated-dev: no per-tier ceiling)"
+      else fail "dev-gates.slice $prop=$eff but HOST_ROLE=dedicated-dev means no per-tier memory ceiling. Re-run install.sh."; fi
+      continue
+    fi
     if [ -z "$cfg" ]; then
       warn "$var not set in $CONF -- dev-gates.slice's effective $prop ($eff) is whatever the installed unit carries, unchecked"
     else
@@ -319,6 +353,12 @@ if [ -d "$BUILDKITD_PATH" ]; then
     prop="${prop_label%%:*}"; var="${prop_label#*:}"
     eff="$(cat "$BUILDKITD_PATH/$prop" 2>/dev/null)"
     cfg="${!var:-}"
+    if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+      # HOST_ROLE=dedicated-dev (MDT-TESTHOST-MEM): a tier carries NO memory ceiling of its own; dev.slice is the bound.
+      if [ "$eff" = max ]; then ok "dev-buildkitd.slice $prop=max (HOST_ROLE=dedicated-dev: no per-tier ceiling)"
+      else fail "dev-buildkitd.slice $prop=$eff but HOST_ROLE=dedicated-dev means no per-tier memory ceiling. Re-run install.sh."; fi
+      continue
+    fi
     if [ -z "$cfg" ]; then
       warn "$var not set in $CONF -- dev-buildkitd.slice's effective $prop ($eff) is whatever the installed unit carries, unchecked"
     else
