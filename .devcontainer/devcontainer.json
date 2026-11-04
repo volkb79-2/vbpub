@@ -187,10 +187,9 @@
     // the host has not been upgraded through host-setup/install.sh; they do
     // not fall back to CGROUP_PARENT_DEV_BACKGROUND. Long-running application
     // stacks receive the background value separately. Note
-    // the host-level cgprofile-host-daemon is NOT a consumer of this block —
-    // per design amendment A1/D-29 it is a host deployment with its own
-    // top-level `cgprofile.slice`, authored directly in its own compose
-    // template, not one of mdt's dev-tier slices.
+    // the host-level profiler daemon (cgpd.service) is NOT a consumer of this
+    // block — per design amendment A1/D-29 it is a host service in its own
+    // top-level `cgprofile.slice`, not one of mdt's dev-tier slices.
     "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
 
     // CoW area root (see the CoW mount above): per user, tools append the target

@@ -367,12 +367,11 @@ if [ -d "$CGPROFILE_DIR" ] && [ ! -L "$CGPROFILE_DIR" ]; then
   # Disclosure only (INFO, not WARN/FAIL): the daemon owns the socket's own
   # lifecycle (a separate package, out of this project's scope) -- its
   # absence here is expected and fine on a host without cgroup-profiler
-  # installed, or one whose daemon predates the socket listener. exec stays
-  # the permanent fallback transport either way (design doc A2).
+  # installed. The control socket is the only carrier.
   if [ -S "$CGPROFILE_DIR/ctl.sock" ]; then
-    info "socket carrier available ($CGPROFILE_DIR/ctl.sock)"
+    info "daemon socket available ($CGPROFILE_DIR/ctl.sock)"
   else
-    info "exec carrier only (daemon socket absent) -- docker exec still works; the daemon may not be installed, may predate the listener, or has not started it yet"
+    info "daemon socket absent -- cgpd.service may not be installed or has not started yet (cgpctl doctor names the cause)"
   fi
 else
   fail "$CGPROFILE_DIR is missing or is not a real directory -- /etc/tmpfiles.d/mdt-cgprofile.conf missing or not applied; re-run install.sh (or 'sudo systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf' directly)"

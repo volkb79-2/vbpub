@@ -69,9 +69,8 @@ one tighter sub-ceiling per child" treatment as IO:**
   mechanism).
 
 `dev.slice` holds dev LOAD only, nothing else — the host-level
-`cgprofile-host-daemon` is a host deployment, not dev load, and ships its own
-top-level `cgprofile.slice` alongside the `cgroup-profiler` stack instead of
-living under here (design amendment A1/D-29, `run-gate-project/nyxloom-trove/
+the profiler daemon (`cgpd.service`) is a host deployment, not dev load, and
+runs in its own top-level `cgprofile.slice` instead of living under here (design amendment A1/D-29, `run-gate-project/nyxloom-trove/
 DESIGN-2026-09-12-liveness-placement-admission.md`).
 
 | Tier | Who joins | Character |
@@ -449,10 +448,9 @@ host's own real swap capacity rather than dev-background's.
 
 **`dev-gates.slice` contains dev LOAD only — it does not hold the profiler
 daemon.** An earlier design draft placed a `dev-infra.slice` for
-`cgprofile-host-daemon` here too; that was withdrawn (design amendment A1/D-29,
-same doc): the daemon is a host DEPLOYMENT, not dev load, and ships its own
-top-level `cgprofile.slice` with the `cgroup-profiler` stack instead — see
-that project's own docs, out of this project's scope. `dev.slice`'s job stays
+the profiler daemon here too; that was withdrawn (design amendment A1/D-29,
+same doc): the daemon is a host DEPLOYMENT, not dev load, and runs in its own
+top-level `cgprofile.slice` — see that project's own docs. `dev.slice`'s job stays
 "contain dev load and nothing else."
 
 **Optional per-container memory defaults.** `mdt-container-memory-inotify-watcher.py`
@@ -565,10 +563,9 @@ that creates `/run/cgprofile` (mode `0770`, owner `root:docker`) — see
 "Quick start"/"Upgrading a host that already runs mdt host-setup" below;
 `mdt-host-check.sh` reports the
 directory's own mode/owner and separately whether the daemon's socket is
-present (`INFO socket carrier available`) or not yet (`INFO exec carrier
-only (daemon socket absent)` — a live daemon that predates the listener, or
-none installed at all, are both this state and both fine, exec is the
-permanent fallback). The daemon package (P6) re-asserts the directory's own
+present (`INFO daemon socket available`) or not yet (`INFO daemon socket
+absent` — no daemon installed or started yet is fine; the control socket is
+the only carrier). The daemon re-asserts the directory's own
 owner/mode at its own start as belt-and-braces; this package only creates
 it and gets out of the way. Opt out by deleting the `mounts` line.
 
