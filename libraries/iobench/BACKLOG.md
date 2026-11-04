@@ -25,12 +25,13 @@ Items the IOB-03 P3 review wave and the later review waves deliberately did not 
 
 * **IOB-BL-09 scratch directory cleanup. CLOSED 2026-10-28** (review round 3): `Runner.clear_scratch` removes the files iobench named in `/run/iobench/<run_id>/` and the directory when empty, after the restore, on every exit path (`test_rev_e_the_run_directory_is_removed_after_the_run`). Not journalled: a crash before `cleanup` leaves the directory on tmpfs, which the next boot clears.
 * **IOB-BL-10 hosts without a container runtime.** The live preflight probes `docker ps`; on a host with no docker the probe is `probe_failed` (a missing binary is now a refusal, not a traceback) and `calibrate`/`matrix` cannot run without `--installer`. Needs a decision in the D-007 frame: an explicit flag that states "no container runtime on this host" (never a silent default; the refusal text would name it), or `--production-pattern` semantics that cover it.
-* **IOB-BL-11 file target on a filesystem with no block device behind it.** `Runner.s0` derives the target's disk through `device_chain(fs_info(...).devno)`; on an overlay, multi-device or network filesystem the devno has no `/sys/dev/block` entry and `read_text` raises (traceback, exit 1 with the lock held until `cleanup`). The matrix now refuses such a work dir (`workdir_disk_unknown`); `calibrate` with a file target on such a filesystem needs the same refusal (`target_fs_disk_unknown`) in `s0`, before the lock is taken.
+* **IOB-BL-11 file target on a filesystem with no block device behind it. FIXED 2026-11-04 (fix-iob-1):** `Runner.file_target_disk` raises `Refusal("target_fs_disk_unknown")` in `s0` (exit 2; `test_bl11_*`). The refusal is raised after the lock is taken and the existing `Refusal` path releases it, so no lock or journal survives; moving it before the lock needs `load_target` to run first and was not worth the reordering. Original finding: `Runner.s0` derives the target's disk through `device_chain(fs_info(...).devno)`; on an overlay, multi-device or network filesystem the devno has no `/sys/dev/block` entry and `read_text` raises (traceback, exit 1 with the lock held until `cleanup`). The matrix now refuses such a work dir (`workdir_disk_unknown`); `calibrate` with a file target on such a filesystem needs the same refusal (`target_fs_disk_unknown`) in `s0`, before the lock is taken.
 * **IOB-BL-12 abort guard for reclaim-driven stalls.** The abort rule watches the protected cgroup's `io.pressure` only. On the live host the stalls observed in monitoring are driven by memory/swap reclaim, not by the disk (iogov design notes, 2026-10-27), and the matrix's buffered 1 GiB writer dirties the page cache: the stall class actually seen would not fire the guard. Add `memory.pressure some avg10` of the same cgroup to the abort rule (same threshold or a second flag; `--abort-psi` names a percentage, so one flag for both is defensible), with FakeHost coverage. Until then the guard protects against IO contention only, and `--confirm-quiet-window` is the operator's protection against the reclaim class.
-* **IOB-BL-13 dry-run argv is representative, not exact.** `dryrun.matrix_plan` prints load files named `iobench-load-w`/`-f` with log prefixes `/run/iobench/s3-w`, while the run names them `iobench-<run_id>-<tag>-w` under `/run/iobench/<run_id>/`. Either build the plan from `Matrixer.load_jobs` or say in IOB-PRF-01 that names carry the run id.
-* **IOB-BL-14 `_ProcHandle` descriptors.** After `kill()` without `wait()` (the abort path) the two `TemporaryFile` objects are closed only by garbage collection. Close them in `kill()` after the bounded wait. RealHost only; no unit coverage until IOB-ACC-01.
+* **IOB-BL-13 dry-run argv is representative, not exact. FIXED 2026-11-04 (fix-iob-1):** `dryrun.matrix_plan` builds S3, S4 and S5 from `Matrixer.load_pair` and `Runner.job`, so file names, log prefixes and queue depth are the run's own; the names carry the plan's run id (a real run has its own id). `test_iob_bl_13_*`. Original finding: `dryrun.matrix_plan` prints load files named `iobench-load-w`/`-f` with log prefixes `/run/iobench/s3-w`, while the run names them `iobench-<run_id>-<tag>-w` under `/run/iobench/<run_id>/`. Either build the plan from `Matrixer.load_jobs` or say in IOB-PRF-01 that names carry the run id.
+* **IOB-BL-14 `_ProcHandle` descriptors. FIXED 2026-11-04 (fix-iob-1):** `kill()` closes both temporary files after the bounded wait (`test_bl14_*`, fake Popen; host.py stays outside the coverage run). Original finding: after `kill()` without `wait()` (the abort path) the two `TemporaryFile` objects are closed only by garbage collection. Close them in `kill()` after the bounded wait. RealHost only; no unit coverage until IOB-ACC-01.
 * **IOB-BL-15 host-agnostic docs pass.** README, CONSUMERS, this backlog, `restore.py` and the test estate no longer name hosts (2026-10-27; the cgroup in examples is `game-server.slice`). `cli.py` examples and `tests/cli_cases.py` still say `wings.slice` because `docs/cli-surface.json`, `docs/CLI-SPEC.md` and the 173 reviewed cases in `docs/cli-review.toml` are generated from them: change them together with a surface regeneration (cli-extended review workflow). SPEC section 15, section 20, IOB-CAL-01/-04/-08, IOB-EVD-01, the DESIGN-GUIDE evidence labels, IMPLEMENTATION-NOTES, `tests/fixtures/r1002_*.json`, `testing.R1002_*` and the test ids `test_slo_05_standard_fits_on_r1002_geometry`, `test_cch_08_recorded_r1002` still carry the evidence hosts as provenance. A full pass renames fixtures and test ids (the SPEC oracles name them), so do it together with the P4 data refresh, replacing the host names by storage-class labels ("the 400 GiB VM partition", "the 14 MiB/s capped host").
-* **IOB-BL-16 `Matrixer.written_bytes` and the diskstats row.** The S3/S4 drain samples come from the `/proc/diskstats` row whose name equals `workdir.disk_name`; a row that is missing mid-run (a hot-unplugged device) ends the run with a `StopIteration` traceback. Turn it into `RunFailed` (the restore already runs on the BaseException path).
+* **IOB-BL-19 `sweep.drain_rate` on a short series (found 2026-11-04 during IOB-R2-01 triage).** With 2 rates the tail slice is `rates[len - 3:]`, i.e. `rates[-1:]` (a negative start), so the "median of the tail" is the last rate only; the intent for fewer than three rates is all of them (`max(0, ...)`). Real runs have tens of samples (S3 is 90 s), so it is latent. Fix with `max(0, ...)` and a test with 2 and 3 rates; `test_sweep_drain_rate_*` pins only that two rates are accepted.
+* **IOB-BL-16 `Matrixer.written_bytes` and the diskstats row. FIXED 2026-11-04 (fix-iob-1):** a missing row raises `RunFailed` (`test_bl16_*`). Original finding: the S3/S4 drain samples come from the `/proc/diskstats` row whose name equals `workdir.disk_name`; a row that is missing mid-run (a hot-unplugged device) ends the run with a `StopIteration` traceback. Turn it into `RunFailed` (the restore already runs on the BaseException path).
 
 ## IOB-REL-01 prerequisites (first release; recommended by the pre-release review)
 
@@ -61,7 +62,7 @@ Items the IOB-03 P3 review wave and the later review waves deliberately did not 
 
 ## IOB-R2-01 — native R2 on r1002 (2026-11-02/03): 318 survivors, 5 budget-exceeded; triage plan
 
-**Status:** OPEN (triage not started). The campaign is incomplete: planned 1,220, terminal 1,215, pending 5.
+**Status:** OPEN (triage: groups A and C done, see below; B and the rest not started). The campaign is incomplete: planned 1,220, terminal 1,215, pending 5.
 
 **Facts.**
 
@@ -142,6 +143,19 @@ Open (no deterministic oracle written; all are exact-float or exact-clock bounda
 - Not verified one operator at a time: the two-line boolean chains at calibrate.py:556-557 and 610-611 are one `BoolOp`
   each in the AST (the CSV lists their operators on both lines). The tests give every rule its own failing decoy cell,
   so each single-operator flip is covered by reasoning, while the hand mutation flipped the whole chain.
+
+**Triage status, group C (result, ceilings, devio, stages, sweep, ladder, proposals, plan, extents; fix-iob-1-20261104).**
+Each kill was checked by applying the mutant to a scratch copy of the package (AST rewrite of the node at the survivor's
+line, one node at a time where a line has several) and running only `tests/test_r2_iob1.py` against it. 58 survivor
+rows: 56 killed, 2 equivalent, 0 open. The oracles are in `tests/test_r2_iob1.py`; the kinds are boundary at the exact
+threshold (ceilings, ladder, sweep, result), frozen-dataclass and default-flag pins, and message content pins (devio).
+(`stages.py` rows 218 and 233 are lines 227 and 242 after this package's edit.)
+
+Equivalent:
+
+- extents.py:32 `e <= start` to `e < start` and `s >= end` to `s > end`. A range that only touches the removed one falls
+  through to `s < start` (appends `(s, start)`, the same range) or to `e > end` (appends `(end, e)`, the same range), so
+  the result is identical.
 
 **Triage plan**, in this order. Each step is a separate reviewed branch; tests only, unless a survivor shows dead code.
 
