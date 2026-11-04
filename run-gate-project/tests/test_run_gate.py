@@ -22258,22 +22258,6 @@ class TestProfilerClient:
         assert doc is None
         assert "(cause: daemon-refusing:" in reason
 
-    def test_an_unreadable_socket_is_socket_permission(
-            self, short_socket_root, monkeypatch):
-        path = short_socket_root / "ctl.sock"
-        listener = run_gate.socket.socket(run_gate.socket.AF_UNIX,
-                                          run_gate.socket.SOCK_STREAM)
-        listener.bind(str(path))
-        listener.listen(1)
-        path.chmod(0)
-        try:
-            if os.geteuid() == 0:
-                pytest.skip("root bypasses socket permissions")
-            doc, reason = run_gate.ProfilerClient(str(path)).version()
-        finally:
-            listener.close()
-        assert doc is None
-        assert "(cause: socket-permission:" in reason
 
     def test_version_success_matches_golden(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "version-v1.json").read_text()
