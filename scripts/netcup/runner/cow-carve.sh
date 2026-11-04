@@ -38,7 +38,7 @@ cow_plan_range() {
 }
 
 # cow_select_device  < `lsblk -P -o PATH,PARTLABEL,FSTYPE,LABEL DISK`
-# Idempotence key: PARTLABEL=MDT_COW, or an existing btrfs filesystem labelled MDT_COW. Never the device number.
+# Idempotence key: PARTLABEL=MDT_COW, or an existing filesystem (partition or LVM LV) labelled MDT_COW. Never the device number.
 # Prints the device path; returns 1 when there is none and 3 when there are several (never pick, never add one).
 cow_select_device() {
   local line path partlabel fstype label found=()
@@ -50,7 +50,10 @@ cow_select_device() {
     [[ $line =~ (^|\ )FSTYPE=\"([^\"]*)\" ]] && fstype=${BASH_REMATCH[2]}
     [[ $line =~ (^|\ )LABEL=\"([^\"]*)\" ]] && label=${BASH_REMATCH[2]}
     [[ -n $path ]] || continue
-    if [[ $partlabel == "$COW_LABEL" || ( $fstype == btrfs && $label == "$COW_LABEL" ) ]]; then
+    # Installer-created cow (debian-install-v2 data_area): a partition with PARTLABEL=MDT_COW, or a partition OR LVM
+    # logical volume (lsblk lists LVs as children of their PV, PATH=/dev/mapper/<vg>-<lv>) whose filesystem LABEL is
+    # MDT_COW, whatever the filesystem; the caller then refuses a non-btrfs one instead of carving a second cow.
+    if [[ $partlabel == "$COW_LABEL" || ( -n $fstype && $label == "$COW_LABEL" ) ]]; then
       found+=("$path")
     fi
   done
@@ -59,4 +62,17 @@ cow_select_device() {
     1) printf '%s\n' "${found[0]}" ;;
     *) echo "several cow candidates (${found[*]}); refusing to choose" >&2; return 3 ;;
   esac
+}
+
+# cow_fstab_entry_ok EXISTING EXPECTED UUID DEVICE
+# An fstab line for the cow mount point is acceptable when it is exactly what provision-runner.sh writes, or when the
+# installer (debian-install-v2 data_area) wrote it: a btrfs line whose source is this very volume, named by UUID, by
+# LABEL=MDT_COW or by the device path (/dev/<vg>/<lv>, /dev/mapper/...). Anything else is refused.
+cow_fstab_entry_ok() {
+  local existing=$1 expected=$2 uuid=$3 device=$4
+  [[ $existing == "$expected" ]] && return 0
+  local src _mp fstype
+  read -r src _mp fstype _ <<<"$existing"
+  [[ $fstype == btrfs ]] || return 1
+  [[ $src == "UUID=$uuid" || $src == "LABEL=$COW_LABEL" || $src == "$device" ]]
 }
