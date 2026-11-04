@@ -83,9 +83,9 @@ class VersionSpec:
     strategy: str = "scm"            # "scm" | "counter" | "file:<PATH>"
     bump: str = "conventional"       # "conventional" | "patch"
     paths: tuple = ()                # extra subtrees to watch for change detection
-    exclude_paths: tuple = ()        # subtrees/globs that never count as changes (KI-118)
     base_version: str = "1.0.0"      # counter strategy: <base>-r<N>
     file: str = "VERSION"            # filename for direct file-strategy construction
+    exclude_paths: tuple = ()        # subtrees/globs that never count as changes (KI-118)
 
 
 @dataclass(frozen=True)
@@ -832,7 +832,7 @@ def load_config(
             artifact_dirs=tuple(parsed.artifact_dirs),
             evidence_paths=tuple(parsed.evidence_paths),
             build_step=parsed.build_step,
-            record_step=parsed.record_step,
+            record_step=getattr(parsed, "record_step", ""),
             token_source=forge.github.token_source,
             github_token=forge.project_tokens.get(name, raw_field(forge.github, "token") or ""),
             tool_dependencies=tuple(parsed.tool_dependencies),

@@ -181,7 +181,9 @@ def test_changelog_cursor_and_generated_exclusions_are_source_facts(tmp_path):
     path = tmp_path / "demo" / "CHANGES.md"
     path.parent.mkdir()
     assert changelog._last_generated_source_end("<!-- cmru: source-end=" + "a" * 40 + " -->") == "a" * 40
-    assert changelog._generated_exclusions(project, path, tmp_path) == ["demo/CHANGES.md", "demo/generated.json"]
+    assert changelog._generated_exclusions(project, path, tmp_path) == [
+        "demo/CHANGES.md", "demo/generated.json", "demo/rigor", "demo/RIGOR.md",
+    ]
 
 
 def test_changelog_backfill_wrong_and_missing_git_tag_facts_fail(tmp_path):
