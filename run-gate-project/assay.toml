@@ -21,9 +21,10 @@ schema_version = 2
 # no pytest; use the same dedicated tester venv as run-gate.toml's selftest.
 
 # The tests invoke run-gate in child processes and exercise its real
-# /proc/self/mountinfo mapping. Run-Gate derives TMPDIR and the Git ceiling
-# from the actual mounted Assay state root, then this lane explicitly passes
-# those values through to pytest. Do not replace them with a guessed absolute
+# /proc/self/mountinfo mapping. Run-Gate derives RUN_GATE_TMPDIR and the Git
+# ceiling from the actual mounted Assay state root; the lane maps
+# RUN_GATE_TMPDIR onto pytest's TMPDIR ([lanes.<n>.infrastructure] below) and
+# passes the Git ceiling through. Do not replace them with a guessed absolute
 # path: the mounted checkout path varies across host and worktree namespaces.
 #
 # This is a monorepo lane: assay's snapshot walks the whole resolved commit,
@@ -41,9 +42,18 @@ enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "--cov=.", "--cov-branch",
         "--cov-report=json:coverage.json"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
-env_passthrough = ["PATH", "TMPDIR", "GIT_CEILING_DIRECTORIES"]
+env_passthrough = ["PATH", "GIT_CEILING_DIRECTORIES"]
 budget = "30m"
 allow_argv_append = false
+
+# RG-98 / RG-157: with the default in-repo state root run-gate exports the
+# state path as RUN_GATE_TMPDIR only (never TMPDIR), so a TMPDIR passthrough
+# silently dropped and pytest's tmp_path fell back to the container's /tmp
+# overlay -- not a bind mount, so every in-process `doctor` test failed its
+# mountinfo check in the lane. Map it explicitly (TMPDIR must not also be in
+# env_passthrough: Assay refuses that collision).
+[lanes.r1.infrastructure]
+TMPDIR = "required-env:RUN_GATE_TMPDIR"
 
 [lanes.r1.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"
@@ -82,9 +92,13 @@ enforcement = "gate"
 argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q", "-x", "--cov=.", "--cov-branch",
         "--cov-report=json:coverage.json"]
 env = { PYTHONDONTWRITEBYTECODE = "1" }
-env_passthrough = ["PATH", "TMPDIR", "GIT_CEILING_DIRECTORIES"]
+env_passthrough = ["PATH", "GIT_CEILING_DIRECTORIES"]
 budget = "4h"
 allow_argv_append = false
+
+# Same mapping and reason as [lanes.r1.infrastructure] above.
+[lanes.r2.infrastructure]
+TMPDIR = "required-env:RUN_GATE_TMPDIR"
 
 [lanes.r2.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"

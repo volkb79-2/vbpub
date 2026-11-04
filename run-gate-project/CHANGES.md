@@ -10,6 +10,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 
 ### Fixed
+- RG-157: run-gate-project's `assay-r1`/`assay-r2` lanes map the state-root path onto the test command's `TMPDIR` with
+  `[lanes.<n>.infrastructure] TMPDIR = "required-env:RUN_GATE_TMPDIR"` (the `env_passthrough` of `TMPDIR` carried nothing since RG-98), so in-process
+  `doctor` tests no longer fail the mountinfo check on the container's `/tmp` overlay and R0 of the R2 baseline passes.
 - RG-154: the `--jobs N>1`/`auto` cheap-clone capacity probe resolves `cowtree` from the pinned Assay zipapp (`python3 x.pyz` assay commands) instead of
   the lane image, and the refusal now names `cheap_clone_reason`; CONSUMERS documents the image requirements.
 - RG-155: the lane header prints the Assay lane `budget` from `assay.toml` (it ends each attempt with LANE_TIMEOUT) next to the run-gate wrapper budget

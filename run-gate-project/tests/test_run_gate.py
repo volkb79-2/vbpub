@@ -10099,8 +10099,16 @@ class TestShippedGateFullDeclaration:
                 == "/opt/tester-venv/bin/python"
             assert "TMPDIR" not in cfg["lanes"][name]["env"]
             assert "GIT_CEILING_DIRECTORIES" not in cfg["lanes"][name]["env"]
-            assert {"PATH", "TMPDIR", "GIT_CEILING_DIRECTORIES"} <= set(
+            assert {"PATH", "GIT_CEILING_DIRECTORIES"} <= set(
                 cfg["lanes"][name]["env_passthrough"])
+            # RG-157: with the default in-repo state root TMPDIR is never
+            # exported to the judge, so a TMPDIR passthrough is dead and the
+            # test command's tmp fell back to the container /tmp overlay.
+            # The only working channel is the infrastructure mapping, and
+            # Assay refuses the same name in both places.
+            assert "TMPDIR" not in cfg["lanes"][name]["env_passthrough"]
+            assert cfg["lanes"][name]["infrastructure"] == {
+                "TMPDIR": "required-env:RUN_GATE_TMPDIR"}
 
     def test_gate_full_forwards_base_only_to_assay_r1_in_order(self):
         cfg_path = RUN_GATE_DIR / "run-gate.toml"

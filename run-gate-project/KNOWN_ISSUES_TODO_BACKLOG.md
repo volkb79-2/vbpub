@@ -7566,3 +7566,18 @@ CONSUMERS, LANE-AUTHORING, `RG55-INTERFACE-CONTRACT.md` and its byte-identical m
 Tests use an in-process fake socket daemon (`set_cgprofile_plan`); the docker shim no longer answers `cgprofile ctl`.
 
 **Release impact.** Conventional-commit `feat(run-gate)!:` takes run-gate from 24.4.0 to 25.0.0 at the next release.
+
+## RG-157 — run-gate-project's own `assay-r1`/`assay-r2` lanes fail R0 in the lane container: the test command's TMPDIR never arrives, so in-process `doctor` tests fail their mountinfo check
+
+**Status:** FIXED 2026-11-05 (fix-r2-lanes-20261105); live R0/R1 re-run recorded in `reports/fix-r2-lanes-REPORT.md`. Found by the host-compute R2 session
+(`test_one_stale_lock_is_reported_with_the_singular_noun` -> `run-gate doctor: [FAIL] mountinfo: could not derive a physical host path for /tmp/pytest-of-tester/...`).
+
+**Cause.** After RG-98 run-gate exports the state-root path to the Assay judge as `RUN_GATE_TMPDIR` only when the state root is inside the judged
+worktree (the default `<checkout>/.run-gate`); `TMPDIR` is exported only for an external root. `assay.toml` still forwarded `TMPDIR` by `env_passthrough`,
+which therefore carried nothing, and pytest's `tmp_path` fell back to the container's `/tmp` overlay. Inside the lane `/.dockerenv` exists, so `doctor`
+(correctly) refuses a repo that is not on a bind mount. The product behaviour is right; the consumer config was stale. Every in-process `doctor` test is
+affected, `-x` only shows the first.
+
+**Fix.** Both lanes drop `TMPDIR` from `env_passthrough` and declare `[lanes.<n>.infrastructure] TMPDIR = "required-env:RUN_GATE_TMPDIR"` (Assay refuses the same
+name in both places). Oracle: `TestShippedGateFullDeclaration::test_assay_test_commands_use_the_tester_unified_python` pins the mapping and the absence of the
+dead passthrough; the live oracle is the `assay-r1` lane passing R0 in the lane container.
