@@ -349,7 +349,7 @@ def _watch_line(doc: Dict[str, Any]) -> str:
     if event == "reading":
         return (f"{doc.get('at')} mem={live.get('memory_current_bytes')} "
                 f"cpu={live.get('cpu_cores_recent')} samples={live.get('samples')}")
-    return f"{doc.get('at', '')} {event} {doc.get('verdict', doc.get('status', ''))}".strip()
+    return f"{doc.get('at', '')} {event} {doc.get('verdict', doc.get('reason', ''))}".strip()
 
 
 @guarded

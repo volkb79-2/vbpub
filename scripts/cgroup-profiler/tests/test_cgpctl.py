@@ -58,9 +58,10 @@ def handlers(**over):
                               "summary": SUMMARY},
         "gc": lambda a, c: {"ok": True, "contract": 2, "removed": [] if a.get("keep") == 99 else [SESSION_DONE],
                             "kept": 1},
-        "watch": lambda a, c: [{"ok": True}, {"event": "reading", "at": "t1", "live": {
+        # the real daemon sends no ack line: reading / verdict / one end carrying `reason` (serve.py _stream_watch)
+        "watch": lambda a, c: [{"event": "reading", "at": "t1", "live": {
             "memory_current_bytes": 7, "cpu_cores_recent": 0.5, "samples": 3}},
-            {"event": "verdict", "at": "t2", "verdict": "stalled"}, {"event": "end", "at": "t3", "status": "stopped"}],
+            {"event": "verdict", "at": "t2", "verdict": "stalled"}, {"event": "end", "at": "t3", "reason": "stopped"}],
         "export": lambda a, c: _fakectl.export_reply(
             {"summary.json": json.dumps(SUMMARY).encode(), "host.jsonl": b"{}\n"}),
         "config-set": lambda a, c: {"ok": True, "contract": 2, "config-set": {
