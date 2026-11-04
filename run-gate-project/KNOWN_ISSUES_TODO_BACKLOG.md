@@ -7616,3 +7616,11 @@ only the reattach test, run 4 PASSED R0 and R1 (2875 passed). `test_clean_sessio
 without evidence of the bytes. **Diagnostic landed:** the `unparsable response` profiling warning now names the response length and its first 60 characters, so the next occurrence names
 the cause. No product defect is claimed. **Next step:** when either test fails again in a lane, read the warning (reattach) or add `faulthandler`/`py-spy` output to the inner session
 (clean-session) before changing code; treat a differing result between runs under load as inconclusive.
+
+## RG-161 — `run-gate --list --json`: lane inventory with derived rigor (rigor-evidence package RG-d)
+
+**Status: FIXED on branch rigor-rgd-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo amendment 2 and row RG-d (release program `reports/RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md`). SPEC R-55, `README.md`, `CONSUMERS.md`, tests `TestListJsonDerivedRigor` in `tests/test_run_gate.py`. The three-column `--list` is untouched (R-01); `--json` with any other verb is still refused.
+
+**Decisions the memo left open (review these).** (1) A sequence's own `rigor` is `["R0"]` and its `members` are its direct members; the members' levels sit on their own rows (the memo says "R0 for every member of a sequence lane": every row holds R0, assay rows hold what the judge declares). (2) `rigor` is the judge's DECLARED list; `rigor_reachable` is also passed through. A level is a claim only once a verdict proves it (assay `claims`). (3) A probe that fails gives `rigor: null` plus `rigor_reason`, not a refusal of the whole listing, so a consumer can still read command and sequence rows; the consumer decides. (4) `--list --json` resolves an `[assay.import]` (plain `--list` still never probes). (5) New schema id `run-gate-list/1`, owned by run-gate (SPEC R-55); the ciu v8 S16.9.2 port is CIU-V8-RIGOR.
+
+**Open.** Command lanes whose argv runs `assay run` (most estate R1/R3 lanes) stay `declared-not-judged` until adopters move them to `kind = "assay"`; that is an adoption task per project, not a run-gate change.

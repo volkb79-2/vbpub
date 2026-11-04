@@ -8945,6 +8945,9 @@ def assay_import_resolution_required(args, declared_lanes: dict,
     """
     if args.check_env:
         return True
+    if args.list and args.json:
+        # R-55: the derived rigor of an imported lane is a judge fact.
+        return True
     lane = args.lane
     if lane == "doctor":
         return True
@@ -17066,6 +17069,111 @@ def cmd_list(lanes: dict) -> int:
     return 0
 
 
+LIST_SCHEMA = "run-gate-list/1"
+
+
+def lane_rigor_facts(lanes: dict, project_dir: Path, cfg: dict, central: dict,
+                     cfg_path: Path, central_path: Path | None,
+                     worktree_override: str | None = None) -> dict[str, dict]:
+    """R-55: the derived rigor of every lane, for `--list --json`.
+
+    Run-gate holds no level table and no policy (R-36). A level is READ, never
+    guessed:
+
+    * `kind = "assay"`: the judge's own `rigor` and `rigor_reachable` from
+      `assay lanes --json` (one probe per environment and judge identity, the
+      same batching `--check-env` uses). A probe that cannot be answered gives
+      `rigor: null` with the reason, never an empty list ("could not ask" is
+      not "declares nothing").
+    * `kind = "command"`: `["R0"]`, basis `declared-not-judged`. Whatever the
+      argv runs, run-gate does not parse it for coverage or mutation, so the
+      lane proves only that the declared command ran and passed.
+    * `kind = "sequence"`: `["R0"]`, basis `sequence`; the levels of the
+      members are on the members' own rows.
+    """
+    docker = shutil.which("docker")
+    inventories: dict[tuple, tuple[dict | None, str | None]] = {}
+    facts: dict[str, dict] = {}
+
+    def unavailable(why: str) -> dict:
+        return {"rigor": None, "rigor_reachable": None,
+                "rigor_basis": "unavailable", "rigor_reason": why}
+
+    for name, lane in sorted(lanes.items()):
+        kind = lane.get("kind")
+        if kind == "sequence":
+            facts[name] = {"rigor": ["R0"], "rigor_reachable": None,
+                           "rigor_basis": "sequence", "rigor_reason": None}
+        elif kind != "assay":
+            facts[name] = {"rigor": ["R0"], "rigor_reachable": None,
+                           "rigor_basis": "declared-not-judged",
+                           "rigor_reason": None}
+        else:
+            try:
+                env_name = lane_environment_name(lane)
+                env, env_source = resolve_environment(
+                    lane, name, cfg, central, cfg_path, central_path)
+                if env and not docker:
+                    facts[name] = unavailable(
+                        "docker not on PATH — the environment cannot be asked")
+                    continue
+                repo, worktree, probe_dir, _ = resolve_worktree_scope(
+                    project_dir, worktree_override, "lane rigor listing")
+                key = (env_name, assay_command_identity(lane))
+                if key not in inventories:
+                    inventories[key] = assay_inventory(
+                        docker, lane, env, env_name, repo, worktree,
+                        env_source, probe_dir)
+            except GateError as exc:
+                facts[name] = unavailable(str(exc))
+                continue
+            document, why = inventories[key]
+            if document is None:
+                facts[name] = unavailable(why)
+                continue
+            entry = next((e for e in document.get("lanes", [])
+                          if e.get("name") == lane["assay_lane"]), None)
+            if entry is None:
+                facts[name] = unavailable(
+                    f"assay lane {lane['assay_lane']!r} is not declared in "
+                    "assay.toml")
+                continue
+            facts[name] = {
+                "rigor": sorted(set(entry.get("rigor") or [])),
+                "rigor_reachable": sorted(set(entry.get("rigor_reachable") or [])),
+                "rigor_basis": "assay-declared", "rigor_reason": None}
+    return facts
+
+
+def cmd_list_json(lanes: dict, project_dir: Path, cfg: dict, central: dict,
+                  cfg_path: Path, central_path: Path | None,
+                  worktree_override: str | None = None) -> int:
+    """R-55: `--list --json`, the machine form of the lane inventory.
+
+    The three-column `--list` stays frozen (R-01); this is a separate form.
+    """
+    facts = lane_rigor_facts(lanes, project_dir, cfg, central, cfg_path,
+                             central_path, worktree_override)
+    rows = []
+    for name, lane in sorted(lanes.items()):
+        kind = lane["kind"]
+        sequence = kind == "sequence"
+        environments = (sequence_environment_names(name, lanes) if sequence
+                        else [lane["environment"]]
+                        if isinstance(lane.get("environment"), str) else [])
+        rows.append({
+            "name": name, "kind": kind,
+            "environment": None if sequence else lane.get("environment"),
+            "environments": environments,
+            "assay_lane": lane.get("assay_lane") if kind == "assay" else None,
+            "members": list(lane["lanes"]) if sequence else None,
+            "imported": bool(lane.get("_imported")),
+            **facts[name]})
+    print(json.dumps({"schema": LIST_SCHEMA, "lanes": rows}, indent=2,
+                     sort_keys=True), flush=True)
+    return 0
+
+
 def sequence_environment_names(name: str, lanes: dict) -> list[str]:
     """Transitive, deduplicated environment names required by a sequence."""
     environments: set[str] = set()
@@ -17127,6 +17235,8 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "usage: run-gate <lane> [--worktree PATH] [--allow-dirty] [--base REF]"
         " [--fresh]",
         "       run-gate --list   (machine-readable: name<TAB>kind<TAB>environment)",
+        "       run-gate --list --json   (R-55: kind, environments, members and"
+        " derived rigor)",
         "       run-gate validate-pointers CONSUMER.toml [--root DIR]",
         "         (RG-2: certify every run-gate pointer in a consumer document —",
         "          trove gates, release steps — against the SSOT lanes they name)",
@@ -17271,8 +17381,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                    duration stats; footprint has the manifest shape;",
         "                    status has its closed verdict/exit code and occupancy).",
         "                    Every other verb REFUSES it by name rather than",
-        "                    silently printing its human form (--list is already",
-        "                    a machine table)",
+        "                    silently printing its human form. `--list --json`",
+        "                    (R-55) emits the lane inventory with each lane's",
+        "                    derived rigor; plain --list stays the 3-column table",
         "  --write           `footprint` ONLY: write run-gate.footprint.json.",
         "                    Every other verb REFUSES it by name",
         "",
@@ -17998,8 +18109,9 @@ def _dispatch(argv: list[str] | None = None, *,
         # other invocation REFUSES it by name instead of accepting it and
         # emitting the plain table anyway. Same rule as RG-1's --worktree and
         # RG-26's --base: a flag the command cannot honor is a refusal, never
-        # a silent no-op — a consumer piping `--list --json` into a parser
-        # would otherwise get a TSV where it asked for JSON.
+        # a silent no-op — a consumer piping `--json` into a parser would
+        # otherwise get a human table where it asked for JSON. (`--list
+        # --json` is honored since R-55.)
         # Same rule for RG-35's flag: `--fresh` names an ephemeral container
         # lane's inflight run, so every verb and every other runner refuses
         # it by name rather than accepting it and doing nothing (R-25/R-35).
@@ -18047,10 +18159,12 @@ def _dispatch(argv: list[str] | None = None, *,
         if args.json and (args.lane is None or args.lane in (
                 "doctor", "validate-pointers", "history", "footprint",
                 "status")) \
-                and args.lane not in ("history", "footprint", "status"):
+                and args.lane not in ("history", "footprint", "status") \
+                and not (args.list and args.lane is None):
             fail("--json is honored by the `history`/`footprint`/`status` verbs only "
-                 "and by a lane result (run-gate <lane> --json); `--list` "
-                 "is already a machine table (name<TAB>kind<TAB>environment)")
+                 "and by a lane result (run-gate <lane> --json) and by "
+                 "`--list`; plain `--list` stays the three-column table "
+                 "(name<TAB>kind<TAB>environment)")
         if args.write and args.lane != "footprint":
             fail("--write is honored by the `footprint` verb only "
                  "(run-gate footprint [LANE] --write) — every other verb "
@@ -18240,7 +18354,12 @@ def _dispatch(argv: list[str] | None = None, *,
                                  merge_lanes=args.footprint_lanes)
             return operation_result(code, "footprint-query-failed")
         if args.list:
-            code = cmd_list(lanes)
+            if args.json:
+                code = cmd_list_json(lanes, project_dir, cfg, central,
+                                     cfg_path, central_path,
+                                     worktree_override=args.worktree)
+            else:
+                code = cmd_list(lanes)
             return operation_result(code, "list-failed")
         if args.check_env:
             # RG-30: --worktree redirects both the env-drift scan and the
