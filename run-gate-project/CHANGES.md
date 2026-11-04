@@ -9,13 +9,25 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.0.1] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=7ef33e037c7aee0b70636b64452cf408cb5ee8c6 -->
+
+### Fixed
+- fix(run-gate): RG-154 probe cowtree from the pinned pyz, name cheap_clone_reason; RG-155 assay lane budget in header; CP-56 canary tar race (vbpub canary-run.sh) (fc0ac39c9)
+
+### Testing
+- test(run-gate): cover the RG-155 budget helper (diff-coverage floor) (0af5fb3b2)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - RG-154: the `--jobs N>1`/`auto` cheap-clone capacity probe resolves `cowtree` from the pinned Assay zipapp (`python3 x.pyz` assay commands) instead of
   the lane image, and the refusal now names `cheap_clone_reason`; CONSUMERS documents the image requirements.
 - RG-155: the lane header prints the Assay lane `budget` from `assay.toml` (it ends each attempt with LANE_TIMEOUT) next to the run-gate wrapper budget
   and warns when it is the smaller one. The plan-estimate comparison needs `assay plan --json` data and is left open.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.0.0] - 2026-11-04
 <!-- cmru: generated -->
