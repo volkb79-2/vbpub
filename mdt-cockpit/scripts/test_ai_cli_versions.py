@@ -220,6 +220,27 @@ def test_the_build_inputs_no_longer_carry_a_version_arg_for_the_four() -> None:
         assert name not in dockerfile and name not in bake and name not in cmru, name
 
 
+def test_every_ai_cli_install_switch_and_pin_is_declared_in_bake_and_forwarded() -> None:
+    """MDT-035: INSTALL_COPILOT/CLAUDELINK/PI and PI_VERSION were Dockerfile ARGs the bake never saw."""
+    import tomllib
+
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    bake = (ROOT / "docker-bake.hcl").read_text(encoding="utf-8")
+    cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
+    ai_tools = ("CODEX", "CLAUDE_CODE", "ANTIGRAVITY", "AIDER", "REASONIX", "OPENCLAW", "COPILOT", "OPENCODE", "CLAUDELINK", "PI")
+    expected = {f"INSTALL_{tool}" for tool in ai_tools} | {"PI_VERSION", "REASONIX_VERSION", "OPENCODE_VERSION"}
+    declared_args = set(re.findall(r"^ARG (INSTALL_[A-Z_]+|[A-Z_]+_VERSION)\b", dockerfile, flags=re.M))
+    # every AI-CLI switch the Dockerfile declares (INSTALL_PHP/CIU are not AI CLI tools) must be in the expected set
+    ai_switches = {a for a in declared_args if a.startswith("INSTALL_") and a not in ("INSTALL_PHP", "INSTALL_CIU")}
+    assert ai_switches <= expected, ai_switches - expected
+    for name in sorted(expected):
+        assert name in declared_args, f"Dockerfile has no ARG {name}"
+        assert re.search(rf'^variable "{name}" \{{', bake, flags=re.M), f"docker-bake.hcl declares no variable {name}"
+        assert f'{name} = "${{{name}}}"' in bake, f"docker-bake.hcl does not pass {name} to the build"
+        for step in ("build", "push"):
+            assert name in cmru["steps"][step]["bake_set_vars"], f"cmru.toml [steps.{step}] does not forward {name}"
+
+
 def test_the_aider_pin_file_is_an_exact_commit_and_names_its_exit_condition() -> None:
     pin = stage._aider_main_pin()
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", pin["AIDER_BEFORE"])
@@ -512,6 +533,19 @@ def test_an_override_of_an_old_enough_release_is_not_waived() -> None:
     assert "COPILOT_WAIVED" not in vetted and vetted["COPILOT_REASON"] == "pinned on purpose"
     rows = "\n".join(_manifest_module().render_vetting_lines(vetted))
     assert "waived" not in rows and "pinned by override, reason: pinned on purpose" in rows
+
+
+def test_a_waiver_expires_after_one_age_window() -> None:
+    """MDT-015: a waiver older than WAIVER_MAX_AGE_DAYS is refused; the same release a day earlier still waives."""
+    records = fake_version_records(VETTED)
+    records["npm.copilot"].update({"version": "1.0.92-4", "reason": "keep until the handshake bug is fixed"})
+    released = datetime.now(timezone.utc) - timedelta(days=1)
+    records["npm.copilot"]["resolved"]["sources"]["npm"]["released_at"] = released.strftime("%Y-%m-%dT%H:%M:%SZ")
+    inside = released + timedelta(days=stage.WAIVER_MAX_AGE_DAYS - 1)
+    assert stage._vetted_ai_cli_versions(lambda: records, now=inside)["COPILOT_WAIVED"] == "true"
+    outside = released + timedelta(days=stage.WAIVER_MAX_AGE_DAYS + 1)
+    with pytest.raises(stage.StageError, match="waiver .* expired"):
+        stage._vetted_ai_cli_versions(lambda: records, now=outside)
 
 
 def test_the_check_record_docstring_states_the_waiver() -> None:

@@ -22,7 +22,9 @@ schema_version = 1
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1 && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests iogov/tests -q -rs --deselect scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone --deselect scripts/test_oci_layout_push.py && echo 'smoke: OK'"]
-budget = "2m"
+# 2m was outgrown by the iogov and host-setup suites (BUDGET_EXCEEDED at ~80% on a loaded host, twice, 2026-11-04);
+# the release flow now runs this lane too (MDT-032/060), so it must not flake on contention.
+budget = "6m"
 
 [lanes.smoke.resources]
 memory = "1g"
@@ -91,6 +93,19 @@ budget = "155m"
 # against that manifest entry for entry, and the lane FAILS without it) and unused for
 # release images, which carry no local artifacts. It is deliberately not in required_env,
 # because a release run does not need it.
+# The same scenarios against the images THE RELEASE JUST BUILT (MDT-012). The refs are derived, never typed:
+# the driver imports the native and VS Code OCI layouts the `prepare` step left (bound to this build by
+# transaction.json, exactly as `oci-push` does) under private tags and runs tests/runtime on them. No built
+# image = the lane FAILS. `cmru release` runs it after `oci-push`.
+#   run-gate image-runtime-built   (after `python3 build-push.py --build`)
+[lanes.image-runtime-built]
+kind = "command"
+environment = "bare-host"
+argv = ["python3", "scripts/run_image_runtime_lane.py", "--native", "trixie-py314-php85", "--vsc", "trixie-py314-php85-vsc"]
+clean_tree = true
+required_env = ["CGROUP_PARENT_DEV_GATES"]
+budget = "75m"
+
 [lanes.image-runtime]
 kind = "command"
 environment = "bare-host"

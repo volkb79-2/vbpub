@@ -37,7 +37,20 @@ class ReleaseFlowTests(unittest.TestCase):
 
     def test_release_gate_runs_from_the_candidate_repository_root(self) -> None:
         commands = self.config["steps"]["run-tests"]["commands"]
-        self.assertEqual(commands[0]["argv"], ["run-gate", "release"])
+        # MDT-032 (release smoke lane) and MDT-012 (runtime acceptance of the built images): the pytest-style
+        # tests the unittest-based `release` lane cannot collect run as `smoke`; image-runtime-built runs last.
+        self.assertEqual(
+            [c["argv"] for c in commands],
+            [
+                ["run-gate", "smoke"],
+                ["run-gate", "release"],
+                ["run-gate", "oci-push"],
+                ["run-gate", "image-runtime-built"],
+            ],
+        )
+        lanes = tomllib.loads((ROOT / "run-gate.toml").read_text())["lanes"]
+        for lane in ("smoke", "release", "oci-push", "image-runtime-built"):
+            self.assertIn(lane, lanes)
 
     def test_vm_acceptance_resolves_the_project_and_shared_harness_roots(self) -> None:
         source = (ROOT / "host-setup/tests/run-vm-acceptance.sh").read_text()
@@ -150,7 +163,13 @@ class ReleaseFlowTests(unittest.TestCase):
         assert spec and spec.loader
         wizard = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = wizard
-        spec.loader.exec_module(wizard)
+        # the wizard imports its sibling modules (mdt_capacity); the release lane sets no PYTHONPATH
+        host_setup = str(ROOT / "host-setup")
+        sys.path.insert(0, host_setup)
+        try:
+            spec.loader.exec_module(wizard)
+        finally:
+            sys.path.remove(host_setup)
         values = wizard.parse_env_file(example, strict=True)
         self.assertEqual(values["WATCHER_MEMORY_POLICY"], "enabled")
         self.assertFalse(wizard.memory_relationship_errors(values))

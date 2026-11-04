@@ -349,6 +349,37 @@ variable "INSTALL_OPENCODE" {
   default = "true"
 }
 
+// Boolean toggles for the remaining AI CLI tools (every Dockerfile INSTALL_* ARG is declared here and
+// forwarded by cmru.toml bake_set_vars; scripts/test_ai_cli_versions.py enforces it).
+variable "INSTALL_REASONIX" {
+  default = "true"
+}
+
+variable "INSTALL_OPENCLAW" {
+  default = "true"
+}
+
+variable "INSTALL_COPILOT" {
+  default = "true"
+}
+
+variable "INSTALL_CLAUDELINK" {
+  default = "true"
+}
+
+variable "INSTALL_PI" {
+  default = "true"
+}
+
+// Version pins for Reasonix and Pi; empty / "latest" resolves at staging time (npm `latest`).
+variable "REASONIX_VERSION" {
+  default = ""
+}
+
+variable "PI_VERSION" {
+  default = ""
+}
+
 // Node.js major version (e.g. 26 for Node 26.x from nodesource).
 // Architectural decision set in docker-bake.hcl, not in the Dockerfile.
 variable "NODE_MAJOR" {
@@ -564,6 +595,13 @@ target "base" {
     INSTALL_AIDER = "${INSTALL_AIDER}"
     OPENCODE_VERSION = "${OPENCODE_VERSION}"
     INSTALL_OPENCODE = "${INSTALL_OPENCODE}"
+    INSTALL_REASONIX = "${INSTALL_REASONIX}"
+    INSTALL_OPENCLAW = "${INSTALL_OPENCLAW}"
+    INSTALL_COPILOT = "${INSTALL_COPILOT}"
+    INSTALL_CLAUDELINK = "${INSTALL_CLAUDELINK}"
+    INSTALL_PI = "${INSTALL_PI}"
+    REASONIX_VERSION = "${REASONIX_VERSION}"
+    PI_VERSION = "${PI_VERSION}"
     NODE_MAJOR = "${NODE_MAJOR}"
     ENABLE_KSM_OPTIN = "${ENABLE_KSM_OPTIN}"
     KSM_OPTIN_LD_PRELOAD = ENABLE_KSM_OPTIN == "true" ? "/usr/local/lib/ksm-optin.so" : ""

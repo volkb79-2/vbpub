@@ -5,6 +5,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- `image-runtime-built` lane: the runtime acceptance scenarios run against the native and VS Code images the release just built
+  (derived from the OCI layouts like `oci-push`); `cmru release` runs it after `oci-push` (MDT-012).
+- `cmru release` runs `run-gate smoke` before the `release` lane, so the pytest-style staging tests are part of a release
+  (MDT-060, "MDT-032 (release)" in the bugfix program).
+- Bake declares and passes `INSTALL_COPILOT`, `INSTALL_CLAUDELINK`, `INSTALL_PI`, `INSTALL_REASONIX`, `INSTALL_OPENCLAW`,
+  `PI_VERSION`, `REASONIX_VERSION`; `cmru.toml` forwards the first four and `PI_VERSION` (MDT-035).
+- A version-override waiver expires after 14 days from the overridden release; staging then fails until re-resolved (MDT-015).
 - Backlog MDT-049 to MDT-052 filed from a live runner reinstall: the BuildKit shim rewrites an explicit `BUILDX_BUILDER=default`
   (`MDT_BUILDX_PASSTHROUGH=1` is the workaround), the example `DEV_INTERACTIVE_MEMORY_LOW`, `mdt-host-check.sh` `auto` noise, and the
   missing UID remap in the docker-run form of the host-folder cockpit.
