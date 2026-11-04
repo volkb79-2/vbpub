@@ -1,0 +1,4 @@
+{
+  "_comment": "Geekbench archive pins per CPU architecture (platform.machine()), the single source for the installer step run_cpu_benchmark and for mdt host-setup cpu-benchmark. sha256 is of the Linux tarball from cdn.geekbench.com. An architecture without an entry is never measured unverified. Update on a deliberate Geekbench bump only.",
+  "x86_64": {"version": "7.1.0", "sha256": "411b72a9c851b69e6f91d390649d419e2e625f475e3983880169651ca27a8672"}
+}

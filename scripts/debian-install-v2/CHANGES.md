@@ -15,6 +15,14 @@ All notable changes to debian-install-v2 are recorded here.
   and update its installer hint, CLI surface, and adoption documentation.
 
 ### Added
+- Installer step `run_cpu_benchmark` (HB-2, default on, `vanilla` profile off): at the end of stage two, after io.cost and the swap
+  health gate and before the apt timers are released, runs the shared `tools/cpu_benchmark.py` once while the host is idle,
+  passing BOTH pins (`--geekbench-version`, `--sha256`) from `tools/cpu_benchmark.pins.json` (x86_64: Geekbench 7.1.0) or the config pair
+  `cpu_benchmark_geekbench_version` / `cpu_benchmark_sha256`. The tool is checked against its `.sha256` first. Failure is advisory
+  (`warned`; exit 4 points to `mdt host-setup cpu-benchmark --resolve`); one summary line (scores, result URL, never the claim link) is
+  appended to the `Install complete` milestone. The v1 key `run_geekbench` stays refused, now with a pointer to `run_cpu_benchmark`.
+  `bootstrap-remote.py` fetches the tool, its pin and the pins file; README, DESIGN-GUIDE and CONSUMERS aligned; tests in
+  `debian_install_v2/tests/test_cpu_benchmark_step.py`. Live check: backlog MDT-066 (mdt-cockpit).
 - `tools/cpu_benchmark.py` (HB-1, sha256-pinned in `tools/cpu_benchmark.py.sha256`): shared stdlib tool, logic lifted
   from the v1 `geekbench_runner.py` and generalised over the Geekbench major (6 or 7, default newest = 7 via CDN probing;
   records `tool_major`, per-major normalisation baselines, refuses to mix majors), that runs

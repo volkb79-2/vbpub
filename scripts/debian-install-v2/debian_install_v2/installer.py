@@ -19,7 +19,7 @@ import urllib.request
 from collections.abc import Iterable
 
 from . import inuse_partition_editor
-from .actions import ActionError, ActionUnreapable, HostActions
+from .actions import ActionError, ActionTimeout, ActionUnreapable, HostActions
 from .config import Config, ConfigError, load_config, persisted_config_data, resolve_notify_backend
 from .disk_layout import GIB, automatic_swap_size_gb
 from .host_facts import _code, collect_host_facts, format_facts_html
@@ -138,6 +138,33 @@ IOBENCH_RESULT_KEYS = ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wra
 # verified, so a resumed stage2 must re-run the leftover check.
 IOBENCH_FINAL_STATUSES = {"success", "skipped", "warned"}
 
+# Per-host CPU benchmark (HB-2). Geekbench archive pins per CPU architecture
+# (platform.machine()): (version, sha256 of the Linux tarball), read from
+# tools/cpu_benchmark.pins.json, the one source shared with `mdt host-setup
+# cpu-benchmark`. There is no "newest from the CDN" default in the installer: an
+# unpinned architecture is `warned`, never run unverified (aarch64 has no
+# verified pin yet).
+def _load_cpu_benchmark_pins() -> dict[str, tuple[str, str]]:
+    path = Path(__file__).resolve().parents[1] / "tools" / "cpu_benchmark.pins.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {
+        arch: (entry["version"], entry["sha256"])
+        for arch, entry in data.items()
+        if not arch.startswith("_") and isinstance(entry, dict) and entry.get("version") and entry.get("sha256")
+    }
+
+
+CPU_BENCHMARK_PINS: dict[str, tuple[str, str]] = _load_cpu_benchmark_pins()
+# Hard limit handed to the tool (its process-group kill) and, with slack for the
+# download/extract/result-page fetch, to the outer command. Free Geekbench under
+# QEMU TCG can exceed 15 minutes (docs/CONSUMERS.md).
+CPU_BENCHMARK_TOOL_TIMEOUT_S = 1800
+CPU_BENCHMARK_OUTER_TIMEOUT_S = 2700
+CPU_BENCHMARK_FINAL_STATUSES = {"success", "skipped", "warned"}
+
 
 class InstallerError(RuntimeError):
     """Expected host-precondition or installer-operation failure."""
@@ -210,6 +237,8 @@ class Installer:
         self._notify_stage = "stage1"
         # Shown in the "Install complete" notification (set when io.cost is skipped).
         self._iocost_note = ""
+        # One line for the "Install complete" milestone (scores + result URL; never the claim link).
+        self._cpu_benchmark_note = ""
         self.release = ""
         self.root_disk = ""
         self.root_partition_path = ""
@@ -622,10 +651,12 @@ class Installer:
                 key_event = ", controller key retained on host" if retained else ""
                 io_note = f"\n\n{_code(self._iocost_note)}" if self._iocost_note else ""
                 io_event = f", {self._iocost_note}" if self._iocost_note else ""
+                cpu_note = f"\n\n{_code(self._cpu_benchmark_note)}" if self._cpu_benchmark_note else ""
+                cpu_event = f", {self._cpu_benchmark_note}" if self._cpu_benchmark_note else ""
                 self._notify(
                     f"<b>Install complete</b> (duration: {duration})"
-                    f"{key_note}{io_note}\n\n{facts_html}",
-                    event=f"install complete (duration {duration}){key_event}{io_event}", status="ok",
+                    f"{key_note}{io_note}{cpu_note}\n\n{facts_html}",
+                    event=f"install complete (duration {duration}){key_event}{io_event}{cpu_event}", status="ok",
                 )
         except BaseException as exc:
             self.state.save(status="failed", phase="stage2", last_error=str(exc))
@@ -2994,6 +3025,110 @@ MaxFileSec=1month
         if size <= 0:
             raise InstallerError("io benchmark partition has a non-positive size")
 
+    def _cpu_benchmark_tool_path(self) -> Path:
+        return Path(__file__).resolve().parents[1] / "tools" / "cpu_benchmark.py"
+
+    def _verify_cpu_benchmark_tool(self, tool: Path) -> str:
+        """Return the sha256 of the shared tool after checking it against its committed pin file."""
+        if not tool.is_file():
+            raise InstallerError(f"cpu benchmark tool not found: {tool}")
+        digest = hashlib.sha256(tool.read_bytes()).hexdigest()
+        pin_file = tool.with_name(tool.name + ".sha256")
+        try:
+            committed = pin_file.read_text(encoding="utf-8").split()[0]
+        except (OSError, IndexError):
+            raise InstallerError(f"tool integrity check failed: {pin_file} is missing or empty") from None
+        if committed != digest:
+            raise InstallerError(
+                f"tool integrity check failed: {tool} sha256 {digest} does not match the committed {pin_file.name}"
+            )
+        return digest
+
+    def _cpu_benchmark_pin(self) -> tuple[str, str]:
+        """The (version, archive sha256) pin: config override, else the built-in pin for this architecture."""
+        if self.config.cpu_benchmark_geekbench_version:
+            return self.config.cpu_benchmark_geekbench_version, self.config.cpu_benchmark_sha256
+        machine = platform.machine()
+        pin = CPU_BENCHMARK_PINS.get(machine)
+        if pin is None:
+            raise InstallerError(
+                f"no pinned Geekbench archive for architecture {machine!r}; set cpu_benchmark_geekbench_version "
+                "and cpu_benchmark_sha256 to measure this host"
+            )
+        return pin
+
+    @staticmethod
+    def _cpu_benchmark_failure_text(exc: BaseException) -> str:
+        """One advisory line from a failed tool run (the tool's own messages are already redacted)."""
+        text = str(exc)
+        match = re.match(r"action failed \((\d+)\)", text)
+        lines = [line.strip() for line in text.splitlines()[1:] if line.strip()]
+        detail = lines[-1] if lines else (text.splitlines()[0] if text else type(exc).__name__)
+        code = match.group(1) if match else ""
+        if code == "4":
+            return (
+                f"cpu benchmark partial: {detail}; the result URL is recorded, scores can be filled later "
+                "with `mdt host-setup cpu-benchmark --resolve`"
+            )
+        if code == "2":
+            return f"cpu benchmark refused: {detail}"
+        if isinstance(exc, ActionTimeout):
+            return "cpu benchmark timed out (process group killed)"
+        return f"cpu benchmark failed: {detail}"
+
+    def _run_cpu_benchmark(self) -> None:
+        """Measure the host CPU once (memo 4.6): shared tools/cpu_benchmark.py, advisory.
+
+        Writes /var/lib/mdt/host-facts/cpu-benchmark.json (0644) and the 0600 claim
+        file through the tool; this method never sees the claim link (the tool
+        redacts it from every line it prints). Any failure -- missing tool, no pin,
+        refused, timeout, partial, no egress -- marks the step ``warned`` and the
+        install continues. Idempotent across stage-two resumes (a terminal step is
+        not repeated; its note is restored for the final milestone).
+        """
+        if not self.config.run_cpu_benchmark:
+            return
+        previous = self.state.load().get("steps", {}).get("cpu_benchmark")
+        if previous and previous.get("status") in CPU_BENCHMARK_FINAL_STATUSES:
+            self._cpu_benchmark_note = previous.get("detail", "") if previous.get("status") != "skipped" else ""
+            return
+        self._mark_step("cpu_benchmark", "started", "")
+        try:
+            tool = self._cpu_benchmark_tool_path()
+            self._verify_cpu_benchmark_tool(tool)
+            version, sha256 = self._cpu_benchmark_pin()
+            output = self._run(
+                [
+                    str(tool), "--geekbench-version", version, "--sha256", sha256,
+                    "--timeout", str(CPU_BENCHMARK_TOOL_TIMEOUT_S),
+                    "--produced-by", f"debian-install-v2 {self._installer_version()}",
+                ],
+                "measure the host CPU once with Geekbench (shared tools/cpu_benchmark.py)", dangerous=True,
+                timeout=CPU_BENCHMARK_OUTER_TIMEOUT_S,
+            )
+        except Exception as exc:  # advisory by design (memo 4.6): nothing here may stop the install
+            note = self._cpu_benchmark_failure_text(exc) if isinstance(exc, ActionError) else f"cpu benchmark not run: {exc}"
+            note = note.splitlines()[0][:400]
+            self._cpu_benchmark_note = note
+            self._mark_step("cpu_benchmark", "warned", note)
+            return
+        if self.actions.dry_run:
+            self._mark_step("cpu_benchmark", "planned", f"would run Geekbench {version}")
+            return
+        lines = [line.strip() for line in output.splitlines() if line.strip().startswith("cpu-benchmark:")]
+        summary = lines[-1][:400] if lines else "cpu-benchmark: finished (no summary line)"
+        if "claim" in summary.lower():  # defence in depth: the tool already redacts; the milestone must never carry it
+            summary = "cpu-benchmark: finished (summary withheld)"
+        self._cpu_benchmark_note = summary
+        self._mark_step("cpu_benchmark", "success", summary)
+
+    @staticmethod
+    def _installer_version() -> str:
+        try:
+            return (Path(__file__).resolve().parents[1] / "VERSION").read_text(encoding="utf-8").strip() or "unknown"
+        except OSError:
+            return "unknown"
+
     def _iocost_tool_path(self) -> Path:
         return Path(__file__).resolve().parents[1] / "tools" / "iocost_coef_gen.py"
 
@@ -4431,6 +4566,9 @@ MaxFileSec=1month
         self._configure_root_cap_boot_guards()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
+        # While the host is still idle (apt timers not released yet, no workload
+        # started): advisory, never stops the install.
+        self._run_cpu_benchmark()
         self._release_apt_timers()
         # Set this before `cloud-init clean`: an attached NoCloud ISO remains a
         # source after clean and can otherwise replay its original runcmd.

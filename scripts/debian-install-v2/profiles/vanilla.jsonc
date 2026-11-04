@@ -22,5 +22,6 @@
   "run_zswap_config": false,
   "run_cgroup2_config": false,
   "run_io_benchmark": false,
+  "run_cpu_benchmark": false,
   "iocost_enabled": false
 }

@@ -1373,3 +1373,19 @@ documented as unreachable. When MDT-066..068 land, cross-reference this entry fr
 
 **Acceptance criteria.** The HB docs and the tool text carry the Cloudflare/stdout-only statement; a test feeds the tool a challenge page and a missing-summary stdout and expects `warned`
 with no score, not a parse of the challenge HTML.
+## MDT-066 - HB-2 live verification: debian-install-v2 `run_cpu_benchmark` in a vm-system run (2026-11-05)
+
+**Status:** OPEN (hermetic tests done; nothing has run against a real guest).
+**What exists.** Installer step `run_cpu_benchmark` (default on, advisory) with mocked-tool tests: success, parse failure (exit 4), refusal, timeout, unpinned architecture, tool tamper, resume, dry-run.
+**Acceptance (needs a vm-system run on the `case-b` image).** (1) With the Browser egress allowlist (`scripts/debian-install-v2/docs/DESIGN-GUIDE.md`, VM section) the step ends `success`, `/var/lib/mdt/host-facts/cpu-benchmark.json` is 0644 and the claim file 0600, the guest reports `QEMU TCG CPU`, and the single `Install complete` milestone carries the scores and result URL but no claim link. (2) With egress locked the step ends `warned` and the install still completes. Free Geekbench under TCG can exceed 15 minutes; check the 1800 s tool timeout holds. (3) Record the real Geekbench 7 stdout from the run and replace `gb7-stdout-ASSUMED-SHAPE.txt` (HB-1 follow-up).
+
+## MDT-067 - HB-3 live verification: `install.sh cpu-benchmark` on the dev host, r1002 and v1001 (2026-11-05)
+
+**Status:** OPEN (operator hands; nothing has run on a real host).
+**What exists.** `sudo ./host-setup/install.sh cpu-benchmark [--force|--resolve]`, `mdt-host-check.sh` section "per-host CPU benchmark", hermetic tests over fixture files.
+**Acceptance.** Run once on the dev host in a quiet window (CPU `some avg10` below 5), then later on r1002 and v1001 (hosts already installed by debian-install-v2 before `run_cpu_benchmark` existed; NEVER nano1). For each: `cpu-benchmark.json` 0644 with both scores, claim file 0600, `mdt-host-check.sh` shows the OK line, a second run is refused without `--force`, and after a VM resize `mdt-host-check.sh` shows the STALE warning. Open the claim link once per host to attach it to the operator's Geekbench account.
+
+## MDT-068 - Geekbench archive pin for aarch64 (2026-11-05)
+
+**Status:** OPEN. `scripts/debian-install-v2/tools/cpu_benchmark.pins.json` holds only x86_64 (Geekbench 7.1.0, sha256 read from the real download in HB-1). An architecture without a pin is `warned` by the installer and refused by `install.sh cpu-benchmark`, never run unverified.
+**Acceptance.** Download the `LinuxARMPreview` 7.1.0 archive on an aarch64-capable path, record its sha256 in the pins file, add a test, and bump the pins together with the tool's `.sha256` where needed.
