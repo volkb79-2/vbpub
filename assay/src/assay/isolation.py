@@ -39,9 +39,11 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import threading
 from contextlib import ExitStack, contextmanager
+from . import _tmpfs_worker
 from .records import record
 from pathlib import Path, PurePosixPath
 from typing import Callable, ContextManager, Iterable, Iterator, Mapping, Sequence
@@ -626,6 +628,13 @@ class SnapshotRepository:
         self._closed = False
         self._live: set[Path] = set()
         self._template_root: Path | None = None
+        #: (B223) ``tmpfs-worker`` state: one long-lived tree per worker thread
+        #: under a private directory of the declared tmpfs, the template's
+        #: size (measured once) and whether creating more trees was refused.
+        self._workers: dict[int, _tmpfs_worker.WorkerTree] = {}
+        self._tmpfs_dir: Path | None = None
+        self._template_bytes: int | None = None
+        self._tmpfs_off = False
 
     @property
     def spec(self) -> SnapshotSpec:
@@ -800,6 +809,13 @@ class SnapshotRepository:
         try:
             if replacement is not None:
                 self._check_replacement_site(replacement, deadline)
+                worker = self._acquire_worker(deadline)
+                if worker is not None:
+                    with self._worker_candidate(
+                        worker, replacement, deadline
+                    ) as snapshot:
+                        yield snapshot
+                    return
             if self._workspace is not None and self._workspace.cheap_clone:
                 template = self._ensure_template(deadline)
                 root = self._workspace.clone_tree(template)
@@ -887,6 +903,8 @@ class SnapshotRepository:
         root: Path,
         replacement: tuple[PurePosixPath, bytes, bytes] | None,
         deadline: "_git._P22Deadline",
+        *,
+        force_full: bool = False,
     ) -> str:
         """Apply one unit's private Git and worktree changes to its clone."""
         executable = self._source.git_executable
@@ -917,7 +935,8 @@ class SnapshotRepository:
             ordinal = self._clone_count
             self._clone_count += 1
         if (
-            self._spec.snapshot_policy.verify_clone == "full"
+            force_full
+            or self._spec.snapshot_policy.verify_clone == "full"
             or ordinal % VERIFY_CLONE_FULL_EVERY == 0
         ):
             self._verify(root, git_dir, commit, run)
@@ -925,6 +944,171 @@ class SnapshotRepository:
             self._verify_clone_identity(root, commit, run, replacement, entries)
         self._plant_link_paths(root, run)
         return commit
+
+    def _acquire_worker(
+        self, deadline: "_git._P22Deadline"
+    ) -> "_tmpfs_worker.WorkerTree | None":
+        """(B223) The calling thread's tmpfs tree, or ``None`` for the CoW path.
+
+        ``None`` is the designed fallback, never a failure: the lane did not
+        ask for ``tmpfs-worker``, there is no sealed template to copy, the
+        thread's tree is already in use (a nested materialization), or the
+        tmpfs refused one more tree (not a tmpfs, tree above
+        ``tmpfs_max_mib``, not enough free space, write error).  Candidates
+        then use the clone path exactly as before, so a verdict never depends
+        on which path a candidate took.
+        """
+        policy = self._spec.snapshot_policy
+        if (
+            policy.materialize != "tmpfs-worker"
+            or self._workspace is None
+            or not self._workspace.cheap_clone
+        ):
+            return None
+        ident = threading.get_ident()
+        with self._lock:
+            worker = self._workers.get(ident)
+            if worker is not None:
+                if worker.busy:
+                    return None
+                worker.busy = True
+                return worker
+            if self._tmpfs_off:
+                return None
+        template = self._ensure_template(deadline)
+        try:
+            worker = self._build_worker(template, deadline)
+        except _tmpfs_worker.TmpfsUnavailable as exc:
+            with self._lock:
+                first = not self._tmpfs_off
+                self._tmpfs_off = True
+            if first:
+                sys.stderr.write(
+                    "Assay advisory: isolation.materialize = 'tmpfs-worker' is "
+                    f"unavailable ({exc}); candidates use copy-on-write clones\n"
+                )
+            return None
+        worker.busy = True
+        with self._lock:
+            self._workers[ident] = worker
+        return worker
+
+    def _build_worker(
+        self, template: Path, deadline: "_git._P22Deadline"
+    ) -> "_tmpfs_worker.WorkerTree":
+        """Populate one tree on the tmpfs from the sealed template, once."""
+        policy = self._spec.snapshot_policy
+        holder: Path | None = None
+        try:
+            with self._lock:
+                if self._tmpfs_dir is None:
+                    self._tmpfs_dir = Path(
+                        tempfile.mkdtemp(prefix="assay-tmpfs-", dir=policy.tmpfs_root)
+                    )
+                directory = self._tmpfs_dir
+            if self._template_bytes is None:
+                self._template_bytes = _tmpfs_worker.tree_bytes(template)
+            _tmpfs_worker.check_capacity(
+                directory,
+                self._template_bytes,
+                max_bytes=policy.tmpfs_max_mib * 1024 * 1024,
+            )
+            holder = Path(tempfile.mkdtemp(prefix="w-", dir=directory))
+            tree = holder / "tree"
+            _tmpfs_worker.copy_template(template, tree)
+            # Inode numbers changed with the copy, so the template's recorded
+            # stat data no longer matches: refresh it here, in the final place.
+            self._prime_index(tree, deadline)
+            return _tmpfs_worker.WorkerTree(tree)
+        except OSError as exc:
+            if holder is not None:
+                shutil.rmtree(holder, ignore_errors=True)
+            raise _tmpfs_worker.TmpfsUnavailable(
+                f"the worker tree could not be built: {exc}"
+            ) from exc
+        except BaseException:
+            if holder is not None:
+                shutil.rmtree(holder, ignore_errors=True)
+            raise
+
+    @contextmanager
+    def _worker_candidate(
+        self,
+        worker: "_tmpfs_worker.WorkerTree",
+        replacement: tuple[PurePosixPath, bytes, bytes],
+        deadline: "_git._P22Deadline",
+    ) -> Iterator[Snapshot]:
+        """One candidate in a worker's tree, restored (or dropped) afterwards.
+
+        The first candidate on a fresh tree runs the complete clone proof
+        (:meth:`_verify`); the others follow the ``verify_clone`` tier as a
+        clone would.  After the body, the tree is restored and scanned
+        (:meth:`_tmpfs_worker.WorkerTree.settle`); an exception in setup or
+        body, or a tree that does not scan clean, drops the tree so the next
+        candidate starts from a fresh copy of the template.
+        """
+        root = worker.root
+        self._track(root)
+        kept = False
+        try:
+            commit = self._materialize_clone(
+                root, replacement, deadline, force_full=worker.fresh
+            )
+            worker.fresh = False
+            yield Snapshot(
+                root=root,
+                project_root=_join_prefix(root, self._spec.project_prefix),
+                commit=commit,
+                tracked_directories=frozenset(self._manifest.directories),
+            )
+            kept = self._settle_worker(worker, replacement)
+        finally:
+            self._untrack(root)
+            worker.busy = False
+            if not kept:
+                self._drop_worker(worker)
+
+    def _settle_worker(
+        self,
+        worker: "_tmpfs_worker.WorkerTree",
+        replacement: tuple[PurePosixPath, bytes, bytes],
+    ) -> bool:
+        path, original, _new = replacement
+        entry = self._manifest.by_path()[path]
+        root = worker.root
+        try:
+            return worker.settle(
+                path=root.joinpath(*path.parts),
+                original=original,
+                executable=entry.mode == _MODE_EXECUTABLE,
+                fixed_mtime=_FIXED_MTIME,
+                planted=tuple(
+                    root / raw for raw in self._spec.snapshot_policy.link_paths
+                ),
+            )
+        except OSError:
+            return False
+
+    def _drop_worker(self, worker: "_tmpfs_worker.WorkerTree") -> None:
+        with self._lock:
+            for ident, held in list(self._workers.items()):
+                if held is worker:
+                    del self._workers[ident]
+        shutil.rmtree(worker.root.parent, ignore_errors=True)
+
+    def _release_workers(self) -> None:
+        """Remove every worker tree and the private tmpfs directory."""
+        with self._lock:
+            self._workers.clear()
+            directory = self._tmpfs_dir
+            self._tmpfs_dir = None
+        if directory is not None:
+            shutil.rmtree(directory, ignore_errors=True)
+            if directory.exists():
+                sys.stderr.write(
+                    f"Assay advisory: tmpfs directory {directory} could not be "
+                    f"removed; its memory stays charged until it is\n"
+                )
 
     def _verify_clone_identity(
         self,
@@ -2627,6 +2811,7 @@ def prepare_snapshot(
         # the caller is actually about to see.
         if repository is not None:
             leaked, template_root = _close_repository(repository)
+            repository._release_workers()
             for root in leaked:
                 repository._discard_materialization(root)
             if template_root is not None:
@@ -2636,6 +2821,7 @@ def prepare_snapshot(
         raise
     else:
         live, template_root = _close_repository(repository)
+        repository._release_workers()
         # Refusing loudly is right, but a refusal that ABANDONS a snapshot
         # directory inside caller-owned scratch would be the silent state
         # leak the terminal table forbids -- so the misused children are

@@ -821,6 +821,36 @@ and the limits fire at the same thresholds in both. The measured cost on a
 7.6k-file repository was 173.6 MB read and 2.31 s per candidate before the
 change (`materialize-experiment-REPORT.md`, variants a and a2).
 
+**Per-worker tmpfs trees (B223).** `isolation.materialize = "tmpfs-worker"`
+(default `"cow"`) removes the cold-cache read of every fresh clone: each mutation
+worker thread owns one tree under `isolation.tmpfs_root` (default `/dev/shm`),
+copied once from the sealed template and proved in full on its first candidate.
+Per candidate only the mutated file is written; afterwards that file, the index,
+`HEAD`, any planted `link_paths` and the loose objects the replacement commit
+added are restored, and the whole tree is scanned against its pristine map
+(type, mode, size, mtime, link target). What a candidate ADDED is removed; what
+it changed or deleted makes Assay discard the tree and rebuild it for the next
+candidate, so residue never reaches a later candidate and no verdict changes.
+The post-command dirt check still judges every candidate first. Measured on a
+7.6k-file repository (variants d and d2 of `materialize-experiment-REPORT.md`):
+0 bytes read and about 0.16 s materialize per candidate against 173.6 MB and
+2.3 s. Memory: one tree is the template's size (about 175 MB for that
+repository), charged to the container's `--memory` as shmem and swappable when
+zswap is on; `jobs` workers hold `jobs` trees. A directory that is not a tmpfs
+or ramfs, a template above `tmpfs_max_mib`, too little free space for one more
+tree, or a write error is not a failure: that candidate and the rest use the
+clone path and one advisory is written to stderr. The baseline, nested
+materializations and a non-copy-on-write workspace always use the clone path.
+Residue that appears after the scan (a process that outlives its command)
+cannot be seen; the command runner owns process cleanup, and a tree that ever
+scans unclean is dropped.
+Run-gate side: Docker's `/dev/shm` is 64 MiB, so a lane that selects this mode
+needs a larger memory-backed mount in the container: `--shm-size=<N>` (or
+`--tmpfs /dev/shm:rw,exec,size=<N>`, or `tmpfs_root` pointing at another tmpfs
+mount) with N at least `jobs` times the tree size plus headroom, and still under
+the lane's `--memory`. Run-gate has no lane key for this yet (filed in its
+backlog as RG-163).
+
 The history policy and the project-level object ceilings are adopted together
 in the same `assay.toml` commit. This is a complete lane file shape you can
 copy and adapt:

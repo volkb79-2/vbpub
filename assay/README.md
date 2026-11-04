@@ -818,6 +818,11 @@ the clone proof runs per candidate on a copy-on-write workspace; the sealed
 template's index is always refreshed once so `git status` stops hashing the
 whole worktree per candidate. See
 [CONSUMERS.md](docs/CONSUMERS.md) (B219/B220/B222) for the semantics.
+`isolation.materialize = "tmpfs-worker"` (B223) keeps one restored-in-place
+tree per mutation worker on a memory-backed directory (`isolation.tmpfs_root`,
+default `/dev/shm`, bounded by `isolation.tmpfs_max_mib`) and falls back to the
+clone path when that directory is unavailable; the container must provide the
+tmpfs (see CONSUMERS.md).
 
 Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
