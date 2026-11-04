@@ -31,6 +31,55 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+<!-- cmru: pending release notes begin -->
+
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [7.2.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=27cbf539a477e7f1013ea94da82d36c5db635379 -->
+
+### Added
+- feat(cmru): tarball-publish --variant publishes a multi-variant release all-or-nothing (KI-115); tls-edge uses it (489bdb8c8)
+- feat(tls-edge): installer packaging - bundled ciu wheels per interpreter, stable stack root, wizard, adapter; file CIU-163 and KI-115 (c247cc5cb)
+- feat(cmru): installer render/check verbs, stable_dir, stub_launchers, self-copy and wizard questions (CMRU-INST62) (f20d8f3ba)
+
+### Fixed
+- fix(cmru): extend the KI-79 R2-postponement window to the 7.2 patch line (operator decision 2026-11-04) (4b54852bb)
+- fix(cmru): keep GHCR wrong-visibility confirmation a hard failure; in-process tee flush tests (ec1578562)
+- fix(cmru): fixture-closure scan resolves every repo-root spelling and guards per function (KI-88) (1c679ba40)
+- fix(cmru): dependency preflight checks nested wheel pyprojects declared in project.wheel_pyprojects (KI-83) (4906ed249)
+- fix(cmru): scale mutation candidate timeout from the control duration and keep the control's full output (KI-106, KI-87) (60eb2bc13)
+- fix(cmru): tee flush restore, KI-55 backup re-push, KI-56 build_step push, KI-102 dry-run resume tip, KI-103 GHCR warn, KI-67 launcher path order (3e8b4712f)
+- fix(worktree): refuse workspace removal when a mount sits under the checkout (WT-OW-01) (b59dbf12d)
+- fix(tester-unified,wheel-builder,cmru): TB-07, TB-08, TB-10, TB-11, TB-12 (88c851870)
+
+### Changed
+- Merge branch 'fix-cmruki115-20261104c' (5979e3e3c)
+- Merge branch 'fix-ciu-20261104c' (046484860)
+- cmru: renumber the tee-flush backlog entry to KI-116 (KI-115 is the multi-variant publishing entry) (d218c63cf)
+- Merge branch 'fix-cmru-1-20261104' (67d136c62)
+- Merge branch 'fix-cmru-3-20261104' (7c53e62e3)
+- Merge branch 'backlog-platform-20261104' (e69a27940)
+- Merge branch 'finish-cmru-1-20261104' (77a973875)
+- cmru backlog: build_contexts option, tester-gate owner overlay (KI-113, KI-114) (2986930ea)
+
+### Documentation
+- docs(cmru): CHANGES lines and backlog status for KI-106, KI-87, KI-88, KI-83, KI-57 (ee86c2fc3)
+- docs(cmru): close KI-55, KI-56, KI-67 (launcher), KI-102, KI-103; file KI-115 (tee flush) (fb749d388)
+- docs(cmru): rebase CMRU-INST62 installer features onto main, file KI-112, regenerate the surface (a136afaa7)
+- docs(cmru): CMRU-INST62 report with per-feature evidence, plants and gate verdict (e04fbadbc)
+
+### Testing
+- test(cmru): ciu is level 1 now that it consumes the cli-extended wheel; bootstrap level view follows (27cbf539a)
+- test(cmru): cover keystone existing-only without a pointer and the two-stream tee flush branch; estate argv test accepts the cli-extended built-ins help/version (b52c7ba15)
+- test(cmru): refresh stale tls-edge bundle tests for the instance installer (switch off wizard/stable-dir/adapter in the generic bundle test; builder helper name) (812d06cc1)
+- test: late-mount tests for the worktree library and a cmru adapter mount-refusal test (bdebd15f6)
+- test(cmru): end-to-end merge-promote for multi-project and nested-project paths (KI-57) (3633db417)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - fix(cmru): the KI-79 R2-postponement window now covers the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`) by operator decision 2026-11-04 (R2 waived for releases, run later with `--jobs` on r1002; closes with one full R2 over the 7.2 content), so cmru 7.2.0 can pass `gate-provisional`; 7.3.0 and later still refuse, and the dry-run precondition shares the gate's table (KI-79, KI-109)
 - WT-OW-01: the embedded `worktree` library refuses workspace removal (release/build worktree cleanup, `cmru abandon`) when any mount, such as a CoW subvolume or bind mount, sits at or under the checkout. It names each mount ("detach it first"), never unmounts, and `force` does not override it. Ships with the identical library copy in ciu (install ciu first, then cmru).
@@ -39,7 +88,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(cmru): the fixture-closure test scans every repository-root path spelling with an AST walk, per function and per declared guard, and checks tracked-ness (KI-88)
 - fix(cmru): `cmru dependencies` checks first-party requirements of nested wheel `pyproject.toml` files declared in `project.wheel_pyprojects` (KI-83)
 - test(cmru): end-to-end merge-promote cases for several projects in one transaction and a project nested two levels deep (KI-57)
-<!-- cmru: pending release notes begin -->
+                                          
 - feat(cmru): `cmru handler tarball-publish --variant NAME[=LABEL]` (repeatable, with `--asset-suffix` and release-level `--extra-asset`) publishes a multi-variant release: one asset plus `.sha256` sidecar per variant and the companions under one tag, `latest.json` listing every variant, all-or-nothing input validation (a missing, stale or undeclared variant refuses before any upload), a read-back of the release's assets before `<prefix>-latest` moves, and the same retained build-output guards as a single asset. Single-variant projects are unchanged (KI-115).
 - fix(cmru): a `BrokenPipeError` (or closed stream) while flushing stdout/stderr at the end of the release log tee scope no longer skips the descriptor restore or masks the in-flight exception; the flush failure is attached as a note, or raised after the restore when nothing else is in flight (KI-116).
 - fix(cmru): the durable candidate backup branch on origin is re-pushed after every merge-promote retry, so a failed or interrupted promotion leaves the merged tip inspectable (KI-55).
@@ -49,8 +98,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(cmru): the embedded `worktree` library now re-reads the mount table right before every deletion, including the permission-retry paths (WT-OW-01); a mount under a release or build workspace refuses removal through `cmru` cleanup and `cmru abandon` (adapter test added). The library copy is byte-identical to ciu's (one source directory, packaged by both wheels); release ciu first, then cmru.
 - fix(cmru): the bound launcher appends a source root that carries a stale `*.egg-info`, so the installed distribution metadata wins the identity check (KI-67).
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [7.1.4] - 2026-11-03
 <!-- cmru: generated -->
