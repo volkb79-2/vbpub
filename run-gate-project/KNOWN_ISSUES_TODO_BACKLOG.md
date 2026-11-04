@@ -7605,3 +7605,14 @@ test failed in the lane (`invalid object name`).
 reason only when the checkout carries no `run-gate-v*` tag at all (the tagless snapshot): there is no hermetic route to a released reader without a tag, and
 vendoring a copy of the released source would drift. A checkout with tags but no usable 24.x tag fails. The skip is the third, documented structural exception in
 `tests/_testdeps.py` (`test_no_test_bypasses_the_policy` now pins three markers). Developer clones and the normal `cmru` gate still run the test.
+
+## RG-160 — two intermittent, lane-only R0 failures in the `assay-r1`/`assay-r2` lane container that do not reproduce by hand: `test_clean_session_passes` (inner pytest hangs to the 120 s timeout) and `test_reattach_adopts_recorded_session_stop_called_with_it` (`ctl stop` answered an unparsable response)
+
+**Status:** OPEN (watch), 2026-11-05 (fix-r2-lanes-20261105). Four full `assay-r1` runs on this worktree: run 1 failed `test_clean_session_passes` (+ RG-157/158/159 items), runs 2 and 3 failed
+only the reattach test, run 4 PASSED R0 and R1 (2875 passed). `test_clean_session_passes` then passed in every later run, in a narrowed lane (single file, and the seven files before
+`test_run_gate`) and by hand; the reattach test passes by hand in a `tester-unified` container, alone and with the whole class, and in a full host run of `tests/test_run_gate.py`.
+
+**What is known.** The reattach test's fake cgprofile daemon (`_FakeCgprofileDaemon`) answered `ctl stop` with an empty or truncated body in the failing runs; no cause was found
+without evidence of the bytes. **Diagnostic landed:** the `unparsable response` profiling warning now names the response length and its first 60 characters, so the next occurrence names
+the cause. No product defect is claimed. **Next step:** when either test fails again in a lane, read the warning (reattach) or add `faulthandler`/`py-spy` output to the inner session
+(clean-session) before changing code; treat a differing result between runs under load as inconclusive.

@@ -17,6 +17,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   the `tester-unified` lane image.
 - RG-159: the released-reader compatibility test derives the older release tag from the `run-gate-v24.*` tags that exist and skips with a stated reason only in a
   tagless snapshot, instead of failing the assay lane R0.
+- RG-160: the `cgprofile ctl <verb> produced an unparsable response` warning now names the response length and its first 60 characters (diagnostic for an
+  intermittent lane-only failure of the reattach profiling test).
 - RG-154: the `--jobs N>1`/`auto` cheap-clone capacity probe resolves `cowtree` from the pinned Assay zipapp (`python3 x.pyz` assay commands) instead of
   the lane image, and the refusal now names `cheap_clone_reason`; CONSUMERS documents the image requirements.
 - RG-155: the lane header prints the Assay lane `budget` from `assay.toml` (it ends each attempt with LANE_TIMEOUT) next to the run-gate wrapper budget
