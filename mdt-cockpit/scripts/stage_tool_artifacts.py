@@ -380,7 +380,7 @@ def _resolve_version(requested: str | None, repo: str) -> str:
 #     newest release at least MDT_TOOL_MIN_AGE_DAYS old, default = the estate's `versions.age_window_days`
 #     in cmru.orchestration.toml, 14), copilot/openclaw/claudelink via the `cmru versions` record, aider's
 #     PyPI dependencies via `deps_before`; tmux/broot/apt packages via Debian's own release process.
-#   * FIRST-PARTY wheels (pip/wheels.list: cli-extended, ciu, cmru, topos, nyxloom, run-gate) and the PWMCP bundle
+#   * FIRST-PARTY wheels (pip/wheels.list: cli-extended, ciu, cmru, topos, nyxloom, run-gate, cgprofile) and the PWMCP bundle
 #     have NO age window: always the newest published release. They are resolved by
 #     scripts/resolve-devcontainers-release.py (`GitHubReleases.resolve_latest`, the highest-semver
 #     `<name>-v*` release; ciu additionally through `ciu-latest/latest.json`) and build-push.py
@@ -404,7 +404,7 @@ SHA40_RE = re.compile(r"[0-9a-f]{40}")
 # key of `_resolve_versions` follows upstream latest or a record; no first-party name is ever here.
 AGED_THIRD_PARTY_TOOLS = ("GDU_VER", "DUST_VER", "OV_VER", "DRY_VER", "YAZI_VER", "SSS_VER")
 # The first-party distributions (pip/wheels.list) and bundle that have NO age window by decision.
-FIRST_PARTY_NO_AGE_WINDOW = ("cli-extended", "ciu", "cmru", "topos", "nyxloom", "run-gate", "pwmcp")
+FIRST_PARTY_NO_AGE_WINDOW = ("cli-extended", "ciu", "cmru", "topos", "nyxloom", "run-gate", "cgprofile", "pwmcp")
 
 
 def _min_age_days() -> int:

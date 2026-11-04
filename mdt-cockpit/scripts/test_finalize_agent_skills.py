@@ -70,7 +70,7 @@ def _calls(home: Path) -> list[str]:
 
 
 def test_the_cli_list_is_one_constant_of_the_first_party_skill_publishers() -> None:
-    assert finalize.SKILLS_CLIS == ("cmru", "ciu", "pwmcp", "topos")
+    assert finalize.SKILLS_CLIS == ("cmru", "ciu", "pwmcp", "topos", "cgpctl")
 
 
 def test_a_not_current_cli_gets_skills_installed(env: tuple[Path, Path]) -> None:

@@ -1008,7 +1008,14 @@ the scratch-host reproduction is recorded with its cause (or "not reproducible w
 
 ## MDT-048 - cgprofile client is not in the image: cgprofile releases carry no wheel (2026-11-03)
 
-**Status:** OPEN. `pip/wheels.list` resolves `<name>-v*` releases that carry a `.whl`. The `cgprofile-v*` releases
+**Status:** FIXED 2026-11-04 (branch `mdt-cgp-native-20261104`; verified by the wheel-set, staging, release-flow, local-dev and
+finalize-skills tests). `cgprofile` is in `pip/wheels.list`, `FIRST_PARTY_WHEEL_NAMES`, `FIRST_PARTY_NO_AGE_WINDOW`, the Dockerfile
+manifest RUN, the size-breakdown leaf, the docs tables and the `local-dev-artifacts.toml.example` names; `SKILLS_CLIS` gains `cgpctl`;
+`cmru.orchestration.toml` declares `cgroup-profiler` in the cockpit's `depends_on`. The `report` extra is not installed (the image
+installs only the files `check_wheel_set.py` emits, and the wheel's only runtime dependency is cli-extended); a release-flow test
+pins that. The text below is the original problem statement.
+
+`pip/wheels.list` resolves `<name>-v*` releases that carry a `.whl`. The `cgprofile-v*` releases
 (`scripts/cgroup-profiler/cmru.toml`: `artifacts = ["oci-image"]`) publish only the daemon image to `ghcr.io/volkb79-2/cgprofile`
 and a release note; the release has no assets, and `scripts/cgroup-profiler/pyproject.toml` (`cgroup-profiler`, stdlib-only
 collector, optional `report` extra) is not built into a wheel. So the cgprofile client (wrap/attach CLI) cannot be added to the

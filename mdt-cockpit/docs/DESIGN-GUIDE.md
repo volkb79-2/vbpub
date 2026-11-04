@@ -138,7 +138,7 @@ decision and could again leave user state behind.
 
 ### Agent skills of the first-party CLIs
 
-The first-party CLIs that package agent skills (`cmru`, `ciu`, `pwmcp`, `topos`;
+The first-party CLIs that package agent skills (`cmru`, `ciu`, `pwmcp`, `topos`, `cgpctl`;
 the constant `SKILLS_CLIS` in `finalize_container_environment.py`) install them
 with `<cli> skills install` into `~/.claude/skills` and `~/.agents/skills`, which
 are user state, so the image cannot ship them. A fresh home has none, and

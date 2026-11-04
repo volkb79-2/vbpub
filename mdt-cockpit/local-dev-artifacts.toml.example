@@ -8,7 +8,7 @@
 # releases, exactly as in a release build.
 #
 # Known names: every package in pip/wheels.list (cli-extended, ciu, cmru, topos,
-# nyxloom, run-gate), plus the PWMCP installer and bundle consumed by
+# nyxloom, run-gate, cgprofile), plus the PWMCP installer and bundle consumed by
 # scripts/install_pwmcp_instance.py:
 #   pwmcp-installer  the generated get.py       (version = the pinned PWMCP release)
 #   pwmcp-bundle     the release .tar.xz bundle (version = the pinned PWMCP release)

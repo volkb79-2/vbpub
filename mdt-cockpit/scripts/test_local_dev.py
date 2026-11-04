@@ -24,7 +24,7 @@ import install_pwmcp_instance as pwmcp_installer  # noqa: E402
 import local_dev  # noqa: E402
 import manifest_sections  # noqa: E402
 
-WHEEL_NAMES = ["cli-extended", "ciu", "cmru", "topos", "nyxloom", "run-gate"]
+WHEEL_NAMES = ["cli-extended", "ciu", "cmru", "topos", "nyxloom", "run-gate", "cgprofile"]
 PWMCP_VERSION = "1.64.0-r2"
 
 

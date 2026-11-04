@@ -21,7 +21,7 @@ PACKAGE_LIST_FILE = Path(__file__).resolve().parent.parent / "apt" / "packages.l
 # One entry per pip/wheels.list name (the Dockerfile's manifest RUN prints `<name>=<version>` for
 # each; `CIU` keeps its historical capitalised key). scripts/test_oci_tool_staging.py pins the
 # three in sync, so a wheel added to the list cannot silently vanish from the manifest.
-FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru", "topos", "nyxloom", "cli-extended", "run-gate")
+FIRST_PARTY_WHEEL_NAMES = ("CIU", "cmru", "topos", "nyxloom", "cli-extended", "run-gate", "cgprofile")
 AI_CLI_TOOL_NAMES = ("aider", "antigravity", "claude", "claudelink", "codex", "copilot", "openclaw", "opencode", "pi", "reasonix")
 CONTAINER_INSPECTION_TOOL_NAMES = (
     "crane",

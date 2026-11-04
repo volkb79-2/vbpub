@@ -217,9 +217,9 @@ def test_the_command_writes_the_install_list_and_record_only_on_success(tmp_path
         assert not install.exists() and not record.exists()
 
 
-def test_the_shipped_wheel_list_declares_the_six_names_the_lane_and_docs_rely_on() -> None:
+def test_the_shipped_wheel_list_declares_the_seven_names_the_lane_and_docs_rely_on() -> None:
     assert check_wheel_set.declared_names(ROOT / "pip" / "wheels.list") == [
-        "cli-extended", "ciu", "cmru", "topos", "run-gate", "nyxloom",
+        "cli-extended", "ciu", "cmru", "topos", "run-gate", "cgprofile", "nyxloom",
     ]
 
 

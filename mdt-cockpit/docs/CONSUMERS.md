@@ -797,7 +797,7 @@ MDT_RUNTIME_IMAGE_NATIVE=<native -dev- tag> MDT_RUNTIME_IMAGE_VSC=<vsc -dev- tag
 MDT_RUNTIME_LOCAL_DEV_MANIFEST=$PWD/local-dev-artifacts.toml run-gate image-runtime
 ```
 
-Allowed names are the packages in `pip/wheels.list` (`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`) plus
+Allowed names are the packages in `pip/wheels.list` (`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, `cgprofile`) plus
 `pwmcp-installer` and `pwmcp-bundle`.
 An unknown, missing, unreadable or hash-mismatched entry refuses the build and names it; names you
 do not list still come from their releases. The images are loaded into your local Docker daemon as
@@ -861,7 +861,7 @@ recorded version and no age window.
 
 **First-party wheels and PWMCP have no age window either** (operator decision 2026-10-27: the 14-day
 buffer is for third-party tools and dependencies only). The wheels in `pip/wheels.list` (`cli-extended`,
-`ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`) always install their newest published `<name>-v*` release, and the
+`ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, `cgprofile`) always install their newest published `<name>-v*` release, and the
 PWMCP bundle is the release named by `pwmcp/pwmcp.contract.json` at the source commit (`get.py` verifies
 it). The third-party staged tools (`gdu`, `dust`, `ov`, `dry`, `yazi`, `sss`) take the newest release at
 least `MDT_TOOL_MIN_AGE_DAYS` old (default: the estate's `versions.age_window_days`).

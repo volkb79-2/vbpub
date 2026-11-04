@@ -258,7 +258,7 @@ def verify_base_tools() -> None:
 # (check / install, cli-extended's skills plugin). One constant: add a CLI here and
 # nowhere else. A CLI that is absent from PATH, or whose installed version has no
 # `skills` verb yet, is skipped quietly.
-SKILLS_CLIS = ("cmru", "ciu", "pwmcp", "topos")
+SKILLS_CLIS = ("cmru", "ciu", "pwmcp", "topos", "cgpctl")
 SKILLS_TIMEOUT_SECONDS = 20  # per call
 SKILLS_TOTAL_BUDGET_SECONDS = 60  # whole step; a hung CLI never holds the container start longer
 # Warn-once markers (one file per CLI and kind, in the container's writable layer): a

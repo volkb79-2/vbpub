@@ -23,7 +23,7 @@ registry = ["ghcr.io"]
 #   cgroup-profiler <- cli-extended  (declared release order)
 #   run-gate-project <- cgroup-profiler  (declared release order)
 #   cmru <- cli-extended, run-gate-project  (declared release order)
-#   ciu <- none  (declared release order)
+#   ciu <- cli-extended  (declared release order)
 #   assay <- none  (declared release order)
 #   topos <- none  (declared release order)
 #   nyxloom <- cli-extended  (declared release order)
@@ -32,13 +32,13 @@ registry = ["ghcr.io"]
 #   tls-edge <- none  (declared release order)
 #   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
-#   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project  (declared release order)
-#     consumes first-party wheels: cli-extended, ciu, cmru, topos, run-gate-project, nyxloom
+#   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project, cgroup-profiler  (declared release order)
+#     consumes first-party wheels: cli-extended, ciu, cmru, topos, run-gate-project, cgroup-profiler, nyxloom
 #   tester-base <- none  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
-#   L0: cli-extended, ciu, assay, topos, tls-edge, tester-base
-#   L1: tnt, cgroup-profiler, nyxloom, pwmcp, iobench
+#   L0: cli-extended, assay, topos, tls-edge, tester-base
+#   L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench
 #   L2: run-gate-project
 #   L3: cmru
 #   L4: modern-debian-tools-python-debug, mdt-cockpit
@@ -213,7 +213,7 @@ depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom"]
 [orchestration.project.mdt-cockpit]
 config = "mdt-cockpit/cmru.toml"
 # The fork uses the same first-party CIU and CLI tooling in its image.
-depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom", "run-gate-project"]
+depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom", "run-gate-project", "cgroup-profiler"]
 
 # Leaf image project (python:3.14-trixie digest + docker client + minisign + shellcheck): no
 # first-party dependency. cmru is its release tooling, an installed tool and not a build edge

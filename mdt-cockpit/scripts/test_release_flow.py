@@ -98,6 +98,12 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertRegex(wheels, r"(?m)^nyxloom\s+#")
         # run-gate is stdlib-only (no dependency floor needed); its wheel is run_gate-*.whl.
         self.assertRegex(wheels, r"(?m)^run-gate\s+#")
+        # cgprofile (MDT-048): the wheel carries the cgpctl client; its only dependency is cli-extended
+        # (already listed) and the `report` extra stays out of the image closure (no pandas/plotly/... here).
+        self.assertRegex(wheels, r"(?m)^cgprofile\s+#")
+        for heavy in ("pandas", "plotly", "matplotlib", "scipy", "ruptures"):
+            self.assertNotRegex(wheels, rf"(?m)^{heavy}\b")
+        self.assertNotIn("cgprofile[report]", requirements)
         # cmru's wheel declares cli-extended; the install is --no-index, so it must be staged too.
         self.assertRegex(wheels, r"(?m)^cli-extended\s+#")
         dockerfile = (ROOT / "Dockerfile").read_text()

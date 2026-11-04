@@ -238,7 +238,7 @@ LEAVES: list[Leaf] = [
     # dependency-closure probe to split it back out of a merged one.
     Leaf("venv_general", "general dev toolkit (toolkit.txt)", ("mdt layers", "Primary venv"), ("Runtimes", "Python (venv)")),
     Leaf("mdt_aider", "aider-chat + its transitive dependency closure (own layer)", ("mdt layers", "Aider (venv mode)"), ("AI coding-agent tools",)),
-    Leaf("mdt_wheels", "first-party wheels (ciu/cmru/topos/nyxloom/run-gate)", ("mdt layers", "First-party wheels"), ("First-party wheels",), ("/opt/mdt/venv/lib/python3.*/site-packages/ciu*", "/opt/mdt/venv/lib/python3.*/site-packages/cmru*", "/opt/mdt/venv/lib/python3.*/site-packages/topos*", "/opt/mdt/venv/lib/python3.*/site-packages/nyxloom*", "/opt/mdt/venv/lib/python3.*/site-packages/run_gate*")),
+    Leaf("mdt_wheels", "first-party wheels (ciu/cmru/topos/nyxloom/run-gate/cgprofile)", ("mdt layers", "First-party wheels"), ("First-party wheels",), ("/opt/mdt/venv/lib/python3.*/site-packages/cgprofile*","/opt/mdt/venv/lib/python3.*/site-packages/ciu*", "/opt/mdt/venv/lib/python3.*/site-packages/cmru*", "/opt/mdt/venv/lib/python3.*/site-packages/topos*", "/opt/mdt/venv/lib/python3.*/site-packages/nyxloom*", "/opt/mdt/venv/lib/python3.*/site-packages/run_gate*")),
     # ── Manifest generation ──────────────────────────────────────────────────
     Leaf("manifest_root_copilot_cache", "/root/.cache/copilot [dead weight — root is never used at runtime]", ("mdt layers", "Manifest generation step"), ("Dead weight / build artifacts",), ("/root/.cache/copilot",)),
 ]
