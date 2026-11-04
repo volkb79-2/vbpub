@@ -156,10 +156,12 @@ class Contract:
     HTOP = [("F10", b"q")]                      # function-key bar drawn -> q
     MC = [("10Quit|Quit", b"\x1b[21~"), (r"(?i)really want|\[\s*Yes", b"\r")]  # F10, then confirm if asked
 
-    def test_nano_reads_the_system_nanorc_that_includes_the_image_defaults(self) -> None:
+    def test_nano_starts_without_rc_errors_and_the_system_nanorc_carries_the_image_defaults(self) -> None:
+        # An `include` of the defaults made nano 8.x print "Command "set" not allowed in included file".
         opened = self.trace("nano /tmp/probe.txt", self.NANO)
-        system = opened.index("/etc/nanorc")
-        self.assertIn("/usr/local/share/mdt-cockpit/nanorc", opened[system:], "the include must be processed")
+        self.assertIn("/etc/nanorc", opened)
+        result = self.box("grep -c '^set linenumbers' /etc/nanorc; grep -c '^include .*mdt-cockpit/nanorc' /etc/nanorc || true; nano --version >/dev/null 2>/tmp/nano.err; script -qec 'nano --help' /dev/null >/dev/null 2>&1; ! grep -q 'not allowed' /tmp/nano.err")
+        self.assertEqual(result.stdout.split()[:2], ["1", "0"], result.output)
 
     def test_a_user_nanorc_is_read_after_the_system_one_so_it_can_override(self) -> None:
         opened = self.trace("nano /tmp/probe.txt", self.NANO, prepare="printf 'set nolinenumbers\\n' > ~/.nanorc; ")
@@ -204,7 +206,7 @@ class Contract:
                 self.assertEqual(in_image[path], expected, f"{path} differs from {source}")
         hooks = self.box(
             "S=/usr/local/share/mdt-cockpit; "
-            "grep -F \"include \\\"$S/nanorc\\\"\" /etc/nanorc >/dev/null && echo nano-includes; "
+            "grep -qx 'set linenumbers' /etc/nanorc && echo nano-includes; "
             "grep -F \"$S/bashrc\" /etc/bash.bashrc >/dev/null && echo bash-hook; "
             "grep -F \"$S/zshrc\" /etc/zsh/zshrc >/dev/null && echo zsh-hook"
         )

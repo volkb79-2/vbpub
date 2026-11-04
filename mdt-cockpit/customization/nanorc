@@ -1,5 +1,6 @@
-# mdt-cockpit nano defaults, included from the end of /etc/nanorc (which already
-# provides the syntax-highlighting set). nano reads ~/.nanorc or
+# mdt-cockpit nano defaults, APPENDED to the end of /etc/nanorc (which already
+# provides the syntax-highlighting set; not included, because nano refuses `set` in
+# an included file). nano reads ~/.nanorc or
 # ~/.config/nano/nanorc after /etc/nanorc, so a user setting overrides these.
 set historylog
 set linenumbers
