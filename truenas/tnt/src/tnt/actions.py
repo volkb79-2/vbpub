@@ -104,6 +104,9 @@ class Action:
     # system/update plan. This binds later reboot verification to the same host
     # boot that the operator reviewed.
     system_baseline: tuple[str, str, str] | None = None
+    # A second typed confirmation naming the data that dies with the call (a zvol or raw backing file); it is bound
+    # into the fingerprint and must be typed separately from ``confirm_target``.
+    confirm_second: str | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,8 @@ class Plan:
             lines.append("Completion check: poll container.get_instance until status.state is STOPPED (up to 30 seconds) before continuing.")
         if self.action.confirm_target:
             lines.append(f"Destructive: type {self.action.confirm_target!r} to confirm.")
+        if self.action.confirm_second:
+            lines.append(f"Data destruction: also type {self.action.confirm_second!r} as the second confirmation.")
         if self.action.confirm_self:
             lines.append("Explicit current-account confirmation: supplied.")
         if self.action.system_preflight:
@@ -181,6 +186,10 @@ def validate_action(action: Action) -> None:
         raise Refused("empty-probe", f"{action.id} changes host state but has no target probe: the drift check would be vacuous")
     if action.kind is Kind.DESTRUCTIVE and not (action.confirm_target and action.confirm_target.strip()):
         raise Refused("empty-confirm", f"{action.id} is destructive but names no confirmation target to type")
+    if action.confirm_second is not None and (action.kind is not Kind.DESTRUCTIVE or not action.confirm_target
+                                              or not isinstance(action.confirm_second, str)
+                                              or not action.confirm_second.strip()):
+        raise Refused("empty-confirm", f"{action.id}: a second confirmation needs a destructive action and a non-empty name")
     if (not isinstance(action.force_with_jobs, bool) or not isinstance(action.system_preflight, tuple)
             or not isinstance(action.confirm_self, bool)):
         raise Refused("action-policy", "action safety metadata is malformed")
@@ -252,7 +261,7 @@ def fingerprint_of(rpc: GuardedRpc, action: Action, nonce: str,
         "id": action.id, "kind": str(action.kind), "title": action.title, "confirm": action.confirm_target,
         "force_with_jobs": action.force_with_jobs, "system_preflight": action.system_preflight,
         "confirm_self": action.confirm_self, "system_baseline": action.system_baseline,
-        "session": rpc.session_id, "nonce": nonce,
+        "confirm_second": action.confirm_second, "session": rpc.session_id, "nonce": nonce,
         "calls": [[c.method, _fingerprint_value(c.params, nonce), c.job] for c in action.calls],
         "probe": [[c.method, _fingerprint_value(c.params, nonce), _fingerprint_probe_result(c, result, nonce)]
                   for c, result in zip(action.probe, probe_results)],
@@ -274,6 +283,7 @@ def make_plan(action: Action, rpc: GuardedRpc, *, cancelled: Callable[[], bool] 
 
 
 def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirmation: str | None = None,
+               typed_second_confirmation: str | None = None,
                job_progress: Callable[[Mapping[str, Any]], None] | None = None,
                cancelled: Callable[[], bool] | None = None) -> ApplyResult:
     if not isinstance(rpc, GuardedRpc):
@@ -295,6 +305,9 @@ def apply_plan(plan: Plan, rpc: GuardedRpc, *, allow_write: bool, typed_confirma
         raise Refused("read-only", f"{action.id} changes the host; rerun with --allow-write")
     if action.kind is Kind.DESTRUCTIVE and (action.confirm_target is None or typed_confirmation != action.confirm_target):
         raise Refused("typed-confirmation", f"{action.id} is destructive: type {action.confirm_target!r} exactly to confirm")
+    if action.confirm_second is not None and typed_second_confirmation != action.confirm_second:
+        raise Refused("typed-second-confirmation",
+                      f"{action.id} also destroys {action.confirm_second!r}: type that exact name as the second confirmation")
     if fingerprint_of(rpc, action, plan.nonce, cancelled) != plan.fingerprint:
         raise Refused("state-drift", f"the host or the action changed since {action.id} was planned; plan again")
     _check_cancelled(cancelled)

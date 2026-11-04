@@ -45,6 +45,9 @@ class Backend:
     verified: ClassVar[str]
     manifest: ClassVar[Mapping[str, Mapping[str, MethodSpec]]]
     destructive: ClassVar[frozenset[str]]
+    # Manifest features whose methods exist only on patched hosts or vary by build. A host that lacks them is not
+    # reported as a capability gap; the feature is probed at runtime and hidden with a clear message (TNT-35 pattern).
+    optional_features: ClassVar[frozenset[str]] = frozenset()
 
     def __init__(self, version: str):
         self.version = version

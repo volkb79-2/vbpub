@@ -528,11 +528,11 @@ export TNT_LIVE_POOL=tank
 export TNT_LIVE_ALLOW_SYSTEM=1
 ```
 
-Run these phases in order against a disposable v1001 host. Resolve the source version from `system verify`, the target
+Run these phases in order against a disposable test host. Resolve the source version from `system verify`, the target
 profile ID from `system update profiles`, and the exact train/version pair from `system update versions`. The lane
 selects the requested available profile through a typed tnt plan if needed, then verifies the exact pair is still
-available before it creates a fixture. Serialize every
-connection to v1001, including the patch pre-steps, with the estate lock:
+available before it creates a fixture. Serialize every connection to the host, including the patch pre-steps, with
+an operator-chosen lock file (`TNT_LIVE_HOST_LOCK` names its absolute path; keep it outside the repository):
 
 ```bash
 export TNT_LIVE_UPDATE_PHASE=vanilla-v27
@@ -540,7 +540,7 @@ export TNT_LIVE_UPDATE_SOURCE_VERSION='<exact vanilla v27 source version>'
 export TNT_LIVE_UPDATE_TARGET_PROFILE='<available profile ID, such as DEVELOPER>'
 export TNT_LIVE_UPDATE_TARGET_TRAIN='<available v27 nightly train>'
 export TNT_LIVE_UPDATE_TARGET_VERSION='<exact v27 nightly version from system update versions>'
-flock -w 3600 /home/vscode/vbpub-release-program-20261027/v1001.lock run-gate live-update
+flock -w 3600 "$TNT_LIVE_HOST_LOCK" run-gate live-update
 ```
 
 Next, install the v27 patch using the existing `scripts/truenas/boot-pool-patch` CLI's `live-v27-patch` lane and its
@@ -555,7 +555,7 @@ export TNT_LIVE_UPDATE_SOURCE_VERSION='<exact patched v27 version>'
 export TNT_LIVE_UPDATE_TARGET_PROFILE='<available profile ID, such as DEVELOPER>'
 export TNT_LIVE_UPDATE_TARGET_TRAIN='<available v28 train>'
 export TNT_LIVE_UPDATE_TARGET_VERSION='<exact v28 nightly version from system update versions>'
-flock -w 3600 /home/vscode/vbpub-release-program-20261027/v1001.lock run-gate live-update
+flock -w 3600 "$TNT_LIVE_HOST_LOCK" run-gate live-update
 ```
 
 After tnt verifies the v28 boot, use the companion patch CLI's documented `live-v28-patch` install/replace action,
@@ -568,7 +568,7 @@ export TNT_LIVE_UPDATE_TARGET_VERSION='<exact patched v28 version>'
 export TNT_LIVE_UPDATE_DATASET='<dataset printed by patched-v27>'
 export TNT_LIVE_UPDATE_SNAPSHOT='<snapshot printed by patched-v27>'
 export TNT_LIVE_UPDATE_CANONICAL_SHA256='<SHA-256 printed by patched-v27>'
-flock -w 3600 /home/vscode/vbpub-release-program-20261027/v1001.lock run-gate live-update
+flock -w 3600 "$TNT_LIVE_HOST_LOCK" run-gate live-update
 ```
 
 The companion patch consumer instructions are maintained in the `truenas-restore-iso` worktree at
