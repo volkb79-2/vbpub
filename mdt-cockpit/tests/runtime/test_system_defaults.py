@@ -164,19 +164,46 @@ class Contract:
         self.assertEqual(result.stdout.split()[:2], ["1", "0"], result.output)
 
     def test_nano_reports_no_rc_errors_when_it_really_reads_its_rc_files(self) -> None:
-        # `nano --version/--help` exit before reading any rc file, so run the editor itself on a pty
-        # (`script`, stdin at EOF so it quits) and read the transcript. The control run proves the
-        # check can fail: a bad user rc must show nano's "Error in ..." line.
-        # Ctrl-X is fed after a second so nano quits by itself; `timeout 120` is only the failsafe
-        # (the runtime lane forbids scenario timeouts under 120 s, test_runtime_lane.py).
-        run = "(sleep 1; printf '\\030') | script -qec 'timeout 120 nano /tmp/probe.txt' /tmp/nano.out >/dev/null 2>&1; "
-        clean = self.box("printf 'x\\n' > /tmp/probe.txt; " + run + "grep -a -c -E 'Error in|not allowed|Mistakes in' /tmp/nano.out || true")
-        self.assertEqual(clean.stdout.strip().splitlines()[-1], "0", clean.output)
-        control = self.box(
-            "printf 'x\\n' > /tmp/probe.txt; printf 'bogusdirective\\n' > ~/.nanorc; " + run
-            + "grep -a -c -E 'Error in' /tmp/nano.out || true"
+        # `nano --version/--help` exit before reading any rc file, so run the editor itself on a real
+        # pty and read its screen. `script` is no use here: with a pipe on stdin it prints
+        # "<not executed on terminal>" and nano never starts. The helper forks a pty (stdlib), sends
+        # Enter (dismisses nano's "press Enter" after rc errors) and then Ctrl-X, and prints the
+        # transcript; its own 90 s deadline is the failsafe. The transcript must show nano's header
+        # (so the check cannot pass on a nano that never ran) and no rc error lines.
+        helper = (
+            "import os, pty, select, sys, time\n"
+            "pid, fd = pty.fork()\n"
+            "if pid == 0:\n"
+            "    os.environ['TERM'] = 'xterm'\n"
+            "    os.execvp('nano', ['nano', '/tmp/probe.txt'])\n"
+            "start = time.time(); buf = b''; sent = 0\n"
+            "while time.time() - start < 90:\n"
+            "    ready, _, _ = select.select([fd], [], [], 0.3)\n"
+            "    if ready:\n"
+            "        try:\n"
+            "            data = os.read(fd, 4096)\n"
+            "        except OSError:\n"
+            "            break\n"
+            "        if not data:\n"
+            "            break\n"
+            "        buf += data\n"
+            "    now = time.time() - start\n"
+            "    if sent == 0 and now > 1.5:\n"
+            "        os.write(fd, b'\\r'); sent = 1\n"
+            "    elif sent == 1 and now > 3.0:\n"
+            "        os.write(fd, b'\\x18'); sent = 2\n"
+            "    if os.waitpid(pid, os.WNOHANG)[0]:\n"
+            "        break\n"
+            "sys.stdout.write(buf.decode('utf-8', 'replace'))\n"
         )
-        self.assertNotEqual(control.stdout.strip().splitlines()[-1], "0", control.output)
+        result = self.box(
+            "printf 'x\\n' > /tmp/probe.txt; python3 - > /tmp/nano.out <<'PY'\n" + helper + "PY\n"
+            "echo \"header=$(grep -a -c 'GNU nano' /tmp/nano.out) errors=$(grep -a -c -E 'Error in|not allowed|Mistakes in' /tmp/nano.out)\""
+        )
+        match = re.fullmatch(r"header=(\d+) errors=(\d+)", result.stdout.strip().splitlines()[-1])
+        self.assertIsNotNone(match, result.output)
+        self.assertGreaterEqual(int(match.group(1)), 1, f"nano never drew its screen: {result.output}")
+        self.assertEqual(int(match.group(2)), 0, f"nano reported rc errors: {result.output}")
 
     def test_a_user_nanorc_is_read_after_the_system_one_so_it_can_override(self) -> None:
         opened = self.trace("nano /tmp/probe.txt", self.NANO, prepare="printf 'set nolinenumbers\\n' > ~/.nanorc; ")
