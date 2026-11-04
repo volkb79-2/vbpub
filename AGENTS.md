@@ -206,9 +206,6 @@ host-independent resource summary per lane (distributions of runtime and memory,
 reference benchmark score, never by host name). Assay and Run-Gate produce the data; the release tool only
 attaches it. Raw campaign data stays outside the repository.
 
-**Versions.** ciu stays on its 7 line even for CLI breaks; breaking changes are listed in the release notes.
-Dependencies prefer the newest stable release that is at least 14 days old (stable, not LTS).
-
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
 > **A default is legitimate only when it is a policy choice that is correct in
