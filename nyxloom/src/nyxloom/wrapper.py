@@ -758,19 +758,25 @@ def wrapper_main(spec_path: str) -> int:
             amendment_request=amendment_request,
         )
 
+        # CR-03 (DR-13): collect the agent's judgement and bind it to the
+        # facts. BEFORE the receipt (NL-12): the receipt is what the daemon (and
+        # any observer) treats as "this attempt is over, consume it", so it must be
+        # the LAST thing published -- written first, a reader that saw the receipt
+        # could look for the typed result before it existed and read "missing" for
+        # a leg that had in fact answered. An unwritable result store must not
+        # suppress the receipt (the process-ended fact survives; the daemon then
+        # reads "missing" and relaunches), so only OSError is absorbed here.
+        try:
+            _write_typed_results(spec, log_text)
+        except OSError as exc:
+            log.error("typed-result-write-failed", attempt=spec.attempt_id, error=str(exc)[:200])
+
         # Atomic write
         receipt_path = Path(spec.receipt_path)
         receipt_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = receipt_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(receipt.to_dict()), encoding="utf-8")
         os.replace(tmp_path, receipt_path)
-
-        # CR-03 (DR-13): collect the agent's judgement and bind it to the
-        # facts. AFTER the receipt, because the receipt records that the
-        # PROCESS ended and this records what the AGENT concluded -- two
-        # different facts, and the process one must survive even if the agent
-        # wrote nothing readable.
-        _write_typed_results(spec, log_text)
 
         # Append event
         state = storage.load_state(spec.project, spec.task_id)

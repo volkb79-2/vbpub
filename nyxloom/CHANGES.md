@@ -7,6 +7,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - fix(nyxloom): session-extract effect detector (NL-35): `sudo -u`/`timeout -s` wrappers, bare `git tag` and `curl -H "a -d b"` false positives, more than 12 leading assignments, `$(...)` inside double quotes, and `$VAR` command heads listed as "possible effect, head unresolved"
 - fix(nyxloom): a leftover `src/nyxloom.egg-info` no longer shadows the installed distribution's version when `exec-nyxloom.py` runs from a checkout (NL-24)
+- docs(nyxloom): operational READMEs, ntfy/pwmcp-instance/nyxloomd files and the process-model doc use `<instance_id>` placeholders and `ciu resolve` instead of a hard-coded instance id; the plain-compose fallback derives its container and network names from `NYXLOOM_CONTAINER_PREFIX` (NL-38, docs part)
+- fix(nyxloom): the wrapper publishes the typed result before the receipt, so a reader that sees the receipt never reads a missing result for a leg that answered (NL-12)
+- test(nyxloom): stray `sleep` children of the interrupt and SIGKILL-drill tests are reaped on failure paths
 
 <!-- cmru: release history -->
 
