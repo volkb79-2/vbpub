@@ -14,48 +14,37 @@ to that production container?"* — so observing a **victim** alongside the
 
 ## CLI identity
 
-The documented shell entrypoint and `cgprofile.py` parser share the project
-version from `pyproject.toml`. A top-level `--version` probe prints
-`cgprofile 0.1.0` on stdout, exits 0, and does not require the reporting venv;
-the shim routes this probe directly to the standard-library parser before its
-missing-venv diagnostic. At every nested parser depth, help, usage, and
-configuration diagnostics begin with `CGPROFILE 0.1.0 — cgroup resource
-profiler` as line 1; normal profiling output is unchanged.
+Two console scripts ship in the `cgprofile` wheel: `cgpctl` (the client) and
+`cgpd` (the daemon). Both are built on cli-extended and read their version
+from the installed distribution (scm-derived from the `cgprofile-v` release
+tag; an untagged build is `0.0.0-dev`). `--version` prints one identity line,
+exits 0 and needs neither the daemon nor the `report` extra. At every nested
+parser depth, help, usage and error output begin with the identity headline.
+The reviewed command surface is `docs/CLI-SPEC.md`; the behavioural contract
+is `docs/CGPCTL-SPEC.md`.
 
 ## 1. Why the shape is what it is
 
-**The devcontainer cannot see the host cgroup tree.** `/sys/fs/cgroup` inside it
-is a read-only, cgroup-namespaced view of its own subtree; `dev.slice`,
-`wings.slice` and everything else simply do not exist there. Shuttling
-individual file reads across a container boundary cannot sustain a 250 ms
-cadence, so instead the profiler **re-executes its entire self** inside a
-privileged helper container with private PID/cgroup namespaces, the repo and
-output directory bind-mounted, and explicit read-only host `/proc` and cgroup
-mounts. Host process data is read from `/hostproc` through
-`CGPROFILE_PROC_ROOT`; the host cgroup tree is mounted at
-`/sys/fs/cgroup`. Sampling code is then byte-identical in both modes, and
-`access.py` owns the proc-root selection. A helper's private PID namespace
-cannot match host PIDs against `cgroup.procs` (the kernel translates
-invisible host tasks to PID `0`), so the Docker-aware caller resolves
-container names, labels, and `self` to immutable container IDs before
-re-exec. `self` therefore continues to mean the invoking container rather
-than the short-lived helper. The ID is located in the read-only host cgroup
-tree; it is never inferred from a namespace-relative `/proc/<pid>/cgroup`
-string.
+**A devcontainer cannot see the host cgroup tree.** `/sys/fs/cgroup` inside it
+is a read-only, cgroup-namespaced view of its own subtree; sibling slices
+simply do not exist there. Shuttling individual file reads across a container
+boundary cannot sustain a 250 ms cadence, so the profiler never tries. There
+are exactly two places the sampling code runs, and it is byte-identical in
+both:
 
-Before starting a helper, `access.py` launches a bounded placement probe under
-the injected interactive slice, after checking that it matches the cockpit's
-actual Docker parent. The probe uses the local `tester-unified:local` image by
-default (or `CGPROFILE_PLACEMENT_PROBE_IMAGE`), queries host systemd over a
-read-only DBus mount, and confirms both the probe and requested slices are
-loaded, non-transient units with instantiated cgroups. Only then is the
-privileged collector launched under the requested parent.
+- **Direct mode** (`cgpctl run`): in the caller's own process tree, where the
+  caller can see cgroupfs. Where it cannot, `run` refuses with one line naming
+  the daemon alternative. `access.py` owns the proc-root selection.
+- **The daemon** (`cgpd`): a native service on the host, which sees host
+  `/proc` and the host cgroup tree directly. Callers in containers reach it
+  through the bind-mounted control socket; they never need host views.
 
-**Bind sources are host paths.** A path handed to the Docker daemon is resolved
-on the host, not inside this container, so `/workspaces/vbpub` must be
-translated to `/home/vb/volkb79-2/vbpub` before it can be mounted into the
-helper. `access.host_path_map()` derives that from our own container's mount
-table — it is discovered, never configured.
+Container names, labels and `self` are resolved to immutable container IDs on
+the Docker-aware caller (`cgpctl start --target container:NAME` runs
+`docker inspect`); the daemon accepts only `containerid:`, `cgroup:` and
+`slice:` targets and locates a container in the host cgroup tree by its ID. It
+is never inferred from a namespace-relative `/proc/<pid>/cgroup` string, and
+the daemon itself never uses Docker.
 
 **Absent is not zero.** Every reader returns `None` for a file that does not
 exist and for the cgroup sentinel `max`. A cgroup can vanish underneath the
@@ -71,48 +60,48 @@ than a huge negative spike. Nothing downstream may reintroduce that spike.
 
 - The **collector** (`access`, `targets`, `metrics`, `limits`, `sampler`,
   `events`, `store`, `caps`, `damon`, `phases`' mark IO, and — RG-55 — `serve`,
-  `subtree`, `summary`) is **standard library only**. It is the half that runs
-  inside the helper container, on a host under memory pressure, next to
-  production. It must not need a venv, must not import pandas to read a
-  counter, and must keep working in a minimal image.
+  `subtree`, `summary`) is **standard library only** (plus cli-extended for the
+  command line). It is the half that runs in direct mode and inside the
+  daemon, on a host under memory pressure, next to production. It must not
+  need the `report` extra, must not import pandas to read a counter, and must
+  keep working in a minimal venv.
 - The **analyser and reports** (`analyze`, `report_html`, `report_md`,
   changepoint detection) run afterwards, outside, and **use real libraries**:
   pandas for resampling/correlation/grouping, plotly for the interactive
   report, matplotlib for the static twin, ruptures for changepoint detection,
   scipy/numpy underneath. Do not hand-roll any of that.
 
-**A third mode, RG-55: the always-on daemon.** `cgprofile serve` is a
-privileged, long-lived process with the host PID namespace (so DAMON sysfs
-resolves host `pid_target` values), a private cgroup namespace, no network,
-read-only host `/proc`, a writable host cgroupfs bind for opt-in placement,
-and the host system bus mounted only into the daemon. Workload, helper, gate,
-and test containers remain private. D-25's cgroup path whitelist is an
-application-level guard on ordinary operations, not an OS boundary against
-arbitrary code execution in the privileged daemon. Host PID mode adds
-process-table visibility and PID-operation authority; numeric PID signalling
-remains prohibited. D-31 asks systemd to create
-one delegated scope beneath the verified gates slice per placed lane; the
-daemon owns only its `rg-<token>` leaf beneath that scope, never a child of the
-systemd-owned slice. D-32 deliberately keeps this single-operator,
-rootful-Docker deployment broker-free; see `docs/DESIGN-GUIDE.md` and the
+**The always-on daemon (RG-55).** `cgpd run` is a privileged, long-lived native
+systemd service (`cgpd.service`, inside a bounded `cgprofile.slice`). Running
+natively it sees the host PID namespace (so DAMON sysfs resolves host
+`pid_target` values), host `/proc` and the host cgroup tree, and talks to host
+systemd over the system bus for placement. It has no network use and no Docker
+use. D-25's cgroup path whitelist is an application-level guard on ordinary
+operations, not an OS boundary against arbitrary code execution in the
+privileged daemon. Host PID visibility adds process-table visibility and
+PID-operation authority; numeric PID signalling remains prohibited. D-31 asks
+systemd to create one delegated scope beneath the verified gates slice per
+placed lane; the daemon owns only its `rg-<token>` leaf beneath that scope,
+never a child of the systemd-owned slice. D-32 deliberately keeps this
+single-operator deployment broker-free; see `docs/DESIGN-GUIDE.md` and the
 RG-55 design record for the honest threat boundary and deferred broker option.
 run-gate talks to this daemon over a Unix socket per lane instead of spawning
-a collector each time —
-`RG55-INTERFACE-CONTRACT.md` is the full wire contract, and it is STILL
-collector-tier: `lib/serve.py` never imports pandas, even for `ctl report`
-(§4.13 below explains how that verb still renders the real interactive
-report without breaking the tier split). The daemon owns its own ciu
-stack (`ciu.*.toml.j2`/`ciu.compose.yml.j2` at the project root) and image
-(`Dockerfile`/`build-push.py`/`docker-bake.hcl`) — see the README's
-"Running the daemon" section for the operator's-eye view; this file stays
-the module-contract reference.
+a collector each time. `RG55-INTERFACE-CONTRACT.md` is the full wire contract
+and `docs/PROTOCOL.md` the request side. The daemon is STILL collector-tier:
+`serve.py` never imports pandas. It does not render reports; it streams a
+stored session through the `export` operation (§4.13) and `cgpctl report`
+renders the real interactive report in the caller's process, so the tier split
+holds. Packaging, the unit and the install path are in
+`docs/NATIVE-DEPLOYMENT.md`; the operator's-eye view is the README's
+"Product overview"; this file stays the module-contract reference.
 
-**Built once, never assembled at run time.** Report dependencies are pinned in
-`requirements-report.txt` and installed into `venv/` by `./setup.sh`, ahead of any
-profiling run. No code path may pip-install, download, or fetch a CDN asset
-while profiling — that would add exactly the load the tool exists to measure.
-`plotly.js` is inlined into each report from the *installed* package, which is
-a local read, not a fetch.
+**Built once, never assembled at run time.** The wheel is built and installed
+ahead of any profiling run; the `report` extra carries the analysis
+dependencies with `>=` floors in `pyproject.toml`, the single source of truth.
+No code path may pip-install, download, or fetch a CDN asset while profiling —
+that would add exactly the load the tool exists to measure. `plotly.js` is
+inlined into each report from the *installed* package, which is a local read,
+not a fetch.
 
 ---
 
@@ -120,44 +109,35 @@ a local read, not a fetch.
 
 ```
 scripts/cgroup-profiler/
-  cgprofile              exec shim → system python3 (serve/ctl/mark/_collect)
-                          or venv/bin/python (everything else, incl. report)
-  cgprofile.py           CLI: run | attach | mark | report | targets | doctor
-                          | serve | ctl  (RG-55)
-  Dockerfile              RG-55: the cgprofile-host-daemon image (2-stage build)
-  build-push.py           RG-55: docker buildx bake --build/--push
-  docker-bake.hcl         RG-55: separate local-only and versioned GHCR targets
-  .dockerignore           RG-55
-  cmru.toml               RG-55: release contract (scm versioning, oci-image)
-  ciu.global.defaults.toml.j2  RG-55: standalone ciu root, host-singleton identity
-  ciu.defaults.toml.j2         RG-55: daemon service config defaults
-  ciu.compose.yml.j2           RG-55: the daemon's compose service block
-  ciu.toml.j2                  RG-55: sparse per-stack override (optional)
-  setup.sh               build venv/ from pinned requirements (run once)
-  requirements-report.txt pinned: pandas, plotly, matplotlib, ruptures, scipy…
-  DESIGN.md              this file
-  README.md              what it is, quickstart; "Running the daemon" (RG-55)
-  ATTACH-GUIDE.md        how to wrap/attach to a gate; "Profiling a run-gate
-                          lane" (RG-55, the daemon-talks-to-run-gate path)
-  lib/
-    model.py      ✅ shared dataclasses (Mark/Phase/Event/Series/Proposal/Analysis)
-    util.py       ✅ file readers, unit parsing, rate(), ancestors(), formatting
-    access.py     ✅ direct-vs-helper detection, host path map, helper spec
-    targets.py    ✅ target spec parsing, cgroup discovery, Membership
-    metrics.py    ← agent A
-    limits.py     ← agent A
-    sampler.py    ← agent B
-    phases.py     ← agent B
-    events.py     ← agent B
-    store.py      ← agent C
-    damon.py      ← agent C (+ RG-55 C3: KdamondPool, multi-session DAMON)
-    caps.py       ← agent C
-    analyze.py    ← agent D
-    report_md.py  ← agent D
-    report_html.py← agent E
-    subtree.py    ← RG-55 C2: token→pid-subtree resolver (§4.13)
-    summary.py    ← RG-55 C1: the incremental Summary accumulator (§4.14)
-    serve.py      ← RG-55 C4/C5: SessionServer, the daemon's own socket loop (§4.15)
+  pyproject.toml          distribution `cgprofile`, console scripts, `report` extra
+  cmru.toml               release contract (scm versioning, wheel artifact)
+  src/cgprofile/
+    cli/cgpctl.py         the client (cli-extended registry; verbs of CGPCTL-SPEC.md)
+    cli/cgpd.py           the daemon entry: run | unit | config | reload
+    cli/legacy.py         the collector child shared by `cgpctl run` and the daemon
+    ctlwire.py            the client side of the control protocol
+    direct.py             `cgpctl run`: direct-mode runner
+    daemon_config.py      the cgpd.toml schema, loader, reload, overrides layer
+    unitfiles.py          `cgpd unit print|check` renderer
+    data/                 unit templates and the default config (package data)
+    skills/cgpctl/        the packaged agent skill
+    _damon/               vendored DAMON analysis (byte-synced by a test)
+    model.py              shared dataclasses (Mark/Phase/Event/Series/Proposal/Analysis)
+    util.py               file readers, unit parsing, rate(), ancestors(), formatting
+    access.py             host-view detection, proc-root selection
+    targets.py            target spec parsing, cgroup discovery, Membership
+    metrics.py limits.py  readers and effective-limit resolution
+    sampler.py phases.py events.py   the sampling loop, marks, event detection
+    store.py damon.py caps.py        run store, DAMON (KdamondPool), cap restore
+    analyze.py report_md.py report_html.py   analysis and renderers (report extra)
+    subtree.py            token→pid-subtree resolver (§4.13)
+    summary.py            the incremental Summary accumulator (§4.14)
+    serve.py              SessionServer, the daemon's socket loop (§4.15)
+    resource_observer.py observer_windows.py   the observer socket (contracts 2, 3)
+  docs/                   CGPCTL-SPEC, CLI-SPEC (generated surface), PROTOCOL,
+                          NATIVE-DEPLOYMENT, CONSUMERS, DESIGN-GUIDE
+  README.md               product overview and quickstart
+  ATTACH-GUIDE.md         how to profile a gate; "Profiling a run-gate lane"
   tests/
 ```
 
@@ -172,7 +152,7 @@ writing anything**; they define the idioms the rest of the package follows.
 <out-dir>/<run-id>/
   manifest.json    run metadata, resolved targets, host facts, limit snapshots
   samples.jsonl    one JSON object per sample tick
-  marks.jsonl      phase marks — appended by `cgprofile mark`, possibly from
+  marks.jsonl      phase marks — appended by `cgpctl mark`, possibly from
                    inside another container sharing the directory
   events.jsonl     detected events
   damon.jsonl      DAMON region snapshots (only when --damon)
@@ -256,7 +236,7 @@ exhausted; never a swap-in) and is the only cgroup-level evidence of swap
 exhaustion. Both read `{}` when the file is absent, never zeros, like every
 other group.
 
-Target option grammar (`lib/targets.py` `_parse_options`): the options of a
+Target option grammar (`cgprofile/targets.py` `_parse_options`): the options of a
 `--target`/`--observe` spec are the text after the LAST `@`, and only when
 every comma-separated item's key is one of `follow`, `nofollow`, `metrics`,
 `as`, `role`, `subpath`; otherwise the whole text is the value, because `@` is
@@ -387,7 +367,7 @@ fixed step. `analyze.py` resamples.
 
 ### 4.5 `phases.py` (agent B)
 
-`Mark` and `Phase` live in `lib/model.py`. Import them; do not redeclare.
+`Mark` and `Phase` live in `cgprofile/model.py`. Import them; do not redeclare.
 
 ```python
 def emit_mark(run_path: str, name: str, kind: str = "phase", meta: Optional[Dict] = None,
@@ -406,7 +386,7 @@ are point annotations, not boundaries.
 
 ### 4.6 `events.py` (agent B)
 
-`Event` and `SEVERITIES` live in `lib/model.py`. Import them; do not redeclare.
+`Event` and `SEVERITIES` live in `cgprofile/model.py`. Import them; do not redeclare.
 
 ```python
 @dataclass
@@ -484,7 +464,7 @@ was `max` means writing back the literal string `max`.
 
 ### 4.9 `analyze.py` (agent D) — **pandas + ruptures**
 
-`Series`, `Proposal` and `Analysis` already exist in `lib/model.py`. Import
+`Series`, `Proposal` and `Analysis` already exist in `cgprofile/model.py`. Import
 them; do not redeclare them.
 
 ```python
@@ -627,20 +607,24 @@ Hard rules from the house data-viz standard, all of which apply here:
 - Past 8 series in a panel, fold the tail into "Other" — never generate a 9th
   hue.
 
-### 4.12 `cgprofile.py` (integrator — not an agent's file)
+### 4.12 `cli/cgpctl.py` and `cli/cgpd.py` (integrators — not an agent's files)
+
+The grammar is the cli-extended registry of each module; the generated
+inventory is `docs/CLI-SPEC.md` and the behaviour is `docs/CGPCTL-SPEC.md`.
+In outline:
 
 ```
-cgprofile run     [--target …] [--observe …] -- <command>     wrapper mode
-cgprofile attach  [--target …] [--duration S] [--until-file F] attach mode
-cgprofile mark    <name> [--kind phase|event] [--run-dir D]
-cgprofile report  [--run-dir D] [--html] [--md]
-cgprofile targets [--target …]                                 resolve and print
-cgprofile doctor                                               access/DAMON check
-cgprofile serve   [--sessions D] [--socket P] [--damon-default on|off]
-                  [--interval S] [--keep-sessions N] [--keep-days N]
-                  [--observe-slices a,b] [--max-sessions N]     RG-55 daemon, PID 1
-cgprofile ctl     <version|start|status|host|stop|report|gc>    RG-55 socket client
+cgpctl run [--phase N] [--out-dir D] [--propagate-exit] -- <command>   direct mode
+cgpctl mark <name> [--kind phase|event] [--meta JSON]                  appends to $CGPROFILE_RUN_DIR
+cgpctl report <session> | --run-dir D   [--out D] [--html-only|--md-only|--export-only D]
+cgpctl start --target T [...] / stop / watch / show / sessions / status / host / prune
+cgpctl config show | set KEY VALUE [--persist] | reset KEY|--all
+cgpctl doctor | skills install|uninstall|check|list
+cgpd run | unit print|check | config check | reload [--reset-overrides]
 ```
+
+The daemon's settings are the keys of `cgpd.toml` (`daemon_config.py`), not
+command-line flags.
 
 ---
 
@@ -689,29 +673,27 @@ rather than threading `limits.py` through the sampler).
 `SessionServer` listens on a Unix socket (JSON-lines request/response, one
 request per connection — `_accept_loop`/`_handle_connection`), running one
 sampling thread per live session at a FIXED cadence (the adaptive
-hot/idle back-off §4.4 describes for `run`/`attach` is deliberately off
+hot/idle back-off §4.4 describes for `cgpctl run` is deliberately off
 here — the contract's own computation rules, §7, assume samples land every
 `interval_seconds` with no gaps). It owns: the in-memory + on-disk session
 registry (restart recovery finalizes any session a previous daemon process
-left `"live"` — `_recover_orphans`), retention (`--keep-sessions`/
-`--keep-days`, run on every `stop` and on demand via `gc`), the
+left `"live"` — `_recover_orphans`), retention (`keep_sessions`/
+`keep_days`, run on every `stop` and on demand via `gc`), the
 `WRITABLE_ROOTS` host-mutation boundary (the sessions directory and the
 DAMON admin sysfs root — every raw write this module or `damon.py` issues
 directly is checked against it; `RunDir`'s own writes are already confined
 by construction), and SIGTERM/SIGINT handling (`serve_forever` — every
 live session is finalized `aborted: "daemon-stopped"` before the socket
-closes). `cgprofile.py`'s `cmd_serve`/`cmd_ctl` (§4.12) are the CLI layer;
-`cmd_ctl`'s wire client (`_ctl_roundtrip`) is a 25 s-timeout, one-document-
-in/one-document-out socket call, nothing more.
+closes). `cli/cgpd.py` (§4.12) is the CLI layer; the client's wire module
+(`ctlwire.py`) is a one-document-in/one-document-out socket call, nothing more
+(`watch` excepted).
 
-**`ctl report` and the tier split.** This module never imports pandas —
-`handle_report` instead shells out to the report tier's OWN interpreter
-(`self.report_python`/`self.report_script`, defaulting to the image's own
-`venv/bin/python` + `cgprofile.py`, both constructor-injectable for tests)
-as a subprocess, exactly the split the `cgprofile` bash shim already draws
-between collector verbs and `report`. For that subprocess to work at all,
-every session directory this module writes is ALSO a valid
-`lib.store.RunDir` in the §3/§4.3 sense — `_manifest_for` carries
+**Reports and the tier split.** This module never imports pandas and has no
+report verb. The `export` operation streams a stored session as four digest-
+verified parts (`docs/PROTOCOL.md` section 10.3) and `cgpctl report` rebuilds
+a run directory from them and renders it in the caller's process with the
+`report` extra. For that to work, every session directory this module writes
+is ALSO a valid `store.RunDir` in the §3/§4.3 sense — `_manifest_for` carries
 `run_id`/`started`/`ended`/`duration`/`targets`/`host`/`config` alongside
 the RG-55 registry fields, and `_on_session_sample` persists `samples`
 keyed by cgroup path (`{"cg": {cgroup: entry}, "mono": …}`), the same
@@ -737,9 +719,9 @@ admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire
   keeps its cgroup namespace private. Host PID mode is not granted to
   workload/helper/gate/test containers; the D-15 boundary still forbids
   numeric PID signalling and uses systemd for delegated-scope ownership.
-  Implemented as `lib/liveness.py`'s `LivenessTracker` (the state machine:
+  Implemented as `cgprofile/liveness.py`'s `LivenessTracker` (the state machine:
   `ok`/`stalled`/`hung`/`runaway`/`throttled`/`over_ceiling`, the idle
-  clock's pause condition, §8.4) wired into `lib/serve.py`'s discovery
+  clock's pause condition, §8.4) wired into `cgprofile/serve.py`'s discovery
   cadence (`_observe_liveness`) and the streaming `ctl watch` verb (§8.2).
   CP-8.
 - **D-28 — the run-gate client is disposable.** A consumer authors POLICY
@@ -747,10 +729,10 @@ admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire
   and never re-implements the judgement itself; §8.9's consumer obligation
   (one `watch` per lane, `killed` → the lane's own stall-exit path,
   `reported` → a warning line) is the whole of what a caller owes.
-- **D-29 — `cgprofile.slice`, the daemon's own containment.** A REFERENCE
-  systemd unit (`infra/cgprofile.slice`) the operator installs once per
-  host, never software the daemon writes itself (see `infra/README.md`);
-  `ctl host`'s `daemon_slice`/`gates_slice` blocks (§8.5) report presence
+- **D-29 — `cgprofile.slice`, the daemon's own containment.** A systemd unit
+  rendered by `cgpd unit print` and installed by the host's installer
+  (`docs/NATIVE-DEPLOYMENT.md` section 4), never software the daemon writes
+  itself; the `host` verb's `daemon_slice`/`gates_slice` blocks (§8.5) report presence
   rather than assuming installation happened. Since 1.1.0 (Sol B4) the daemon
   does not merely report: `serve` refuses to start unless the daemon's OWN
   cgroup (derived from the host proc view) is under `cgprofile.slice` and that
@@ -758,12 +740,11 @@ admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire
   unreadable and non-numeric all refuse), because an implicitly auto-created
   slice is unbounded and a "governed-looking" daemon without limits is the
   silent-default hazard. Unprovable counts as unbounded.
-- **D-30 — the socket carrier, host-visible.** `/run/cgprofile/ctl.sock`
-  is bind-mounted to the host, `SO_PEERCRED`-gated
-  (`CGPROFILE_ALLOW_UIDS`), so a consumer that should not or cannot use
-  `docker exec` can still speak the protocol directly — exactly the same
-  request/response shapes as the exec carrier (`docs/PROTOCOL.md` §1,
-  parity proven by one test that runs every verb through both). CP-2.
+- **D-30 — the socket is the only carrier.** `/run/cgprofile/ctl.sock` is
+  the daemon's control surface, `SO_PEERCRED`-gated (the `allow_uids` key of
+  `cgpd.toml`), bind-mountable into any container that should speak the
+  protocol (`docs/PROTOCOL.md` §1). There is no `docker exec` carrier and no
+  in-image client. CP-2.
 - **D-31 — systemd owns the gates slice and delegated per-lane scope.**
   `--place` asks the host manager to create a token-derived transient scope
   directly beneath the verified gates slice. After reading its actual
@@ -857,26 +838,24 @@ number.
 
 ---
 
-## 6. Environment facts (verified on this host — do not re-derive)
+## 6. Environment assumptions
 
-- Host: 16 GiB RAM, ~70 GiB swap, zswap `zstd` at 25 % pool, KSM on.
-- cgroup v2 at `/sys/fs/cgroup`, mounted with `nsdelegate`,
-  `memory_recursiveprot`, and `memory_hugetlb_accounting` (host `findmnt`,
-  rechecked 2026-09-30).
-- Devcontainer runs in `dev-interactive.slice`; gate/lane containers and
-  placed `rg-*` leaves run in `dev-gates.slice`
-  (`$CGROUP_PARENT_DEV_GATES`). `dev-background.slice` remains for
-  long-running application stacks.
-- Workspace bind: host `/home/vb/volkb79-2/vbpub` → `/workspaces/vbpub`.
-- Python 3.14.6 in both the devcontainer and the helper image. The
-  devcontainer's own interpreter is itself a venv (`/home/vscode/.venv`), so
-  `python3 -m venv --system-site-packages` inherits the *base* install and
-  silently loses matplotlib — this tool's `venv/` is fully self-contained for
-  that reason.
-- `scripts/damon-analysis/venv/bin/damo` is **not executable here** (host-path
-  shebang). Use `SysfsInterface`/`Classifier` from that library, not `Monitor`.
-- The network **is** available, but nothing may be installed or fetched at run
-  time — build with `./setup.sh` first (see §1).
+- cgroup v2 at `/sys/fs/cgroup`. The effective-limit logic reads the mount
+  options (`nsdelegate`, `memory_recursiveprot`, `memory_localevents`,
+  `pids_localevents`) at run time and never assumes them.
+- The estate's tier slices are `dev-interactive.slice` (cockpits),
+  `dev-gates.slice` (gate and lane containers, and the placed `rg-*` leaves)
+  and `dev-background.slice` (long-running application stacks). The names are
+  `cgpd.toml` defaults (`gates_slice`, `observe_slices`), never assumptions.
+- Python 3.11 or newer. The `report` extra is installed into the client's
+  environment, not the daemon's.
+- A `venv` created with `--system-site-packages` from an interpreter that is
+  itself a venv inherits the *base* install and silently loses packages; the
+  install lanes therefore use a clean venv.
+- Use `SysfsInterface`/`Classifier` from the vendored DAMON library
+  (`cgprofile._damon`), not the `damo` executable.
+- The network may be available, but nothing is installed or fetched at run
+  time (§1).
 
 ---
 
@@ -907,7 +886,7 @@ number.
   outside the standard library**; analysis and report modules use the pinned
   libraries freely and should reach for them rather than write the algorithm.
 - Any new dependency goes in the matching `pyproject.toml` extra, then is
-  re-locked into `requirements-report.txt` for `setup.sh` — never at run time.
+  declared with a `>=` floor and a documented reason — never at run time.
 - Comments explain *why*, at the density of `util.py`/`targets.py`. No
   banner comments restating the signature.
 - Tests are `pytest`, live in `tests/`, use `tmp_path` and synthetic fixtures,
