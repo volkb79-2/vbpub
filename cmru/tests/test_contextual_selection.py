@@ -72,7 +72,7 @@ execution_mode = "project-first"
 [cleanup]
 release_tag_prefixes = ["*"]
 keep_release_tags = []
-ghcr_packages = []
+ghcr_packages = ["*"]
 ghcr_delete_packages = []
 '''
 

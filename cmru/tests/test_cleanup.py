@@ -32,7 +32,7 @@ def _make_cleanup_config(
     return cli.CleanupConfig(
         keep_release_tags=keep_release_tags or [],
         release_tag_prefixes=release_tag_prefixes or ["*"],
-        ghcr_packages=ghcr_packages or [],
+        ghcr_packages=ghcr_packages or ["*"],
         ghcr_delete_packages=ghcr_delete_packages or [],
     )
 

@@ -1398,8 +1398,55 @@ def _delete_package_version_if_unchanged(
     delete_package_version(owner, package, token, version_id, owner_type, dry_run=False)
 
 
+def resolve_ghcr_wildcard_packages(
+    owner: str, repo: str | None, token: str, owner_type: str,
+    configs: Mapping[str, "ProjectConfig"] | None,
+) -> list[str]:
+    """Resolve ``ghcr_packages = ["*"]`` to this repository's own packages (KI-117).
+
+    A package qualifies only when (a) at least one configured project of this
+    repository publishes an ``oci-image`` artifact and (b) GitHub links the package
+    to the configured ``owner/repo``. Packages of other repositories under the same
+    account, and packages with no repository link, are never selected. With no
+    resolvable project configuration the wildcard is refused.
+    """
+    publishing = [
+        name for name, project in (configs or {}).items()
+        if "oci-image" in tuple(getattr(project, "artifacts", ()) or ())
+    ]
+    if not repo or not publishing:
+        raise ValueError(
+            'cleanup.ghcr_packages = ["*"] needs a repository with configured projects that '
+            "publish an oci-image artifact; none could be resolved (not started inside the "
+            "repository, or no such project). Run cmru from the repository, or list the "
+            "package names explicitly in cleanup.ghcr_packages. It never expands to every "
+            "package of the account."
+        )
+    want = f"{owner}/{repo}".lower()
+    selected: list[str] = []
+    for record in _list_container_package_records(owner, token, owner_type):
+        name = (record.get("name") or "").strip()
+        linked = ((record.get("repository") or {}).get("full_name") or "").lower()
+        if name and linked == want:
+            selected.append(name)
+        elif name and not linked:
+            log_warn(
+                f"GHCR package {name} has no repository link; the wildcard skips it "
+                "(name it explicitly in cleanup.ghcr_packages to include it)."
+            )
+    return selected
+
+
 def list_container_packages(owner: str, token: str, owner_type: str) -> list[str]:
-    packages: list[str] = []
+    return [
+        (item.get("name") or "").strip()
+        for item in _list_container_package_records(owner, token, owner_type)
+        if (item.get("name") or "").strip()
+    ]
+
+
+def _list_container_package_records(owner: str, token: str, owner_type: str) -> list[dict]:
+    packages: list[dict] = []
     page = 1
     while True:
         if owner_type == "org":
@@ -1416,9 +1463,8 @@ def list_container_packages(owner: str, token: str, owner_type: str) -> list[str
         if not items:
             break
         for item in items:
-            name = (item.get("name") or "").strip()
-            if name:
-                packages.append(name)
+            if (item.get("name") or "").strip():
+                packages.append(item)
         if len(items) < 100:
             break
         page += 1
@@ -1531,18 +1577,18 @@ def delete_package(owner: str, package: str, token: str, owner_type: str, dry_ru
 def cleanup_ghcr(
     owner: str, token: str, owner_type: str, cutoff: datetime, dry_run: bool,
     cleanup: CleanupConfig, *, plan: CleanupPlan | None = None,
+    repo: str | None = None, configs: Mapping[str, "ProjectConfig"] | None = None,
 ) -> None:
 
-    # KI-117: GHCR package listings are owner-wide, so "*" is refused. Only the
-    # explicitly named packages are ever touched (config.py rejects it earlier;
-    # this guards programmatically built CleanupConfig values).
+    # KI-117: the GHCR listing is owner-wide, so "*" never means "every package of
+    # the account". It resolves to the packages of THIS repository's configured
+    # projects (resolve_ghcr_wildcard_packages) and refuses when that scope is unknown.
+    packages = [p for p in cleanup.ghcr_packages if p != "*"]
     if "*" in cleanup.ghcr_packages:
-        raise ValueError(
-            'cleanup.ghcr_packages = ["*"] is refused (KI-117): it would select every '
-            "GHCR package of the owner, including other repositories' packages. "
-            "List the package names explicitly."
-        )
-    for package in cleanup.ghcr_packages:
+        for package in resolve_ghcr_wildcard_packages(owner, repo, token, owner_type, configs):
+            if package not in packages:
+                packages.append(package)
+    for package in packages:
         if package in cleanup.ghcr_delete_packages:
             preview = get_container_package(owner, package, token, owner_type)
             if preview is None:
@@ -1604,6 +1650,7 @@ def remove_assets(
     env_config: ReleaseEnvConfig,
     *,
     plan: CleanupPlan | None = None,
+    configs: Mapping[str, "ProjectConfig"] | None = None,
 ) -> CleanupPlan | None:
     duration = parse_duration(age)
     cutoff = datetime.now(timezone.utc) - duration
@@ -1617,7 +1664,10 @@ def remove_assets(
 
     log_info(f"Removing assets older than {age} (cutoff {cutoff.isoformat()})")
     cleanup_releases(owner, repo, token, cutoff, dry_run, cleanup, plan=plan)
-    cleanup_ghcr(owner, token, github.owner_type, cutoff, dry_run, cleanup, plan=plan)
+    cleanup_ghcr(
+        owner, token, github.owner_type, cutoff, dry_run, cleanup, plan=plan,
+        repo=repo, configs=configs,
+    )
     return plan
 
 
@@ -6437,7 +6487,7 @@ def _dispatch(args, runtime):
                 _usage_error("--remove-assets applies estate-wide [cleanup] policy; omit the target")
             action = lambda dry_run: remove_assets(
                 vargs.remove_assets, dry_run, cleanup, github_config, env_config,
-                plan=plan,
+                plan=plan, configs=configs,
             )
         elif vargs.policy:
             action = lambda dry_run: run_cleanup_verb(

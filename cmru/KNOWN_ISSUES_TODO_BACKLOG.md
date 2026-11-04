@@ -2778,12 +2778,14 @@ Tests: `tests/test_cmru1_bugfixes.py::test_tee_flush_broken_pipe_*` (subprocess 
 
 **Status:** FIXED 2026-11-05 (cmru-4 package; commit hash in the report); severity: high (cross-repository data loss). Origin: dstdns adoption memo V1.
 `cleanup_ghcr` expanded `"*"` through `list_container_packages`, which is owner-wide, so a second repository publishing images under the
-same account (dstdns) would have lost old versions of its images to vbpub's cleanup. Chosen fix (SPEC S2.5 already demanded explicit selectors):
-`"*"` in `ghcr_packages` is now a configuration error at load (`config._parse_cleanup`, exit 2) and a `ValueError` in `cleanup_ghcr` for
-programmatically built configs; the owner listing is no longer used for selection. Only explicitly named packages are touched. `release_tag_prefixes = ["*"]`
-is unchanged (it is scoped by the configured repository's releases). The vbpub root `cmru.orchestration.toml`, the sample, the template, SPEC, CONSUMERS and README were updated.
-Tests: `tests/test_cleanup_ghcr_scope.py` (fake listing with a foreign package; dry-run and real mode never touch it, no owner-wide listing, wildcard refused before any request).
-Migration: replace `["*"]` by the package names; `cmru standards` reports the error.
+same account (dstdns) would have lost old versions of its images to vbpub's cleanup. Fix (operator decision 2026-11-05): `"*"` now resolves via `resolve_ghcr_wildcard_packages` to the packages GitHub links to the configured
+`github.owner/github.repo` (package record `repository.full_name`), and only when a configured project declares an `oci-image` artifact. Foreign
+packages and packages without a repository link are never selected (unlinked ones are skipped with a warning; name them explicitly). When cmru has no
+resolvable publishing project (not started inside the repository) the wildcard is refused with an actionable `ValueError`, before any request, in dry-run
+and real mode. Explicit names are unchanged and may be mixed with `"*"`. `remove_assets` passes the loaded project configs and repo to `cleanup_ghcr`.
+SPEC S2.5, CONSUMERS and README updated; vbpub's root config keeps `"*"`.
+Tests: `tests/test_cleanup_ghcr_scope.py` (fake listing with a foreign package and an unlinked one; dry-run and real mode never touch them; refusal without publishing projects or repo).
+Residual: packages not linked to the repository on GitHub are not covered by the wildcard.
 
 ## KI-118 - `project.version.exclude_paths`: let doc-only / evidence-only commits not count as project changes
 

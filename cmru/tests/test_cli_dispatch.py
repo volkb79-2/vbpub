@@ -81,7 +81,7 @@ depends_on = []
 [cleanup]
 release_tag_prefixes = ["*"]
 keep_release_tags = ["alpha-latest"]
-ghcr_packages = []
+ghcr_packages = ["*"]
 ghcr_delete_packages = []
 """
 
@@ -309,7 +309,7 @@ execution_mode = "project-first"
 [cleanup]
 release_tag_prefixes = ["*"]
 keep_release_tags = ["a-latest"]
-ghcr_packages = []
+ghcr_packages = ["*"]
 [projects.a]
 prefix = "a-v"
 [projects.a.steps.build]

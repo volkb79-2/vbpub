@@ -1774,7 +1774,7 @@ depends_on = []
 [cleanup]
 release_tag_prefixes = ["*"]
 keep_release_tags = ["example-latest"]
-ghcr_packages = ["example"]
+ghcr_packages = ["*"]
 ghcr_delete_packages = []
 ```
 
@@ -2008,12 +2008,17 @@ If none is found and a write verb is invoked, cmru MUST exit 3 (V10).
 **S2.5 — Cleanup selectors are explicit.** In `cmru.orchestration.toml`, an
 empty `cleanup.release_tag_prefixes` or `cleanup.ghcr_packages` list selects
 nothing. An explicit `"*"` in `release_tag_prefixes` selects every release tag
-prefix. `"*"` in `cleanup.ghcr_packages` is a configuration error (exit 2,
-KI-117): GHCR package listings are owner-wide, so a wildcard would reach
-packages of other repositories published under the same account. GHCR cleanup
-touches only the package names listed explicitly, and CMRU MUST NOT enumerate
-the owner's packages to widen that set. CMRU MUST never reinterpret an empty
-destructive selector as a wildcard.
+prefix. `"*"` in `ghcr_packages` (KI-117) is scoped to the repository CMRU runs
+on: GHCR package listings are owner-wide, so CMRU MUST NOT expand it to every
+package of the account. It resolves to the packages that GitHub links to the
+configured `github.owner/github.repo`, and only when at least one configured
+project publishes an `oci-image` artifact. Packages of other repositories and
+packages without a repository link are never selected. When no such project
+configuration can be resolved (CMRU not started inside the repository), CMRU
+MUST refuse the wildcard with an actionable error telling the operator to run it
+from the repository or to list package names explicitly; explicit names remain
+valid in every case. This holds identically in `--dry-run` and real mode. CMRU MUST
+never reinterpret an empty destructive selector as a wildcard.
 
 **S2.5a — Cleanup confirmation applies the previewed target set.** Every
 mutating `cmru cleanup` invocation MUST enumerate and render its target set

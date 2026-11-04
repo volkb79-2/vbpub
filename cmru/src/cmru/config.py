@@ -1539,13 +1539,6 @@ def _parse_cleanup(raw: object) -> CleanupS2Config:
     required = ("release_tag_prefixes", "keep_release_tags", "ghcr_packages", "ghcr_delete_packages")
     for key in required:
         _string_list(_require(raw, key, "cleanup"), f"cleanup.{key}")
-    if "*" in raw["ghcr_packages"]:
-        _error(
-            'cleanup.ghcr_packages = ["*"] is refused (KI-117): GHCR lists packages '
-            "owner-wide, so a wildcard would delete old versions of packages that "
-            "other repositories of the same account publish. List the package names "
-            'this estate publishes explicitly, e.g. ghcr_packages = ["mytool", "mytool-ocr"].'
-        )
     return CleanupS2Config(
         max_age_days=raw.get("max_age_days"),
         release_tag_prefixes=list(raw["release_tag_prefixes"]),

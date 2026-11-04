@@ -90,9 +90,9 @@ CMRU_TESTER_CGROUP_FORWARD_GATES_VAR = "${CGROUP_PARENT_DEV_GATES}"
 @@PROJECT_ENTRIES@@
 
 [cleanup]
-# Tags/packages this estate's `cmru cleanup` may manage. Release tag prefixes
-# accept `*`; GHCR packages must be named explicitly (`*` is refused, KI-117).
+# Tags/packages this estate's `cmru cleanup` may manage. `*` scopes to the
+# projects declared above; tighten to explicit prefixes on shared registries.
 release_tag_prefixes = ["*"]
 keep_release_tags = ["latest"]
-ghcr_packages = []
+ghcr_packages = ["*"]
 ghcr_delete_packages = []
