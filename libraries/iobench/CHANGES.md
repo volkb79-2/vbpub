@@ -9,6 +9,11 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 - This command-to-native lane switch changes campaign storage: the old `.assay/mutation-state-r2` state directory and `.assay/progress-r2.jsonl` progress file are not reused. The native lane uses Run-Gate's durable state area under `.run-gate/` and `.assay/progress-iobench.jsonl`; a campaign already running with the old configuration does not carry over.
 
 ### Fixed
+- `calibrate` with a file target on a filesystem with no single block device behind it (overlay, multi-device, network) refuses cleanly (`target_fs_disk_unknown`, exit 2) instead of a traceback (IOB-BL-11).
+- `matrix` ends with a failed run, not a `StopIteration` traceback, when the work dir's `/proc/diskstats` row disappears mid-run (IOB-BL-16).
+- `--dry-run` for `matrix` prints the argv a real run builds (file names, log prefixes, queue depth), built from the same job constructors; names carry the plan's run id (IOB-BL-13).
+- The temporary stdout/stderr files of a killed fio are closed in `kill()` (IOB-BL-14).
+- New oracles for the R2 survivors in result, ceilings, devio, stages, sweep, ladder, proposals, plan and extents (IOB-R2-01).
 - Keep the Assay whole-target lane measurable: exclude the docstring-only package initializer, let pytest finish the coverage run after a failure, and reap both detached subprocesses created by the bounded-reaping test.
 - Test infrastructure (`tests/conftest.py`, not shipped in the wheel): every test now runs under a CPU-time limit (`ITIMER_PROF`, 100 CPU seconds, 10x the slowest measured test, `@pytest.mark.time_limit(cpu_seconds)` overrides) so a mutant's non-terminating loop is killed while host load cannot fail a slow-but-correct test; the session registers as child subreaper to check for unreaped children, and degrades to a warning when `/proc/<pid>/task/<pid>/children` is unreadable.
 
