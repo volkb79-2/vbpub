@@ -89,7 +89,12 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.r2.judge.mutation]
-jobs = 1
+# Ceiling for concurrent candidate windows (assay >= 11; run-gate's `jobs = "auto"`
+# in run-gate.toml picks the count). Measured on r1002 2026-11-05: ~300 s per
+# candidate, ~3% of one core, ~260 MiB RSS (the suite waits on subprocess and
+# browser-less IO), so 4 workers cost about 12% of one core. No fixed ports
+# or shared dirs in tests/ and client/tests. Audit: reports/assay-jobs-audit-REPORT.md.
+jobs_max = 4
 max_mutants = 1000
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 budget_per_candidate = "900s"

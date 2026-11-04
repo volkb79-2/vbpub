@@ -238,8 +238,13 @@ artifact = "coverage.json"
 [lanes.cmru-first-release-r2.judge.mutation]
 # This lane runs after the initial stable release, when it has no prior
 # CMRU release baseline to compare. Keep its whole-source R2 policy aligned
-# with Assay's own serial Python qualification campaign.
-jobs = 1
+# with Assay's own Python qualification campaign.
+# Ceiling for concurrent candidate windows (assay >= 11). Measured 2026-11-05:
+# ~570 s per candidate, ~85% of one core, 1-1.75 GiB RSS (pytest + coverage), so
+# this suite is CPU- and memory-bound: 2, not 3, and the lane container needs 4g
+# (run-gate.toml). Assay's `--shard` across hosts is the real lever for the
+# 4605-candidate whole-source plan.
+jobs_max = 2
 max_mutants = 10000
 operators = [
   "python:compare-swap",

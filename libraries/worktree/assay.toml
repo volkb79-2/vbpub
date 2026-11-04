@@ -37,7 +37,9 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.worktree.judge.mutation]
-jobs = 1
+# Ceiling (assay >= 11). Measured: 20-33 s per candidate at 5-12% of a core,
+# ~65 MiB RSS (git-subprocess bound), so 3 workers are nearly free.
+jobs_max = 3
 max_mutants = 10000
 operators = [
   "python:compare-swap",

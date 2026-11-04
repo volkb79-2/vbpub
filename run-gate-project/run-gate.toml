@@ -130,9 +130,11 @@ environment = "tester-unified"
 resource_observer = "cgprofile"
 clean_tree = true
 budget = "4h"
+jobs = "auto"                       # assay.toml jobs_max = 2 is the ceiling
 
 [lanes.assay-r2.resources]
 memory = "2g"
+candidate_ram = "700m"
 pids = 8192
 cpus = "3"
 

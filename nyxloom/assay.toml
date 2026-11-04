@@ -202,7 +202,9 @@ base_source = "request"
 # finite candidate cap prevents an unbounded campaign.
 # budget_per_candidate remains 120s.
 [lanes.session-extract.judge.mutation]
-jobs = 1
+# Ceiling (assay >= 11); pure-python pytest, 7012 s / 293 candidates (24 s each)
+# measured serially in the previous campaign; run-gate `jobs = "auto"` picks.
+jobs_max = 3
 # Cap 1500 (same as run-gate-project's R2): the whole session_extract package
 # is ~1.2k candidates, so even a base older than every release still plans
 # under the cap with headroom, while a request base at the previous release tag

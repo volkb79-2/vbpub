@@ -66,10 +66,14 @@ environment = "tester-unified"
 resource_observer = "cgprofile"
 clean_tree = true
 budget = "7h"
+# CPU- and memory-bound suite (~85% of a core, 1-1.75 GiB per candidate):
+# auto settles on 2 workers under the 4g container below.
+jobs = "auto"
 
 [lanes.assay-first-release-r2.resources]
-memory = "2g"
+memory = "4g"
 memory_swap = "16g"
+candidate_ram = "1536m"
 pids = 8192
 cpus = "3"
 

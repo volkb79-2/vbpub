@@ -21,7 +21,14 @@ environment = "tester-unified"
 resource_observer = "cgprofile"
 clean_tree = true
 budget = "4h"
+# Wait-dominated suite (~3% of a core per candidate, ~260 MiB): let run-gate pick
+# the worker count (min of assay.toml jobs_max=4, cpus, memory / candidate_ram).
+# Needs run-gate >= 25.0.1 for pyz-pinned consumers (RG-154) and a btrfs
+# MDT_COW_ROOT host; otherwise auto clamps to one worker.
+jobs = "auto"
 
 [lanes.r2.resources]
 memory = "2g"
 pids = 8192
+cpus = "4"
+candidate_ram = "450m"
