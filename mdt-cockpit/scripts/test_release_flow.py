@@ -38,7 +38,7 @@ class ReleaseFlowTests(unittest.TestCase):
 
     def test_release_gate_runs_from_the_candidate_repository_root(self) -> None:
         commands = self.config["steps"]["run-tests"]["commands"]
-        # MDT-032 (release smoke lane) and MDT-012 (runtime acceptance of the built images): the pytest-style
+        # MDT-060 (release smoke lane) and MDT-012 (runtime acceptance of the built images): the pytest-style
         # tests the unittest-based `release` lane cannot collect run as `smoke`; image-runtime-built runs last.
         self.assertEqual(
             [c["argv"] for c in commands],
@@ -121,7 +121,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("/inputs/\n", stage)
 
     def test_build_inputs_are_never_copied_into_the_image(self) -> None:
-        """MDT-033 build inputs: nothing the install RUNs read may be COPYed to /tmp (it would stay in the layers)."""
+        """MDT-061 build inputs: nothing the install RUNs read may be COPYed to /tmp (it would stay in the layers)."""
         dockerfile = (ROOT / "Dockerfile").read_text()
         final_stage = dockerfile[dockerfile.rindex("\nFROM ") :]  # the throwaway build stages are not shipped
         for line in final_stage.splitlines():

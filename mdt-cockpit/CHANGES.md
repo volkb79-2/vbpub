@@ -5,10 +5,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- docs: the README names every staged tool and the apt utilities it had omitted (`bat`, `rg`, `rga`, `yq`, `gh`, `grpcurl`,
+  `consul`, `vault`, `awscli`, `b2`, `hadolint`, `grype`, `cdebug`, `shellcheck`, `ncdu`, `httpie`, `w3m`, `sshfs`, `skopeo`,
+  `minisign`, `sqlite3`, `strace`, `gdb`, sysstat, `iotop`), with a docs-in-sync test (MDT-042).
+- docs: `docs/BUILD-ARCHITECTURE.md` "Release inputs" documents `LATEST_KNOWN_PYTHON` and `DEVCONTAINERS_IGNORE_NEW_RELEASES`,
+  with a docs-in-sync test (MDT-046).
+- docs: the design guide and two build-input comments no longer name the reference host or a consumer project (MDT-041).
+- Backlog: MDT-032 (iogov fill test, `6f669fa26`), MDT-034 and the TODO "ship run-gate in the image" (`c5938f3b0`) are closed with
+  evidence; the stale renumbering references (Dockerfile, run-gate.toml, tests, BUILD-ARCHITECTURE) now cite MDT-060/MDT-061.
 - `image-runtime-built` lane: the runtime acceptance scenarios run against the native and VS Code images the release just built
   (derived from the OCI layouts like `oci-push`); `cmru release` runs it after `oci-push` (MDT-012).
 - `cmru release` runs `run-gate smoke` before the `release` lane, so the pytest-style staging tests are part of a release
-  (MDT-060, "MDT-032 (release)" in the bugfix program).
+  (MDT-060).
 - Bake declares and passes `INSTALL_COPILOT`, `INSTALL_CLAUDELINK`, `INSTALL_PI`, `INSTALL_REASONIX`, `INSTALL_OPENCLAW`,
   `PI_VERSION`, `REASONIX_VERSION`; `cmru.toml` forwards the first four and `PI_VERSION` (MDT-035).
 - A version-override waiver expires after 14 days from the overridden release; staging then fails until re-resolved (MDT-015).
@@ -90,7 +98,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Build inputs (apt/pip lists, wheel set, requirements, customization, installer scripts, staged tool versions) are
   no longer COPYed into the image's `/tmp`: a throwaway `mdt-build-inputs` stage is bind-mounted at `/tmp/mdt-inputs`
   by each RUN that reads it, and the timestamped `metadata.json` has its own stage so it never invalidates the
-  tool-install cache (MDT-061, "MDT-033 build inputs" in the bugfix program).
+  tool-install cache (MDT-061).
 - The aged-latest resolvers (`_resolve_latest_aged_release`, `_resolve_sss_commit`) follow pagination (bounded to 5
   pages of 30) instead of failing when the newest 30 entries are all inside the age window; the error reports how many
   were inspected (MDT-036).

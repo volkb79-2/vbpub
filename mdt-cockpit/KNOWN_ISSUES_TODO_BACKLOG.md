@@ -523,6 +523,8 @@ Only ov, gdu, dust, yazi, regctl, nvim, lnav and shellcheck are normalised. `cla
 `delta`/`fd`/`rga`/`ripgrep`/`htop`/`node` likewise; the 20261021 and 20261022 manifests recorded `copilot` as
 `Package extraction took 18189ms` (a first-run log line). The aider row regressed to its usage banner on 20261027
 (fixed: the manifest RUN no longer exports the staged `AIDER_*` variables and reads the distribution version).
+**Status 2026-11-04: FIXED** (the normaliser is on main: `scripts/manifest_sections.py` `normalise_version` / `normalise_versions`);
+the "still open" improvement below is an optional redesign, not part of this defect.
 **Status 2026-10-27 (follow-up): FIXED in the review branch** — `manifest_sections.normalise_version` (first
 version-looking token, `v` stripped, `sss`/`ksm-optin`/node/npm passed through) is applied when the custom-tooling
 file is read; grype and lazydocker take their `Version:` line in the Dockerfile; `scripts/test_oci_tool_staging.py`
@@ -610,6 +612,14 @@ User-facing docs are host-agnostic since this review (README, CONSUMERS, templat
 the design doc ("the reference host"), move the measurements it cites into `handoff/` (exempt), and give the
 host guide a host-neutral directory name or an in-repo alias.
 
+**Status 2026-11-04: FIXED for the mdt-cockpit docs and build inputs (fix-mdt-h).** `docs/DESIGN-GUIDE.md` now says "the reference
+host" and "the production slice", names the guide once as `scripts/<host>-guide/` (defined at its first use), and the two
+consumer-project mentions in `apt/packages.list` and `requirements/toolkit.txt` are gone. Re-diff: the README, CONSUMERS,
+templates and USAGE were already host-agnostic; the host-setup README keeps its `<host>` pointers. Not done, by decision: the
+guide directory itself keeps its name (`scripts/gstammtisch-guide/`; renaming it touches other subprojects' paths, tests and the
+wizard's printed example); the measurements stay in the design doc rather than moving to `handoff/`. Open as a follow-up only if
+the directory is ever renamed.
+
 ## MDT-042 - the README's tool inventory is incomplete (2026-10-27)
 
 The "Shell and CLI tooling" tables never name `bat`, `rg`, `rga`, `yq`, `gh`, `grpcurl`, `consul`, `vault`,
@@ -618,6 +628,11 @@ The "Shell and CLI tooling" tables never name `bat`, `rg`, `rga`, `yq`, `gh`, `g
 (`zswap-status` in the README is an alias from `aliases.sh`, not a binary). Fix: one compact table generated from
 `apt/packages.list` plus the staged-tool list, or a pointer to the generated manifest as the complete inventory,
 with a docs-in-sync test that every staged tool name appears in the README.
+
+**Status 2026-11-04: FIXED (fix-mdt-h).** Re-diff: only `skopeo` and the QEMU packages were named; the listed tools were all missing.
+The README gained a compact "Everyday search, data and cloud tools" table plus a pointer to the generated manifest as the
+complete inventory, and `scripts/test_docs_in_sync.py` `test_every_staged_tool_and_the_named_apt_utilities_appear_in_the_readme_inventory`
+fails when a `tool="..."` entry in `stage_tool_artifacts.py` (or one of the named apt utilities) is not in the README.
 
 ## MDT-043 - decision record: `pwmcp-client` wheel in `/opt/mdt/venv` (2026-10-27)
 
@@ -704,7 +719,7 @@ The test builds its collectors from the live host (`covs(world)`) and asserts th
 root filesystem is above the fill threshold (observed at 74% used) the finding appears and the `smoke` lane fails although
 nothing in the change under test is related.
 
-**CLOSED 2026-11-03.** The test now injects an empty fill result before checking the unknown fstrim/provider facts, so verdicts do
+**CLOSED 2026-11-03 (6f669fa26).** The test now injects an empty fill result before checking the unknown fstrim/provider facts, so verdicts do
 not depend on the machine's disk usage. `test_covariates_record_fill_discard_provider_queue_and_prio` continues to exercise live
 fill collection using the fixture's controlled filesystem.
 
@@ -959,7 +974,9 @@ the first step with a one-line reason. The supported list is in the README.
 
 ## MDT-046 - release docs omit the `LATEST_KNOWN_PYTHON` and `DEVCONTAINERS_IGNORE_NEW_RELEASES` environment inputs (2026-11-03)
 
-**Status:** OPEN (docs). CHANGES (`[Unreleased]`) records both: `LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit` publishes a
+**Status 2026-11-04: FIXED (fix-mdt-h).** `docs/BUILD-ARCHITECTURE.md` "Release inputs" documents both variables; the README
+links it; `scripts/test_docs_in_sync.py` `test_the_release_environment_inputs_are_documented_where_the_release_flow_lives` pins it.
+*(Original status: OPEN (docs).)* CHANGES (`[Unreleased]`) records both: `LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit` publishes a
 second Python variant next to the default, and `DEVCONTAINERS_IGNORE_NEW_RELEASES=true` skips the newer-base stop. The README
 mentions the bake default and `--ignore-new-releases`, but not the environment form.
 

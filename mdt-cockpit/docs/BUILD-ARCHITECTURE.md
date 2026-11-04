@@ -308,6 +308,19 @@ The phases are:
    missing layout, failed copy, missing remote manifest, or digest mismatch is
    nonzero and therefore fails the CMRU transaction.
 
+### Release inputs
+
+Two environment variables steer a release without editing a file:
+
+| Variable | Effect |
+|---|---|
+| `LATEST_KNOWN_PYTHON=<major.minor>` | The Python version of the release. The environment wins over the `docker-bake.hcl` default (`docker buildx bake` resolves variables that way). `LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit` publishes `trixie-py3.15-php8.5-<date>` and its `-latest` next to the default variant. |
+| `DEVCONTAINERS_IGNORE_NEW_RELEASES=true` | Skips the stop that fires when upstream publishes a newer devcontainer base than `LATEST_KNOWN_*`; use it when a release intentionally stays on an older base. The CLI form is `--ignore-new-releases`. |
+
+A Python version other than the default builds only when it is on the supported list (README, "Python version support"
+and MDT-045): the pwmcp instance install and `aider-chat` have per-interpreter limits, and a variant that cannot build
+must stop at the first failing step rather than publish a partial set.
+
 ### Ordering: the source commit must be on GitHub before the image builds
 
 `build-push.py` points the in-image PWMCP installer (`scripts/install_pwmcp_instance.py`) at
@@ -322,7 +335,7 @@ commit, or use an explicit `--local-dev` build, which supplies the verified loca
 The apt and pip lists, the wheel set, `requirements/`, the `customization/` tree, the installer scripts and the staged
 tool versions/metadata are gathered in the throwaway `mdt-build-inputs` stage of the Dockerfile. Each RUN that reads
 them bind-mounts that stage at `/tmp/mdt-inputs` (read-only, scoped to the RUN), so none of it is committed to an image
-layer (MDT-033 build inputs). The one file left in `/tmp` between RUNs is the generated `ai-tool-versions.env`, which a
+layer (MDT-061). The one file left in `/tmp` between RUNs is the generated `ai-tool-versions.env`, which a
 later RUN removes.
 
 ### Optional OCI-layout repack lane

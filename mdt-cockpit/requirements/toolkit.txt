@@ -50,7 +50,7 @@ asyncpg               # async PostgreSQL driver — poke Postgres/TimescaleDB
 redis                 # Redis client — inspect queues / streams / keys
 hvac                  # HashiCorp Vault API client
 sqlalchemy            # ORM/Core for richer interactive DB inspection
-dnspython             # DNS toolkit (matches dstdns worker-io DNS work)
+dnspython             # DNS toolkit (DNS worker debugging)
 websockets            # WebSocket client — poke WS endpoints (e.g. webapp-server)
 pydantic              # data validation (config/model scratch)
 pydantic-settings     # settings models

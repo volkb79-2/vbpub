@@ -17,7 +17,7 @@ zsh-syntax-highlighting # command syntax highlighting
 ca-certificates    # TLS trust roots for HTTPS
 locales            # generate the en_US.UTF-8 locale
 curl               # HTTP client / artifact downloads
-bind9-dnsutils     # dig / nslookup / host — DNS inspection (e.g. dstdns worker-io)
+bind9-dnsutils     # dig / nslookup / host — DNS inspection (e.g. DNS worker debugging)
 fuse3              # userspace filesystem support (backs sshfs)
 gdb                # native / C debugger
 procps             # ps/top/vmstat/free - baseline process and memory diagnostics

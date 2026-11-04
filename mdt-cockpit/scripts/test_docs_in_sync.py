@@ -273,3 +273,34 @@ def test_the_version_override_example_in_the_consumer_guide_parses_as_a_cmru_tar
     assert len(blocks) == 1
     target = tomllib.loads(blocks[0])["versions"]["targets"]["npm.copilot"]
     assert target["version"] and target["reason"] and target["mode"] == "single"
+
+
+_STAGED_NON_TOOLS = ("nvchad",)
+_STAGED_SIDE_FILE = re.compile(r"-(hashes|checksums|sha256sums|sha256|manifest)$")
+
+
+def test_every_staged_tool_and_the_named_apt_utilities_appear_in_the_readme_inventory() -> None:
+    """MDT-042: the README tool tables must not silently omit a tool the image installs."""
+    source = _read("scripts/stage_tool_artifacts.py")
+    staged = {
+        name
+        for name in re.findall(r'^\s+tool="([a-z0-9-]+)",', source, flags=re.MULTILINE)
+        if not _STAGED_SIDE_FILE.search(name) and name not in _STAGED_NON_TOOLS
+    }
+    assert {"rga", "grype", "hadolint", "cdebug", "awscli"} <= staged, "the staged-tool scan found too little"
+    apt_named = {"sqlite3", "strace", "gdb", "ncdu", "httpie", "w3m", "sshfs", "skopeo", "minisign", "iotop", "sysstat"}
+    packages = _read("apt/packages.list")
+    for name in apt_named:
+        assert re.search(rf"^{name}\b", packages, flags=re.MULTILINE), f"{name} left apt/packages.list; update this test"
+    readme = _read("README.md").lower()
+    missing = sorted(n for n in staged | apt_named if not re.search(rf"(?<![\w-]){re.escape(n)}(?![\w-])", readme))
+    assert not missing, f"README.md does not name: {missing}"
+
+
+def test_the_release_environment_inputs_are_documented_where_the_release_flow_lives() -> None:
+    """MDT-046: both release environment variables are named in the build architecture guide and linked from the README."""
+    architecture = _read("docs/BUILD-ARCHITECTURE.md")
+    for variable in ("LATEST_KNOWN_PYTHON", "DEVCONTAINERS_IGNORE_NEW_RELEASES"):
+        assert variable in architecture
+    assert "docs/BUILD-ARCHITECTURE.md#release-inputs" in _read("README.md")
+    assert "release-inputs" in _headings(ROOT / "docs" / "BUILD-ARCHITECTURE.md")

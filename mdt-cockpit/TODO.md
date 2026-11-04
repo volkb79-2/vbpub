@@ -147,7 +147,9 @@ _Captured 2026-09-27 after a live runtime-path audit._
 ## Feature request: ship `run-gate` (and the estate CLI set) in the image the way `ciu` is shipped
 
 Filed 2026-10-03 from dstdns (tooling-boundary pass,
-`dstdns/docs/proposals/TOOLING-BOUNDARY-2026-10.md` Q3). Status: OPEN.
+`dstdns/docs/proposals/TOOLING-BOUNDARY-2026-10.md` Q3). Status: **SHIPPED 2026-11-04 (closed in fix-mdt-h)**: run-gate is
+one of the image's first-party wheels (`c5938f3b0`; `Dockerfile` pip/wheels step, version reported at `Dockerfile:1033`).
+The original request follows for the record.
 
 **Observed:**
 - The image bakes the ciu wheel from an immutable release (`Dockerfile:87-94`, `CIU_WHEEL_*`). It does not bake `run-gate`, which the estate's AGENTS doctrine makes the only sanctioned gate entry point.

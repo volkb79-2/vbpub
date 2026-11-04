@@ -832,7 +832,7 @@ def test_the_manifest_system_packages_are_derived_from_the_apt_list() -> None:
     for vendor_package in ("docker-ce-cli", "docker-buildx-plugin", "docker-compose-plugin", "nodejs", "postgresql-client", "redis-tools"):
         assert vendor_package in layer, f"{vendor_package} is installed by a vendor-repository layer and belongs in the inventory"
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    # MDT-033 build inputs: bind-mounted from the throwaway inputs stage, never COPYed into (or rm'd from) /tmp.
+    # MDT-061 build inputs: bind-mounted from the throwaway inputs stage, never COPYed into (or rm'd from) /tmp.
     assert "apt/packages.list" in dockerfile.split("AS mdt-build-inputs", 1)[1].split("AS mdt-build-metadata", 1)[0]
     assert "/tmp/packages.list" not in dockerfile
     assert "COPY apt/packages.list /tmp/" not in dockerfile

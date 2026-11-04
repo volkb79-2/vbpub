@@ -31,7 +31,7 @@ FROM scratch AS mdt-local-dev
 # ── Build inputs (never committed to a layer) ─────────────────────────────────
 # The package lists, wheel set, requirements, customization tree, installer scripts and
 # staged tool versions the install RUNs read. They used to be COPYed into /tmp of the
-# image and shipped in every layer from there on (MDT-033 build inputs). Now they are
+# image and shipped in every layer from there on (MDT-061). Now they are
 # gathered here, in a throwaway stage, and each RUN that needs them bind-mounts the stage
 # at /tmp/mdt-inputs (read-only, scoped to that RUN, never part of any layer).
 # Release worktrees may be checked out under umask 077: the files are public package

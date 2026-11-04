@@ -817,7 +817,8 @@ understood and systemd should show it. A good event resets the streak. Review fo
 
 ### IO caps are given to systemd as the whole disk's `/dev/<DEVNAME>`, reset-then-set (MDT-HS-04)
 
-**Measured on gstammtisch** (systemd 257.13, kernel 7.2.6, root on a device-mapper LV `dm-0` 253:0
+**Measured on the reference host** (the production game host this work was developed against; its guide lives at the
+repository root as `scripts/<host>-guide/`, and every `<host>` path below means that directory) (systemd 257.13, kernel 7.2.6, root on a device-mapper LV `dm-0` 253:0
 over `vda` 254:0): `systemctl set-property --runtime dev.slice "IOReadBandwidthMax=/dev/mapper/<lv> N"`
 left the kernel's `dev.slice/io.max` empty with nothing logged, while `systemctl show` reported the value;
 the same call with `/dev/vda` or `/dev/block/254:0` wrote `254:0 rbps=N` at once. For `dev-gates.slice`
@@ -891,7 +892,7 @@ to race its writes; see the MDT-016 note in the reconcile script).
 ## Writeback and root-queue settings are host-setup keys, not a runbook (MDT-HS-05)
 
 **Why.** On a slow shared disk, fsync and journal commits wait behind the dirty backlog and the device queue. The
-measured fix on gstammtisch (2026-10-20, `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` sections 4.2 A/B, 4.3 and 4.4
+measured fix on the reference host (2026-10-20, `scripts/<host>-guide/HOST-IO-INTERFERENCE.md` sections 4.2 A/B, 4.3 and 4.4
 matrices, recommendations in section 5): `vm.dirty_bytes` 16 MiB, `vm.dirty_background_bytes` 4 MiB, root disk
 `nr_requests` 16, `max_sectors_kb` 64 took the game thread's D-state maximum from 26.9 s to 0.14 s, the probe fsync maximum
 from 39 s to 0.5 s and the gate fio from 5 to 173 iops under the same load. These were applied by hand and by interim files; the operator
@@ -913,7 +914,7 @@ sysctl.d likewise lets the later file win. install.sh applies them after the BFQ
 `--sysname-match`, settle), reads the live values back and fails non-zero on any mismatch or unreadable value, naming the file and the
 remedy; the rest of the install still completes. An interim file is retired only when MDT's own file carries EVERY key the interim file sets (parsed from it, never
 assumed) and each is verified live; otherwise it is kept with a WARN naming the missing keys and the remedy, because with every key
-at `kernel` the interim file is the only thing persisting the live values (the state of gstammtisch when this shipped), and
+at `kernel` the interim file is the only thing persisting the live values (the state of the reference host when this shipped), and
 retiring it would silently lose the tuning at the next reboot (review H-46).
 
 **Strict values, derived disk, verified identity.** Values are positive integers without leading zeros. `vm.dirty_bytes` must be
@@ -934,7 +935,7 @@ writeback (section 4.5). A setting returned to `kernel` removes MDT's line but c
 install.sh says so in a NOTICE and never guesses the old value.
 
 **Where proposals come from.** Precedence per key: a current benchmark result, then the existing configured value, then `kernel`;
-the gstammtisch values are shown as a labelled example only. The benchmark reader is coupled to the documented IOB-02 `result.json`
+the reference host's values are shown as a labelled example only. The benchmark reader is coupled to the documented IOB-02 `result.json`
 schema (schema 1, `run.status`, `quality.plausible`, `identity.disk.devno`, `proposals.writeback`) and nothing else: absent means no
 benchmark; a corrupt, newer-schema, aborted, implausible or other-disk result is reported and not used; a formula-only, limited or
 target-missed proposal is shown with that label. Full identity validation belongs to `iobench check` once it exists; the reader only
@@ -942,7 +943,7 @@ compares the disk's device number.
 
 ## io.cost is the weight mechanism and host-setup owns the scheduler (MDT-HS-07)
 
-**Why io.cost over BFQ.** Measured on gstammtisch (2026-10-20, `IO-STALL-TESTING-GUIDE.md` section 11, same load as sections 6 and 10).
+**Why io.cost over BFQ.** Measured on the reference host (2026-10-20, `IO-STALL-TESTING-GUIDE.md` section 11, same load as sections 6 and 10).
 C0 = bfq, C1 = mq-deadline, C2 = mq-deadline + io.cost. Game D-state total / max: 1.15 s / 96 ms (C0), 0.61 s / 75 ms (C1), 0 / 0 (C2).
 Probe fdatasync p99: 205 ms, 491 ms, 290 ms. Gate-like fio: 208, 174, 199 iops. mq-deadline alone is worse than bfq for sync writes
 (the kernel also enables the writeback throttle, wbt, 75 ms, when leaving bfq); io.cost with a measured model and QoS removes the game's IO
@@ -964,7 +965,7 @@ Empty or absent = not managed, deliberately: an old env file must not silently c
 `60-mdt-bfq-scheduler.rules`, which is retired. Order: scheduler (60), then the queue rule (61, unchanged), then io.cost. A scheduler change
 resets `nr_requests`, so install.sh verifies the scheduler once more after the queue settings and the read-back covers all of them. The
 module file `mdt-bfq.conf` is installed only for `bfq`. A non-MDT `/etc/udev/rules.d/60-bfq-scheduler.rules` (origin:
-`scripts/gstammtisch-guide/files/etc/udev/rules.d/60-bfq-scheduler.rules`) is retired only when byte-identical (sha256) to a known repo copy,
+`scripts/<host>-guide/files/etc/udev/rules.d/60-bfq-scheduler.rules`) is retired only when byte-identical (sha256) to a known repo copy,
 with a NOTICE; any other rule that assigns the scheduler to the disk is kept with a WARN, and one that sorts after MDT's is a refusal to report
 the scheduler as verified.
 
@@ -991,9 +992,9 @@ or `ctrl=auto` the kernel keeps the other fields).
 **Weights.** With io.cost the weight is `io.weight` (1..10000, used directly); BFQ used `io.bfq.weight` (1..1000) and systemd compressed values above
 100. Every IOWeight comment (env example, the four tier units) is now mechanism-conditional rather than wrong for either. No weight VALUE changed.
 Findings, for the operator (not changed here): (1) the "keep <= 100" rule is a BFQ artefact; under io.cost the tier ratios of 100:10:20 can be raised
-without rescaling, but the measured gains are with the root weights unchanged (wings.slice 7800, dev.slice 100, system.slice 100) and the probe in
+without rescaling, but the measured gains are with the root weights unchanged (the production slice 7800, dev.slice 100, system.slice 100) and the probe in
 system.slice is NOT protected by weight; (2) dev.slice and system.slice share weight 100 at the root, so under io.cost they split a contended disk
-equally while wings.slice gets 7800, which is probably intended but unmeasured for builds; (3) the per-scope `io.bfq.weight` raw writes in
+equally while the production slice gets 7800, which is probably intended but unmeasured for builds; (3) the per-scope `io.bfq.weight` raw writes in
 `mdt-container-io-caps.lib.sh` are inert under io.cost (the `IOWeight=1` set-property is what applies); (4) `mdt-host-check.sh` used to claim "IOWeight is
 inert" without BFQ, which is false under io.cost; it now derives the active mechanism from the scheduler and `io.cost.qos`.
 
@@ -1044,19 +1045,19 @@ runs as (root in production, so a file an unprivileged user could create is refu
 ## Memory watermarks and watermark boost are kernel settings this host-setup does not own yet (follow-up)
 
 **Status.** host-setup manages `vm.dirty_*` and the root queue (MDT-HS-05) and the scheduler and io.cost (MDT-HS-07). It does **not** yet manage the
-memory watermarks. On gstammtisch they are set by hand in `/etc/sysctl.d/99-gstammtisch-memory.conf` (the repo copy is
-`scripts/gstammtisch-guide/files/etc/sysctl.d/99-gstammtisch-memory.conf`); `scripts/debian-install-v2` writes the same sysctls on a fresh install. The
+memory watermarks. On the reference host they are set by hand in `/etc/sysctl.d/99-<host>-memory.conf` (the repo copy is
+`scripts/<host>-guide/files/etc/sysctl.d/99-<host>-memory.conf`); `scripts/debian-install-v2` writes the same sysctls on a fresh install. The
 mechanism, the measured numbers, the source-labelled statements and the 14:09 UTC failure record are canonical in
-`scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`, "Watermark boost and the 14:09 UTC failure mode" (not repeated here, to avoid drift).
+`scripts/<host>-guide/MEMORY-ARCHITECTURE.md`, "Watermark boost and the 14:09 UTC failure mode" (not repeated here, to avoid drift).
 
-**What the wizard needs from it.** On gstammtisch a watermark boost of 859 MB was observed holding free memory while all reclaim ran in the allocating
-threads [M]; a watermark recompute cleared it. **Decision (operator, 2026-10-20):** `vm.watermark_boost_factor = 0` (persisted on gstammtisch at 23:16
+**What the wizard needs from it.** On the reference host a watermark boost of 859 MB was observed holding free memory while all reclaim ran in the allocating
+threads [M]; a watermark recompute cleared it. **Decision (operator, 2026-10-20):** `vm.watermark_boost_factor = 0` (persisted on the reference host at 23:16
 UTC) and `vm.watermark_scale_factor = 50`, target ~100–300 MB free; the cost of boost 0 is more fragmentation, little impact with THP=`madvise`. Related
 knobs to name: `min_free_kbytes`, `watermark_scale_factor`, `watermark_boost_factor`, `lowmem_reserve_ratio`, `extfrag_threshold`,
 `compaction_proactiveness`, THP `enabled`/`defrag`.
 
 **Wizard implication (not implemented; backlog MDT-021).** The wizard, and debian-install-v2 which writes the same sysctls, should ask for or derive
-`watermark_boost_factor` (suggest 0 on swap-backed, memory-protected hosts) next to wsf, with the reasoning in `scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md` ("Watermark boost and the 14:09 UTC failure mode"). `mdt-host-check.sh` should WARN when
+`watermark_boost_factor` (suggest 0 on swap-backed, memory-protected hosts) next to wsf, with the reasoning in `scripts/<host>-guide/MEMORY-ARCHITECTURE.md` ("Watermark boost and the 14:09 UTC failure mode"). `mdt-host-check.sh` should WARN when
 `node_unreclaimable` is 1 or `watermark_boost` is non-zero for long.
 
 ## Per-container memory policy

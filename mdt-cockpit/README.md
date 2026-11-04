@@ -302,6 +302,24 @@ Container and system inspection, in-image:
 | `tmux` | terminal multiplexer, **opt-in** (nothing starts it); `/etc/tmux.conf` ships the defaults, prefix Ctrl+Space — see [`templates/vscode/`](templates/vscode/README.md) |
 | `broot` | interactive directory tree navigator (Debian package) |
 
+Everyday search, data and cloud tools (staged tools are resolved at build time, checksum-verified, newest release at least 14 days old):
+
+| Tool | For |
+|---|---|
+| `bat`, `delta`, `fd`, `fzf` | `cat` with syntax highlighting; git pager; fast `find`; fuzzy finder |
+| `rg` (ripgrep), `rga` | recursive grep; the same over PDFs, archives and office files |
+| `yq`, `sqlite3` | YAML/JSON query; SQLite CLI |
+| `gh` | GitHub CLI |
+| `grpcurl`, `httpie` (`http`/`https`) | gRPC and REST probing |
+| `consul`, `vault`, `awscli`, `b2` | HashiCorp and cloud storage command-line clients |
+| `crane`, `regctl`, `skopeo`, `cdebug` | registry and OCI image inspection and copy without a daemon; debug distroless containers |
+| `hadolint`, `shellcheck`, `grype` | Dockerfile lint; shell lint; vulnerability scan of images and SBOMs |
+| `ncdu`, `w3m`, `sshfs`, `minisign` | disk usage; static-HTML browser; SSH filesystem; signature verification |
+| `strace`, `gdb`, `sysstat` (`iostat`, `pidstat`, `sar`), `iotop` | syscall tracing, native debugging, I/O and CPU statistics |
+
+The generated manifest (see [Canonical manifest](#canonical-manifest)) is the complete inventory with the installed versions;
+the tables in this README name the tools worth knowing about, and a docs-in-sync test fails when a staged tool is missing here.
+
 apt priorities (`/etc/apt/preferences.d/debian-priorities`, by archive name): `stable-backports` **600** >
 `stable` **500** > `testing`, `oldstable`, `oldstable-backports` **100** (visible, never automatic). Backports
 therefore win over stable for `apt install`; vendor repositories (pgdg, redis, docker, sury) are pinned to **700** so they win over backports; see [USAGE](USAGE.md#apt-priorities-backports-and-testing) and the
@@ -691,6 +709,9 @@ into Dockerfile metadata and manifest content.
 detection — it makes local intent explicit and removes scattered hardcoded values. Keep
 `LATEST_KNOWN_*` aligned with the adopted stable baseline; when upstream moves ahead, the
 gate fails until you either adopt the new baseline or pass `--ignore-new-releases`.
+Both have environment forms (`LATEST_KNOWN_PYTHON=3.15 cmru release mdt-cockpit`,
+`DEVCONTAINERS_IGNORE_NEW_RELEASES=true`); see
+[Release inputs](docs/BUILD-ARCHITECTURE.md#release-inputs).
 
 Override the checked/resolved base, e.g. to validate gate behavior:
 
