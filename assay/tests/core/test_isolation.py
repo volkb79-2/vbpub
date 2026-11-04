@@ -2284,13 +2284,17 @@ def test_primed_template_status_trusts_stat_data_and_still_reports_changes(
     assert _git(side, *stat_only, "status", "--porcelain=v1") == "", (
         "an index with stat data must not re-hash an unchanged-looking file"
     )
-    assert _git(side, "status", "--porcelain=v1") == " M other.txt"  # ctime moved
+    # `_git` strips its output, which would eat the leading status column; the
+    # `--branch` header line keeps every entry line intact.
+    assert _git(side, "status", "--porcelain=v1", "--branch").splitlines()[1:] == [
+        " M other.txt"  # ctime moved
+    ]
     victim.write_bytes(b"other\n")
     (side / "dup1.txt").write_bytes(b"longer\n")
     (side / "bin" / "tool.sh").chmod(0o644)
     (side / "dup2.txt").unlink()
     (side / "untracked.txt").write_bytes(b"u\n")
-    reported = _git(side, "status", "--porcelain=v1").splitlines()
+    reported = _git(side, "status", "--porcelain=v1", "--branch").splitlines()[1:]
     assert sorted(line for line in reported) == [
         " D dup2.txt",
         " M bin/tool.sh",
@@ -2504,7 +2508,9 @@ def _child_measurements(tmp_path: Path, path: str, data: bytes) -> dict[str, int
     repo, _commit = _dup_repo(tmp_path / "measure")
     (repo / path).write_bytes(data)
     _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "child")
+    # "replace with identical bytes" leaves nothing to commit; the child is
+    # then an empty commit over the same tree.
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "child")
     child = _git(repo, "rev-parse", "HEAD")
     listing = _git(repo, "rev-list", "--objects", "--no-object-names", child)
     sizes: dict[str, tuple[str, int]] = {}
@@ -2580,7 +2586,7 @@ def test_tiered_limits_refuse_what_the_full_walk_refuses(tmp_path: Path) -> None
     for mode in ("full", "tiered"):
         outcome = _outcome(tmp_path, mode, limits, path, data, f"refuse-{mode}")
         assert outcome[0] == "materialize"
-        assert outcome[2] is ReasonCode.LIMIT_EXCEEDED
+        assert outcome[2] is ReasonCode.SNAPSHOT_LIMIT_EXCEEDED
         assert "max_blob_bytes" in outcome[3]
 
 
