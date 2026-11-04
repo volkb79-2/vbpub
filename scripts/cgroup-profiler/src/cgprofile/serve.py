@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
-from . import access, damon as damon_mod, events as events_mod, metrics, sampler as sampler_mod
+from . import access, daemon_config, damon as damon_mod, events as events_mod, metrics, sampler as sampler_mod
 from . import store, subtree, summary, targets as targets_mod, util
 from . import (
     ancestor_events as ancestor_events_mod,
@@ -65,6 +65,10 @@ from . import (
 from .version import installed_version, runtime_version
 
 CONTRACT_VERSION = 1
+#: Control-socket contracts a 2.x daemon serves (PROTOCOL 10.1). A response
+#: is stamped with the contract number of the request it answers.
+CONTRACTS = (1, 2)
+CONTRACT_2_VERBS = frozenset({"export", "config", "config-set", "config-reset"})
 RESOURCE_OBSERVER_CONTRACT_VERSION = (
     resource_observer_mod.RESOURCE_OBSERVER_CONTRACT_VERSION
 )
@@ -96,22 +100,6 @@ DISCOVERY_INTERVAL_SECONDS = 2.0
 REQUEST_LINE_TIMEOUT_SECONDS = 25.0
 MAX_REQUEST_LINE_BYTES = 1024 * 1024
 MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES = 4096
-
-# RW-14 (C5): `ctl report` renders the REAL interactive HTML — `analyze.build`
-# + `report_html.render`, which need pandas/plotly. This module stays
-# collector-tier (stdlib only, per the module docstring) by never importing
-# either directly; instead `handle_report` shells out to the report tier's
-# OWN interpreter, exactly the split `cgprofile`'s own bash shim already
-# makes between collector verbs (system python) and `report` (the venv) —
-# see that shim's comment. Both paths are resolved relative to this file
-# (``lib/serve.py`` -> the project root two levels up) so the daemon needs no
-# extra configuration to find its own venv inside the built image; a test
-# overrides both via the constructor to point at whatever interpreter the
-# test environment actually has the report deps installed in.
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DEFAULT_REPORT_SCRIPT = os.path.join(_PROJECT_ROOT, "src", "cgprofile", "cli", "legacy.py")
-DEFAULT_REPORT_PYTHON = os.path.join(_PROJECT_ROOT, "venv", "bin", "python")
-DEFAULT_REPORT_TIMEOUT = 120.0
 
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 _SESSION_ID_TS_FMT = "%Y%m%dT%H%M%SZ"
@@ -217,9 +205,14 @@ STOP_FORCED_REASON = "sampler-still-running"
 MAX_REQUEST_READERS = 32
 MAX_CONTROL_HANDLERS = 16
 MAX_WATCH_STREAMS = 32
-#: `report` runs a matplotlib/pandas subprocess on a load-sensitive host: it
-#: has its own cap, separate from MAX_CONTROL_HANDLERS.
-MAX_REPORT_JOBS = 2
+#: `export` streams (PROTOCOL 10.3): their own slot class, beyond which `busy`.
+MAX_EXPORTS = 4
+DEFAULT_EXPORT_MAX_BYTES = 256 * 1024 * 1024
+#: Raw bytes per `export` data line (65,536 base64 characters).
+EXPORT_CHUNK_BYTES = 49152
+#: A stalled export reader is cut after this many seconds without progress.
+EXPORT_STALL_SECONDS = 25.0
+EXPORT_PARTS = ("summary.json", "samples.jsonl.gz", "damon.jsonl", "events.jsonl")
 #: How long the accept thread waits to deliver a `busy` line to a peer it is
 #: refusing (it must never block the accept loop on a peer that never reads).
 BUSY_SEND_TIMEOUT_SECONDS = 0.2
@@ -321,6 +314,52 @@ class _HeldLock:
         self._lock.release()
 
 
+class _ResizableSlots:
+    """A non-blocking counting limit whose cap can change at runtime
+    (`BoundedSemaphore` cannot be resized). Lowering the cap never evicts a
+    holder; it only refuses new acquires until enough have released."""
+
+    def __init__(self, limit: int) -> None:
+        self._lock = threading.Lock()
+        self._limit = limit
+        self._held = 0
+
+    def acquire(self, blocking: bool = False) -> bool:
+        with self._lock:
+            if self._held >= self._limit:
+                return False
+            self._held += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            if self._held <= 0:
+                raise ValueError("released more slots than were acquired")
+            self._held -= 1
+
+    def resize(self, limit: int) -> None:
+        with self._lock:
+            self._limit = limit
+
+
+class _Ctx:
+    """Per-request context: the wire contract and the peer (SO_PEERCRED)."""
+
+    __slots__ = ("contract", "uid", "pid")
+
+    def __init__(self, contract: int = CONTRACT_VERSION, uid: Optional[int] = 0,
+                 pid: Optional[int] = None) -> None:
+        self.contract = contract
+        self.uid = uid
+        self.pid = pid
+
+
+#: In-process callers (tests, direct handler calls) are the trusted uid 0.
+_TRUSTED = _Ctx()
+#: Sentinel: `_dispatch(req)` without a peer means "in-process, trusted".
+_UNSET: Any = object()
+
+
 class RequestError(Exception):
     """A verb refused the request — becomes ``{"ok": false, "error": {...}}``
     (contract exit code 2), never an uncaught traceback back to the socket."""
@@ -357,6 +396,9 @@ class _Session:
     slice_name: Optional[str]
     slice_cgroup: Optional[str]
     token: Optional[str]
+    # PROTOCOL 10.5: the SO_PEERCRED uid that started the session; None for a
+    # session recovered from a 1.x store (uid 0 only).
+    owner_uid: Optional[int] = field(default=None, kw_only=True)
     interval: float
     meta: Dict[str, Any]
     started_at: str
@@ -494,12 +536,11 @@ class SessionServer:
         max_request_readers: int = MAX_REQUEST_READERS,
         max_control_handlers: int = MAX_CONTROL_HANDLERS,
         max_watch_streams: int = MAX_WATCH_STREAMS,
-        max_report_jobs: int = MAX_REPORT_JOBS,
+        max_exports: int = MAX_EXPORTS,
+        export_max_bytes: int = DEFAULT_EXPORT_MAX_BYTES,
         socket_check_interval: float = SOCKET_CHECK_INTERVAL_SECONDS,
-        report_python: Optional[str] = None,
-        report_script: Optional[str] = None,
-        report_timeout: float = DEFAULT_REPORT_TIMEOUT,
         placement_factory: Optional[Callable[..., "placement_mod.LanePlacement"]] = None,
+        settings: Optional["daemon_config.Settings"] = None,
     ) -> None:
         if damon_default not in ("on", "off"):
             raise ValueError(f"damon_default must be 'on' or 'off', got {damon_default!r}")
@@ -517,6 +558,7 @@ class SessionServer:
         self.observe_slices = list(observe_slices)
         self.max_sessions = max_sessions
         self.gates_slice_name = gates_slice_name
+        self.export_max_bytes = export_max_bytes
         self.slice_unit_verifier = slice_unit_verifier or access.verify_systemd_slice
         self._gates_slice_verification: Optional[Tuple[float, bool]] = None
         self._gates_slice_verify_lock = threading.Lock()
@@ -566,18 +608,6 @@ class SessionServer:
             damon_pool if damon_pool is not None
             else damon_mod.KdamondPool(capacity=max_sessions)
         )
-        # RW-14: resolved once at construction (a long-lived daemon's venv,
-        # baked into the image at build time in C6, never appears mid-run) —
-        # `None` means "not found", checked at `ctl report` time so the
-        # error names the exact path that was missing.
-        if report_python is not None:
-            self.report_python = report_python
-        elif os.access(DEFAULT_REPORT_PYTHON, os.X_OK):
-            self.report_python = DEFAULT_REPORT_PYTHON
-        else:
-            self.report_python = None
-        self.report_script = report_script or DEFAULT_REPORT_SCRIPT
-        self.report_timeout = report_timeout
         # CP-9: how a placement leaf is removed. `os.rmdir` on the real
         # kernfs cgroup directory; a test pointing `cgroup_root` at a tmp
         # tree replaces it, because a REAL directory holding the same
@@ -603,13 +633,38 @@ class SessionServer:
         # CP-33: bounded admission. Non-blocking acquires only.
         self._reader_slots = threading.BoundedSemaphore(max_request_readers)
         self._handler_slots = threading.BoundedSemaphore(max_control_handlers)
-        self._watch_slots = threading.BoundedSemaphore(max_watch_streams)
-        # `report` is a heavy subprocess (matplotlib/pandas): its own small
-        # class, so a slow report can neither run 16 at once nor make the
-        # cheap verbs (`status`, `stop`) answer `busy`.
-        self._report_slots = threading.BoundedSemaphore(max_report_jobs)
+        self._watch_slots = _ResizableSlots(max_watch_streams)
+        self._export_slots = _ResizableSlots(max_exports)
+        self._exporting: Dict[str, int] = {}
         self._inflight = 0
         self._inflight_cond = threading.Condition()
+
+        seeded = settings is None
+        if settings is None:
+            # In-process construction (tests, embedding): the keyword
+            # arguments are the file layer of a config-less Settings, so the
+            # `config` verbs work the same way for every server.
+            settings = daemon_config.Settings(
+                os.path.join(os.path.dirname(sessions_dir), "cgpd.toml"),
+                overrides_path=os.path.join(os.path.dirname(sessions_dir), "overrides.toml"),
+                log=self._log,
+            )
+            settings.load()
+            settings.seed({
+                "sessions_dir": sessions_dir, "ctl_socket": socket_path,
+                "damon_default": damon_default, "interval": interval,
+                "keep_sessions": keep_sessions, "keep_days": keep_days,
+                "max_sessions": max_sessions, "observe_slices": list(observe_slices),
+                "gates_slice": gates_slice_name, "max_watchers": max_watch_streams,
+                "max_exports": max_exports, "export_max_bytes": export_max_bytes,
+                "allow_uids": list(allow_uids or []),
+            })
+        self.settings = settings
+        self._applied: Dict[str, Any] = {}
+        # A Settings handed in (cgpd) is authoritative; one built above from
+        # the keyword arguments already equals the attributes, so it is only
+        # snapshotted (an `allow_uids=[]` argument must stay a list).
+        self._apply_settings(snapshot_only=seeded)
 
         self.started_at = self._iso(self.clock())
         self._guard_path(self.sessions_dir)
@@ -872,6 +927,7 @@ class SessionServer:
             "container_id": sess.container_id,
             "cgroup": sess.cgroup,
             "token": sess.token,
+            "owner_uid": sess.owner_uid,
             "slice_name": sess.slice_name,
             "interval_seconds": sess.interval,
             "started_at": sess.started_at,
@@ -933,17 +989,19 @@ class SessionServer:
 
     # ── verb: version ────────────────────────────────────────────────────
 
-    def handle_version(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_version(self, args: Dict[str, Any], ctx: _Ctx = _TRUSTED) -> Dict[str, Any]:
         with self._lock:
             live = self._count_live()
             observer_listening = self._observer_sock is not None
         damon_state = "available" if damon_mod.available() else "unavailable:not available on this host"
-        return {
+        doc = {
             "ok": True,
             "contract": CONTRACT_VERSION,
+            "contracts": list(CONTRACTS),
             "cgprofile": CGPROFILE_VERSION,
             "daemon": {
                 "name": self.daemon_name,
+                "version": CGPROFILE_VERSION,
                 "started_at": self.started_at,
                 "damon": damon_state,
                 "damon_default": self.damon_default,
@@ -957,7 +1015,7 @@ class SessionServer:
             # configured, i.e. docker-group trust) and that SO_PEERCRED is
             # enforced on every accepted connection.
             "transports": {
-                "exec": True,
+                "exec": False,
                 "socket": {
                     "path": self.socket_path,
                     "listening": self._sock is not None,
@@ -975,10 +1033,106 @@ class SessionServer:
                 "listening": observer_listening,
             },
         }
+        if ctx.contract >= 2:
+            # The exec carrier no longer exists: the key is dropped at
+            # contract 2 and kept (false) at contract 1 (PROTOCOL 10.1).
+            del doc["transports"]["exec"]
+            doc["config"] = {
+                "digest": self.settings.digest,
+                "last_reload_error": self.settings.last_reload_error,
+                "overrides": self.settings.override_count,
+            }
+        return doc
+
+    # ── verbs: config / config-set / config-reset (PROTOCOL 10.4) ────────
+
+    def handle_config(self, args: Dict[str, Any], ctx: _Ctx = _TRUSTED) -> Dict[str, Any]:
+        if args:
+            raise RequestError("bad-argument", f"config takes no arguments, got {sorted(args)!r}")
+        return {"ok": True, "contract": 2, "config": self.settings.describe()}
+
+    def _config_audit(self, ctx: _Ctx, op: str, key: Any, old: Any, new: Any,
+                      persist: Any) -> str:
+        audit_id = self.settings.next_audit_id()
+        self._log(
+            f"config-audit id={audit_id} op={op} uid={ctx.uid} pid={ctx.pid} "
+            f"key={key} old={json.dumps(old)} new={json.dumps(new)} "
+            f"persist={json.dumps(persist)} ts={self._iso(self.clock())}"
+        )
+        return audit_id
+
+    def _require_root(self, ctx: _Ctx, op: str, args: Dict[str, Any]) -> None:
+        """Config writes are uid 0 only, audited even when refused."""
+        if ctx.uid != 0:
+            self._config_audit(
+                ctx, "refused", args.get("key"), None, args.get("value"),
+                args.get("persist"),
+            )
+            who = "unavailable" if ctx.uid is None else str(ctx.uid)
+            raise RequestError(
+                "peer-refused", f"{op} is allowed to uid 0 only (peer uid {who})"
+            )
+
+    def handle_config_set(self, args: Dict[str, Any], ctx: _Ctx = _TRUSTED) -> Dict[str, Any]:
+        self._require_root(ctx, "set", args)
+        unknown = sorted(set(args) - {"key", "value", "persist", "dry_run"})
+        if unknown:
+            raise RequestError("bad-argument", f"unexpected config-set argument(s) {unknown!r}")
+        if "value" not in args:
+            raise RequestError("bad-argument", "config-set requires 'key' and 'value'")
+        for flag in ("persist", "dry_run"):
+            if not isinstance(args.get(flag, False), bool):
+                raise RequestError("bad-argument", f"{flag!r} must be a boolean")
+        persist = args.get("persist", False)
+        dry_run = args.get("dry_run", False)
+        key = args.get("key")
+        try:
+            result = self.settings.set_override(
+                key, args["value"], persist=persist, dry_run=dry_run
+            )
+        except daemon_config.ConfigError as exc:
+            self._config_audit(ctx, "refused", key, None, args["value"], persist)
+            raise RequestError("bad-argument", str(exc)) from None
+        except daemon_config.PersistError as exc:
+            self._config_audit(ctx, "refused", key, None, args["value"], persist)
+            raise RequestError("persist-failed", str(exc)) from None
+        if not dry_run:
+            self._apply_settings()
+        result["audit_id"] = self._config_audit(
+            ctx, "set", key, result["old"]["value"], result["new"]["value"], persist,
+        )
+        return {"ok": True, "contract": 2, "config-set": result}
+
+    def handle_config_reset(self, args: Dict[str, Any], ctx: _Ctx = _TRUSTED) -> Dict[str, Any]:
+        self._require_root(ctx, "reset", args)
+        unknown = sorted(set(args) - {"key", "all"})
+        if unknown:
+            raise RequestError("bad-argument", f"unexpected config-reset argument(s) {unknown!r}")
+        key = args.get("key")
+        every = args.get("all", False)
+        if not isinstance(every, bool):
+            raise RequestError("bad-argument", "'all' must be a boolean")
+        if (key is None) == (not every):
+            raise RequestError(
+                "bad-argument", "config-reset needs exactly one of 'key' or 'all': true"
+            )
+        try:
+            result = self.settings.reset(None if every else key)
+        except daemon_config.ConfigError as exc:
+            self._config_audit(ctx, "refused", key, None, None, None)
+            raise RequestError("bad-argument", str(exc)) from None
+        except daemon_config.PersistError as exc:
+            self._config_audit(ctx, "refused", key, None, None, None)
+            raise RequestError("persist-failed", str(exc)) from None
+        self._apply_settings()
+        result["audit_id"] = self._config_audit(
+            ctx, "reset", "all" if every else key, result["reset"], None, None,
+        )
+        return {"ok": True, "contract": 2, "config-reset": result}
 
     # ── verb: start ──────────────────────────────────────────────────────
 
-    def handle_start(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_start(self, args: Dict[str, Any], ctx: _Ctx = _TRUSTED) -> Dict[str, Any]:
         target_spec = args.get("target")
         scope = args.get("scope")
         token = args.get("token")
@@ -1101,7 +1255,7 @@ class SessionServer:
             sess = self._create_session_locked(
                 container_id=container_id, cgroup=cgroup, scope=scope, token=token,
                 interval=interval, damon_req=damon_req, meta=meta, policy=policy,
-                place_request=place_request,
+                place_request=place_request, owner_uid=ctx.uid,
             )
             try:
                 thread = threading.Thread(
@@ -1134,6 +1288,7 @@ class SessionServer:
         interval: float, damon_req: str, meta: Dict[str, Any],
         policy: Optional["liveness_mod.Policy"] = None,
         place_request: Optional["placement_mod.PlacementRequest"] = None,
+        owner_uid: Optional[int] = None,
     ) -> _Session:
         start_state: Dict[str, Any] = {}
         try:
@@ -1141,7 +1296,7 @@ class SessionServer:
                 container_id=container_id, cgroup=cgroup, scope=scope,
                 token=token, interval=interval, damon_req=damon_req,
                 meta=meta, policy=policy, place_request=place_request,
-                start_state=start_state,
+                start_state=start_state, owner_uid=owner_uid,
             )
         except BaseException:
             if start_state.get("created") and not start_state.get("rejected"):
@@ -1172,6 +1327,7 @@ class SessionServer:
         interval: float, damon_req: str, meta: Dict[str, Any], start_state: Dict[str, Any],
         policy: Optional["liveness_mod.Policy"] = None,
         place_request: Optional["placement_mod.PlacementRequest"] = None,
+        owner_uid: Optional[int] = None,
     ) -> _Session:
         session_id = self._session_id_fn()
         if session_id in self._sessions or os.path.lexists(
@@ -1367,7 +1523,7 @@ class SessionServer:
 
             sess = _Session(
                 session_id=session_id, scope=scope, container_id=container_id, cgroup=cgroup,
-                slice_name=slice_name, slice_cgroup=slice_cgroup, token=token, interval=interval,
+                owner_uid=owner_uid, slice_name=slice_name, slice_cgroup=slice_cgroup, token=token, interval=interval,
                 meta=meta, started_at=started_at, baseline_memory_bytes=baseline,
                 pids_at_start=pids_at_start, host_snapshot=host_snapshot, rundir=rundir,
                 summary_acc=acc, subtree_resolver=subtree_resolver, damon_session=damon_session_obj,
@@ -2103,13 +2259,30 @@ class SessionServer:
 
     # ── verb: status / host ──────────────────────────────────────────────
 
-    def handle_status(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_status(self, args: Dict[str, Any], ctx: _Ctx = _TRUSTED) -> Dict[str, Any]:
         session_id = args.get("session")
+        state = args.get("state")
+        if state is not None:
+            if ctx.contract < 2:
+                raise RequestError(
+                    "bad-argument", "status 'state' exists only at contract 2 (request is contract 1)"
+                )
+            if state not in ("live", "done", "all"):
+                raise RequestError("bad-argument", "status 'state' must be live, done or all")
         if session_id is None:
             with self._lock:
                 entries = [
                     self._status_entry(s) for s in self._sessions.values() if not s.finished
                 ]
+            if ctx.contract >= 2:
+                for entry in entries:
+                    entry["state"] = "live"
+                    entry["owner_uid"] = self._sessions[entry["session"]].owner_uid
+                if state in ("done", "all"):
+                    stored = self._stored_entries()
+                    entries = stored if state == "done" else entries + stored
+                    entries.sort(key=lambda entry: entry["session"], reverse=True)
+                    entries = entries[: self.keep_sessions]
             return {
                 "ok": True, "contract": CONTRACT_VERSION, "at": self._iso(self.clock()),
                 "sessions": entries, "host": self._host_snapshot(),
@@ -2123,11 +2296,42 @@ class SessionServer:
                     "unknown-session", f"no session {session_id} is live or on record"
                 )
             entry = self._status_entry(sess)
+            if ctx.contract >= 2:
+                entry["state"] = "live"
+                entry["owner_uid"] = sess.owner_uid
         return {
             "ok": True, "contract": CONTRACT_VERSION, "at": self._iso(self.clock()),
             "session": entry,
             "host": self._host_snapshot(),
         }
+
+    def _stored_entries(self) -> List[Dict[str, Any]]:
+        """Finished or aborted sessions on disk (contract-2 `status --state`)."""
+        try:
+            names = os.listdir(self.sessions_dir)
+        except OSError:
+            return []
+        with self._lock:
+            live_ids = {s.session_id for s in self._sessions.values() if not s.finished}
+        entries: List[Dict[str, Any]] = []
+        for name in names:
+            if name in live_ids or not _SESSION_ID_RE.match(name):
+                continue
+            manifest = self._read_manifest(name)
+            if manifest is None or manifest.get("status") not in ("finished", "aborted"):
+                continue
+            owner = manifest.get("owner_uid")
+            entries.append({
+                "session": name,
+                "state": "aborted" if manifest["status"] == "aborted" else "done",
+                "scope": manifest.get("scope"),
+                "container_id": manifest.get("container_id"),
+                "token": manifest.get("token"),
+                "started_at": manifest.get("started_at"),
+                "ended_at": manifest.get("ended_at"),
+                "owner_uid": owner if type(owner) is int else None,
+            })
+        return entries
 
     def _status_entry(self, sess: _Session) -> Dict[str, Any]:
         with sess.lock:
@@ -2170,7 +2374,7 @@ class SessionServer:
                 "placement": _placement_block(sess),
             }
 
-    def handle_host(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_host(self, args: Dict[str, Any], ctx: _Ctx = _TRUSTED) -> Dict[str, Any]:
         return {"ok": True, "contract": CONTRACT_VERSION, "host": self._host_snapshot()}
 
     def _host_snapshot(self) -> Dict[str, Any]:
@@ -2311,7 +2515,7 @@ class SessionServer:
 
     # ── verb: stop ───────────────────────────────────────────────────────
 
-    def handle_stop(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def handle_stop(self, args: Dict[str, Any], ctx: _Ctx = _TRUSTED) -> Dict[str, Any]:
         session_id = args.get("session")
         if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
             raise RequestError("unknown-session", f"no session {session_id!r} is live or on record")
@@ -2323,7 +2527,9 @@ class SessionServer:
                     raise RequestError(
                         "unknown-session", f"no session {session_id} is live or on record"
                     )
+                self._check_owner(ctx, self._stored_owner(session_id), "stop")
                 return self._stop_response(session_id, on_disk, already_stopped=True)
+            self._check_owner(ctx, sess.owner_uid, "stop")
             if sess.finished:
                 return self._stop_response(session_id, sess.summary_doc, already_stopped=True)
             worker = sess.thread
@@ -2375,6 +2581,34 @@ class SessionServer:
         response = self._stop_response(session_id, summary_doc, already_stopped=False)
         self._run_retention()
         return response
+
+    @staticmethod
+    def _check_owner(ctx: _Ctx, owner: Optional[int], op: str) -> None:
+        """PROTOCOL 10.5: the session's owner uid or uid 0. A session with no
+        recorded owner (a 1.x store) is uid 0 only; unreadable peer
+        credentials fail closed."""
+        if ctx.uid == 0:
+            return
+        if ctx.uid is None or owner is None or ctx.uid != owner:
+            named = "no owner recorded (uid 0 only)" if owner is None else f"owner uid {owner}"
+            who = "unavailable" if ctx.uid is None else str(ctx.uid)
+            raise RequestError(
+                "peer-refused", f"{op} of this session is allowed to its {named}; peer uid {who}",
+            )
+
+    def _read_manifest(self, session_id: str) -> Optional[Dict[str, Any]]:
+        path = os.path.join(self.sessions_dir, session_id, "manifest.json")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            return None
+        return doc if isinstance(doc, dict) else None
+
+    def _stored_owner(self, session_id: str) -> Optional[int]:
+        manifest = self._read_manifest(session_id) or {}
+        owner = manifest.get("owner_uid")
+        return owner if type(owner) is int else None
 
     def _read_stored_summary(self, session_id: str) -> Optional[Dict[str, Any]]:
         path = os.path.join(self.sessions_dir, session_id, "summary.json")
@@ -2563,62 +2797,64 @@ class SessionServer:
             },
         }
 
-    # ── verb: report ─────────────────────────────────────────────────────
+    # ── verb: report (removed in 2.0.0, PROTOCOL 10.1/10.2) ─────────────
 
-    def handle_report(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """RW-14: renders the REAL interactive HTML report — `analyze.build`
-        + `report_html.render`, exactly what `cgprofile report` already
-        produces for a `cgprofile run`/`attach` session — never a hand-rolled
-        stub. This module stays collector-tier (stdlib only) by never
-        importing either directly: the session directory this daemon writes
-        is already shaped like any other `lib.store.RunDir` (see
-        `_manifest_for` and `_on_session_sample`'s own RW-14 comments), so
-        the existing report tier can render it unmodified, run from ITS OWN
-        interpreter (`self.report_python`, the venv baked into the image at
-        build time) as a subprocess of `self.report_script` (`cgprofile.py`
-        itself) — the same system-python/venv split the `cgprofile` bash
-        shim already makes between collector verbs and `report`.
-        """
-        session_id = args.get("session")
-        if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
-            raise RequestError("unknown-session", f"no session {session_id!r} is live or on record")
-        session_dir = os.path.join(self.sessions_dir, session_id)
-        summary_doc = self._read_stored_summary(session_id)
-        if summary_doc is None:
-            raise RequestError("unknown-session", f"no finished session {session_id} on record")
-        if not self.report_python or not os.access(self.report_python, os.X_OK):
-            raise RequestError(
-                "report-unavailable",
-                f"no executable report-tier interpreter at {self.report_python!r} — "
-                "the image's venv is missing (rebuild the image, or run ./setup.sh in dev)",
-            )
-        report_path = os.path.join(session_dir, "report.html")
-        self._guard_path(report_path)
-        command = [
-            self.report_python, self.report_script, "report",
-            "--run-dir", session_dir, "--html-only",
-        ]
-        try:
-            proc = subprocess.run(
-                command, capture_output=True, text=True, timeout=self.report_timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RequestError(
-                "report-failed", f"report subprocess timed out after {self.report_timeout}s",
-            ) from exc
-        if proc.returncode != 0 or not os.path.isfile(report_path):
-            tail_source = (proc.stderr or proc.stdout or "").strip().splitlines()
-            tail = tail_source[-1] if tail_source else f"report subprocess exited {proc.returncode}"
-            raise RequestError("report-failed", tail)
-        return {"ok": True, "contract": CONTRACT_VERSION, "path": report_path}
+    @staticmethod
+    def handle_report(args: Dict[str, Any], ctx: _Ctx = _TRUSTED) -> Dict[str, Any]:
+        """The daemon no longer renders reports: it holds no pandas, plotly
+        or matplotlib and runs no report subprocess. Every contract answers
+        the additive `report-removed` error so a 1.x client is told, never
+        dropped silently."""
+        raise RequestError(
+            "report-removed",
+            "the daemon no longer renders reports; export the session with "
+            "contract 2 and render locally (cgpctl report <session>)",
+        )
 
     # ── verb: gc / retention ─────────────────────────────────────────────
 
-    def handle_gc(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        removed, kept = self._run_retention()
-        return {"ok": True, "contract": CONTRACT_VERSION, "removed": removed, "kept": kept}
+    def handle_gc(self, args: Dict[str, Any], ctx: _Ctx = _TRUSTED) -> Dict[str, Any]:
+        """Retention on demand (CP-52: `dry_run`, `keep`, `keep_days`). Only
+        sessions the peer owns are removed (uid 0: any); a session being
+        exported is skipped."""
+        unknown = sorted(set(args) - {"dry_run", "keep", "keep_days"})
+        if unknown:
+            raise RequestError("bad-argument", f"unexpected gc argument(s) {unknown!r}")
+        dry_run = args.get("dry_run", False)
+        if not isinstance(dry_run, bool):
+            raise RequestError("bad-argument", "'dry_run' must be a boolean")
+        limits: Dict[str, Optional[int]] = {}
+        for name, ceiling in (("keep", self.keep_sessions), ("keep_days", self.keep_days)):
+            value = args.get(name)
+            if value is None:
+                limits[name] = None
+                continue
+            if type(value) is not int or value < 1:
+                raise RequestError("bad-argument", f"{name!r} must be an integer >= 1")
+            if value > ceiling:
+                raise RequestError(
+                    "bad-argument",
+                    f"{name!r}={value} is above the configured maximum {ceiling} "
+                    f"(gc may only keep fewer or expire sooner)",
+                )
+            limits[name] = value
+        if ctx.uid is None:
+            raise RequestError(
+                "peer-refused", "gc needs readable peer credentials (peer uid unavailable)"
+            )
+        removed, kept = self._run_retention(
+            keep=limits["keep"], keep_days=limits["keep_days"],
+            owner_uid=None if ctx.uid == 0 else ctx.uid, dry_run=dry_run,
+        )
+        return {
+            "ok": True, "contract": CONTRACT_VERSION, "removed": removed, "kept": kept,
+            "dry_run": dry_run,
+        }
 
-    def _run_retention(self) -> Tuple[List[str], int]:
+    def _run_retention(
+        self, *, keep: Optional[int] = None, keep_days: Optional[int] = None,
+        owner_uid: Optional[int] = None, dry_run: bool = False,
+    ) -> Tuple[List[str], int]:
         try:
             names = sorted(os.listdir(self.sessions_dir))
         except OSError:
@@ -2653,20 +2889,28 @@ class SessionServer:
             finished.append((name, manifest))
         finished.sort(key=lambda pair: pair[0])
 
+        keep_count = keep if keep is not None else self.keep_sessions
         keep_newest: Set[str] = (
-            {name for name, _ in finished[-self.keep_sessions:]} if self.keep_sessions > 0 else set()
+            {name for name, _ in finished[-keep_count:]} if keep_count > 0 else set()
         )
-        cutoff = self.clock() - self.keep_days * 86400.0
+        cutoff = self.clock() - (keep_days if keep_days is not None else self.keep_days) * 86400.0
 
         removed: List[str] = []
         kept = 0
         for name, manifest in finished:
             ended_epoch = self._parse_iso_epoch(manifest.get("ended_at"))
             too_old = ended_epoch is not None and ended_epoch < cutoff
-            if name in keep_newest and not too_old:
+            expendable = not (name in keep_newest and not too_old)
+            if expendable and owner_uid is not None and manifest.get("owner_uid") != owner_uid:
+                expendable = False
+            with self._lock:
+                if expendable and self._exporting.get(name):
+                    expendable = False
+            if not expendable:
                 kept += 1
             else:
-                self._remove_session_dir(name)
+                if not dry_run:
+                    self._remove_session_dir(name)
                 removed.append(name)
         return removed, kept
 
@@ -2677,7 +2921,63 @@ class SessionServer:
 
     # ── dispatch / socket loop ───────────────────────────────────────────
 
-    def _dispatch(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    # ── settings (cgpd config, CGPCTL-SPEC 3) ────────────────────────────
+
+    #: settings key -> how a changed value reaches the running server.
+    _APPLIED_KEYS = (
+        "interval", "damon_default", "keep_sessions", "keep_days", "max_sessions",
+        "allow_uids", "export_max_bytes", "observe_slices", "gates_slice",
+        "max_watchers", "max_exports",
+    )
+
+    def _apply_settings(self, *, snapshot_only: bool = False) -> None:
+        """Copy every changed runtime key from `self.settings` onto the
+        attributes the verbs read, and resize the stream slot caps. Only keys
+        whose value changed since the last call are touched."""
+        current = {key: self.settings.get(key) for key in self._APPLIED_KEYS}
+        if not snapshot_only:
+            for key, value in current.items():
+                if key in self._applied and self._applied[key] == value:
+                    continue
+                if key == "interval":
+                    self.default_interval = value
+                elif key == "damon_default":
+                    self.damon_default = value
+                elif key == "allow_uids":
+                    self.allow_uids = list(value) if value else None
+                elif key == "observe_slices":
+                    self.observe_slices = list(value)
+                elif key == "gates_slice":
+                    self.gates_slice_name = value
+                    self.windows.gates_slice_name = value
+                elif key == "max_watchers":
+                    self._watch_slots.resize(value)
+                elif key == "max_exports":
+                    self._export_slots.resize(value)
+                else:
+                    setattr(self, key, value)
+        self._applied = current
+
+    def reload_settings(self) -> bool:
+        """SIGHUP / `cgpd reload`: re-read the file and apply. Never raises."""
+        ok = self.settings.reload()
+        self._apply_settings()
+        return ok
+
+    @staticmethod
+    def _request_contract(req: Any) -> int:
+        """The contract a response to `req` is stamped with: the requested
+        one when this daemon serves it, else 1 (an omitted or unsupported
+        contract is answered as a contract-1 error)."""
+        if isinstance(req, dict):
+            contract = req.get("contract", CONTRACT_VERSION)
+            if type(contract) is int and contract in CONTRACTS:
+                return contract
+        return CONTRACT_VERSION
+
+    def _dispatch(
+        self, req: Dict[str, Any], peer: Any = _UNSET
+    ) -> Dict[str, Any]:
         """Route ONE §8.1 request line to its handler.
 
         `req` is the wire request exactly as contract §8.1 defines it —
@@ -2691,6 +2991,12 @@ class SessionServer:
         the long-option arg NAMES are documented per verb in
         `docs/PROTOCOL.md`.
         """
+        if peer is _UNSET:
+            ctx = _Ctx(self._request_contract(req))
+        elif peer is None:
+            ctx = _Ctx(self._request_contract(req), uid=None)
+        else:
+            ctx = _Ctx(self._request_contract(req), uid=peer[1], pid=peer[0])
         verb, args, wire_error = self._validate_wire(req)
         if wire_error is not None:
             return wire_error
@@ -2703,6 +3009,7 @@ class SessionServer:
                 "not-streaming",
                 f"{verb!r} streams one JSON object per line until the session ends "
                 f"(contract §8.2) and cannot be answered as a single response",
+                contract=ctx.contract,
             )
         handlers = {
             "version": self.handle_version,
@@ -2712,16 +3019,29 @@ class SessionServer:
             "stop": self.handle_stop,
             "report": self.handle_report,
             "gc": self.handle_gc,
+            "config": self.handle_config,
+            "config-set": self.handle_config_set,
+            "config-reset": self.handle_config_reset,
         }
         handler = handlers.get(verb)
         if handler is None:
-            return self._error_response("bad-argument", f"unknown verb {verb!r}")
+            return self._error_response(
+                "bad-argument", f"unknown verb {verb!r}", contract=ctx.contract
+            )
+        if verb in CONTRACT_2_VERBS and ctx.contract < 2:
+            return self._error_response(
+                "bad-argument",
+                f"verb {verb!r} exists only at contract 2; this request is contract "
+                f"{ctx.contract} (this daemon speaks contracts {list(CONTRACTS)})",
+                contract=ctx.contract,
+            )
         try:
-            resp = handler(args)
+            resp = handler(args, ctx)
         except RequestError as exc:
-            return self._error_response(exc.code, exc.message)
+            return self._error_response(exc.code, exc.message, contract=ctx.contract)
         if verb == "stop" and resp.get("ok"):
             resp["session_dir"] = os.path.join(self.sessions_dir, resp["session"])
+        resp["contract"] = ctx.contract
         return resp
 
     def _validate_wire(
@@ -2745,28 +3065,29 @@ class SessionServer:
                 "bad-argument",
                 f"unexpected request key(s) {unexpected!r}: a request is "
                 f"{{\"verb\", \"args\", \"contract\"}} (contract §8.1)",
+                contract=self._request_contract(req),
             )
         contract = req.get("contract", CONTRACT_VERSION)
         if (
             isinstance(contract, bool)
             or not isinstance(contract, int)
-            or contract != CONTRACT_VERSION
+            or contract not in CONTRACTS
         ):
             return None, {}, self._error_response(
                 "bad-argument",
-                f"request contract {contract!r}, this daemon speaks contract {CONTRACT_VERSION}",
+                f"request contract {contract!r}, this daemon speaks contracts {list(CONTRACTS)}",
             )
         verb = req.get("verb")
         if not isinstance(verb, str):
             return None, {}, self._error_response(
-                "bad-argument", "request 'verb' must be a string"
+                "bad-argument", "request 'verb' must be a string", contract=contract
             )
         args = req.get("args")
         if args is None:
             args = {}
         if not isinstance(args, dict):
             return None, {}, self._error_response(
-                "bad-argument", "request 'args' must be a JSON object"
+                "bad-argument", "request 'args' must be a JSON object", contract=contract
             )
         return verb, args, None
 
@@ -3275,28 +3596,23 @@ class SessionServer:
             self._inflight -= 1
             self._inflight_cond.notify_all()
 
-    def _dispatch_admitted(self, req: Dict[str, Any]) -> Dict[str, Any]:
+    def _dispatch_admitted(self, req: Dict[str, Any], peer: Any = _UNSET) -> Dict[str, Any]:
         """`_dispatch` under the bounded-handler admission (CP-33). Verbs run
         concurrently across connections; the registry/session locks already
         guard every piece of shared state (`version`, `host`, `status` and
-        `gc` are read-only snapshots), and the cap answers `busy`. `report`
-        draws from its own small pool (`MAX_REPORT_JOBS`), never from the
-        shared handler pool."""
+        `gc` are read-only snapshots), and the cap answers `busy`."""
         # A non-object request is refused by `_dispatch`, inside a slot.
-        verb = req.get("verb") if isinstance(req, dict) else None
-        slots = self._report_slots if verb == "report" else self._handler_slots
+        slots = self._handler_slots
         if not slots.acquire(blocking=False):
             return self._error_response(
-                "busy",
-                "too many reports are running; retry shortly"
-                if slots is self._report_slots
-                else "too many verbs are running; retry shortly",
+                "busy", "too many verbs are running; retry shortly",
+                contract=self._request_contract(req),
             )
         try:
             if not self._begin_inflight():
                 return self._error_response("busy", "the daemon is shutting down")
             try:
-                return self._dispatch(req)
+                return self._dispatch(req, peer)
             finally:
                 self._end_inflight()
         finally:
@@ -3308,6 +3624,9 @@ class SessionServer:
         try:
             uid = self._peer_uid(conn)
             peer_allowed = self._peer_allowed(uid)
+            peer = self._peer_credentials(conn)
+            if peer is None and uid is not None:
+                peer = (0, uid, 0)
             data = bytearray()
             deadline = self.request_clock() + self.request_line_timeout
             while True:
@@ -3401,7 +3720,7 @@ class SessionServer:
                         ))
                     return
                 try:
-                    resp = self._dispatch_admitted(req)
+                    resp = self._dispatch_admitted(req, peer)
                 except Exception as exc:  # noqa: BLE001 - RG-55 live acceptance
                     # An unanticipated bug in ONE handler must never take
                     # down the whole accept loop — that would silently kill

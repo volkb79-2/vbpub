@@ -578,27 +578,6 @@ class TestStatusStopReport:
         assert resp["already_stopped"] is True
         assert resp["summary"]["session"] == session_id
 
-    def test_report_unknown_session(self, simple_server):
-        resp = simple_server._dispatch(_wire("report", session="s-20260101T000000Z-abcd"))
-        assert resp["error"]["code"] == "unknown-session"
-
-    def test_report_is_unavailable_with_no_report_python(self, simple_server):
-        # RW-14: `simple_server` (like a real dev checkout with no
-        # `./setup.sh` run yet) has no `venv/bin/python` on disk, so
-        # `SessionServer.__init__`'s own discovery resolves `report_python`
-        # to `None` — `handle_report` must refuse cleanly (exit-2 shape),
-        # never crash trying to exec a path that does not exist.
-        assert simple_server.report_python is None
-        start_resp = simple_server._dispatch(_start_req())
-        session_id = start_resp["session"]
-        sess = simple_server._sessions[session_id]
-        sess.stop_event.set()
-        sess.thread.join(timeout=5.0)
-        simple_server._dispatch(_wire("stop", session=session_id))
-        resp = simple_server._dispatch(_wire("report", session=session_id))
-        assert resp["ok"] is False
-        assert resp["error"]["code"] == "report-unavailable"
-
     def test_version_shape(self, simple_server):
         resp = simple_server._dispatch(_wire("version"))
         assert resp["ok"] is True
@@ -654,146 +633,22 @@ class TestHandleReportRealRender:
         server._dispatch(_wire("stop", session=session_id))
         return server, session_id
 
-    def test_report_script_explicit_arg_is_used_as_is(self, tmp_path):
-        # Same shape of bug as report_python above but for `report_script or
-        # DEFAULT_REPORT_SCRIPT` -- an explicit value must win, and (unlike
-        # report_python) an explicit value is truthy, so a broken `or`->`and`
-        # here would silently overwrite it with DEFAULT_REPORT_SCRIPT instead
-        # of merely falling through.
-        server = serve.SessionServer(
-            sessions_dir=str(tmp_path / "sessions"), report_script="/custom/report.py",
+    @pytest.mark.parametrize("contract", [1, 2])
+    def test_report_is_removed_at_both_contracts(self, tmp_path, contract):
+        # PROTOCOL 10.1/10.2: a 1.x client that still sends `report` is told
+        # with the additive `report-removed` code, stamped with ITS contract.
+        server, session_id = self._stopped_session(tmp_path)
+        resp = server._dispatch(
+            {"verb": "report", "args": {"session": session_id}, "contract": contract}
         )
-        assert server.report_script == "/custom/report.py"
-        assert server.report_script != serve.DEFAULT_REPORT_SCRIPT
-
-    def test_report_python_explicit_arg_is_used_as_is(self, tmp_path):
-        # An explicitly-passed report_python= must win outright, never fall
-        # through to the DEFAULT_REPORT_PYTHON auto-discovery branch -- this
-        # is the one assertion neither the "no venv" nor the "built venv"
-        # discovery tests make directly (both only ever observe the
-        # discovered value's downstream EFFECT, via a real `report` call).
-        server = serve.SessionServer(
-            sessions_dir=str(tmp_path / "sessions"), report_python=sys.executable,
-        )
-        assert server.report_python == sys.executable
-
-    def test_report_python_defaults_to_the_built_venv_when_present(self, tmp_path, monkeypatch):
-        # The other branch of SessionServer.__init__'s discovery — a fresh
-        # checkout with no built venv (this worktree's own actual state) is
-        # exercised by every other test in this class via an explicit
-        # report_python=; this pins the "found it" branch, which this
-        # checkout cannot exercise for real without running ./setup.sh.
-        real_access = os.access
-
-        def fake_access(path, mode):
-            if path == serve.DEFAULT_REPORT_PYTHON:
-                return True
-            return real_access(path, mode)
-
-        monkeypatch.setattr(serve.os, "access", fake_access)
-        server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
-        assert server.report_python == serve.DEFAULT_REPORT_PYTHON
-
-    @pytest.mark.skipif(not _HAS_REPORT_DEPS, reason="pandas/plotly not installed here")
-    def test_renders_a_real_interactive_html_report(self, tmp_path):
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
-        )
-        resp = server._dispatch(_wire("report", session=session_id))
-        assert resp["ok"] is True, resp
-        html = Path(resp["path"]).read_text()
-        # A real render, never the old hand-rolled stub: plotly's own figure
-        # div and inlined JS, never a bare <pre>{json}</pre> dump.
-        assert "cgp-figure" in html
-        assert "Plotly.newPlot" in html
-        assert "<pre>" not in html
-
-    def test_report_failed_surfaces_the_subprocess_stderr_tail(self, tmp_path, monkeypatch):
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
-        )
-        seen_kwargs: Dict[str, Any] = {}
-
-        def fake_run(command, **kwargs):
-            seen_kwargs.update(kwargs)
-            return subprocess.CompletedProcess(
-                command, returncode=1, stdout="", stderr="boom\nlast line\n"
-            )
-
-        monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch(_wire("report", session=session_id))
         assert resp["ok"] is False
-        assert resp["error"]["code"] == "report-failed"
-        assert resp["error"]["message"] == "last line"
-        # capture_output/text must both be True -- a real real subprocess
-        # run with either False would not give `proc.stdout`/`.stderr` as
-        # captured strings at all (None, or inherited fds, or bytes), which
-        # the mocked fake_run above cannot itself catch since it ignores
-        # kwargs entirely.
-        assert seen_kwargs["capture_output"] is True
-        assert seen_kwargs["text"] is True
-
-    def test_report_failed_surfaces_stdout_when_stderr_is_empty(self, tmp_path, monkeypatch):
-        # `(proc.stderr or proc.stdout or "")` has TWO `or`s -- a stderr-
-        # truthy fixture (the sibling test above) can only ever exercise
-        # the FIRST one, short-circuiting before the second is evaluated.
-        # This drives stderr empty/stdout non-empty specifically to reach
-        # the second `or`, whose own `or`->`and` mutant collapses straight
-        # to "" (stdout and "" is always falsy) regardless of real content.
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
+        assert resp["contract"] == contract
+        assert resp["error"]["code"] == "report-removed"
+        assert resp["error"]["message"] == (
+            "the daemon no longer renders reports; export the session with "
+            "contract 2 and render locally (cgpctl report <session>)"
         )
-
-        def fake_run(command, **kwargs):
-            return subprocess.CompletedProcess(
-                command, returncode=1, stdout="from stdout\nlast stdout line\n", stderr="",
-            )
-
-        monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch(_wire("report", session=session_id))
-        assert resp["error"]["code"] == "report-failed"
-        assert resp["error"]["message"] == "last stdout line"
-
-    def test_report_failed_with_no_output_at_all_names_the_exit_code(self, tmp_path, monkeypatch):
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
-        )
-
-        def fake_run(command, **kwargs):
-            return subprocess.CompletedProcess(command, returncode=7, stdout="", stderr="")
-
-        monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch(_wire("report", session=session_id))
-        assert resp["error"]["code"] == "report-failed"
-        assert resp["error"]["message"] == "report subprocess exited 7"
-
-    def test_report_failed_when_exit_0_but_no_file_was_written(self, tmp_path, monkeypatch):
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
-        )
-
-        def fake_run(command, **kwargs):
-            return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch(_wire("report", session=session_id))
-        assert resp["ok"] is False
-        assert resp["error"]["code"] == "report-failed"
-
-    def test_report_times_out(self, tmp_path, monkeypatch):
-        server, session_id = self._stopped_session(
-            tmp_path, report_python=sys.executable, report_script=_CGPROFILE_PY,
-            report_timeout=0.01,
-        )
-
-        def fake_run(command, **kwargs):
-            raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs.get("timeout", 0.01))
-
-        monkeypatch.setattr(serve.subprocess, "run", fake_run)
-        resp = server._dispatch(_wire("report", session=session_id))
-        assert resp["ok"] is False
-        assert resp["error"]["code"] == "report-failed"
-        assert "timed out" in resp["error"]["message"]
+        assert not (tmp_path / "sessions" / session_id / "report.html").exists()
 
 
 # ── host snapshot, exact reproduction of host-v1.json ──────────────────
@@ -1393,7 +1248,10 @@ class TestRetention:
             clock=lambda: EPOCH_START,
         )
         resp = server._dispatch(_wire("gc"))
-        assert resp == {"ok": True, "contract": 1, "removed": ["s-20260101T000000Z-aaaa"], "kept": 0}
+        assert resp == {
+            "ok": True, "contract": 1, "removed": ["s-20260101T000000Z-aaaa"], "kept": 0,
+            "dry_run": False,
+        }
 
     def test_retention_with_no_sessions_dir_yet(self, tmp_path):
         # __init__ always creates sessions_dir, so the only way _run_retention
@@ -3358,15 +3216,6 @@ def test_stop_with_a_malformed_session_id(simple_server):
     assert resp["error"]["message"] == "no session 'not-a-session-id' is live or on record"
 
 
-def test_report_with_a_malformed_session_id(simple_server):
-    resp = simple_server._dispatch(_wire("report", session="not-a-session-id"))
-    assert resp["error"]["code"] == "unknown-session"
-    # handle_report's fallback message is worded entirely differently
-    # ("no finished session ... on record", no "is live or", no repr) --
-    # an `or` -> `and` mutant on the first guard falls through to it.
-    assert resp["error"]["message"] == "no session 'not-a-session-id' is live or on record"
-
-
 # ── socket plumbing: stale files, unlink failures, short reads, accept() ──
 
 def test_bind_removes_a_stale_socket_node(tmp_path):
@@ -3458,11 +3307,11 @@ def test_handle_connection_survives_an_unhandled_dispatch_exception(tmp_path, mo
     # the failure must be visible on stderr, not silently swallowed.
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
 
-    def _boom(req):
+    def _boom(req, *_peer):
         raise ValueError("synthetic unanticipated handler bug")
 
     monkeypatch.setattr(server, "_dispatch", _boom)
-    conn = _FakeConn([_wire_bytes("version")])
+    conn =_FakeConn([_wire_bytes("version")])
     server._handle_connection(conn)
     assert conn.closed is True
     assert conn.sent == []  # no reply at all — never a malformed one
@@ -3482,7 +3331,7 @@ def test_handle_connection_dispatch_exception_flushes_stderr_immediately(tmp_pat
     # -- spy on the real `print(...)` call's kwargs instead.
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
 
-    def _boom(req):
+    def _boom(req, *_peer):
         raise ValueError("synthetic unanticipated handler bug")
 
     monkeypatch.setattr(server, "_dispatch", _boom)
@@ -3513,10 +3362,10 @@ def test_accept_loop_survives_a_handler_bug_and_keeps_serving(tmp_path, monkeypa
     # counter, and the accept loop is not allowed to end (which flips the
     # daemon to "shutting down" and answers late requests `busy`) until both
     # connections have been closed by their handlers.
-    def _flaky(req):
+    def _flaky(req, *peer):
         if req["args"].get("crash"):
             raise ValueError("synthetic unanticipated handler bug")
-        return real_dispatch(req)
+        return real_dispatch(req, *peer)
 
     monkeypatch.setattr(server, "_dispatch", _flaky)
 
@@ -4323,7 +4172,7 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         # byte-identical"). `listening` is true here because this test
         # reached the daemon over that very socket.
         assert version_out["transports"] == {
-            "exec": True,
+            "exec": False,
             "socket": {"path": socket_path, "listening": True,
                        "allow_uids": [], "peer_cred": True},
         }
@@ -4334,6 +4183,9 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
             "listening": True,
         }
         version_out.pop("transports")
+        # 2.0 additions (PROTOCOL 10.1), stripped like `transports` above.
+        assert version_out.pop("contracts") == [1, 2]
+        assert version_out["daemon"].pop("version") == serve.CGPROFILE_VERSION
         version_out.pop("resource_observer")
         assert _canon(version_out) == _canon(json.loads((FIXTURES / "version-v1.json").read_text()))
 
@@ -4950,11 +4802,11 @@ def test_cp33_a_long_verb_does_not_delay_another_verb(tmp_path):
     entered, release = threading.Event(), threading.Event()
     real = server._dispatch
 
-    def dispatch(req):
+    def dispatch(req, *peer):
         if req.get("verb") == "host":
             entered.set()
             release.wait(timeout=30.0)
-        return real(req)
+        return real(req, *peer)
 
     server._dispatch = dispatch
     slow: List[Dict[str, Any]] = []
@@ -4978,11 +4830,11 @@ def test_cp33_verbs_over_the_handler_cap_are_busy_and_the_slot_is_returned(tmp_p
     entered, release = threading.Event(), threading.Event()
     real = server._dispatch
 
-    def dispatch(req):
+    def dispatch(req, *peer):
         if req.get("verb") == "host":
             entered.set()
             release.wait(timeout=30.0)
-        return real(req)
+        return real(req, *peer)
 
     server._dispatch = dispatch
     slow: List[Dict[str, Any]] = []
@@ -5002,47 +4854,10 @@ def test_cp33_verbs_over_the_handler_cap_are_busy_and_the_slot_is_returned(tmp_p
         _stop_running(server, thread)
 
 
-def test_cp33_report_has_its_own_cap_and_never_starves_other_verbs(tmp_path):
-    server, thread = _running(tmp_path, max_control_handlers=1, max_report_jobs=1)
-    entered, release = threading.Event(), threading.Event()
-    real = server._dispatch
-
-    def dispatch(req):
-        if req.get("verb") == "report":
-            entered.set()
-            release.wait(timeout=30.0)
-            return {"ok": True, "contract": 1}
-        return real(req)
-
-    server._dispatch = dispatch
-    slow: List[Dict[str, Any]] = []
-    worker = threading.Thread(
-        target=lambda: slow.append(_ask(server.socket_path, "report", session="s")),
-        daemon=True,
-    )
-    try:
-        worker.start()
-        assert entered.wait(timeout=10.0)
-        # The one report slot is taken: a second report is busy ...
-        second = _ask(server.socket_path, "report", session="s")
-        assert second["ok"] is False and second["error"]["code"] == "busy"
-        assert "reports" in second["error"]["message"]
-        # ... but the shared handler pool (cap 1) is untouched.
-        assert _ask(server.socket_path)["ok"] is True
-        release.set()
-        worker.join(timeout=10.0)
-        assert slow[0]["ok"] is True
-        third = _ask(server.socket_path, "report", session="s")
-        assert third["ok"] is True                       # the report slot came back
-    finally:
-        release.set()
-        _stop_running(server, thread)
-
-
 def test_cp33_a_failing_handler_returns_its_slot(tmp_path):
     server, thread = _running(tmp_path, max_control_handlers=1)
 
-    def dispatch(_req):
+    def dispatch(_req, *_peer):
         raise RuntimeError("handler bug")
 
     real = server._dispatch

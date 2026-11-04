@@ -1,5 +1,8 @@
 {
-  "ok": true,
+  "ok": false,
   "contract": 1,
-  "path": "/var/lib/cgprofile/sessions/s-20260912T101500Z-9f01/report.html"
+  "error": {
+    "code": "report-removed",
+    "message": "the daemon no longer renders reports; export the session with contract 2 and render locally (cgpctl report <session>)"
+  }
 }

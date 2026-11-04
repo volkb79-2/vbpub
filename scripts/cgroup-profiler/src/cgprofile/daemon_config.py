@@ -272,6 +272,17 @@ class Settings:
             }
             self._load_overrides()
 
+    def seed(self, values: Mapping[str, Any]) -> None:
+        """Take in-process values (a ``SessionServer`` built from keyword
+        arguments, no config file) as the file layer. Values equal to the
+        default are skipped so their source stays ``default``. The values
+        are the caller's own constructor arguments and are not re-validated
+        (a test may use an interval no config file could carry)."""
+        with self._lock:
+            for key, value in values.items():
+                if value != KEYS[key].default:
+                    self._file[key] = value
+
     def _load_overrides(self) -> None:
         path = self.overrides_path
         self._overrides = {}

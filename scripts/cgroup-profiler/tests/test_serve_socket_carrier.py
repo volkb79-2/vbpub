@@ -221,19 +221,6 @@ def _fake_roots(tmp_path: Path) -> tuple:
     return root, proc
 
 
-def _stub_report_script(tmp_path: Path) -> str:
-    """A report tier that writes the file and nothing else — the real one
-    needs pandas/plotly, which this suite must not require to freeze the
-    `report` response SHAPE."""
-    script = tmp_path / "stub_report.py"
-    script.write_text(
-        "import os, sys\n"
-        "run_dir = sys.argv[sys.argv.index('--run-dir') + 1]\n"
-        "open(os.path.join(run_dir, 'report.html'), 'w').write('<html>stub</html>')\n"
-    )
-    return str(script)
-
-
 def _wait_for_socket(server: serve.SessionServer, thread: threading.Thread) -> None:
     # SessionServer assigns _sock only after bind() AND listen() succeed.  Wait
     # on that state instead of connecting a synthetic client: an extra
@@ -369,8 +356,7 @@ class _Scenario:
             cgroup_root=str(root), proc_root=str(proc),
             clock=lambda: EPOCH_START, sampler_clock=_per_thread_counting_clock(),
             sampler_sleep=self.barrier, session_id_fn=lambda: next(ids),
-            accept_timeout=0.05, report_python=sys.executable,
-            report_script=_stub_report_script(tmp_path),
+            accept_timeout=0.05,
         )
         self.barrier.server = self.server
         self.thread = threading.Thread(target=self.server._accept_loop, daemon=True)
@@ -609,7 +595,7 @@ class TestWireShape:
             sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
             accept_timeout=0.05, request_line_timeout=0.4,
         )
-        server.handle_stop = lambda _args: server._error_response(
+        server.handle_stop = lambda _args, *_ctx: server._error_response(
             "unknown-session", "no session"
         )
         thread = threading.Thread(target=server._accept_loop, daemon=True)
@@ -696,7 +682,7 @@ class TestWireShape:
         wire = _wire_bytes("version")
         assert wire.endswith(b"\n")
         conn = _AdvancingConn([wire[:-2], wire[-2:]])
-        server._dispatch = lambda _request: pytest.fail(
+        server._dispatch = lambda _request, *_peer: pytest.fail(
             "a request completed at the deadline was dispatched"
         )
 
@@ -801,9 +787,10 @@ class TestWireShape:
 
     def test_refuses_a_foreign_contract_major(self, tmp_path):
         server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
-        resp = server._dispatch({"verb": "version", "args": {}, "contract": 2})
+        resp = server._dispatch({"verb": "version", "args": {}, "contract": 3})
         assert resp["error"]["code"] == "bad-argument"
-        assert "contract 2" in resp["error"]["message"]
+        assert "contract 3" in resp["error"]["message"]
+        assert resp["contract"] == 1
 
     def test_boolean_is_not_the_integer_contract_version(self, tmp_path):
         server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
@@ -1247,7 +1234,7 @@ class TestVersionTransports:
             sessions_dir=str(tmp_path / "sessions"), socket_path="/run/cgprofile/ctl.sock",
         )
         assert server.handle_version({})["transports"] == {
-            "exec": True,
+            "exec": False,
             "socket": {"path": "/run/cgprofile/ctl.sock", "listening": False,
                        "allow_uids": [], "peer_cred": True},
         }
@@ -1406,4 +1393,8 @@ def test_the_scenario_actually_exercised_a_session(scenario):
     stop = scenario.socket_docs["stop"]["response"]
     assert stop["already_stopped"] is False
     assert stop["summary"]["schema"] == 1
-    assert scenario.socket_docs["report"]["response"]["path"].endswith("/report.html")
+    # `report` is removed (PROTOCOL 10.1): its golden is the contract-1
+    # `report-removed` answer a 2.x daemon gives a 1.x client.
+    report = scenario.socket_docs["report"]["response"]
+    assert report["ok"] is False and report["contract"] == 1
+    assert report["error"]["code"] == "report-removed"
