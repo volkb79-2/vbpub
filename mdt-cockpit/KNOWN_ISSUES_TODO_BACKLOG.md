@@ -253,6 +253,11 @@ release flow, so `cmru release` does not run it against the images it publishes.
 
 ## MDT-012 - run `image-runtime` as part of the release flow
 
+**FIXED 2026-11-04 (fix-mdt-1-20261104).** New lane `image-runtime-built` (`scripts/run_image_runtime_lane.py`): it takes the native
+and VS Code layouts the `prepare` step left (bound to the build by `transaction.json`, the `oci-push` rules), imports them under
+private tags, runs `tests/runtime` on them and removes the tags by exact name. `cmru.toml` `run-tests` runs it after `oci-push`.
+`image-runtime` itself stays the manual lane with explicit refs. Not yet exercised by a real release (needs a full build).
+
 `image-runtime` needs the exact image refs (`MDT_RUNTIME_IMAGE_NATIVE`, `MDT_RUNTIME_IMAGE_VSC`).
 A release builds and pushes images but never runs the lane against them, so a published image can
 still skip the runtime contract. Decide where the refs come from (the build's saved state) and wire
@@ -277,6 +282,10 @@ Python <3.13 (MDTC-03). When an aider release supports Python 3.14: delete the f
 documented exception from README / DESIGN-GUIDE.
 
 ## MDT-015 - a version waiver has no expiry (INT-01 B-06, 2026-10-19)
+
+**FIXED 2026-11-04 (fix-mdt-1-20261104).** `_check_record` refuses a waiver once the overridden release is more than
+`WAIVER_MAX_AGE_DAYS` (14, one age window) old; the error names `cmru versions resolve`. Test:
+`test_a_waiver_expires_after_one_age_window`.
 
 `_check_record` marks `<TOOL>_WAIVED` and the manifest row says so, but nothing makes a long-lived
 waiver fail or age out: an override released after the age cutoff waives the 14-day window for that
@@ -470,6 +479,9 @@ Fix direction: a `stage_tool_artifacts.py prune --older-than` and a unit test; n
 
 ## MDT-060 - `cmru release` never runs the smoke lane, and the release lane skips every pytest-style staging test (2026-10-27)
 
+**FIXED 2026-11-04 (fix-mdt-1-20261104; the bugfix program calls this "MDT-032 (release)").** `cmru.toml` `[steps.run-tests]` now
+runs `run-gate smoke` first; `test_release_flow` asserts the exact command list.
+
 *(Renumbered from MDT-032 on 2026-11-04: the id was reused by the iogov fill-test entry; MDT-032 now means that entry.)*
 
 `cmru.toml` `[steps.run-tests]` runs `run-gate release` and `run-gate oci-push` only. The `release` lane is
@@ -511,6 +523,10 @@ the staged version (`tool-versions.env`) would be the better source for every st
 that RUN; a manifest built from it would not depend on banner parsing at all.
 
 ## MDT-035 - `INSTALL_COPILOT`, `INSTALL_CLAUDELINK`, `INSTALL_PI` and `PI_VERSION` are not wired through bake (2026-10-27)
+
+**FIXED 2026-11-04 (fix-mdt-1-20261104).** The bake file declares and passes `INSTALL_COPILOT`, `INSTALL_CLAUDELINK`, `INSTALL_PI`,
+`PI_VERSION` (and the equally missing `INSTALL_REASONIX`, `INSTALL_OPENCLAW`, `REASONIX_VERSION`); `cmru.toml` `build` and `push`
+forward the four. `test_every_ai_cli_install_switch_and_pin_is_declared_in_bake_and_forwarded` pins it.
 
 The Dockerfile declares them as ARGs and `scripts/install_ai_cli_tools.py` / `stage_tool_artifacts.py` honour the
 switches, but `docker-bake.hcl` declares no variables for them and `cmru.toml` `bake_set_vars` does not forward

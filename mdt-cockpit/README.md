@@ -905,6 +905,9 @@ host, with product assertions inside the guest:
   of a local-dev image (for which `MDT_RUNTIME_LOCAL_DEV_MANIFEST=<the manifest it was built
   from>` is required; release images do not need it). Its driver is stdlib `unittest` in `tests/runtime/`; every
   container is offline, in the gate tier, and removed by exact name.
+- `run-gate image-runtime-built` runs the same scenarios against the native and VS Code images the release just built
+  (derived from the OCI layouts the `prepare` step left, like `oci-push`; no ref is typed, no built image fails the lane).
+  `cmru release` runs it after `oci-push`.
 - `run-gate oci-push` runs the OCI-layout build-once-and-push test and the bake-file evaluation test (a real `registry:2`,
   buildx export, `crane`/`regctl` digest verification) **inside the image the release just built**,
   because that image ships those tools and tester-unified does not. Nobody types a ref: the driver imports

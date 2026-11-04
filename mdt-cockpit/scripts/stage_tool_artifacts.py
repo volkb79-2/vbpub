@@ -1960,6 +1960,9 @@ AIDER_ENV_PINS = ("AIDER_VERSION", "AIDER_COMMIT")
 # A record older than two age windows (2 x 14 days) is stale: the rule exists so that a newly published
 # release is not adopted before it has aged; a record left to rot defeats the other half (picking up fixes).
 RECORD_MAX_AGE_DAYS = 28
+# A dependency-window waiver (an override released after the age cutoff, MDT-015) lasts at most one age window
+# (14 days) from the release date of the overridden version; after that staging fails until re-resolved.
+WAIVER_MAX_AGE_DAYS = 14
 RESOLVE_ADVICE = (
     "run `cmru versions resolve` in mdt-cockpit and commit the result "
     "(cmru.toml, package-lock.json, constraints/, versions/)"
@@ -2064,7 +2067,7 @@ def _vetted_ai_cli_versions(load=_load_version_records, now: datetime | None = N
             raise StageError(f"{target} was resolved {age:.0f} days ago (limit {RECORD_MAX_AGE_DAYS}): {RESOLVE_ADVICE}")
         prefix = env_key[: -len("_VER")]
         vetted[env_key] = version
-        vetted[f"{prefix}_BEFORE"], reason, waived = _check_record(target, declaration, resolved, version)
+        vetted[f"{prefix}_BEFORE"], reason, waived = _check_record(target, declaration, resolved, version, now)
         if reason:
             vetted[f"{prefix}_REASON"] = reason
         if waived:
@@ -2084,7 +2087,9 @@ def _parse_utc(value: object, what: str) -> datetime:
         raise StageError(f"{what}: unreadable timestamp {value!r}; {RESOLVE_ADVICE}") from exc
 
 
-def _check_record(target: str, declaration: dict, resolved: dict, version: str) -> tuple[str, str, bool]:
+def _check_record(
+    target: str, declaration: dict, resolved: dict, version: str, now: datetime | None = None
+) -> tuple[str, str, bool]:
     """Cross-check one record; returns (the `npm --before` cutoff, the override reason or "", whether the window is waived).
 
     * resolved.version must equal the source's version (a hand-edited record is caught);
@@ -2094,7 +2099,8 @@ def _check_record(target: str, declaration: dict, resolved: dict, version: str) 
     * the cutoff handed to npm is the record's own age cutoff, so transitive dependencies are judged by the
       rule that judged the package. EXCEPTION: an override released AFTER the age cutoff cannot be installed
       under that cutoff, so `--before` becomes its release date and the 14-day window is WAIVED for that tool's
-      dependencies too (returned `waived`, recorded as <TOOL>_WAIVED and shown in the manifest).
+      dependencies too (returned `waived`, recorded as <TOOL>_WAIVED and shown in the manifest). The waiver
+      EXPIRES (MDT-015): once the overridden release is more than WAIVER_MAX_AGE_DAYS old, staging fails.
     """
     source = (resolved.get("sources") or {}).get("npm") if isinstance(resolved.get("sources"), dict) else None
     if not isinstance(source, dict) or source.get("version") != version:
@@ -2113,6 +2119,14 @@ def _check_record(target: str, declaration: dict, resolved: dict, version: str) 
             raise StageError(f"{target}: an override needs a reason; {RESOLVE_ADVICE}")
         reason = reason.strip()
         if released > cutoff:
+            # A waiver expires: once the overridden release is older than WAIVER_MAX_AGE_DAYS it has aged
+            # through the window anyway, and a re-resolve ends the waiver; keeping it alive is refused.
+            held = ((now or datetime.now(timezone.utc)) - released).total_seconds() / 86400
+            if held > WAIVER_MAX_AGE_DAYS:
+                raise StageError(
+                    f"{target}: the window waiver for the override {version!r} expired (released {source['released_at']}, "
+                    f"{held:.0f} days ago, limit {WAIVER_MAX_AGE_DAYS}); {RESOLVE_ADVICE}"
+                )
             cutoff_text = source["released_at"]
             waived = True
     elif released > cutoff:

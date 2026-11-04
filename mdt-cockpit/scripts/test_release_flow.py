@@ -37,7 +37,20 @@ class ReleaseFlowTests(unittest.TestCase):
 
     def test_release_gate_runs_from_the_candidate_repository_root(self) -> None:
         commands = self.config["steps"]["run-tests"]["commands"]
-        self.assertEqual(commands[0]["argv"], ["run-gate", "release"])
+        # MDT-032 (release smoke lane) and MDT-012 (runtime acceptance of the built images): the pytest-style
+        # tests the unittest-based `release` lane cannot collect run as `smoke`; image-runtime-built runs last.
+        self.assertEqual(
+            [c["argv"] for c in commands],
+            [
+                ["run-gate", "smoke"],
+                ["run-gate", "release"],
+                ["run-gate", "oci-push"],
+                ["run-gate", "image-runtime-built"],
+            ],
+        )
+        lanes = tomllib.loads((ROOT / "run-gate.toml").read_text())["lanes"]
+        for lane in ("smoke", "release", "oci-push", "image-runtime-built"):
+            self.assertIn(lane, lanes)
 
     def test_vm_acceptance_resolves_the_project_and_shared_harness_roots(self) -> None:
         source = (ROOT / "host-setup/tests/run-vm-acceptance.sh").read_text()
