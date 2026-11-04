@@ -4,9 +4,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-- `tools/local_baseline_facts.py` + `docs/CONSUMERS.md`: how to start the `mutation` lane outside a release (builds `CMRU_ASSAY_BASELINE_FACTS`
-  from local `cmru-v*` tags; the R1 pin must equal the selected tag).
-
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
      KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file
@@ -35,14 +32,68 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
+
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [7.2.1] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=68890590ac7f2581da3aa407552b3245ddf922b8 -->
+
+### Fixed
+- fix(cmru): KI-117 scope the GHCR wildcard to this repository's packages, refuse outside a repo (066122c56)
+- fix(cmru): KI-117 repo template no longer ships the ghcr_packages wildcard (fdce6180f)
+- fix(cmru): KI-117 refuse cleanup.ghcr_packages wildcard; file KI-118..KI-120 (V2-V4) (02aef3bff)
+
+### Changed
+- Merge branch 'fix-cmru-4-20261105' (e5674890d)
+- cmru: document and script starting the mutation lane outside a release (f87173a0d)
+
+### Documentation
+- docs(cmru): close shipped backlog entries against 6.2.0 (KI-58/59/68/74/75/78/80/81/82/84), document cleanup grammars (KI-105) and digest-pin refresh (KI-60) (ce8fc4257)
+
+### Testing
+- test(cmru): dependency levels after cgprofile's cli-extended edge; bootstrap doc names run-gate 25.0.0 (090d30d87)
+
+<!-- cmru: pending release notes begin -->
+- `tools/local_baseline_facts.py` + `docs/CONSUMERS.md`: how to start the `mutation` lane outside a release (builds `CMRU_ASSAY_BASELINE_FACTS`
+  from local `cmru-v*` tags; the R1 pin must equal the selected tag).
+
+                                                                                       
+                                                                                      
+                                                                                        
+                                                                                       
+                                                                              
+
+                                                                                          
+                                                                                             
+                                                                                               
+                                                                                             
+                                                                                              
+                                                                                        
+                                                                                     
+                                                
+
+                                                                                      
+                                                                                      
+                                                                                                  
+                                                                                                
+                                                                                              
+                                         
+
+                                                                                              
+                                                                                            
+                                                                                            
+                                             
+
+                                          
 ### Documentation
 - docs: `cleanup --policy` and `cleanup --remove-assets` selection grammars are contrasted in `docs/CONSUMERS.md` and the README; `max_age_days` is `--policy`-only (KI-105).
 - docs: a reproducible refresh procedure for digest-pinned probe and DinD images in `docs/CONSUMERS.md` (KI-60).
 - docs: backlog entries KI-58, KI-59, KI-68, KI-74, KI-75, KI-78, KI-80, KI-81, KI-82, KI-84 are closed against the 6.2.0 release notes.
 - fix: `cleanup.ghcr_packages = ["*"]` listed every GHCR package of the account and could delete versions of other repositories' images. It now resolves only to packages linked to the configured repository (and only when a project publishes an `oci-image`), and is refused with an actionable error outside the repository; explicit names always work (KI-117). Backlog KI-118 (`exclude_paths`), KI-119 (cross-repository pins), KI-120 (`cmru rigor`) filed.
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [7.2.0] - 2026-11-04
 <!-- cmru: generated -->
