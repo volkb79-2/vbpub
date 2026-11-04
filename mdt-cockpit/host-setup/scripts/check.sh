@@ -283,7 +283,7 @@ if [ -d "$DEV_PATH" ]; then
         elif _ded_swap=$(python3 "$_CAPACITY_PY" dedicated-memory "$CONF" --meminfo /proc/meminfo --dev-swap "$_d_swap" 2>&1); then
           _want_swap="$(printf '%s\n' "$_ded_swap" | sed -n 's/^DEDICATED_LOAD_SWAP=//p')"
           _cfg_swap_var="DEV_${_tier_key}_MEMORY_SWAP_MAX"
-          if [ -n "${!_cfg_swap_var:-}" ]; then
+          if [ -n "${!_cfg_swap_var:-}" ] && [ "${!_cfg_swap_var}" != auto ]; then
             info "$_tier_unit memory.swap.max=$_t_swap ($_cfg_swap_var is a pin: not compared with the derivation)"
           elif [ "$_t_swap" = "$_want_swap" ]; then
             ok "$_tier_unit memory.swap.max=$_t_swap = dev.slice's $_d_swap minus the protected tiers' MemoryLow sum (AD2-0)"
