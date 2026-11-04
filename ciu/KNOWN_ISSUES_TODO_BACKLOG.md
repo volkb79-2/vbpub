@@ -5814,7 +5814,7 @@ the socket. Unblocks CIU-161 for the cockpit case.
 
 ## CIU-161 — `ciu worktree create` fails multi-root preparation with "DOCKER_GID not found" and ignores the requested `--branch` name
 
-**Status: OPEN (filed 2026-11-04, observed live the same day).** Known defect; workers use `git worktree add` meanwhile.
+**Status: FIXED 2026-11-05 (branch fix-ciu-161-20261105; CIU-160's full redesign is NOT part of it and stays OPEN).** Cockpit repro: `DOCKER_GID` unset and the relay socket at `/run/docker-api/docker.sock` made `_detect_docker_gid` miss it; the gid is now `stat`ed from `DOCKER_HOST` first. Preparation passes `CIU_PREPARE_WITHOUT_DOCKER_GID=1` to its `ciu env generate` children, so a missing group id downgrades to an empty `DOCKER_GID` + one INFO line, and an absent Docker socket skips the runtime-network uniqueness probe (INFO); Docker-using verbs keep the hard refusal, now with a remedy. `--branch` is honoured exactly (verified live and by test; the reported rename did not reproduce once preparation completes). Failed preparation still leaves the checkout + record, named with `ciu worktree ensure <name>` as the resume (unchanged contract). Residual: `worktree create` still creates the Docker network when a socket exists (CIU-162).
 
 **Observed.**
 
@@ -6022,7 +6022,7 @@ path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.
 **Acceptance criteria.** After up + clean in a non-devcontainer bundle, `docker network ls` shows no network whose name carries the project name or the instance id.
 ## CIU-172 — a legacy (schema v1) worktree record whose id differs from the path-derived id refuses every `ciu worktree up` / `ciu up`, and the refusals name no remedy
 
-**Status:** OPEN. Filed 2026-11-04 from dstdns (P220, worktree `p220-test-runner-ui`; ciu 7.19.0). Severity: P2.
+**Status:** PARTIALLY FIXED 2026-11-05 (branch fix-ciu-161-20261105): both refusals now name `ciu worktree ensure <name>` and `--adopt-existing-network` (test-asserted). STILL OPEN: automatic migration of a v1 record by `ensure`, and the `ciu env generate`-without-`DOCKER_GID` half is covered only by the CIU-161 change for worktree preparation and the clearer CIU-161 refusal text (the CIU-160 socket-derivation redesign stays OPEN). Filed 2026-11-04 from dstdns (P220, worktree `p220-test-runner-ui`; ciu 7.19.0). Severity: P2.
 
 **Observed.** A worktree created on 2026-09-30 carries a schema-v1 record with `runtime.instance_id = f234d8`; a later `ciu env generate` (2026-10-02) wrote `ciu.instance.generated.toml` with the path-derived `20spbc` and created the network `p220-test-runner-ui-20spbc-network`. On 2026-11-04 `ciu worktree up <name>` stopped with `[S16] .../ciu.instance.generated.toml instance_id '20spbc' does not match the selected record's 'f234d8'`, and plain `ciu up` with `generated runtime identity for <root> does not match its managed worktree record`. Neither message names a remedy. `ciu env generate` alone fails without `DOCKER_GID` in the environment (`DOCKER_GID not found`), which a caller shell often lacks. The working recovery was undocumented: `DOCKER_GID=<gid> ciu worktree ensure <name>` (it regenerates the facts and then stops with `recovery-required`: `cannot prove ownership of existing runtime network '...-20spbc-network'`), then `ciu worktree ensure <name> --adopt-existing-network`.
 

@@ -405,8 +405,14 @@ def test_verify_identity_mismatch_refuses(tmp_repo, fake_generate_env, which):
     with pytest.raises(
         worktree.RuntimeNetworkVerificationError,
         match="generated runtime identity .* does not match its managed worktree record",
-    ):
+    ) as err:
         worktree.verify_own_runtime_network(record.ciu_root, **kwargs)
+    # CIU-172: the refusal names the recovery commands.
+    assert f"`ciu worktree ensure {record.logical_name}`" in str(err.value)
+    assert (
+        f"`ciu worktree ensure {record.logical_name} --adopt-existing-network`"
+        in str(err.value)
+    )
 
 
 def test_verify_sibling_collision_marks_recovery(tmp_repo, fake_generate_env):

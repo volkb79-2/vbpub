@@ -7679,8 +7679,13 @@ class TestExactWorktreeControl:
         ]
         for key, value, match in cases:
             write_instance_facts(record.ciu_root, **{**good, key: value})
-            with pytest.raises(worktree.WorktreeError, match=match):
+            with pytest.raises(worktree.WorktreeError, match=match) as err:
                 worktree._sanitized_target_env(repo_root, record)
+            if key != "repo_root":
+                # CIU-172: the refusal names the recovery commands.
+                name = record.logical_name
+                assert f"`ciu worktree ensure {name}`" in str(err.value)
+                assert f"`ciu worktree ensure {name} --adopt-existing-network`" in str(err.value)
             write_instance_facts(record.ciu_root, **good)
 
     def test_sanitized_env_surfaces_unreadable_env(self, ready):

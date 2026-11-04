@@ -328,10 +328,21 @@ def ensure_workspace_env(required_keys: Iterable[str]) -> None:
     missing = [key for key in required_keys if os.environ.get(key) is None or os.environ.get(key) == ""]
     if missing:
         missing_str = ", ".join(missing)
+        hint = ""
+        if "DOCKER_GID" in missing:
+            # CIU-161: a checkout prepared without a Docker socket carries an
+            # empty DOCKER_GID, and plain regeneration only fixes it once the
+            # group is derivable.
+            hint = (
+                " DOCKER_GID is empty because no Docker socket was derivable "
+                "when the checkout was prepared: set DOCKER_HOST=unix:///path/to/"
+                "docker.sock (or export DOCKER_GID=<gid>) first."
+            )
         raise WorkspaceEnvError(
             "Missing required workspace environment variables: "
             f"{missing_str}. "
             'Run: ciu env generate (then, for a shell: eval "$(ciu env print)")'
+            + hint
         )
 
 
@@ -508,13 +519,43 @@ def _detect_public_fqdn(repo_root: Path, require_fqdn: bool) -> Dict[str, str]:
     }
 
 
+#: Set to "1" in the child environment of worktree preparation (which never
+#: touches Docker) so its `ciu env generate` children tolerate a missing Docker
+#: group id. Internal: ordinary verbs never set it.
+DOCKER_GID_OPTIONAL_ENV = "CIU_PREPARE_WITHOUT_DOCKER_GID"
+
+
+class DockerGidUnavailableError(WorkspaceEnvError):
+    """No Docker group id could be derived (CIU-161).
+
+    A distinct type so worktree preparation, which does not need the Docker
+    socket, can downgrade this one condition to an INFO line while every
+    Docker-using verb keeps the hard, remedy-bearing refusal.
+    """
+
+
+def _docker_socket_candidates() -> list[str]:
+    """Socket paths to ``stat`` for the Docker group, most specific first.
+
+    The socket the Docker client actually uses (``DOCKER_HOST=unix://...``, e.g.
+    a devcontainer's relay socket) comes first; then the two classic paths.
+    """
+    candidates: list[str] = []
+    host = os.environ.get("DOCKER_HOST", "")
+    if host.startswith("unix://") and len(host) > len("unix://"):
+        candidates.append(host[len("unix://"):])
+    candidates.extend(("/var/run/docker-host.sock", "/var/run/docker.sock"))
+    return candidates
+
+
 def _detect_docker_gid() -> str:
     docker_gid = os.environ.get("DOCKER_GID", "")
     # S2.5: '0' is a valid value — do not reject on falsy check
     if docker_gid is not None and docker_gid != "":
         return docker_gid
 
-    for socket_path in ("/var/run/docker-host.sock", "/var/run/docker.sock"):
+    candidates = _docker_socket_candidates()
+    for socket_path in candidates:
         if Path(socket_path).exists():
             return str(Path(socket_path).stat().st_gid)
 
@@ -523,7 +564,14 @@ def _detect_docker_gid() -> str:
 
         return str(grp.getgrnam("docker").gr_gid)
     except KeyError:
-        raise WorkspaceEnvError("DOCKER_GID not found. Ensure docker group exists or set DOCKER_GID.")
+        raise DockerGidUnavailableError(
+            "DOCKER_GID not found: no Docker socket exists at "
+            f"{', '.join(candidates)} and there is no `docker` group. "
+            "Remedy: set DOCKER_HOST=unix:///path/to/docker.sock to the socket "
+            "this environment uses (its group is read from it), or export "
+            "DOCKER_GID=<gid>; a root that does not use Docker needs neither "
+            "(`ciu worktree create` prepares it without)."
+        )
 
 
 def _detect_governance_read_iops() -> tuple[str, str]:
@@ -1925,8 +1973,14 @@ def generate_ciu_env(
     output_path: Optional[Path] = None,
     *,
     notice_stream=None,
+    docker_gid_optional: bool = False,
 ) -> Path:
     """Generate ciu.env with autodetected values.
+
+    ``docker_gid_optional`` (CIU-161) is for callers that only prepare a
+    checkout (worktree create/ensure) and never touch Docker: when no Docker
+    group id can be derived the key is written empty and one INFO line says
+    so, instead of failing. Docker-using verbs keep the hard refusal.
 
     ``notice_stream`` routes the one-release deprecation notice (S3.1c clause
     3). It defaults to stdout, which is right for the verb an operator typed;
@@ -1954,7 +2008,17 @@ def generate_ciu_env(
     output_path = output_path or repo_root / ENV_FILE_NAME
 
     env_flags = _detect_env_type()
-    docker_gid = _detect_docker_gid()
+    try:
+        docker_gid = _detect_docker_gid()
+    except DockerGidUnavailableError:
+        if not (docker_gid_optional or os.environ.get(DOCKER_GID_OPTIONAL_ENV) == "1"):
+            raise
+        docker_gid = ""
+        _log_info(
+            "No Docker group id derivable (no Docker socket here); DOCKER_GID is "
+            "left empty. Set DOCKER_HOST=unix:///path/to/docker.sock before a "
+            "Docker-using command such as `ciu up`."
+        )
     physical_root = _detect_physical_repo_root(repo_root)
     host_mdt_tmp = _detect_host_mdt_tmp()
     workspace_id: str | None = None
