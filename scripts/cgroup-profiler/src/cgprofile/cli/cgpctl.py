@@ -54,6 +54,7 @@ _KEY_TYPES = {
 DIRECT_MODE_REFUSAL = "direct mode needs cgroupfs; use 'cgpctl start' against the host daemon"
 REPORT_EXTRA_HINT = "pip install 'cgprofile[report]'"
 OBSERVER_DIR = "/run/cgprofile/observer"
+SLICE_DIR = "/sys/fs/cgroup/cgprofile.slice"
 
 
 def identity() -> CliIdentity:
@@ -238,10 +239,16 @@ def _sessions(args: argparse.Namespace, runtime: CliRuntime) -> None:
 def _show(args: argparse.Namespace, runtime: CliRuntime) -> None:
     path = socket_path(args)
     ctlwire.need_contract(path, "show", 2)
-    live = ctlwire.call(path, "status", {"session": args.session}, 2)
-    entries = [e for e in live.get("sessions", []) if isinstance(e, dict) and e.get("session") == args.session]
-    if entries:
-        body: Dict[str, Any] = {"state": entries[0].get("state", "live"), "session": entries[0]}
+    entry: Optional[Dict[str, Any]] = None
+    try:
+        live = ctlwire.call(path, "status", {"session": args.session}, 2)
+        candidate = live.get("session")
+        entry = candidate if isinstance(candidate, dict) else None
+    except WireFailure as exc:
+        if exc.code != "unknown-session":
+            raise
+    if entry is not None:
+        body: Dict[str, Any] = {"state": entry.get("state", "live"), "session": entry}
     else:
         done = ctlwire.call(path, "status", {"state": "all"}, 2)
         stored = [e for e in done.get("sessions", []) if isinstance(e, dict) and e.get("session") == args.session]
@@ -562,15 +569,13 @@ class _Probe:
         return ctlwire.call(self.path, "config", None, 2).get("config")
 
 
-_PROBES: Dict[int, _Probe] = {}
-
-
 def _probe(args: argparse.Namespace) -> _Probe:
-    # one probe per Namespace object, i.e. per doctor invocation
-    if id(args) not in _PROBES:
-        _PROBES.clear()
-        _PROBES[id(args)] = _Probe(args)
-    return _PROBES[id(args)]
+    """One probe per doctor invocation, cached on the invocation's own Namespace."""
+    probe = getattr(args, "_cgpctl_probe", None)
+    if probe is None:
+        probe = _Probe(args)
+        args._cgpctl_probe = probe
+    return probe
 
 
 def _skip_no_daemon(probe: _Probe) -> CheckResult:
@@ -651,7 +656,7 @@ def _check_observer_dir(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
 
 
 def _check_slice(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
-    base = "/sys/fs/cgroup/cgprofile.slice"
+    base = SLICE_DIR
     if not os.path.isdir(base):
         return CheckResult("skip", "cgprofile.slice is not visible here")
     bounds = {}
@@ -798,7 +803,7 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
             _opt("--meta", "JSON object merged over the client's meta", group="TARGET", metavar="JSON"),
         ), handler=_start))
     registry.register(VerbSpec("stop", description="stop and finalize a session; prints the summary", group=modify,
-                               mutating=True, confirmation_required=False, include_progress=False,
+                               mutating=True, confirmation_required=True, include_progress=False,
                                examples=("cgpctl stop s-20261104T101500Z-9f01",),
                                arguments=(_session_arg(),), handler=_stop))
     registry.register(VerbSpec(
