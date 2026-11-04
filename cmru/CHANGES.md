@@ -15,6 +15,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `release-body.md` under `## Rigor at publication` and upload `record.json` as `<prefix>-v<V>-rigor.json` plus `.sha256`
   (read back from the release asset list). `oci-image-release` gains exactly this one asset-and-sidecar exception to "uploads no
   asset". `release --dry-run` prints the appendix placeholder. New module `cmru/rigor_publish.py`.
+  The body-only path fails closed on GitHub immutable releases (assets cannot change after publication): it refuses before
+  any write when the repository setting is enabled, and before any asset delete when the release reports `immutable`.
+  Draft-first publication (attach, then publish) is not implemented; the remaining delete-then-upload window on a
+  non-immutable repository is documented, not closed.
 
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.

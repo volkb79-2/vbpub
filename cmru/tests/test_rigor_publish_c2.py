@@ -78,6 +78,8 @@ class AssetGitHub(FakeGitHub):
         return super().handle(method, url, data)
 
     def _serve(self, method, path, data):
+        if method == "GET" and path == "/immutable-releases":
+            return 404, "{}"
         if method == "GET" and path.endswith("/assets"):
             return 200, json.dumps(self.assets[int(path.split("/")[2])])
         if method == "DELETE" and path.startswith("/releases/assets/"):
@@ -323,3 +325,46 @@ def test_dry_run_preview_shows_the_appendix_only_for_a_record_step_project():
     assert shown.startswith("BODY\n\n## Rigor at publication\n\n")
     assert "'record'" in shown and "-rigor.json" in shown
     assert cli._with_rigor_preview(without, "BODY") == "BODY"
+
+
+# --- immutable releases (review M8): refuse before any mutation ---------------------
+
+
+def _serve_setting(api, response):
+    original = api._serve
+
+    def serve(method, path, data):
+        if path == "/immutable-releases":
+            return response
+        return original(method, path, data)
+
+    api._serve = serve
+
+
+def test_oci_refuses_before_any_write_when_the_repository_has_immutable_releases(
+    oci, record_env, capsys,
+):
+    _serve_setting(oci.api, (200, '{"enabled": true, "enforced_by_owner": false}'))
+    assert _publish(oci.project) == 1  # a clean _die refusal
+    assert "immutable releases enabled" in capsys.readouterr().err
+    assert not any(c[0] in ("POST", "PATCH", "DELETE") or c[1].startswith("upload") for c in oci.api.calls)
+
+
+@pytest.mark.parametrize("response", [
+    (200, '{"enabled": false}'), (403, "{}"), (404, "{}"), (200, "not json"), (200, "[]"),
+])
+def test_an_unknown_or_disabled_setting_does_not_block_the_attach(oci, record_env, response):
+    _serve_setting(oci.api, response)
+    assert _publish(oci.project) == 0
+    assert "demo-v2.0.0-rigor.json" in oci.api.blobs
+
+
+def test_oci_refuses_an_immutable_release_before_deleting_an_asset(oci, record_env, capsys):
+    api = oci.api
+    api.seed_release(TAG, assets=({"id": 1, "name": "demo-v2.0.0-rigor.json", "size": 3},))
+    api.releases[TAG]["immutable"] = True
+    api.tags[TAG] = oci.commit
+    assert _publish(oci.project) == 1  # a clean _die refusal
+    assert "the published release is immutable" in capsys.readouterr().err
+    assert ("DELETE", "/releases/assets/1") not in api.calls
+    assert api.blobs == {}

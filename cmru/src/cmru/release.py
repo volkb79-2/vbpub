@@ -169,6 +169,22 @@ class GitHubReleases:
             self._fail(f"fetch release {release_id}", status, body)
         return json.loads(body)
 
+    def immutable_releases_enabled(self) -> bool:
+        """True when the repository setting makes published releases immutable.
+
+        Read-only. Any answer other than a clear ``{"enabled": true}`` (404, a token
+        without admin rights, a malformed body) is "not known to be enabled"; the
+        published release's own ``immutable`` flag is checked again before any
+        asset mutation.
+        """
+        status, body = self._request("GET", self._repo_url("/immutable-releases"))
+        if status != 200:
+            return False
+        try:
+            return json.loads(body).get("enabled") is True
+        except (ValueError, AttributeError):
+            return False
+
     def get_tag_commit(self, tag: str) -> Optional[str]:
         """Resolve an existing lightweight or annotated Git tag to its commit."""
         commit_ref = quote(tag, safe="")
@@ -401,6 +417,8 @@ class GitHubReleases:
         only same-named assets are replaced, each mutation is preceded by the
         release/tag identity recheck, and the asset list is read back afterwards.
         """
+        if assets and self.immutable_releases_enabled():
+            _die(_IMMUTABLE_REFUSAL.format(tag=tag, why="the repository has immutable releases enabled"))
         record = self._write_release_body(tag, title, notes, tag_commit=tag_commit)
         if assets:
             self._attach_exact_assets(tag, tag_commit, record, list(assets))
@@ -411,6 +429,10 @@ class GitHubReleases:
     ) -> None:
         """Upload exactly ``assets`` to the already-verified release; read them back."""
         release_id = self._release_record_id(tag, record)
+        if record.get("immutable") is True:
+            # Assets cannot be added, replaced or deleted on a published immutable
+            # release: refuse before the first delete so no record is lost.
+            _die(_IMMUTABLE_REFUSAL.format(tag=tag, why="the published release is immutable"))
         for asset in assets:
             current = {a.get("name"): a for a in self.list_assets(release_id)}
             old = current.get(asset.name)
@@ -1253,6 +1275,14 @@ def publish_versioned_variants(
 # built wheel, read its version, assert the published "latest" is well-formed). They
 # now live here once so a project can route through cmru.handlers instead of
 # carrying its own copy.
+_IMMUTABLE_REFUSAL = (
+    "refusing to attach the rigor record to GitHub Release {tag}: {why}, and release "
+    "assets cannot be added, replaced or deleted after publication. No asset was changed. "
+    "Disable immutable releases for this repository, or publish the "
+    "record before the release is published (draft-first publication is not implemented)"
+)
+
+
 def _die(message: str) -> None:
     print(f"[ERROR] {message}", file=sys.stderr)
     raise SystemExit(1)
