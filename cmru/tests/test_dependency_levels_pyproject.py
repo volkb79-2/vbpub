@@ -242,8 +242,10 @@ class TestRealEstate:
         assert report.levels["modern-debian-tools-python-debug"] == max(report.levels.values()) == 3
         assert report.levels["mdt-cockpit"] == 3
         assert all(report.levels[name] == 0 for name in (
-            "ciu", "assay", "topos", "cgroup-profiler", "tls-edge", "tester-base",
+            "assay", "topos", "cgroup-profiler", "tls-edge", "tester-base",
         ))
+        # ciu consumes the cli-extended wheel (CIU-114 adoption): a real wheel edge, so L1.
+        assert report.levels["ciu"] == 1
         # pwmcp's client wheel requires cli-extended (PWMCP-02, CX-D1): a real wheel edge, so L1.
         assert report.levels["pwmcp"] == 1
 

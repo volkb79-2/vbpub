@@ -33,8 +33,8 @@ builder. No published vbpub image is needed.
 The checked-in level view must match the graph:
 
 ```project-order
-L0: cli-extended, cgroup-profiler, ciu, assay, topos, tls-edge, tester-base
-L1: tnt, run-gate-project, nyxloom, pwmcp, iobench
+L0: cli-extended, cgroup-profiler, assay, topos, tls-edge, tester-base
+L1: tnt, run-gate-project, ciu, nyxloom, pwmcp, iobench
 L2: cmru
 L3: modern-debian-tools-python-debug, mdt-cockpit
 ```
