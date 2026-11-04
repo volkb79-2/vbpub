@@ -14192,7 +14192,6 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 **Acceptance.** A recorded strace count for strict and relaxed, and either a note in B209 and the run-gate README ("coordinator durability is unchanged by the preload") or a switch that makes `relaxed` honor the declared per-file table of B209.
 
-=======
 ## B227 — `assay analyze export`: judgment-fact fragment for the rigor-evidence record (package A-1)
 
 **Status: FIXED on branch rigor-a1-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo section 2 and 3.7 and row A-1 (release program `reports/RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md`); schema: vbpub `libraries/rigor-record` (RR-1). `assay analyze export --verdict V [--progress P] --lane L --file assay.toml --expected-commit C [--project N] --out F` verifies the verdict, then writes a `urn:vbpub:rigor-fragment:1` document (kind `assay-lane`). Documented in `docs/CONSUMERS.md`; tests in `analysis/tests/test_analysis_rigor_export.py` use schemas and goldens copied byte-for-byte into `analysis/tests/fixtures/rigor/`. Assay does not import rigor-record.
@@ -14301,5 +14300,3 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Question to answer first.** Run each parametrized case alone on the bare devcontainer under `timeout 60` and note which one blocks and what the child's `/proc/<pid>/stack`/`wchan` shows (`fifo_open`/`pipe_wait` points to hypothesis 1).
 
 **Acceptance.** The hanging case named; either the test (and the production code path that inspects `alternates`, if it can also block) opens the file non-blocking or with a timeout and refuses `fifo` alternates cleanly, or the lane-only requirement is documented; a regression test that completes in seconds with a bounded timeout.
-=======
->>>>>>> rigor-a1a-20261105
