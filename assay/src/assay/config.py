@@ -121,6 +121,7 @@ __all__ = [
     "SCOPES",
     "SNAPSHOT_HISTORIES",
     "SNAPSHOT_SELECTIONS",
+    "VERIFY_CLONE_MODES",
     "find_lane_file",
     "lane_validation_warnings",
     "load_lane_file",
@@ -243,9 +244,19 @@ SNAPSHOT_SELECTIONS: frozenset[str] = frozenset(
 # shallow/promisor/alternate refusals remain owned by the Git boundary.
 SNAPSHOT_HISTORIES: frozenset[str] = frozenset({"shallow", "full"})
 
+# B222: how much of the clone proof runs for every candidate of a cheap
+# (copy-on-write) workspace.  ``full`` repeats the whole template proof per
+# clone and walks the complete object closure per replacement (the pre-B222
+# behaviour); ``tiered`` proves the sealed template once, re-proves the clone in
+# full every ``VERIFY_CLONE_FULL_EVERY`` candidates, and otherwise checks only
+# the replacement's identity and the objects it adds.  The post-command dirt
+# check is identical in both modes.
+VERIFY_CLONE_MODES: frozenset[str] = frozenset({"tiered", "full"})
+
 _ISOLATION_FIELDS: tuple[str, ...] = (
     "snapshot_selection",
     "snapshot_history",
+    "verify_clone",
     "unsafe_symlink_omissions",
     # (B041(b), schema v9) paths symlinked IN from the invoking checkout.
     "link_paths",
@@ -1152,9 +1163,21 @@ class IsolationConfig:
     #: is orthogonal to the unsafe-symlink omission policy, and a lane may
     #: declare this under either selection.
     link_paths: tuple[str, ...] = ()
+    #: (B222) ``tiered`` (default) or ``full``; see :data:`VERIFY_CLONE_MODES`.
+    #: Declared by the lane only when it is not the default, so a lane that
+    #: never mentions it keeps an unchanged declaration.
+    verify_clone: str = "tiered"
 
     def __post_init__(self) -> None:
         where = "IsolationConfig"
+        if (
+            not isinstance(self.verify_clone, str)
+            or self.verify_clone not in VERIFY_CLONE_MODES
+        ):
+            raise LaneConfigError(
+                f"{where}: 'verify_clone' must be one of "
+                f"{sorted(VERIFY_CLONE_MODES)}, got {self.verify_clone!r}"
+            )
         if (
             not isinstance(self.snapshot_history, str)
             or self.snapshot_history not in SNAPSHOT_HISTORIES
@@ -1254,6 +1277,8 @@ class IsolationConfig:
             declared["unsafe_symlink_omissions"] = list(self.unsafe_symlink_omissions)
         if self.link_paths:
             declared["link_paths"] = list(self.link_paths)
+        if self.verify_clone != "tiered":
+            declared["verify_clone"] = self.verify_clone
         return declared
 
 
@@ -2088,6 +2113,14 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
                 f"{where}: 'isolation.snapshot_history' must be one of "
                 f"{sorted(SNAPSHOT_HISTORIES)}, got {snapshot_history!r}"
             )
+    verify_clone = "tiered"
+    if "verify_clone" in value:
+        verify_clone = _as_str(value["verify_clone"], where, "isolation.verify_clone")
+        if verify_clone not in VERIFY_CLONE_MODES:
+            raise LaneConfigError(
+                f"{where}: 'isolation.verify_clone' must be one of "
+                f"{sorted(VERIFY_CLONE_MODES)}, got {verify_clone!r}"
+            )
     # (B041(b)/A-366) Read BEFORE the selection fork and passed to both
     # branches: `link_paths` is independent of `snapshot_selection`, and
     # reading it inside one branch is how a key silently becomes legal under
@@ -2117,6 +2150,7 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
             snapshot_history=snapshot_history,
             snapshot_history_declared=snapshot_history_declared,
             link_paths=link_paths,
+            verify_clone=verify_clone,
         )
     if not has_omissions:
         raise LaneConfigError(
@@ -2133,6 +2167,7 @@ def _load_isolation(value: Any, where: str) -> IsolationConfig:
         snapshot_history=snapshot_history,
         snapshot_history_declared=snapshot_history_declared,
         link_paths=link_paths,
+        verify_clone=verify_clone,
     )
 
 

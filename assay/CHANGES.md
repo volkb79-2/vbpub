@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Changed
+- B219: the sealed snapshot template's Git index is refreshed once before sealing (`update-index --refresh`), so `git status` in a copy-on-write clone validates by `lstat` instead of hashing the whole worktree for every candidate (measured on a 7.6k-file repository: 173.6 MB to 37.2 MB read and 2.31 s to 0.33 s materialize per candidate). A clone that does not preserve inode numbers or timestamps still hashes and stays correct.
+- B220: under `verify_clone = "tiered"` the child closure limits are computed from totals recorded when the seed was prepared plus the objects the replacement adds (commit, trees on the path, new blob) with one `cat-file --batch-check`, instead of two `rev-list --objects` walks over the whole pack per candidate. The limits fire at the same thresholds; a path containing a newline, a repository prepared without base facts, and `verify_clone = "full"` keep the full walk.
+- B222: new lane key `isolation.verify_clone = "tiered" | "full"` (default `tiered`). Tiered proves the sealed template completely once (at build), repeats the complete clone proof for the first and every 25th clone, and otherwise checks the replacement's identity (HEAD, index tree, the blob at the replaced path, the replaced file's bytes and mode). The post-command dirt check is unchanged and still runs for every candidate. `full` keeps the pre-B222 per-clone proof.
+
 <!-- cmru: release history -->
 
 ## [12.0.0] - 2026-11-04
