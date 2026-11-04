@@ -566,6 +566,35 @@ a hard timeout (the whole process group is killed; an unreapable child stops the
 install), and the artifact's body must match `tools/iocost_coef_gen.py.sha256`.
 See `IO-BENCHMARK-DESIGN.md` for the full flow.
 
+### Host CPU benchmark tool (`tools/cpu_benchmark.py`, HB-1)
+
+One shared stdlib-only tool measures the host CPU ONCE with Geekbench 6 and persists it in host state; it is pinned by
+`tools/cpu_benchmark.py.sha256` (same pattern as `iocost_coef_gen.py`) and is used by the installer step (HB-2) and by
+`mdt host-setup cpu-benchmark` (HB-3). Never copy it. The Geekbench archive is pinned too: `--geekbench-version 6.x.y`
+and `--sha256 <archive sha256>` are mandatory (no default); a mismatch refuses to run.
+
+```
+cpu_benchmark.py --geekbench-version 6.3.0 --sha256 <hex> [--state-dir DIR] [--force] [--max-psi 25] [--timeout S]
+cpu_benchmark.py --resolve [--state-dir DIR]        # re-read the result page, never runs Geekbench
+```
+
+Files under `--state-dir` (default `/var/lib/mdt/host-facts`):
+
+| File | Mode | Content |
+|---|---|---|
+| `cpu-benchmark.json` | 0644 | `mdt-host-cpu-benchmark/1` |
+| `cpu-benchmark.claim.json` | 0600 | `mdt-host-cpu-benchmark-claim/1`: `result_url`, `claim_url`, `measured_at` |
+
+`mdt-host-cpu-benchmark/1` fields: `tool` (`geekbench`), `tool_version`, `tool_sha256` (archive or binary), `measured_at`
+(UTC), `cpu_model`, `cpus_online`, `hypervisor`, `single_core`, `multi_core` (null when not found), `score_source`
+(`stdout` | `result-page` | null), `result_url`, `result_id`, `conditions` (`loadavg1_start`, `psi_cpu_some_avg10_max`,
+`steal_fraction`, `duration_seconds`), `reason` (null, `SCORES_NOT_FOUND`, `RESULT_PAGE_UNAVAILABLE: <error type>`,
+`NO_SCORES_AND_NO_RESULT_URL`), `produced_by`, and `resolved_at` after `--resolve`. Scores come from the CLI output, else
+from the public result page. The claim link exists only in the 0600 file; the tool never prints, logs or stores it
+elsewhere. It refuses when the record exists (unless `--force`), refuses when CPU `some avg10` is above `--max-psi`
+(default 25; host-setup passes a stricter value), and kills the whole process group on `--timeout`. Exit codes: 0 ok,
+2 refused, 3 failed, 4 record written without scores (complete it with `--resolve`).
+
 Still not done: the result is NOT written to `io.cost.model`/`io.cost.qos`
 and io.cost is not enabled; choosing and applying those is a separate,
 later decision.

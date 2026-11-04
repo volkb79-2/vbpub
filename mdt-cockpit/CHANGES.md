@@ -5,6 +5,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- Hermetic tests for the shared host CPU benchmark tool `scripts/debian-install-v2/tools/cpu_benchmark.py` (HB-1:
+  `host-setup/tests/test_cpu_benchmark.py` with Geekbench stdout and result-page fixtures); the tool writes
+  `/var/lib/mdt/host-facts/cpu-benchmark.json` (+ root-only `.claim.json`) and is wired into `mdt host-setup` by HB-3.
 - host-setup `HOST_ROLE` (`shared-prod` | `dedicated-dev`, section 4.0; the wizard asks it first): on a sole-tenant dev/test host `dev.slice` takes
   its absolute IO ceilings from the MEASURED iobench result (`proposals.caps.dev_aggregate`, identity-verified through the new
   `scripts/mdt_iobench_caps.py`) or the `DEV_IO_*_MAX` pins, with NO static fallback: without either, `install.sh` refuses and the reconcile
