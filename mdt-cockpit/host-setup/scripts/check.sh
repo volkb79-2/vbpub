@@ -1084,6 +1084,25 @@ else
   fi
 fi
 
+echo "== per-host CPU benchmark (HB-3) =="
+# The persisted /var/lib/mdt/host-facts/cpu-benchmark.json (measured once, never by this check): missing,
+# partial (no scores) or STALE (cpu_model / vCPU count changed) is a WARN with the command to run.
+_CPUBENCH_PY="${CPUBENCH_PY:-$(dirname "$0")/mdt-host-cpu-benchmark.py}"
+if [ ! -f "$_CPUBENCH_PY" ]; then
+  warn "$_CPUBENCH_PY missing — cannot report the CPU benchmark; re-run install.sh"
+else
+  _cpub_out=$(python3 "$_CPUBENCH_PY" doctor 2>&1) || _cpub_out="WARN the CPU benchmark report failed to run: $_cpub_out"
+  while IFS= read -r _line; do
+    case "$_line" in
+      OK\ *)   ok "${_line#OK }" ;;
+      WARN\ *) warn "${_line#WARN }" ;;
+      INFO\ *) info "${_line#INFO }" ;;
+      "") ;;
+      *)       warn "CPU benchmark report: $_line" ;;
+    esac
+  done <<<"$_cpub_out"
+fi
+
 echo "== container placement (informational) =="
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   docker ps --format '{{.Names}}' | while read -r n; do

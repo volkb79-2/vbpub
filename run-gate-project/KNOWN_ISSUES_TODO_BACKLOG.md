@@ -7620,3 +7620,34 @@ the cause. No product defect is claimed. **Next step:** when either test fails a
 ## RG-163 — no lane key for the container's shm/tmpfs size, which Assay's `isolation.materialize = "tmpfs-worker"` (B223) needs
 
 **Status:** OPEN, 2026-11-05 (filed from assay-tmpfs-20261105). The lane container is started with `--memory`, `--cpus`, `--pids-limit` and mounts but no `--shm-size` / `--tmpfs`, so `/dev/shm` is Docker's default 64 MiB, below one worker tree (about 175 MB for a 7.6k-file repository). Assay falls back to clone materialization with one stderr advisory when the directory is too small, so nothing fails, but the option has no effect. **Fix shape:** an optional `resources.shm_size` (and/or `resources.tmpfs = ["/path:size"]`) lane key passed as `--shm-size` / `--tmpfs ...:rw,exec,size=N`, validated against `resources.memory` (tmpfs pages are charged to the container). Until then a measuring run can pass the flag through a wrapper.
+## RG-161 — `run-gate --list --json`: lane inventory with derived rigor (rigor-evidence package RG-d)
+
+**Status: FIXED on branch rigor-rgd-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo amendment 2 and row RG-d (release program `reports/RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md`). SPEC R-55, `README.md`, `CONSUMERS.md`, tests `TestListJsonDerivedRigor` in `tests/test_run_gate.py`. The three-column `--list` is untouched (R-01); `--json` with any other verb is still refused.
+
+**Decisions the memo left open (review these).** (1) A sequence's own `rigor` is `["R0"]` and its `members` are its direct members; the members' levels sit on their own rows (the memo says "R0 for every member of a sequence lane": every row holds R0, assay rows hold what the judge declares). (2) `rigor` is the judge's DECLARED list; `rigor_reachable` is also passed through. A level is a claim only once a verdict proves it (assay `claims`). (3) A probe that fails gives `rigor: null` plus `rigor_reason`, not a refusal of the whole listing, so a consumer can still read command and sequence rows; the consumer decides. (4) `--list --json` resolves an `[assay.import]` (plain `--list` still never probes). (5) New schema id `run-gate-list/1`, owned by run-gate (SPEC R-55); the ciu v8 S16.9.2 port is CIU-V8-RIGOR.
+
+**Open.** Command lanes whose argv runs `assay run` (most estate R1/R3 lanes) stay `declared-not-judged` until adopters move them to `kind = "assay"`; that is an adoption task per project, not a run-gate change.
+
+## RG-162 — load-sensitive flaky selftest tests: `test_lock_wait_does_not_consume_lane_budget` (1 s budget timing) and `test_reattach_adopts_recorded_session_stop_called_with_it` (`profiling: cgprofile ctl stop produced an unparsable response`)
+
+**Status:** FIXED 2026-11-05 (rigor-rgd-20261105); test-only change, no product defect. Related to RG-160 (same reattach test; its cause is this one).
+
+**Root cause (reproduced, instrumented).** `_FakeCgprofileDaemon.close()` closed the listener while its accept thread was blocked in `accept()`; that does not wake the thread, and the freed fd number is
+reused by the next test's listener. The stale thread then accepted the NEXT test's connections and answered them from its own deleted plan directory (no plan file: close with 0 bytes), and the new daemon never
+saw the request (instrumentation showed a `stop` for the reattach test answered by the `test_wrong_contract_...` daemon's plan path). It also explains the doctor test (`[OK] profiler daemon` missing) and
+`basic`-instead-of-`daemon` failures in sibling tests. **Fix:** the accept loop polls with a 50 ms timeout and `close()` sets a stop event and joins the thread before releasing the fd. Assertions untouched.
+**Lock-wait test:** same oracle (lock wait alone exceeds the lane budget, lane still PASSes) with a 2 s budget, 0.5 s command and 2.2 s lock hold, so the command has 1.5 s headroom instead of 0.25 s.
+**Proof.** Before: the seven fake-daemon classes failed 1 to 2 tests in about 1 of 3 runs under 4 nice spinners. After: 25 consecutive such runs, 0 failures; each of the reattach, doctor-pressure and lock-wait tests run 20x alone, 0 failures.
+The remote `TestHistoryStoreReadableByTheReleasedReader` failure was the thin-bundle tag gap, fixed in remote-gate (branch remote-gate-20261105).
+
+**Evidence.** Three local `run-gate selftest` runs on the rgd branch each failed exactly one test of ~2886, and the failing test differed between runs, with no relation to the change under test:
+`TestRG78ClosedExitTable.test_lock_wait_does_not_consume_lane_budget` (its 1-second lane budget is exceeded by scheduler delay under host load) and
+`TestReattachProfilingWiring.test_reattach_adopts_recorded_session_stop_called_with_it` (fails with `profiling: cgprofile ctl stop produced an unparsable response` under load).
+
+**Next step.** Make the lock-wait test's budget independent of wall-clock jitter (inject the clock or widen the budget relative to the measured wait) and, for the reattach test, read the length/prefix now named in the
+warning (RG-160 diagnostic) before changing code. Until then a differing single-test failure under load is inconclusive, not a PASS.
+
+**Update 2026-11-05 (remote runs on v1001 and r1002, quiet hosts, PSI cpu under 3).** Run 1 (v1001) failed the reattach test with `0 bytes, starts ''`: the fake daemon closed without a body, so this is a
+race or plan-file gap in `_FakeCgprofileDaemon`, not load. Run 2 (r1002) did not hit it but failed a doctor test (`'[OK] profiler daemon'` missing from the doctor output), another intermittent failure of the same family.
+Both runs also failed `TestHistoryStoreReadableByTheReleasedReader` deterministically: the remote-gate checkout is built from a thin git bundle and carries only a few `run-gate-v25.*` tags, so RG-159's
+"tags present but no `run-gate-v24.>=3` tag" assertion fires. Remote `selftest` can therefore never be clean until remote-gate syncs all `run-gate-v*` tags (or the test skips on a tag-incomplete checkout).

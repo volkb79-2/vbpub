@@ -8,6 +8,14 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Added
+- Machine facts (`machine/1`, rigor-evidence CP-1, CP-58): `host.machine`, `host.steal_seconds`, `host.cpu_seconds_total` in the `host` verb, the
+  `status` host block and the Summary host block (additive; Summary v1.2). The CPU speed is read from the persisted
+  `/var/lib/mdt/host-facts/cpu-benchmark.json` at start and on reload (accepted only while CPU model and CPU count match; never measured, the claim
+  file is never opened), else looked up in the packaged `cgprofile-scores/1` table by CPU model and Geekbench major, else `null` with a reason.
+  Per-major baselines (6 and 7: 2500). The table ships empty (CP-59); refresh procedure in `docs/SCORES-TABLE.md`; `docs/PROTOCOL.md` section 11.
+- `metrics.sample_host` cpu block gains `steal_jiffies` and `accounted_jiffies`.
+
 ### Fixed
 - R2 lane base: the recorded pre-wave base `eb3af770` exceeds Assay's 64 MiB git output bound (GIT_FAILED). `docs/CONSUMERS.md` now names the
   previous release tag as the request base, to be refreshed per release (`cgprofile-v1.2.0` plans 557 candidates).

@@ -613,7 +613,7 @@ fi
 expected_mounts+=$'\n'"$RESOURCE_OBSERVER_DIRECTORY_SOURCE"$'\t'"$RESOURCE_OBSERVER_TARGET_DIRECTORY"
 if [[ "$(printf '%s\n' "$mounts" | sed '/^$/d' | sort)" != \
       "$(printf '%s\n' "$expected_mounts" | sort)" ]] \
-  || printf '%s\n' "$mounts" | grep -Fq '/var/run/docker.sock'; then
+  || grep -Fq '/var/run/docker.sock' <<<"$mounts"; then
   die 'B105 container mounts do not match the dual-mount, no-Docker-socket contract'
 fi
 
@@ -630,7 +630,7 @@ if [[ -v CMRU_RELEASE_GATE_VERSION ]]; then
   expected_container_env+=("CMRU_RELEASE_GATE_VERSION=$CMRU_RELEASE_GATE_VERSION")
 fi
 for expected in "${expected_container_env[@]}"; do
-  if ! printf '%s\n' "$container_env" | grep -Fqx "$expected"; then
+  if ! grep -Fqx -- "$expected" <<<"$container_env"; then
     die "B105 container is missing required environment fact: ${expected%%=*}"
   fi
 done
@@ -638,14 +638,14 @@ if [[ "$lane" == b110-pilot || "$lane" == b110-screen ]]; then
   for expected in \
     "ASSAY_B110_ASSAY_STATE_DEVICE=$assay_state_device" \
     "ASSAY_B110_ASSAY_STATE_INODE=$assay_state_inode"; do
-    if ! printf '%s\n' "$container_env" | grep -Fqx "$expected"; then
+    if ! grep -Fqx -- "$expected" <<<"$container_env"; then
       die "B110 container is missing its admitted .assay identity: ${expected%%=*}"
     fi
   done
 fi
 if [[ -n "${CGROUP_PARENT_DEV_BACKGROUND:-}" ]] \
-  && ! printf '%s\n' "$container_env" | grep -Fqx \
-    "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND"; then
+  && ! grep -Fqx -- \
+    "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND" <<<"$container_env"; then
   die 'B105 container is missing the declared background cgroup tier'
 fi
 container_groups="$(docker_bounded inspect "$container_id" \

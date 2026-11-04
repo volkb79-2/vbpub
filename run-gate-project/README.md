@@ -607,6 +607,7 @@ run-gate history [LANE]  # what each lane last did + what it typically costs
 run-gate history --json  #   … the same, machine-readable (this verb only)
 run-gate history --worktree B   # … for tree B's store, not this checkout's
 run-gate --list          # machine-readable lane inventory (for CI fan-out)
+run-gate --list --json   # … with kind, members and each lane's derived rigor (R-55); asks the judge
 run-gate --help          # usage(), incl. the installed SemVer
 ```
 

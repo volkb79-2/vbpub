@@ -170,11 +170,15 @@ WIZARD_SECTIONS = (
             WizardField("io_benchmark_duration_s", "Duration per benchmark phase (seconds)", "integer"),
             WizardField("io_benchmark_max_size_gb", "Maximum temporary benchmark partition (GiB)", "integer"),
             WizardField("iocost_enabled", "Configure io.cost for the root disk when a benchmark result exists?", "boolean"),
+            WizardField("run_cpu_benchmark", "Measure the host CPU once with Geekbench at the end of the install (needs internet; failure only warns)?", "boolean"),
         ),
     ),
 )
 
 _FIXED_FIELDS = {"schema_version", "fresh_install"}
+# Advanced pins for the CPU benchmark archive: edited in the config file, not prompted
+# (a wrong pair only makes the step warn; the built-in per-architecture pin is the default).
+_FIXED_FIELDS |= {"cpu_benchmark_geekbench_version", "cpu_benchmark_sha256"}
 _SECRET_FIELDS = {"telegram_bot_token", "mattermost_webhook_url"}
 _SUMMARY_HIDDEN_FIELDS = _SECRET_FIELDS | {"controller_ssh_pubkey", "ssh_authorized_keys"}
 _WIZARD_REQUIREMENTS = Path(__file__).resolve().parents[1] / "requirements-wizard.txt"

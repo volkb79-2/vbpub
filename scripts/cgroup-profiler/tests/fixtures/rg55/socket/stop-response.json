@@ -58,6 +58,18 @@
     },
     "damon": null,
     "host": {
+      "machine": {
+        "schema": "machine/1",
+        "cpu_model": null,
+        "cpus_online": null,
+        "cpus_available": null,
+        "hypervisor": null,
+        "smt": null,
+        "speed": null,
+        "speed_reason": "NO_HOST_MEASUREMENT_AND_MODEL_NOT_IN_TABLE"
+      },
+      "steal_seconds": null,
+      "cpu_seconds_total": null,
       "start": {
         "memory_pressure": {
           "some_avg10": 0.0,

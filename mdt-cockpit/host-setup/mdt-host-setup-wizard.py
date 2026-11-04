@@ -4208,6 +4208,11 @@ def main(argv: list[str] | None = None) -> int:
         "change, and schedule a Docker restart if `DOCKER_DAEMON_CGROUP_PARENT` "
         "changed. A restart disrupts running containers."
     )
+    out(
+        "Once per host (not part of this configuration): `sudo ./host-setup/install.sh cpu-benchmark` "
+        "measures the CPU with Geekbench (quiet window, needs internet) and stores it under "
+        "`/var/lib/mdt/host-facts`; `mdt-host-check.sh` warns while it is missing or stale."
+    )
 
     if args.skip_run_offer:
         return 0
