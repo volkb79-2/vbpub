@@ -106,9 +106,9 @@ memory_swap = "16g"
 # Mutation (R2). Run in tester-unified with its private cgroup namespace;
 # the observer-only cgprofile socket supplies the hidden host ancestry needed
 # by Assay B145 without exposing the daemon control socket or using
-# --cgroupns=host. Assay runs one candidate at a time and Docker caps this
-# container at 3 CPUs, below dev-gates.slice's 5-CPU ceiling. The shared tester
-# cgroup makes Assay's resource-event windows serial (jobs = 1).
+# --cgroupns=host. Docker caps this container at 3 CPUs, below dev-gates.slice's
+# 5-CPU ceiling. Assay may run up to jobs_max candidates concurrently (assay 11/12 B157);
+# the count is chosen by jobs = "auto" below.
 #
 # RW-23b (round-1 review S1): NO `stall_timeout` here. `stall_timeout`
 # (RG-36/R-40c) bounds SILENCE via `ProgressWatch`/`LogStreamWatch`, both of
@@ -130,9 +130,11 @@ environment = "tester-unified"
 resource_observer = "cgprofile"
 clean_tree = true
 budget = "4h"
+jobs = "auto"                       # assay.toml jobs_max = 2 is the ceiling
 
 [lanes.assay-r2.resources]
 memory = "2g"
+candidate_ram = "700m"
 pids = 8192
 cpus = "3"
 
