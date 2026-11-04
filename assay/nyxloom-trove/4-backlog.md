@@ -14191,3 +14191,55 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Question to answer first.** Under the relaxed image, `strace -f -c -e trace=fsync,fdatasync,sync_file_range` on one short serial candidate: do the assay coordinator's fsyncs reach the kernel? The answer decides whether B209 option A or B is even distinguishable.
 
 **Acceptance.** A recorded strace count for strict and relaxed, and either a note in B209 and the run-gate README ("coordinator durability is unchanged by the preload") or a switch that makes `relaxed` honor the declared per-file table of B209.
+
+## B219 — the sealed snapshot template's git index has no stat data, so every `git status` in every candidate hashes the whole worktree (173 MB of disk reads per candidate on a 7.6k-file repository)
+
+**Status: OPEN (filed 2026-11-05).** Measured on v1001 (experiment report `materialize-experiment-REPORT.md`, variant a vs a2); explains the 132 GB read by the cli-extended r2 container (740 candidates, 178 MB each).
+
+**Problem.** `_build` creates the template with `git read-tree` and writes the worktree from Python; the index therefore holds no stat data. Every git child runs with `GIT_OPTIONAL_LOCKS=0` and `--no-optional-locks`, so `git status` never persists a refresh. In `_verify` (before the command) and `_snapshot_left_dirt` (after it) `git status` hashes the content of every tracked file. A btrfs snapshot clone has a cold page cache (new inodes), so the first status reads the whole worktree from disk: 173.6 MB read, materialize 2.3 s, integrity 0.48 s per candidate; the campaign's own `phase_seconds` match (2.06-2.21 s, 0.48-0.54 s).
+
+**Design.** Before `seal` in `_ensure_template`, run one `git update-index --refresh` against the template with optional locks allowed (template only, never in a clone), after the fixed mtimes are set. Clones that preserve inode numbers and timestamps (btrfs snapshot, overlay with the template as lower) then validate by stat. Clones that do not preserve them fall back to content hashing, so correctness is unchanged. Measured: 173.6 -> 37.2 MB read, 2.31 -> 0.33 s materialize, 0.48 -> 0.07 s integrity (variant a2); the remaining 37 MB is B220.
+
+**Acceptance.** Test: a status in a snapshot clone of a primed template performs no content read of unmodified worktree files (assert via counting hash-object/`read` or a fake) and still reports a modified, a mode-changed, an untracked and a deleted file. Test: a non-preserving clone (plain copy) still produces a correct status. Live: `rbytes` of a one-worker campaign container drops by more than 70 percent per candidate.
+
+## B220 — `_enforce_child_closure` walks the full base closure of the pack for every candidate (36 MB pack read per candidate after B219)
+
+**Status: OPEN (filed 2026-11-05).** Follow-on of B219; the 37 MB that remains in variant a2.
+
+**Problem.** Per candidate, `_enforce_child_closure` runs `rev-list --objects --no-object-names`, `cat-file --batch-check` over every object and a second `rev-list --objects --no-walk`. The base closure is the seed's and was bounded once when the seed was prepared; only the replacement blob, its tree path and the commit are new. The walk reads the whole 36 MB pack through the clone's cold page cache each time.
+
+**Design.** Bound the child's closure from the base counts plus the new objects only: take `base_objects`/`base_bytes` from the seed check, `cat-file --batch-check` the handful of new OIDs, and keep the existing limit comparison. A full walk remains the behaviour when the base counts are unknown (legacy callers) and in `verify_clone = "full"` (B222).
+
+**Acceptance.** The limits fire at exactly the same thresholds as today (differential test over replacements at the object-count and byte ceilings); per-candidate pack bytes read drop to near zero in the experiment harness; a replacement that exceeds `max_blob_bytes` is still refused.
+
+## B221 — overlay backend for cowtree/assay (lower = sealed template, upper on tmpfs or btrfs): zero steady-state reads
+
+**Status: OPEN (filed 2026-11-05).** Measured variants e, e2, f (experiment report section 3).
+
+**Findings.** Overlay with the template as lower shares the lower files' page cache, so steady-state reads are 0 MB (tmpfs upper) or 35.9 MB (btrfs upper), materialize 0.81 s (0.29 s with the B219 primed index), per-candidate setup 0.01 s, teardown 0.03 s. The upper on tmpfs held 37 MB per live candidate (probable pack copy-up, cause unverified). Mounting needs root. An unprivileged overlay in a user namespace inside the lane container is impossible under docker's default seccomp and AppArmor (`unshare` EPERM; with seccomp off the propagation change fails; only seccomp+apparmor unconfined works), which is not acceptable for lanes.
+
+**Design.** New cowtree mode `overlay` (`COWTREE_MODE=overlay`, options `upper = tmpfs|area`): a privileged host-side helper (run-gate/cowtree, not the lane) creates the template and a per-worker mount namespace or mount point with a root-owned helper command; the lane container receives the merged directory by bind mount. Assay's `ActiveWorkspace` gains a backend that does `make_overlay(template) -> merged` and `delete_overlay(merged)`; `_require_btrfs` is relaxed for this mode. Decide the copy-up question (is the pack copied up and why) before sizing the tmpfs.
+
+**Acceptance.** Parallel R2 fixture lane with 3 workers on the overlay mode: per-candidate disk reads below 5 MB steady state, no leftover mounts after success, failure and kill (test via `/proc/self/mountinfo`), the template unchanged after the run (tree hash), cowtree gc reclaims upper dirs of dead runs.
+
+## B222 — tiered clone verification: verify the template once, per candidate only the replacement identity and a cheap touched-path dirt check; `verify_clone = "full"` keeps today's proof
+
+**Status: OPEN (filed 2026-11-05).** Analysis in experiment report section 4.3.
+
+**Problem.** `_verify` proves the whole clone (status, write-tree, ls-files -v, manifest lstat walk, shallow/alternates/hooks/config) for every candidate although the clone is a CoW snapshot of a read-only sealed template that was just built by `_build` and verified there; the post-command `status` (guards a test or mutant dirtying or committing in the snapshot) must stay but costs 0.48 s with the unprimed index and can be a 0.05 s touched-path check.
+
+**Design.** (1) Full `_verify` once on the template at seal. (2) Per candidate: `rev-parse HEAD == commit`, `HEAD^{tree} == write-tree`, the expected blob oid at the replaced path, closure limits of new objects (B220). (3) After the command: stat-walk of the tree against the template's map (size, mtime_ns, inode, mode, directory entry counts; also catches ignored files) or `git diff --name-only` plus `ls-files --others` on the primed index; HEAD check unchanged; full `status` every N candidates (default 25) and after any candidate that crashed, timed out, was killed or hit a resource limit. (4) New lane/isolation key `verify_clone = "full"|"tiered"`, default `full` until the tests below pass; backends that are not CoW snapshots of the verified template (plain copy, in-place reuse) force `full` or the stat-walk.
+
+**Correctness argument.** The untouched content of a snapshot equals the sealed template by construction; the replaced path is covered by the blob oid; test side effects are what the post check observes, and a stat-walk is a superset of `git status` for file creation and removal (it also sees ignored files) and weaker only for an in-place rewrite that preserves size, mtime and inode, which the periodic full status covers.
+
+**Acceptance (tests).** A test writing a tracked file, an untracked file, an ignored file, making a commit and changing a mode is detected in `tiered` mode (ignored file by the stat-walk); an anomaly candidate triggers the full check; wrong-blob replacement fails the identity check; `full` is byte-identical to today's behaviour; the periodic full check runs every N; a stale artifact left by candidate k cannot influence candidate k+1.
+
+## B223 — in-place worker tree backend (`tmpfs-worker`): one pristine tree per worker, restore the mutated file, index, HEAD and loose objects after each candidate
+
+**Status: OPEN (filed 2026-11-05; depends on B222).** Measured variants d and d2: total 3.2 s per candidate (4.3 s with the unprimed index) against 6.0 s, zero disk reads, materialize 0.16 s, teardown about 0 s; 175 MB of tmpfs per worker for the whole repository plus `.git` (3 MB for the project directory alone if only the tests need it, but the git verification needs the tree and `.git`).
+
+**Risks.** Contamination: a test that leaves a file (pyc, caches, coverage output) or edits a tracked file changes the next candidate; the primed index must be created inside the final tmpfs (copying changes inode numbers and ctime and silently loses the priming, observed); the mount is root-privileged and tmpfs pages are charged to the cgroup that wrote them. zswap is enabled on the test hosts (zstd, 25 percent pool), so tmpfs is swappable.
+
+**Design.** Worker-owned tree built once, verified fully once, then per candidate: apply replacement, run, stat-walk against the map, restore file/index/HEAD, delete new loose objects; full verify every N and after any anomaly (B222); candidate runs require `PYTHONDONTWRITEBYTECODE`, no pytest cache provider and report paths outside the tree, enforced by the stat-walk.
+
+**Acceptance.** Fixture lane with 3 workers, 200 candidates: results equal the btrfs-clone run bucket for bucket; the stat-walk detects an injected stale artifact and the candidate is reported as an infrastructure error, not a bucket; tmpfs memory stays within the declared per-worker size.
