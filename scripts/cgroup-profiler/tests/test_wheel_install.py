@@ -48,7 +48,7 @@ def wheel(tmp_path_factory) -> Path:
     work = tmp_path_factory.mktemp("wheel-build")
     tree = work / "tree"
     tree.mkdir()
-    for name in ("pyproject.toml", "README.md", "NOTICE"):
+    for name in ("pyproject.toml", "README.md", "NOTICE", "LICENSE"):
         shutil.copy2(PROJECT_ROOT / name, tree / name)
     shutil.copytree(
         PROJECT_ROOT / "src", tree / "src",
@@ -80,7 +80,7 @@ def cli_extended_wheel(tmp_path_factory) -> Path:
     work = tmp_path_factory.mktemp("cli-extended-build")
     tree = work / "tree"
     tree.mkdir()
-    for name in ("pyproject.toml", "README.md"):
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
         shutil.copy2(source / name, tree / name)
     shutil.copytree(source / "src", tree / "src", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     out = work / "dist"

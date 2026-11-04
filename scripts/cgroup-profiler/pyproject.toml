@@ -19,6 +19,7 @@ name = "cgprofile"
 description = "Profile a container/cgroup's resource use over time, with effective limits, phase marks, and an interactive report; plus the host daemon run-gate and assay talk to"
 readme = "README.md"
 requires-python = ">=3.11"   # floor: tomllib (daemon config, 2.0) is stdlib from 3.11
+license = "MIT"
 authors = [{name = "Volker Badziong"}]
 dynamic = ["version"]        # scm-derived from the cgprofile-v tag; no literal, no CGPROFILE_VERSION input
 

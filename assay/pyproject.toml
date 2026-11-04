@@ -16,6 +16,8 @@ name = "assay"
 dynamic = ["version"]
 description = "assay — how to judge a change: declared lanes, declared rigor, one machine-readable verdict"
 requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Volker Badziong"}]
 
 # ZERO EXTERNAL RUNTIME DEPENDENCIES (decision A-005). Assay and the bundled
 # same-repository cowtree package use only the standard library. This list

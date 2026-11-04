@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: MIT
 #
 # run_analysis.sh — thin wrapper, delegates to damon_cli.py
 # Python-native CLI is the canonical entry point.

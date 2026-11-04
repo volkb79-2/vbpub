@@ -1,20 +1,24 @@
 cgprofile (cgroup-profiler)
 
-Third-party and vendored code
------------------------------
+Licence
+-------
 
-src/cgprofile/_damon/damon_analysis.py
-  Vendored byte copy of scripts/damon-analysis/lib/damon_analysis.py
-  (DAMON sysfs control and hot/warm/cold classification).
-  SPDX-License-Identifier: GPL-2.0-only (as carried in the file's header,
-  which is kept unchanged).
-  The copy is kept equal to its source by tests/test_damon_vendor.py.
+MIT (see LICENSE), SPDX `MIT`.
 
-Open licence question
+DAMON analysis module
 ---------------------
 
-The rest of the project declares no licence of its own, and sibling estate
-projects declare MIT. Whether a GPL-2.0-only module may ship inside the
-cgprofile wheel, be split into an optional extra, or be rewritten is undecided
-and tracked as backlog item CP-51 (nyxloom-trove/backlog). Until that is
-decided, no licence field is set in pyproject.toml.
+src/cgprofile/_damon/damon_analysis.py
+  Byte copy of scripts/damon-analysis/lib/damon_analysis.py (DAMON sysfs
+  control and hot/warm/cold classification), kept equal to its source by
+  tests/test_damon_vendor.py.
+  SPDX-License-Identifier: MIT.
+
+  Provenance: first-party code written by the project owner around the kernel
+  DAMON sysfs interface (/sys/kernel/mm/damon/admin). It contains no copied
+  `damo` source; the separate `damo` tool is only invoked as a subprocess
+  (`damo report sysinfo`). The file carried `SPDX-License-Identifier: GPL-2.0`
+  until 2026-11-05; the owner confirmed authorship and the header was changed
+  to MIT (backlog CP-51, docs/LICENSING.md at the repository root).
+
+No third-party source is vendored in this wheel.

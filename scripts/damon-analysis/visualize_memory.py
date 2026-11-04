@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: MIT
 """
 visualize_memory.py — Generate visual representations of DAMON analysis results.
 

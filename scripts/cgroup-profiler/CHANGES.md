@@ -8,6 +8,8 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+- Licence: `license = "MIT"` and a `LICENSE` file in the wheel; the vendored DAMON module header is MIT (the owner confirmed it is first-party code, CP-51); `NOTICE` updated.
+
 <!-- cmru: release history -->
 
 ## [2.0.0] - 2026-11-04

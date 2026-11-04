@@ -46,3 +46,9 @@ source with `tests/test_damon_vendor.py`.
 - The chosen state is reflected in `pyproject.toml` (licence field and `license-files`), `NOTICE`, and the wheel contents (a test in
   `tests/test_wheel_install.py` asserts the shipped files).
 - If option 2 or 3: `tests/test_damon_vendor.py` is removed or retargeted and `cmru.toml` reflects the extra distribution.
+
+## Status note (2026-11-05, licence audit branch licence-audit-20261105)
+
+The operator confirmed the module is first-party code written around the DAMON sysfs interface; `damo` is only run as a subprocess (option 4).
+The SPDX headers (8 files), `NOTICE`, `pyproject.toml` (`license = "MIT"`) and the wheel test now say MIT on the audit branch.
+Stays `open` until the operator confirms MIT as the estate licence and the branch is merged.

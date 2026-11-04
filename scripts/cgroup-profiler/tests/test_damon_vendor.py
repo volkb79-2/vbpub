@@ -5,7 +5,7 @@
 wheel cannot import across projects, so the copy ships inside the package; this
 test is the sync mechanism. Update both together:
 `cp ../damon-analysis/lib/damon_analysis.py src/cgprofile/_damon/damon_analysis.py`.
-The file is SPDX GPL-2.0-only; see NOTICE and backlog CP-51 for the licence question.
+The file is first-party and SPDX MIT (owner-confirmed 2026-11-05); see NOTICE and backlog CP-51.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ SOURCE_OF_TRUTH = PROJECT_ROOT.parent / "damon-analysis" / "lib" / "damon_analys
 
 def test_the_vendored_copy_keeps_its_licence_header():
     head = VENDORED.read_text(encoding="utf-8").splitlines()[:5]
-    assert any("SPDX-License-Identifier: GPL-2.0" in line for line in head)
+    assert any(line.strip() == "# SPDX-License-Identifier: MIT" for line in head)
 
 
 @pytest.mark.skipif(
@@ -35,4 +35,5 @@ def test_the_vendored_copy_equals_the_source_of_truth():
 def test_the_notice_names_the_vendored_file():
     notice = (PROJECT_ROOT / "NOTICE").read_text(encoding="utf-8")
     assert "cgprofile/_damon/damon_analysis.py" in notice
-    assert "GPL-2.0-only" in notice
+    assert "SPDX-License-Identifier: MIT" in notice
+    assert "GPL-2.0-only" not in notice

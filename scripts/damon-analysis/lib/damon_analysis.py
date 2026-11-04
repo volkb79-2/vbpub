@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-2.0
+# SPDX-License-Identifier: MIT
 """
 DAMON Analysis Library — Hot/Warm/Cold Memory Classification
 
