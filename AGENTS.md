@@ -177,6 +177,38 @@ git status --short
   `[permissions]` (`deny`/`ask`/`allow` rules such as `Bash(git push*)`) and
   `[sandbox]` in `~/.reasonix/config.toml`.
 
+## Development, release and rigor workflow (operator-agreed, estate-wide)
+
+**Release gate.** A release needs R0 (baseline), R1 (unit and coverage at the project's floor), R3 (canary
+rejection) and an independent review of the exact commit. R2 mutation does not block a release: a release
+notes "R2 pending" and the campaign runs afterwards.
+
+**R2 runs asynchronously, on the latest release only.** When a host slot frees, the next R2 campaign starts
+on the newest released version of a tool. Older releases that never received R2 are never retro-run. There
+is no cap on unsettled releases: keep developing and releasing.
+
+**Survivors.** A surviving mutant gets a root-cause analysis first. The usual outcome is a fix plus a new
+release; the previous release is withdrawn only when the cause shows a defect that is unsafe to leave
+published.
+
+**Bugs are folded in, not parked.** Bugs found while developing are fixed in the same wave and released
+with it; release only versions without known open defects in the touched code.
+
+**Compute use.** The only reasons to stop adding work are pressure (`some avg10` above 25 for CPU or
+memory) and heavy swapping. Keep every host busy with useful work: the planned ceiling is about one
+single-threaded job more than the core count, because lane work also waits on IO. Never run more parallel
+jobs than the host can serve, and never exceed the per-lane limits in `dev-gates.slice`. Test hosts
+(`r1002`, `v1001`) take the long campaigns; protected hosts are never used.
+
+**Rigor evidence.** What a release guarantees is recorded in the repository per release (levels completed,
+tool and config versions, candidate counts, killed and surviving mutants with their waivers) together with a
+host-independent resource summary per lane (distributions of runtime and memory, normalised by a published
+reference benchmark score, never by host name). Assay and Run-Gate produce the data; the release tool only
+attaches it. Raw campaign data stays outside the repository.
+
+**Versions.** ciu stays on its 7 line even for CLI breaks; breaking changes are listed in the release notes.
+Dependencies prefer the newest stable release that is at least 14 days old (stable, not LTS).
+
 ## Defaults and fallbacks are hazards (MANDATORY, estate-wide)
 
 > **A default is legitimate only when it is a policy choice that is correct in
