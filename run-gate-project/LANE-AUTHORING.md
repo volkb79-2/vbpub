@@ -280,10 +280,9 @@ with sqlfluff in a command lane if the project wants it.
   host is shared). A daemon-backed lane waits for gates-slice headroom before
   starting and then proceeds after its bounded `admission_wait` with one
   warning; host load never becomes a lane verdict.
-- The project-level `[profile]` table may select `transport = "auto"`,
-  `"exec"`, or `"socket"`, set `socket_path`, and set `admission_wait`.
-  `auto` uses the socket only after a successful version probe and otherwise
-  uses Docker exec. The daemon watch is one reader per session; if it is
+- The project-level `[profile]` table may set `socket_path` (the only
+  carrier; RG-154 removed `transport` and `daemon`) and `admission_wait`.
+  The daemon watch is one reader per session; if it is
   unavailable, the in-process assay watch bounds the R2 baseline by Assay's
   heartbeat (`300s` minimum; run-gate requests a 60 s heartbeat, so an assay
   lane's `stall_timeout` below `120s` is refused at load) and then uses the producer's calibrated
@@ -393,7 +392,7 @@ a yes/no.
 - [ ] Floors measured before set; R2 has `budget`, `budget_per_candidate`
       and (23.4.0) `stall_timeout`; `memory` declared, with `memory_max`
       where daemon placement of an exec/bare-host lane needs a ceiling.
-- [ ] If profiling is configured, `[profile]`'s transport/socket/admission
+- [ ] If profiling is configured, `[profile]`'s socket_path/admission
       fields are documented for the adopter and exercised by `doctor` or
       `--dry-run`; no consumer starts or stops the daemon.
 - [ ] Artifacts declared if the lane may run remotely.

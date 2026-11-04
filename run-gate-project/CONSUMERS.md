@@ -78,12 +78,14 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    is host infrastructure, started once from the vbpub checkout** — `cd
    scripts/cgroup-profiler && ciu up` — never per-project, and never
    something a consumer's own gate config starts or stops. A runner
-   without `docker exec` rights to that daemon (a locked-down CI box, a
-   sandboxed agent) should set `RUN_GATE_PROFILE=off` rather than eat one
-   `docker exec`-per-tick failure per profiled lane; `doctor`'s "profiler"
-   check reports the daemon's reachability either way. A Docker permission,
-   transport, or `docker ps` failure is reported as **state unknown**, never
-   as “daemon absent” with a start-it remedy. On the bare-host daemon path,
+   without access to the daemon's control socket (a locked-down CI box, a
+   sandboxed agent) should set `RUN_GATE_PROFILE=off`; run-gate reaches the
+   daemon only through `/run/cgprofile/ctl.sock` (RG-154: no `docker exec`
+   carrier, no `transport`/`daemon` keys), so a lane needs that directory
+   bind-mounted and the socket's group. `doctor`'s "profiler" check reports
+   the socket's reachability; an unreachable socket is named by its cause tag
+   (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
+   `socket-permission`), never as a guess. On the bare-host daemon path,
    run-gate resolves `/etc/hostname` only as a candidate and compares that
    Docker object's mount namespace with its own; a mismatch or unverifiable
    identity safely takes the `wait4()` fallback. `run-gate.footprint.json`
@@ -135,13 +137,11 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
                                   # (a lane's own `profile = false` disables
                                   # just that one; RUN_GATE_PROFILE=on/off
                                   # overrides both, see above)
-   daemon = "cgprofile-host-daemon"  # the daemon CONTAINER NAME (default shown)
    interval = "1s"                # the `budget` grammar; basic/daemon sample tick
    damon = true                   # default true; DAMON hot-set classification
                                   # when the daemon supports it (basic-path
                                   # sampling never has DAMON data either way)
-   transport = "auto"             # auto | exec | socket
-   socket_path = "/run/cgprofile/ctl.sock"  # socket carrier path
+   socket_path = "/run/cgprofile/ctl.sock"  # the only carrier (RG-154)
    admission_wait = "10m"          # wait bound; then proceed with one warning
 
    # run-gate.toml or run-gate.root.toml — [footprint]: same whole-table

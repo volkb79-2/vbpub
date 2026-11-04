@@ -2377,7 +2377,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `damon_cleanup.confirmed == false` is recorded verbatim in `resources`
     and disclosed as the one warning line suffixed "profile recorded with
     this caveat" — never a verdict change (`R-36h`). `--dry-run` prints the plan
-    (daemon name, scope, damon, token env) and starts nothing — UNCONDITIONAL
+    (socket path, scope, damon, token env) and starts nothing — UNCONDITIONAL
     on whether profiling is enabled, so a disabled lane's dry run still
     names WHY (a fix in the same commit that shipped this: gating the print
     call on `profiling` as well as inside the function made the
@@ -2385,16 +2385,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     The ambient override `RUN_GATE_PROFILE` (`"on"|"off"`, checked BEFORE
     any config table; any other value refuses by name at load) is the same
     class of knob as `$RUN_GATE_CGROUPFS_ROOT`/`$RUN_GATE_PROC_ROOT` — a CI
-    runner without `docker exec` rights to a profiler daemon it will never
+    runner without access to the cgprofile control socket it will never
     have sets `off`; `on` force-enables even over a lane's own `profile =
     false`. `doctor`'s "profiler" check (`R-30c`) discloses the effective
     `[profile]` settings AND whether `RUN_GATE_PROFILE` is overriding them.
   - **`R-43h` Config.** `[profile]` (central/project, whole-table shadowing,
-    `R-09`'s rule): `enabled` (bool, default true), `daemon` (container
-    name, default `cgprofile-host-daemon`), `interval` (the `budget`
-    grammar, default `"1s"`), `damon` (bool, default true), `transport`
-    (`"auto"`, `"exec"`, or `"socket"`, default `"auto"`),
-    `socket_path` (absolute Unix-socket path), and `admission_wait` (the
+    `R-09`'s rule): `enabled` (bool, default true), `interval` (the `budget`
+    grammar, default `"1s"`), `damon` (bool, default true),
+    `socket_path` (absolute Unix-socket path, default
+    `/run/cgprofile/ctl.sock`), and `admission_wait` (the
     `budget` grammar, default `"10m"`). Per lane: `profile = false` (opt out
     entirely — `profile = true` is REFUSED by name, a no-op typo for "delete
     this key") or a table `[lanes.<n>.profile] { enabled, damon }` overriding
@@ -2488,14 +2487,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `--dry-run` rehearses the plan (`container-shared`) and attempts
     nothing for real.
 
-- **`R-43j` Transport and request parity (RG-55/P5 C2).** The project-level
-  `[profile]` table's `transport` is `"auto"`, `"exec"`, or `"socket"`.
-  `"socket"` uses `socket_path`; `"exec"` uses the daemon container's
-  `docker exec` carrier; `"auto"` probes the configured socket with
-  `ctl version` and selects it only on a valid v1.1 response, otherwise
-  retaining the exec carrier with a disclosure. Both carriers serialize the
-  same v1.1 request object and pass through the same response parser. A
-  carrier, daemon, or parser failure is profiling state unknown and follows
+- **`R-43j` Socket-only carrier (RG-55/P5 C2, RG-154).** Run-gate reaches
+  the profiler daemon only through its control socket, `socket_path` of the
+  `[profile]` table (default `/run/cgprofile/ctl.sock`). There is no
+  `docker exec` carrier, no `transport` or `daemon` key and no
+  `RUN_GATE_PROFILE_TRANSPORT`; each is refused by name at load. An
+  unreachable socket carries its CP-31 cause tag in the one warning
+  (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
+  `socket-permission`; classified from errno and the socket directory) and the
+  lane falls back as for any unavailable profiler. A
+  socket, daemon, or parser failure is profiling state unknown and follows
   `R-36h`; it never changes the lane's verdict.
 - **`R-43k` Streaming watch (RG-55/P5 C5).** After a successful profile
   `start`, run-gate creates one `ctl watch` reader for that session. `reading`

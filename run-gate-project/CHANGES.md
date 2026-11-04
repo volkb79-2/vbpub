@@ -48,6 +48,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   speedup/efficiency/per-worker-memory table.
 
 ### Changed
+- **BREAKING (RG-154): run-gate reaches the cgprofile daemon over its control socket only.** The
+  `docker exec cgprofile-host-daemon cgprofile ctl ...` fallback is removed with its settings: the `[profile] transport`
+  and `[profile] daemon` keys, the `RUN_GATE_PROFILE_TRANSPORT` variable and the `docker ps` check in `doctor`. Each is
+  refused by name (exit 2), with no alias; delete the key or unset the variable. The socket is
+  `[profile] socket_path` (default `/run/cgprofile/ctl.sock`) and works against the current 1.x daemon (the operations
+  run-gate uses, `version`, `host`, `status`, `start`, `stop` and `watch`, are unchanged; run-gate never sends `report` or
+  `gc`). An unreachable socket degrades exactly as an absent profiler did (basic or rusage profile, one warning) and the
+  warning now carries the CP-31 cause tag (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
+  `socket-permission`). `doctor`'s "profile config" line shows `socket=` instead of `daemon=`; `--dry-run` prints the
+  socket instead of the daemon name and transport; inflight records drop `profile_daemon`/`profile_transport` and
+  `profile_ref` carries `socket_path` instead of `daemon`. Lanes need the `/run/cgprofile` directory mounted and the
+  socket's group; a lane without access sets `RUN_GATE_PROFILE=off` as before.
 - `r2_candidate_ram_p95_bytes` / `r2_candidate_ram_samples` and the history
   duration and resource medians are computed from clean profiles only.
 - History keeps one entry per commit, io_sync and xdist worker count (was per

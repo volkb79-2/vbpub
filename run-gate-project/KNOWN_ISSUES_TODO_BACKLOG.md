@@ -7492,3 +7492,30 @@ The RG-150 preflight stays. Docs: one CONSUMERS statement of the lane user contr
 a test pins that no committed default names 1003.
 
 **Dependencies and order.** Last package of the rollout; then MDT-059.
+
+## RG-154 — run-gate talks to the cgprofile daemon over the control socket only; the `docker exec` carrier and its transport setting are removed
+
+**Status:** FIXED 2026-11-04 (COMMIT_HASH). Package 4 of the cgprofile 2.0 plan
+(`CGPCTL-PLAN-2026-11-04.md` §2 and §4.2). BREAKING for run-gate (a user-visible setting is removed).
+
+**Problem.** `ProfilerClient` had two carriers: the control socket and `docker exec cgprofile-host-daemon cgprofile ctl ...`,
+chosen by `[profile] transport = auto|exec|socket` (and `RUN_GATE_PROFILE_TRANSPORT`), plus `[profile] daemon` (the
+container name) and a `docker ps` check in `doctor`. cgprofile 2.0 retires the daemon container and the `cgprofile` command,
+so the exec carrier has no target.
+
+**Change.** Socket only, no aliases. Removed: `ProfilerClient._exec_ctl`, the `auto` probe, the exec watch reader, the
+`daemon` and `transport` keys, `PROFILE_DAEMON_DEFAULT`, `PROFILE_TRANSPORTS`, `RUN_GATE_PROFILE_TRANSPORT`, the
+`daemon_not_running_reason`/`daemon_broken_reason` docker-stderr classifiers, the `docker ps` doctor check, the `report`
+wire verb, and the `profile_daemon`/`profile_transport` inflight fields (`profile_ref` carries `socket_path`). Each removed
+key or variable is refused by name at exit 2. The socket path is `[profile] socket_path` (default `/run/cgprofile/ctl.sock`);
+`resource_observer_version_preflight` now uses it as well (it used the default regardless of config). When the socket is
+unreachable run-gate degrades as for an absent profiler and the one warning names the CP-31 cause tag
+(`socket-not-mounted`, `socket-missing`, `daemon-refusing`, `socket-permission`), classified client-side from errno and the
+socket directory because the socket carries no tag when nobody answers.
+
+**Compatibility.** Works against the 1.x daemon unchanged: `version`, `host`, `status`, `start`, `stop` and `watch` are the
+only operations run-gate sends and their socket protocol is untouched (contract 1). Docs updated: README, SPEC R-43h/R-43j,
+CONSUMERS, LANE-AUTHORING, `RG55-INTERFACE-CONTRACT.md` and its byte-identical mirror in `scripts/cgroup-profiler/docs`.
+Tests use an in-process fake socket daemon (`set_cgprofile_plan`); the docker shim no longer answers `cgprofile ctl`.
+
+**Release impact.** Conventional-commit `feat(run-gate)!:` takes run-gate from 24.3.0 to 25.0.0 at the next release.

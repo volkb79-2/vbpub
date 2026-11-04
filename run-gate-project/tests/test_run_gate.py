@@ -260,28 +260,89 @@ def make_project(repo: Path, config: str, name: str = "proj", *,
     return proj
 
 
-# RG-55: `docker exec <daemon> cgprofile ctl <verb> ... --json` is answered
-# from per-test plan files under
-# $RUN_GATE_TEST_CGPROFILE_PLAN/<verb>.{json,exit,sleep} (set_cgprofile_plan
-# writes them); unset (every pre-RG-55 test) is a silent no-op, matching the
-# prior behavior of an unmatched `exec` falling straight through to the
-# shim's own `exit 0`. Shared by fake_docker's `exec)` case; embedded once
-# here so future shims (fake_docker_executing's own `exec)` branch, when a
-# later package wires ProfilerClient calls alongside a real lane exec) can
-# reuse the identical snippet instead of drifting apart.
-CGPROFILE_SHIM_CASE = """\
-            if [ -n "$RUN_GATE_TEST_CGPROFILE_PLAN" ] && [ "$3" = "cgprofile" ] && [ "$4" = "ctl" ]; then
-              verb="$5"
-              plan="$RUN_GATE_TEST_CGPROFILE_PLAN/$verb"
-              if [ -f "$plan.sleep" ]; then sleep "$(cat "$plan.sleep")"; fi
-              if [ -f "$plan.json" ]; then cat "$plan.json"; fi
-              if [ -f "$plan.exit" ]; then exit "$(cat "$plan.exit")"; fi
-            fi"""
+# RG-154: run-gate talks to the cgprofile daemon over its control socket only.
+# `set_cgprofile_plan` starts an in-process fake daemon on a short AF_UNIX path
+# and points `run_gate.PROFILE_SOCKET_PATH_DEFAULT` at it; the per-verb plan
+# files $plan_dir/<verb>.{json,exit,sleep} are read on every request.
+_FAKE_CGPROFILE_DAEMONS: dict[str, "_FakeCgprofileDaemon"] = {}
+
+
+class _FakeCgprofileDaemon:
+    """One newline-framed request per connection, one answer, then close
+    (streaming verbs are not planned here: `watch` answers like the rest)."""
+
+    def __init__(self, plan_dir: Path):
+        self.plan_dir = plan_dir
+        self.root = tempfile.mkdtemp(prefix="rgcp-", dir="/tmp")
+        self.path = os.path.join(self.root, "ctl.sock")
+        self.requests: list[dict] = []
+        self.listener = run_gate.socket.socket(run_gate.socket.AF_UNIX,
+                                               run_gate.socket.SOCK_STREAM)
+        self.listener.bind(self.path)
+        self.listener.listen(16)
+        threading.Thread(target=self._accept_loop, daemon=True).start()
+
+    def _accept_loop(self) -> None:
+        while True:
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(conn,),
+                             daemon=True).start()
+
+    def _handle(self, conn) -> None:
+        with conn:
+            line = bytearray()
+            while b"\n" not in line:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                line.extend(chunk)
+            try:
+                request = json.loads(bytes(line).decode())
+            except ValueError:
+                return
+            self.requests.append(request)
+            plan = self.plan_dir / str(request.get("verb"))
+            sleep_file = Path(f"{plan}.sleep")
+            if sleep_file.is_file():
+                time.sleep(float(sleep_file.read_text()))
+            body_file = Path(f"{plan}.json")
+            if not body_file.is_file():
+                return
+            body = body_file.read_bytes()
+            exit_file = Path(f"{plan}.exit")
+            if exit_file.is_file() and int(exit_file.read_text()) != 0:
+                # A non-zero planned exit models a daemon fault: it never
+                # delivers an ok:true answer (a refusal still arrives).
+                try:
+                    if json.loads(body).get("ok") is True:
+                        return
+                except ValueError:
+                    pass
+            try:
+                conn.sendall(body)
+            except OSError:
+                pass
+
+    def close(self) -> None:
+        self.listener.close()
+        shutil.rmtree(self.root, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _close_fake_cgprofile_daemons():
+    yield
+    while _FAKE_CGPROFILE_DAEMONS:
+        _FAKE_CGPROFILE_DAEMONS.popitem()[1].close()
 
 
 def set_cgprofile_plan(tmp_path: Path, monkeypatch, **verbs) -> Path:
-    """Configure fake_docker's `cgprofile ctl <verb>` responses. Each kwarg
-    is `<verb>=(stdout_text_or_None, exit_code_or_None, sleep_seconds_or_None)`."""
+    """Configure the fake daemon's `<verb>` answers. Each kwarg is
+    `<verb>=(response_text_or_None, exit_code_or_None, sleep_seconds_or_None)`;
+    no response text means the connection closes with no answer. The fake
+    listens on a fresh socket that becomes the default `socket_path`."""
     plan_dir = tmp_path / "cgprofile-plan"
     plan_dir.mkdir(exist_ok=True)
     for verb, (stdout, exit_code, sleep_s) in verbs.items():
@@ -291,7 +352,11 @@ def set_cgprofile_plan(tmp_path: Path, monkeypatch, **verbs) -> Path:
             (plan_dir / f"{verb}.exit").write_text(str(exit_code))
         if sleep_s is not None:
             (plan_dir / f"{verb}.sleep").write_text(str(sleep_s))
-    monkeypatch.setenv("RUN_GATE_TEST_CGPROFILE_PLAN", str(plan_dir))
+    daemon = _FAKE_CGPROFILE_DAEMONS.get(str(plan_dir))
+    if daemon is None:
+        daemon = _FAKE_CGPROFILE_DAEMONS[str(plan_dir)] = \
+            _FakeCgprofileDaemon(plan_dir)
+    monkeypatch.setattr(run_gate, "PROFILE_SOCKET_PATH_DEFAULT", daemon.path)
     return plan_dir
 
 
@@ -450,7 +515,6 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
                 ;;
               *)
                 python3 {helper_command} "{wait_code}" "$@"
-                {CGPROFILE_SHIM_CASE}
                 ;;
             esac
             ;;
@@ -663,20 +727,11 @@ def profiling_off_by_default(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolate_host_profiler_socket(monkeypatch):
-    """Never let unit tests auto-select the cockpit's real host daemon."""
-    socket_path = run_gate.PROFILE_SOCKET_PATH_DEFAULT
-    real_exists = os.path.exists
-
-    def exists_without_host_socket(path):
-        try:
-            candidate = os.fspath(path)
-        except TypeError:
-            return real_exists(path)
-        if candidate == socket_path:
-            return False
-        return real_exists(path)
-
-    monkeypatch.setattr(run_gate.os.path, "exists", exists_without_host_socket)
+    """Never let unit tests reach the cockpit's real host daemon: the default
+    socket path points at a directory that does not exist (CP-31
+    `socket-not-mounted`) until a test installs a fake daemon."""
+    monkeypatch.setattr(run_gate, "PROFILE_SOCKET_PATH_DEFAULT",
+                        "/nonexistent-run-gate-test/cgprofile/ctl.sock")
 
 
 @pytest.fixture
@@ -749,35 +804,6 @@ class TestEarlyMutationSentinels:
         assert unsupported == {"resources": None,
                                "profile_error": "planted unsupported",
                                "profile_ref": None}
-
-    def test_doctor_captures_docker_ps_diagnostics_as_text(
-            self, tmp_path, monkeypatch, capsys):
-        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
-        monkeypatch.setattr(run_gate, "physical_path",
-                            lambda path, **kwargs: Path("/phys"))
-        repo = make_repo(tmp_path)
-        proj = make_project(repo, PROFILER_DOCTOR_LANE)
-        fake_docker(tmp_path, monkeypatch)
-        real_run = subprocess.run
-
-        def fail_ps(argv, *args, **kwargs):
-            if len(argv) > 1 and argv[1] == "ps":
-                captured = kwargs.get("capture_output") is True
-                as_text = kwargs.get("text") is True
-                return subprocess.CompletedProcess(
-                    argv, 1,
-                    stdout=("" if as_text else b"") if captured else None,
-                    stderr=(("planted Docker denial\n" if as_text else
-                             b"planted Docker denial\n")
-                            if captured else None))
-            return real_run(argv, *args, **kwargs)
-
-        monkeypatch.setattr(run_gate.subprocess, "run", fail_ps)
-        monkeypatch.chdir(proj)
-        monkeypatch.setattr(sys, "argv", ['run-gate'])
-        assert run_gate.main(["doctor"]) == 0
-        assert ("state could not be determined: docker ps failed (exit 1): "
-                "planted Docker denial") in capsys.readouterr().out
 
     def test_one_stale_lock_is_reported_with_the_singular_noun(
             self, tmp_path, monkeypatch, capsys):
@@ -1292,7 +1318,7 @@ class TestRG78ClosedExitTable:
                             lambda *a, **k: [])
         monkeypatch.setattr(run_gate, "resolve_profile_settings",
                             lambda *a, **k: {"enabled": False,
-                                            "source": "test", "daemon": None,
+                                            "source": "test",
                                             "damon": False})
         lane = cfg["lanes"]["suite"]
         for raw in range(256):
@@ -7095,7 +7121,7 @@ class TestDryRun:
             run_gate, "prepare_profile_start",
             lambda *_args, **_kwargs: pytest.fail(
                 "no daemon preflight without a resolvable target"))
-        plan = {"enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+        plan = {"enabled": True, "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                 "interval": "1s", "damon": True, "source": "test",
                 "token": "fixture-token"}
         assert run_gate.run_bare_host_lane(
@@ -10288,7 +10314,7 @@ class TestResourceObserverLane:
         monkeypatch.setattr(
             run_gate.ProfilerClient, "version", lambda self: (valid, None),
         )
-        run_gate.resource_observer_version_preflight("docker", "cgprofile")
+        run_gate.resource_observer_version_preflight("/run/cgprofile/ctl.sock")
 
         for bad, message in [
             ({}, "does not advertise"),
@@ -10306,7 +10332,7 @@ class TestResourceObserverLane:
                 run_gate.ProfilerClient, "version", lambda self, bad=bad: (bad, None),
             )
             with pytest.raises(run_gate.GateInfraError, match=message):
-                run_gate.resource_observer_version_preflight("docker", "cgprofile")
+                run_gate.resource_observer_version_preflight("/run/cgprofile/ctl.sock")
 
     def test_observer_version_preflight_reports_daemon_query_failure(self, monkeypatch):
         monkeypatch.setattr(
@@ -10314,7 +10340,7 @@ class TestResourceObserverLane:
             lambda self: (None, "control socket unavailable"),
         )
         with pytest.raises(run_gate.GateInfraError, match="control socket unavailable"):
-            run_gate.resource_observer_version_preflight("docker", "cgprofile")
+            run_gate.resource_observer_version_preflight("/run/cgprofile/ctl.sock")
 
     def test_live_observer_lane_preflights_before_clearing_or_launching(
             self, tmp_path, monkeypatch):
@@ -10330,7 +10356,7 @@ class TestResourceObserverLane:
         monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
         monkeypatch.setattr(
             run_gate, "resource_observer_version_preflight",
-            lambda docker, daemon: events.append(("version", docker, daemon)),
+            lambda socket_path: events.append(("version", socket_path)),
         )
         monkeypatch.setattr(
             run_gate, "clear_previous_assay_verdict",
@@ -10359,11 +10385,12 @@ class TestResourceObserverLane:
             "observer", repo, repo, repo,
             {"mode": "ephemeral", "image": "tester:local"},
             "fixture", "dev-gates.slice", "fixture",
-            profile_plan={"enabled": False, "daemon": "cgprofile-host-daemon",
+            profile_plan={"enabled": False,
+                          "socket_path": "/run/test-cgprofile/ctl.sock",
                           "disabled_reason": "test"},
         ) == 0
         assert events == [
-            ("version", "/usr/bin/docker", "cgprofile-host-daemon"),
+            ("version", "/run/test-cgprofile/ctl.sock"),
             ("clear",),
             ("docker-run", "run"),
         ]
@@ -21363,9 +21390,8 @@ class TestProfileConfigValidation:
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
         assert settings == {
-            "enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+            "enabled": True,
             "interval": "1s", "damon": True, "source": "default",
-            "transport": "auto",
             "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
             "admission_wait": "10m",
             "disabled_reason": "disabled"}
@@ -21375,7 +21401,7 @@ class TestProfileConfigValidation:
             schema_version = 1
             [profile]
             enabled = false
-            daemon = "my-daemon"
+            socket_path = "/run/my-daemon/ctl.sock"
             interval = "2s"
             damon = false
             [lanes.suite]
@@ -21387,7 +21413,7 @@ class TestProfileConfigValidation:
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
         assert settings["enabled"] is False
-        assert settings["daemon"] == "my-daemon"
+        assert settings["socket_path"] == "/run/my-daemon/ctl.sock"
         assert settings["interval"] == "2s"
         assert settings["damon"] is False
         assert settings["source"] == f"[profile] in {path}"
@@ -21395,12 +21421,12 @@ class TestProfileConfigValidation:
     def test_project_profile_table_shadows_central_whole_table(self, tmp_path):
         central_path = tmp_path / "central.toml"
         central = run_gate._validate_config(
-            {"schema_version": 1, "profile": {"enabled": False, "daemon": "central-d"}},
+            {"schema_version": 1, "profile": {"enabled": False, "socket_path": "/run/central-d.sock"}},
             central_path, central=True)
         path = self._cfg(tmp_path, """\
             schema_version = 1
             [profile]
-            daemon = "project-d"
+            socket_path = "/run/project-d.sock"
             [lanes.suite]
             kind = "command"
             environment = "bare-host"
@@ -21411,14 +21437,14 @@ class TestProfileConfigValidation:
             cfg["lanes"]["suite"], cfg, path, central, central_path)
         # whole-table shadowing (R-09): the project's [profile] table wins
         # ENTIRELY -- central's enabled=False must NOT leak through.
-        assert settings["daemon"] == "project-d"
+        assert settings["socket_path"] == "/run/project-d.sock"
         assert settings["enabled"] is True
 
     def test_resolve_profile_settings_falls_back_to_central_when_project_omits_it(
             self, tmp_path):
         central_path = tmp_path / "central.toml"
         central = run_gate._validate_config(
-            {"schema_version": 1, "profile": {"daemon": "central-only-d"}},
+            {"schema_version": 1, "profile": {"socket_path": "/run/central-only-d.sock"}},
             central_path, central=True)
         path = self._cfg(tmp_path, """\
             schema_version = 1
@@ -21430,7 +21456,7 @@ class TestProfileConfigValidation:
         cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path, central, central_path)
-        assert settings["daemon"] == "central-only-d"
+        assert settings["socket_path"] == "/run/central-only-d.sock"
         assert settings["source"] == f"[profile] in central {central_path}"
 
     def test_a_populated_central_dict_is_ignored_with_no_central_path(
@@ -21451,9 +21477,10 @@ class TestProfileConfigValidation:
         cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path,
-            {"environments": {}, "profile": {"daemon": "should-be-ignored"}},
+            {"environments": {},
+             "profile": {"socket_path": "/run/should-be-ignored.sock"}},
             None)
-        assert settings["daemon"] == run_gate.PROFILE_DAEMON_DEFAULT
+        assert settings["socket_path"] == run_gate.PROFILE_SOCKET_PATH_DEFAULT
         assert settings["source"] == "default"
 
     def test_top_level_profile_table_rejects_non_table_scalar(self, tmp_path):
@@ -21481,17 +21508,22 @@ class TestProfileConfigValidation:
         with pytest.raises(run_gate.GateError, match="'enabled' must be a boolean"):
             run_gate._validate_config(run_gate._read_toml(path), path, central=False)
 
-    def test_top_level_profile_table_rejects_bad_daemon(self, tmp_path):
-        path = self._cfg(tmp_path, """\
+    @pytest.mark.parametrize("key, value", [
+        ("daemon", '"cgprofile-host-daemon"'), ("transport", '"socket"'),
+        ("transport", '"exec"')])
+    def test_removed_profile_keys_are_refused_by_name(
+            self, tmp_path, key, value):
+        path = self._cfg(tmp_path, f"""\
             schema_version = 1
             [profile]
-            daemon = ""
+            {key} = {value}
             [lanes.suite]
             kind = "command"
             environment = "bare-host"
             argv = ["true"]
         """)
-        with pytest.raises(run_gate.GateError, match="'daemon' must be a non-empty string"):
+        with pytest.raises(run_gate.GateError,
+                           match=f"'{key}' was removed \\(RG-154\\)"):
             run_gate._validate_config(run_gate._read_toml(path), path, central=False)
 
     def test_top_level_profile_table_rejects_non_bool_damon(self, tmp_path):
@@ -21777,11 +21809,10 @@ class TestProfileConfigValidation:
         with pytest.raises(run_gate.GateError, match="'footprint' must be a table"):
             run_gate._validate_config(run_gate._read_toml(path), path, central=False)
 
-    def test_profile_transport_socket_and_admission_wait_validate(self, tmp_path):
+    def test_profile_socket_path_and_admission_wait_validate(self, tmp_path):
         path = self._cfg(tmp_path, """\
             schema_version = 1
             [profile]
-            transport = "socket"
             socket_path = "/run/cgprofile/ctl.sock"
             admission_wait = "2m"
             [lanes.suite]
@@ -21793,16 +21824,15 @@ class TestProfileConfigValidation:
                                         central=False)
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
-        assert settings["transport"] == "socket"
+        assert "transport" not in settings and "daemon" not in settings
         assert settings["socket_path"] == "/run/cgprofile/ctl.sock"
         assert settings["admission_wait"] == "2m"
 
     @pytest.mark.parametrize("field, value, phrase", [
-        ("transport", '"serial"', "transport"),
         ("socket_path", '"relative.sock"', "socket_path"),
         ("admission_wait", '"not-a-duration"', "admission_wait"),
     ])
-    def test_profile_transport_socket_and_wait_reject_bad_values(
+    def test_profile_socket_path_and_wait_reject_bad_values(
             self, tmp_path, field, value, phrase):
         path = self._cfg(tmp_path, f"""\
             schema_version = 1
@@ -21817,7 +21847,7 @@ class TestProfileConfigValidation:
             run_gate._validate_config(run_gate._read_toml(path), path,
                                       central=False)
 
-    def test_profile_transport_environment_override_covers_empty_bad_and_valid(
+    def test_removed_transport_environment_variable_is_refused_by_name(
             self, tmp_path, monkeypatch):
         path = self._cfg(tmp_path, """\
             schema_version = 1
@@ -21828,19 +21858,17 @@ class TestProfileConfigValidation:
         """)
         cfg = run_gate._validate_config(run_gate._read_toml(path), path,
                                         central=False)
-        monkeypatch.setenv(run_gate.PROFILE_TRANSPORT_ENV_VAR, "")
+        monkeypatch.setenv(run_gate.PROFILE_REMOVED_ENV_VAR, "")
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
-        assert settings["transport"] == run_gate.PROFILE_TRANSPORT_DEFAULT
-        monkeypatch.setenv(run_gate.PROFILE_TRANSPORT_ENV_VAR, "bad")
-        with pytest.raises(run_gate.GateError, match="must be one of"):
-            run_gate.resolve_profile_settings(
-                cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
-        monkeypatch.setenv(run_gate.PROFILE_TRANSPORT_ENV_VAR, "socket")
-        settings = run_gate.resolve_profile_settings(
-            cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
-        assert settings["transport"] == "socket"
-        assert "RUN_GATE_PROFILE_TRANSPORT=socket" in settings["source"]
+        assert "transport" not in settings
+        for value in ("socket", "exec", "auto"):
+            monkeypatch.setenv(run_gate.PROFILE_REMOVED_ENV_VAR, value)
+            with pytest.raises(run_gate.GateError,
+                               match="RUN_GATE_PROFILE_TRANSPORT was removed"):
+                run_gate.resolve_profile_settings(
+                    cfg["lanes"]["suite"], cfg, path, {"environments": {}},
+                    None)
 
 
 # ---------------------------------------------------------------------------
@@ -22123,9 +22151,8 @@ class TestLastSuccessful:
 
 
 # ---------------------------------------------------------------------------
-# ProfilerClient: one `docker exec <daemon> cgprofile ctl <verb> ...
-# --json` per method, via the fake docker shim's cgprofile branch
-# (CGPROFILE_SHIM_CASE / set_cgprofile_plan). Every failure mode must
+# ProfilerClient: one control-socket request per method, answered by the
+# in-process fake daemon (`set_cgprofile_plan`). Every failure mode must
 # return (None, reason) and NEVER raise (R-04/R-36h) -- the caller's
 # single-warning, verdict-unchanged behavior is a wiring-level guarantee
 # this class exists to make possible, proven here at the unit level.
@@ -22163,9 +22190,8 @@ class TestProfilerClient:
         return path, received, thread
 
     def _client(self, tmp_path, monkeypatch) -> "run_gate.ProfilerClient":
-        fake_docker(tmp_path, monkeypatch)
-        docker = shutil.which("docker")
-        return run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        set_cgprofile_plan(tmp_path, monkeypatch)   # fake daemon + default path
+        return run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
 
     def test_wire_args_covers_watch_defaults_and_start_rejections(self):
         assert run_gate.ProfilerClient._wire_args(
@@ -22181,42 +22207,73 @@ class TestProfilerClient:
             run_gate.ProfilerClient._wire_args("start", ("--unknown", "x"))
 
     @pytest.mark.parametrize("error, phrase", [
-        (PermissionError("denied"), "permission denied"),
+        (PermissionError("denied"), "cause: socket-permission"),
+        (ConnectionRefusedError("refused"), "cause: daemon-refusing"),
+        (FileNotFoundError("gone"), "cause: socket-not-mounted"),
         (run_gate.socket.timeout("late"), "timed out"),
         (OSError("broken"), "carrier failed"),
         (RuntimeError("unexpected"), "failed unexpectedly"),
     ])
     def test_socket_transport_failures_are_profile_reasons(
             self, monkeypatch, error, phrase):
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="socket")
+        client = run_gate.ProfilerClient("/nonexistent-run-gate-test/ctl.sock")
         monkeypatch.setattr(client, "_socket_request",
                             lambda *args: (_ for _ in ()).throw(error))
         doc, reason = client.version()
         assert doc is None
         assert phrase in reason
 
-    def test_unknown_transport_is_refused_before_any_carrier(self):
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="bogus")
+    def test_there_is_no_docker_exec_carrier_or_transport_setting(self):
+        assert not hasattr(run_gate.ProfilerClient, "_exec_ctl")
+        assert not hasattr(run_gate, "PROFILE_TRANSPORTS")
+        assert not hasattr(run_gate, "PROFILE_DAEMON_DEFAULT")
+        client = run_gate.ProfilerClient("/x/ctl.sock")
+        assert not hasattr(client, "transport")
+        assert not hasattr(client, "carrier")
+        with pytest.raises(TypeError):
+            run_gate.ProfilerClient("docker", "cgprofile-host-daemon")
+
+    @pytest.mark.parametrize("cause, make_path", [
+        ("socket-not-mounted", lambda root: root / "no-such-dir" / "ctl.sock"),
+        ("socket-missing", lambda root: root / "ctl.sock"),
+    ])
+    def test_missing_socket_names_the_cp31_cause_tag(
+            self, short_socket_root, cause, make_path):
+        client = run_gate.ProfilerClient(str(make_path(short_socket_root)))
         doc, reason = client.version()
         assert doc is None
-        assert "unknown profiler transport" in reason
+        assert f"(cause: {cause}:" in reason
 
-    def test_auto_transport_records_probe_failure_then_uses_exec(
-            self, tmp_path, monkeypatch):
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="auto",
-            socket_path=str(tmp_path / "cgprofile.sock"))
-        monkeypatch.setattr(run_gate.os.path, "exists", lambda path: True)
-        monkeypatch.setattr(client, "_socket_ctl",
-                            lambda *args: (None, "socket probe failed"))
-        monkeypatch.setattr(client, "_exec_ctl",
-                            lambda *args: ({"ok": True, "contract": 1}, None))
-        doc, reason = client.version()
-        assert reason is None and doc["ok"] is True
-        assert client.carrier == "exec"
-        assert client.transport_reason == "socket probe failed"
+    def test_unclassified_failures_have_no_cause_tag(self):
+        assert run_gate.socket_unreachable_cause(
+            "/run/cgprofile/ctl.sock", ValueError("x")) == ""
+
+    def test_a_node_with_no_listener_is_daemon_refusing(self, short_socket_root):
+        path = short_socket_root / "ctl.sock"
+        stale = run_gate.socket.socket(run_gate.socket.AF_UNIX,
+                                       run_gate.socket.SOCK_STREAM)
+        stale.bind(str(path))
+        stale.close()   # the node stays on disk, nothing listens
+        doc, reason = run_gate.ProfilerClient(str(path)).version()
+        assert doc is None
+        assert "(cause: daemon-refusing:" in reason
+
+    def test_an_unreadable_socket_is_socket_permission(
+            self, short_socket_root, monkeypatch):
+        path = short_socket_root / "ctl.sock"
+        listener = run_gate.socket.socket(run_gate.socket.AF_UNIX,
+                                          run_gate.socket.SOCK_STREAM)
+        listener.bind(str(path))
+        listener.listen(1)
+        path.chmod(0)
+        try:
+            if os.geteuid() == 0:
+                pytest.skip("root bypasses socket permissions")
+            doc, reason = run_gate.ProfilerClient(str(path)).version()
+        finally:
+            listener.close()
+        assert doc is None
+        assert "(cause: socket-permission:" in reason
 
     def test_version_success_matches_golden(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "version-v1.json").read_text()
@@ -22227,11 +22284,11 @@ class TestProfilerClient:
         assert doc == json.loads(golden)
 
     @pytest.mark.parametrize("body, returncode, expected", [
-        ('{"ok":true,"contract":1}', 3, "carrier exited 3"),
+        ('{"ok":true,"contract":1}', 3, "unparsable response"),
         ('{"ok":true,"contract":true}', 0, "reports contract True"),
         ('{"ok":"yes","contract":1}', 0, "non-boolean 'ok'"),
     ])
-    def test_exec_transport_cannot_certify_failed_or_malformed_success(
+    def test_socket_cannot_certify_faulted_or_malformed_success(
             self, tmp_path, monkeypatch, body, returncode, expected):
         set_cgprofile_plan(
             tmp_path, monkeypatch, version=(body, returncode, None))
@@ -22249,9 +22306,7 @@ class TestProfilerClient:
         response = '{"ok": true, "contract": 1, "session": "s-test"}\n'
         path, received, thread = self._socket_round_trip(
             short_socket_root, response)
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
-            transport="socket", socket_path=str(path))
+        client = run_gate.ProfilerClient(str(path))
         meta = {"lane": "rg55-fixture-lane", "expected": None}
         doc, reason = client.start(
             "a" * 64, "container-shared", token="rg55-parity-token-a",
@@ -22293,9 +22348,7 @@ class TestProfilerClient:
             self, short_socket_root, verb, args, body):
         path, received, thread = self._socket_round_trip(
             short_socket_root, body)
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
-            transport="socket", socket_path=str(path))
+        client = run_gate.ProfilerClient(str(path))
         doc, reason = client._ctl(verb, *args)
         thread.join(timeout=2)
         assert reason is None
@@ -22305,52 +22358,6 @@ class TestProfilerClient:
         assert wire["verb"] == verb
         assert wire["contract"] == 1
         assert wire["args"] == ({"session": args[0]} if args else {})
-
-    def test_auto_selects_socket_only_after_version_probe(
-            self, short_socket_root):
-        path, received, thread = self._socket_round_trip(
-            short_socket_root, '{"ok": true, "contract": 1}\n')
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
-            transport="auto", socket_path=str(path))
-        doc, reason = client.version()
-        thread.join(timeout=2)
-        assert reason is None
-        assert doc == {"ok": True, "contract": 1}
-        assert client.carrier == "socket"
-        assert client.transport_reason == "socket version probe succeeded"
-        assert json.loads(received[0])["verb"] == "version"
-
-    def test_auto_probe_success_routes_non_version_to_socket(
-            self, tmp_path, monkeypatch):
-        """A successful auto probe must also serve the first non-version
-        request; the probe result is not allowed to be discarded and replaced
-        by an exec call."""
-        calls = []
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
-            transport="auto", socket_path=str(tmp_path / "cgprofile.sock"))
-        monkeypatch.setattr(run_gate.os.path, "exists", lambda path: True)
-        def _socket_ctl(verb, *args):
-            calls.append(verb)
-            return {"ok": True, "contract": 1, "host": {}}, None
-        monkeypatch.setattr(client, "_socket_ctl", _socket_ctl)
-        monkeypatch.setattr(client, "_exec_ctl",
-                            lambda *args: pytest.fail("exec fallback"))
-        doc, reason = client._ctl("host")
-        assert reason is None
-        assert doc == {"ok": True, "contract": 1, "host": {}}
-        assert client.carrier == "socket"
-        assert calls == ["version", "host"]
-
-    def test_socket_path_failure_is_a_profile_reason(self, short_socket_root):
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
-            transport="socket",
-            socket_path=str(short_socket_root / "absent.sock"))
-        doc, reason = client.version()
-        assert doc is None
-        assert "path absent" in reason
 
     def test_socket_watch_stream_is_single_reader_and_preserves_events(
             self, short_socket_root):
@@ -22362,9 +22369,7 @@ class TestProfilerClient:
             '"reason":"brief gap","readings":1}}\n')
         path, received, thread = self._socket_round_trip(
             short_socket_root, response)
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
-            transport="socket", socket_path=str(path))
+        client = run_gate.ProfilerClient(str(path))
         watch = client.watch("s-test", watch_interval=2)
         thread.join(timeout=2)
         watch._thread.join(timeout=2)
@@ -22378,85 +22383,27 @@ class TestProfilerClient:
                         "contract": 1}
         watch.close()
 
-    def test_exec_watch_reader_death_is_a_profile_warning(self, monkeypatch):
-        class Proc:
-            stdout = []
-
-            def wait(self):
-                return 17
-
-            def poll(self):
-                return 17
-
-        monkeypatch.setattr(run_gate.subprocess, "Popen",
-                            lambda *args, **kwargs: Proc())
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="exec")
+    def test_watch_reader_death_is_a_profile_warning(self, short_socket_root):
+        client = run_gate.ProfilerClient(str(short_socket_root / "ctl.sock"))
         watch = client.watch("s-test", watch_interval=2)
         watch._thread.join(timeout=2)
         events = watch.drain()
-        assert ("error", "watch command exited 17") in events
-        assert events[-1] == ("end", None)
+        assert [kind for kind, _ in events] == ["error", "end"]
         assert watch.ended()
         watch.close()
 
-    def test_exec_watch_reader_exception_is_queued_and_ends(
-            self, monkeypatch):
-        def _boom(*args, **kwargs):
-            raise OSError("planted reader transport failure")
-
-        monkeypatch.setattr(run_gate.subprocess, "Popen", _boom)
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="exec")
-        watch = client.watch("s-test", watch_interval=2)
-        watch._thread.join(timeout=2)
-        assert watch.drain() == [
-            ("error", "planted reader transport failure"),
-            ("end", None),
-        ]
-        assert watch.ended()
-        watch.close()
-
-    def test_exec_watch_exception_after_close_only_emits_end(self, monkeypatch):
-        started = threading.Event()
-        release = threading.Event()
-
-        def _boom(*args, **kwargs):
-            started.set()
-            assert release.wait(timeout=2)
-            raise OSError("planted late reader failure")
-
-        monkeypatch.setattr(run_gate.subprocess, "Popen", _boom)
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="exec")
-        watch = client.watch("s-closed", watch_interval=2)
-        assert started.wait(timeout=2)
+    def test_watch_exception_after_close_only_emits_end(
+            self, short_socket_root):
+        client = run_gate.ProfilerClient(str(short_socket_root / "ctl.sock"))
+        watch = object.__new__(run_gate.ProfilerWatch)
+        watch.client = client
+        watch.session = "s-closed"
+        watch.watch_interval = 2
+        watch._events = queue.SimpleQueue()
+        watch._socket = None
         watch._closed = True
-        release.set()
-        watch._thread.join(timeout=2)
+        watch._read()
         assert watch.drain() == [("end", None)]
-        watch.close()
-
-    def test_exec_watch_reader_accepts_events_before_clean_end(self, monkeypatch):
-        class Proc:
-            stdout = ['{"contract":1,"session":"s-test",'
-                      '"event":"reading"}\n']
-
-            def wait(self):
-                return 0
-
-            def poll(self):
-                return 0
-
-        monkeypatch.setattr(run_gate.subprocess, "Popen",
-                            lambda *args, **kwargs: Proc())
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT, transport="exec")
-        watch = client.watch("s-test", watch_interval=2)
-        watch._thread.join(timeout=2)
-        assert watch.drain()[0] == (
-            "event", {"contract": 1, "session": "s-test", "event": "reading"})
-        watch.close()
 
     def test_watch_reader_and_accept_report_transport_shape_errors(self):
         watch = object.__new__(run_gate.ProfilerWatch)
@@ -22489,9 +22436,7 @@ class TestProfilerClient:
             '"reason":"later line","readings":2}}')
         path, received, server = self._socket_round_trip(
             short_socket_root, line + "\n" + later_kill + "\n")
-        client = run_gate.ProfilerClient(
-            "docker", run_gate.PROFILE_DAEMON_DEFAULT,
-            transport="socket", socket_path=str(path))
+        client = run_gate.ProfilerClient(str(path))
         watch = client.watch("s-test")
         server.join(timeout=60)
         watch._thread.join(timeout=60)
@@ -22504,8 +22449,7 @@ class TestProfilerClient:
         assert json.loads(received[0])["args"]["session"] == "s-test"
         watch.close()
 
-    def test_watch_idle_and_close_cover_dead_socket_and_kill_timeout(
-            self, monkeypatch):
+    def test_watch_idle_and_close_cover_dead_socket(self, monkeypatch):
         class Thread:
             def __init__(self, alive):
                 self.alive = alive
@@ -22523,25 +22467,6 @@ class TestProfilerClient:
             def close(self):
                 self.closed = True
 
-        class Process:
-            def __init__(self):
-                self.terminated = False
-                self.killed = False
-
-            def poll(self):
-                return None
-
-            def terminate(self):
-                self.terminated = True
-
-            def wait(self, timeout=None):
-                if timeout == 1:
-                    raise subprocess.TimeoutExpired("watch", timeout)
-                return 0
-
-            def kill(self):
-                self.killed = True
-
         watch = object.__new__(run_gate.ProfilerWatch)
         watch._events = queue.SimpleQueue()
         watch._last_event_at = 0.0
@@ -22553,10 +22478,9 @@ class TestProfilerClient:
         assert watch.idle() is False
         watch._closed = False
         watch._socket = Socket()
-        watch._process = Process()
         watch.close()
         assert watch._closed is True
-        assert watch._process.terminated and watch._process.killed
+        assert watch._socket.closed is True
 
     def test_watch_consumer_records_reading_and_killed_verdict(self, monkeypatch):
         class Stream:
@@ -22827,43 +22751,36 @@ class TestProfilerClient:
     def test_start_success_and_argv_shape(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "start-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, start=(golden, None, None))
-        docker_log = fake_docker(tmp_path, monkeypatch)
-        docker = shutil.which("docker")
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         doc, reason = client.start(RG55_CONTAINER_ID, "container-shared",
                                    token="abc123", damon=True, interval=1.0,
                                    meta={"lane": "suite"})
         assert reason is None
         assert doc == json.loads(golden)
-        execs = docker_execs(docker_log)
-        assert execs, "expected a docker exec call"
-        argv = execs[-1]
-        assert argv[:5] == ["exec", run_gate.PROFILE_DAEMON_DEFAULT, "cgprofile",
-                            "ctl", "start"]
-        assert f"containerid:{RG55_CONTAINER_ID}" in argv
-        assert "container-shared" in argv
-        assert "abc123" in argv
-        assert "--json" in argv
+        (daemon,) = _FAKE_CGPROFILE_DAEMONS.values()
+        request = daemon.requests[-1]
+        assert request["verb"] == "start" and request["contract"] == 1
+        args = request["args"]
+        assert args["target"] == f"containerid:{RG55_CONTAINER_ID}"
+        assert args["scope"] == "container-shared"
+        assert args["token"] == "abc123"
         # `meta or {}` (assay-r2 mutation lane: an `or`-vs-`and` swap here
-        # survived until this assertion existed -- the mutant still puts
-        # SOME `--meta` value on argv, just never the CALLER'S actual
-        # dict content, only `{}`/`null` depending on truthiness).
-        meta_value = json.loads(argv[argv.index("--meta") + 1])
-        assert meta_value == {"lane": "suite"}
+        # survived until this assertion existed -- the mutant still sends
+        # SOME `meta` value, just never the CALLER'S actual dict content).
+        assert args["meta"] == {"lane": "suite"}
 
     def test_start_with_minimal_args_omits_optional_flags(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "start-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, start=(golden, None, None))
-        docker_log = fake_docker(tmp_path, monkeypatch)
-        docker = shutil.which("docker")
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         doc, reason = client.start(RG55_CONTAINER_ID, "container")
         assert reason is None
-        argv = docker_execs(docker_log)[-1]
-        assert "--token" not in argv
-        assert "--damon" not in argv
-        assert "--interval" not in argv
-        assert "--meta" in argv   # always required (contract Sec 2.2)
+        (daemon,) = _FAKE_CGPROFILE_DAEMONS.values()
+        args = daemon.requests[-1]["args"]
+        assert args["token"] is None
+        assert args["damon"] is None
+        assert args["interval"] is None
+        assert args["meta"] == {}   # always present (contract Sec 2.2)
 
     def test_exit2_bad_request_returns_reason_never_raises(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "error-v1.json").read_text()
@@ -22889,148 +22806,14 @@ class TestProfilerClient:
         assert doc is None
         assert "unparsable" in reason
 
-    # -- RG-59: `docker exec` into an ABSENT/STOPPED daemon container fails
-    # BEFORE cgprofile ever runs -- stdout is empty, so the SAME
-    # `json.JSONDecodeError` branch as "a running daemon returned garbage"
-    # fires; only docker's own stderr wording tells the two apart. Direct
-    # `subprocess.run` monkeypatches (not the shell shim) -- the shim has no
-    # stderr-injection knob and adding one would touch shared fixture
-    # infrastructure every other ProfilerClient test also depends on, for a
-    # one-off need this is simpler and more surgical.
-
-    def test_daemon_not_running_names_the_real_cause(self, tmp_path,
-                                                      monkeypatch):
-        class _FakeCompleted:
-            stdout = ""
-            stderr = ("Error response from daemon: container abc123 "
-                     "is not running")
-            returncode = 1
-        monkeypatch.setattr(run_gate.subprocess, "run",
-                            lambda *a, **k: _FakeCompleted())
-        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
-        doc, reason = client.version()
-        assert doc is None
-        assert "not running" in reason
-        assert "ciu up" in reason
-        assert "unparsable" not in reason
-
-    def test_docker_own_stderr_prefix_names_the_real_cause(self, tmp_path,
-                                                           monkeypatch):
-        class _FakeCompleted:
-            stdout = ""
-            stderr = "docker: Error response from daemon: container is not running.\n"
-            returncode = 1
-        monkeypatch.setattr(run_gate.subprocess, "run",
-                            lambda *a, **k: _FakeCompleted())
-        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
-        doc, reason = client.version()
-        assert doc is None
-        assert "not running" in reason
-
-    def test_docker_exit_125_without_absence_evidence_is_indeterminate(
+    def test_a_traceback_instead_of_json_is_an_unparsable_response(
             self, tmp_path, monkeypatch):
-        """Exit 125 says Docker itself failed, not why it failed.  A
-        permission/transport/configuration failure must never be certified
-        as the benign "daemon absent" state with a start-it remedy."""
-        class _FakeCompleted:
-            stdout = ""
-            stderr = "no such file or directory: unknown"
-            returncode = 125
-        monkeypatch.setattr(run_gate.subprocess, "run",
-                            lambda *a, **k: _FakeCompleted())
-        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(
+            "Traceback (most recent call last):\n", None, None))
+        client = self._client(tmp_path, monkeypatch)
         doc, reason = client.version()
         assert doc is None
-        assert "failed before a valid cgprofile response" in reason
-        assert "exit 125" in reason
-        assert "not running" not in reason
-        assert "ciu up" not in reason
-
-    def test_docker_prefixed_permission_failure_is_not_called_absent(
-            self, monkeypatch):
-        class _FakeCompleted:
-            stdout = ""
-            stderr = "docker: permission denied while connecting to the daemon\n"
-            returncode = 1
-        monkeypatch.setattr(run_gate.subprocess, "run",
-                            lambda *a, **k: _FakeCompleted())
-        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
-        doc, reason = client.version()
-        assert doc is None
-        assert "failed before a valid cgprofile response" in reason
-        assert "permission denied" in reason
-        assert "not running" not in reason
-        assert "ciu up" not in reason
-
-    def test_exit_code_126_127_name_a_broken_daemon_not_a_stopped_one(
-            self, tmp_path, monkeypatch):
-        """S11 (round-2 review, RW-51): exit 126 (container command not
-        executable) and 127 (not found) mean `docker exec` REACHED a live
-        container -- `cgprofile` itself could not be started inside it (a
-        broken image or PATH), reproduced live on this host with a real
-        OCI runtime exec failure. The OLD wording (126/127 folded into the
-        same "not running ... ciu up" reason as 125) told the operator to
-        start a container that is already up -- the wrong remedy for the
-        wrong cause. Must name the real condition instead, for BOTH exit
-        codes, and never say "not running"."""
-        for code in (126, 127):
-            class _FakeCompleted:
-                stdout = ""
-                stderr = "OCI runtime exec failed: exec failed: no such file or directory"
-                returncode = code
-            monkeypatch.setattr(run_gate.subprocess, "run",
-                                lambda *a, **k: _FakeCompleted())
-            client = run_gate.ProfilerClient("docker",
-                                             run_gate.PROFILE_DAEMON_DEFAULT)
-            doc, reason = client.version()
-            assert doc is None
-            assert "not running" not in reason
-            assert "is running" in reason
-            assert "126/127" in reason
-            assert run_gate.PROFILE_DAEMON_DEFAULT in reason
-
-    def test_a_running_daemons_own_crash_is_never_misreported_as_not_running(
-            self, tmp_path, monkeypatch):
-        """S2's own attack-surface find, reproduced directly: a daemon
-        container that IS running and IS reachable, whose own `cgprofile`
-        process raised an application-level exception mentioning "is not
-        running" in ITS OWN text (`cgprofile.errors.TargetError`) -- exit
-        code 1 (an ordinary Python traceback exit, not one of docker's
-        reserved codes) and stdout carrying the traceback (docker itself
-        never failed). The OLD substring match would misreport this as
-        "daemon not running, start it" -- exactly backwards. Must fall
-        through to the generic "produced unparsable stdout" reason
-        instead, which names a REAL daemon problem (a crashing process),
-        never "not deployed at all"."""
-        class _FakeCompleted:
-            stdout = "Traceback (most recent call last):\n"
-            stderr = ("cgprofile.errors.TargetError: target container 9f01 "
-                     "is not running")
-            returncode = 1
-        monkeypatch.setattr(run_gate.subprocess, "run",
-                            lambda *a, **k: _FakeCompleted())
-        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
-        doc, reason = client.version()
-        assert doc is None
-        assert "produced unparsable stdout" in reason
-        assert "ciu up" not in reason
-
-    def test_malformed_stdout_from_a_running_daemon_keeps_the_wording(
-            self, tmp_path, monkeypatch):
-        # A RUNNING daemon returning garbage must NOT be reclassified --
-        # "unparsable stdout" stays reserved for an actually malformed
-        # response, per the oracle sketch's second bullet.
-        class _FakeCompleted:
-            stdout = "not json at all"
-            stderr = ""
-            returncode = 0
-        monkeypatch.setattr(run_gate.subprocess, "run",
-                            lambda *a, **k: _FakeCompleted())
-        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
-        doc, reason = client.version()
-        assert doc is None
-        assert "unparsable" in reason
-        assert "not running" not in reason
+        assert "unparsable response" in reason
 
     def test_a_response_missing_the_ok_key_entirely_degrades(
             self, tmp_path, monkeypatch):
@@ -23064,16 +22847,6 @@ class TestProfilerClient:
         assert doc is None
         assert "timed out" in reason
 
-    def test_docker_binary_missing_returns_reason_never_raises(self, tmp_path):
-        # A resolved-but-nonexistent docker path -> subprocess.run raises
-        # OSError (FileNotFoundError), the other "could not even start"
-        # failure mode alongside a timeout -- must not propagate either.
-        client = run_gate.ProfilerClient("/no/such/docker-binary",
-                                         run_gate.PROFILE_DAEMON_DEFAULT)
-        doc, reason = client.version()
-        assert doc is None
-        assert "could not be run" in reason
-
     def test_non_object_json_returns_reason(self, tmp_path, monkeypatch):
         set_cgprofile_plan(tmp_path, monkeypatch, version=("[1, 2, 3]", None, None))
         client = self._client(tmp_path, monkeypatch)
@@ -23100,12 +22873,6 @@ PROFILER_DOCTOR_LANE = """\
 """
 
 
-def _add_daemon_ps_case(monkeypatch, daemon: str = run_gate.PROFILE_DAEMON_DEFAULT) -> None:
-    shim = shim_dir_of(monkeypatch) / "docker"
-    shim.write_text(shim.read_text().replace(
-        'case "$1" in', f'case "$1" in\n  ps) echo "{daemon}" ;;'))
-
-
 class TestDoctorProfilerCheck:
     """Every finding here is WARN/OK/SKIP, never FAIL -- profiling is
     optional infrastructure (contract Sec 4 obligation 3, a lane without a
@@ -23124,12 +22891,10 @@ class TestDoctorProfilerCheck:
         monkeypatch.setattr(run_gate, "physical_path",
                             lambda path, **kwargs: Path("/phys"))
 
-    def _doctor(self, tmp_path, monkeypatch, capsys, daemon_running=False):
+    def _doctor(self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
         proj = make_project(repo, PROFILER_DOCTOR_LANE)
         fake_docker(tmp_path, monkeypatch)
-        if daemon_running:
-            _add_daemon_ps_case(monkeypatch)
         monkeypatch.chdir(proj)
         monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
@@ -23162,12 +22927,13 @@ class TestDoctorProfilerCheck:
         assert (f"${run_gate.PROFILE_AMBIENT_ENV_VAR}='off' override active"
                in out)
 
-    def test_daemon_not_running_warns_by_name(self, tmp_path, monkeypatch,
-                                              capsys):
-        code, out = self._doctor(tmp_path, monkeypatch, capsys,
-                                 daemon_running=False)
+    def test_unreachable_socket_warns_with_the_cause_tag(
+            self, tmp_path, monkeypatch, capsys):
+        code, out = self._doctor(tmp_path, monkeypatch, capsys)
         assert "[WARN] profiler daemon" in out
-        assert "not running" in out and "ciu up" in out
+        assert "(cause: socket-not-mounted:" in out
+        assert "docker" not in next(
+            line for line in out.splitlines() if "profiler daemon" in line)
         # B4 (round-1 review, RW-43): the WARN must name BOTH fallbacks --
         # RG-57 gave bare-host lanes a fallback (coarse rusage) that is
         # NOT the basic-sampler wording this line used to state
@@ -23178,76 +22944,24 @@ class TestDoctorProfilerCheck:
                ) in out
         assert code == 0
 
-    def test_docker_ps_failure_is_indeterminate_not_daemon_absence(
+    def test_daemon_answering_garbage_warns_by_name(
             self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
         proj = make_project(repo, PROFILER_DOCTOR_LANE)
         fake_docker(tmp_path, monkeypatch)
-        real_run = subprocess.run
-
-        def fail_ps(argv, *args, **kwargs):
-            if len(argv) > 1 and argv[1] == "ps":
-                return subprocess.CompletedProcess(
-                    argv, 1, stdout="",
-                    stderr="permission denied while connecting to Docker\n")
-            return real_run(argv, *args, **kwargs)
-
-        monkeypatch.setattr(run_gate.subprocess, "run", fail_ps)
-        monkeypatch.chdir(proj)
-        monkeypatch.setattr(sys, "argv", ['run-gate'])
-        code = run_gate.main(["doctor"])
-        out = capsys.readouterr().out
-        profiler_line = next(
-            line for line in out.splitlines() if "profiler daemon" in line)
-        assert "state could not be determined" in profiler_line
-        assert "permission denied" in profiler_line
-        assert "not running" not in profiler_line
-        assert "ciu up" not in profiler_line
-        assert code == 0
-
-    def test_docker_ps_exception_is_indeterminate_not_a_doctor_crash(
-            self, tmp_path, monkeypatch, capsys):
-        repo = make_repo(tmp_path)
-        proj = make_project(repo, PROFILER_DOCTOR_LANE)
-        fake_docker(tmp_path, monkeypatch)
-        real_run = subprocess.run
-
-        def fail_ps(argv, *args, **kwargs):
-            if len(argv) > 1 and argv[1] == "ps":
-                raise OSError("planted: Docker socket vanished")
-            return real_run(argv, *args, **kwargs)
-
-        monkeypatch.setattr(run_gate.subprocess, "run", fail_ps)
-        monkeypatch.chdir(proj)
-        monkeypatch.setattr(sys, "argv", ['run-gate'])
-        assert run_gate.main(["doctor"]) == 0
-        out = capsys.readouterr().out
-        profiler_line = next(
-            line for line in out.splitlines() if "profiler daemon" in line)
-        assert "state could not be determined" in profiler_line
-        assert "Docker socket vanished" in profiler_line
-        assert "not running" not in profiler_line
-
-    def test_daemon_running_but_ctl_version_fails_warns_by_name(
-            self, tmp_path, monkeypatch, capsys):
-        repo = make_repo(tmp_path)
-        proj = make_project(repo, PROFILER_DOCTOR_LANE)
-        fake_docker(tmp_path, monkeypatch)
-        _add_daemon_ps_case(monkeypatch)
         set_cgprofile_plan(tmp_path, monkeypatch, version=(None, 3, None))
         monkeypatch.chdir(proj)
         monkeypatch.setattr(sys, "argv", ['run-gate'])
         code = run_gate.main(["doctor"])
         out = capsys.readouterr().out
         assert "[WARN] profiler daemon" in out
-        assert "running but unreachable" in out
+        assert "unparsable response" in out
         assert code == 0
 
     def test_wrong_contract_warns_by_name(self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
         proj = make_project(repo, PROFILER_DOCTOR_LANE)
         fake_docker(tmp_path, monkeypatch)
-        _add_daemon_ps_case(monkeypatch)
         set_cgprofile_plan(tmp_path, monkeypatch, version=(
             json.dumps({"ok": True, "contract": 2}), None, None))
         monkeypatch.chdir(proj)
@@ -23261,7 +22975,6 @@ class TestDoctorProfilerCheck:
         repo = make_repo(tmp_path)
         proj = make_project(repo, PROFILER_DOCTOR_LANE)
         fake_docker(tmp_path, monkeypatch)
-        _add_daemon_ps_case(monkeypatch)
         version = (RG55_FIXTURES / "version-v1.json").read_text()
         host = (RG55_FIXTURES / "host-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
@@ -23284,7 +22997,6 @@ class TestDoctorProfilerCheck:
         repo = make_repo(tmp_path)
         proj = make_project(repo, PROFILER_DOCTOR_LANE)
         fake_docker(tmp_path, monkeypatch)
-        _add_daemon_ps_case(monkeypatch)
         version = (RG55_FIXTURES / "version-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
                            host=(None, 3, None))
@@ -23295,17 +23007,19 @@ class TestDoctorProfilerCheck:
         assert "[OK] profiler daemon" in out
         assert "[WARN] profiler host/slice pressure" in out
 
-    def test_docker_absent_is_skip_not_a_crash(self, tmp_path, monkeypatch,
-                                               capsys):
+    def test_missing_docker_does_not_skip_the_socket_probe(
+            self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
         proj = make_project(repo, PROFILER_DOCTOR_LANE)
+        version = (RG55_FIXTURES / "version-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None))
         monkeypatch.setattr(run_gate.shutil, "which", lambda name: None)
         monkeypatch.chdir(proj)
         monkeypatch.setattr(sys, "argv", ['run-gate'])
         run_gate.main(["doctor"])
         out = capsys.readouterr().out
-        assert "[SKIP] profiler daemon" in out
-        assert "docker not found" in out
+        assert "[OK] profiler daemon" in out
+        assert "[SKIP] profiler daemon" not in out
 
 
 class TestDoctorStaleLockCheck:
@@ -23768,35 +23482,6 @@ class TestBasicSamplerFinalSample:
 # ever resolves a fresh profile_plan).
 # ---------------------------------------------------------------------------
 
-CGPROFILE_SHIM_CASE_SHIFTED = """\
-            if [ -n "$RUN_GATE_TEST_CGPROFILE_PLAN" ] && [ "$2" = "cgprofile" ] && [ "$3" = "ctl" ]; then
-              verb="$4"
-              plan="$RUN_GATE_TEST_CGPROFILE_PLAN/$verb"
-              if [ -f "$plan.sleep" ]; then sleep "$(cat "$plan.sleep")"; fi
-              if [ -f "$plan.json" ]; then cat "$plan.json"; fi
-              if [ -f "$plan.exit" ]; then exit "$(cat "$plan.exit")"; fi
-            fi"""
-
-
-def add_cgprofile_exec_case_to_stateful_shim(monkeypatch) -> None:
-    """`fake_docker_stateful`'s shim (`cmd="$1"; shift` then `case "$cmd"
-    in`) has no `exec)` case at all -- every test using it that needs one
-    patches it in the same textual way `TestExecMode` already patches a new
-    `ps)` case onto `fake_docker`'s shim. `CGPROFILE_SHIM_CASE_SHIFTED`'s
-    indices are one lower than the module-level `CGPROFILE_SHIM_CASE`'s
-    because of that shim's own `shift` -- both must answer the SAME
-    `set_cgprofile_plan` layout, so a divergence here would silently pin the
-    wrong shim to the wrong plan."""
-    shim = shim_dir_of(monkeypatch) / "docker"
-    body = shim.read_text()
-    assert "exec)" not in body, "fake_docker_stateful already has an exec case"
-    body = body.replace(
-        'case "$cmd" in',
-        f'case "$cmd" in\n          exec)\n{CGPROFILE_SHIM_CASE_SHIFTED}\n'
-        '            ;;', 1)
-    shim.write_text(body)
-
-
 class TestProfileAmbientOverride:
     """RW-17: `RUN_GATE_PROFILE` ('on'|'off') — the operator-facing ambient
     override that superseded the old test-only kill switch."""
@@ -23926,7 +23611,7 @@ class TestProfilingOrchestration:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
 
     def _plan(self, **overrides):
-        plan = {"enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+        plan = {"enabled": True, "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                "interval": "1s", "damon": True, "source": "test",
                "token": "abc123token"}
         plan.update(overrides)
@@ -23953,8 +23638,9 @@ class TestProfilingOrchestration:
         assert "scope container-shared" in state["session_line"]
         assert "baseline 500 MiB" in state["session_line"]   # 524288000 bytes
         assert state["warning"] is None
-        assert state["profiler_status"] == \
-            "cgprofile-host-daemon (cgprofile 1.1.0, damon available)"
+        assert state["profiler_status"] == (
+            f"{run_gate.PROFILE_SOCKET_PATH_DEFAULT} "
+            "(cgprofile 1.1.0, damon available)")
 
     def test_version_failure_degrades_to_basic_and_samples_once(self, tmp_path, monkeypatch):
         set_cgprofile_plan(tmp_path, monkeypatch, version=(None, 3, None))
@@ -23992,7 +23678,7 @@ class TestProfilingOrchestration:
     def test_preflight_supplies_host_placement_and_admission_to_start(
             self, tmp_path):
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
 
             def __init__(self):
                 self.calls = []
@@ -24025,7 +23711,7 @@ class TestProfilingOrchestration:
     def test_host_probe_exception_is_warning_but_start_can_succeed(
             self, tmp_path, monkeypatch):
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
 
             def __init__(self, *args, **kwargs):
                 pass
@@ -24092,16 +23778,16 @@ class TestProfilingOrchestration:
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(stop, None, None))
         fake_docker(tmp_path, monkeypatch)
         docker = shutil.which("docker")
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         state = {"mode": "daemon", "client": client,
-                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                 "session": "s-20260912T101500Z-9f01", "warning": None}
         result = run_gate.finish_lane_profiling(state)
         expected = json.loads(stop)["summary"]
         assert result["resources"] == expected
         assert result["profile_error"] is None
         assert result["profile_ref"] == {
-            "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+            "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
             "session": "s-20260912T101500Z-9f01",
             "session_dir": "/var/lib/cgprofile/sessions/s-20260912T101500Z-9f01"}
 
@@ -24109,9 +23795,9 @@ class TestProfilingOrchestration:
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(None, 3, None))
         fake_docker(tmp_path, monkeypatch)
         docker = shutil.which("docker")
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         state = {"mode": "daemon", "client": client,
-                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                 "session": "s-x", "warning": None}
         result = run_gate.finish_lane_profiling(state)
         assert result["resources"] is None
@@ -24125,8 +23811,7 @@ class TestProfilingOrchestration:
         """A ProfilerClient whose `_ctl` answers `stop` from a scripted list
         of `(doc, reason, refusal_code)`; records the calls."""
         fake_docker(tmp_path, monkeypatch)
-        client = run_gate.ProfilerClient(shutil.which("docker"),
-                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         script = iter(answers)
         calls = []
 
@@ -24183,22 +23868,14 @@ class TestProfilingOrchestration:
         assert len(calls) == 2 and len(slept) == 1
 
     def test_ctl_clears_the_refusal_code_before_every_call(self, tmp_path, monkeypatch):
-        """The real `_ctl`: a carrier timeout or an unknown transport returns
-        before `_parse_response` could reset the code."""
-        fake_docker(tmp_path, monkeypatch)
-        client = run_gate.ProfilerClient(shutil.which("docker"),
-                                         run_gate.PROFILE_DAEMON_DEFAULT,
-                                         transport="exec")
+        """The real `_ctl`: a carrier timeout returns before
+        `_parse_response` could reset the code."""
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         client.last_refusal_code = "stop-incomplete"
-        monkeypatch.setattr(client, "_exec_ctl", lambda verb, *args: (
-            None, f"`cgprofile ctl {verb}` timed out after 30s"))
+        monkeypatch.setattr(client, "_socket_ctl", lambda verb, *args: (
+            None, f"cgprofile socket ctl {verb} timed out after 30s"))
         assert client._ctl("stop", "s-1") == (
-            None, "`cgprofile ctl stop` timed out after 30s")
-        assert client.last_refusal_code is None
-        client.last_refusal_code = "stop-incomplete"
-        client.transport = "carrier-pigeon"
-        doc, reason = client._ctl("stop", "s-1")
-        assert doc is None and "unknown profiler transport" in reason
+            None, "cgprofile socket ctl stop timed out after 30s")
         assert client.last_refusal_code is None
 
     def test_stop_does_not_retry_any_other_refusal(self, tmp_path, monkeypatch):
@@ -24213,8 +23890,7 @@ class TestProfilingOrchestration:
 
     def test_parse_response_records_the_refusal_code(self, tmp_path, monkeypatch):
         fake_docker(tmp_path, monkeypatch)
-        client = run_gate.ProfilerClient(shutil.which("docker"),
-                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         refused = {"contract": run_gate.PROFILE_CONTRACT, "ok": False,
                    "error": {"code": "stop-incomplete", "message": "busy"}}
         doc, reason = client._parse_response("stop", json.dumps(refused))
@@ -24227,7 +23903,7 @@ class TestProfilingOrchestration:
                     "summary": {}}
         doc, reason = client._parse_response("stop", json.dumps(accepted))
         assert doc == accepted and client.last_refusal_code is None
-        client._parse_response("stop", "not json", returncode=1, stderr="x")
+        client._parse_response("stop", "not json")
         assert client.last_refusal_code is None
 
     def test_finish_daemon_forced_stop_keeps_the_summary_and_warns(
@@ -24236,10 +23912,9 @@ class TestProfilingOrchestration:
         stop["summary"]["stop_forced"] = "sampler-still-running"
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(json.dumps(stop), None, None))
         fake_docker(tmp_path, monkeypatch)
-        client = run_gate.ProfilerClient(shutil.which("docker"),
-                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         state = {"mode": "daemon", "client": client,
-                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                  "session": "s-x", "warning": None}
         result = run_gate.finish_lane_profiling(state)
         assert result["resources"] == stop["summary"]   # recorded verbatim
@@ -24258,10 +23933,9 @@ class TestProfilingOrchestration:
                                             "quarantined": True}
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(json.dumps(stop), None, None))
         fake_docker(tmp_path, monkeypatch)
-        client = run_gate.ProfilerClient(shutil.which("docker"),
-                                         run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         state = {"mode": "daemon", "client": client,
-                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                  "session": "s-x", "warning": "earlier"}
         result = run_gate.finish_lane_profiling(state)
         assert result["resources"]["damon_cleanup"]["slot"] == 2
@@ -24322,7 +23996,8 @@ class TestProfilingOrchestration:
         run_gate.print_profile_plan_dry_run(self._plan(), "container")
         out = capsys.readouterr().out
         assert "profile plan" in out
-        assert run_gate.PROFILE_DAEMON_DEFAULT in out
+        assert run_gate.PROFILE_SOCKET_PATH_DEFAULT in out
+        assert "daemon '" not in out and "transport" not in out
         assert run_gate.PROFILE_TOKEN_ENV in out
         run_gate.print_profile_plan_dry_run(self._plan(enabled=False), "container")
         assert "profiling disabled" in capsys.readouterr().out
@@ -24435,8 +24110,8 @@ class TestProfilingOrchestration:
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
                            str(RG55_FIXTURES / "frames" / "0" / "proc"))
         run_gate.print_host_pressure_line(
-            "cgprofile-host-daemon (cgprofile 1.1.0, damon on)")
-        assert "| profiler cgprofile-host-daemon" in capsys.readouterr().out
+            "/run/cgprofile/ctl.sock (cgprofile 1.1.0, damon on)")
+        assert "| profiler /run/cgprofile/ctl.sock" in capsys.readouterr().out
 
     def test_profile_meta_shape(self, tmp_path):
         repo = make_repo(tmp_path)
@@ -24572,7 +24247,7 @@ class TestAwaitContainerProfilingWiring:
         t.start()
         sampler = _CountingSampler()
         profiler = {"mode": "basic", "sampler": sampler, "client": None,
-                   "daemon": None, "session": None, "warning": None,
+                   "socket_path": None, "session": None, "warning": None,
                    "session_line": None, "profiler_status": None}
         docker = shutil.which("docker")
         code = run_gate.await_container(docker, name, {"kind": "command"},
@@ -24598,7 +24273,7 @@ class TestAwaitContainerProfilingWiring:
             ({"summary": summary, "session_dir": "/var/lib/cgprofile/sessions/s-x"},
              None))
         run_record: dict = {}
-        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+        profiler = {"mode": "daemon", "client": client, "socket_path": "d",
                    "session": "s-x", "warning": None, "session_line": None,
                    "sampler": None, "profiler_status": None}
         docker = shutil.which("docker")
@@ -24621,7 +24296,7 @@ class TestAwaitContainerProfilingWiring:
         (state / ".hang").write_text("")   # never cleared: the lane hangs
         client = _StubProfilerClient(
             ({"summary": {"method": "daemon"}, "session_dir": None}, None))
-        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+        profiler = {"mode": "daemon", "client": client, "socket_path": "d",
                    "session": "s-x", "warning": None, "session_line": None,
                    "sampler": None, "profiler_status": None}
         docker = shutil.which("docker")
@@ -24693,7 +24368,7 @@ class TestAwaitContainerProfilingWiring:
                 args[0], 0, stdout="0\n", stderr=""))
 
         client = _Client()
-        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+        profiler = {"mode": "daemon", "client": client, "socket_path": "d",
                     "session": "s-x", "warning": None, "session_line": None,
                     "sampler": None, "profiler_status": None}
         docker = shutil.which("docker")
@@ -24736,7 +24411,7 @@ class TestAwaitContainerProfilingWiring:
                             lambda state: {"resources": None,
                                            "profile_error": None,
                                            "profile_ref": None})
-        profiler = {"mode": "daemon", "client": None, "daemon": "d",
+        profiler = {"mode": "daemon", "client": None, "socket_path": "d",
                     "session": None, "warning": None, "session_line": None,
                     "sampler": None, "profiler_status": None}
         docker = shutil.which("docker")
@@ -24777,7 +24452,7 @@ class TestAwaitContainerProfilingWiring:
         monkeypatch.setattr(run_gate, "make_progress_watch",
                             lambda *args, **kwargs: (
                                 built.append(kwargs) or fallback))
-        profiler = {"mode": "disabled", "client": None, "daemon": None,
+        profiler = {"mode": "disabled", "client": None, "socket_path": None,
                     "session": None, "warning": None, "session_line": None,
                     "sampler": None, "profiler_status": None,
                     "disabled_reason": "disabled"}
@@ -24821,7 +24496,7 @@ class TestAwaitContainerProfilingWiring:
                             lambda state: {"resources": None,
                                            "profile_error": None,
                                            "profile_ref": None})
-        profiler = {"mode": "daemon", "client": _Client(), "daemon": "d",
+        profiler = {"mode": "daemon", "client": _Client(), "socket_path": "d",
                     "session": "s-killed", "warning": None,
                     "session_line": None, "sampler": None,
                     "profiler_status": None}
@@ -24890,7 +24565,7 @@ class TestAwaitContainerProfilingWiring:
                             lambda state: {"resources": None,
                                            "profile_error": None,
                                            "profile_ref": None})
-        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+        profiler = {"mode": "daemon", "client": client, "socket_path": "d",
                     "session": "s-ended", "warning": None,
                     "session_line": None, "sampler": None,
                     "profiler_status": None}
@@ -24957,7 +24632,7 @@ class TestAwaitContainerProfilingWiring:
                             lambda state: {"resources": None,
                                            "profile_error": None,
                                            "profile_ref": None})
-        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+        profiler = {"mode": "daemon", "client": client, "socket_path": "d",
                     "session": "s-live", "warning": None,
                     "session_line": None, "sampler": None,
                     "profiler_status": None}
@@ -25016,7 +24691,7 @@ class TestAwaitContainerProfilingWiring:
                                     "verdict": daemon_verdict,
                                     "reason": "verified idle kill"}},
                                 "profile_error": None, "profile_ref": None})
-        profiler = {"mode": "daemon", "client": _Client(), "daemon": "d",
+        profiler = {"mode": "daemon", "client": _Client(), "socket_path": "d",
                     "session": "s-killed", "warning": None,
                     "session_line": None, "sampler": None,
                     "profiler_status": None}
@@ -25080,7 +24755,7 @@ class TestAwaitContainerProfilingWiring:
                             lambda state: {"resources": None,
                                            "profile_error": None,
                                            "profile_ref": None})
-        profiler = {"mode": "daemon", "client": client, "daemon": "d",
+        profiler = {"mode": "daemon", "client": client, "socket_path": "d",
                     "session": "s-no-fallback", "warning": None,
                     "session_line": None, "sampler": None,
                     "profiler_status": None}
@@ -25117,7 +24792,7 @@ class TestAwaitContainerProfilingWiring:
                 return {"schema": 1, "method": "basic", "samples": 0}
 
         profiler = {"mode": "basic", "sampler": _RaisingSampler(), "client": None,
-                   "daemon": None, "session": None, "warning": None,
+                   "socket_path": None, "session": None, "warning": None,
                    "session_line": None, "profiler_status": None}
         docker = shutil.which("docker")
         code = run_gate.await_container(docker, name, {"kind": "command"},
@@ -25151,7 +24826,7 @@ class TestAwaitContainerProfilingWiring:
 
         run_record: dict = {}
         profiler = {"mode": "basic", "sampler": _RaisingFinalSampler(),
-                   "client": None, "daemon": None, "session": None,
+                   "client": None, "socket_path": None, "session": None,
                    "warning": None, "session_line": None,
                    "profiler_status": None}
         docker = shutil.which("docker")
@@ -25184,7 +24859,7 @@ class TestAwaitContainerProfilingWiring:
                 return {"schema": 1, "method": "basic", "samples": 0}
 
         profiler = {"mode": "basic", "sampler": _RaisingFinalSampler(),
-                   "client": None, "daemon": None, "session": None,
+                   "client": None, "socket_path": None, "session": None,
                    "warning": None, "session_line": None,
                    "profiler_status": None}
         docker = shutil.which("docker")
@@ -25221,7 +24896,7 @@ class TestContainerProfilingDefensiveBranches:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": None,
-                                "daemon": "d", "session": "s-container",
+                                "socket_path": "d", "session": "s-container",
                                 "session_line": None, "warning": None,
                                 "sampler": None, "profiler_status": None,
                                 "placement": placement})
@@ -25237,7 +24912,7 @@ class TestContainerProfilingDefensiveBranches:
                                                stdout="container-id\n",
                                                stderr="")
         monkeypatch.setattr(run_gate.subprocess, "run", _run)
-        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+        plan = {"enabled": True,"interval": "1s",
                 "damon": True, "source": "test", "token": "tok"}
         lane = {"kind": "command", "environment": "tester-unified",
                 "argv": ["true"], "clean_tree": False}
@@ -25275,7 +24950,7 @@ class TestBareHostProfilingWiring:
         reason = "profiling preflight failed unexpectedly: planted"
         state = run_gate.start_bare_host_profiling(
             {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
-            tmp_path, "docker", {"enabled": True, "daemon": "d"},
+            tmp_path, "docker", {"enabled": True},
             preflight={"client": Client(), "version": None,
                        "reason": reason, "fatal_reason": reason})
         assert state["mode"] == "rusage"
@@ -25286,7 +24961,7 @@ class TestBareHostProfilingWiring:
         host_doc = {"host": {"gates_slice": {"present": True}}}
 
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
 
             def __init__(self, *args, **kwargs):
                 self.start_kwargs = None
@@ -25315,7 +24990,7 @@ class TestBareHostProfilingWiring:
             lambda *args: admission_calls.append(args) or {"state": "admitted"})
         state = run_gate.start_bare_host_profiling(
             {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
-            tmp_path, "docker", {"enabled": True, "daemon": "d",
+            tmp_path, "docker", {"enabled": True,
                                   "damon": False, "interval": "1s"})
         assert state["mode"] == "rusage"
         assert state["warning"] == "planted start refusal"
@@ -25339,14 +25014,14 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "ProfilerClient", Client)
         state = run_gate.start_bare_host_profiling(
             {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
-            tmp_path, "docker", {"enabled": True, "daemon": "d"})
+            tmp_path, "docker", {"enabled": True})
         assert state["mode"] == "rusage"
         assert "version probe failed unexpectedly" in state["warning"]
 
     def test_host_probe_exception_is_kept_while_start_is_attempted(
             self, tmp_path, monkeypatch):
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
 
             def __init__(self, *args, **kwargs):
                 pass
@@ -25366,7 +25041,7 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "ProfilerClient", Client)
         state = run_gate.start_bare_host_profiling(
             {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
-            tmp_path, "docker", {"enabled": True, "daemon": "d",
+            tmp_path, "docker", {"enabled": True,
                                   "damon": True, "interval": "1s"})
         assert state["mode"] == "rusage"
         assert state["warning"] == "planted start refusal"
@@ -25465,7 +25140,7 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "time", _Clock())
         record = {}
         plan = {"enabled": True,
-                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                 "interval": run_gate.PROFILE_INTERVAL_DEFAULT,
                 "damon": run_gate.PROFILE_DAMON_DEFAULT,
                 "source": "test", "disabled_reason": "disabled",
@@ -25546,7 +25221,8 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(sys, "argv", ['run-gate'])
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
-        assert "DRY RUN — profile plan: daemon" in out
+        assert "DRY RUN — profile plan: scope" in out
+        assert f"socket {run_gate.PROFILE_SOCKET_PATH_DEFAULT!r}" in out
         assert "container-shared" in out
         assert "admission: would wait" in out
         assert preflights == [("container-shared", True)]
@@ -25607,11 +25283,13 @@ class TestBareHostProfilingWiring:
         assert len(calls) == 1
         assert calls[0]["flush"] is True
         assert "'suite'" in out
-        start_calls = [c for c in docker_execs(log) if len(c) > 4 and c[4] == "start"]
+        (daemon,) = _FAKE_CGPROFILE_DAEMONS.values()
+        start_calls = [r for r in daemon.requests if r["verb"] == "start"]
         assert len(start_calls) == 1
-        joined = " ".join(start_calls[0])
-        assert f"containerid:{RG55_CONTAINER_ID}" in joined
-        assert "--scope container-shared" in joined
+        assert (start_calls[0]["args"]["target"]
+                == f"containerid:{RG55_CONTAINER_ID}")
+        assert start_calls[0]["args"]["scope"] == "container-shared"
+        assert not [c for c in docker_execs(log) if "cgprofile" in c]
         assert captured_env["env"] is not None
         assert captured_env["env"].get(run_gate.PROFILE_TOKEN_ENV) == \
             "deadbeefcafebabedeadbeefcafebabe"
@@ -25664,9 +25342,9 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "resolve_self_container_id",
                             lambda docker: (RG55_CONTAINER_ID, None))
         assert run_gate.main(["suite"]) == 0
-        ctl = [c for c in docker_execs(log) if len(c) > 4]
-        assert len([c for c in ctl if c[4] == "start"]) == 1
-        assert len([c for c in ctl if c[4] == "stop"]) == 1
+        (daemon,) = _FAKE_CGPROFILE_DAEMONS.values()
+        assert len([r for r in daemon.requests if r["verb"] == "start"]) == 1
+        assert len([r for r in daemon.requests if r["verb"] == "stop"]) == 1
         latest = lane_slot(proj)["latest"]
         assert latest["resources"]["method"] == "daemon"
         assert latest["profile_error"] is None
@@ -25981,7 +25659,7 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "start_bare_host_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": Client(),
-                                "daemon": "d", "session": "s-bare-failed",
+                                "socket_path": "d", "session": "s-bare-failed",
                                 "session_line": None, "warning": None,
                                 "sampler": None, "profiler_status": None})
         monkeypatch.setattr(run_gate.subprocess, "Popen",
@@ -25998,7 +25676,7 @@ class TestBareHostProfilingWiring:
                                                      "profile_ref": None})
         monkeypatch.setattr(run_gate, "print_lane_artifacts",
                             lambda *args, **kwargs: None)
-        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+        plan = {"enabled": True,"interval": "1s",
                 "damon": True, "source": "test", "token": "tok"}
         code = run_gate.run_bare_host_lane(
             {"kind": "command", "environment": "bare-host",
@@ -26023,7 +25701,7 @@ class TestBareHostProfilingWiring:
                                              "profile_ref": None})
         monkeypatch.setattr(run_gate, "print_lane_artifacts",
                             lambda *a, **k: None)
-        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+        plan = {"enabled": True,"interval": "1s",
                 "damon": True, "source": "test", "token": "tok"}
         return run_gate.run_bare_host_lane(
             {"kind": "assay", "assay_lane": "r2",
@@ -26032,7 +25710,7 @@ class TestBareHostProfilingWiring:
 
     @staticmethod
     def _rusage_state():
-        return {"mode": "rusage", "client": None, "daemon": "d",
+        return {"mode": "rusage", "client": None, "socket_path": "d",
                 "session": None, "session_line": None, "warning": None,
                 "sampler": None, "profiler_status": None}
 
@@ -26101,7 +25779,7 @@ class TestBareHostProfilingWiring:
                                     "profile_ref": None}))
         monkeypatch.setattr(run_gate, "print_lane_artifacts",
                             lambda *a, **k: None)
-        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+        plan = {"enabled": True,"interval": "1s",
                 "damon": True, "source": "test", "token": "tok"}
         with pytest.raises(run_gate.GateInfraError, match="STALLED"):
             run_gate.run_bare_host_lane(
@@ -26270,7 +25948,7 @@ class TestBareHostProfilingWiring:
             proc.terminated = True
 
         monkeypatch.setattr(run_gate.os, "killpg", killpg)
-        state = {"mode": "disabled", "client": None, "daemon": None,
+        state = {"mode": "disabled", "client": None, "socket_path": None,
                  "session": None, "session_line": None, "warning": None,
                  "sampler": None, "profiler_status": None,
                  "disabled_reason": "disabled"}
@@ -26316,7 +25994,7 @@ class TestBareHostProfilingWiring:
         proc = Process()
         monkeypatch.setattr(run_gate.os, "killpg",
                             lambda pid, sig: setattr(proc, "terminated", True))
-        state = {"mode": "daemon", "client": Client(), "daemon": "d",
+        state = {"mode": "daemon", "client": Client(), "socket_path": "d",
                  "session": "s-bare-failed", "session_line": None,
                  "warning": None, "sampler": None, "profiler_status": None}
         with pytest.raises(run_gate.GateInfraError, match="STALLED"):
@@ -26380,7 +26058,7 @@ class TestBareHostProfilingWiring:
 
         client = Client()
         watch = Watch()
-        state = {"mode": "daemon", "client": client, "daemon": "d",
+        state = {"mode": "daemon", "client": client, "socket_path": "d",
                  "session": "s-bare-reattach", "session_line": None,
                  "warning": "earlier profiling warning",
                  "sampler": None, "profiler_status": None}
@@ -26449,7 +26127,7 @@ class TestBareHostProfilingWiring:
 
         client = Client()
         watch = Watch()
-        state = {"mode": "daemon", "client": client, "daemon": "d",
+        state = {"mode": "daemon", "client": client, "socket_path": "d",
                  "session": "s-bare-idle2", "session_line": None,
                  "warning": None, "sampler": None, "profiler_status": None}
         assert self._bare_assay_call(tmp_path, monkeypatch, state,
@@ -26518,7 +26196,7 @@ class TestBareHostProfilingWiring:
                 return self.returncode
 
         client = Client()
-        state = {"mode": "daemon", "client": client, "daemon": "d",
+        state = {"mode": "daemon", "client": client, "socket_path": "d",
                  "session": "s-bare-idle2-nofb", "session_line": None,
                  "warning": None, "sampler": None, "profiler_status": None}
         assert self._bare_assay_call(tmp_path, monkeypatch, state,
@@ -26578,7 +26256,7 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "start_bare_host_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": Client(),
-                                "daemon": "d", "session": "s-bare-killed",
+                                "socket_path": "d", "session": "s-bare-killed",
                                 "session_line": None, "warning": None,
                                 "sampler": None, "profiler_status": None})
         process = Process()
@@ -26598,7 +26276,7 @@ class TestBareHostProfilingWiring:
                                                      "profile_ref": None})
         monkeypatch.setattr(run_gate, "print_lane_artifacts",
                             lambda *args, **kwargs: None)
-        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+        plan = {"enabled": True,"interval": "1s",
                 "damon": True, "source": "test", "token": "tok"}
         with pytest.raises(run_gate.GateInfraError, match="STALLED"):
             run_gate.run_bare_host_lane(
@@ -26657,7 +26335,7 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "start_bare_host_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "daemon": "d", "session": "s-bare-ended",
+                                "socket_path": "d", "session": "s-bare-ended",
                                 "session_line": None, "warning": None,
                                 "sampler": None, "profiler_status": None})
         monkeypatch.setattr(run_gate.subprocess, "Popen",
@@ -26668,7 +26346,7 @@ class TestBareHostProfilingWiring:
                                                      "profile_ref": None})
         monkeypatch.setattr(run_gate, "print_lane_artifacts",
                             lambda *args, **kwargs: None)
-        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+        plan = {"enabled": True,"interval": "1s",
                 "damon": True, "source": "test", "token": "tok"}
         assert run_gate.run_bare_host_lane(
             {"kind": "command", "environment": "bare-host",
@@ -26723,7 +26401,7 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "start_bare_host_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": Client(),
-                                "daemon": "d", "session": "s-budget",
+                                "socket_path": "d", "session": "s-budget",
                                 "session_line": None, "warning": None,
                                 "sampler": None, "profiler_status": None})
         monkeypatch.setattr(run_gate.subprocess, "Popen",
@@ -26742,7 +26420,7 @@ class TestBareHostProfilingWiring:
             return proc.returncode
 
         monkeypatch.setattr(run_gate, "terminate_process_group", terminate)
-        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+        plan = {"enabled": True,"interval": "1s",
                 "damon": True, "source": "test", "token": "tok"}
         with pytest.raises(run_gate.GateBudgetExceeded):
             run_gate.run_bare_host_lane(
@@ -26798,7 +26476,7 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "start_bare_host_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "daemon": "d", "session": "s-bare-live",
+                                "socket_path": "d", "session": "s-bare-live",
                                 "session_line": None, "warning": None,
                                 "sampler": None, "profiler_status": None})
         monkeypatch.setattr(run_gate.subprocess, "Popen",
@@ -26809,7 +26487,7 @@ class TestBareHostProfilingWiring:
                                                      "profile_ref": None})
         monkeypatch.setattr(run_gate, "print_lane_artifacts",
                             lambda *args, **kwargs: None)
-        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+        plan = {"enabled": True,"interval": "1s",
                 "damon": True, "source": "test", "token": "tok"}
         assert run_gate.run_bare_host_lane(
             {"kind": "command", "environment": "bare-host",
@@ -26829,7 +26507,7 @@ class TestBareHostProfilingWiring:
         repo, proj = make_history_repo(tmp_path, self._config())
         fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
         profile_plan = {"enabled": True,
-                        "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": run_gate.PROFILE_INTERVAL_DEFAULT,
                         "damon": run_gate.PROFILE_DAMON_DEFAULT,
                         "source": "test", "disabled_reason": "disabled",
@@ -26852,7 +26530,7 @@ class TestBareHostProfilingWiring:
         repo, proj = make_history_repo(tmp_path, self._config())
         fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
         profile_plan = {"enabled": True,
-                        "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": run_gate.PROFILE_INTERVAL_DEFAULT,
                         "damon": run_gate.PROFILE_DAMON_DEFAULT,
                         "source": "test", "disabled_reason": "disabled",
@@ -27315,14 +26993,14 @@ class TestEphemeralProfilingWiring:
         stop = (RG55_FIXTURES / "stop-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, version=(version, None, None),
                            start=(start, None, None), stop=(stop, None, None))
-        add_cgprofile_exec_case_to_stateful_shim(monkeypatch)
         assert run_gate.main(["suite"]) == 0
         latest = lane_slot(proj)["latest"]
         expected = json.loads(stop)["summary"]
         assert latest["resources"] == expected
         assert latest["profile_error"] is None
         assert latest["profile_ref"]["session"] == "s-20260912T101500Z-9f01"
-        assert latest["profile_ref"]["daemon"] == run_gate.PROFILE_DAEMON_DEFAULT
+        assert (latest["profile_ref"]["socket_path"]
+                == run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         # the inflight record's second write (RW: session added after start)
         # already happened and was cleared in the same finally as `rm -f` --
         # nothing left behind.
@@ -27351,7 +27029,7 @@ class TestEphemeralProfilingWiring:
                      "cpu_weight": 100}
         daemon_state = {
             "mode": "daemon", "client": Client(),
-            "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+            "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
             "session": "s-placement", "session_line": None,
             "warning": None, "sampler": None,
             "profiler_status": None, "placement": placement,
@@ -27492,7 +27170,8 @@ class TestEphemeralProfilingWiring:
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
-        assert "DRY RUN — profile plan: daemon" in out
+        assert "DRY RUN — profile plan: scope" in out
+        assert f"socket {run_gate.PROFILE_SOCKET_PATH_DEFAULT!r}" in out
         assert run_gate.PROFILE_TOKEN_ENV in out
         assert docker_runs(log) == []
 
@@ -27610,7 +27289,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         docker = shutil.which("docker")
         set_cgprofile_plan(tmp_path, monkeypatch,
                            start=('{"ok": true, "contract": 1}', None, None))
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         doc, reason = client.start(RG55_CONTAINER_ID, "container")
         assert doc is None
         assert reason is not None and "session" in reason
@@ -27620,7 +27299,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         docker = shutil.which("docker")
         set_cgprofile_plan(tmp_path, monkeypatch,
                            stop=('{"ok": true, "contract": 1}', None, None))
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         doc, reason = client.stop("s-20260912T101500Z-9f01")
         assert doc is None
         assert reason is not None and "summary" in reason
@@ -27633,7 +27312,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         body = json.dumps({"ok": True, "contract": 1, "session": session})
         set_cgprofile_plan(tmp_path, monkeypatch,
                            start=(body, None, None))
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         doc, reason = client.start(RG55_CONTAINER_ID, "container")
         assert doc is None
         assert reason is not None and "session" in reason
@@ -27646,7 +27325,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         body = json.dumps({"ok": True, "contract": 1, "summary": summary})
         set_cgprofile_plan(tmp_path, monkeypatch,
                            stop=(body, None, None))
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         doc, reason = client.stop("s-20260912T101500Z-9f01")
         assert doc is None
         assert reason is not None and "summary" in reason
@@ -27659,22 +27338,18 @@ class TestProfilerClientDegradesOnMalformedResponses:
         body = json.dumps({"ok": False, "contract": 1, "error": error})
         set_cgprofile_plan(tmp_path, monkeypatch,
                            version=(body, 3, None))
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         doc, reason = client.version()
         assert doc is None
         assert reason is not None and "non-object 'error'" in reason
 
     def test_json_parser_exception_degrades_without_raising(self, monkeypatch):
-        completed = subprocess.CompletedProcess(
-            ["docker"], 0, stdout="{}", stderr="")
-        monkeypatch.setattr(run_gate.subprocess, "run",
-                            lambda *a, **k: completed)
-
         def boom(text):
             raise RecursionError("planted: JSON nesting too deep")
 
         monkeypatch.setattr(run_gate.json, "loads", boom)
-        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        monkeypatch.setattr(client, "_socket_request", lambda *args: "{}")
         doc, reason = client.version()
         assert doc is None
         assert reason is not None and "JSON parser failed" in reason
@@ -27687,19 +27362,19 @@ class TestProfilerClientDegradesOnMalformedResponses:
         docker = shutil.which("docker")
         set_cgprofile_plan(tmp_path, monkeypatch,
                            version=('{"ok": true, "contract": 1}', None, None))
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         doc, reason = client.version()
         assert reason is None
         assert doc == {"ok": True, "contract": 1}
 
-    def test_ctl_survives_a_generic_exception_from_subprocess_run(
+    def test_ctl_survives_a_generic_exception_from_the_socket_request(
             self, monkeypatch):
         # B1b (round-1 review): _ctl's docstring promises NEVER raises --
         # broadened from (TimeoutExpired, OSError) to Exception.
         def _boom(*a, **k):
-            raise ValueError("planted: subprocess.run exploded")
-        monkeypatch.setattr(run_gate.subprocess, "run", _boom)
-        client = run_gate.ProfilerClient("docker", run_gate.PROFILE_DAEMON_DEFAULT)
+            raise ValueError("planted: socket request exploded")
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        monkeypatch.setattr(client, "_socket_request", _boom)
         doc, reason = client.version()
         assert doc is None
         assert reason is not None and "failed unexpectedly" in reason
@@ -27708,13 +27383,9 @@ class TestProfilerClientDegradesOnMalformedResponses:
         # B1a: reproduces the review's own probe (a stray non-UTF-8 byte in
         # the daemon's output) against `_ctl`'s `text=True` decode -- must
         # degrade to (None, reason), never raise UnicodeDecodeError.
-        fake_docker(tmp_path, monkeypatch)
-        docker = shutil.which("docker")
-        plan_dir = tmp_path / "cgprofile-plan"
-        plan_dir.mkdir(exist_ok=True)
+        plan_dir = set_cgprofile_plan(tmp_path, monkeypatch)
         (plan_dir / "version.json").write_bytes(b'{"ok": true, \xff"contract": 1}')
-        monkeypatch.setenv("RUN_GATE_TEST_CGPROFILE_PLAN", str(plan_dir))
-        client = run_gate.ProfilerClient(docker, run_gate.PROFILE_DAEMON_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
         doc, reason = client.version()   # must not raise
         assert doc is None
         assert reason is not None
@@ -27766,11 +27437,11 @@ class TestPlacementBarrier:
         monkeypatch.setattr(run_gate, "spawn_placement_barrier",
                             spawn_exec_barrier)
         client = SimpleNamespace(
-            carrier="exec", socket_path="/run/cgprofile/ctl.sock",
+            socket_path="/run/cgprofile/ctl.sock",
             watch=lambda *_args: None)
         state = {
             "mode": "daemon", "client": client,
-            "daemon": "cgprofile-host-daemon", "session": "s-test",
+            "socket_path": "/run/cgprofile/ctl.sock", "session": "s-test",
             "session_line": None, "warning": None, "sampler": None,
             "profiler_status": None, "placement": placement or {
                 "requested": True,
@@ -27791,7 +27462,7 @@ class TestPlacementBarrier:
                 "test-env", "probe-runner", "test-src", "test-remedy",
                 None, "no-slice")
         profile_plan = {
-            "enabled": True, "daemon": "cgprofile-host-daemon",
+            "enabled": True,
             "interval": "1s", "damon": False, "source": "test",
             "token": "profile-token", "disabled_reason": "disabled"}
         return marker, args, profile_plan, state, children
@@ -27821,7 +27492,7 @@ class TestPlacementBarrier:
                      "error": None}
         client = SimpleNamespace(watch=lambda *_args: None)
         state = {"mode": "daemon", "client": client,
-                 "daemon": "cgprofile-host-daemon", "session": "s-bare",
+                 "socket_path": "/run/cgprofile/ctl.sock", "session": "s-bare",
                  "session_line": None, "warning": None, "sampler": None,
                  "profiler_status": None, "placement": placement,
                  "admission": {"state": "admitted"}}
@@ -27849,7 +27520,7 @@ class TestPlacementBarrier:
                 "argv": ["bash", "-c",
                          f"touch {shlex.quote(str(marker))}"],
                 "clean_tree": False}
-        plan = {"enabled": True, "daemon": "cgprofile-host-daemon",
+        plan = {"enabled": True,
                 "interval": "1s", "damon": False, "source": "test",
                 "token": "profile-token", "disabled_reason": "disabled"}
         return marker, lane, project, repo, plan, state, children
@@ -28279,12 +27950,11 @@ class TestPlacementBarrier:
         monkeypatch.setattr(run_gate, "spawn_placement_barrier",
                             spawn_exec_barrier)
         client = type("Client", (), {
-            "carrier": "exec",
             "socket_path": "/run/cgprofile/ctl.sock",
             "watch": lambda *_args: None})()
         state = {
             "mode": "daemon", "client": client,
-            "daemon": "cgprofile-host-daemon", "session": "s-test",
+            "socket_path": "/run/cgprofile/ctl.sock", "session": "s-test",
             "session_line": None, "warning": None, "sampler": None,
             "profiler_status": None, "placement": placement,
             "admission": {"state": "admitted"}}
@@ -28307,7 +27977,7 @@ class TestPlacementBarrier:
                 "test-env", "probe-runner", "test-src", "test-remedy",
                 None, "no-slice")
         profile_plan = {
-            "enabled": True, "daemon": "cgprofile-host-daemon",
+            "enabled": True,
             "interval": "1s", "damon": False, "source": "test",
             "token": "profile-token", "disabled_reason": "disabled"}
         if placement["error"] is None:
@@ -28353,7 +28023,7 @@ class TestPlacementBarrier:
             "watch": lambda *_args: None})()
         state = {
             "mode": "daemon", "client": client,
-            "daemon": "cgprofile-host-daemon", "session": "s-bare",
+            "socket_path": "/run/cgprofile/ctl.sock", "session": "s-bare",
             "session_line": None, "warning": None, "sampler": None,
             "profiler_status": None, "placement": placement,
             "admission": {"state": "admitted"}}
@@ -28387,7 +28057,7 @@ class TestPlacementBarrier:
                          f"touch {shlex.quote(str(marker))}"],
                 "clean_tree": False}
         profile_plan = {
-            "enabled": True, "daemon": "cgprofile-host-daemon",
+            "enabled": True,
             "interval": "1s", "damon": False, "source": "test",
             "token": "profile-token", "disabled_reason": "disabled"}
         if refused:
@@ -28415,7 +28085,7 @@ class TestPlacementBarrier:
 
         def fallback(*_args, preflight=None, **_kwargs):
             seen.append(preflight)
-            return {"mode": "disabled", "client": None, "daemon": None,
+            return {"mode": "disabled", "client": None, "socket_path": None,
                     "session": None, "session_line": None,
                     "warning": preflight["fatal_reason"], "sampler": None,
                     "profiler_status": None,
@@ -28517,7 +28187,7 @@ class TestPlacementBarrier:
         def fallback(*_args, preflight=None, **_kwargs):
             seen.append(preflight)
             return {"mode": "rusage", "client": None,
-                    "daemon": "cgprofile-host-daemon", "session": None,
+                    "socket_path": "/run/cgprofile/ctl.sock", "session": None,
                     "session_line": None,
                     "warning": preflight["fatal_reason"], "sampler": None,
                     "profiler_status": None,
@@ -28822,7 +28492,8 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "prepare_profile_start", preflight)
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
-        assert "DRY RUN — profile plan: daemon" in out
+        assert "DRY RUN — profile plan: scope" in out
+        assert f"socket {run_gate.PROFILE_SOCKET_PATH_DEFAULT!r}" in out
         assert "scope 'container-shared'" in out
         assert "admission: would wait" in out
         assert preflights == [("container-shared", True)]
@@ -28850,7 +28521,7 @@ class TestExecLaneProfilingWiring:
             lane, "suite", repo, repo, repo, env, "test-env",
             "the-runner", "test-src", "test-remedy", None, "no-slice",
             dry_run=False, run_record=None,
-            profile_plan={"enabled": False, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+            profile_plan={"enabled": False, "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                          "interval": "1s", "damon": True, "source": "test",
                          "token": None})
         assert code == 0
@@ -28874,7 +28545,7 @@ class TestExecLaneProfilingWiring:
                 self.closed = True
 
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
             socket_path = "/run/cgprofile/ctl.sock"
 
             def __init__(self):
@@ -28914,7 +28585,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                                 "session": "s-watch", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -28938,7 +28609,7 @@ class TestExecLaneProfilingWiring:
     def test_exec_initial_watch_failure_announces_progress_fallback(
             self, tmp_path, monkeypatch, capsys):
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
             socket_path = "/run/cgprofile/ctl.sock"
 
             def watch(self, session):
@@ -28958,7 +28629,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": Client(),
-                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                                 "session": "s-failed-watch", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29008,7 +28679,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "disabled", "client": None,
-                                "daemon": None, "session": None,
+                                "socket_path": None, "session": None,
                                 "session_line": None, "warning": None,
                                 "sampler": None, "profiler_status": None,
                                 "disabled_reason": "disabled"})
@@ -29050,7 +28721,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "disabled", "client": None,
-                                "daemon": None, "session": None,
+                                "socket_path": None, "session": None,
                                 "session_line": None, "warning": None,
                                 "sampler": None, "profiler_status": None,
                                 "disabled_reason": "disabled"})
@@ -29083,7 +28754,7 @@ class TestExecLaneProfilingWiring:
                 pass
 
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
             socket_path = "/run/cgprofile/ctl.sock"
 
             def __init__(self):
@@ -29119,7 +28790,7 @@ class TestExecLaneProfilingWiring:
         client = Client()
         fallback = Fallback()
         state = {"mode": "daemon", "client": client,
-                 "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                 "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                  "session": "s-reattach-fail", "session_line": None,
                  "warning": "earlier profiling warning", "sampler": None,
                  "profiler_status": None}
@@ -29160,7 +28831,7 @@ class TestExecLaneProfilingWiring:
                 pass
 
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
             socket_path = "/run/cgprofile/ctl.sock"
 
             def __init__(self):
@@ -29205,7 +28876,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                                 "session": "s-progress-fallback", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29242,7 +28913,7 @@ class TestExecLaneProfilingWiring:
                 pass
 
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
             socket_path = "/run/cgprofile/ctl.sock"
 
             def __init__(self):
@@ -29271,7 +28942,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                                 "session": "s-no-fallback", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29304,7 +28975,7 @@ class TestExecLaneProfilingWiring:
                 pass
 
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
             socket_path = "/run/cgprofile/ctl.sock"
 
             def __init__(self):
@@ -29331,7 +29002,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                                 "session": "s-live-exec", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29367,7 +29038,7 @@ class TestExecLaneProfilingWiring:
                 self.closed = True
 
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
             socket_path = "/run/cgprofile/ctl.sock"
 
             def __init__(self):
@@ -29389,7 +29060,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                                 "session": "s-final", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29422,7 +29093,7 @@ class TestExecLaneProfilingWiring:
                 pass
 
         class Client:
-            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
             socket_path = "/run/cgprofile/ctl.sock"
 
             def watch(self, session):
@@ -29454,7 +29125,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": Client(),
-                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                                 "session": "s-killed", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29518,7 +29189,7 @@ class TestExecLaneProfilingWiring:
             lane, "suite", repo, repo, repo, env, "test-env",
             "the-runner", "test-src", "test-remedy", None, "no-slice",
             dry_run=False, run_record=run_record,
-            profile_plan={"enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+            profile_plan={"enabled": True, "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                          "interval": "1s", "damon": True, "source": "test",
                          "token": "abc123"})
 
@@ -29535,7 +29206,7 @@ class TestExecLaneProfilingWiring:
 
     def test_tick_exception_never_escapes_exec_lane(self, tmp_path, monkeypatch):
         monkeypatch.setattr(run_gate, "PROFILE_SAMPLE_SECONDS", 0.05)
-        stub_state = {"mode": "basic", "client": None, "daemon": None,
+        stub_state = {"mode": "basic", "client": None, "socket_path": None,
                       "session": None, "session_line": None, "warning": None,
                       "sampler": None, "profiler_status": None,
                       "disabled_reason": None}
@@ -29556,7 +29227,7 @@ class TestExecLaneProfilingWiring:
                             # planted tick exception
 
     def test_finally_exception_never_escapes_exec_lane(self, tmp_path, monkeypatch):
-        stub_state = {"mode": "basic", "client": None, "daemon": None,
+        stub_state = {"mode": "basic", "client": None, "socket_path": None,
                       "session": None, "session_line": None, "warning": None,
                       "sampler": None, "profiler_status": None,
                       "disabled_reason": None}
@@ -29575,7 +29246,7 @@ class TestExecLaneProfilingWiring:
     def test_finally_exception_tolerates_no_run_record_exec_lane(
             self, tmp_path, monkeypatch):
         # The `if run_record is not None:` guard's False side.
-        stub_state = {"mode": "basic", "client": None, "daemon": None,
+        stub_state = {"mode": "basic", "client": None, "socket_path": None,
                       "session": None, "session_line": None, "warning": None,
                       "sampler": None, "profiler_status": None,
                       "disabled_reason": None}
@@ -29670,7 +29341,7 @@ class TestExecLaneInflightRecord:
             "kind": "command", "environment": "fixture", "argv": ["true"],
         }
         profile_plan = {"enabled": True,
-                        "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": "1s", "damon": True, "source": "test",
                         "token": "abc123",
                         "disabled_reason": "disabled"}
@@ -29711,7 +29382,7 @@ class TestExecLaneInflightRecord:
         after a child exists, where Python never reaches the finally and the
         record must survive for reconciliation."""
         profile_plan = {"enabled": False,
-                        "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": "1s", "damon": True, "source": "test",
                         "token": None, "disabled_reason": "disabled"}
 
@@ -29744,7 +29415,7 @@ class TestExecLaneInflightRecord:
         # daemon shim.
         def _fake_daemon_state(*a, **k):
             return {"mode": "daemon", "client": None,
-                    "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                    "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                     "session": "s-fake-session-id", "session_line": None,
                     "warning": None, "sampler": None, "profiler_status": None}
         monkeypatch.setattr(run_gate, "start_lane_profiling", _fake_daemon_state)
@@ -29771,7 +29442,7 @@ class TestExecLaneInflightRecord:
         monkeypatch.setattr(run_gate.subprocess, "Popen", _spy_popen)
         env = {"forward_env": []}
         lane = {"kind": "command", "argv": ["true"]}
-        profile_plan = {"enabled": True, "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+        profile_plan = {"enabled": True, "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": "1s", "damon": True, "source": "test",
                         "token": "abc123", "disabled_reason": "disabled"}
         code = run_gate.run_exec_lane(
@@ -29891,7 +29562,7 @@ class TestExecLaneInflightRecord:
         # container regardless of `[profile]` -- a client can die mid-run
         # whether or not this invocation is profiled.
         profile_plan = {"enabled": False,
-                        "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                        "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": "1s", "damon": True, "source": "test",
                         "token": None, "disabled_reason": "disabled"}
         seen = {}
@@ -29928,7 +29599,6 @@ class TestReattachProfilingWiring:
         monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
         plant_inflight(proj, repo, state, status="exited", code=0,
                        profile_token="tok123",
-                       profile_daemon=run_gate.PROFILE_DAEMON_DEFAULT,
                        profile_session="s-x")
         assert run_gate.main(["suite"]) == 0
         latest = lane_slot(proj)["latest"]
@@ -29941,20 +29611,19 @@ class TestReattachProfilingWiring:
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         stop = (RG55_FIXTURES / "stop-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(stop, None, None))
-        add_cgprofile_exec_case_to_stateful_shim(monkeypatch)
         plant_inflight(proj, repo, state, status="running", code=0,
                        profile_token="tok123",
-                       profile_daemon=run_gate.PROFILE_DAEMON_DEFAULT,
                        profile_session="s-20260912T101500Z-9f01")
         assert run_gate.main(["suite"]) == 0
         latest = lane_slot(proj)["latest"]
         expected = json.loads(stop)["summary"]
         assert latest["resources"] == expected
         assert latest["profile_error"] is None
-        exec_calls = [c for c in _docker_calls(log) if c and c[0] == "exec"]
-        assert any("stop" in c and "s-20260912T101500Z-9f01" in c
-                   for c in exec_calls)
-        assert not any("start" in c for c in exec_calls)   # no new start
+        (daemon,) = _FAKE_CGPROFILE_DAEMONS.values()
+        verbs = [(r["verb"], r["args"].get("session"))
+                 for r in daemon.requests]
+        assert ("stop", "s-20260912T101500Z-9f01") in verbs
+        assert not any(verb == "start" for verb, _ in verbs)   # no new start
 
     def test_reattach_with_token_but_no_session_names_the_reason(
             self, tmp_path, monkeypatch):
@@ -29971,10 +29640,8 @@ class TestReattachProfilingWiring:
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         stop = (RG55_FIXTURES / "stop-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(stop, None, None))
-        add_cgprofile_exec_case_to_stateful_shim(monkeypatch)
         plant_inflight(proj, repo, state, status="running", code=0,
                        profile_token="tok123",
-                       profile_daemon=run_gate.PROFILE_DAEMON_DEFAULT,
                        profile_session="s-20260912T101500Z-9f01",
                        **live_owner_fields())
         answers = iter([os.getpid(), os.getpid(), None])
@@ -30004,10 +29671,8 @@ class TestReattachProfilingWiring:
             self, tmp_path, monkeypatch, capsys):
         repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(None, 3, None))
-        add_cgprofile_exec_case_to_stateful_shim(monkeypatch)
         plant_inflight(proj, repo, state, status="running", code=0,
                        profile_token="tok123",
-                       profile_daemon=run_gate.PROFILE_DAEMON_DEFAULT,
                        profile_session="s-x", **live_owner_fields())
         answers = iter([os.getpid(), os.getpid(), None])
         monkeypatch.setattr(run_gate, "live_owner_pid",
@@ -32243,7 +31908,7 @@ class TestLaneDeadlineEnforcement:
             run_gate.run_bare_host_lane(
                 {"kind": "command", "argv": ["true"]}, "unit",
                 Path("project"), Path("repo"), Path("worktree"),
-                profile_plan={"enabled": True, "daemon": "profiler",
+                profile_plan={"enabled": True,
                              "token": "token"}, budget_deadline=1.0)
         assert signals == [signal.SIGTERM, signal.SIGKILL]
         assert wait4_calls == 4
@@ -32825,8 +32490,9 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "load_footprint_manifest",
                             lambda _project: None)
         monkeypatch.setattr(run_gate, "resolve_profile_settings",
-                            lambda *_args: {"enabled": False, "daemon": "d",
+                            lambda *_args: {"enabled": False,
                                             "interval": "5s", "damon": "off",
+                                            "socket_path": "/run/d.sock",
                                             "source": "fixture"})
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir()
@@ -32871,8 +32537,9 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "load_footprint_manifest",
                             lambda _project: None)
         monkeypatch.setattr(run_gate, "resolve_profile_settings",
-                            lambda *_args: {"enabled": False, "daemon": "d",
+                            lambda *_args: {"enabled": False,
                                             "interval": "5s", "damon": "off",
+                                            "socket_path": "/run/d.sock",
                                             "source": "fixture"})
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir()
@@ -32933,8 +32600,9 @@ class TestFinalChangedLineCoverageOracles:
         monkeypatch.setattr(run_gate, "load_footprint_manifest",
                             lambda _project: None)
         monkeypatch.setattr(run_gate, "resolve_profile_settings",
-                            lambda *_args: {"enabled": False, "daemon": "d",
+                            lambda *_args: {"enabled": False,
                                             "interval": "5s", "damon": "off",
+                                            "socket_path": "/run/d.sock",
                                             "source": "fixture"})
         lock_dir = tmp_path / "locks"
         lock_dir.mkdir()
@@ -33413,7 +33081,7 @@ class TestFinalChangedLineCoverageOracles:
             run_gate.run_bare_host_lane(
                 {"kind": "command", "argv": ["true"]}, "unit",
                 Path("project"), Path("repo"), Path("worktree"),
-                profile_plan={"enabled": True, "daemon": "profiler",
+                profile_plan={"enabled": True,
                               "token": "token"}, budget_deadline=1.0)
         assert signals == [signal.SIGTERM, signal.SIGKILL]
         assert waits == 4

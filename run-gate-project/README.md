@@ -74,10 +74,13 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `ctl.sock` or change the lane's private cgroup namespace. See the
    [R2 observer design](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer)
    and [consumer setup](CONSUMERS.md#native-r2-resource-observer).
-   The project-level `[profile]` table also accepts
-   `transport = "auto" | "exec" | "socket"`, `socket_path`, and bounded
-   `admission_wait`; `auto` uses the mounted Unix socket only after a
-   successful version probe and otherwise uses the Docker-exec carrier.
+   The project-level `[profile]` table also accepts `socket_path` (default
+   `/run/cgprofile/ctl.sock`) and bounded `admission_wait`. The control socket
+   is the only carrier; the former `transport` and `daemon` keys and
+   `RUN_GATE_PROFILE_TRANSPORT` were removed (RG-154) and are refused by name.
+   An unreachable socket degrades to the basic profile with one warning that
+   names the cause (`socket-not-mounted`, `socket-missing`, `daemon-refusing`
+   or `socket-permission`).
    Daemon-backed exec and bare-host lanes may request measured memory
    placement; ephemeral lanes use the selected, verified gate cgroup parent.
    The inherited tester environment resolves it from `cgroup_slice`, then
@@ -804,8 +807,7 @@ the tool's reason to exist and MUST be implemented + tested:
 - **Lane cost is PROFILED too, when a cgroup-profiler daemon is reachable
   (RG-55):** peak memory, +baseline, hot-set p90 (DAMON), CPU cores, and
   memory-full stall join `history`'s own duration series (schema 2, SPEC
-  `R-36j`) — precisely from the daemon (`cgprofile-host-daemon`, `docker
-  exec ... cgprofile ctl ...`), or a coarser in-lane profile when it is
+  `R-36j`) — precisely from the daemon (over its control socket), or a coarser in-lane profile when it is
   absent: cgroup sampling for container/exec lanes and child-specific
   `wait4()` accounting for bare-host lanes. Bare-host daemon targeting uses
   a Docker object only after its mount namespace proves it is this process's

@@ -37,11 +37,15 @@ SemVer wheel. A copied project-local `run-gate.py` script is not supported;
 compatibility checks use the installed `run-gate --version`.
 
 Parties: **producer** = cgroup-profiler's daemon (`cgprofile serve`) and its
-client verb (`cgprofile ctl`), running inside the container
-`cgprofile-host-daemon`; **consumer** = the installed Run-Gate wheel
-(stdlib-only runtime, docker CLI only), invoking
-`docker exec cgprofile-host-daemon cgprofile ctl <verb>
-[args] --json` from any devcontainer, worktree or instance.
+client verb (`cgprofile ctl`); **consumer** = the installed Run-Gate wheel
+(stdlib-only runtime), which talks to the daemon over its control socket
+`/run/cgprofile/ctl.sock` (§8.1) from any devcontainer, worktree or
+instance. **RG-154 (2026-11-04):** the socket is the only carrier Run-Gate
+uses; its former `docker exec cgprofile-host-daemon cgprofile ctl <verb>
+[args] --json` fallback, the `[profile] transport` and `[profile] daemon`
+settings and `RUN_GATE_PROFILE_TRANSPORT` were removed. Run-Gate never sends
+`report` or `gc`. The `cgprofile ctl` client verbs remain the producer's own
+operator interface and the reference translator of the socket protocol.
 
 ---
 
@@ -323,16 +327,18 @@ and the `footprint` manifest.
 6. **Disclosure lines** (stdout, exact shapes; `{…}` substituted; optional
    segments in `[…]` appear only when known):
    ```
-   run-gate: host memory PSI full avg10={x}% avg60={y}%[ | slice {name}: full avg10={z}%][ | profiler {daemon} (cgprofile {ver}, damon {on|off|unavailable})]
+   run-gate: host memory PSI full avg10={x}% avg60={y}%[ | slice {name}: full avg10={z}%][ | profiler {socket_path} (cgprofile {ver}, damon {on|off|unavailable})]
    run-gate: profile session {id} (scope {scope}, baseline {n} MiB, damon {on|off|unavailable: reason})
    run-gate: footprint {lane}: peak {n} MiB[ (+{n} MiB over baseline)], p90 {n} MiB, {c} cores avg, {s} s stalled on memory (full)[, hot-set p90 {n} MiB]; history median peak {n} MiB ({k} runs)[ | manifest {n} MiB]
    run-gate: WARNING profiling: {reason} — {basic in-lane sampling only|no profile recorded}
    ```
 7. **Config:** `[profile]` top-level table (central or project, whole-table
-   shadowing per R-09): `enabled` (bool, default true), `daemon` (container
-   name, default `cgprofile-host-daemon`), `interval` (duration grammar of
+   shadowing per R-09): `enabled` (bool, default true), `socket_path`
+   (absolute path, default `/run/cgprofile/ctl.sock`), `admission_wait`,
+   `interval` (duration grammar of
    `budget`, default `"1s"`, passed as `--interval`), `damon` (bool, default
-   true → `--damon on`). Per lane: `profile = false` (bool) or a table
+   true → `--damon on`). The former `daemon` and `transport` keys are
+   refused by name (RG-154). Per lane: `profile = false` (bool) or a table
    `[lanes.<n>.profile]` with `enabled`/`damon`. `[footprint]`:
    `tolerance_pct` (int, default 25), `max_age_days` (int, default 30).
    Unknown keys refuse at load like every other table.
@@ -480,7 +486,7 @@ asserts `root:docker 0770` on the directory and `0660` on the socket
 
 | carrier | how a request travels | who is authorised | default |
 |---|---|---|---|
-| `exec` | `docker exec cgprofile-host-daemon cgprofile ctl <verb> … --json` (v1, unchanged) | anyone who can use the docker socket; arrives as uid 0 inside the daemon | yes (v1.1 consumers) |
+| `exec` | `docker exec cgprofile-host-daemon cgprofile ctl <verb> … --json` (v1, unchanged; the producer keeps it for operators, Run-Gate no longer uses it since RG-154) | anyone who can use the docker socket; arrives as uid 0 inside the daemon | no (operators only) |
 | `socket` | the consumer connects to `/run/cgprofile/ctl.sock` (mounted into its container or on the host) and writes ONE request line `{"verb": "<verb>", "args": {…}, "contract": 1}\n`; the daemon answers with the same JSON object stdout would carry, then closes (streaming verbs: one object per line until end) | members of the `docker` group (socket mode 0660) and, when `CGPROFILE_ALLOW_UIDS` is set on the daemon, only the listed uids (`SO_PEERCRED`); a refused peer gets `{"ok": false, "contract": 1, "error": {"code": "peer-refused", …}}` and the connection closes | opt-in |
 
 Rules: (1) every verb, response, error code and the `contract` field are
@@ -498,12 +504,14 @@ including the newline and must arrive within an absolute 25 s deadline from
 accept (trickle bytes do not extend it); an oversized line receives
 `bad-argument`, an incomplete line at deadline or EOF is closed without
 dispatch, and the accepted `watch` stream itself has no server-side timeout;
-(5) the
-exec carrier is permanent — a producer MUST keep it; a consumer's
-`transport = "auto"` means "socket if the path exists AND `version`
-answers on it within 5 s, else exec", `"socket"` means socket only (its
-absence is "unavailable" with a warning naming the path), `"exec"` means
-exec only. Environment override on the consumer: `RUN_GATE_PROFILE_TRANSPORT`.
+(5) a producer keeps
+the exec carrier for operators; Run-Gate (RG-154) is socket only. When the
+socket cannot be reached Run-Gate degrades as for any unavailable profiler
+(basic or rusage profile, one warning) and the warning names the CP-31 cause
+tag, classified from errno and the socket directory because nobody answers:
+`socket-not-mounted` (directory absent), `socket-missing` (directory present,
+node gone), `daemon-refusing` (node present, nothing listening) or
+`socket-permission`. `RUN_GATE_PROFILE_TRANSPORT` is refused by name.
 
 ### 8.2 `cgprofile ctl watch <session> --json` (streaming, D-27)
 
@@ -706,8 +714,8 @@ bounded-admission limit or shutting down; retry shortly).
 
 ### 8.9 Consumer obligations added by v1.1 (run-gate, P5)
 
-1. `transport` per §8.1; `doctor` probes BOTH carriers and prints which is
-   live and why the other is not.
+1. Socket only per §8.1 (RG-154); `doctor` probes the socket and prints the
+   CP-31 cause tag when it is unreachable.
 2. Every lane with a daemon session opens ONE `watch` (thread or long
    exec), consumes readings, maps the verdict: `killed` → the lane's stall
    exit path (R-40) with the daemon's reason in the record; `reported` →
