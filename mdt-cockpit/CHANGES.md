@@ -5,6 +5,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- host-setup `HOST_ROLE` (`shared-prod` | `dedicated-dev`, section 4.0; the wizard asks it first): on a sole-tenant dev/test host `dev.slice` takes
+  its absolute IO ceilings from the MEASURED iobench result (`proposals.caps.dev_aggregate`, identity-verified through the new
+  `scripts/mdt_iobench_caps.py`) or the `DEV_IO_*_MAX` pins, with NO static fallback: without either, `install.sh` refuses and the reconcile
+  keeps the current cap and fails, printing the remedy. An unset role stays conservative (shared-prod) with a NOTICE. Fixes the 500-IOPS static default
+  that throttled all gate lanes on r1002/v1001 (disk 1-2% busy). Hermetic tests in `tests/test_testhost_io.py`. Deferred: running iobench inside
+  debian-install-v2 (MDT-063), io.cost QoS latency targets (MDT-064); the btrfs/page-cache read-volume observation is recorded without a cause (MDT-065).
 - host-setup installs and pins the cgprofile host service from the released wheel (MDT-055): `scripts/mdt-cgprofile-install.sh`
   builds `/opt/cgprofile/<version>/venv` from the sha256-pinned `cgprofile` and `cli-extended` wheels (`pip --no-index`),
   renders `/etc/cgprofile/cgpd.toml` and the two units through `cgpd config check` / `cgpd unit print`, restarts only on drift and

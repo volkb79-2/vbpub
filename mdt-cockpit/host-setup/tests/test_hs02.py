@@ -101,7 +101,7 @@ class ValidateConfigOnAnOldEnvFileTests(unittest.TestCase):
             text=True, stdout=subprocess.PIPE).stdout.split()
         python = [k for k in example_keys() if OPTIONAL_RE and OPTIONAL_RE.fullmatch(k)]
         self.assertEqual(sorted(shell), sorted(python))
-        self.assertEqual(len(python), 36)  # 28 IO/scheduler keys + the 8 CGPROFILE_* keys (MDT-055)
+        self.assertEqual(len(python), 37)  # 28 IO/scheduler keys + the 8 CGPROFILE_* keys (MDT-055) + HOST_ROLE (MDT-TESTHOST-IO)
 
     def test_install_runs_the_validator_before_anything_it_exempts(self) -> None:
         install = (ROOT / "install.sh").read_text()
@@ -364,7 +364,8 @@ class PreflightBeforeActionTests(unittest.TestCase):
         "_mdt_io_systemd_dev", "_mdt_io_devname_for_majmin", "_mdt_dev_majmin",
         "_mdt_io_queue_keys_set", "_mdt_root_disk_node", "_mdt_io_queue_attr", "_mdt_io_wb_value",
         "_mdt_io_sched_value", "_mdt_io_sched_list", "_mdt_io_sched_offered", "_mdt_sched_module_available",
-        "_mdt_io_sched_current",
+        "_mdt_io_sched_current", "_mdt_host_role", "_mdt_load_iobench_caps", "_mdt_dedicated_remedy",
+        "_mdt_resolve_static_io_dedicated", "_mdt_root_disk_majmin", "_mdt_io_disk_identity",
     }
     ALLOWED_REDIRECT = re.compile(r'\d*>>?\s*(&\d|/dev/null|"?\$CANDIDATE\w*"?)')
 

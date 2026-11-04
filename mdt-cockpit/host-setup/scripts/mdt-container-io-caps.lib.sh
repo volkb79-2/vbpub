@@ -307,6 +307,89 @@ _mdt_size_to_bytes() {
   printf '%s\n' $((num * mult))
 }
 
+# --- host role (MDT-TESTHOST-IO) ---------------------------------------------------------------
+# HOST_ROLE in host-setup.env:
+#   shared-prod    (also: unset) the host carries production workloads; dev.slice keeps the
+#                  CONSERVATIVE rule: pin, else DEV_IO_CAP_PCT% of a baseline, else the static
+#                  DEV_STATIC_* fallback.
+#   dedicated-dev  sole-tenant dev/test host (nothing else to protect).  dev.slice gets
+#                  near-device-capacity ceilings from the MEASURED iobench result
+#                  (proposals.caps.dev_aggregate, already scaled by iobench's utilisation
+#                  factor); an operator pin DEV_IO_*_MAX still wins per value.  There is NO static
+#                  fallback on this role: with neither a pin nor a verified measurement the limit
+#                  is UNRESOLVED and install.sh refuses / the reconcile keeps the current cap and
+#                  fails, with the remedy printed (a 500-IOPS guess on a 8000-IOPS disk
+#                  throttled every gate lane on r1002/v1001, 2026-11-04).
+# The responsiveness guard stays on: the sub-ceilings (DEV_SUBSLICE_IOPS_PCT), IOWeight on gates and
+# BuildKit, the PSI guard and (optionally) io.cost QoS all remain; only the ABSOLUTE ceiling moves.
+_mdt_host_role() {
+  case "${HOST_ROLE:-}" in
+    dedicated-dev|shared-prod) printf '%s\n' "$HOST_ROLE" ;;
+    "") printf 'unset\n' ;;
+    *) printf 'invalid\n' ;;
+  esac
+}
+
+# _mdt_load_iobench_caps: sets MDT_MEASURED_{RIOPS,WIOPS,RBPS,WBPS} (empty = no usable value) and
+# MDT_MEASURED_WHY (the reason when nothing is usable) from the iobench result, through the ONE
+# reader scripts/mdt_iobench_caps.py with the ROOT disk's identity.  Seams: MDT_IOBENCH_CAPS_HELPER,
+# IOBENCH_RESULT, MDT_SYSFS_ROOT/MDT_ROOT_TARGET (as for the other root-disk helpers).  Loaded once
+# per process; set MDT_MEASURED_LOADED= to force a re-read.
+_mdt_load_iobench_caps() {
+  [ -n "${MDT_MEASURED_LOADED:-}" ] && return 0
+  local helper="${MDT_IOBENCH_CAPS_HELPER:-/usr/local/sbin/mdt_iobench_caps.py}" node majmin k v out rc
+  local -a args=()
+  MDT_MEASURED_LOADED=1; MDT_MEASURED_WHY=""
+  for k in RIOPS WIOPS RBPS WBPS; do printf -v "MDT_MEASURED_$k" '%s' ""; done
+  if [ ! -f "$helper" ]; then MDT_MEASURED_WHY="the reader $helper is not installed"; return 1; fi
+  if ! node=$(_mdt_root_disk_node 2>/dev/null) || ! majmin=$(_mdt_root_disk_majmin 2>/dev/null); then
+    MDT_MEASURED_WHY="the root disk could not be derived"; return 1
+  fi
+  args+=(--devno "$majmin")
+  while IFS='=' read -r k v; do
+    case "$k" in model|serial|wwn) [ -n "$v" ] && args+=("--$k" "$v") ;; size_bytes) [ -n "$v" ] && args+=(--size-bytes "$v") ;; esac
+  done < <(_mdt_io_disk_identity "${node#/dev/}" 2>/dev/null)
+  [ -n "${IOBENCH_RESULT:-}" ] && args+=(--result "$IOBENCH_RESULT")
+  # stdout and stderr are merged (read-only: no temp file): KEY=number lines are values, the rest is the reason
+  out=$(python3 "$helper" "${args[@]}" 2>&1); rc=$?
+  if [ "$rc" != 0 ]; then
+    MDT_MEASURED_WHY=$(printf '%s' "$out" | tr '\n' ' '); return 1
+  fi
+  while IFS='=' read -r k v; do
+    case "$k" in RIOPS|WIOPS|RBPS|WBPS) case "$v" in ''|*[!0-9]*) ;; *) printf -v "MDT_MEASURED_$k" '%s' "$v" ;; esac ;; esac
+  done <<<"$out"
+  return 0
+}
+
+# _mdt_dedicated_remedy: the operator-facing remedy for an unresolved dedicated-dev limit.
+_mdt_dedicated_remedy() {
+  log "ERROR: HOST_ROLE=dedicated-dev has no limit for: $1 — no DEV_IO_*_MAX pin and no usable iobench measurement (${MDT_MEASURED_WHY:-none}). There is deliberately NO static fallback on a dedicated host. Remedy: (1) measure — 'iobench calibrate --target <scratch partition> --work-dir <dir> --installer --confirm-quiet-window ...' (libraries/iobench/docs/CONSUMERS.md section 2; debian-install-v2 does this at install time when io_benchmark is enabled) and re-run install.sh; or (2) pin DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX from a sustained measurement (host-setup.env.example 4.2); or (3) set HOST_ROLE=shared-prod if production runs here."
+}
+
+# _mdt_resolve_static_io_dedicated: dedicated-dev flavour of _mdt_resolve_static_io.  Per field the pin
+# (DEV_IO_*_MAX), else the measured iobench cap; never DEV_STATIC_*, never a built-in.  Fields without
+# either stay EMPTY and MDT_DEDICATED_UNRESOLVED lists them; rc 1 then (the callers refuse / fail).
+_mdt_resolve_static_io_dedicated() {
+  local rc=0 field pin value unresolved=""
+  _mdt_load_iobench_caps || true
+  for field in "RBPS DEV_IO_RBPS_MAX" "WBPS DEV_IO_WBPS_MAX" "RIOPS DEV_IO_RIOPS_MAX" "WIOPS DEV_IO_WIOPS_MAX"; do
+    set -- $field
+    pin="${!2:-}"; value=""
+    if [ -n "$pin" ]; then
+      if ! value=$(_mdt_size_to_bytes "$pin"); then
+        log "ERROR: $2='$pin' is not a positive integer with an optional K/M/G/T suffix (0 would halt IO) — ignoring it"
+        rc=1; value=""
+      fi
+    fi
+    if [ -z "$value" ]; then eval "value=\${MDT_MEASURED_$1:-}"; fi
+    [ -z "$value" ] && unresolved="$unresolved $1"
+    printf -v "MDT_STATIC_$1" '%s' "$value"
+  done
+  MDT_DEDICATED_UNRESOLVED="${unresolved# }"
+  if [ -n "$MDT_DEDICATED_UNRESOLVED" ]; then _mdt_dedicated_remedy "$MDT_DEDICATED_UNRESOLVED"; rc=1; fi
+  return $rc
+}
+
 # _mdt_resolve_static_io: sets MDT_STATIC_RBPS/WBPS/RIOPS/WIOPS (numbers) from
 # ONE source: the operator-pinned DEV_IO_*_MAX key when set, else the
 # DEV_STATIC_* key, else the built-in default.  install.sh renders the unit
@@ -316,6 +399,10 @@ _mdt_size_to_bytes() {
 # decides whether rc 1 refuses (install.sh) or fails the run (reconcile).
 _mdt_resolve_static_io() {
   local rc=0 field builtin abs static value
+  case "$(_mdt_host_role)" in
+    dedicated-dev) _mdt_resolve_static_io_dedicated; return ;;
+    invalid) log "ERROR: HOST_ROLE='${HOST_ROLE}' is not dedicated-dev or shared-prod — treating the host as shared-prod (conservative static limits)"; rc=1 ;;
+  esac
   for field in "RBPS DEV_IO_RBPS_MAX DEV_STATIC_RBW 150M" "WBPS DEV_IO_WBPS_MAX DEV_STATIC_WBW 150M" \
                "RIOPS DEV_IO_RIOPS_MAX DEV_STATIC_RIOPS 500" "WIOPS DEV_IO_WIOPS_MAX DEV_STATIC_WIOPS 500"; do
     set -- $field
@@ -345,6 +432,20 @@ _mdt_resolve_dev_io_caps() {
   local rc=0 field abs base value pinned_value src
   _mdt_resolve_static_io || rc=1
   DEV_IO_SRC=""
+  if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+    # pin > measured iobench cap; the legacy baseline and DEV_STATIC_* do not apply on this role.
+    # An unresolved field leaves DEV_<F> empty: the caller must not apply (see MDT_DEDICATED_UNRESOLVED).
+    for field in RBPS WBPS RIOPS WIOPS; do
+      eval "pinned_value=\${DEV_IO_${field}_MAX:-}"
+      if [ -n "$pinned_value" ] && _mdt_size_to_bytes "$pinned_value" >/dev/null 2>&1; then src="pinned"
+      elif eval "[ -n \"\${MDT_MEASURED_$field:-}\" ]"; then src="iobench"
+      else src="UNRESOLVED"; fi
+      eval "DEV_$field=\$MDT_STATIC_$field"
+      DEV_IO_SRC="$DEV_IO_SRC $field=$src"
+    done
+    DEV_IO_SRC="${DEV_IO_SRC# } [HOST_ROLE=dedicated-dev]"
+    return $rc
+  fi
   for field in "RBPS DEV_IO_RBPS_MAX RBW_MAX_BPS" "WBPS DEV_IO_WBPS_MAX WBW_MAX_BPS" \
                "RIOPS DEV_IO_RIOPS_MAX RIOPS_MAX" "WIOPS DEV_IO_WIOPS_MAX WIOPS_MAX"; do
     set -- $field
@@ -756,6 +857,7 @@ _mdt_missing_declared_keys() {
 # _mdt_io_pin_notice: one loud NOTICE when no DEV_IO_*_MAX pin is set, naming the
 # effective dev.slice cap source (call after _mdt_resolve_static_io).
 _mdt_io_pin_notice() {
+  [ "$(_mdt_host_role)" = dedicated-dev ] && return 0
   [ -z "${DEV_IO_RBPS_MAX:-}${DEV_IO_WBPS_MAX:-}${DEV_IO_RIOPS_MAX:-}${DEV_IO_WIOPS_MAX:-}" ] || return 0
   echo "NOTICE: no DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX pin is set. Effective dev.slice cap source: the static fallback DEV_STATIC_* = ${MDT_STATIC_RBPS}/${MDT_STATIC_WBPS} bytes/s r/w, ${MDT_STATIC_RIOPS}/${MDT_STATIC_WIOPS} IOPS r/w (lowered only by a current, plausible baseline). On a virtual disk pin the caps from a sustained measurement (docs/CONSUMERS.md) or run install.sh --wizard."
 }
