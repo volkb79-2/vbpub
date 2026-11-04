@@ -4,6 +4,68 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [1.64.1-r1] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=31b70bff4e651cfab147567aa0d48e323805375d -->
+
+### Added
+- feat(pwmcp): inspect --retries with stable-DOM check, page diagnostics and small-result warnings (PWMCP-24..26) (004fbbe29)
+- feat(pwmcp): per-project vm-lab layout for console-capture; document VM files and downloads convention (a6d2fa901)
+- feat(pwmcp): verify console corpus from local directory (6c9d91300)
+- feat(pwmcp): imagegen, deterministic OCR test-image generator with exact ground truth (d47859f11)
+- feat(pwmcp/glyphgrid): console-extra font atlas (Debian console-setup Terminus/Fixed/VGA, kernel TER16x32; Debian netinst + grml measured) (f104e9560)
+
+### Fixed
+- fix(pwmcp): bounded, scoped, xdist-safe repository cleanliness guard (PWMCP-12..16) (48838ede3)
+- fix(pwmcp): tRNS colour-key PNGs composited onto white (PWMCP-18), corpus defaults from script location (PWMCP-21), gateway test reaps process, serialised-fetch wording (PWMCP-10) (6be337905)
+- fix(pwmcp): explicit TLS opt-out for the TrueNAS RPC helper (verify by default, warn when disabled) (4f9171acd)
+- fix(pwmcp): vm launcher review fixes (main-checkout defaults, short QMP socket, ISO/disk checks) + AGENTS.md VM wording (16a7133ef)
+- fix(pwmcp/glyphgrid): fourth review (restore GlyphReader session condition + crossing test, trust_scale fails closed, PSF1 stray byte test, NOTICE hash case/length/stale checks, alias-set kill) (f851cf741)
+- fix(pwmcp): imagegen second review: revert Dockerfile change, vector font without system packages, golden keyed by env+font, subpixel clip clamp, report pins (72a4621ac)
+- fix(pwmcp/glyphgrid): third review (z cells keep pre-cap class/homoglyph set and flags, trust_scale restores H, Atlas.add clears caches, PSF1 loud on unterminated record, NOTICE sha whitelist, redundant reader condition removed) (4e57ca647)
+- fix(pwmcp/glyphgrid): second review follow-up (all-divisor unscale guard carried on the grid, class z cap + trust_scale, hazard/PSF2/NOTICE fixes) (21b8ea485)
+- fix(pwmcp): imagegen review follow-up: complement-twin ambiguity, crop-aware scoring, answered counts, char-level Tesseract, mutation tests (b510c71af)
+- fix(pwmcp/glyphgrid): review follow-up (unscale guard, rival rule, mapping checks, PSF2 padding, tier analysis, NOTICE evidence) (d335df8e6)
+
+### Changed
+- Merge branch 'fix-pwmcp-1-20261104' (c38661194)
+- Merge branch 'backlog-platform-20261104' (e69a27940)
+- Merge branch 'fix-r1002-findings-20261104' (4da35babe)
+- pwmcp backlog: local base behind the builder bypass (PWMCP-23) (6418b501a)
+- pwmcp: launcher refuses (disk/pid/ISO) before any OVMF side effect; OVMF_VARS overridable (a34015611)
+- Merge branch 'vm-layout-pwmcp-20261103' (c62ad7618)
+- pwmcp: web-console and TrueNAS VM console capture tools (operator work: JSON-RPC display, web console session daemon) (f57b79f52)
+- refactor(pwmcp): vm launcher uses script-relative paths only; vm-lab placeholders; AGENTS.md VM section for CoW-clone model (576c0eeb9)
+- pwmcp: route corpus absence through shared test policy (da3b0c9e8)
+- pwmcp: restore OCR backlog context (91c24eb47)
+- Merge pwmcp GlyphGrid tooling (fonts-speed + imagegen branches integrated; NOTICE for atlases; tools only, service stays 501; r1 green, Opus reviewed) (507219a23)
+- Integrate pwmcp GlyphGrid tooling branches (e73e16160)
+- Merge branch 'worktree-agent-ab4156ad5c7c6cb52' into pwmcp-glyphgrid-integ-20261103 (e80714f73)
+- Merge branch 'integration-fonts-speed' into pwmcp-glyphgrid-integ-20261103 (926ec645a)
+- Merge speed branch 1768edafa into glyphgrid fonts work (prepare keeps _state/_masks and g[unscaled]; GlyphReader guard test) (83d41796e)
+- perf(glyphgrid): 5x faster read_image with bit-identical output (reference path kept), GlyphReader for frame sequences (3b493d882)
+
+### Documentation
+- docs(pwmcp): file PWMCP-31 (bundle client not installable by a consumer without a cli-extended source; dstdns@ed07ca19 context) (947f6a93c)
+- docs(pwmcp): backlog statuses for PWMCP-12..17, file PWMCP-24..30, CHANGES [Unreleased] (7bad87117)
+- docs(pwmcp): backlog statuses PWMCP-18/21/05/10 (33e9825af)
+- docs: NOTICE font licence evidence from upstream (Terminus OFL-1.1, misc-fixed public domain, kernel ter16x32 GPL-2.0), remaining gaps named (1c0266d98)
+- docs(pwmcp): PWMCP-20 note: r2 lane declares jobs = 1, so --jobs auto stays serial (d78302d99)
+- docs(pwmcp): PWMCP-22 backlog entry for unported canvas/xterm/login groundwork (14d0d8bc7)
+- docs(pwmcp): file PWMCP-19 (screenshot fixture rule: public/agnostic only, prefer generated alphabets) (468847293)
+
+### Testing
+- test: installer test uses the shared optional-dependency policy (no importorskip) (ad4b09060)
+- test: installer test ignores the gate's PYTHONPATH when running the venv launcher (720d0058b)
+- test: glyphgrid reference-identity checks run with an unlimited phase-search budget (the 4 s wall clock made the slower reference path diverge under load) (f38bbfd80)
+- test: offline installer test for the rendered pwmcp get.py; CHANGES entry for the installer (6d5cc0448)
+- test(pwmcp): align launcher test with simplified refusal message (6395a4b41)
+- test(pwmcp): restore console corpus refusal cases (a8fdd53ea)
+- test(glyphgrid): pin every GlyphReader fallback gate and the tied-cell redo, full-dict parity, README accuracy (1768edafa)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - `pwmcp inspect --retries N` (0..10): extra attempts, each a fresh context and navigation, after a failed attempt or text that still changes over a 0.5 s settle window (PWMCP-24).
 - `pwmcp inspect` stderr diagnostics: a `page diagnostics:` line with the main-document status, console error count and failed subresources per status (PWMCP-25), and a warning when text output is under 1 KiB without `--wait-for` or much smaller than an earlier attempt (PWMCP-26). Stdout is unchanged.
@@ -22,8 +84,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Oracle for the cleanliness guard (`tests/test_git_guard.py`): real child pytest runs in a throwaway git repository, including `-n 2`.
 - Offline installer test (`tests/test_installer_offline.py`): the committed `get.py` runs unattended install, update and rollback against a fixture bundle with no network.
 - Keep the full 242-frame console capture local and unpublished. Corpus tests verify an explicit `PWMCP_CONSOLE_CORPUS_DIR` against the frame index and deterministic tar pin; they skip with a reason when unset, and `PWMCP_REQUIRE_CONSOLE_CORPUS=1` makes absence fail. The registered gate lanes remain corpus-free.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [1.64.0-r4] - 2026-11-02
 <!-- cmru: generated -->
