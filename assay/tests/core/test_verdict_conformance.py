@@ -1445,13 +1445,26 @@ def test_v17_verdict_is_refused_with_exactly_one_diagnostic():
 #: cannot drift. v18 (B208) replaces the v17 entry: only the current version's
 #: schema ships.
 _VERDICT_SCHEMA_SHA256 = {
-    18: "b0b5814ce39e9d9ae17fff995db82eff748969f81379f62d18a3c8c0d8851379",
+    18: "bf7c710838f46baecc4cacb86ea4cbf7f50797ecb7aeab1be946fda5e3d3bef3",
 }
 
 
 def test_the_shipped_verdict_schema_is_frozen_for_its_version():
     shipped = (PROJECT_ROOT / "src" / "assay" / "schemas" / "verdict.schema.json").read_bytes()
     assert hashlib.sha256(shipped).hexdigest() == _VERDICT_SCHEMA_SHA256[VERDICT_SCHEMA_VERSION]
+
+
+def test_the_shipped_verdict_schema_id_and_title_name_the_current_version():
+    """The packaged schema's own identity must follow VERDICT_SCHEMA_VERSION
+    (the v18 release shipped it still naming v17)."""
+    schema = json.loads(
+        (PROJECT_ROOT / "src" / "assay" / "schemas" / "verdict.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert schema["$id"] == f"urn:assay:schema:verdict:{VERDICT_SCHEMA_VERSION}"
+    assert schema["title"] == f"assay verdict artifact v{VERDICT_SCHEMA_VERSION}"
+    assert schema["properties"]["schema_version"]["const"] == VERDICT_SCHEMA_VERSION
 
 
 def test_b171_leak_retains_underlying_suite_result_without_mutation_credit():

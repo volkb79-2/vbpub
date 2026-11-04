@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import copy
 import errno
-import json
 import os
 import socket
 import subprocess

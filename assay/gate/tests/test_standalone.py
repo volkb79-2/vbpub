@@ -663,6 +663,11 @@ def _expected_r2_artifact(
     liveness_active: bool = False,
     liveness_reason: str | None = "argv-does-not-invoke-pytest",
     liveness_plugin: str | None = None,
+    #: (B203/B206/schema v18) how many native candidates actually ran (the
+    #: `worker_counts` total, keyed by *jobs*) and how many candidates the
+    #: observer profile accounts for (executed plus not-started ones).
+    executed: int = 0,
+    profiled: int = 0,
 ) -> dict:
     """The COMPLETE expected document, written out in full so a field the
     producer adds, drops, or fills in wrongly fails even though no assertion
@@ -800,6 +805,38 @@ def _expected_r2_artifact(
                 "kill_attribution": "unattributed",
                 "cold_witness_kills": False,
                 "r2_command": None,
+                # B203/schema v18: candidates per worker count; `jobs` is
+                # the campaign maximum.
+                "worker_counts": {str(jobs): executed} if executed else {},
+                # B206/schema v18: the observer profile summary. The
+                # cgroup observer's availability and contract support are
+                # properties of the host the gate runs on, so the status and
+                # reason breakdown and the observed modes are validated and
+                # normalized by `_assert_complete`; what is pinned here is
+                # that every profiled candidate is accounted for and that
+                # nothing outside the cgprofile identity appears.
+                "profile": {
+                    "status_counts": {
+                        "MEASURED": 0,
+                        "PARTIAL": 0,
+                        "NO_MEASUREMENT": profiled,
+                    },
+                    "reason_counts": {},
+                    "observer": {
+                        "name": "cgprofile",
+                        "version": None,
+                        "contracts": [3],
+                        "modes": [],
+                    },
+                },
+                "schedule": {
+                    "policy": "canonical",
+                    "thresholds": None,
+                    "memory_budget_bytes": None,
+                    "jobs": jobs,
+                    "prediction_sources": {},
+                    "error": None,
+                },
                 "equivalence_ledger": None,
                 # B035/A-329: every R2 lane in this module is changed-line
                 # scoped (each declares `judge.base` and no `judge.mode`), so
@@ -966,6 +1003,24 @@ def _assert_complete(real: dict, expected: dict) -> None:
     normalize_process_tree_evidence(
         r2.get("mutation") if isinstance(r2, dict) else None
     )
+    if isinstance(r2, dict) and isinstance(r2.get("profile"), dict):
+        # B206: whether the host's cgroup observer measures, refuses its
+        # contract or is absent is an environment fact. Validate that the
+        # summary is internally consistent and accounts for the same number
+        # of candidates as the expected one, then normalize the
+        # environment-dependent breakdown.
+        profile = r2["profile"]
+        expected_profile = expected["judgment"]["r2"]["profile"]
+        statuses = profile["status_counts"]
+        reasons = profile["reason_counts"]
+        assert sum(reasons.values()) == statuses["NO_MEASUREMENT"]
+        assert sum(statuses.values()) == sum(
+            expected_profile["status_counts"].values()
+        )
+        assert set(profile["observer"]["modes"]) <= {"cgroup", "process-tree"}
+        profile["status_counts"] = dict(expected_profile["status_counts"])
+        profile["reason_counts"] = dict(expected_profile["reason_counts"])
+        profile["observer"]["modes"] = list(expected_profile["observer"]["modes"])
     if isinstance(r2, dict) and "budget_per_candidate_derived_s" in r2:
         derived = r2["budget_per_candidate_derived_s"]
         assert isinstance(derived, (int, float)) and not isinstance(derived, bool)
@@ -1015,6 +1070,8 @@ def test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wh
             reason_code="MUTANTS_SURVIVED",
             exit_code=1,
             operators=["python:compare-swap"],
+            executed=2,
+            profiled=2,
             r2_claim={
                 "rigor": "R2",
                 "source": "computed",
@@ -1033,7 +1090,10 @@ def test_a_real_r2_lane_kills_one_mutant_and_lets_another_survive_through_the_wh
                     # names which site the suite actually caught -- a count
                     # could not distinguish this run from one that killed
                     # line 6 and let line 2 live.
-                    "killed": [_gt_site(2)],
+                    # B205/schema v18: every native killed entry names the
+                    # first failing test, null when the suite reported none
+                    # (this lane's grep is not a pytest run).
+                    "killed": [{**_gt_site(2), "first_failing_test": None}],
                     "survived": [_gt_site(6)],
                     "crashed": [],
                     "budget_exceeded": [],
@@ -1260,6 +1320,9 @@ def test_a_real_r2_mutant_that_outlives_the_lane_budget_is_its_own_bucket(
             reason_code="LANE_TIMEOUT",
             exit_code=4,
             jobs=1,
+            # Line 2's mutant ran; line 6's was never started.
+            executed=1,
+            profiled=2,
             operators=["python:compare-swap"],
             r2_claim={
                 "rigor": "R2",
