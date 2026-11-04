@@ -82,6 +82,7 @@ WIZARD_SECTIONS = (
         (
             WizardField("root_resize_policy", "Root partition policy", "choice", ("resize", "untouched", "grow-only")),
             WizardField("root_max_size_gb", "Maximum root partition size in GiB (blank for no cap)", "optional-integer"),
+            WizardField("disk_layout", "Disk layout (dev-host caps root by rule, leaves cow/reserve space, swap at end)", "choice", ("full-root", "dev-host")),
             WizardField("swap_policy", "Swap policy", "choice", ("on", "off", "untouched")),
             WizardField("swap_disk_total_gb", "Total swap capacity in GiB (blank or auto derives from disk and RAM)", "optional-integer"),
             WizardField("swap_partition_count", "Number of swap partitions", "integer"),

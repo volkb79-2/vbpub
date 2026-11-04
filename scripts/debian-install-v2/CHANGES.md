@@ -4,6 +4,24 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Fixed
+- Disk layout policy (NC-12): swap is always placed at the END of the disk,
+  also when `root_max_size_gb` caps root (the cap no longer forces swap directly
+  after root, which put swap in the middle on r1002/v1001 and boxed in root and
+  the cow partition). The planner refuses plans where a non-swap partition
+  follows swap, where more than 2 MiB follows the last swap, or where a capped
+  root is below `min_root_gib` (20% of the disk, 8..100 GiB). Stage-two growth
+  resizes root to exactly the plan when unallocated space follows it.
+
+### Added
+- `disk_layout` config key (`full-root` default, `dev-host`): `dev-host` sizes root
+  by rule (5/16 of the disk, 160 GiB on 512 GiB), leaves the cow area (1/3 of the
+  disk) and reserve unallocated between root and swap; wizard field and
+  `show_plan` entry. New module `layout_policy.py`, tests
+  `tests/test_layout_policy.py`, README "Disk layout policy".
+- `scripts/netcup/runner/provision-runner.sh` carves the cow partition from the
+  largest free row (`COW_SIZE_GIB`, default 1/3 of the disk), at the end of the gap.
+
 ### Changed
 - A configured `root_max_size_gb` now installs cloud-init and initramfs root
   growth guards after stage one validates the capped tail-swap plan and before

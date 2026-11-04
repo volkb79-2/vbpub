@@ -52,10 +52,21 @@ identity_check
 if test -b "$COW_DEVICE"; then
   test "$(lsblk -dn -o PKNAME "$COW_DEVICE")" = "$(basename "$COW_PARENT_DISK")"
 else
-  free_row="$(parted -m -s "$COW_PARENT_DISK" unit MiB print free | awk -F: 'tolower($5) ~ /^free/ {start=$2; end=$3} END {if (start != "") print start ":" end}')"
+  # The debian-install-v2 layout (disk_layout=dev-host) leaves the cow area + reserve UNALLOCATED between root and
+  # the END-of-disk swap, so the cow partition is carved from the LARGEST free row (never the last row, which is a
+  # sliver after swap), ends at the row end, and takes COW_SIZE_GIB (default: a third of the disk, 8 GiB steps,
+  # capped to the row). The rest stays unallocated reserve directly behind root.
+  free_row="$(parted -m -s "$COW_PARENT_DISK" unit MiB print free | awk -F: 'tolower($5) ~ /^free/ {s=int($2+0.999); e=int($3); if (e - s > best) {best=e - s; start=s; end=e}} END {if (start != "") print start ":" end}')"
   test -n "$free_row"
-  free_start=${free_row%%:*}
-  parted -s "$COW_PARENT_DISK" mkpart primary "$free_start" 100%
+  free_start_mib=${free_row%%:*}
+  free_end_mib=${free_row##*:}
+  disk_mib=$(( $(blockdev --getsize64 "$COW_PARENT_DISK") / 1048576 ))
+  cow_mib=$(( ${COW_SIZE_GIB:-$(( disk_mib / 1024 / 3 / 8 * 8 ))} * 1024 ))
+  # The cow partition is placed at the END of the gap (right before swap); the reserve stays directly behind root,
+  # so root can grow into it (sfdisk + resize2fs) and cow, a disposable cache, is re-created larger if needed.
+  cow_start_mib=$(( free_end_mib - cow_mib ))
+  if test "$cow_start_mib" -lt "$free_start_mib"; then cow_start_mib=$free_start_mib; fi
+  parted -s "$COW_PARENT_DISK" mkpart primary "${cow_start_mib}MiB" "${free_end_mib}MiB"
   partprobe "$COW_PARENT_DISK"
   udevadm settle
 fi
