@@ -235,14 +235,15 @@ class TestRealEstate:
         report = self._report()
         assert report.ok, report.errors
         assert report.levels["cli-extended"] == 0
-        assert report.levels["cgroup-profiler"] == 0
-        assert report.levels["run-gate-project"] == 1
-        assert report.levels["cmru"] == 2
+        # cgroup-profiler's wheel requires cli-extended (cgprofile 2.0 package 1): a real wheel edge, so L1.
+        assert report.levels["cgroup-profiler"] == 1
+        assert report.levels["run-gate-project"] == 2
+        assert report.levels["cmru"] == 3
         assert report.levels["nyxloom"] == 1
-        assert report.levels["modern-debian-tools-python-debug"] == max(report.levels.values()) == 3
-        assert report.levels["mdt-cockpit"] == 3
+        assert report.levels["modern-debian-tools-python-debug"] == max(report.levels.values()) == 4
+        assert report.levels["mdt-cockpit"] == 4
         assert all(report.levels[name] == 0 for name in (
-            "assay", "topos", "cgroup-profiler", "tls-edge", "tester-base",
+            "assay", "topos", "tls-edge", "tester-base",
         ))
         # ciu consumes the cli-extended wheel (CIU-114 adoption): a real wheel edge, so L1.
         assert report.levels["ciu"] == 1
