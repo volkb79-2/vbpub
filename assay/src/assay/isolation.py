@@ -269,6 +269,36 @@ class _Entry:
     target: str | None = None
 
 
+#: (B222) Under ``verify_clone = "tiered"`` every this-many-th clone (the first
+#: included) still gets the complete :meth:`SnapshotRepository._verify` proof.
+#: The clone of a sealed read-only template cannot differ from it, so this is
+#: insurance against a harness or backend defect, not a part of the argument.
+VERIFY_CLONE_FULL_EVERY = 25
+
+_LS_TREE_BLOB = re.compile(rb"[0-7]+ blob ([0-9a-f]{40})\t")
+
+
+@record
+class _BaseClosure:
+    """(B220) What the seed already proved about the judged commit's closure.
+
+    The child commit of a replacement shares every object of the judged
+    commit's closure except the replaced blob, the trees on its path and the
+    commit itself. These facts are derived once while the seed is prepared, so
+    each candidate bounds only the objects it adds instead of re-walking the
+    whole pack. ``oids`` is the closure under the seed's own shallow boundaries
+    (the same visible commits a child walk sees), not the larger seed
+    inventory.
+    """
+
+    oids: frozenset[str]
+    total_bytes: int
+    #: Unique blob OID -> size over the judged commit's tree.
+    tree_blob_sizes: Mapping[str, int]
+    #: Number of tree leaves (paths) that reference each blob OID.
+    blob_refs: Mapping[str, int]
+
+
 @record
 class _Manifest:
     """The frozen content of one commit: what materialization may write.
@@ -579,6 +609,7 @@ class SnapshotRepository:
         template: Path,
         manifest: _Manifest,
         workspace: ActiveWorkspace | None = None,
+        base_closure: _BaseClosure | None = None,
     ) -> None:
         self._spec = spec
         self._source = source
@@ -586,6 +617,10 @@ class SnapshotRepository:
         self._template = template
         self._manifest = manifest
         self._workspace = workspace
+        #: ``None`` (a caller that did not derive it) keeps the full closure
+        #: walk, exactly as before B220.
+        self._base_closure = base_closure
+        self._clone_count = 0
         self._lock = threading.Lock()
         self._template_lock = threading.Lock()
         self._closed = False
@@ -814,12 +849,38 @@ class SnapshotRepository:
             root = workspace.make_tree()
             try:
                 self._build(root, None, deadline, plant_links=False)
+                self._prime_index(root, deadline)
                 workspace.seal(root)
             except BaseException:
                 self._discard_materialization(root)
                 raise
             self._template_root = root
             return root
+
+    def _prime_index(self, root: Path, deadline: "_git._P22Deadline") -> None:
+        """(B219) Record stat data in the sealed template's index, once.
+
+        ``_build`` writes the index with ``read-tree`` and the worktree from
+        Python, so the index carries no stat data, and every Git child runs
+        with optional locks off, so a later ``git status`` never persists a
+        refresh. Each candidate's ``status`` (before the command and in the
+        post-command dirt check) therefore hashed every tracked file. One
+        explicit ``update-index --refresh`` here (a non-optional write, so the
+        lock flags do not suppress it) lets a clone that preserves inode
+        numbers and timestamps validate by ``lstat`` alone. A clone that does
+        not preserve them simply mismatches the recorded stat data and Git
+        falls back to hashing: slower, never wrong. The file mtimes are fixed
+        and far older than the index file, so no entry is racily clean.
+        """
+        git_dir = root / ".git"
+        _git._p22_git(
+            self._source.git_executable,
+            git_dir=git_dir,
+            work_tree=root,
+            args=("update-index", "--refresh"),
+            deadline=deadline,
+            cwd=root,
+        )
 
     def _materialize_clone(
         self,
@@ -843,7 +904,7 @@ class SnapshotRepository:
                 identity=identity,
             )
 
-        commit, _entries = self._apply_replacement(
+        commit, entries = self._apply_replacement(
             root=root,
             git_dir=git_dir,
             run=run,
@@ -852,9 +913,71 @@ class SnapshotRepository:
             rewrite_worktree=True,
         )
         (git_dir / "HEAD").write_text(f"{commit}\n", encoding="ascii")
-        self._verify(root, git_dir, commit, run)
+        with self._lock:
+            ordinal = self._clone_count
+            self._clone_count += 1
+        if (
+            self._spec.snapshot_policy.verify_clone == "full"
+            or ordinal % VERIFY_CLONE_FULL_EVERY == 0
+        ):
+            self._verify(root, git_dir, commit, run)
+        else:
+            self._verify_clone_identity(root, commit, run, replacement, entries)
         self._plant_link_paths(root, run)
         return commit
+
+    def _verify_clone_identity(
+        self,
+        root: Path,
+        commit: str,
+        run: Callable[..., bytes],
+        replacement: tuple[PurePosixPath, bytes, bytes] | None,
+        entries: tuple[_Entry, ...],
+    ) -> None:
+        """(B222) The per-candidate proof for a clone of the sealed template.
+
+        The clone is a copy-on-write snapshot of a read-only template that
+        :meth:`_build` already proved in full, so its untouched content equals
+        the template's by construction. What a clone adds is the candidate: the
+        replacement commit, and the one worktree file written for it. Those
+        are checked directly: ``HEAD`` is the commit, the index tree is
+        ``HEAD``'s tree, the replaced path holds the intended blob in the
+        commit and the intended bytes and mode on disk. The post-command dirt
+        check (``status`` plus the head check) is not tiered and still runs
+        for every candidate.
+        """
+        head = _decode(run("rev-parse", "HEAD")).strip()
+        if head != commit:
+            raise _git_failed(f"private HEAD is {head}, expected {commit}")
+        tree = _decode(run("write-tree")).strip()
+        head_tree = _decode(run("rev-parse", "HEAD^{tree}")).strip()
+        if tree != head_tree:
+            raise _git_failed(
+                f"the private snapshot at {root} has an index tree {tree} "
+                f"that does not match HEAD^{{tree}} {head_tree}"
+            )
+        if replacement is None:
+            return
+        path, _expected, new_bytes = replacement
+        entry = next(item for item in entries if item.path == path)
+        committed = _decode(run("rev-parse", f"HEAD:{path}")).strip()
+        if committed != entry.oid:
+            raise _git_failed(
+                f"the replacement commit holds blob {committed} at {path!s}, "
+                f"expected {entry.oid}"
+            )
+        destination = root.joinpath(*path.parts)
+        executable = entry.mode == _MODE_EXECUTABLE
+        status = destination.lstat()
+        if (
+            not stat.S_ISREG(status.st_mode)
+            or bool(status.st_mode & 0o111) != executable
+            or destination.read_bytes() != new_bytes
+        ):
+            raise _git_failed(
+                f"the replaced file {path!s} in the private snapshot at {root} "
+                f"does not hold the replacement bytes and mode"
+            )
 
     def _discard_materialization(self, root: Path) -> None:
         """Remove a failed or leaked child without masking its first error."""
@@ -1025,7 +1148,12 @@ class SnapshotRepository:
             )
             for item in entries
         )
-        self._enforce_child_closure(git_dir, commit, deadline)
+        self._enforce_child_closure(
+            git_dir,
+            commit,
+            deadline,
+            replaced=(path, entry.oid, new_oid),
+        )
         if rewrite_worktree:
             destination = root.joinpath(*path.parts)
             destination.unlink()
@@ -1145,7 +1273,12 @@ class SnapshotRepository:
             )
 
     def _enforce_child_closure(
-        self, git_dir: Path, commit: str, deadline: "_git._P22Deadline"
+        self,
+        git_dir: Path,
+        commit: str,
+        deadline: "_git._P22Deadline",
+        *,
+        replaced: tuple[PurePosixPath, str, str],
     ) -> None:
         """Bound the child's own closure (A-186).
 
@@ -1153,7 +1286,23 @@ class SnapshotRepository:
         Checking only the base closure would let the declared ceilings be
         true of the prepared seed and false of every repository actually
         handed to a consumer command.
+
+        (B220) The base closure was already measured when the seed was
+        prepared, so under ``verify_clone = "tiered"`` only the objects the
+        replacement adds are read (:meth:`_enforce_added_objects`); the limits
+        fire at exactly the thresholds of the full walk, which remains the
+        behaviour for ``verify_clone = "full"``, for a repository prepared
+        without base facts, and for a path Git's line-oriented object-name
+        protocol cannot carry.
         """
+        path = replaced[0]
+        if (
+            self._base_closure is not None
+            and self._spec.snapshot_policy.verify_clone == "tiered"
+            and "\n" not in str(path)
+        ):
+            self._enforce_added_objects(git_dir, commit, deadline, replaced)
+            return
         limits = self._spec.limits
         oids = _closure_oids(
             self._source.git_executable,
@@ -1184,6 +1333,82 @@ class SnapshotRepository:
             no_walk=True,
         )
         _enforce_tree_blob_limits(child_metadata, tree_oids, limits)
+
+    def _enforce_added_objects(
+        self,
+        git_dir: Path,
+        commit: str,
+        deadline: "_git._P22Deadline",
+        replaced: tuple[PurePosixPath, str, str],
+    ) -> None:
+        """(B220) The child's limits from the base facts plus the added objects.
+
+        The child closure is the judged commit's closure plus, at most, the
+        replacement commit, the root tree and every tree down to the replaced
+        path, and the new blob. Those are read with one ``cat-file
+        --batch-check``; everything else is the seed's recorded totals.
+        """
+        base = self._base_closure
+        assert base is not None
+        limits = self._spec.limits
+        path, old_oid, new_oid = replaced
+        names = [commit, f"{commit}^{{tree}}"]
+        names.extend(
+            f"{commit}^{{tree}}:{PurePosixPath(*path.parts[:depth])}"
+            for depth in range(1, len(path.parts) + 1)
+        )
+        raw = _git._p22_git(
+            self._source.git_executable,
+            git_dir=git_dir,
+            work_tree=None,
+            args=("cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"),
+            deadline=deadline,
+            cwd=git_dir,
+            stdin_bytes=("\n".join(names) + "\n").encode("utf-8"),
+        )
+        lines = _decode(raw).splitlines()
+        reported: dict[str, tuple[str, int]] = {}
+        for line in lines:
+            fields = line.split(" ")
+            if len(fields) != 3:
+                raise _git_failed(
+                    f"git cat-file --batch-check reported {line!r} for the "
+                    f"replacement's own objects"
+                )
+            reported[fields[0]] = (fields[1], int(fields[2]))
+        added = {
+            oid: found for oid, found in reported.items() if oid not in base.oids
+        }
+        if len(base.oids) + len(added) > limits.max_objects:
+            raise _limit_exceeded(
+                f"the reachable closure of {commit} exceeds max_objects "
+                f"({limits.max_objects})"
+            )
+        total = base.total_bytes
+        for oid, (kind, size) in added.items():
+            if kind == "blob" and size > limits.max_blob_bytes:
+                raise _limit_exceeded(
+                    f"blob {oid} is {size} bytes, exceeding max_blob_bytes "
+                    f"({limits.max_blob_bytes})"
+                )
+            total += size
+            if total > limits.max_total_object_bytes:
+                raise _limit_exceeded(
+                    f"the closure exceeds max_total_object_bytes "
+                    f"({limits.max_total_object_bytes})"
+                )
+        # The judged tree's unique blob bytes: the old blob leaves when this
+        # was its only path, the new blob joins unless the tree held it.
+        tree_total = sum(base.tree_blob_sizes.values())
+        if old_oid != new_oid and base.blob_refs[old_oid] == 1:
+            tree_total -= base.tree_blob_sizes[old_oid]
+        if new_oid not in base.tree_blob_sizes:
+            tree_total += reported[new_oid][1]
+        if tree_total > limits.max_total_tree_blob_bytes:
+            raise _limit_exceeded(
+                "the judged tree exceeds max_total_tree_blob_bytes "
+                f"({limits.max_total_tree_blob_bytes}) with {tree_total} bytes"
+            )
 
     def _verify(
         self,
@@ -1349,6 +1574,56 @@ def _copy_objects(
                 shutil.copyfile(item, destination)
             else:
                 workspace.clone_file(item, destination)
+
+
+def _derive_base_closure(
+    git_executable: Path,
+    *,
+    seed_git_dir: Path,
+    spec: SnapshotSpec,
+    metadata: Mapping[str, tuple[str, int]],
+    judged_tree_oids: Sequence[str],
+    deadline: "_git._P22Deadline",
+) -> _BaseClosure:
+    """(B220) Measure, once, what every child commit shares with the seed.
+
+    The walk is the one a child performs (``rev-list --objects <commit>`` under
+    the seed's shallow boundaries), so a child's closure is exactly this set
+    plus the objects its replacement adds.
+    """
+    oids = frozenset(
+        _closure_oids(
+            git_executable,
+            git_dir=seed_git_dir,
+            work_tree=None,
+            cwd=seed_git_dir,
+            commit=spec.commit,
+            deadline=deadline,
+            max_objects=spec.limits.max_objects,
+        )
+    )
+    listing = _git._p22_git(
+        git_executable,
+        git_dir=seed_git_dir,
+        work_tree=None,
+        args=("ls-tree", "-r", "-z", "--full-tree", spec.commit),
+        deadline=deadline,
+        cwd=seed_git_dir,
+    )
+    refs: dict[str, int] = {}
+    for match in _LS_TREE_BLOB.finditer(listing):
+        oid = match.group(1).decode("ascii")
+        refs[oid] = refs.get(oid, 0) + 1
+    return _BaseClosure(
+        oids=oids,
+        total_bytes=sum(metadata[oid][1] for oid in oids),
+        tree_blob_sizes={
+            oid: metadata[oid][1]
+            for oid in set(judged_tree_oids)
+            if metadata[oid][0] == "blob"
+        },
+        blob_refs=refs,
+    )
 
 
 def _workspace_estimate(
@@ -2315,6 +2590,14 @@ def prepare_snapshot(
             judged_tree_oids,
             spec.limits,
         )
+        base_closure = _derive_base_closure(
+            executable,
+            seed_git_dir=seed_git_dir,
+            spec=spec,
+            metadata=metadata,
+            judged_tree_oids=judged_tree_oids,
+            deadline=deadline,
+        )
         if workspace is not None:
             estimate = _workspace_estimate(
                 manifest,
@@ -2335,6 +2618,7 @@ def prepare_snapshot(
             template=template,
             manifest=manifest,
             workspace=active_workspace,
+            base_closure=base_closure,
         )
         yield repository
     except BaseException as exc:

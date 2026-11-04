@@ -815,6 +815,12 @@ run `git fetch --unshallow` before judging it. This is independent of the
 deliberately shallow private seed described above: use
 `snapshot_history = "full"` when the lane's own command walks ancestry.
 
+`isolation.verify_clone = "tiered"` (default) or `"full"` selects how much of
+the clone proof runs per candidate on a copy-on-write workspace; the sealed
+template's index is always refreshed once so `git status` stops hashing the
+whole worktree per candidate. See
+[CONSUMERS.md](docs/CONSUMERS.md) (B219/B220/B222) for the semantics.
+
 Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).
 **`sql:*` is different — see below.**
