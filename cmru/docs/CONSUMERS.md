@@ -613,6 +613,19 @@ preview or moved to another object is left for a later preview. For age-based cl
 is computed once, so an asset that becomes old while the prompt is open remains for a later
 preview.
 
+**The two selection modes use different grammars (KI-105).** They are not interchangeable:
+
+| | `cleanup --policy` | `cleanup --remove-assets AGE` |
+|---|---|---|
+| Scope | per selected project (a project target is accepted) | estate-wide (a project target is refused) |
+| Release selection | every `<prefix>-v*` Release and tag of the project | every Release matching `[cleanup] release_tag_prefixes` (`"*"` means all) |
+| Kept | `<prefix>-latest`, `keep_release_tags`, and, only when `[cleanup] max_age_days` is set, Releases published within that window | `keep_release_tags` and anything newer than the `AGE` given on the command line |
+| Age | `max_age_days` from the config (no age filter at all when the key is unset) | the CLI `AGE` only; `max_age_days` is ignored |
+
+Tag-only refs (a versioned tag with no Release) have no publication time, so `--policy` deletes them regardless of the age
+window. Treat `max_age_days` as a `--policy` setting and always preview with `--dry-run`; the preview lists exactly what the
+mode selected.
+
 If configured cleanup runs `steps.clean`, CMRU commits only paths that become dirty during that
 step. Files already dirty when the confirmed plan starts are left out of that commit so cleanup
 does not sweep caller edits into its generated commit. It commits generated files even when the
@@ -776,6 +789,21 @@ overrides a value only where it has a genuinely different requirement). The requ
 | `CMRU_TESTER_DIND_IMAGE` | **only** with `--enable-docker` (nested Docker daemon); privileged, so digest-pinned and local like the probe image |
 | `CMRU_TESTER_DIND_MEMORY`, `CMRU_TESTER_DIND_CPUS`, `CMRU_TESTER_DIND_PIDS_LIMIT` | **only** with `--enable-docker`: the sidecar's own memory / CPU / pids limits |
 | `CMRU_WHEEL_BUILDER_IMAGE` | resolved by `wheel-build` from an explicit environment value or the selected CMRU config |
+
+**Refreshing a digest pin (KI-60).** `CMRU_TESTER_CGROUP_PROBE_IMAGE` and `CMRU_TESTER_DIND_IMAGE` are started with
+`--pull=never`, so a pin names an image that must already be on the host, and nothing warns when the pin ages (base-image
+security updates). Refresh deliberately, at least when the base image publishes a security update and always before a release
+that relies on the probe:
+
+1. Choose the new tag, and apply the estate freshness rule: adopt it only when it is at least 14 days past its release.
+2. Pull it on the gate host: `docker pull <repo>:<tag>`.
+3. Read the digest the daemon recorded: `docker image inspect --format '{{index .RepoDigests 0}}' <repo>:<tag>` gives
+   `<repo>@sha256:<64 hex>`.
+4. Replace the pin in the project's `cmru.toml` (and the estate `cmru.orchestration.toml`) with that exact string, and record the
+   date and the source tag in a comment next to it, because the pin itself carries neither.
+5. Verify with `cmru standards` and one `tester-gate` run; the old image can then be removed by exact name.
+
+`cmru standards` does not yet warn about an old pin; the date comment in step 4 is the only record until it does.
 
 These reach the step through `cmru release`. **`cmru standards` checks this exact set** against
 your declared config statically, and at runtime `tester-gate` validates the same set up front

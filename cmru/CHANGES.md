@@ -32,7 +32,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 <!-- cmru: pending release notes begin -->
-
+### Documentation
+- docs: `cleanup --policy` and `cleanup --remove-assets` selection grammars are contrasted in `docs/CONSUMERS.md` and the README; `max_age_days` is `--policy`-only (KI-105).
+- docs: a reproducible refresh procedure for digest-pinned probe and DinD images in `docs/CONSUMERS.md` (KI-60).
+- docs: backlog entries KI-58, KI-59, KI-68, KI-74, KI-75, KI-78, KI-80, KI-81, KI-82, KI-84 are closed against the 6.2.0 release notes.
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

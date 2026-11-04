@@ -1688,7 +1688,7 @@ per-project promotion order and checkpointing of a multi-project transaction thr
 
 **Oracle:** the new tests pass; planting the path check as always-true or always-false fails one of them.
 
-### KI-58 — Non-empty `## [Unreleased]` bodies in three estate changelogs will make their next tagged releases fail (KI-30 follow-up, estate) — *preflight issue fixed in candidate; release-note carry-forward pending, severity: major*
+### KI-58 — Non-empty `## [Unreleased]` bodies in three estate changelogs will make their next tagged releases fail (KI-30 follow-up, estate) — *FIXED (closed 2026-11-04; released in cmru-v6.2.0, CHANGES `[6.2.0]` "KI-78 stages pending notes ..."; KI-78 superseded the parking requirement), severity: major*
 
 **Observed:** since W0-REL (REL-10 / KI-30) a tagged release is refused while a plain `## [Unreleased]` section has a non-empty body. The candidate had emptied Run-Gate and cgprofile sections, but the removed release notes must still ship with their releases.
 
@@ -1700,7 +1700,7 @@ per-project promotion order and checkpointing of a multi-project transaction thr
 
 **Oracle:** run `cmru release --dry-run` for each selected project from the pushed integration snapshot and confirm each passes the changelog check and prints a body ending with the carried notes.
 
-### KI-59 — The `file:` resume bump-commit skip matches any subject starting with `chore: bump <prefix> to ` (W0-REL review nit) — *fixed in source (ported from `cmru-bugs62`, branch `cmru-release-fixes-20261013`), pending registered gate, severity: minor*
+### KI-59 — The `file:` resume bump-commit skip matches any subject starting with `chore: bump <prefix> to ` (W0-REL review nit) — *FIXED (closed 2026-11-04; `changelog.py:377` `_is_own_bump_commit`, released in cmru-v6.2.0, CHANGES `[6.2.0]` "KI-68 ... KI-59"), severity: minor*
 
 **Fixed in source:** `changelog._is_own_bump_commit` skips only a commit whose subject equals `chore: bump <prefix> to <pending version>` exactly AND whose diff touches only the declared `file:` version file and the generated changelog outputs; an unlistable commit is not skipped. Covered by `tests/test_changelog_hand_edits.py` (the reviewer's look-alike probe, wrong file, wrong version, other prefix, non-`file:` strategy, unlistable commit).
 
@@ -1710,7 +1710,11 @@ per-project promotion order and checkpointing of a multi-project transaction thr
 
 **Oracle:** the reviewer's probe (a real change with a look-alike subject) is counted as project work; the existing `file:VERSION` resume e2e case stays green.
 
-### KI-60 — Digest pins of locally present helper images age and have no refresh policy (W0-TESTER review) — *open, severity: minor*
+### KI-60 — Digest pins of locally present helper images age and have no refresh policy (W0-TESTER review) — *refresh procedure DOCUMENTED 2026-11-04 (option b); the `cmru standards` age warning (option a) remains open, severity: minor*
+
+**Documented 2026-11-04 (fix-cmru-h):** `docs/CONSUMERS.md` ("Refreshing a digest pin (KI-60)", in the gate-environment section) gives the
+reproducible procedure: choose the tag under the 14-day rule, pull, read `RepoDigests`, replace the pin with a dated comment, verify with
+`cmru standards` and one `tester-gate` run. Option (a), an automatic warning, needs a pin-date record and stays open.
 
 **Observed:** since W0-TESTER the privileged probe and DinD images must be `@sha256:` pinned and are started `--pull=never`, so the pin must name an image already on the host. `cmru.orchestration.toml` (`debian@sha256:d7e1...`) and mdt's `cmru.toml` (`docker@sha256:5efe...`) were pinned on 2026-10-05 from the local `RepoDigests`. Nothing records when, nothing warns when a pin gets old (base-image CVEs), and nothing says how to refresh one; a refresh is also the only moment a pull happens, so it is easy to forget.
 
@@ -1778,7 +1782,7 @@ per-project promotion order and checkpointing of a multi-project transaction thr
 
 **Second instance (2026-10-17, exact-tip review of the 6.2.0 candidate):** an in-place `cmru handler wheel-build --cwd cmru` leaves git-ignored `cmru/cmru.egg-info` and `cmru/build/` in the checkout. The registered `coverage` lane mounts that live worktree, and with pytest's working directory at `cmru/` three tests then read the stale `6.1.1.dev428+gd8d5e9250` metadata in process while subprocesses saw `0.0.0+tester.unified`, so they failed (`test_step_one_reaches_a_working_first_cmru_from_the_artifacts_it_built`, `test_real_executable_obeys_help_version_and_parse_contract`, `test_python_dash_m_handlers_and_cmru_handler_share_one_builder`); they passed once the two directories were moved aside. The same leftover `build/lib` can also carry a module deleted from source into a later in-place wheel (setuptools reuses it); the tester-unified image context now excludes `**/build`, `**/dist` and `**/*.egg-info`, and release transactions build in a fresh worktree, but a bootstrap or manual wheel build from a reused checkout is still exposed. **Ask:** have `wheel-build` build out of tree (or clean its own `build/` and `*.egg-info` first), and have the coverage/gate lanes refuse or ignore ignored package metadata in the judged tree. Report: `nyxloom-trove/reports/cmru-opus-high-review-and-release-wave-inventory-20261017.md` §6.
 
-### KI-68 — REL-02: regenerating a stale generated changelog section silently drops hand edits — *fixed in source (refusal; ported from `cmru-bugs62`, branch `cmru-release-fixes-20261013`), pending registered gate, severity: minor (raised in practice by KI-75: curated release notes live in that section)*
+### KI-68 — REL-02: regenerating a stale generated changelog section silently drops hand edits — *FIXED (closed 2026-11-04; refusal at `changelog.py:607`, released in cmru-v6.2.0, CHANGES `[6.2.0]` "KI-68"), severity: minor (raised in practice by KI-75: curated release notes live in that section)*
 
 **Fixed in source (2026-10-13):** `generate_release_changelog` now compares a stale generated section's body with its own generator's output for the old range (`_dropped_hand_edits`) and refuses with exit 4, listing at most 20 dropped lines, instead of regenerating over them. A current section (cursor at the final project commit) stays byte-identical. Unlike the `cmru-bugs62` version there is NO override flag (`--allow-changelog-regeneration` was not ported: it needs new CLI surface and a silent-drop escape hatch protects nothing); the remedy is to advance `source-end` in the same commit as the edit. Tests: `tests/test_changelog_hand_edits.py`.
 
@@ -1846,7 +1850,7 @@ per-project promotion order and checkpointing of a multi-project transaction thr
 
 **Historical oracle:** earlier masking tests covered secrets under `.venv`, `node_modules`, `__pycache__`, `.pytest_cache`, and `.mypy_cache`. KI-74 adds snapshot exclusion and live-container canary oracles.
 
-### KI-74 — aggregate release lanes must never mount the mutable caller checkout — *implemented with focused tests; registered gate pending; severity: critical (publisher-secret and evidence integrity)*
+### KI-74 — aggregate release lanes must never mount the mutable caller checkout — *FIXED (closed 2026-11-04; released in cmru-v6.2.0, CHANGES `[6.2.0]` "Bind release gates to the exact candidate commit ..."); severity: critical (publisher-secret and evidence integrity)*
 
 **Review follow-up (2026-10-13, branch `cmru-release-fixes-20261013`; findings C-1..C-7 of `nyxloom-trove/reports/cmru-release-readiness-claude-opus-5-high-2026-10-13.md`):** C-1: the host runner now binds every helper under each `sys.path` root to `git ls-tree HEAD` by blob hash (untracked, ignored, symlinked or edited-away-from-HEAD refuse before any lane). C-2: a live `ref-probe` proves the gate-owned ref detector inside the real container; the snapshot also records existing tags and `main`, refuses moved/deleted tags or non-fast-forward `main`, and permits new refs and fast-forward `main`. The common Git directory remains writable, so unrelated existing branch refs are not guarded (KI-77). C-3: the dead untested cleanup is replaced by the tested `cmru gate-snapshots` verb (C-6). C-4: namespace-aware lease liveness (`gate_snapshot.gate_lease_state`: dead only on positive same-namespace evidence; foreign/legacy holders are live until the TTL and indeterminate after it) and `worktree.remove_orphan_workspace` refuses a source Git still registers as live. C-5: `installed-wheel` is a plain component lane again; `installed-wheel-live` (gate-only) requires a fresh manifest bound to its own snapshot. C-7: the canary is gitignored (already in the checkpoint) and tested clean after a passing and a SIGTERM-interrupted gate. C-8: KI-52's status text was already corrected in the checkpoint (B147 shipped in assay-v8.0.0). The CMRU-side Run-Gate floor is implemented in the current candidate; container-level event evidence for non-mutation lanes remains open in KI-77.
 
@@ -1856,7 +1860,7 @@ per-project promotion order and checkpointing of a multi-project transaction thr
 
 **Oracles:** focused tests prove late ignored secrets in the source stay outside the exact snapshot, tracked secrets/filters/evidence paths refuse, lanes receive only allowlisted prior state, invalid output cannot copy a plausible verdict back, interrupted snapshots are validated before retry cleanup, and release-candidate cleanup removes its snapshot. Before preflight or importing CMRU/Assay helpers, the host runner inventories the import roots (including ignored entries) and refuses untracked Python modules or symlinks; it uses a private bytecode cache so ignored checkout-local `.pyc` files cannot shadow tracked code. An adversarial untracked helper that writes a marker on import must be refused before the marker appears, both when normally untracked and when ignored. A real registered CMRU tester lane checks the host canary; Run-Gate's real-container acceptance test proves an in-container commit cannot run or replace a host hook or alter `info/exclude`, and a later host commit still runs the original hook unchanged. Exact-tree registered gates and the aggregate release gate remain required before release.
 
-### KI-75 — GitHub release bodies omit curated version notes and migration guidance — *implemented in branch `cmru-release-fixes-20261013`, pending registered gate, severity: major (release usability and upgrade risk)*
+### KI-75 — GitHub release bodies omit curated version notes and migration guidance — *FIXED (closed 2026-11-04; released in cmru-v6.2.0, CHANGES `[6.2.0]` "KI-75: `wheel-publish` and `tarball-publish` ..."), severity: major (release usability and upgrade risk)*
 
 **Implemented (2026-10-13).** `release_notes.py` extracts the exact `## [X.Y.Z] - YYYY-MM-DD` section; `release.build_release_body` / `build_variants_release_body` are the ONE builder used by `publish_versioned*` and by `cmru release --dry-run` (which prints the complete body between `----- begin release body -----` markers, with only the artifact name and SHA256 as marked placeholders). Handlers (`wheel-publish`, `tarball-publish`) read the text from the tagged commit (`CMRU_RELEASE_COMMIT`, or a retained build's source commit) via the protected `CMRU_RELEASE_NOTES_SOURCE=changelog:<path>|none` that the runner gives every step (reserved name; an undeclared publisher refuses). The prepare phase refuses before the gate/tag/upload when the pending section is missing, undated, duplicated, empty or wrong-version. `--notes-env` remains and replaces only the opening line. Decision recorded: a project WITH a changelog and no section refuses (it never gets a notes-less body); `changelog = false` publishes the generated body alone. Image-only pushes (no handler) have no GitHub Release body. Tests: `tests/test_release_notes.py`; docs: README / DESIGN-GUIDE / CONSUMERS.
 
@@ -1952,7 +1956,7 @@ one-command UX without shell-specific pipe-status traps.
 
 **Equivalent survivors:** `process_guard.py:141` (`close_paren >= 0` → `> 0`) differs only when `)` is at index zero, impossible for valid `/proc/<pid>/stat`; `process_guard.py:142` (`open_paren < 0` → `<= 0`) differs only when `(` is at index zero, also impossible for valid proc-stat input; the other `process_guard.py:142` `<=` → `<` changes the malformed-parenthesis check only when the distinct `(` and `)` positions are equal, or both absent (where the empty-fields guard already refuses); `process_guard.py:265` (`return None` → `return []`) changes only the ignored SET result of private `_prctl`, not the GET result consumed by callers.
 
-### KI-78 — `[Unreleased]` entries (migration notes included) do not reach the immutable release notes — *implemented in branch `cmru-release-fixes-20261013`; independent GPT-6-Sol xhigh review (`nyxloom-trove/reports/cmru-KI78-codex-sol-xhigh-2026-10-15.md`) raised six findings, all addressed below and awaiting re-review and the registered gates; severity: major (upgrade guidance can be lost or duplicated)*
+### KI-78 — `[Unreleased]` entries (migration notes included) do not reach the immutable release notes — *FIXED (closed 2026-11-04; released in cmru-v6.2.0, CHANGES `[6.2.0]` "KI-78 stages pending notes ..."; history: implemented in branch `cmru-release-fixes-20261013`; independent GPT-6-Sol xhigh review (`nyxloom-trove/reports/cmru-KI78-codex-sol-xhigh-2026-10-15.md`) raised six findings, all addressed below and awaiting re-review and the registered gates; severity: major (upgrade guidance can be lost or duplicated))*
 
 **Observed:** KI-30 used to refuse a tagged release while `## [Unreleased]` had content. The first KI-78 implementation appended those notes to the release body, then changed the changelog after publication. Review found that a post-publish commit could fail after the release was public, direct `cmru publish --from-checkout` could read later mutable text, and image-only publishers could mark notes published without a GitHub body.
 
@@ -1996,7 +2000,7 @@ one-command UX without shell-specific pipe-status traps.
 
 ### KI-80 — changelog version planning must use the same project-scope registry as the release tag
 
-**Status:** implementation and behavioral test in the 2026-10-14 candidate; exact-tree gate and independent review pending; severity: medium (release metadata mismatch).
+**Status:** FIXED, closed 2026-11-04: released in cmru-v6.2.0 (CHANGES `[6.2.0]` "Use the full configured project-scope registry consistently ..."). History: implementation and behavioral test in the 2026-10-14 candidate; severity: medium (release metadata mismatch).
 
 **Observed:** the release planner knows every configured project when it filters scoped Conventional Commits, but changelog planning and `cmru status` previously received only the selected project set. A commit such as `feat(other)!: change demo API` that touches `demo/` is recognized as scope `other` by the release tag planner but can be treated as an unknown scope by the changelog planner. The tag can then use a patch bump while the generated heading and published notes use a major bump.
 
@@ -2006,7 +2010,7 @@ one-command UX without shell-specific pipe-status traps.
 
 ### KI-81 — the bare-host release-gate controller ran under a Python that lacks CMRU's declared dependencies
 
-**Status:** implementation and behavioral tests in the 2026-10-15 candidate; exact-tree gate and independent review pending; severity: major (the registered `gate`/`gate-provisional` lanes could not start on a supported host).
+**Status:** FIXED, closed 2026-11-04: released in cmru-v6.2.0 (CHANGES `[6.2.0]` "KI-81" and "KI-81 follow-up"). History: implementation and behavioral tests in the 2026-10-15 candidate; severity: major (the registered `gate`/`gate-provisional` lanes could not start on a supported host).
 
 **Observed:** the exact-tip gate passed its commit-binding preflight and then failed before any lane with `cmru-release-gate: No module named cli_extended`. `gate` and `gate-provisional` are `bare-host` lanes that run `python3 -I -B {worktree}/cmru/tools/run_release_gate.py`; `python3` there is whatever the host PATH names (`/usr/local/bin/python3` in the devcontainer), not the environment the CMRU wheel and its declared `cli-extended` dependency were installed into (the estate venv, where `cmru` and `run-gate` themselves live). The controller imports CMRU from the exact worktree source and needs only the declared third-party wheel from an installed environment (CX-D1: never vendored, never a source root).
 
@@ -2021,7 +2025,7 @@ one-command UX without shell-specific pipe-status traps.
 **Verification:** run the registered coverage lane, then `run-gate gate-provisional` from a host whose PATH has the estate venv's `cmru` but whose `python3` is the system interpreter.
 ### KI-82 — release from an origin-backed feature worktree without promoting or syncing `main`
 
-**Status:** implementation in candidate; registered gate and acceptance evidence open.
+**Status:** FIXED, closed 2026-11-04: released in cmru-v6.2.0 (CHANGES `[6.2.0]` "KI-82 candidate: `cmru release --from-worktree` ..."). History: implementation in candidate.
 Severity: major (blocks releases from isolated feature worktrees while local and remote
 `main` are unreconciled).
 
@@ -2172,8 +2176,9 @@ absent from `depends_on` fails preflight and names the consumer, provider, and n
 
 ### KI-84 — OCI release-body publication used an invalid GitHub tag lookup and had no safe retry
 
-**Status:** code and focused oracles added in this candidate; registered gates and independent
-review pending. Severity: major (a completed image push could leave a public tag and image with
+**Status:** FIXED, closed 2026-11-04: released in cmru-v6.2.0 (CHANGES `[6.2.0]` "OCI release-body publishing now resolves tags with
+GitHub's commit-by-ref API route" and the `cmru publish --from-checkout --release-tag` retry). History: code and focused oracles added
+in that candidate. Severity: major (a completed image push could leave a public tag and image with
 no GitHub Release body).
 
 **Observed:** `GitHubReleases.get_tag_commit` requested `/commits/tags/<tag>`, which GitHub's REST
@@ -2601,7 +2606,10 @@ argument with the same proofs as the bulk path.
 
 ### KI-105 - `cleanup --policy` and `cleanup --remove-assets` select releases with two different grammars
 
-**Status:** OPEN; severity: minor, documentation/design. `--policy` selects per PROJECT by `<prefix>-v*` and keeps `keep_release_tags`,
+**Status:** DOCUMENTED 2026-11-04 (fix-cmru-h): `docs/CONSUMERS.md` ("Running configured steps and previewing cleanup") has a table that
+contrasts the two grammars and states that `max_age_days` is `--policy`-only, and the README cleanup paragraph says the same. Behaviour
+is unchanged: honouring `max_age_days` as the default `AGE` for `--remove-assets` stays a design option, not a defect.
+Original: OPEN; severity: minor, documentation/design. `--policy` selects per PROJECT by `<prefix>-v*` and keeps `keep_release_tags`,
 `<prefix>-latest` and (since this branch) Releases inside `[cleanup] max_age_days`; `--remove-assets AGE` selects estate-wide by
 `release_tag_prefixes` (where `"*"` means all) and the CLI age, ignoring `max_age_days`. Before this branch `max_age_days` was parsed
 (positive-integer validation in `config.py`) and used by NOTHING: the estate `[cleanup]` table has no such key, so `cmru cleanup --policy
