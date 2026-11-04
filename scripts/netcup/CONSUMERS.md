@@ -282,7 +282,8 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 - **Run.** A detached host job (`run-job rg-<id>`, `~/rg/<id>/` and `~/jobs/rg-<id>/{job.log,EXIT}`) waits until PSI is <= 25
   (`--wait-psi`, default 900 s, else exit 75, verdict `PSI_REFUSED`), then runs `nice -n 19 run-gate <lane> [--base SHA] [extra]` in the
   `mdt-cockpit-runner` container from the project dir (default: the worktree path's own subdirectory) with
-  `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` (the checkout is a throwaway clone) and `RUN_GATE_TESTER_UNIFIED_IMAGE=tester-unified:local`.
+  `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` and `ASSAY_GATE_HOST_REPO_ROOT=~/checkouts/vbpub` (the host path behind the cockpit's
+  `/workspaces/vbpub`, which assay's tester-unified lane cannot derive from `docker inspect` here) (the checkout is a throwaway clone) and `RUN_GATE_TESTER_UNIFIED_IMAGE=tester-unified:local`.
   The caller follows it, or `--detach` returns at once; the job survives the caller (`status`, `logs -f`, `collect` later).
 - **What runs.** The cockpit's `run-gate` wheel and the host's `tester-unified:local` image; both are printed as `header:` lines in
   `job.log`. Refresh: v1001 `docker load` of a built tester-unified plus a tag `:local`, then `pip install` the wheel in the cockpit

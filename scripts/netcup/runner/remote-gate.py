@@ -271,7 +271,7 @@ log "checkout $CKDIR at $SHA"
 args=("$LANE" "${EXTRA[@]}")
 [[ -n $BASE_SHA ]] && args+=(--base "$BASE_SHA")
 log "run-gate ${args[*]} (cwd $CKIN/$PROJ)"
-docker exec -u vscode -w "$CKIN/$PROJ" -e RUN_GATE_TESTER_UNIFIED_IMAGE="$IMAGE" -e RUN_GATE_ALLOW_MAIN_CHECKOUT=1 -e RUN_GATE_PROFILE=off \
+docker exec -u vscode -w "$CKIN/$PROJ" -e RUN_GATE_TESTER_UNIFIED_IMAGE="$IMAGE" -e RUN_GATE_ALLOW_MAIN_CHECKOUT=1 -e ASSAY_GATE_HOST_REPO_ROOT="$HOME/checkouts/vbpub" -e RUN_GATE_PROFILE=off \
   "$COCKPIT" sh -c 'echo $$ > "$1"; shift; exec nice -n 19 /home/vscode/.local/bin/run-gate "$@"' sh "$PIDF" "${args[@]}" > "$D/lane.log" 2>&1 &
 lanepid=$!
 wait "$lanepid"

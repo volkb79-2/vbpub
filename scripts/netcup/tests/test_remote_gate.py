@@ -234,4 +234,5 @@ def test_checkout_lives_under_vbpub_worktrees_and_cleanup_is_scoped(tmp_path):
     assert "CKDIR=$CKROOT/$CK" in job and "CKROOT=$HOME/checkouts/vbpub/.worktrees" in job
     assert "CKIN=/workspaces/vbpub/.worktrees/$CK" in job
     assert '"$HOME"/checkouts/vbpub/.worktrees/rg-*' in job  # removal guard only matches our own rg-* dirs
+    assert '-e ASSAY_GATE_HOST_REPO_ROOT="$HOME/checkouts/vbpub"' in job
     assert '-w "$CKIN/$PROJ"' in job and "/workspaces/$CK" not in job
