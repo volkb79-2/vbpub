@@ -14194,7 +14194,7 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 ## B219 — the sealed snapshot template's git index has no stat data, so every `git status` in every candidate hashes the whole worktree (173 MB of disk reads per candidate on a 7.6k-file repository)
 
-**Status: OPEN (filed 2026-11-05).** Measured on v1001 (experiment report `materialize-experiment-REPORT.md`, variant a vs a2); explains the 132 GB read by the cli-extended r2 container (740 candidates, 178 MB each).
+**Status: FIXED on branch `fix-assay-mat-20261105` (2026-11-05, pending merge/release): `SnapshotRepository._prime_index` runs `update-index --refresh` on the template before `seal`; tests `test_sealed_template_index_carries_stat_data_for_every_entry`, `test_primed_template_status_trusts_stat_data_and_still_reports_changes`, `test_cheap_clone_dirt_is_reported_after_priming`. Live `rbytes` check still to do on a real campaign.** Measured on v1001 (experiment report `materialize-experiment-REPORT.md`, variant a vs a2); explains the 132 GB read by the cli-extended r2 container (740 candidates, 178 MB each).
 
 **Problem.** `_build` creates the template with `git read-tree` and writes the worktree from Python; the index therefore holds no stat data. Every git child runs with `GIT_OPTIONAL_LOCKS=0` and `--no-optional-locks`, so `git status` never persists a refresh. In `_verify` (before the command) and `_snapshot_left_dirt` (after it) `git status` hashes the content of every tracked file. A btrfs snapshot clone has a cold page cache (new inodes), so the first status reads the whole worktree from disk: 173.6 MB read, materialize 2.3 s, integrity 0.48 s per candidate; the campaign's own `phase_seconds` match (2.06-2.21 s, 0.48-0.54 s).
 
@@ -14204,7 +14204,7 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 ## B220 — `_enforce_child_closure` walks the full base closure of the pack for every candidate (36 MB pack read per candidate after B219)
 
-**Status: OPEN (filed 2026-11-05).** Follow-on of B219; the 37 MB that remains in variant a2.
+**Status: FIXED on branch `fix-assay-mat-20261105` (2026-11-05, pending merge/release): `_derive_base_closure` records the base closure once at prepare; `_enforce_added_objects` bounds only the added objects; full walk kept for `verify_clone = "full"`, no base facts, newline paths. Differential test `test_tiered_limits_fire_at_exactly_the_full_walk_thresholds`. Known difference: when a replacement violates both `max_blob_bytes` and `max_total_object_bytes`, which message is reported can differ (the full walk reports whichever object comes first in rev-list order).** Follow-on of B219; the 37 MB that remains in variant a2.
 
 **Problem.** Per candidate, `_enforce_child_closure` runs `rev-list --objects --no-object-names`, `cat-file --batch-check` over every object and a second `rev-list --objects --no-walk`. The base closure is the seed's and was bounded once when the seed was prepared; only the replacement blob, its tree path and the commit are new. The walk reads the whole 36 MB pack through the clone's cold page cache each time.
 
@@ -14224,7 +14224,7 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 ## B222 — tiered clone verification: verify the template once, per candidate only the replacement identity and a cheap touched-path dirt check; `verify_clone = "full"` keeps today's proof
 
-**Status: OPEN (filed 2026-11-05).** Analysis in experiment report section 4.3.
+**Status: FIXED on branch `fix-assay-mat-20261105` (2026-11-05, pending merge/release), scoped to the PRE-command proof: `isolation.verify_clone = "tiered"` (default) | `"full"`; tiered runs the full clone proof for the first and every 25th clone (`VERIFY_CLONE_FULL_EVERY`) and `_verify_clone_identity` otherwise. The post-command dirt check is deliberately unchanged (every candidate, full `status`), so the stat-walk and anomaly-triggered full check of the original design are not implemented (not needed once B219 makes `status` cheap).** Analysis in experiment report section 4.3.
 
 **Problem.** `_verify` proves the whole clone (status, write-tree, ls-files -v, manifest lstat walk, shallow/alternates/hooks/config) for every candidate although the clone is a CoW snapshot of a read-only sealed template that was just built by `_build` and verified there; the post-command `status` (guards a test or mutant dirtying or committing in the snapshot) must stay but costs 0.48 s with the unprimed index and can be a 0.05 s touched-path check.
 

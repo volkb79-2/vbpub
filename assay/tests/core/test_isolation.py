@@ -23,6 +23,7 @@ literal committed bytes and are never produced by calling the implementation.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -2188,3 +2189,495 @@ def test_reviewer_a_committed_empty_subtree_materializes_nothing(
             assert (snapshot.root / "bin" / "tool.sh").read_bytes() == LITERALS[
                 "bin/tool.sh"
             ]
+
+
+# --------------------------------------------------------------------------
+# B219 / B220 / B222 -- cost of a candidate's materialization
+# --------------------------------------------------------------------------
+
+DUP_FILES: dict[str, bytes] = {
+    "dup1.txt": b"dup\n",
+    "dup2.txt": b"dup\n",
+    "other.txt": b"other\n",
+    "sub/dir/deep.txt": b"deep\n",
+    "bin/tool.sh": b"#!/bin/sh\n",
+}
+
+
+def _dup_repo(tmp_path: Path, extra: dict[str, bytes] | None = None) -> tuple[Path, str]:
+    """Two paths share one blob (so replacing one keeps the blob in the tree)."""
+    repo = tmp_path / "dup-consumer"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q")
+    for name, data in {**DUP_FILES, **(extra or {})}.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    (repo / "bin" / "tool.sh").chmod(0o755)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "dup base")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def _policy(mode: str) -> IsolationConfig:
+    return IsolationConfig(
+        snapshot_selection="repository",
+        unsafe_symlink_omissions=(),
+        verify_clone=mode,
+    )
+
+
+class _StatCapturingWorkspace(_CheapCloneWorkspace):
+    """Records what the template's index holds at the moment of sealing."""
+
+    def seal(self, path: Path) -> None:
+        self.index_debug = _git(path, "ls-files", "--debug")
+        # outside the provider's own root, which is removed on close
+        self.side = self.root.parent / "template-side"
+        shutil.copytree(path, self.side, symlinks=True, copy_function=shutil.copy2)
+        super().seal(path)
+
+
+class _StatCapturingProvider(_CheapCloneWorkspaceProvider):
+    workspace_type = _StatCapturingWorkspace
+
+
+def test_sealed_template_index_carries_stat_data_for_every_entry(tmp_path: Path) -> None:
+    """B219: before sealing, no entry may keep the all-zero stat block that
+    `read-tree` leaves, because Git would then hash every file per `status`."""
+    repo, commit = _dup_repo(tmp_path)
+    provider = _StatCapturingProvider(tmp_path / "stat-run")
+    with prepare_snapshot(
+        _spec(repo, _scratch(tmp_path), commit), timeout=TIMEOUT, workspace=provider
+    ) as prepared:
+        with prepared.materialize(timeout=TIMEOUT):
+            pass
+        debug = provider.workspace.index_debug
+    assert debug.count("ctime:") == len(DUP_FILES)
+    assert "ctime: 0:0" not in debug
+    assert debug.count(f"mtime: {isolation._FIXED_MTIME}:0") == len(DUP_FILES)
+    assert debug.count(f"size: {len(DUP_FILES['dup1.txt'])}") == 2
+
+
+def test_primed_template_status_trusts_stat_data_and_still_reports_changes(
+    tmp_path: Path,
+) -> None:
+    """B219 oracle on behaviour: with ctime and inode out of the comparison, a
+    same-size, same-mtime content edit is invisible to a stat-validated index
+    and visible to one that must hash. The primed template must be the former,
+    and a size change, a mode change, an untracked and a deleted file must
+    still be reported."""
+    repo, commit = _dup_repo(tmp_path)
+    provider = _StatCapturingProvider(tmp_path / "prime-run")
+    with prepare_snapshot(
+        _spec(repo, _scratch(tmp_path), commit), timeout=TIMEOUT, workspace=provider
+    ) as prepared:
+        with prepared.materialize(timeout=TIMEOUT):
+            pass
+        side = provider.workspace.side
+    stat_only = ("-c", "core.checkStat=minimal", "-c", "core.trustCtime=false")
+    assert _git(side, *stat_only, "status", "--porcelain=v1") == ""
+    victim = side / "other.txt"
+    before = victim.stat()
+    victim.write_bytes(b"OTHER\n")  # same size
+    os.utime(victim, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert _git(side, *stat_only, "status", "--porcelain=v1") == "", (
+        "an index with stat data must not re-hash an unchanged-looking file"
+    )
+    assert _git(side, "status", "--porcelain=v1") == " M other.txt"  # ctime moved
+    victim.write_bytes(b"other\n")
+    (side / "dup1.txt").write_bytes(b"longer\n")
+    (side / "bin" / "tool.sh").chmod(0o644)
+    (side / "dup2.txt").unlink()
+    (side / "untracked.txt").write_bytes(b"u\n")
+    reported = _git(side, "status", "--porcelain=v1").splitlines()
+    assert sorted(line for line in reported) == [
+        " D dup2.txt",
+        " M bin/tool.sh",
+        " M dup1.txt",
+        "?? untracked.txt",
+    ]
+
+
+def test_cheap_clone_dirt_is_reported_after_priming(tmp_path: Path) -> None:
+    repo, commit = _dup_repo(tmp_path)
+    provider = _CheapCloneWorkspaceProvider(tmp_path / "dirt-run")
+    with prepare_snapshot(
+        _spec(repo, _scratch(tmp_path), commit), timeout=TIMEOUT, workspace=provider
+    ) as prepared:
+        with prepared.materialize_replacement(
+            path=PurePosixPath("other.txt"),
+            expected=DUP_FILES["other.txt"],
+            replacement=b"changed\n",
+            timeout=TIMEOUT,
+        ) as clone:
+            assert git_module.dirty_paths(clone.root) == ()
+            (clone.root / "sub" / "dir" / "deep.txt").write_bytes(b"x")
+            (clone.root / "new.txt").write_bytes(b"n")
+            (clone.root / "dup2.txt").unlink()
+            assert sorted(git_module.dirty_paths(clone.root)) == [
+                "dup2.txt",
+                "new.txt",
+                "sub/dir/deep.txt",
+            ]
+
+
+class _CountingSpy:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, owner: object, name: str):
+        self.calls = 0
+        original = getattr(owner, name)
+
+        def counted(*args: object, **kwargs: object) -> object:
+            self.calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, counted)
+
+
+@pytest.mark.parametrize("mode,walks", [("tiered", 0), ("full", 2)])
+def test_closure_walk_per_candidate_follows_verify_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, walks: int
+) -> None:
+    """B220: a tiered candidate reads only its own objects (no `rev-list
+    --objects` walk); `full` keeps the two walks of the original check."""
+    repo, commit = _dup_repo(tmp_path)
+    provider = _CheapCloneWorkspaceProvider(tmp_path / "walk-run")
+    with prepare_snapshot(
+        _spec(repo, _scratch(tmp_path), commit, snapshot_policy=_policy(mode)),
+        timeout=TIMEOUT,
+        workspace=provider,
+    ) as prepared:
+        spy = _CountingSpy(monkeypatch, isolation, "_closure_oids")
+        with prepared.materialize_replacement(
+            path=PurePosixPath("sub/dir/deep.txt"),
+            expected=DUP_FILES["sub/dir/deep.txt"],
+            replacement=b"deeper\n",
+            timeout=TIMEOUT,
+        ):
+            pass
+        assert spy.calls == walks
+
+
+@pytest.mark.parametrize("mode,full_proofs", [("tiered", 3), ("full", 7)])
+def test_full_clone_proof_cadence_follows_verify_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, full_proofs: int
+) -> None:
+    """B222: tiered proves the clone in full for the first and every N-th
+    clone and checks identity for the rest; `full` proves every clone."""
+    monkeypatch.setattr(isolation, "VERIFY_CLONE_FULL_EVERY", 3)
+    repo, commit = _dup_repo(tmp_path)
+    provider = _CheapCloneWorkspaceProvider(tmp_path / "cadence-run")
+    with prepare_snapshot(
+        _spec(repo, _scratch(tmp_path), commit, snapshot_policy=_policy(mode)),
+        timeout=TIMEOUT,
+        workspace=provider,
+    ) as prepared:
+        proofs = _CountingSpy(monkeypatch, isolation.SnapshotRepository, "_verify")
+        identity = _CountingSpy(
+            monkeypatch, isolation.SnapshotRepository, "_verify_clone_identity"
+        )
+        for number in range(7):
+            with prepared.materialize_replacement(
+                path=PurePosixPath("dup1.txt"),
+                expected=DUP_FILES["dup1.txt"],
+                replacement=f"v{number}\n".encode(),
+                timeout=TIMEOUT,
+            ):
+                pass
+        # the template's own build proof is the one extra full `_verify`
+        assert proofs.calls == full_proofs + 1
+        assert identity.calls == 7 - full_proofs
+
+
+def test_clone_identity_check_refuses_every_wrong_candidate(tmp_path: Path) -> None:
+    """B222: the tiered proof must refuse a wrong head, an index that is not
+    the commit's tree, a wrong blob at the replaced path, and a replaced file
+    with wrong bytes, wrong mode or a wrong kind."""
+    repo, commit = _dup_repo(tmp_path)
+    provider = _CheapCloneWorkspaceProvider(tmp_path / "identity-run")
+    path = PurePosixPath("bin/tool.sh")
+    new = b"#!/bin/sh\necho new\n"
+    with prepare_snapshot(
+        _spec(repo, _scratch(tmp_path), commit), timeout=TIMEOUT, workspace=provider
+    ) as prepared:
+        deadline = git_module._P22Deadline(TIMEOUT)
+        with prepared.materialize_replacement(
+            path=path, expected=DUP_FILES["bin/tool.sh"], replacement=new, timeout=TIMEOUT
+        ) as snapshot:
+            root = snapshot.root
+
+            def run(*args: str, stdin_bytes: bytes = b"") -> bytes:
+                return git_module._p22_git(
+                    prepared._source.git_executable,
+                    git_dir=root / ".git",
+                    work_tree=root,
+                    args=args,
+                    deadline=deadline,
+                    cwd=root,
+                    stdin_bytes=stdin_bytes,
+                )
+
+            entries = tuple(
+                isolation._Entry(
+                    path=PurePosixPath(name),
+                    mode="100755" if name == "bin/tool.sh" else "100644",
+                    oid=_git(root, "rev-parse", f"HEAD:{name}"),
+                    size=1,
+                )
+                for name in DUP_FILES
+            )
+            replacement = (path, DUP_FILES["bin/tool.sh"], new)
+
+            def check(*, commit_id: str = snapshot.commit, ents=entries) -> None:
+                prepared._verify_clone_identity(root, commit_id, run, replacement, ents)
+
+            check()  # the honest candidate passes
+            prepared._verify_clone_identity(root, snapshot.commit, run, None, ())
+
+            with pytest.raises(AssayError, match="private HEAD is"):
+                check(commit_id="0" * 40)
+
+            wrong_oid = tuple(
+                dataclasses.replace(e, oid="1" * 40) if e.path == path else e
+                for e in entries
+            )
+            with pytest.raises(AssayError, match="holds blob"):
+                check(ents=wrong_oid)
+
+            target = root / "bin" / "tool.sh"
+            target.chmod(0o644)
+            with pytest.raises(AssayError, match="replacement bytes and mode"):
+                check()
+            target.chmod(0o755)
+            target.write_bytes(b"tampered")
+            with pytest.raises(AssayError, match="replacement bytes and mode"):
+                check()
+            target.unlink()
+            os.symlink("dup1.txt", target)
+            with pytest.raises(AssayError, match="replacement bytes and mode"):
+                check()
+            target.unlink()
+            target.write_bytes(new)
+            target.chmod(0o755)
+
+            other = _git(root, "rev-parse", "HEAD:other.txt")
+            run("update-index", "--add", "--cacheinfo", f"100644,{other},ghost.txt")
+            with pytest.raises(AssayError, match="index tree"):
+                check()
+            run("update-index", "--force-remove", "ghost.txt")
+            check()
+
+
+def _outcome(
+    tmp_path: Path,
+    mode: str,
+    limits: SnapshotLimits,
+    path: str,
+    data: bytes,
+    tag: str,
+) -> tuple[object, ...]:
+    repo, commit = _dup_repo(tmp_path / tag)
+    provider = _CheapCloneWorkspaceProvider(tmp_path / f"{tag}-run")
+    scratch = tmp_path / f"{tag}-scratch"
+    scratch.mkdir()
+    stage = "prepare"
+    try:
+        with prepare_snapshot(
+            _spec(repo, scratch, commit, snapshot_policy=_policy(mode), limits=limits),
+            timeout=TIMEOUT,
+            workspace=provider,
+        ) as prepared:
+            stage = "materialize"
+            with prepared.materialize_replacement(
+                path=PurePosixPath(path),
+                expected=DUP_FILES[path],
+                replacement=data,
+                timeout=TIMEOUT,
+            ) as snapshot:
+                return ("ok", snapshot.commit)
+    except AssayError as exc:
+        return (stage, exc.outcome, exc.reason_code, str(exc))
+
+
+def _child_measurements(tmp_path: Path, path: str, data: bytes) -> dict[str, int]:
+    """The child's own closure facts, from plain git on a real child commit."""
+    repo, _commit = _dup_repo(tmp_path / "measure")
+    (repo / path).write_bytes(data)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "child")
+    child = _git(repo, "rev-parse", "HEAD")
+    listing = _git(repo, "rev-list", "--objects", "--no-object-names", child)
+    sizes: dict[str, tuple[str, int]] = {}
+    for oid in dict.fromkeys(listing.splitlines()):
+        sizes[oid] = (
+            _git(repo, "cat-file", "-t", oid),
+            int(_git(repo, "cat-file", "-s", oid)),
+        )
+    tree_oids = _git(
+        repo, "rev-list", "--objects", "--no-walk", "--no-object-names", child
+    ).splitlines()
+    tree_blobs = {oid for oid in tree_oids if sizes[oid][0] == "blob"}
+    return {
+        "objects": len(sizes),
+        "total": sum(size for _kind, size in sizes.values()),
+        "blob": max(size for kind, size in sizes.values() if kind == "blob"),
+        "tree_blobs": sum(sizes[oid][1] for oid in tree_blobs),
+    }
+
+
+_LIMIT_SCENARIOS = [
+    # grow a unique blob in a nested path
+    ("sub/dir/deep.txt", b"deep and much much longer\n" * 3),
+    # replace one of two paths sharing a blob: the old blob stays in the tree
+    ("dup1.txt", b"a brand new payload for dup1\n"),
+    # replace with bytes the tree already holds at another path
+    ("other.txt", b"dup\n"),
+    # replace a unique blob with identical bytes
+    ("bin/tool.sh", b"#!/bin/sh\n"),
+    # shrink
+    ("other.txt", b"o\n"),
+]
+
+
+@pytest.mark.parametrize("path,data", _LIMIT_SCENARIOS)
+def test_tiered_limits_fire_at_exactly_the_full_walk_thresholds(
+    tmp_path: Path, path: str, data: bytes
+) -> None:
+    """B220 differential: for every limit, probe just below, at and just above
+    the child's own value; `tiered` must give the same terminal as `full`."""
+    facts = _child_measurements(tmp_path, path, data)
+    base = DEFAULT_SNAPSHOT_LIMITS
+    cases: list[SnapshotLimits] = []
+    for delta in (-1, 0, 1):
+        cases.append(dataclasses.replace(base, max_objects=facts["objects"] + delta))
+        cases.append(
+            dataclasses.replace(base, max_blob_bytes=max(1, facts["blob"] + delta))
+        )
+        total = facts["total"] + delta
+        cases.append(
+            dataclasses.replace(
+                base,
+                max_total_object_bytes=total,
+                max_blob_bytes=min(base.max_blob_bytes, total),
+                max_total_tree_blob_bytes=min(base.max_total_tree_blob_bytes, total),
+            )
+        )
+        cases.append(
+            dataclasses.replace(
+                base, max_total_tree_blob_bytes=max(1, facts["tree_blobs"] + delta)
+            )
+        )
+    for index, limits in enumerate(cases):
+        full = _outcome(tmp_path, "full", limits, path, data, f"full{index}")
+        tiered = _outcome(tmp_path, "tiered", limits, path, data, f"tier{index}")
+        assert tiered == full, (index, limits)
+
+
+def test_tiered_limits_refuse_what_the_full_walk_refuses(tmp_path: Path) -> None:
+    """The differential above would be vacuous if nothing were ever refused."""
+    path, data = "sub/dir/deep.txt", b"x" * 500
+    limits = dataclasses.replace(DEFAULT_SNAPSHOT_LIMITS, max_blob_bytes=100)
+    for mode in ("full", "tiered"):
+        outcome = _outcome(tmp_path, mode, limits, path, data, f"refuse-{mode}")
+        assert outcome[0] == "materialize"
+        assert outcome[2] is ReasonCode.LIMIT_EXCEEDED
+        assert "max_blob_bytes" in outcome[3]
+
+
+def test_replacement_at_a_path_with_a_newline_keeps_the_full_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Git's object-name stdin is line-oriented, so such a path cannot be named
+    for the incremental check; the original full walk handles it."""
+    odd = "odd\nname.txt"
+    repo, commit = _dup_repo(tmp_path, {odd: b"odd\n"})
+    provider = _CheapCloneWorkspaceProvider(tmp_path / "newline-run")
+    with prepare_snapshot(
+        _spec(repo, _scratch(tmp_path), commit), timeout=TIMEOUT, workspace=provider
+    ) as prepared:
+        spy = _CountingSpy(monkeypatch, isolation, "_closure_oids")
+        with prepared.materialize_replacement(
+            path=PurePosixPath(odd),
+            expected=b"odd\n",
+            replacement=b"odder\n",
+            timeout=TIMEOUT,
+        ) as snapshot:
+            assert (snapshot.root / odd).read_bytes() == b"odder\n"
+        assert spy.calls == 2
+
+
+def test_incremental_closure_refuses_a_malformed_object_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, commit = _dup_repo(tmp_path)
+    provider = _CheapCloneWorkspaceProvider(tmp_path / "malformed-run")
+    original = git_module._p22_git
+
+    def broken(*args: object, **kwargs: object) -> bytes:
+        if kwargs["args"][0] == "cat-file" and b"^{tree}" in kwargs.get(
+            "stdin_bytes", b""
+        ):
+            return b"deadbeef missing\n"
+        return original(*args, **kwargs)
+
+    with prepare_snapshot(
+        _spec(repo, _scratch(tmp_path), commit), timeout=TIMEOUT, workspace=provider
+    ) as prepared:
+        monkeypatch.setattr(git_module, "_p22_git", broken)
+        with pytest.raises(AssayError, match="reported 'deadbeef missing'"):
+            with prepared.materialize_replacement(
+                path=PurePosixPath("other.txt"),
+                expected=DUP_FILES["other.txt"],
+                replacement=b"new\n",
+                timeout=TIMEOUT,
+            ):
+                pytest.fail("a malformed report must not yield a candidate")
+
+
+def test_prepared_repository_without_base_facts_walks_the_full_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, commit = _dup_repo(tmp_path)
+    provider = _CheapCloneWorkspaceProvider(tmp_path / "legacy-run")
+    with prepare_snapshot(
+        _spec(repo, _scratch(tmp_path), commit), timeout=TIMEOUT, workspace=provider
+    ) as prepared:
+        monkeypatch.setattr(prepared, "_base_closure", None)
+        spy = _CountingSpy(monkeypatch, isolation, "_closure_oids")
+        with prepared.materialize_replacement(
+            path=PurePosixPath("other.txt"),
+            expected=DUP_FILES["other.txt"],
+            replacement=b"new\n",
+            timeout=TIMEOUT,
+        ):
+            pass
+        assert spy.calls == 2
+
+
+def test_tiered_and_full_yield_the_same_candidate(tmp_path: Path) -> None:
+    """`full` is today's behaviour: the yielded candidate is identical."""
+    seen = []
+    for mode in ("full", "tiered"):
+        repo, commit = _dup_repo(tmp_path / mode)
+        provider = _CheapCloneWorkspaceProvider(tmp_path / f"{mode}-same-run")
+        scratch = tmp_path / f"{mode}-same-scratch"
+        scratch.mkdir()
+        with prepare_snapshot(
+            _spec(repo, scratch, commit, snapshot_policy=_policy(mode)),
+            timeout=TIMEOUT,
+            workspace=provider,
+        ) as prepared:
+            with prepared.materialize_replacement(
+                path=PurePosixPath("bin/tool.sh"),
+                expected=DUP_FILES["bin/tool.sh"],
+                replacement=b"#!/bin/sh\necho x\n",
+                timeout=TIMEOUT,
+            ) as snapshot:
+                seen.append(
+                    (
+                        snapshot.commit,
+                        _snapshot_file_signature(snapshot.root),
+                        _snapshot_git_state(snapshot.root),
+                    )
+                )
+    assert seen[0] == seen[1]
