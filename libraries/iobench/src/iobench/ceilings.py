@@ -13,6 +13,7 @@ from .host import Host
 
 SCHEMA = 1
 SOURCES = ("benchmark", "governor", "probe")
+SOURCE_KINDS = {"benchmark": ("raw", "file"), "governor": ("raw", "file"), "probe": ("probe",)}
 WORKLOADS = ("seq1m", "rand4k")
 DIRS = ("read", "write")
 # What an observation was measured on (IOB-CEI-06): a raw partition or device (R), a file on a filesystem (F), or a read-only raw probe (P).
@@ -84,6 +85,9 @@ def validate(obs: Mapping[str, Any]) -> None:
         raise Refusal("ceiling_dir", f"unknown dir {obs['dir']!r}", "use read or write")
     if obs.get("kind") not in KINDS:
         raise Refusal("ceiling_kind", f"unknown or missing kind {obs.get('kind')!r}", f"say what the observation was measured on: {', '.join(KINDS)}")
+    if obs["kind"] not in SOURCE_KINDS[obs["source"]]:
+        allowed = " or ".join(SOURCE_KINDS[obs["source"]])
+        raise Refusal("ceiling_kind", f"source {obs['source']!r} cannot use kind {obs['kind']!r}", f"use kind {allowed} for source {obs['source']}")
     if obs["kind"] == "probe" and obs["dir"] == "write":
         raise Refusal("ceiling_kind", "a probe only reads; it cannot observe a write ceiling", "use kind raw or file for a write observation")
 
@@ -118,7 +122,7 @@ def rotate_foreign(host: Host, path: str, digest: str, stamp: str) -> str | None
             return None
     except (ValueError, KeyError, IndexError):
         pass  # an empty or garbled header cannot be appended to either
-    aside = f"{path}.foreign-{stamp.replace(':', '')}"
+    aside = f"{path}.superseded-{stamp.replace(':', '')}"
     host.write_atomic(aside, text)
     host.remove(path)
     return aside
@@ -152,6 +156,14 @@ def summary(observations: Sequence[Mapping[str, Any]], now: float, window_days: 
     for (d, w), vals in sorted(groups.items()):
         out.setdefault(d, {})[w] = {"worst": min(vals), "median": statistics.median(vals), "best": max(vals), "n": len(vals)}
     return out
+
+
+def value_summary(observations: Sequence[Mapping[str, Any]], now: float, window_days: int = 30) -> dict[str, Any]:
+    """History permitted to derive model and cap values (4.1.1): raw calibration rows only.
+
+    File observations and read-only probes can confirm stability in their allowed direction, but cannot supply the value itself.
+    """
+    return summary([o for o in observations if o.get("kind") == "raw"], now, window_days)
 
 
 def summary_by_kind(observations: Sequence[Mapping[str, Any]], now: float, window_days: int = 30) -> dict[str, Any]:

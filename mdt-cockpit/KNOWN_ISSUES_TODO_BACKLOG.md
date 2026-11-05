@@ -704,7 +704,7 @@ iogov v1 is that service but writes only its own journal; its `w_fresh_qd1`/`w_f
 recommendations never reach iobench, so `recalibrate_recommended` in `mdt doctor` (the next MDT-023 step) has nothing to read.
 
 **Do:** an `iogov export-ceilings [--since]` command that prints (never writes outside its state dir, never runs a subprocess: the static
-no-write test must stay green) one `iobench ceilings add --dir write --workload <w> --bps <rate> --duration-s <s> --source governor` line per
+no-write test must stay green) one `iobench ceilings add --dir write --workload <w> --bps <rate> --duration-s <s> --source governor --kind file` line per
 qualifying closed window, or the JSON observation lines themselves for the operator to append. The mapping of iogov's 64 KiB sequential lanes
 to iobench's `seq1m|rand4k` workload names needs an explicit decision (a new workload name, or a documented approximation carrying the
 `file`-kind label of IOB-TGT-09, since iogov measures a file, not the device).

@@ -716,7 +716,7 @@ def test_rev_b_s10_a_foreign_history_is_rotated_aside_before_the_run_not_refused
     ceilings.append(host, f"{STATE}/ceilings.jsonl", {"ts": CREATED, "dir": "read", "workload": "rand4k", "plateau_bps": 1e8, "duration_s": 600,
                                                        "source": "governor", "kind": "raw"}, foreign)
     out = calibrate(host)
-    assert out.status == "complete" and out.exit_code == 0 and out.result["evidence"]["history_rotated"].startswith(f"{STATE}/ceilings.jsonl.foreign-")
+    assert out.status == "complete" and out.exit_code == 0 and out.result["evidence"]["history_rotated"].startswith(f"{STATE}/ceilings.jsonl.superseded-")
     aside = out.result["evidence"]["history_rotated"]
     assert json.loads(host.read_text(aside).splitlines()[0])["identity_digest"] == foreign  # kept, not deleted
     assert json.loads(host.read_text(f"{STATE}/ceilings.jsonl").splitlines()[0])["identity_digest"] != foreign

@@ -6,6 +6,7 @@ import pytest
 
 from iobench import calibrate as cal_mod, derive, dryrun, plan, plausibility, proposals as P, result as res, shape
 from iobench.devio import parse_job
+from iobench.errors import Refusal
 from iobench.testing import GIB
 
 from helpers import INVERSION, calibrate, config, fio_jobs, make_host
@@ -45,6 +46,36 @@ def test_prf_03_the_plan_fits_180_seconds_inside_a_210_second_budget():
     assert plan.plan_calibration("veryquick", 435853320192, 1.36e9, 99).budget_s == 99
     # the budget numbers are the quick profile's order of magnitude down: 12 minutes -> 3 minutes
     assert plan.PROFILE_BUDGET_S["quick"] == 720 > 3 * plan.PROFILE_BUDGET_S["veryquick"]
+
+
+def test_prf_03_veryquick_refuses_to_overwrite_a_full_calibration():
+    host = make_host(cache=INVERSION)
+    full = calibrate(host)
+    assert full.status == "complete"
+    before_calibration = host.read_text(f"{STATE}/calibration.json")
+    before_result = host.read_text(f"{STATE}/result.json")
+    jobs_before = len(fio_jobs(host))
+    with pytest.raises(Refusal) as err:
+        calibrate(host, profile="veryquick")
+    assert err.value.condition == "veryquick_state_exists" and "--state-dir" in err.value.remedy
+    assert host.read_text(f"{STATE}/calibration.json") == before_calibration
+    assert host.read_text(f"{STATE}/result.json") == before_result and len(fio_jobs(host)) == jobs_before
+    isolated_state = f"{STATE}/veryquick"
+    isolated = calibrate(host, profile="veryquick", state_dir=isolated_state)
+    assert isolated.status == "complete"
+    assert calibrate(host, profile="veryquick", state_dir=isolated_state).status == "complete"
+    assert host.read_text(f"{STATE}/calibration.json") == before_calibration
+    assert host.read_text(f"{STATE}/result.json") == before_result
+
+
+def test_prf_03_veryquick_refuses_to_replace_an_unreadable_state_file():
+    host = make_host(cache=None)
+    host.makedirs(STATE)
+    host.put(f"{STATE}/calibration.json", "{truncated")
+    with pytest.raises(Refusal) as err:
+        calibrate(host, profile="veryquick")
+    assert err.value.condition == "veryquick_state_exists" and "separate --state-dir" in err.value.remedy
+    assert not fio_jobs(host)
 
 
 def test_prf_03_a_run_takes_the_planned_time_and_ends_complete(clean):
@@ -217,9 +248,13 @@ def test_prf_03_without_the_cold_probe_the_verdict_is_inconclusive_and_the_run_s
 def test_pla_19_boundaries():
     assert plausibility.pla_19(None, 1.0).status == "not_applicable" and plausibility.pla_19(1.0, None).status == "not_applicable"
     assert plausibility.pla_19(20.0, 1.0).status == "pass"  # exactly 20x is not above it
-    assert plausibility.pla_19(20.001, 1.0).status == "fail"
+    assert plausibility.pla_19(15.0, 1.0).status == "pass"
+    assert plausibility.pla_19(50.0, 1.0).status == "info"
+    assert plausibility.pla_19(100.0, 1.0).status == "info"
+    assert plausibility.pla_19(150.0, 1.0).status == "fail"
     assert plausibility.pla_19(1.0, 20.0).status == "pass"  # a write faster than the read is no sign of a read cache
-    assert plausibility.pla_19(10.0, 1.0).value == 10.0 and plausibility.READ_OVER_WRITE == 20.0
+    assert plausibility.pla_19(10.0, 1.0).value == 10.0
+    assert plausibility.READ_OVER_WRITE_WARN == 20.0 and plausibility.READ_OVER_WRITE_FAIL == 100.0
 
 
 def test_prf_03_the_verdict_table():
@@ -227,11 +262,12 @@ def test_prf_03_the_verdict_table():
     assert plausibility.VERDICTS == expect and set(expect) == set(P.CACHE_STATES)
     for state, verdict in expect.items():
         assert plausibility.verdict(state) == {"verdict": verdict, "cache_state": state}
-    # veryquick: a hit-like cold region is no failure (no cache looks the same), an inflated read is
+    # veryquick: a hit-like cold region is inconclusive alone; a 20-100x ratio is corroborated by a hit-like cold probe.
     assert plausibility.verdict("cold_hit_like", vq=True)["verdict"] == "inconclusive"
     assert plausibility.verdict("cold_measured", vq=True)["verdict"] == "pass"
-    assert plausibility.verdict("cold_measured", vq=True, inflated=True)["verdict"] == "fail"
-    assert plausibility.verdict("undetermined", inflated=True)["verdict"] == "fail"
+    assert plausibility.verdict("cold_measured", vq=True, rate_status="info")["verdict"] == "inconclusive"
+    assert plausibility.verdict("cold_hit_like", vq=True, rate_status="info")["verdict"] == "fail"
+    assert plausibility.verdict("undetermined", vq=True, rate_status="fail")["verdict"] == "fail"
 
 
 def test_prf_03_every_calibration_carries_the_verdict_of_its_cache_state():

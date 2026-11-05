@@ -120,10 +120,10 @@ def test_res_03_identity_validity(world):
                 del h.devices["/dev/vda7"]
             c = do_check(h)
             assert (c.state, c.exit_code) == ("stale", 3), (name, partition_gone)
-    # the serial a weak disk gains later is no identity change (only stored non-null fields are compared) ...
+    # a weak scope cannot prove that a disk which reports a new serial is still the same disk
     gained = fresh_copy(host)
     gained.put("/sys/devices/pci0/block/vda/device/serial", "SER-B\n")
-    assert do_check(gained).state in ("current", "current_unproven")
+    assert (do_check(gained).state, do_check(gained).exit_code) == ("stale", 3)
     # ... and the disk is gone when nothing on the host has its size and model
     vanished = fresh_copy(host)
     del vanished.devices["/dev/vda7"]

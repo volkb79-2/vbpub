@@ -1,6 +1,7 @@
 """Calibration (IOB-CAL-01..10, IOB-CCH-01..07, IOB-SLO, IOB-SHP, IOB-LAT): the slow once-per-host phase."""
 from __future__ import annotations
 
+import json
 import math
 import statistics
 from dataclasses import replace
@@ -652,7 +653,9 @@ class Calibrator(Runner):
         digest = ceilings.identity_digest(self.identity)
         hist_path = res.paths(self.state_dir)["ceilings"]
         rows, _ = ceilings.load(self.host, hist_path, digest)
-        history = ceilings.summary(rows, self.host.now())
+        now = self.host.now()
+        history = ceilings.summary(rows, now)
+        value_history = ceilings.value_summary(rows, now)
         bps = self.bps_bases()
         shape_doc = self.shape_doc()
         self.checks += [plausibility.pla_11({d: shape_doc["linear_model_fit_by_dir"][d] for d in ("read", "write")})] if self.cells else []
@@ -689,23 +692,24 @@ class Calibrator(Runner):
             "plateau_bps": {f"{d}/rand4k": self.obs[d].steady * 4096 for d in ("read", "write") if d in self.obs},
             "stages": dict(self.stages),
         }
-        inflated = False
+        rate_status = "pass"
         if self.vq:
             wl = a["writes"][-1]
             p19 = plausibility.pla_19(self.cell_bps("read", "seq", plan.VQ_SEQ_BS), self.cell_bps("write", "seq", plan.VQ_SEQ_BS))
             self.checks.append(p19)
-            inflated = p19.status == "fail"
+            rate_status = p19.status
             cal["coarse_model"] = self.coarse_model()
             # a burst that ends inside the 30 s series shows; one that outlives it cannot be seen (and no write value is proven either way)
             cal["veryquick"] = {"series_s": plan.VQ_SERIES_S, "write_burst_seen": wl["state"] != "unsteady" and bool(wl["knee_s"]) and wl["burst_units"] > 0,
                                 "write_knee_s": wl["knee_s"], "write_state": wl["state"]}
-        props = proposals.build_calibration_proposals(cal, self.cfg.targets, history)
+        props = proposals.build_calibration_proposals(cal, self.cfg.targets, value_history)
         props = plausibility.apply_effects(props, self.checks)
         cal["proposals"] = props
         cal["iocost_keys"] = {k: (v["value"] if v["status"] != "absent" else None) for k, v in props["iocost_model"].items()}
         limits = self.final_limits(history)
         run_checks = [c.as_dict() for c in self.checks]
-        quality = {"cache_proof": self.cache_proof(), "limits": limits, "checks": run_checks, "plausibility": plausibility.verdict(state.state, vq=self.vq, inflated=inflated)}
+        quality = {"cache_proof": self.cache_proof(), "limits": limits, "checks": run_checks,
+                   "plausibility": plausibility.verdict(state.state, vq=self.vq, rate_status=rate_status)}
         tgt = dict(proposals.DEFAULT_TARGETS)
         targets = {**self.cfg.targets, "source": "default" if self.cfg.targets == tgt else "operator"}
         writeback = {n: proposals.absent("stage_skipped", r) for n, r in (("dirty_bytes", "R1"), ("dirty_background_bytes", "R1b"),
@@ -787,8 +791,25 @@ class Calibrator(Runner):
             self.skip(stage, "very-quick-profile")
         self.analyze()
 
+    def protect_veryquick_state(self) -> None:
+        """Do not let an install-time quick run replace a fuller result in the same state directory."""
+        paths = res.paths(self.state_dir)
+        for name in ("calibration", "result"):
+            path = paths[name]
+            if not self.host.exists(path):
+                continue
+            try:
+                doc = json.loads(self.host.read_text(path))
+                profile = doc["run"]["profile"]
+            except (OSError, ValueError, KeyError, TypeError):
+                profile = None  # an unreadable record is not proof that the directory is safe to replace
+            if profile != "veryquick":
+                raise Refusal("veryquick_state_exists", f"refusing to overwrite {path}; it is not a verified veryquick result",
+                              "use a separate --state-dir for the veryquick calibration")
+
     def body(self) -> None:
         if self.vq:
+            self.protect_veryquick_state()
             return self.body_vq()
         self.s0(need_workdir=False)
         self.stage("S1", self.s1, required=True)

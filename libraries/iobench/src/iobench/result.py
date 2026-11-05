@@ -161,9 +161,10 @@ def s0_identity(host: Host, target: guard.Target, workdir_path: str | None) -> d
 def live_identity(host: Host, stored: Mapping[str, Any]) -> dict[str, Any] | None:
     """Identity of the stored measurement as it is now; ``None`` if the disk cannot be found at all.
 
-    The target is read first (it still carries the partition facts).  A target that is gone (a throwaway partition, a
-    formatted data partition, a deleted file) is not a changed identity: the disk is then found by its serial / wwn / model and
-    size alone (IOB-CEI-06).  Only a disk that cannot be found, or that differs, is stale."""
+    The target is read first (it still carries the partition facts). A target that is gone (a throwaway partition, a
+    formatted data partition, a deleted file) is not a changed identity when its disk can still be identified (IOB-CEI-06).
+    Strong scopes use stored identifiers and size; weak scopes also require the remembered device name, matching machine-id,
+    equal model, and a candidate that remains weak. Only a disk that cannot be found, or that differs, is stale."""
     path = stored["target"]["path"]
     wd = stored.get("workdir_fs")
     wd_path = wd["path"] if wd else None
@@ -181,7 +182,9 @@ def live_identity(host: Host, stored: Mapping[str, Any]) -> dict[str, Any] | Non
     if stored_scope is None:
         return None  # a record from before the disk scope: nothing to find the disk with
     facts = guard.find_disk(host, model=stored_scope["model"], serial=stored_scope["serial"], wwn=stored_scope["wwn"],
-                            size_bytes=stored_scope["size_bytes"], hint=stored_scope.get("name"))
+                            size_bytes=stored_scope["size_bytes"], hint=stored_scope.get("name"),
+                            machine_id_matches=(stored_scope.get("machine_id_hash") is not None
+                                                and stored_scope["machine_id_hash"] == machine_id_hash(host)))
     if facts is None:
         return None
     disk = {"devno": None, "model": facts.model, "serial": facts.serial, "wwn": facts.wwn, "partuuid": None, "size_bytes": None,
@@ -190,7 +193,7 @@ def live_identity(host: Host, stored: Mapping[str, Any]) -> dict[str, Any] | Non
 
 
 def identity_differs(stored: Mapping[str, Any], live: Mapping[str, Any] | None) -> bool:
-    """IOB-RES-03: the disk scope only: the whole-disk size, each non-null model/serial/wwn, and for a serial-less disk the host.
+    """IOB-RES-03: the disk scope only: whole-disk size, each stored non-null model/serial/wwn, weak-to-strong changes, and host id.
 
     The partition (devno, PARTUUID, size) or file (filesystem uuid, inode) that was measured is no part of it: it may be gone
     (``target_changed`` warns), the disk it was on is what the result describes."""
@@ -201,7 +204,9 @@ def identity_differs(stored: Mapping[str, Any], live: Mapping[str, Any] | None) 
         return True  # a record from before the disk scope cannot be shown to describe this disk
     if ss["size_bytes"] != ls["size_bytes"] or any(ss.get(k) is not None and ss[k] != ls.get(k) for k in OPTIONAL_STRICT):
         return True
-    # a serial-less disk is bound to its host; a disk that has since gained a serial is the same disk (nothing to compare the host with)
+    if ss["strength"] == "weak" and ls["strength"] == "strong":
+        return True
+    # A serial-less disk is bound to its host; an unknown installer-chroot id remains unbound until first boot.
     return ss["strength"] == "weak" and ls["strength"] == "weak" and ss.get("machine_id_hash") is not None and ss["machine_id_hash"] != ls["machine_id_hash"]
 
 
@@ -292,7 +297,7 @@ def check(host: Host, state_dir: str, *, calibration: bool = False, sections: tu
         return res
     res.warnings = advisory_warnings(doc["identity"], live, ceilings.parse_iso(doc["run"]["started"]), now)
     rows, _ = ceilings.load(host, p["ceilings"], ceilings.identity_digest(doc["identity"]))
-    res.history = "recorded" if rows else "single-run"
+    res.history = ceilings.summary(rows, now)["history"]
     if "calibration" in cal_doc and ceilings.recalibrate_recommended(rows, cal_doc["calibration"].get("plateau_bps", {}), now):
         res.warnings.append("recalibrate_recommended")
     if host.exists(failed):

@@ -43,7 +43,9 @@ def test_cei_02_refusals():
                       (obs(dur=59), "ceiling_duration"), (obs(dur=float("nan")), "ceiling_duration"), (obs(dur="x"), "ceiling_duration"),
                       (obs(src="oracle"), "ceiling_source"),
                       (obs(w="rand8k"), "ceiling_workload"), (obs(d="both"), "ceiling_dir"),
-                      (obs(kind="ssd"), "ceiling_kind"), (obs(kind=None), "ceiling_kind"), (obs(kind="probe", d="write"), "ceiling_kind")):
+                      (obs(kind="ssd"), "ceiling_kind"), (obs(kind=None), "ceiling_kind"), (obs(kind="probe", d="write", src="probe"), "ceiling_kind"),
+                      (obs(kind="file", src="probe"), "ceiling_kind"), (obs(kind="probe", src="benchmark"), "ceiling_kind"),
+                      (obs(kind="probe", src="governor"), "ceiling_kind")):
         with pytest.raises(Refusal) as err:
             ceilings.validate(bad)
         assert err.value.condition == cond, bad
@@ -52,10 +54,12 @@ def test_cei_02_refusals():
     ceilings.validate(ceilings.reference_shift(ceilings.iso(T0), "write", 86_000_000.0, "raw"))
     with pytest.raises(Refusal):
         ceilings.validate(obs(dur=14, note="reference_shift"))
-    for kind, d in (("raw", "read"), ("raw", "write"), ("file", "read"), ("file", "write"), ("probe", "read")):
-        ceilings.validate(obs(kind=kind, d=d))
+    for src, kind, d in (("benchmark", "raw", "read"), ("benchmark", "raw", "write"), ("benchmark", "file", "read"),
+                         ("benchmark", "file", "write"), ("governor", "raw", "read"), ("governor", "file", "write"),
+                         ("probe", "probe", "read")):
+        ceilings.validate(obs(kind=kind, d=d, src=src))
     with pytest.raises(Refusal) as err:
-        ceilings.validate(obs(kind="probe", d="write"))
+        ceilings.validate(obs(kind="probe", d="write", src="probe"))
     assert "a probe only reads" in str(err.value)
     with pytest.raises(Refusal):
         ceilings.validate(obs(dur=15))

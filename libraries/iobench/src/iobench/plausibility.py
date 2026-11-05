@@ -129,30 +129,40 @@ def pla_10(cache_state: str, reasons: Sequence[str]) -> Check:
 
 
 VERDICTS = {"cold_measured": "pass", "rate_cap": "pass", "cold_hit_like": "fail", "no_cache_observed": "inconclusive", "undetermined": "inconclusive"}
-READ_OVER_WRITE = 20.0  # [I] a sequential read more than 20x the sequential write of the same disk is a cache's rate, not a device's
+READ_OVER_WRITE_WARN = 20.0  # [I] inferred: above this, flag the ratio for review
+READ_OVER_WRITE_FAIL = 100.0  # [I] inferred: a gross mismatch fails without corroboration
 
 
 def pla_19(read_bps: float | None, write_bps: float | None) -> Check:
-    """veryquick only: the gross cache-inflation test (a 4.3 GB/s read from a 20 MB/s disk).  Same block size, queue depth and region."""
+    """veryquick only: an inferred gross cache-inflation check, calibrated against the cold probe when possible.
+
+    The thresholds are provisional [I] values; IOB-ACC-01 must calibrate them on the VM and a known cached device."""
     if read_bps is None or write_bps is None:
         return Check("IOB-PLA-19", "not_applicable", "no sequential read and write cell pair")
     ratio = read_bps / write_bps
-    if ratio > READ_OVER_WRITE:
-        return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.0f}x the sequential write (> {READ_OVER_WRITE:.0f}x): a cache is serving the reads", value=round(ratio, 1))
-    return Check("IOB-PLA-19", "pass", f"sequential read is {ratio:.1f}x the sequential write", value=round(ratio, 1))
+    if ratio > READ_OVER_WRITE_FAIL:
+        return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.0f}x the sequential write (> {READ_OVER_WRITE_FAIL:.0f}x): a cache is serving the reads; inferred threshold, calibrate with IOB-ACC-01",
+                     value=round(ratio, 1))
+    if ratio > READ_OVER_WRITE_WARN:
+        return Check("IOB-PLA-19", "info", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x): inconclusive without a hit-like cold probe; inferred threshold, calibrate with IOB-ACC-01",
+                     value=round(ratio, 1))
+    return Check("IOB-PLA-19", "pass", f"sequential read is {ratio:.1f}x the sequential write (within the inferred {READ_OVER_WRITE_WARN:.0f}x band)", value=round(ratio, 1))
 
 
-def verdict(cache_state: str, *, vq: bool = False, inflated: bool = False) -> dict[str, str]:
+def verdict(cache_state: str, *, vq: bool = False, rate_status: str = "pass") -> dict[str, str]:
     """The plausibility verdict of a calibration (``quality.plausibility``).
 
-    ``pass``: the cold region was measured (or a flat rate cap): the figure is not a cache.  ``fail``: the cold region reads like the
-    hit reference with a cliff or a slower cold rate, so the rate is a cache's (or, veryquick, a read 20x its write: ``inflated``): a model
-    that contradicts it must be refused.  ``inconclusive``: no cold probe (quick, or cut by the budget), a drifting one, or no cliff to
-    tell a cache from no cache.  A veryquick run has no ladder, so a hit-like cold region there is ``inconclusive`` (no cache looks the same)."""
+    A veryquick ratio above 100x fails alone; a ratio above 20x is inconclusive unless the cold probe is also hit-like, which corroborates
+    the cache explanation. The ratio bands are inferred and IOB-ACC-01 must calibrate them. A hit-like veryquick cold region without a
+    ratio warning remains inconclusive because no cache looks the same."""
     found = VERDICTS[cache_state]
-    if vq and found == "fail":
+    if vq and rate_status == "fail":
+        found = "fail"
+    elif vq and rate_status == "info":
+        found = "fail" if cache_state == "cold_hit_like" else "inconclusive"
+    elif vq and found == "fail":
         found = "inconclusive"
-    return {"verdict": "fail" if inflated else found, "cache_state": cache_state}
+    return {"verdict": found, "cache_state": cache_state}
 
 
 def pla_11(fit_by_dir: Mapping[str, str]) -> Check:

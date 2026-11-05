@@ -347,10 +347,10 @@ def test_identity_comparison_on_every_strict_field():
         live = copy.deepcopy(base)
         live["disk_scope"][key] = value
         assert res_mod.identity_differs(base, live) is True, key
-    # a field the stored record never had does not make it stale; the host is compared for a weak disk only
+    # a field the stored record never had normally does not make it stale; a weak-to-strong identity change is the exception
     live = copy.deepcopy(base)
     live["disk_scope"].update(serial="S1", strength="strong", machine_id_hash=None)
-    assert res_mod.identity_differs(base, live) is False
+    assert res_mod.identity_differs(base, live) is True
     unknown_host = copy.deepcopy(base)
     unknown_host["disk_scope"]["machine_id_hash"] = None  # no usable machine id at calibration time: the later real one is not a change
     assert res_mod.identity_differs(unknown_host, base) is False

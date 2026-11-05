@@ -26,6 +26,11 @@ SIDECAR_SUFFIX = ".iobench-target"
 ROOT_TARGET_FREE_SHARE = 0.10
 WORKDIR_MARK = ".iobench-workdir"
 MIN_WORKDIR_FREE = 4 * GIB
+PLACEHOLDER_DISK_IDENTIFIERS = frozenset({
+    "", "0", "qm00001", "qemu harddisk", "unknown", "none", "null", "n/a", "na", "not available",
+    "not specified", "not set", "not provided", "unspecified", "default", "placeholder", "tbd", "serial number",
+    "system serial number", "0123456789", "1234567890", "to be filled by o.e.m.",
+})
 
 
 # -- low-level facts ------------------------------------------------------------
@@ -92,6 +97,21 @@ def disk_attr(host: Host, disk_name: str, rel: str) -> str | None:
     return host.read_text(path).strip() or None
 
 
+def _disk_identifier(value: str | None) -> str | None:
+    """Return a usable disk serial/WWN, treating virtual defaults as weak evidence."""
+    if value is None:
+        return None
+    clean = " ".join(value.split())
+    normalized = clean.casefold()
+    compact = "".join(ch for ch in normalized if ch.isalnum())
+    repeated_pattern = any(len(compact) >= 4 and len(compact) % period == 0
+                          and compact == compact[:period] * (len(compact) // period)
+                          for period in range(1, len(compact) // 2 + 1))
+    if normalized in PLACEHOLDER_DISK_IDENTIFIERS or repeated_pattern:
+        return None
+    return clean or None
+
+
 @dataclass(frozen=True)
 class DiskFacts:
     """The whole disk behind a target (IOB-CEI-06): what the disk-scope identity is made of."""
@@ -110,16 +130,22 @@ def disk_facts(host: Host, name: str) -> DiskFacts:
     """Facts of the whole disk ``name`` (a ``/sys/class/block`` entry that is not a partition)."""
     base = f"/sys/class/block/{name}"
     return DiskFacts(name, host.read_text(base + "/dev").strip(), int(host.read_text(base + "/size")) * 512,
-                     disk_attr(host, name, "device/model"), disk_attr(host, name, "device/serial"), disk_attr(host, name, "wwid"),
+                     disk_attr(host, name, "device/model"), _disk_identifier(disk_attr(host, name, "device/serial")),
+                     _disk_identifier(disk_attr(host, name, "wwid")),
                      disk_attr(host, name, "queue/scheduler"), disk_attr(host, name, "queue/rotational"))
 
 
-def find_disk(host: Host, *, model: str | None, serial: str | None, wwn: str | None, size_bytes: int, hint: str | None) -> DiskFacts | None:
+def find_disk(host: Host, *, model: str | None, serial: str | None, wwn: str | None, size_bytes: int, hint: str | None,
+              machine_id_matches: bool = False) -> DiskFacts | None:
     """The whole disk that matches a stored disk scope without any target path (the throwaway partition may be gone).
 
     Every stored non-null field must match and the size always must.  ``/sys/block`` lists whole disks only.  Several matches
-    (two identical disks without a serial) are resolved by the remembered name; a tie that cannot be broken is ``None``,
-    never a guess."""
+    (two identical strong identities) are resolved by the remembered name; a tie that cannot be broken is ``None``, never a guess.
+    A weak stored scope needs its remembered name, a matching machine id, an equal model, and a weak candidate; size alone never
+    identifies it."""
+    weak_scope = serial is None and wwn is None
+    if weak_scope and (hint is None or not machine_id_matches):
+        return None
     found = []
     try:
         names = sorted(host.listdir("/sys/block"))
@@ -132,7 +158,10 @@ def find_disk(host: Host, *, model: str | None, serial: str | None, wwn: str | N
             continue  # a device that vanished or has no size (an unbound loop device) cannot be the disk
         if facts.size_bytes != size_bytes:
             continue
-        if any(want is not None and want != have for want, have in ((model, facts.model), (serial, facts.serial), (wwn, facts.wwn))):
+        if weak_scope:
+            if name != hint or facts.serial is not None or facts.wwn is not None or facts.model != model:
+                continue
+        elif any(want is not None and want != have for want, have in ((model, facts.model), (serial, facts.serial), (wwn, facts.wwn))):
             continue
         found.append(facts)
     if len(found) > 1:

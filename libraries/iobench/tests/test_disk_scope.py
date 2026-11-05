@@ -6,11 +6,11 @@ import pytest
 
 from cli_extended import CliIdentity
 
-from iobench import ceilings, cli, guard, result as res
+from iobench import calibrate as cal_mod, ceilings, cli, guard, proposals, result as res
 from iobench.errors import Refusal
 from iobench.testing import GIB
 
-from helpers import INVERSION, calibrate, make_host, read_json
+from helpers import INVERSION, calibrate, config, make_host, read_json
 from test_tgt import file_host
 
 STATE = "/var/lib/iobench"
@@ -81,6 +81,18 @@ def test_cei_06_a_strong_disk_is_keyed_by_model_serial_wwn_and_size_alone():
     assert ceilings.scope_key({**scope, "serial": "SER-2"}) != scope["key"]
 
 
+def test_cei_06_placeholder_serials_are_weak_and_use_the_machine_id():
+    for serial in ("QM00001", "QEMU HARDDISK", "000000000000", "AAAAAAAA", "ABABABAB", "0", "", "UNKNOWN", "N/A"):
+        host = make_host(cache=None)
+        host.put(VDA + "device/serial", serial + "\n")
+        scope = res.disk_scope(host, guard.disk_facts(host, "vda"))
+        assert scope["serial"] is None and scope["strength"] == "weak", serial
+        assert scope["machine_id_hash"] == res.machine_id_hash(host) and scope["key"] == ceilings.scope_key(scope)
+    host = make_host(cache=None)
+    host.put(VDA + "device/serial", "SERIAL-123\n")
+    assert guard.disk_facts(host, "vda").serial == "SERIAL-123"
+
+
 def test_cei_06_a_serialless_disk_is_bound_to_its_host_and_an_unusable_machine_id_is_not_a_binding():
     a, b = make_host(cache=None), make_host(cache=None)
     b.put("/etc/machine-id", "ffffffffffffffffffffffffffffffff\n")
@@ -98,6 +110,11 @@ def test_cei_06_a_serialless_disk_is_bound_to_its_host_and_an_unusable_machine_i
     assert calibrate(first).result["identity"]["disk_scope"]["machine_id_hash"] is None
     first.put("/etc/machine-id", "0123456789abcdef0123456789abcdef\n")
     assert check(first).state in ("current", "current_unproven")
+    stored = read_json(first, f"{STATE}/result.json")["identity"]
+    assert res.live_identity(first, stored)["disk_scope"]["key"] != stored["disk_scope"]["key"]
+    next_calibration = calibrate(first)
+    assert next_calibration.status == "complete"
+    assert next_calibration.result["evidence"]["history_rotated"].startswith(f"{HIST}.superseded-")
 
 
 # -- raw, file and probe evidence join one history ---------------------------------------------------------------
@@ -142,6 +159,38 @@ def test_cei_07_only_the_evidence_class_table_decides_what_confirms_stability():
     assert ceilings.summary([legacy], now)["history"] == "single-run" and ceilings.summary_by_kind([legacy], now) == {}
 
 
+def test_cei_07_value_rows_are_raw_only_while_stability_rows_follow_the_table():
+    now = 1_792_550_400.0
+    rows = [obs("raw", d="write", w="seq1m", bps=100.0, ts=now),
+            obs("file", d="write", w="seq1m", bps=1.0, src="governor", ts=now),
+            obs("raw", d="read", w="rand4k", bps=100.0, ts=now),
+            obs("probe", d="read", w="rand4k", bps=1.0, src="probe", ts=now)]
+    stability = ceilings.summary(rows, now)
+    values = ceilings.value_summary(rows, now)
+    assert stability["write"]["seq1m"]["worst"] == 1.0 and stability["read"]["rand4k"]["worst"] == 1.0
+    assert values["write"]["seq1m"] == {"worst": 100.0, "median": 100.0, "best": 100.0, "n": 1}
+    assert values["read"]["rand4k"] == {"worst": 100.0, "median": 100.0, "best": 100.0, "n": 1}
+
+
+def test_cei_07_file_and_probe_history_cannot_lower_calibration_model_or_caps():
+    host = make_host(cache=INVERSION)
+    run = cal_mod.Calibrator(host, config())
+    baseline = run.execute()
+    assert baseline.status == "complete"
+    digest = ceilings.identity_digest(baseline.result["identity"])
+    ts = host.now() - 60
+    for direction, workload, kind, source in (("write", "seq1m", "file", "governor"),
+                                               ("write", "rand4k", "file", "governor"),
+                                               ("read", "rand4k", "probe", "probe")):
+        ceilings.append(host, HIST, obs(kind, d=direction, w=workload, bps=1.0, src=source, ts=ts), digest)
+    run.checks = []
+    _, updated = run.assemble(run.safety.report)
+    for section in ("caps", "iocost_model", "iocost_qos"):
+        before = {key: item.get("value") for key, item in proposals.iter_values(baseline.result["proposals"][section])}
+        after = {key: item.get("value") for key, item in proposals.iter_values(updated["proposals"][section])}
+        assert after == before, section
+
+
 def test_cei_07_recalibrate_recommended_counts_only_stability_evidence():
     now = 1_792_550_400.0
     cal = {"read/rand4k": 100.0}
@@ -170,6 +219,28 @@ def test_res_03_a_deleted_partition_is_still_current_and_its_history_still_joins
     assert rows[0]["identity_digest"] == ceilings.identity_digest(out.result["identity"]) and rows[-1]["kind"] == "probe"
     live = res.live_identity(gone, read_json(gone, f"{STATE}/result.json")["identity"])
     assert live["target"] is None and live["disk_scope"]["name"] == "vda" and live["disk"]["partuuid"] is None
+
+
+def test_res_03_a_replaced_weak_disk_is_stale_with_or_without_a_serial():
+    for serial, model in (("UNRELATED", "Samsung X"), (None, None)):
+        host = make_host(cache=INVERSION)
+        out = calibrate(host)
+        identity = out.result["identity"]
+        host.devices.pop("/dev/vda7")
+        for link in ("/sys/dev/block/254:7", "/sys/class/block/vda7", "/sys/block/vda", "/sys/class/block/vda", "/sys/dev/block/254:0"):
+            host.symlinks.pop(link, None)
+        host.add_disk("vdb", 253, 500 * GIB, serial=serial, model=model)
+        assert res.live_identity(host, identity) is None
+        assert (check(host).state, check(host).exit_code) == ("stale", 3)
+
+
+def test_res_03_a_weak_scope_becoming_strong_is_stale_even_when_the_target_is_unchanged():
+    host = make_host(cache=INVERSION)
+    host.put(VDA + "device/model", "M\n")
+    calibrate(host)
+    host.put(VDA + "device/serial", "NEWDISK-123\n")
+    c = check(host)
+    assert (c.state, c.exit_code) == ("stale", 3)
 
 
 def test_res_03_a_replaced_resized_or_foreign_disk_is_stale_with_or_without_its_partition(world):
@@ -262,25 +333,47 @@ def test_cei_06_find_disk_matches_every_stored_field_and_the_size():
     find = lambda **kw: guard.find_disk(host, **{"model": None, "serial": None, "wwn": None, "size_bytes": 500 * GIB, "hint": None, **kw})  # noqa: E731
     assert find(serial="B-SER").name == "vdb" and find(serial="C-SER", model="M").name == "vdc"
     assert find(serial="NOPE") is None and find(serial="B-SER", model="OTHER") is None
-    assert find(serial="B-SER", size_bytes=1) is None and find(size_bytes=100 * GIB).name == "vdd"
+    assert find(serial="B-SER", size_bytes=1) is None and find(size_bytes=100 * GIB) is None
     host.add_disk("vde", 250, 500 * GIB, wwn="naa.5000")
     assert find(wwn="naa.5000").name == "vde" and find(wwn="naa.5000", serial="B-SER") is None
-    # no serial: three 500 GiB disks (vda, vdb, vdc, vde) match by size alone, the remembered name breaks the tie, a tie that cannot be broken is no answer
-    assert find(hint="vdc").name == "vdc"
-    assert find() is None and find(hint="vdz") is None
-    assert find(model="M", hint="vdc").name == "vdc"
+    # Weak scopes need the remembered name and a machine-id match; a name hint never selects a strong candidate for a weak scope.
+    assert find(hint="vda", machine_id_matches=True).name == "vda"
+    assert find(hint="vdc", machine_id_matches=True) is None
+    assert find() is None and find(hint="vdz", machine_id_matches=True) is None
+    assert find(serial="C-SER", model="M", hint="vdc").name == "vdc"
+    duplicate = make_host(cache=None)
+    duplicate.put(VDA + "device/serial", "SHARED-SERIAL\n")
+    duplicate.put(VDA + "device/model", "M\n")
+    duplicate.add_disk("vdb", 253, 500 * GIB, serial="SHARED-SERIAL", model="M")
+    args = {"model": "M", "serial": "SHARED-SERIAL", "wwn": None, "size_bytes": 500 * GIB}
+    assert guard.find_disk(duplicate, **args, hint=None) is None
+    assert guard.find_disk(duplicate, **args, hint="vdb").name == "vdb"
+
+
+def test_cei_06_weak_find_disk_needs_the_remembered_name_and_machine_id_match():
+    host = make_host(cache=None)
+    args = {"model": None, "serial": None, "wwn": None, "size_bytes": 500 * GIB}
+    assert guard.find_disk(host, **args, hint=None) is None
+    assert guard.find_disk(host, **args, hint="vda", machine_id_matches=False) is None
+    assert guard.find_disk(host, **args, hint="vda", machine_id_matches=True).name == "vda"
 
 
 def test_cei_06_find_disk_skips_what_cannot_be_read_and_survives_no_block_devices():
     host = make_host(cache=None)
     host.symlinks["/sys/block/loop0"] = "/sys/devices/virtual/block/loop0"  # listed, but has no dev and no size file
-    assert guard.find_disk(host, model=None, serial=None, wwn=None, size_bytes=500 * GIB, hint=None).name == "vda"
+    assert guard.find_disk(host, model=None, serial=None, wwn=None, size_bytes=500 * GIB, hint="vda", machine_id_matches=True).name == "vda"
     host.put("/sys/devices/virtual/block/loop0/dev", "7:0\n")
     host.put("/sys/devices/virtual/block/loop0/size", "not a number\n")
-    assert guard.find_disk(host, model=None, serial=None, wwn=None, size_bytes=500 * GIB, hint=None).name == "vda"
+    assert guard.find_disk(host, model=None, serial=None, wwn=None, size_bytes=500 * GIB, hint="vda", machine_id_matches=True).name == "vda"
     empty = make_host(cache=None)
     for link in [k for k in empty.symlinks if k.startswith("/sys/block/")]:
         del empty.symlinks[link]
+    assert guard.find_disk(empty, model=None, serial=None, wwn=None, size_bytes=500 * GIB, hint=None) is None
+
+    def block_list(_path):
+        raise OSError("sysfs unavailable")
+
+    empty.listdir = block_list
     assert guard.find_disk(empty, model=None, serial=None, wwn=None, size_bytes=500 * GIB, hint=None) is None
 
 
@@ -309,7 +402,11 @@ def test_cei_06_ceilings_add_knows_what_each_source_measures_on(world):
     code, out, _ = add("--source", "governor", "--kind", "file")
     assert code == 0 and json.loads(out)["observation"]["kind"] == "file"
     code, out, err = add("--source", "benchmark", "--kind", "probe", "--dry-run")
-    assert code == 0 and json.loads(out)["observation"]["kind"] == "probe"
+    assert code == 2 and "cannot use kind" in err
+    code, out, err = add("--source", "probe", "--kind", "file", "--dry-run")
+    assert code == 2 and "cannot use kind" in err
+    code, out, err = add("--source", "governor", "--kind", "probe", "--dry-run")
+    assert code == 2 and "cannot use kind" in err
     code, out, err = run(host, "ceilings", "add", "--dir", "write", "--workload", "rand4k", "--bps", "4e7", "--duration-s", "600", "--source", "probe", "--kind", "probe")
     assert code == 2 and "a probe only reads" in err
     # a file-kind calibration's benchmark observations are file observations
@@ -348,4 +445,15 @@ def test_cei_06_a_legacy_calibration_is_refused_for_new_observations_and_reads_a
     rows = legacy.read_text(HIST).splitlines()
     legacy.put(HIST, "\n".join([json.dumps({"header": True, "schema": 1, "identity_digest": "sha256:old-scheme"}), *rows[1:]]) + "\n")
     out = calibrate(legacy)
-    assert out.status == "complete" and out.result["evidence"]["history_rotated"].startswith(f"{HIST}.foreign-")
+    assert out.status == "complete" and out.result["evidence"]["history_rotated"].startswith(f"{HIST}.superseded-")
+
+
+def test_res_03_check_history_matches_the_default_filtered_summary(world):
+    host, out = world
+    host = clone(host)
+    digest = ceilings.identity_digest(out.result["identity"])
+    host.write_atomic(HIST, ceilings.header_line(digest) + "\n")
+    ceilings.append(host, HIST, obs("file", d="read", ts=host.now() - 60), digest)
+    summary = ceilings.summary(ceilings.load(host, HIST, digest)[0], host.now())
+    c = check(host)
+    assert summary["history"] == c.history == "single-run"
