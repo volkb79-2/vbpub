@@ -911,7 +911,9 @@ value in an earlier-sorting `sysctl.d` file is lowered to 524288 at the next boo
 A raised limit is only half the fix: generated trees (git worktrees, run-gate and pytest output) can still consume most
 of it. The devcontainer template therefore sets `files.watcherExclude` and `search.exclude` under
 `customizations.vscode.settings`; trim those patterns to the consumer repo. The cost: the Source Control view does not
-live-refresh inside a worktree under `.worktrees/`.
+live-refresh inside a worktree under `.worktrees/`. These settings land in the persisted home's
+`~/.vscode-server/data/Machine/settings.json`, which a rebuild does not rewrite: after the template block changes, apply
+it as `templates/vscode/README.md` ("Template settings and the persisted home") describes.
 
 ### IO scheduler and io.cost (MDT-HS-07)
 

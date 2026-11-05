@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from helpers import wait_until
 from tnt.actions import ApplyResult, CallExecution
 from tnt.errors import PlanExecutionError, Refused
 from textual.widgets import Button, DataTable, Input, Static, Tree
@@ -34,10 +35,11 @@ def _select(app, label):
 
 
 async def _settle(pilot, predicate):
-    for _ in range(200):
-        await pilot.pause(0.05)
-        if predicate():
-            return
+    try:
+        await wait_until(pilot, predicate)
+        return
+    except AssertionError:
+        pass
     app = pilot.app
     view = app.query_one("#content").children[0] if app.query_one("#content").children else None
     status = app.query_one("#core-status", Static).render().plain if view is not None else "no view"

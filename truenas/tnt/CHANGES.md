@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- TNT-63: the R2 lane qualifies from a tag: the docstring-only `src/tnt/__init__.py` and `src/tnt/tui/__init__.py` are no longer `judge.targets` (an inventory test keeps the list exact); `tests/test_tui_tmux.py` runs every case on a private tmux socket and its fixture kills the server and waits for server and pane processes to be gone (no more assay `leaked-process-tree`); TUI tests wait on conditions with a 90 s deadline instead of counted short pauses, and the hung-RPC tests release the RPC themselves instead of on a 1.5-3 s timer (no host-load-dependent failures).
+
 <!-- cmru: release history -->
 
 ## [0.4.0] - 2026-11-05

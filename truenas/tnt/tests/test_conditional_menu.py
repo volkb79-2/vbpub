@@ -4,6 +4,7 @@ import asyncio
 
 from textual.widgets import Static, Tree
 
+from helpers import wait_until
 from tnt.menu import MENU, walk
 from tnt.session import _valid_kmip_config, open_session
 from tnt.testing import FakeServer
@@ -81,10 +82,7 @@ def test_conditional_menu_hides_unsupported_and_keeps_unavailable_non_actionable
         async def go():
             app = TntApp(session)
             async with app.run_test() as pilot:
-                for _ in range(100):
-                    await pilot.pause(0.03)
-                    if app.conditional_capabilities is not None:
-                        break
+                await wait_until(pilot, lambda: app.conditional_capabilities is not None, what="conditional capabilities")
                 labels = []
 
                 def collect(node):
@@ -115,11 +113,7 @@ def test_supported_conditional_result_replaces_checking_panel():
         async def go():
             app = TntApp(session)
             async with app.run_test() as pilot:
-                for _ in range(100):
-                    if app.conditional_capabilities is not None:
-                        break
-                    await pilot.pause(0.03)
-                assert app.conditional_capabilities is not None
+                await wait_until(pilot, lambda: app.conditional_capabilities is not None, what="conditional capabilities")
                 app.conditional_capabilities = None
                 app.show(next(item for item in MENU if item.key == "apps"))
                 assert "Checking" in str(app.query_one("#conditional-unavailable", Static).render())
@@ -142,11 +136,8 @@ def test_conditional_callbacks_keep_pending_pages_action_safe():
             async def go():
                 app = TntApp(session)
                 async with app.run_test() as pilot:
-                    for _ in range(100):
-                        if app.conditional_capabilities is not None:
-                            break
-                        await pilot.pause(0.03)
-                    assert app.conditional_capabilities is not None
+                    await wait_until(pilot, lambda: app.conditional_capabilities is not None,
+                                     what="conditional capabilities")
                     app.current = key
                     if state == "unsupported":
                         app._conditional_capabilities_loaded({key: {"state": state, "reason": "no hardware"}})

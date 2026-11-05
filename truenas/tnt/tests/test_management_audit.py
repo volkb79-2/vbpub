@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from textual.widgets import Button, DataTable, Input, Select, Static, Tree
 
+from helpers import wait_until
 from tnt.cli import build_cli
 from tnt.errors import Refused
 from tnt.session import open_session
@@ -116,22 +117,14 @@ def test_audit_tui_filters_and_displays_only_scrubbed_events():
                 find(tree.root)
                 assert target is not None
                 tree.select_node(target)
-                for _ in range(60):
-                    await pilot.pause(0.05)
-                    note = str(app.query_one("#audit-note", Static).render())
-                    if "audit event(s)" in note:
-                        break
+                await wait_until(pilot, lambda: "audit event(s)" in str(app.query_one("#audit-note", Static).render()))
                 table = app.query_one("#audit-table", DataTable)
                 assert table.row_count == 2
                 details = str(table.get_cell_at((0, 5)))
                 assert "synthetic-audit-secret" not in details and "synthetic-audit-token" not in details
                 app.query_one("#audit-event", Input).value = "USER_LOGIN"
                 await pilot.click("#audit-refresh")
-                for _ in range(60):
-                    await pilot.pause(0.05)
-                    if table.row_count == 1:
-                        break
-                assert table.row_count == 1
+                await wait_until(pilot, lambda: table.row_count == 1, what="filtered audit rows")
                 assert "audit.query" in server.called()
 
                 from tnt.tui.audit import AuditView

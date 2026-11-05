@@ -9,9 +9,9 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from textual.css.query import NoMatches
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TextArea, Tree
 
+from helpers import UI_WAIT_DEADLINE, wait_until
 from tnt.actions import Action, ApplyResult, CallExecution, Kind, RpcCall, make_plan
 from tnt.adapters.v27 import V27
 from tnt.errors import Refused
@@ -98,19 +98,14 @@ def choose(app, label):
 
 
 async def wait_loaded(pilot, app, *, key=None):
-    for _ in range(100):
-        await pilot.pause(0.05)
+    def loaded():
         if key is None:
             note = app.query_one("#workflow-note", Static)
         else:
-            try:
-                view = app.query_one(f"#view-{key}", WorkflowView)
-                note = view.query_one("#workflow-note", Static)
-            except NoMatches:
-                continue
-        if " loaded." in str(note.render()):
-            return
-    raise AssertionError("workflow view did not load")
+            note = app.query_one(f"#view-{key}", WorkflowView).query_one("#workflow-note", Static)
+        return " loaded." in str(note.render())
+
+    await wait_until(pilot, loaded, what="workflow view loading")
 
 
 def test_safe_display_helpers_flatten_tree_and_hide_nested_fields():
@@ -248,10 +243,8 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
             view.pending_vm_name = "missing"
             view.pending_vm_devices = [{"dtype": "NIC"}]
             view._open_next_vm_device()
-            for _ in range(100):
-                await pilot.pause(0.05)
-                if "next device plan was refused" in str(app.query_one("#workflow-note", Static).render()):
-                    break
+            await wait_until(pilot, lambda: "next device plan was refused" in str(
+                app.query_one("#workflow-note", Static).render()), what="refused-device note")
             assert "next device plan was refused" in str(app.query_one("#workflow-note", Static).render())
             assert view.pending_vm_name is None and view.pending_vm_devices == []
 
@@ -292,6 +285,9 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
             containers._plan_applied(make_plan(session.workflows.snapshot_hold_action("tank/home@nightly"), session.rpc),
                                      {"ok": True})
             assert "Applied plan; result:" in str(containers.query_one("#workflow-note", Static).render())
+            # _plan_applied started a refresh worker; leaving the app now tears the view down under it
+            # and the late _loaded() callback raises NoMatches (seen once under load). Let it finish.
+            await asyncio.wait_for(app.workers.wait_for_complete(), timeout=UI_WAIT_DEADLINE)
     asyncio.run(go())
     session.close()
 
