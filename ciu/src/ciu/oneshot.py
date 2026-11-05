@@ -42,6 +42,8 @@ _RUN_EVENT_SCHEMA = "ciu-run-event/1"
 _FOREGROUND_INSPECT_INTERVAL = 0.05
 _FOREGROUND_INSPECT_TIMEOUT = 30.0
 _SIGNAL_GRACE_SECONDS = 10.0
+_PROC_ROOT = Path("/proc")
+_DEFAULT_REAP_AGE_SECONDS = 3600.0
 
 
 def validate_container_name(name: str) -> str:
@@ -1105,6 +1107,234 @@ def _run_foreground(
     finally:
         for signum, previous in signal_handlers.items():
             signal.signal(signum, previous)
+
+
+def _reap_owner_state(
+    labels: Mapping[str, str], *, proc_root: Path | None = None,
+) -> tuple[str, str]:
+    """Return dead/alive/unknown from the same pid+start+boot+pidns identity."""
+    proc = Path(proc_root or _PROC_ROOT)
+    try:
+        owner_pid = int(labels["ciu.run.owner-pid"])
+        owner_start = int(labels["ciu.run.owner-start"])
+        owner_pidns = int(labels["ciu.run.pidns"])
+        owner_boot = labels["ciu.run.boot-id"]
+    except (KeyError, TypeError, ValueError):
+        return "unknown", "owner identity labels are missing or malformed"
+    if owner_pid < 1 or owner_start < 0 or owner_pidns < 1 or not owner_boot:
+        return "unknown", "owner identity labels are outside their valid range"
+    try:
+        current_boot = (proc / "sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return "unknown", "host boot identity is unavailable"
+    if owner_boot != current_boot:
+        return "dead", "owner belongs to a previous host boot"
+    try:
+        current_pidns = (proc / "self/ns/pid").stat().st_ino
+    except OSError:
+        return "unknown", "current PID namespace is unavailable"
+    if owner_pidns != current_pidns:
+        return "unknown", "owner PID belongs to another namespace"
+
+    owner_proc = proc / str(owner_pid)
+    try:
+        raw = (owner_proc / "stat").read_text(encoding="ascii")
+    except FileNotFoundError:
+        return "dead", "owner PID no longer exists"
+    except (OSError, UnicodeError):
+        return "unknown", "owner process state is unreadable"
+    fields = raw.rpartition(")")[2].split()
+    try:
+        state = fields[0]
+        start_ticks = int(fields[19])
+        process_pidns = (owner_proc / "ns/pid").stat().st_ino
+    except (IndexError, OSError, ValueError):
+        return "unknown", "owner process identity is incomplete"
+    if process_pidns != owner_pidns:
+        return "unknown", "owner PID was observed in another namespace"
+    if state in {"Z", "X"}:
+        return "dead", f"owner process is in state {state}"
+    if start_ticks != owner_start:
+        return "dead", "owner PID was recycled to a different process"
+    return "alive", "owner process identity still matches"
+
+
+def _started_at(labels: Mapping[str, str]) -> datetime | None:
+    raw = labels.get("ciu.run.started")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def reap_project(
+    repo_root: Path,
+    project: str,
+    *,
+    older_than_seconds: float = _DEFAULT_REAP_AGE_SECONDS,
+    yes: bool = False,
+    now: datetime | None = None,
+) -> list[dict[str, str]]:
+    """Survey or remove this root's one-shots from one exact Compose project."""
+    from . import engine
+
+    root = Path(repo_root).resolve()
+    try:
+        ownership = engine.workspace_ownership_labels(root)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("[CIU-141] cannot read this checkout's ownership identity") from exc
+    query = [
+        "docker", "ps", "-a", "--no-trunc",
+        "--filter", f"label=com.docker.compose.project={project}",
+        "--filter", "label=com.docker.compose.oneoff=True",
+        "--filter", "label=ciu.run=1",
+    ]
+    if ownership is not None:
+        for key in (engine.OWNERSHIP_LABEL_INSTANCE, engine.OWNERSHIP_LABEL_REPO_ROOT):
+            query.extend(["--filter", f"label={key}={ownership[key]}"])
+    query.extend(["--format", "{{.ID}}"])
+    try:
+        listing = procutil.run_cmd(query, check=False, capture=True)
+    except OSError as exc:
+        raise RuntimeError("[CIU-141] Docker unavailable while listing one-shot containers") from exc
+    if listing.returncode != 0:
+        raise RuntimeError("[CIU-141] Docker failed while listing one-shot containers")
+    ids = [line.strip() for line in (listing.stdout or "").splitlines() if line.strip()]
+    if any(not _CONTAINER_ID_RE.fullmatch(item) for item in ids):
+        raise RuntimeError("[CIU-141] Docker did not return full container IDs for reap")
+
+    instant = (now or datetime.now(UTC)).astimezone(UTC)
+    rows: list[dict[str, str]] = []
+    for container_id in sorted(set(ids)):
+        try:
+            inspected = procutil.run_cmd(
+                ["docker", "inspect", container_id], check=False, capture=True,
+            )
+        except OSError as exc:
+            raise RuntimeError("[CIU-141] Docker unavailable while inspecting a one-shot") from exc
+        if inspected.returncode != 0:
+            raise RuntimeError(
+                f"[CIU-141] one-shot {container_id} changed during inspection; retry reap"
+            )
+        try:
+            result = json.loads(inspected.stdout or "")
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise RuntimeError("[CIU-141] Docker inspect returned invalid one-shot JSON") from exc
+        if not isinstance(result, list) or len(result) != 1 or not isinstance(result[0], dict):
+            raise RuntimeError("[CIU-141] Docker inspect did not identify one exact one-shot")
+        document = result[0]
+        if document.get("Id") != container_id:
+            raise RuntimeError(f"[CIU-141] Docker inspect changed ID {container_id}")
+        labels = _event_labels(document)
+        name = str(document.get("Name", "")).lstrip("/")
+        if (
+            labels.get("com.docker.compose.project") != project
+            or labels.get("com.docker.compose.oneoff") != "True"
+            or labels.get("ciu.run") != "1"
+        ):
+            raise RuntimeError(
+                f"[CIU-141] one-shot {container_id} no longer matches its exact label filter"
+            )
+        if ownership is not None:
+            if any(labels.get(key) != value for key, value in ownership.items()):
+                rows.append({
+                    "id": container_id, "name": name, "action": "left",
+                    "reason": "container ownership labels name another or unknown checkout",
+                })
+                continue
+        elif labels.get("com.docker.compose.project.working_dir") != str(root):
+            rows.append({
+                "id": container_id, "name": name, "action": "left",
+                "reason": "Compose working directory does not identify this primary checkout",
+            })
+            continue
+
+        state = document.get("State") or {}
+        status = state.get("Status") if isinstance(state, Mapping) else None
+        owner_state, owner_reason = _reap_owner_state(labels)
+        if owner_state != "dead":
+            rows.append({
+                "id": container_id, "name": name, "action": "left",
+                "reason": owner_reason,
+            })
+            continue
+        started = _started_at(labels)
+        age = (instant - started).total_seconds() if started is not None else None
+        if status != "exited" and (age is None or age < older_than_seconds):
+            rows.append({
+                "id": container_id, "name": name, "action": "left",
+                "reason": "dead owner, but container is not exited and is not older than the bound",
+            })
+            continue
+        if not yes:
+            rows.append({
+                "id": container_id, "name": name, "action": "would-remove",
+                "reason": owner_reason,
+            })
+            continue
+        try:
+            removed = procutil.run_cmd(
+                ["docker", "rm", "-f", container_id], check=False, capture=True,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"[CIU-141] Docker unavailable while removing {container_id}") from exc
+        rows.append({
+            "id": container_id, "name": name,
+            "action": "removed" if removed.returncode == 0 else "failed",
+            "reason": owner_reason if removed.returncode == 0 else "docker rm -f failed",
+        })
+    return rows
+
+
+def reap_cli(
+    repo_root: Path, *, older_than: str | None = None, yes: bool = False,
+) -> int:
+    """Survey one-shots for this root; ``--yes`` performs safe removals."""
+    from . import deploy
+
+    if older_than is None:
+        age_seconds = _DEFAULT_REAP_AGE_SECONDS
+    else:
+        age_seconds = deploy.parse_duration_seconds(older_than)
+        if age_seconds <= 0:
+            raise ValueError("[CIU-141] --older-than must be greater than zero")
+    root = Path(repo_root).resolve()
+    document = deploy.resolve_identities(root)
+    identities = document.get("resolved", {}).get("identities", {})
+    if not isinstance(identities, Mapping):
+        raise RuntimeError("[CIU-141] resolved identity document has an invalid shape")
+    projects = sorted({
+        str(identity.get("compose_project"))
+        for services in identities.values()
+        if isinstance(services, Mapping)
+        for identity in services.values()
+        if isinstance(identity, Mapping) and identity.get("compose_project")
+    })
+    if not projects:
+        print("[CIU-141] no selected Compose projects have CIU run containers")
+        return 0
+    failed = False
+    for project in projects:
+        for row in reap_project(
+            root, project, older_than_seconds=age_seconds, yes=yes,
+        ):
+            action = row["action"]
+            if action == "failed":
+                failed = True
+                verb = "failed to remove"
+            elif action == "removed":
+                verb = "removed"
+            elif action == "would-remove":
+                verb = "would remove"
+            else:
+                verb = "left alone"
+            print(f"[CIU-141] {verb} {row['id']} ({row['name']}): {row['reason']}")
+    return 1 if failed else 0
 
 
 def run_cli(
