@@ -931,6 +931,41 @@ payload 108 KB (r1002; PoC build 96 KB) and 91 KB (v1001), extrapolating to abou
 `write_bytes` 201 KB and 135 KB per 290 s (about 2.4 and 1.6 MB/h). Not measured: the query path on hosts (only in
 container tests), 500 cgroups / 5,000 PIDs, the envelope, other kernels.
 
+### topos-sampler after the S2 review fixes (r1002, 2026-11-05, 300 ticks at 1 Hz)
+
+Binary built from the S2 commit, run from a fresh `/tmp` directory on r1002 (read-only on the system; tmpfs tiers
+under `/dev/shm`, cold tier under `/tmp`, everything removed afterwards), store and socket on, three tiers of
+`sampler.example.toml`, 84 cgroups, 225 PIDs. Writer thread, command-line helper pool, per-thread D scan and the
+"read until EOF" rule are all in. 240 s into the run a client sent 240 `current` requests (see below).
+
+| metric | value |
+|---|---|
+| CPU of one core | 1.71% (17.1 ms CPU per tick; includes the 240 requests) |
+| tick work avg / p50 / p95 / max | 15.7 / 15.1 / 21.1 / 55.2 ms (cgroups 11.1, procs 4.2, host 0.4) |
+| writer last job | about 2 ms, on the writer thread, not on the tick |
+| VmHWM / VmRSS at exit | 10.5 MB / 3.3 MB |
+| overruns / skipped ticks / counter resets / dropped frames / write errors | 0 / 0 / 0 / 0 / 0 |
+| tmpfs tiers / cold tier | 7.8 MB / 140 KB zstd (1.6 GB/day extrapolation not meaningful: 5 min) |
+| process rows / thread scans per tick | 11 / 7 (`pids.d_unseen` 0) |
+
+The earlier Rust 0.1.0 row for r1002 (about 1.4-1.5%) is lower; this run adds the per-thread scan of candidates,
+one more `read(2)` per pseudo-file (the seq_file fix), 11 more cgroup files read per cgroup and 240 requests, and
+r1002 load differs from that day. I did not separate the contributions, so no claim about which dominates.
+
+`current` on r1002 (83 cgroups, 11 process rows), 60 requests per form after one warm-up; server CPU is the
+sampler's CPU delta divided by the requests, so it includes the 1 Hz tick loop running meanwhile (about 17 ms per
+second, i.e. 0.3-0.5 ms of the figures below at this request rate is not the request):
+
+| form | bytes | server CPU per request |
+|---|---|---|
+| default (`current`) | 564,542 | 2.83 ms |
+| `procs:false` | 557,786 | 2.83 ms |
+| `fields` (9 metric selectors, full objects) | 76,263 | 1.00 ms |
+| `fields` + `compact` | 37,439 | 0.33 ms |
+
+`vm.zswpin`, `vm.zswpout`, `vm.zswpwb` are present on r1002 (raw 47903, 650320, 36362) since reads go to EOF; the root
+cgroup shows `mem.current` 2.71 GB (MemTotal - MemAvailable) and `mem.swap_current` 111.5 MB.
+
 ## Release Signoff Template
 
 - Release/tag:
