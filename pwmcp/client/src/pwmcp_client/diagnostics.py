@@ -11,6 +11,7 @@ import argparse
 from cli_extended import CheckResult, CliRuntime, DoctorCheck
 
 from .contract import PwmcpContract, load_contract
+from .release import assess_skew
 from .session import VersionMismatch, verify_installed_playwright
 
 # What loading the contract (URL or file) can raise for an unreachable server, a
@@ -65,11 +66,42 @@ def playwright_check(runtime: CliRuntime, args: argparse.Namespace) -> CheckResu
     )
 
 
+def client_version() -> str:
+    """The installed client's version (metadata and packaged VERSION agree, see ``cli.identity``)."""
+
+    from .cli import identity  # lazy: cli imports this module
+
+    return identity().version
+
+
+def skew_check(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
+    contract, _problem = try_load_contract(args.contract)
+    if contract is None:
+        return CheckResult("skip", "the pwmcp contract is unavailable (see the contract check)")
+    client = client_version()
+    skew = assess_skew(client, contract.release)
+    details = {"client": client, "server": contract.release}
+    if skew.status == "ok":
+        return CheckResult("ok", skew.message, details=details)
+    return CheckResult(
+        skew.status,
+        skew.message,
+        remedy="install the pwmcp-client of the server's release: pwmcp-client-install.py --version "
+        f"{contract.release} (see README, Client install and upgrade)",
+        details=details,
+    )
+
+
 DOCTOR_CHECKS = (
     DoctorCheck("contract", "the pwmcp server contract is reachable and well-formed", contract_check),
     DoctorCheck(
         "playwright",
         "the installed Playwright package matches the contract's protocol",
         playwright_check,
+    ),
+    DoctorCheck(
+        "skew",
+        "the client release matches the server release (a different Playwright major.minor fails)",
+        skew_check,
     ),
 )

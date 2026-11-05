@@ -32,6 +32,7 @@ from . import ocr as ocr_module
 from . import storage_state as storage_module
 from .blocked import BlockVerdict, detect as detect_block
 from .diagnostics import DOCTOR_CHECKS, try_load_contract
+from .release import assess_skew, version_to_release
 from .session import BrowserLease, PwmcpError
 from .user_agent import ResolvedUserAgent, UserAgentError, cdp_override_params, resolve
 
@@ -67,6 +68,41 @@ def _contract(args: argparse.Namespace, runtime: CliRuntime) -> None:
         runtime.output.primary(dict(contract.__dict__))
     else:
         runtime.output.primary(json.dumps(contract.__dict__, indent=2, sort_keys=True))
+
+
+def _versions(args: argparse.Namespace, runtime: CliRuntime) -> None:
+    """Client version, server release (when reachable) and their skew verdict.
+
+    ``--version``/``version`` stay the framework's exact, network-free line (the shared
+    CLI contract); this verb is the one that talks to the server.
+    """
+
+    client = runtime.identity.version
+    contract, problem = try_load_contract(args.contract)
+    server = contract.release if contract is not None else None
+    skew = assess_skew(client, server) if server is not None else None
+    if runtime.json_mode:
+        runtime.output.primary({
+            "client": client,
+            "client_release": version_to_release(client) if _is_client_version(client) else None,
+            "server": server,
+            "skew": skew.status if skew else "unknown",
+            "skew_message": skew.message if skew else f"server unreachable: {problem}",
+        })
+        return
+    runtime.output.primary(f"pwmcp {client} (server {server if server is not None else 'unreachable'})")
+    if skew is None:
+        runtime.output.warn(f"cannot read the server contract from {args.contract} ({problem})")
+    elif skew.status != "ok":
+        runtime.output.warn(f"{skew.status}: {skew.message}")
+
+
+def _is_client_version(value: str) -> bool:
+    try:
+        version_to_release(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _server_identity(contract: object) -> ResolvedUserAgent:
@@ -747,6 +783,14 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
         examples=("pwmcp contract", "pwmcp contract --contract ./pwmcp.contract.json"),
         include_progress=False,
         handler=_contract,
+    ))
+    registry.register(VerbSpec(
+        "versions",
+        description="print the client version and, when reachable, the server release plus their skew verdict",
+        group=VerbGroup.EXPLORATION.value,
+        examples=("pwmcp versions", "pwmcp versions --contract ./pwmcp.contract.json"),
+        include_progress=False,
+        handler=_versions,
     ))
     registry.register(VerbSpec(
         "inspect",

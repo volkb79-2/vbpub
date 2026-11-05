@@ -94,6 +94,55 @@ One service has one shared browser, so fetches must be serialised. A second
 parallel MCP client fails with "Browser is already in use ... use --isolated";
 do not follow that hint (the service cannot take `--isolated`), wait and retry.
 
+## Wire protocol for a consumer without `pwmcp_client`
+
+`BrowserLease.connect()` (and `pwmcp inspect`) is a thin wrapper over a plain Playwright `connect()`; a test
+runner that cannot install the `pwmcp-client` wheel can speak the protocol directly. First read the contract
+(`GET http://pwmcp:3000/contract`): `endpoints.playwright_ws`, `playwright.python`, `run_server.limits`.
+
+```python
+import json, urllib.request
+from playwright.sync_api import sync_playwright
+
+contract = json.load(urllib.request.urlopen("http://pwmcp:3000/contract", timeout=10))
+with sync_playwright() as p:
+    browser = p.chromium.connect(
+        contract["endpoints"]["playwright_ws"],
+        headers={"X-PWMCP-Lease-Seconds": "600", "X-PWMCP-Session-Label": "my-suite"},
+        timeout=30_000,
+    )
+    page = browser.new_page()
+    page.goto("http://my-app:8080/")
+    browser.close()
+```
+
+* **Headers** (both optional at the gateway, `containers/pwmcp/run-server-gateway/index.js`):
+  `X-PWMCP-Lease-Seconds` is a positive integer; default `run_server.limits.default_lease_seconds` (1800), capped at
+  `max_lease_seconds` (7200); a non-integer is refused with HTTP 400 naming the header. The session is closed when
+  the lease expires. `X-PWMCP-Session-Label` is free text (first 128 characters, default `unlabelled`) shown in the admin
+  session list and the gateway log.
+* **Limits:** at most `max_clients` (2) concurrent sessions; the next upgrade gets HTTP 503 ("all N browser slots
+  are in use"). The browser is recycled after `idle_recycle_seconds` without sessions.
+* **HTTP 403** (body names the problem): the connecting `Host` header is not in the gateway allowlist
+  (`PWMCP_RUN_SERVER_ALLOWED_HOSTS`: the ciu-derived names `pwmcp:3000` and `<project>-<env>-pwmcp:3000`, the
+  `pwmcp.consumer.aliases` entries, and `pwmcp.external.unified_host`). Connect by one of those names, or add an alias
+  in the stack config. The gateway logs `[gateway] rejected status=403 ...` with the allowed list.
+* **HTTP 428 Precondition Required** is not produced by this gateway (it never requires the lease headers: absent
+  headers mean the default lease). If you see it, the request reached something else (an older release's gateway or the
+  Playwright server directly): check `curl http://pwmcp:3000/contract` for the release and send both headers as above.
+* **Version rule:** the connecting `playwright` package must have the same major.minor as the contract's
+  `playwright.python` (the `playwright.protocol` field); a different minor fails at connect time. Install exactly
+  `playwright==<contract playwright.python>` (the `pwmcp-client` wheel pins it for you).
+
+### Reaching the instance from another ciu network
+
+The browser runs inside the pwmcp container, so the pwmcp container must reach your app and your runner must
+reach pwmcp. Put them on one network: either deploy pwmcp as a sub-stack of your project (pass your project's
+network as `deploy.network_name`, see `docs/DEPLOYMENT.md`), or attach your runner and app containers to the
+instance's network (for the devcontainer instance `vbpub-cmqemn-network`). netcup-api-filter does the latter:
+its compose requires a `PWMCP_NETWORK` variable naming that network and joins both its runners and its app to it
+as an external network, then uses `pwmcp:3000` and `http://<app-service>:<port>` as above.
+
 ## Inspect a webpage
 
 Use the bundled CLI to read a rendered page through PWMCP's managed remote

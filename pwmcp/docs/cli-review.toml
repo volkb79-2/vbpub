@@ -54,6 +54,58 @@ effects = ["Reads the contract file (or one HTTP GET); prints it as key-sorted J
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[contract---json---contract-contract.json]"]
 
 [[cases]]
+id = "case:route:entrypoint:pwmcp/versions/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:45a923c2af1be9cd755d76a6fc10c0d6e93d8d7e01deff448a12200e3bea0e50"
+rationale = "The only input is the contract source; the verb prints the client version beside the server release it read, so a skewed pair is visible at a glance."
+invocation = ["versions", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "pwmcp 1.63.0.post2 (server 1.63.0-r2)"
+expected_stderr_contains = ""
+effects = ["Reads the contract file (or one HTTP GET); prints one line and a skew warning when the pair differs; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[versions---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/versions/option-spelling/option:route:entrypoint:pwmcp/versions/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ccdd5c845e96da72f58415e317a06f1aa214e6ce823851869aed093a8c87f00b"
+rationale = "--contract is invocation-wide, so it is also accepted before the verb."
+invocation = ["--contract", "contract.json", "versions"]
+expected_exit_status = 0
+expected_stdout_contains = "(server 1.63.0-r2)"
+expected_stderr_contains = ""
+effects = ["Reads the contract file (or one HTTP GET); prints one line and a skew warning when the pair differs; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[--contract-contract.json-versions]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/versions/option-spelling/option:route:entrypoint:pwmcp/versions/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f07aa3de62f075ceeb0504dc616be353a2666f17ad07867bbde66ce4770de408"
+rationale = "The shared control is accepted by a read-only verb; it only lifts redaction and warns."
+invocation = ["versions", "--debug-raw", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "(server 1.63.0-r2)"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Reads the contract file (or one HTTP GET); prints one line and a skew warning when the pair differs; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[versions---debug-raw---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/versions/option-spelling/option:route:entrypoint:pwmcp/versions/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:47f519ad8c42e3287ae01645ca213b22807d3b9b8569cd2e819a88c12b09cfc0"
+rationale = "--json prints client, server and the skew verdict as one object for machines."
+invocation = ["versions", "--json", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"server\": \"1.63.0-r2\""
+expected_stderr_contains = ""
+effects = ["Reads the contract file (or one HTTP GET); prints one JSON object; changes nothing"]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[versions---json---contract-contract.json]"]
+
+[[cases]]
 id = "case:route:entrypoint:pwmcp/doctor/minimum"
 state = "active"
 decision = "accept"

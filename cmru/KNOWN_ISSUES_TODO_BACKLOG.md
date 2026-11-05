@@ -2889,3 +2889,15 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 4. Write the manifest (`bundle-manifest`), then the deterministic archive named `<prefix>-v<version>-<variant>.tar.xz`.
 
 **Wanted.** A `[[variants]]`-aware bundle build: `cmru handler bundle-build` (or `bundle.toml` keys) with `vendor_requirements = ["requirements-runtime.txt"]`, `platforms = [...]`, `stage = [argv]`, and a per-variant `exec_prefix` argv (for example `["docker","exec","-w","{root}","{container}"]`) so the step runs in the project's runner while cmru keeps the archive, manifest, naming and publish. Per-variant interpreter versions come from the existing `[[project.X.variants]] build_arg`. Acceptance: naf and tls-edge delete their builders, and a new project with one `bundle.toml` plus a requirements manifest releases a vendored per-interpreter tarball. Do not add secrets or host-specific limits to the config.
+
+## KI-127 — `cmru get-py` has no `--client-only` mode for projects whose bundle carries a consumer client wheel
+
+**Status:** OPEN 2026-11-05; severity: enhancement (found shipping the pwmcp client, `vbpub` pwmcp PWMCP-38). CHANGES checked: nothing in `[Unreleased]` covers it.
+
+**Observed.** The generated `get.py` only installs the whole release (stable tree, adapter, wheels, launchers). pwmcp's consumers often need only the client wheel plus its pinned dependencies to talk to a server running elsewhere, with no adapter/ciu links; pwmcp therefore ships a hand-written `pwmcp-client-install.py` (SHA-256 of the bundle, manifest check of every wheel, `pip install --no-index --require-hashes` into a private venv, atomic `current`/launcher links).
+
+**Wanted.** A generated `get.py install --client-only` (declared by e.g. `[project.installer] client_only_wheels = [...]`) that verifies the bundle and manifest exactly as today, installs only the declared wheels into the release venv and skips the adapter and tree activation, so projects need no bespoke installer. Reuse the same verified wheelhouse/lock code path.
+
+## KI-128 - `cmru versions resolve` cannot use the operator's Docker credential store, so a shared-IP host stays stuck on the anonymous Docker Hub limit
+
+**Status:** OPEN; severity: enhancement. Found in netcup-api-filter (`netcup-api-filter@68ea380`, cmru 7.2.1). `resolve` for three Docker Hub targets (mailpit, pdns-auth, python) fails with HTTP 429 `TOOMANYREQUESTS ... unauthenticated pull rate limit` (exit 3 here, exit 5 for a bare 429 per the docs) on a host whose IP is shared by many consumers; retrying every 15 minutes did not clear it. Credentials can only be supplied as `username_env`/`password_env` source keys, so an operator who is logged in through the Docker credential store (`~/.docker/config.json` `auths` or `credsStore`/`credHelpers`) must also export a second copy of the secret into the environment. Wanted: an opt-in per-source (or per-run) `auth = "docker-config"` that asks the Docker credential helper for the registry host, without ever printing the secret, plus the exit code being 5 for every rate-limit refusal (this run exited 3 although the message is a pull-limit 429).

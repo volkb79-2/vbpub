@@ -19,6 +19,8 @@ Outputs:
   ciu.toml.j2          — same (kept in sync with defaults)
   docker-bake.hcl      — common-version defaults updated in-place
   client/pyproject.toml and client/requirements-runtime.txt — exact runtime dependencies
+  client/src/pwmcp_client/VERSION — the client wheel version, generated from the release
+                     (1.64.1-r2 -> 1.64.1.post2, via pwmcp_client/release.py)
 
 Consumer contract:
   - :latest and :latest-npm track the same reviewed version available from all
@@ -63,6 +65,9 @@ RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 CONTRACT_FILE = PWMCP_DIR / "pwmcp.contract.json"
 CLIENT_REQUIREMENTS_FILE = PWMCP_DIR / "client" / "requirements-runtime.txt"
 CLIENT_PROJECT_FILE = PWMCP_DIR / "client" / "pyproject.toml"
+# The client wheel version is generated from the server release (1.64.1-r2 -> 1.64.1.post2).
+CLIENT_RELEASE_MODULE = PWMCP_DIR / "client" / "src" / "pwmcp_client" / "release.py"
+CLIENT_VERSION_FILE = PWMCP_DIR / "client" / "src" / "pwmcp_client" / "VERSION"
 DOCKERFILE = PWMCP_DIR / "containers" / "pwmcp" / "Dockerfile"
 OCR_DOCKERFILE = PWMCP_DIR / "containers" / "ocr" / "Dockerfile"
 # ciu.toml.j2 is a maintainer's LOCAL, gitignored override (pwmcp/.gitignore): it is not in a clean checkout
@@ -498,6 +503,42 @@ def update_contract(path: Path, *, release: str, playwright_version: str) -> Non
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def _release_helper():
+    """Load the client's ONE release<->version helper by path (stdlib-only; the client need not be installed)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("pwmcp_client_release_helper", CLIENT_RELEASE_MODULE)
+    if spec is None or spec.loader is None:
+        fail(f"cannot load {CLIENT_RELEASE_MODULE}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # the helper's dataclass resolves its own module by name
+    spec.loader.exec_module(module)
+    return module
+
+
+def update_client_version(path: Path, release: str) -> None:
+    """Regenerate the client VERSION file from the server release (``-rN`` -> ``.postN``)."""
+    try:
+        version = _release_helper().release_to_version(release)
+    except ValueError as exc:
+        fail(str(exc))
+    path.write_text(version + "\n", encoding="utf-8")
+
+
+def check_client_version(release: str) -> None:
+    """The committed client VERSION must be exactly the release mapped through the shared helper."""
+    try:
+        expected = _release_helper().release_to_version(release)
+    except ValueError as exc:
+        fail(str(exc))
+    actual = CLIENT_VERSION_FILE.read_text(encoding="utf-8").strip() if CLIENT_VERSION_FILE.is_file() else ""
+    if actual != expected:
+        fail(
+            f"{CLIENT_VERSION_FILE.name} is {actual!r} but the pwmcp release {release!r} requires "
+            f"{expected!r} (run --refresh, or write the mapped version)"
+        )
+
+
 def update_client_runtime_requirements(path: Path, playwright_version: str) -> None:
     """Keep the installable client's Playwright dependency at the contract version."""
     lines = [
@@ -721,6 +762,7 @@ def check_committed_inputs() -> None:
             f"does not match committed Playwright version {playwright_version!r}"
         )
     check_client_runtime_requirements(playwright_version)
+    check_client_version(release_tag)
     expected_protocol = ".".join(playwright_version.split(".")[:2])
     if contract_playwright.get("protocol") != expected_protocol:
         fail(
@@ -885,6 +927,9 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
 
     log(f"Updating {CLIENT_REQUIREMENTS_FILE.name}...")
     update_client_runtime_requirements(CLIENT_REQUIREMENTS_FILE, agreed_version)
+
+    log(f"Updating {CLIENT_VERSION_FILE.name} (client wheel version follows the release)...")
+    update_client_version(CLIENT_VERSION_FILE, pwmcp_version)
 
     log(f"Writing {RELEASE_VARS_FILE.name}...")
     pw_mcp_ver = _read_bake_var("PLAYWRIGHT_MCP_VERSION")

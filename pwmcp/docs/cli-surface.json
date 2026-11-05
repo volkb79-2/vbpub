@@ -1528,6 +1528,63 @@
         "spelling": "--overwrite-modified"
       },
       "signature": "sha256:33fc6feb12425836f38ab7b8139c903da88012768c73634f8c467bf49b701244"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/versions/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:pwmcp/versions/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/versions",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:pwmcp/versions/--contract"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:45a923c2af1be9cd755d76a6fc10c0d6e93d8d7e01deff448a12200e3bea0e50"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/versions/option-spelling/option:route:entrypoint:pwmcp/versions/--contract/--contract",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/versions/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/versions",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/versions/--contract",
+        "spelling": "--contract"
+      },
+      "signature": "sha256:ccdd5c845e96da72f58415e317a06f1aa214e6ce823851869aed093a8c87f00b"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/versions/option-spelling/option:route:entrypoint:pwmcp/versions/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/versions/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:pwmcp/versions",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/versions/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:f07aa3de62f075ceeb0504dc616be353a2666f17ad07867bbde66ce4770de408"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/versions/option-spelling/option:route:entrypoint:pwmcp/versions/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/versions/--json"
+      ],
+      "route_id": "route:entrypoint:pwmcp/versions",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/versions/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:47f519ad8c42e3287ae01645ca213b22807d3b9b8569cd2e819a88c12b09cfc0"
     }
   ],
   "entrypoint": {
@@ -4099,6 +4156,113 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "remove the skills this tool installed [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--contract",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "pwmcp contract URL or JSON file",
+          "dest": "contract",
+          "effective_default": "http://pwmcp:3000/contract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--contract"
+          ],
+          "help_group": "CONTRACT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/versions/--contract",
+          "kind": "option",
+          "metavar": "URL_OR_FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "http://pwmcp:3000/contract"
+          },
+          "parser_path": [
+            "versions"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "print the client version and, when reachable, the server release plus their skew verdict",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:pwmcp/versions",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "versions"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "versions"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "print the client version and, when reachable, the server release plus their skew verdict",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

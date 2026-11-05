@@ -339,6 +339,31 @@ def shared_test_repo_read_lock() -> Iterator[None]:
     yield from _hold_test_repo_lock(fcntl.LOCK_SH)
 
 
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None):
+    """CIU-192: no test may leak a process-environment change to the next one.
+
+    ``bootstrap_workspace_env`` (and a few tests that assign ``os.environ[...]``
+    directly) write identity/machine facts into the process environment on
+    purpose, so any test that drives a verb used to leave them behind for
+    whichever test the xdist worker ran next. ``--dist loadfile`` hands files to
+    workers nondeterministically, so a later test saw an environment that
+    depended on scheduling (a leaked empty ``USER_UID`` made a real
+    ``ciu env generate`` write an empty ``container_uid``, which then failed the
+    release gate with "Missing required workspace environment variables:
+    CONTAINER_UID" in only some runs). Wrapping the WHOLE protocol (fixture
+    setup and teardown included) snapshots before the first fixture and restores
+    after the last, so it composes with every ``monkeypatch`` undo.
+    """
+    before = dict(os.environ)
+    try:
+        yield
+    finally:
+        if dict(os.environ) != before:
+            os.environ.clear()
+            os.environ.update(before)
+
+
 @pytest.fixture(autouse=True)
 def _scrub_ambient_identity_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Clear ambient identity/policy env vars before each test body runs."""

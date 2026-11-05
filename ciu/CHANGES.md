@@ -141,6 +141,8 @@ the technical detail below it.
 - A missing-environment refusal raised from a linked worktree's template names the primary checkout's gitignored `.env*` files that the worktree lacks, and how to export them (CIU-176)
 - Behaviour change: `ciu env generate` / worktree preparation now attach the container the process ACTUALLY runs in (own container id from `/proc/self/mountinfo`, name via `docker inspect`), not the one `DEVCONTAINER_NAME` names; a stale machine fact such as `dstdns-devcontainer-vb` in another cockpit is replaced with a warning, a short-id `HOSTNAME` fallback resolves to the real name silently, and a denied `docker inspect` warns and keeps the configured name. A ciu run inside an ephemeral gate container that inherits `ENV_TYPE=devcontainer` therefore attaches that container (CIU-176)
 - `ciu bake` no longer doubles the prefix (`[CIU-117] [CIU-176]`) on refusals that already carry a CIU id
+- `ciu env generate` treats an exported but EMPTY `USER_UID`, `USER_GID`, `DOCKER_UID`, `CONTAINER_UID` or `CONTAINER_GID` as unset (it used to record `container_uid = ""`, which every later verb rejected with "Missing required workspace environment variables: CONTAINER_UID"); `0` stays valid (CIU-192)
+- Test suite: `os.environ` is snapshotted and restored around every test, so a verb's bootstrap can no longer leak identity/machine facts into the next test of an xdist worker (the root of an intermittent release-gate failure, CIU-192)
 
 ### Adoption / Migration Notes
 - Safe to ignore: additive; the new refusals name the command to run.
