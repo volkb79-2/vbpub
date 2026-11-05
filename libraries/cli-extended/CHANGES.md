@@ -218,6 +218,8 @@ Behaviour changes a consumer can see:
 
 ## [Unreleased]
 
+- test(cli-extended): kill the four 0.5.2 R2 survivors; drop the unobservable `1 <=` exit-code bound and the dead private `isolated` defaults in `testing.py` (CLI-EXT-33)
+
 ## [0.5.0] - 2026-10-21
 <!-- cmru: generated -->
 <!-- cmru: source-end=eaa1421fc7e2df2fbf287a4cb68243b7a73f238b -->
