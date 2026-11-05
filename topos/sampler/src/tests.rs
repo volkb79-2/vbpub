@@ -237,7 +237,7 @@ fn stacked_devices_unknown_lines_and_io_cost() {
     let mut col = Collector::new(cfg_for(&root), Dict::default(), Instant::now());
     tick(&mut col, 1);
     assert_eq!(get(&col, "cg:/", "io.rbytes").unwrap().raw, 50, "stacked dm device excluded");
-    assert_eq!(get(&col, "cg:/", "io.cost.usage").unwrap().raw, 77);
+    assert_eq!(get(&col, "cg:/", "io.cost.usage").unwrap().raw, 999 + 77, "iocost state is summed over every device that has it");
     assert_eq!(get(&col, "cg:/", "io.cost.vrate").unwrap().v, 12.5);
     // the other cgroup files are absent: sticky not-applicable states, not zeros
     let s = sticky(&col, "cg:/", "mem.current").unwrap();

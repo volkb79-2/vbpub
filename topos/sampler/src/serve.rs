@@ -381,7 +381,13 @@ fn current(ctx: &Ctx, prefix: &str, with_procs: bool) -> (String, bool) {
     ));
     let mut truncated = false;
     let mut first = true;
-    for (id, vals) in s.frame.iter() {
+    // Entities with values this tick, then entities that only have sticky states (every
+    // file unreadable): a cgroup in the tree is always listed, never silently dropped.
+    let in_frame: std::collections::HashSet<u32> = s.frame.iter().map(|(i, _)| *i).collect();
+    let mut sticky_only: Vec<u32> = s.sticky.keys().filter(|k| !in_frame.contains(k)).copied().collect();
+    sticky_only.sort_unstable();
+    let rows: Vec<(u32, &[Val])> = s.frame.iter().map(|(i, v)| (*i, v.as_slice())).chain(sticky_only.iter().map(|i| (*i, &[][..]))).collect();
+    for (id, vals) in rows.iter() {
         let name = &s.ents[*id as usize];
         if !name.starts_with(prefix) {
             continue;
@@ -390,7 +396,7 @@ fn current(ctx: &Ctx, prefix: &str, with_procs: bool) -> (String, bool) {
         jstr(&mut e, name);
         e.push_str(":{");
         let mut f2 = true;
-        for x in vals {
+        for x in vals.iter() {
             if !f2 {
                 e.push(',');
             }

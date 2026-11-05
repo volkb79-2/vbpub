@@ -691,11 +691,12 @@ impl Collector {
                                         continue;
                                     }
                                     b"cost.usage" | b"cost.wait" | b"cost.indelay" => {
+                                        // iocost state exists only on devices where it is enabled, so
+                                        // there is no double counting: sum over every device (Python
+                                        // collector semantics, `io.stat:cost_usage`).
                                         have_cost = true;
-                                        if bottom {
-                                            let ci = match k { b"cost.usage" => 0, b"cost.wait" => 1, _ => 2 };
-                                            cost[ci] += parse_u64(v).unwrap_or(0);
-                                        }
+                                        let ci = match k { b"cost.usage" => 0, b"cost.wait" => 1, _ => 2 };
+                                        cost[ci] += parse_u64(v).unwrap_or(0);
                                         continue;
                                     }
                                     _ => continue,
