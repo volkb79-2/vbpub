@@ -73,6 +73,7 @@ cgroup_root = "{r}/cg"
 proc_root = "{r}/proc"
 sys_root = "{r}/sys"
 socket_path = "{r}/s.sock"
+socket_mode = "0600"
 duration_s = 0
 stats_path = ""
 [process]
@@ -237,6 +238,7 @@ cgroup_root = "{r}/cg"
 proc_root = "{r}/proc"
 sys_root = "{r}/sys"
 socket_path = "{r}/run/s.sock"
+socket_mode = "0600"
 duration_s = 0
 stats_path = ""
 [process]

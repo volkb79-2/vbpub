@@ -60,7 +60,8 @@ fn looks_secret(name: &str) -> bool {
         return false;
     }
     // names that mention a secret word but hold no secret
-    if n.contains("tokenizer") || n.ends_with("-tokens") || n.ends_with("_tokens") || n.contains("password-stdin") {
+    const COUNT_ENDINGS: &[&str] = &["max-tokens", "num-tokens", "n-tokens", "batched-tokens", "max_tokens", "num_tokens", "n_tokens", "batched_tokens"];
+    if n.contains("tokenizer") || COUNT_ENDINGS.iter().any(|s| n.ends_with(s)) || n.contains("password-stdin") {
         return false;
     }
     // whole parts, not substrings: `-pw`, `--auth` are secret, `--author`, `--authority` are not
@@ -75,7 +76,18 @@ fn looks_secret(name: &str) -> bool {
 /// `-H "Authorization: Bearer x"` and `Cookie: a=b`: one word holding a secret header.
 fn redact_header(a: &str) -> Option<String> {
     let (name, _) = a.split_once(':')?;
-    let n = name.trim().to_ascii_lowercase();
+    // `--password=abc:def`, `SECRET_KEY=a:b`: a secret `name=` prefix is the `name=value` branch's
+    // business (it hides the whole value); with another prefix (`--header=`) only the rest is judged
+    let judged = match name.split_once('=') {
+        Some((pre, after)) => {
+            if looks_secret(pre) {
+                return None;
+            }
+            after
+        }
+        None => name,
+    };
+    let n = judged.trim().to_ascii_lowercase();
     let secret = matches!(n.as_str(), "authorization" | "authentication" | "cookie" | "set-cookie")
         || n.ends_with("-token")
         || n.ends_with("-key")
@@ -102,11 +114,18 @@ fn redact_url(a: &str) -> Option<String> {
         if let Some(at) = auth.rfind('@') {
             let info = &auth[..at];
             match info.split_once(':') {
-                Some((user, _)) => out.push_str(&format!("{user}:{REDACTED}")),
-                None => out.push_str(REDACTED),
+                Some((user, _)) => {
+                    out.push_str(&format!("{user}:{REDACTED}"));
+                    changed = true;
+                }
+                // a short plain login (`git@host`) is not a secret; anything else is hidden
+                None if (1..=16).contains(&info.len()) && info.bytes().all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-')) => out.push_str(info),
+                None => {
+                    out.push_str(REDACTED);
+                    changed = true;
+                }
             }
             pos = start + at;
-            changed = true;
         }
     }
     out.push_str(&a[pos..]);
@@ -114,20 +133,49 @@ fn redact_url(a: &str) -> Option<String> {
 }
 
 /// `user:password` as `-u` / `--user` / `--proxy-user` take it. `None` when it is visible anyway:
-/// both sides digits or both sides identical (`1000:1000`, `www-data:www-data`, uid:gid pairs).
-fn redact_user_pair(v: &str) -> Option<String> {
+/// both sides digits (`docker run -u 1000:1000`) and the program is a container runtime
+/// (`ids_ok`). Identical sides are NOT exempt: `admin:admin` is a password.
+fn redact_user_pair(v: &str, ids_ok: bool) -> Option<String> {
     let (user, pw) = v.split_once(':')?;
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    if (digits(user) && digits(pw)) || user == pw {
+    if ids_ok && digits(user) && digits(pw) {
         return None;
     }
     Some(format!("{user}:{REDACTED}"))
 }
 
+/// In a word cut at `?`, `&`, `;` and `,`, a segment `name=value` whose name (before the last
+/// `=`) looks secret loses its value: `https://x/y?access_token=abc&a=1`.
+fn redact_pairs(a: &str) -> String {
+    let mut out = String::with_capacity(a.len());
+    let mut seg_start = 0;
+    let flush = |out: &mut String, seg: &str| match seg.rfind('=') {
+        Some(i) if looks_secret(&seg[..i]) => {
+            out.push_str(&seg[..=i]);
+            out.push_str(REDACTED);
+        }
+        _ => out.push_str(seg),
+    };
+    for (i, c) in a.char_indices() {
+        if matches!(c, '?' | '&' | ';' | ',') {
+            flush(&mut out, &a[seg_start..i]);
+            out.push(c);
+            seg_start = i + c.len_utf8();
+        }
+    }
+    flush(&mut out, &a[seg_start..]);
+    out
+}
+
 /// One word. Returns (replacement, true when the NEXT word is this option's value).
 fn redact_word(a: &str) -> (String, bool) {
-    if let Some(u) = redact_url(a) {
-        return (u, false);
+    if a.contains("://") {
+        // a URL word is never finished by the userinfo pass: query pairs and nested pairs follow
+        let u = redact_url(a);
+        let p = redact_pairs(u.as_deref().unwrap_or(a));
+        if p != a {
+            return (p, false);
+        }
     }
     if let Some(h) = redact_header(a) {
         return (h, false);
@@ -155,6 +203,9 @@ pub fn redact(words: &[&str]) -> Vec<String> {
     let mut out = Vec::with_capacity(words.len());
     let mut hide_next = false;
     let mut user_next = false;
+    // numeric `uid:gid` pairs are only known not to be passwords for container runtimes
+    let prog = words.first().map(|p| p.rsplit('/').next().unwrap_or(p)).unwrap_or("");
+    let ids_ok = matches!(prog, "docker" | "podman" | "nerdctl" | "runc" | "crun");
     'words: for w in words {
         if hide_next {
             hide_next = false;
@@ -166,21 +217,21 @@ pub fn redact(words: &[&str]) -> Vec<String> {
         }
         // `-u user:password`, as curl takes it
         if std::mem::take(&mut user_next) {
-            if let Some(p) = redact_user_pair(w) {
+            if let Some(p) = redact_user_pair(w, ids_ok) {
                 out.push(p);
                 continue;
             }
         }
         user_next = matches!(*w, "-u" | "--user" | "--proxy-user");
         for pre in ["--user=", "--proxy-user="] {
-            if let Some(p) = w.strip_prefix(pre).and_then(redact_user_pair) {
+            if let Some(p) = w.strip_prefix(pre).and_then(|v| redact_user_pair(v, ids_ok)) {
                 out.push(format!("{pre}{p}"));
                 continue 'words;
             }
         }
         // attached form `-ubob:pw`
         if w.starts_with("-u") && !w.starts_with("--") {
-            if let Some(p) = redact_user_pair(&w[2..]) {
+            if let Some(p) = redact_user_pair(&w[2..], ids_ok) {
                 out.push(format!("-u{p}"));
                 continue;
             }
@@ -267,8 +318,57 @@ mod redaction_tests {
         assert_eq!(r(&["--proxy-user=bob:pw"]), "--proxy-user=bob:<redacted>");
         assert_eq!(r(&["-ubob:pw"]), "-ubob:<redacted>");
         assert_eq!(r(&["-u", "bob:pw"]), "-u bob:<redacted>");
-        assert_eq!(r(&["-u", "1000:1000", "-u1000:1001", "--user=www-data:www-data", "--user", "www-data:www-data"]), "-u 1000:1000 -u1000:1001 --user=www-data:www-data --user www-data:www-data");
         assert_eq!(r(&["-u", "1000:pw"]), "-u 1000:<redacted>");
+        // identical sides are a password, not an exemption
+        assert_eq!(r(&["curl", "-u", "admin:admin", "--user=www-data:www-data"]), "curl -u admin:<redacted> --user=www-data:<redacted>");
+        // all-digit pairs are visible only for container runtimes (basename of argv[0])
+        assert_eq!(r(&["docker", "run", "-u", "1000:1000", "--user=0:0", "-u1000:1001"]), "docker run -u 1000:1000 --user=0:0 -u1000:1001");
+        assert_eq!(r(&["/usr/bin/podman", "run", "-u", "1000:1000"]), "/usr/bin/podman run -u 1000:1000");
+        assert_eq!(r(&["curl", "-u", "100:654321"]), "curl -u 100:<redacted>");
+        assert_eq!(r(&["docker", "run", "-u", "bob:654321"]), "docker run -u bob:<redacted>");
+    }
+
+    #[test]
+    fn secret_prefixed_pairs_with_a_colon_are_hidden_whole() {
+        for w in ["--password=abc:def", "SECRET_KEY=a:b", "--token=ghp:xyz", "DB_PASSWORD=user:pw"] {
+            let out = r(&["x", w]);
+            let (k, _) = w.split_once('=').unwrap();
+            assert_eq!(out, format!("x {k}=<redacted>"), "{w}");
+        }
+        // a non-secret prefix: only the part after `=` is judged
+        assert_eq!(r(&["curl", "--header=Authorization: Bearer x"]), "curl --header=Authorization: <redacted>");
+        assert_eq!(r(&["x", "--note=a:b"]), "x --note=a:b");
+    }
+
+    #[test]
+    fn token_exemptions_are_exact_count_names() {
+        assert_eq!(r(&["--max-tokens", "4096", "--max-num-batched-tokens", "8192", "--n_tokens=3"]), "--max-tokens 4096 --max-num-batched-tokens 8192 --n_tokens=3");
+        assert_eq!(r(&["--access-tokens=a,b"]), "--access-tokens=<redacted>");
+        assert_eq!(r(&["--auth-tokens=abc"]), "--auth-tokens=<redacted>");
+        assert_eq!(r(&["API_TOKENS=abc"]), "API_TOKENS=<redacted>");
+        assert_eq!(r(&["--valid-tokens", "abc"]), "--valid-tokens <redacted>");
+    }
+
+    #[test]
+    fn bare_userinfo_is_visible_only_when_a_short_login() {
+        assert_eq!(r(&["ssh://git@github.com/o/r", "sftp://user@host"]), "ssh://git@github.com/o/r sftp://user@host");
+        assert_eq!(r(&["https://ghp_TOKEN@github.com/o/r"]), "https://<redacted>@github.com/o/r");
+        assert_eq!(r(&["https://abcdefghijklmnopq@h"]), "https://<redacted>@h", "17 characters is too long for a login");
+        assert_eq!(r(&["https://Git@h"]), "https://<redacted>@h", "upper case is outside the login alphabet");
+    }
+
+    #[test]
+    fn nested_secret_pairs_follow_a_url() {
+        assert_eq!(r(&["https://x/y?access_token=abc&a=1"]), "https://x/y?access_token=<redacted>&a=1");
+        assert_eq!(r(&["--args=token=abc&u=http://x:y@h"]), "--args=token=<redacted>&u=http://x:<redacted>@h");
+        assert_eq!(r(&["https://u:p@h/p?sig=1&password=2;ok=3"]), "https://u:<redacted>@h/p?sig=1&password=<redacted>;ok=3");
+        assert_eq!(r(&["https://x/y?a=1&b=2"]), "https://x/y?a=1&b=2");
+    }
+
+    #[test]
+    fn a_line_of_exactly_the_cap_plus_its_nul_is_not_cut() {
+        assert_eq!(render(&cut_to_word(b"abc\0de\0".to_vec(), 6)), "abc de");
+        assert_eq!(render(&cut_to_word(b"abc\0de\0f".to_vec(), 6)), "abc <truncated>");
     }
 
     #[test]
@@ -288,8 +388,8 @@ fn read_cmdline(path: &str, max: usize) -> Result<String, u8> {
     use crate::util::{err_state, stc};
     let f = std::fs::File::open(path).map_err(|e| err_state(&e, stc::UN_READ))?;
     let mut b = Vec::new();
-    // one byte more than the cap tells a cut from a line that fits exactly
-    f.take(max as u64 + 1).read_to_end(&mut b).map_err(|e| err_state(&e, stc::UN_READ))?;
+    // two bytes more than the cap tell a cut from a line that fits exactly (cap bytes + its NUL)
+    f.take(max as u64 + 2).read_to_end(&mut b).map_err(|e| err_state(&e, stc::UN_READ))?;
     Ok(render(&cut_to_word(b, max)))
 }
 
@@ -300,7 +400,9 @@ pub const TRUNCATED: &str = "<truncated>";
 /// (`postgres://admin:hunter2` cut before the `@`). One word longer than the cap becomes just
 /// `<truncated>`.
 fn cut_to_word(mut b: Vec<u8>, max: usize) -> Vec<u8> {
-    if b.len() <= max {
+    // a complete line of `max` bytes plus its closing NUL is not a cut
+    let content = if b.last() == Some(&0) { b.len() - 1 } else { b.len() };
+    if content <= max {
         return b;
     }
     b.truncate(max);
