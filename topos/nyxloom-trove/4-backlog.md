@@ -392,7 +392,10 @@ conformance tests. It is one BuildKit build of `sampler/Dockerfile` target `gate
 `--no-cache-filter test,conformance` so a verdict never comes from a cached layer. The lane is `bare-host`.
 The first run showed that the `tester-unified` gate container has a docker CLI but no buildx and no Docker
 socket. That is not a run-gate gap: a build-only lane needs no gate container, as with mdt-cockpit's
-`oci-push`. The bases (`mirror.gcr.io`), crates.io and PyPI were reachable from the controller.
+`oci-push`. The lane requires `BUILDX_BUILDER`, so it runs on the mdt-managed buildkitd, whose placement is
+its only resource limit: run-gate does not admit it against the gates slice. The bases (`mirror.gcr.io`),
+crates.io and PyPI were reachable from the controller. Python dependencies are installed only from releases
+at least 14 days old (`--uploaded-prior-to P14D`).
 
 Still open:
 - the lane is not in the release gates of `topos/cmru.toml`;

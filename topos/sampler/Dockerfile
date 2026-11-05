@@ -28,13 +28,15 @@ COPY --from=build /topos-sampler /topos-sampler
 # The release binary against the Python collector (tests/test_sampler_conformance.py, fixture trees
 # only). topos itself is not installed: its version comes from git (setuptools_scm). Its runtime
 # dependencies, the zstandard and mcp extras the test conftest requires, and pytest are read from
-# pyproject.toml, so the floors live in one place. pip takes the newest release above each floor.
+# pyproject.toml, so the floors live in one place. pip takes the newest release above each floor that
+# is at least 14 days old (the estate's freshness rule); the layer is cached, so it is refreshed only
+# when pyproject.toml or the base image changes.
 FROM mirror.gcr.io/library/python:3.14-slim AS pydeps
 WORKDIR /src/topos
 COPY pyproject.toml ./
 RUN python -c "import subprocess, sys, tomllib; p = tomllib.load(open('pyproject.toml', 'rb'))['project']; o = p['optional-dependencies']; \
 deps = p['dependencies'] + o['zstandard'] + o['mcp'] + [d for d in o['dev'] if d.startswith('pytest>')]; \
-subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', '--root-user-action=ignore', *deps])"
+subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-cache-dir', '--root-user-action=ignore', '--uploaded-prior-to', 'P14D', *deps])"
 
 FROM pydeps AS conformance
 COPY src ./src

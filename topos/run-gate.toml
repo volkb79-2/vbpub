@@ -25,8 +25,12 @@ budget = "30m"
 [lanes.topos-sampler]
 kind = "command"
 environment = "bare-host"
-# --no-cache-filter: a verdict comes from tests run now, never from a cached layer of an earlier build
-argv = ["bash", "-c", "cd {worktree}/topos && docker buildx build -f sampler/Dockerfile --target gate --no-cache-filter test,conformance --progress=plain ."]
+# --no-cache-filter: a verdict comes from tests run now, never from a cached layer of an earlier build.
+# type=cacheonly: nothing is loaded into the Docker daemon. BUILDX_BUILDER is required so the build never
+# falls back to the default dockerd builder, which runs outside any governed slice. run-gate does not
+# admit this lane against the gates slice; the builder's own placement is the limit.
+argv = ["bash", "-c", "cd {worktree}/topos && docker buildx build -f sampler/Dockerfile --target gate --no-cache-filter test,conformance --output type=cacheonly --progress=plain ."]
+required_env = ["BUILDX_BUILDER"]
 clean_tree = true
 budget = "20m"
 
