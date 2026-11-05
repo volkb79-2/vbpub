@@ -25,7 +25,10 @@ About 60 fixes from the deep review. Gate and adversarial review before merge.
 4. Unit with the self-protection envelope; install flow, and the wizard question
    for `kernel.task_delayacct`.
 5. `mdt-cockpit` mounts `/run/topos`; zero-argument source selection; visible
-   fallback; a clear message when a container sees only its own namespace.
+   fallback; a clear message when a container sees only its own namespace. No daemon
+   installs on r1002 or v1001 without coordinating with the agent that controls them
+   (D-034). The unit's `RuntimeDirectory=` removes the directory on stop, which would
+   strand directory mounts, so the unit must keep it.
 6. Build and release: Rust image pinned in the build, a `cmru` step for a static
    musl binary, a run-gate lane. Containers only; no toolchain in the cockpit.
 
@@ -42,10 +45,12 @@ About 60 fixes from the deep review. Gate and adversarial review before merge.
 5. Process rows: wire the bounded process model into the tree. The code in
    `src/topos/procs/` exists and has no caller; Stream A's sampler replaces its
    reads.
-6. Side pane, then the lenses as settled by PoC use.
-7. Config lens: set vs effective using the real kernel algorithm (A-08), origin,
-   drift (A-13), inconsistency warnings. Validate on real kernels in a VM lane.
-8. Stall lens, freeze and scrub.
+6. The single view (no lenses), planned for 260 columns, in both Textual and
+   ratatui, with column order and priority in config, and the side pane.
+7. Config in the row and pane: set vs effective using the real kernel algorithm
+   (A-08), origin, drift (A-13), inconsistency warnings. Validate on real kernels in
+   a VM lane.
+8. Freeze and scrub.
 
 ### Track C: eBPF block latency (independent)
 
@@ -65,10 +70,10 @@ parked web UI.
 |---|---|
 | TUI engine: Textual line widget or ratatui | ratatui PoC vs the swapped Python table |
 | Sampler language final go | Sampler PoC numbers |
-| Lens set and final column list | Using the PoCs |
+| Final column list | Using the PoCs |
 | Drawing: which techniques | Drawing PoC in real terminals |
 | Milestone definition | The above |
-| Unit protection policy: should `docker.service`, `containerd.service`, `multi-user.target`, `sshd.service` be refused by default? | Before gated TUI actions |
+| Control submenu design for gated actions (D-033), including whether power and rescue units stay refused | Later; no work until designed |
 
 ## Known gaps carried from the review
 

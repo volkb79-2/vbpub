@@ -1,7 +1,8 @@
 # TUI-SPEC: `topos`, a host state and cgroup governance console
 
 Status: target design from the operator interview of 2026-11-05. The PoCs in
-`docs/PLAN-2026-11-CONSOLE.md` can still change the items marked **OPEN**.
+`docs/PLAN-2026-11-CONSOLE.md` can still change items marked **OPEN** and the shipped
+column list.
 `docs/STATUS.md` says what exists today. Kernel-mechanism detail that this
 document does not repeat (column formulas, friendly-name resolver, DAMON
 integration, network provider tiers, BPF design, the degradation matrix) stays
@@ -50,7 +51,7 @@ Meters on top, the tree below, and a side pane following the cursor. The pane
 hides below about 140 columns or with `Tab`.
 
 ```text
-r1002 4c 7.7G  daemon● 1s  [1 Now] 2 Config 3 Stall            HOST OK    frozen -
+r1002 4c 7.7G  daemon● 1s                                      HOST OK    frozen -
 CPU ▇▅▂▆ us32 sy9 io5 st2 si1   LOAD 1.2 1.0 1.5   RUN 3 BLK 2   ctx 12k/s
 MEM anon▓▓file▒▒▒▒▒shm░zsw░free·· avail 6.4G  dirty 12M  major 0/s  scan 0/s
 ZSW 31M→8M 3.8x pool 1%/25% in0 out0 wb0 rej0   SWAP 52M/16G in0 out0   KSM 159M
@@ -66,13 +67,12 @@ NAME        CPU THR RAM/CEIL   PROT ZSW RF d/f PSI m/i/c │ dev-gates.slice
    python3   24      95M                                 │ cpu.w 20 ← dev 100
   interact   .2   0 190M       512M 60K  0/0   0/0/0     │ io.max 30k/18k iops
 ▾system      10   0 990M       1.0G 24M  0/0   0/0/0     │ origin runtime-dropin
-1/2/3 lens  / filter  s sort  a rows:middle(3 hidden)  space freeze  , . step  ? help
+/ filter  s sort  a rows:middle(3 hidden)  Tab pane  space freeze  , . step  ? help
 ```
 
 ### 3.1 Tree and processes
 
-- The cgroup tree is the spine. It stays the same across lenses, with the same
-  selection and filter.
+- The cgroup tree is the spine of a single view; there are no lenses or tabs.
 - Containers decorate their cgroup node with a display name; no duplicate row.
 - Hot (CPU or IO) and blocked (D state) processes appear under their owning
   cgroup automatically, capped per cgroup. Expand shows all. One key flips to a
@@ -85,34 +85,33 @@ NAME        CPU THR RAM/CEIL   PROT ZSW RF d/f PSI m/i/c │ dev-gates.slice
 
 ### 3.2 Width
 
-Plan for 200-300 columns. **Never clip the right side.** Every column has a fixed
-display position and a configurable priority; narrower terminals drop the lowest
-priority columns and the rest keep their order. Priorities and column sets are
-configuration, not constants.
+A single view, planned for a maximum of 260 columns. **Never clip the right side.**
+Column order and priority both come from configuration. On resize, the highest
+priority number disappears first and the remaining columns keep their order. When
+the side pane is shown it takes its width first, and dropping applies to the rest.
 
-### 3.3 Lenses
+### 3.3 Columns
 
-**OPEN** (settled by using the PoCs). Working set, combining more than the seven
-first proposed because wide screens hold more:
+Shipped order, with width and priority (1 is kept longest); all configuration:
 
-| Key | Lens | Content |
-|---|---|---|
-| 1 | Now | The wide all-in-one row |
-| 2 | Config | Set vs effective for every knob, origin, drift, inconsistency warnings |
-| 3 | Stall | D-state processes with wait and owner, major faults, PSI, device await; freezable |
-
-Now column order, priority in brackets (1 is kept longest):
-
-NAME[1] CPU[1] THR[4] RAM/CEIL[1] PROT[3] ZSW[5] RF_D[2] RF_F[6] PSI_M[2] PSI_I[2]
-PSI_C[3] IO_R[2] IO_W[2] IOPS_R[5] IOPS_W[5] STALL[3] BLK[1] NET_RX[6] NET_TX[6]
-PIDS[7] ANON[7] FILE[7] SHMEM[8] SWAP[6] PGSCAN[8] PGSTEAL[8] IOCOST[8] ORIGIN[8]
-DRIFT[4]
+| Group | Columns |
+|---|---|
+| Identity | NAME 30 p1 |
+| CPU | CPU 5 p1, THR 4 p3, CPU.W 5 p5, QUOTA 6 p6 |
+| Memory | RAM/CEIL 12 p1, MIN 6 p5, LOW 6 p3, LOW.EFF 6 p4, HIGH 6 p6, MAX 6 p6, SWAP 6 p4, SWAP.MAX 6 p7, ZSW 6 p3, RATIO 5 p6, ANON 6 p6, FILE 6 p6 |
+| Refaults | RF_D 6 p2, RF_Z 6 p5, RF_F 6 p4 |
+| Pressure | PSI_C 5 p3, PSI_M 5 p2, PSI_I 5 p2 |
+| IO | IO_R 7 p2, IO_W 7 p2, IOPS_R 6 p4, IOPS_W 6 p4, STALL 5 p3, IO.MAX 9 p6, IOCOST 6 p7 |
+| Stall and tasks | BLK 4 p1, MAJ 5 p4, PIDS 5 p5 |
+| Network | NET_RX 7 p5, NET_TX 7 p5 |
+| Provenance | ORIGIN 7 p7, DRIFT 5 p2 |
 
 Deep DAMON, per-device and interface detail lives in the side pane and drill-down.
 
-### 3.4 Config lens: the differentiator
+### 3.4 Config: the differentiator
 
-For each knob: the configured value, the effective value, and where it came from.
+Shown in the row where it fits and always in the side pane. For each knob: the
+configured value, the effective value, and where it came from.
 
 - **Memory:** `memory.min`, `low`, `high`, `max`, `swap.max`, `zswap.max`.
   Effective `min`/`low` follow the kernel's `effective_protection()`: ancestor
@@ -127,14 +126,15 @@ For each knob: the configured value, the effective value, and where it came from
 
 ### 3.5 Time
 
-Freeze (`space`) and step (`,` `.`) work in every lens. Scrubbing reads the same
+Freeze (`space`) and step (`,` `.`) work everywhere. Scrubbing reads the same
 tiers as live, so live and history share one UI. A shared time axis applies to
 all sparklines. Gaps and resets are drawn, never interpolated.
 
 ### 3.6 Actions
 
-The TUI ships read-only first. Gated actions come later, after the safety work:
-same owner chain and audit as the CLI, typed confirmation bound to the target.
+The TUI ships read-only first. Actions come later as a control submenu on a process
+or container: allowed and gated rather than refused by default (D-033). This needs
+more design before any work starts.
 
 ## 4. Metrics and honest sources
 

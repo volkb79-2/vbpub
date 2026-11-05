@@ -1,7 +1,7 @@
 # Decisions inbox — product calls and outcomes
 
-Current state (2026-11-05): D-001 through D-030 are decided (D-028 in part); D-031,
-D-032 and D-033 are open (see the end of this file). Entries D-001 to D-019 cite the 2026-07 spec
+Current state (2026-11-05): D-001 through D-030, D-033 and D-034 are decided (D-028 in
+part, D-033's design later); D-031 and D-032 are open (see the end of this file). Entries D-001 to D-019 cite the 2026-07 spec
 (`nyxloom-trove/archive/TUI-SPEC-2026-07.md`) and roadmap
 (`nyxloom-trove/archive/ROADMAP-2026-07.md`); the current target is `TUI-SPEC.md`.
 New product questions receive new monotonic IDs; do not reopen these through an old
@@ -767,8 +767,10 @@ their cgroup automatically, capped; a key gives a flat global ranking.
 Row noise is a stepped toggle from all rows to only hot rows, with a middle default.
 Width: plan for 200-300 columns. Narrower terminals drop less important columns by
 priority so the order stays coherent; the right side is never just cut off.
-Supersedes the width tiers. Lens set remains open: combine more than the seven
-proposed.
+Supersedes the width tiers. **Amended by the operator the same day:** a single view,
+no lenses, planned for a maximum width of 260 columns, built in both engines for
+comparison. Column order and priority are both configuration; columns disappear by
+configured priority on resize.
 
 ## D-023 · 2026-11-05 · operator interview · DECIDED
 
@@ -830,8 +832,17 @@ tmux and plain SSH, PuTTY, Termix, common Ubuntu and CachyOS terminals.
 
 Milestone definition: deliberately not set. Wait for decisions on the PoCs.
 
-## D-033 · 2026-11-05 · review · OPEN
+## D-033 · 2026-11-05 · operator interview · DECIDED, DESIGN LATER
 
-Unit protection policy: whether `docker.service`, `containerd.service`,
-`sshd.service` and `multi-user.target` are refused by default on systemd verbs.
-Power and rescue units are already refused. Decide before gated TUI actions.
+Do not add default refusals for `docker.service`, `containerd.service`,
+`sshd.service` or `multi-user.target`: things are allowed, gated. Actions will live
+in a control submenu on a process or container; that needs more design before any
+TUI action work. Open within that design: whether the existing unconditional refusal
+of power and rescue units stays.
+
+## D-034 · 2026-11-05 · operator interview · DECIDED
+
+Build unattended only where permitted. The Rust sampler proper starts without waiting
+if the PoC clears D-026. r1002 and v1001 are controlled by another agent: no daemon or
+service installs there without coordination; short read-only measurements from `/tmp`
+are fine. `mdt-cockpit` template changes are committed for the next image.
