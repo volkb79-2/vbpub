@@ -2119,6 +2119,92 @@ project's own deployment authority; ciu-derived → the ciu lifecycle naming
 the config file (never a vbpub-specific remedy for another project's tree).
 The old `testing-exec.sh` shim is retired — run-gate execs directly.
 
+**Container-name derivation rule (RG-165).** For an exec environment with no
+declared `container_name`, run-gate resolves the name from the judged
+worktree's rendered `<worktree>/ciu.global.toml` `[deploy]` table:
+
+1. `<deploy.project_name>-<deploy.environment_tag>-<ENVIRONMENT NAME>`;
+2. else, if `deploy.network_name` ends in `-network`, that name without the
+   suffix, then `-<ENVIRONMENT NAME>` (`<prefix>-<env>`);
+3. else the lane is refused (nothing is guessed).
+
+`<ENVIRONMENT NAME>` is the `[environments.<name>]` key the lane's
+`environment = "<name>"` selects, and it must equal the ciu SERVICE name of the
+runner, because ciu names a service's container `<project>-<tag>-<service>`.
+A project with several runners (for example one per Python version) therefore
+names the ciu services and the run-gate environments identically:
+
+```toml
+# ciu stack services:   test-runner-py311, test-runner-py313
+[environments.test-runner-py311]
+mode = "exec"
+[environments.test-runner-py313]
+mode = "exec"
+[lanes.tests-py311]
+kind = "command"
+environment = "test-runner-py311"   # -> myproj-ab12cd-test-runner-py311
+```
+
+A declared `container_name` bypasses the derivation (and is wrong for the next
+worktree; see below). When a runner cannot be found, the refusal also lists the
+project's declared `mode = "ephemeral"` (container-mode) environments, which
+need no ciu stack, as an alternative.
+
+**A plain `git worktree add` checkout cannot run exec lanes (RG-166).** The
+rendered `<worktree>/ciu.global.toml` exists only in a ciu-managed worktree
+(`ciu worktree create`, or `ciu worktree adopt` for an existing checkout) or
+in the main checkout. In a plain worktree `run-gate <lane> --dry-run` refuses
+(exit 2) and running `ciu up` there cannot help; either create or adopt the
+worktree through ciu, or run the lane from a container-mode environment.
+
+**Runner stdout and the placement handshake (RG-167).** A lane that declares
+`resources.memory` runs behind a placement wrapper that prints one private
+readiness line (`\x1eRUN_GATE_PLACEMENT_READY:<per-placement nonce>`). Other
+complete lines the environment prints first (an `LD_PRELOAD` shim such as
+ciu's `ksm-optin`, a profile script) are ignored, up to 64 KiB; only the exact
+marker line with the nonce of that placement is accepted, a marker-shaped line
+with another nonce is refused, and a missing marker is still an error that
+quotes the last ignored lines (sanitised: printable ASCII, `;` replaced, token-
+like strings redacted, capped). Stdout therefore need not be clean. Caveat: the
+nonce is in the wrapper's argv, so code running inside the wrapper before it
+prints (a preload shim, a profile script) can read it from `/proc/self/cmdline`;
+the nonce separates this placement from stale or stray output, it is not a
+defence against hostile code in the runner's own trust domain.
+
+The `last_output` field on a `command-exit-map` ERROR verdict line is a
+JSON-quoted, sanitised copy of the lane log's last line (printable ASCII,
+ANSI/control bytes removed, `;` replaced by `,`, secret-looking assignments and
+long token-like strings redacted, at most 160 characters). Redaction is best
+effort: the full log can still hold secrets and stays owner-only.
+
+**Copy-on-write root in an exec runner (RG-168).** The cockpit exports
+`MDT_COW_ROOT` (a host path). For an exec lane run-gate forwards
+`COWTREE_MODE=auto` and `MDT_COW_ROOT` only when the runner container mounts
+that path (it reads the running container's `docker inspect` mount
+destinations; a destination equal to the path or a parent of it counts).
+Otherwise both are dropped and the plan line says so:
+`resource env (forwarded: ..., not forwarded (no mount): COWTREE_MODE,
+MDT_COW_ROOT)`, and assay uses its own storage path inside the runner instead
+of refusing with `MDT_COW_ROOT does not exist`. A runner that should use
+copy-on-write must mount the root at the identical path; a lane that wants it
+off explicitly sets `resources = { cowtree = { mode = "off" } }` (an
+environment accepts only `resources.cpus`). `COWTREE_MODE=off` is always
+forwarded.
+
+Which runners mount the root: the cockpit devcontainer template
+(`mdt-cockpit/templates/devcontainer.json`, `.devcontainer/devcontainer.json`)
+bind-mounts `/srv/mdt-cockpit-cow/<user>` at the identical path and sets
+`MDT_COW_ROOT` to it, so lanes run from there get copy-on-write. No ciu
+test-runner / tester-base service template in this estate mounts it, so exec
+lanes against those runners run without copy-on-write and print the
+`not forwarded (no mount)` notice (they used to be refused). To give such a
+runner copy-on-write, add a bind mount of the same host path at the same
+container path to the runner service (and set `MDT_COW_ROOT` to that path in
+the invoking environment). Plan time: `--dry-run` of the state-root probe
+cannot know the answer without inspecting; it prints a note that the decision
+is made at run time after `docker inspect --type container`. The lane plan line
+itself is accurate because the runner must be running.
+
 **Worktree config and runner follow the JUDGED TREE (RG-47/RG-65/RG-79).**
 When invoking from a main checkout with `--worktree PATH`, run-gate derives
 the project directory as `PATH` plus that project's path relative to the Git
@@ -2130,9 +2216,10 @@ SHA-256 (plus the central config path/hash when used).
 
 For an exec lane whose name is derived from CIU, run-gate reads only the
 judged worktree's rendered `<worktree>/ciu.global.toml`. If your worktrees
-get their own isolated stacks (`ciu worktree create` — each with its own
-rendered config, network and `test-runner`), a missing file refuses with a
-remedy to start that worktree's runner using
+get their own isolated stacks (`ciu worktree create` or `ciu worktree adopt`
+— each with its own rendered config, network and `test-runner`; a plain
+`git worktree add` checkout has no such file and cannot run exec lanes), a
+missing file refuses with a remedy to start that worktree's runner using
 `ciu up --dir <test-runner stack> --deploy --healthcheck`. This remedy
 requires CIU 7.15.2 or newer (CIU-124). A stopped runner gets the same remedy
 before `docker exec`. run-gate never falls back to

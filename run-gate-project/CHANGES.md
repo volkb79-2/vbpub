@@ -9,6 +9,16 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Fixed
+- fix(run-gate): the placement handshake ignores unrelated lines the runner prints before its readiness marker (e.g. the `[ksm-optin]` LD_PRELOAD line), bounded to 64 KiB; only the exact marker with the placement nonce is accepted, a wrong-nonce marker or a missing marker is still an error (RG-167)
+- fix(run-gate): an exec lane forwards `COWTREE_MODE=auto`/`MDT_COW_ROOT` only when the runner container mounts that path; otherwise they are dropped and the plan line reads `not forwarded (no mount): ...`, so assay no longer refuses with `MDT_COW_ROOT does not exist` (RG-168)
+- fix(run-gate): untrusted text quoted on verdict/error lines (`last_output`, placement-handshake preamble) is sanitised (printable ASCII, `;` replaced, secret-looking values redacted, capped at 160) and `last_output` is a JSON-quoted field; the exec CoW mount check uses `docker inspect --type container` and a normalised path comparison (rejects `..`)
+- fix(run-gate): the exec-mode "no ciu.global.toml" refusal states that the file exists only in a ciu-managed worktree (`ciu worktree create|adopt`) or the main checkout, and names the project's declared `mode = "ephemeral"` environments as alternatives (RG-166, RG-165a)
+- fix(run-gate): a `command-exit-map` ERROR verdict line echoes the last non-empty line of the lane's combined output as `last_output` (RG-165b)
+
+### Documentation
+- docs(run-gate): CONSUMERS.md states the exec-mode container-name derivation rule (`<project_name>-<environment_tag>-<environment name>`, environment name = ciu service name, several runners) and the plain-`git worktree add` limitation; DESIGN-GUIDE cross-reference (RG-165, RG-166)
+
 <!-- cmru: release history -->
 
 ## [25.1.1] - 2026-11-04

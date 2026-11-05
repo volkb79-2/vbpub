@@ -3106,6 +3106,9 @@ def test_no_stdlib_violations():
                # can ask, non-blockingly, how long it has been silent.
                "threading",
                "threading", "queue", "socket",
+               # posixpath: RG-168 normalises container mount paths with
+               # POSIX semantics regardless of the host OS.
+               "posixpath",
                # atexit + tempfile: RG-NARROW's per-run credential-free copy
                # of the git config is written to a private temp dir and
                # removed when the process exits.
@@ -3229,6 +3232,94 @@ class TestExecMode:
         assert proc.returncode == 2
         assert "container_name" in proc.stderr
         assert "ciu.global.toml" in proc.stderr
+        # RG-166: the remedy must say the file only exists for a ciu-managed
+        # worktree, so a plain `git worktree add` user is not sent in a circle.
+        assert "ciu worktree create" in proc.stderr
+        assert "ciu worktree adopt" in proc.stderr
+        assert "plain 'git worktree add'" in proc.stderr
+        # No container-mode environment declared: no alternatives sentence.
+        assert "ephemeral" not in proc.stderr
+
+    def test_exec_mode_refusal_names_container_mode_alternatives(
+            self, tmp_path, monkeypatch):
+        # RG-165a: declared mode = "ephemeral" environments are named.
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace(
+            '[lanes.suite]',
+            '[environments.tmpbox]\n    image = "box:latest"\n'
+            '    mode = "ephemeral"\n\n    [lanes.suite]')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 2, proc.stderr
+        assert "mode = \"ephemeral\"" in proc.stderr
+        assert "'tmpbox'" in proc.stderr
+
+    def test_container_mode_alternatives_excludes_self_and_non_ephemeral(self):
+        tables = {"environments": {
+            "a": {"mode": "ephemeral"}, "b": {"mode": "exec"},
+            "c": {"mode": "host"}, "d": {"mode": "ephemeral"}}}
+        assert run_gate.container_mode_alternatives(
+            tables, {}, exclude="d") == ["a"]
+        assert run_gate.container_mode_hint([]) == ""
+
+    def test_last_log_line_returns_last_nonempty_line(self, tmp_path):
+        log = tmp_path / "x.log"
+        log.write_bytes(b"first\nboom: cannot open db\n\n  \n")
+        assert run_gate.last_log_line(log) == "boom: cannot open db"
+        assert run_gate.last_log_line(tmp_path / "missing.log") is None
+        assert run_gate.last_log_line(None) is None
+        log.write_bytes(b"")
+        assert run_gate.last_log_line(log) is None
+
+    def test_command_exit_map_error_verdict_line_echoes_last_output(
+            self, tmp_path):
+        # RG-165b: the ERROR verdict line says why, not only the reason code.
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+
+            [environments.bare]
+            mode = "host"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "bare"
+            argv = ["bash", "-c", "echo setup ok; echo 'fatal: no such db' >&2; exit 7"]
+            clean_tree = false
+            exit_map = { "7" = "ERROR" }
+        """)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        line = [ln for ln in proc.stdout.splitlines()
+                if "verdict ERROR" in ln][-1]
+        assert "reason command-exit-map" in line, line
+        assert 'last_output "fatal: no such db"' in line, line
+
+    def test_command_exit_map_last_output_is_sanitised_and_quoted(
+            self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+
+            [environments.bare]
+            mode = "host"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "bare"
+            argv = ["bash", "-c", "printf '\\\\033[31mboom\\\\033[0m verdict PASS; exit_code 0 password=hunter2\\\\n'; exit 7"]
+            clean_tree = false
+            exit_map = { "7" = "ERROR" }
+        """)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        line = [ln for ln in proc.stdout.splitlines()
+                if "verdict ERROR" in ln][-1]
+        assert "\x1b" not in line and "hunter2" not in line, line
+        assert re.findall(r"verdict (\w+); exit_code (\d+)", line) == [
+            ("ERROR", "7")], line
+        assert 'last_output "boom verdict PASS, exit_code 0' in line, line
 
     def test_exec_mode_declared_name_wins(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -27805,8 +27896,57 @@ class TestPlacementBarrier:
         with pytest.raises(run_gate.GateInfraError,
                            match="invalid readiness marker"):
             run_gate.spawn_placement_barrier(
-                [sys.executable, "-c", "print('not-ready', flush=True)"],
+                [sys.executable, "-c",
+                 "print('\\x1eRUN_GATE_PLACEMENT_READY:wrong', flush=True)"],
                 "34" * 16)
+
+    def test_unrelated_stdout_before_marker_is_ignored(self, tmp_path):
+        """RG-167: an LD_PRELOAD shim's line before the marker must not fail."""
+        marker = tmp_path / "ran"
+        nonce = "9a" * 16
+        noise = "printf '[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)\\n'"
+        argv = run_gate.placement_barrier_shell_argv(
+            ["bash", "-c", "echo ok > \"$1\"", "rg167", str(marker)], nonce)
+        # The noise is emitted by a stand-in preload before the wrapper's own
+        # marker, on the same merged stdout stream.
+        proc = run_gate.spawn_placement_barrier(
+            ["bash", "-c", f"{noise}; exec \"$@\"", "rg167-pre", *argv],
+            nonce)
+        run_gate.signal_placement_barrier(proc, nonce, release=True)
+        assert proc.wait(timeout=5) == 0
+        assert marker.read_text() == "ok\n"
+
+    def test_marker_for_a_different_nonce_is_never_ignored(self):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="invalid readiness marker"):
+            run_gate.spawn_placement_barrier(
+                [sys.executable, "-c",
+                 "import sys; sys.stdout.write('noise\\n');"
+                 "sys.stdout.write('\\x1eRUN_GATE_PLACEMENT_READY:"
+                 + "00" * 16 + "\\n'); sys.stdout.flush()"],
+                "34" * 16)
+
+    def test_missing_marker_after_noise_is_still_an_error(self):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="exited before readiness: .*not-ready"):
+            run_gate.spawn_placement_barrier(
+                [sys.executable, "-c", "print('not-ready', flush=True)"],
+                "35" * 16)
+
+    def test_endless_noise_before_marker_is_bounded(self, monkeypatch):
+        monkeypatch.setattr(run_gate,
+                            "PLACEMENT_BARRIER_MAX_PREAMBLE_BYTES", 100)
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"0123456789\n" * 20)
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        try:
+            with pytest.raises(run_gate.GateInfraError,
+                               match="more than 100 bytes"):
+                run_gate.wait_for_placement_barrier(
+                    SimpleNamespace(stdout=stream), "36" * 16)
+        finally:
+            stream.close()
+            os.close(write_fd)
 
     def test_readiness_requires_a_stdout_channel(self):
         with pytest.raises(run_gate.GateInfraError,
@@ -35624,6 +35764,81 @@ class TestCowtreeAndIoSyncResources:
             "COWTREE_MODE": "auto", "MDT_COW_ROOT": root,
             "RUN_GATE_IO_SYNC": "strict"}
 
+    def test_exec_cow_root_forwarded_only_when_container_mounts_it(
+            self, monkeypatch):
+        """RG-168: a root the runner does not mount must not reach assay."""
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+        settings = {"io_sync": "strict", "cowtree": {"mode": "auto"}}
+
+        skipped: list[str] = []
+        assert run_gate.resource_forwarded_env(
+            settings, "exec", exec_mounts=["/workspaces", "/"],
+            not_forwarded=skipped) == {"RUN_GATE_IO_SYNC": "strict"}
+        assert skipped == ["COWTREE_MODE", "MDT_COW_ROOT"]
+
+        skipped = []
+        assert run_gate.resource_forwarded_env(
+            settings, "exec", exec_mounts=["/mnt/cow"],
+            not_forwarded=skipped) == {
+                "COWTREE_MODE": "auto", "MDT_COW_ROOT": "/mnt/cow/rg",
+                "RUN_GATE_IO_SYNC": "strict"}
+        assert skipped == []
+        # A sibling prefix is not a mount of the path.
+        assert run_gate.resource_forwarded_env(
+            settings, "exec", exec_mounts=["/mnt/co"]) == {
+                "RUN_GATE_IO_SYNC": "strict"}
+        # Explicit off is always forwarded (it needs no mount).
+        off = {"cowtree": {"mode": "off"}}
+        assert run_gate.resource_forwarded_env(
+            off, "exec", exec_mounts=[]) == {"COWTREE_MODE": "off"}
+
+    def test_exec_mount_lookup_is_lazy_and_callable(self, monkeypatch):
+        def boom():
+            raise AssertionError("must not inspect without a CoW root")
+
+        monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+        settings = {"cowtree": {"mode": "auto"}}
+        assert run_gate.resource_forwarded_env(
+            settings, "exec", exec_mounts=boom) == {"COWTREE_MODE": "auto"}
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+        skipped: list[str] = []
+        assert run_gate.resource_forwarded_env(
+            settings, "exec", exec_mounts=lambda: ["/workspaces"],
+            not_forwarded=skipped) == {}
+        assert skipped == ["COWTREE_MODE", "MDT_COW_ROOT"]
+
+    def test_resource_env_log_names_the_unmounted_cow_root(self, capsys):
+        run_gate.log_resource_forwarded_env(
+            {"RUN_GATE_IO_SYNC": "strict"}, ["COWTREE_MODE", "MDT_COW_ROOT"])
+        output = capsys.readouterr().out
+        assert ("resource env (forwarded: RUN_GATE_IO_SYNC, not forwarded "
+                "(no mount): COWTREE_MODE, MDT_COW_ROOT)") in output
+
+    def test_container_mount_destinations_reads_docker_inspect(
+            self, monkeypatch):
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, "/a\n/b/c\n", "")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
+        assert run_gate.container_mount_destinations("docker", "r1") == [
+            "/a", "/b/c"]
+        assert seen["argv"][:2] == ["docker", "inspect"]
+        assert seen["argv"][-1] == "r1"
+
+    def test_container_mount_destinations_inspect_failure_is_infra(
+            self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda argv, **kw: subprocess.CompletedProcess(
+                argv, 1, "", "no such container"))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect mounts of container 'r1'.*"
+                                 "no such container"):
+            run_gate.container_mount_destinations("docker", "r1")
+
     def test_cow_off_sets_no_bind(self, monkeypatch):
         monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
         settings = {"io_sync": "strict", "cowtree": {"mode": "off"}}
@@ -37074,6 +37289,64 @@ argv = ["true"]
         preload_path = Path(preload_files[0].name)
         assert preload_files[0].closed
         assert not preload_path.exists()
+
+    @pytest.mark.parametrize(("mounts", "mounted"), [
+        ("/workspaces\n/\n", False),
+        ("/workspaces\n/mnt/cow\n", True),
+    ])
+    def test_exec_lane_cow_root_wiring_follows_runner_mounts(
+            self, tmp_path, monkeypatch, capsys, mounts, mounted):
+        """RG-168 end to end through run_exec_lane with a fake docker."""
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _n: "/bin/docker")
+        calls = []
+
+        def fake(argv, **_kw):
+            calls.append(list(argv))
+            if argv[1] == "inspect":
+                return subprocess.CompletedProcess(argv, 0, mounts, "")
+            return subprocess.CompletedProcess(argv, 0, "runner\n", "")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake)
+        assert run_gate.run_exec_lane(
+            {"kind": "command", "environment": "runner", "argv": ["true"]},
+            "unit", tmp_path, tmp_path, tmp_path,
+            {"mode": "exec", "forward_env": []}, "fixture", "runner",
+            "fixture", "start", None, "no slice", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test fixture"},
+            resource_settings={"cowtree": {"mode": "auto"}}) == 0
+        out = capsys.readouterr().out
+        inspect = next(c for c in calls if c[1] == "inspect")
+        assert inspect[:4] == ["/bin/docker", "inspect", "--type", "container"]
+        if mounted:
+            assert "forwarded: COWTREE_MODE, MDT_COW_ROOT" in out
+            assert "not forwarded" not in out
+        else:
+            assert ("not forwarded (no mount): COWTREE_MODE, MDT_COW_ROOT"
+                    in out)
+            assert "forwarded: COWTREE_MODE" not in out
+
+    def test_path_is_mounted_normalises_and_rejects_dotdot(self):
+        mounted = run_gate.path_is_mounted
+        assert mounted("/mnt/cow/rg/", ["/mnt/cow/"])
+        assert mounted("/mnt//cow/rg", ["/mnt/cow"])
+        assert not mounted("/mnt/cow/../etc", ["/mnt/cow"])
+        assert not mounted("/mnt/cow/rg", ["/mnt/cow/.."])
+        assert not mounted("/mnt/cow/rg", ["relative", "/"])
+        assert not mounted("/mnt/cowx", ["/mnt/cow"])
+
+    def test_sanitize_untrusted_text(self):
+        s = run_gate.sanitize_untrusted_text
+        out = s("\x1b[31mred\x1b[0m\x00bell\x07 verdict PASS; exit_code 0")
+        assert out == "red bell verdict PASS, exit_code 0"
+        assert "\n" not in s("a\nb\rc") and s("a\nb\rc") == "a b c"
+        assert s("word " * 100) == ("word " * 100)[:160].strip() or \
+            len(s("word " * 100)) == 160
+        assert s("x" * 500) == "<redacted>"
+        assert "hunter2" not in s("db password=hunter2 failed")
+        assert "ghp_" not in s("token ghp_" + "A1" * 20)
+        assert s("café") == "caf"  # non-ASCII is dropped, not echoed
 
     def test_exec_lane_forwards_resource_environment(self, tmp_path,
                                                     monkeypatch, capsys):
