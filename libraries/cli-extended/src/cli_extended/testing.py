@@ -25,7 +25,7 @@ def _child_environment(
     env: Mapping[str, str | None] | None,
     pythonpath: Sequence[Path | str],
     library_path: bool,
-    isolated: bool = False,
+    isolated: bool,
 ) -> dict[str, str]:
     if isolated and (pythonpath or library_path):
         raise ValueError("isolated=True cannot be combined with pythonpath or library_path")
@@ -79,7 +79,7 @@ def _run(
     timeout: float,
     pythonpath: Sequence[Path | str],
     library_path: bool,
-    isolated: bool = False,
+    isolated: bool,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
