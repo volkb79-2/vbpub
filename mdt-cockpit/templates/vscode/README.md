@@ -65,8 +65,9 @@ in the persisted home and affects no other folder:
 Still not covered: an extension's own file search (`workspace.findFiles` with its own exclude) and a
 language server's own indexer walk the folder regardless; `search.followSymlinks: false` keeps those
 walks from following links out of it. An extension that activates on `workspaceContains:` can also be
-activated by a file there (Terraform was, by `.tf` files in Codex's plugin cache); disable such an
-extension's server per folder, for example `"terraform.languageServer.enable": false`.
+activated by a file there (Terraform was, by `.tf` files in Codex's plugin cache). Such a switch is
+often window-scoped and ignored in a folder's settings file: `"terraform.languageServer.enable": false`
+goes in the `.code-workspace` `"settings"` (or the machine settings) and turns it off for the whole window.
 
 ## Verify before you rely on it
 
