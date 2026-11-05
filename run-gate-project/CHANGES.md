@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Testing
+- test(run-gate): kill the three R2 survivors in `--list --json` (host env without docker, container env with docker, key-sorted flushed output) (RG-169)
+
 <!-- cmru: release history -->
 
 ## [25.1.2] - 2026-11-05

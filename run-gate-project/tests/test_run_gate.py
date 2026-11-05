@@ -16348,6 +16348,78 @@ class TestListJsonDerivedRigor:
         assert facts["cov"]["rigor"] is None
         assert "docker not on PATH" in facts["cov"]["rigor_reason"]
 
+    @staticmethod
+    def _stub_probe(monkeypatch, env, docker):
+        """lane_rigor_facts with the environment and docker presence fixed."""
+        asked = []
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda _n: docker)
+        monkeypatch.setattr(run_gate, "resolve_environment",
+                            lambda *_a: (env, "cfg"))
+        monkeypatch.setattr(run_gate, "resolve_worktree_scope",
+                            lambda *_a: (Path("."), Path("."), Path("."), None))
+        monkeypatch.setattr(
+            run_gate, "assay_inventory",
+            lambda *a, **_k: (asked.append(a[0]) or
+                              {"lanes": [{"name": "cov", "rigor": ["R1"],
+                                          "rigor_reachable": ["R1", "R2"]}]},
+                              None))
+        lanes = {"cov": {"kind": "assay", "environment": "runner",
+                         "assay_lane": "cov"}}
+        facts = run_gate.lane_rigor_facts(lanes, Path("."), {}, {},
+                                          Path("run-gate.toml"), None)
+        return facts["cov"], asked
+
+    def test_a_host_environment_is_asked_even_without_docker(
+            self, monkeypatch):
+        # A host-mode environment resolves to {} and never needs docker:
+        # missing docker must not mark it unavailable (`env and not docker`).
+        fact, asked = self._stub_probe(monkeypatch, {}, None)
+        assert asked == [None]
+        assert fact["rigor"] == ["R1"]
+        assert fact["rigor_basis"] == "assay-declared"
+
+    def test_a_container_environment_is_asked_when_docker_is_present(
+            self, monkeypatch):
+        fact, asked = self._stub_probe(monkeypatch, {"mode": "ephemeral"},
+                                       "/usr/bin/docker")
+        assert asked == ["/usr/bin/docker"]
+        assert fact["rigor"] == ["R1"]
+        assert fact["rigor_reachable"] == ["R1", "R2"]
+        assert fact["rigor_reason"] is None
+
+    def test_list_json_is_key_sorted_and_flushed(self, monkeypatch):
+        lanes = {"b": {"kind": "command", "environment": "x"},
+                 "a": {"kind": "sequence", "lanes": ["b"]}}
+        monkeypatch.setattr(run_gate, "sequence_environment_names",
+                            lambda *_a: ["x"])
+        flushes = []
+
+        class Out:
+            def __init__(self):
+                self.text = []
+
+            def write(self, s):
+                self.text.append(s)
+                return len(s)
+
+            def flush(self):
+                flushes.append(len(self.text))
+
+        out = Out()
+        monkeypatch.setattr(sys, "stdout", out)
+        assert run_gate.cmd_list_json(lanes, Path("."), {}, {},
+                                      Path("run-gate.toml"), None) == 0
+        text = "".join(out.text)
+        doc = json.loads(text)
+        # sort_keys=True: top-level keys and every row's keys are ordered.
+        assert text.index('"lanes"') < text.index('"schema"')
+        assert list(doc) == sorted(doc)
+        for row in doc["lanes"]:
+            assert list(row) == sorted(row)
+        # flush=True: the listing is flushed once it is fully written.
+        assert flushes and flushes[-1] == len(out.text)
+
     def test_a_worktree_that_cannot_be_resolved_is_unavailable(
             self, tmp_path, monkeypatch, capsys):
         self._project(tmp_path, monkeypatch)
