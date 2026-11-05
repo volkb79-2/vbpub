@@ -504,7 +504,10 @@ image, so it lives in two places that must agree:
   themselves: `dev-interactive.slice` for devcontainers, `dev-gates.slice` for gate/lane
   containers, and `dev-background.slice` for long-running stacks plus the Docker daemon-wide
   fallback via `/etc/docker/daemon.json`, all under one shared `dev.slice` IOPS/bandwidth
-  ceiling and a health check. Run this part from the Docker host shell only;
+  ceiling and a health check. It also publishes the run-gate gates admission cap from the effective
+  host CPU and memory limits. Read the [host setup guide](host-setup/README.md#run-gate-gates-admission-cap-mdt-076),
+  the [publication policy rationale](docs/DESIGN-GUIDE.md#mdt-076-admission-cap-publication-policy),
+  and the [operator steps](docs/CONSUMERS.md#run-gate-admission-cap). Run this part from the Docker host shell only;
   the installer, wizard, and baseline benchmark refuse a devcontainer because container
   root cannot modify the host's `/etc`, systemd, or cgroup tree.
 
@@ -874,7 +877,7 @@ production-quality. Support windows as of June 2026:
 | [USAGE.md](USAGE.md) | Consuming the image day to day |
 | [docs/DEVCONTAINER-MECHANISMS.md](docs/DEVCONTAINER-MECHANISMS.md) | **Start here.** Every devcontainer mechanism end to end: host prerequisites, bootstrap, create-time mounts and env, finalizer, filesystem split, shell selection and startup files, troubleshooting |
 | [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) | Build → create → start ordering, what runs when, host resource governance |
-| [host-setup/README.md](host-setup/README.md) | Installing the host cgroup tiers and narrow cgprofile observer setup |
+| [host-setup/README.md](host-setup/README.md) | Installing host cgroup tiers, publishing the gates admission cap, and narrow cgprofile observer setup |
 | [host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md) | What slice units can't express; BFQ caveats |
 | [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) | Which concerns belong to the image, the orchestration, and the host |
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |
@@ -909,6 +912,8 @@ host, with product assertions inside the guest:
 
 - `run-gate smoke` runs Python syntax checks, the host-setup renderer and
   the complete `scripts/` and `host-setup/tests/` pytest suites.
+- `run-gate host-setup-admission` runs the host admission, wizard, installer,
+  and capacity subset in `tester-unified` with a two CPU lane limit.
 - `run-gate release` is the image-release gate for the Docker/OCI release
   flow tests; CMRU consumes this declaration instead of carrying a second
   `tester-gate` command.

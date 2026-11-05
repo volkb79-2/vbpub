@@ -15,8 +15,9 @@ capacity host-setup already enforces on ``dev-gates.slice`` and publishes it, id
     memory_cap = floor(gates MemoryHigh / ADMISSION_MEMORY_PER_GATE)            (default 2G per gate;
                  no term when the gates tier has no MemoryHigh)
 
-``gates CPU cores`` is the tier's own CPUQuota (``DEV_GATES_CPU_QUOTA``: a percentage pin, ``auto`` or empty =
-the tier share of MDT's cores, ``-`` = dev.slice's whole share). ``gates MemoryHigh`` is the dedicated-dev
+``gates CPU cores`` is the effective minimum of the ``dev.slice`` and gates-tier CPUQuota values. Auto quotas
+come from ``mdt_capacity``; explicit ``DEV_CPU_QUOTA`` and ``DEV_GATES_CPU_QUOTA`` percentages bound that
+share, and ``-`` omits that level's quota. ``gates MemoryHigh`` is the dedicated-dev
 derivation (``mdt_capacity.dedicated_memory``) or the configured ``DEV_GATES_MEMORY_HIGH``. A 4 vCPU / 8 GB
 dedicated-dev host (v1001) therefore publishes 2.
 
@@ -53,7 +54,7 @@ DEFAULT_UNREADABLE_POLICY = "refuse"
 DEFAULT_COCKPIT_USER = "vscode"
 MEMORY_PER_GATE_MIN = 256 * cap.MIB
 
-PUBLISH_MODES = ("auto", "missing", "off")
+PUBLISH_MODES = ("auto", "missing", "replace", "off")
 POLICIES = ("refuse", "unbudgeted")
 
 # ------------------------------------------------------------------------------------------- validators
@@ -61,15 +62,15 @@ POLICIES = ("refuse", "unbudgeted")
 # the settings parser below. Each returns None when valid, else the reason.
 
 _IMAGE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@+-]*")
-_PATH_RE = re.compile(r"[A-Za-z0-9_./+-]+")
+_PATH_RE = re.compile(r"[A-Za-z0-9_./][A-Za-z0-9_./+-]*")
 _CONTAINER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _USER_RE = re.compile(r"[a-z_][a-z0-9_-]*|[0-9]+")
 
 
 def validate_publish(value: str) -> str | None:
     if value != "" and value not in PUBLISH_MODES:
-        return ("choose 'auto' (publish when absent, replace when it differs), 'missing' (publish only when "
-                "no cap is readable, never replace) or 'off'")
+        return ("choose 'auto' (publish when absent; --admission-only reconciles), 'missing' (publish only when "
+                "no cap is readable), 'replace' (also replace on full install), or 'off'")
     return None
 
 
@@ -116,7 +117,7 @@ def validate_ticket_image(value: str) -> str | None:
 
 def validate_run_gate(value: str) -> str | None:
     if value and not _PATH_RE.fullmatch(value):
-        return f"{value!r} is not a command name or path (letters, digits and _ . / + - only); empty = run-gate on PATH"
+        return f"{value!r} is not a command name or path (must start with a letter, digit, _, . or /); empty = run-gate on PATH"
     return None
 
 
@@ -201,16 +202,28 @@ class Derivation:
 
 
 def gates_cpu_cores(values: Mapping[str, str], capacity: cap.Capacity) -> tuple[Decimal, str]:
-    """Cores the gates tier may use: its CPUQuota pin, else the tier share (``auto``/empty), else all of MDT's."""
-    raw = (values.get("DEV_GATES_CPU_QUOTA", "") or "").strip()
-    if raw in ("", "auto"):
-        return capacity.tier_cpu, "tier CPU share (nproc minus the excluded cores)"
-    if raw == "-":
-        return capacity.cpu_mdt, "no tier CPUQuota (dev.slice's share)"
-    match = re.fullmatch(r"([0-9]+)%", raw)
-    if not match:  # the wizard validator refuses this shape first; never guess a number
-        raise AdmissionConfigError(f"DEV_GATES_CPU_QUOTA={raw!r} is not N%, auto or -")
-    return min(Decimal(int(match.group(1))) / 100, capacity.cpu_mdt), f"DEV_GATES_CPU_QUOTA={raw}"
+    """Effective gates cores under the parent and tier CPUQuota values install.sh renders."""
+
+    def configured_quota(key: str, fallback: Decimal) -> tuple[Decimal, str, bool]:
+        raw = (values.get(key, "") or "").strip()
+        if raw in ("", "auto"):
+            return fallback, f"{key} auto ({fallback.normalize():f} cores from mdt_capacity)", False
+        if raw == "-":
+            return capacity.cpu_mdt, f"{key}=- (no additional CPUQuota; dev.slice share)", False
+        match = re.fullmatch(r"([0-9]+)%", raw)
+        if not match:  # the wizard validator refuses this shape first; never guess a number
+            raise AdmissionConfigError(f"{key}={raw!r} is not N%, auto or -")
+        pinned = min(Decimal(int(match.group(1))) / 100, capacity.cpu_mdt)
+        return pinned, f"{key}={raw}", True
+
+    dev_cores, dev_basis, dev_pinned = configured_quota("DEV_CPU_QUOTA", capacity.cpu_mdt)
+    tier_cores, tier_basis, tier_pinned = configured_quota("DEV_GATES_CPU_QUOTA", capacity.tier_cpu)
+    effective = min(dev_cores, tier_cores)
+    if dev_pinned or tier_pinned:
+        return effective, f"min({dev_basis}; {tier_basis}) = {effective.normalize():f} effective gates cores"
+    if (values.get("DEV_GATES_CPU_QUOTA", "") or "").strip() == "-":
+        return effective, f"no gates CPUQuota; bounded by dev.slice ({dev_basis})"
+    return effective, f"tier CPU share ({tier_basis}), bounded by dev.slice ({dev_basis})"
 
 
 def gates_memory_high(values: Mapping[str, str], *, mem_total: int, swap_total: int) -> tuple[int | None, str]:
@@ -332,6 +345,10 @@ class AdmissionFailure(RuntimeError):
     """A publish or read that was attempted and did not work (as opposed to a Skip)."""
 
 
+class UnreadablePublished(AdmissionFailure):
+    """run-gate reported an admission object whose concurrency limit is not parseable."""
+
+
 @dataclass(frozen=True)
 class Published:
     max_concurrent: int
@@ -339,7 +356,7 @@ class Published:
     generation: int | None = None
 
 
-_SHOW_LINE = re.compile(r"max_concurrent=(?P<n>[0-9]+)\b")
+_SHOW_VALUE = re.compile(r"\bmax_concurrent=(?P<n>\S+)")
 
 
 def parse_show(text: str) -> Published | None:
@@ -347,10 +364,12 @@ def parse_show(text: str) -> Published | None:
 
     Fail closed: output that states neither is an error (a changed format must not read as "absent" and
     cause a blind replace, nor as "present")."""
-    if "no published object" in text:
+    match = _SHOW_VALUE.search(text)
+    if match is not None and not re.fullmatch(r"[0-9]+", match.group("n")):
+        raise UnreadablePublished(f"`run-gate admission show` reported an unparseable max_concurrent limit: {text[:200]!r}")
+    if match is None and "no published object" in text:
         return None
-    match = _SHOW_LINE.search(text)
-    if not match:
+    if match is None:
         raise AdmissionFailure("`run-gate admission show` printed neither a published cap nor 'no published object' "
                                f"(output format changed?): {text[:200]!r}")
     policy = re.search(r"unreadable_policy=(?P<p>[a-z]+)", text)
@@ -396,6 +415,14 @@ def prepare(settings: Settings, *, run: RunFn, which: WhichFn) -> Prepared:
         raise Skip("no ticket image: set ADMISSION_TICKET_IMAGE (a local image that provides /bin/true)")
     present = run([docker, "image", "inspect", image])
     if present.rc != 0:
+        error = present.text
+        lowered = error.lower()
+        if any(marker in lowered for marker in (
+            "cannot connect to the docker daemon", "error during connect:",
+            "permission denied while trying to connect to the docker api",
+        )):
+            detail = f": {error[:240]}" if error else ""
+            raise Skip(f"the Docker daemon is not reachable while checking the ticket image{detail}")
         raise Skip(f"the ticket image {image} is not present locally (run-gate never pulls it)")
     if not settings.cockpit:
         workdir = tempfile.TemporaryDirectory(prefix="mdt-admission-")
@@ -406,16 +433,18 @@ def prepare(settings: Settings, *, run: RunFn, which: WhichFn) -> Prepared:
 
 
 def skip_advice(settings: Settings) -> str:
-    return ("re-run `sudo ./install.sh --admission-only` once run-gate and the ticket image exist "
+    return ("run `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist "
             "(host-setup.env: ADMISSION_COCKPIT / ADMISSION_RUN_GATE / ADMISSION_TICKET_IMAGE)")
 
 
 def publish(settings: Settings, derivation: Derivation, *, run: RunFn, which: WhichFn,
-            log: Callable[[str], None]) -> str:
+            log: Callable[[str], None], operator_reconcile: bool = False) -> str:
     """Make the daemon publish ``derivation``; returns published | replaced | unchanged | kept | skipped.
 
-    Idempotent: a readable cap equal in value and policy is left alone (no new generation), a different one is
-    replaced (``auto``) or kept (``missing``), an absent one is published. Raises AdmissionFailure when the
+    Idempotent: a readable cap equal in value and policy is left alone (no new generation); ``auto`` on a full
+    install and ``missing`` preserve a differing readable cap, while ``replace`` and explicit operator
+    reconciliation replace it. An absent cap is published. The explicit reconcile uses ``--replace`` even when
+    ``show`` cannot parse the old limit, so the operator can repair that state. Raises AdmissionFailure when the
     attempt fails or the read-back differs."""
     if settings.publish == "off":
         log("admission: ADMISSION_PUBLISH=off; the gates cap is not managed by host-setup")
@@ -427,18 +456,25 @@ def publish(settings: Settings, derivation: Derivation, *, run: RunFn, which: Wh
         return "skipped"
     try:
         gate = prepared.gate
-        current = gate.show()
+        unreadable = False
+        try:
+            current = gate.show()
+        except UnreadablePublished:
+            # A malformed value is no readable cap. Non-replacing modes may try a plain set, which run-gate
+            # will refuse if the unreadable object still exists; only explicit replace policy may repair it.
+            current, unreadable = None, True
         want = Published(derivation.max_concurrent, derivation.unreadable_policy)
         if current is not None and (current.max_concurrent, current.unreadable_policy) == (want.max_concurrent, want.unreadable_policy):
             log(f"admission: gates cap already published: max_concurrent={want.max_concurrent} "
                 f"unreadable_policy={want.unreadable_policy} (generation {current.generation}); nothing to do")
             return "unchanged"
-        if current is not None and settings.publish == "missing":
+        should_replace = settings.publish == "replace" or (settings.publish == "auto" and operator_reconcile)
+        if current is not None and not should_replace:
             log(f"admission: a cap is published (max_concurrent={current.max_concurrent} unreadable_policy={current.unreadable_policy}); "
-                f"ADMISSION_PUBLISH=missing keeps it (host policy would be {want.max_concurrent}: {derivation.basis})")
+                f"ADMISSION_PUBLISH={settings.publish} keeps it (host policy would be {want.max_concurrent}: {derivation.basis})")
             return "kept"
         args = ["set", "--max-concurrent", str(want.max_concurrent), "--unreadable-policy", want.unreadable_policy]
-        if current is not None:
+        if should_replace:
             args.append("--replace")
         done = gate.invoke(*args)
         if done.rc != 0:
@@ -447,11 +483,12 @@ def publish(settings: Settings, derivation: Derivation, *, run: RunFn, which: Wh
         if after is None or (after.max_concurrent, after.unreadable_policy) != (want.max_concurrent, want.unreadable_policy):
             raise AdmissionFailure(f"published, but the read-back shows {after} instead of max_concurrent={want.max_concurrent} "
                                    f"unreadable_policy={want.unreadable_policy}")
-        if current is None:
+        if current is None and not unreadable:
             log(f"admission: published gates cap max_concurrent={want.max_concurrent} unreadable_policy={want.unreadable_policy}: {derivation.basis}")
             return "published"
-        log(f"admission: replaced gates cap max_concurrent={current.max_concurrent}/{current.unreadable_policy} -> "
-            f"{want.max_concurrent}/{want.unreadable_policy}: {derivation.basis}")
+        old = (f"{current.max_concurrent}/{current.unreadable_policy}" if current is not None
+               else "unparseable published cap")
+        log(f"admission: replaced gates cap {old} -> {want.max_concurrent}/{want.unreadable_policy}: {derivation.basis}")
         return "replaced"
     finally:
         prepared.close()
@@ -475,17 +512,15 @@ def check(settings: Settings, derivation: Derivation, *, run: RunFn, which: Whic
         prepared.close()
     if current is None:
         return ["FAIL no gates cap is published on this Docker daemon: every lane of a project with [admission] "
-                "enabled ends NOT_RUN no-headroom; run `sudo ./install.sh --admission-only`"]
+                "enabled ends NOT_RUN no-headroom; run `sudo ./host-setup/install.sh --admission-only`"]
     expected = f"max_concurrent={derivation.max_concurrent} unreadable_policy={derivation.unreadable_policy}"
     published = f"max_concurrent={current.max_concurrent} unreadable_policy={current.unreadable_policy}"
     if (current.max_concurrent, current.unreadable_policy) == (derivation.max_concurrent, derivation.unreadable_policy):
         return [f"OK run-gate gates cap {published} matches the host policy ({derivation.basis})"]
     differs = f"published gates cap {published}, host policy says {expected} ({derivation.basis})"
-    if settings.publish == "missing":
-        return [f"INFO {differs}; ADMISSION_PUBLISH=missing leaves a published cap alone"]
     if settings.pinned:
-        return [f"FAIL {differs}; re-run `sudo ./install.sh --admission-only`"]
-    return [f"WARN {differs}; a manual `run-gate admission set`? `install.sh --admission-only` reconciles it, "
+        return [f"FAIL {differs}; run `sudo ./host-setup/install.sh --admission-only`"]
+    return [f"WARN {differs}; run `sudo ./host-setup/install.sh --admission-only` to reconcile it, "
             "or pin the value with ADMISSION_MAX_CONCURRENT"]
 
 
@@ -509,6 +544,9 @@ def main(argv: Sequence[str] | None = None, *, run: RunFn = default_run, which: 
         p.add_argument("env", type=Path)
         p.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
         p.add_argument("--nproc", type=int, default=None)
+        if name == "publish":
+            p.add_argument("--operator-reconcile", action="store_true",
+                           help="with ADMISSION_PUBLISH=auto, replace a differing cap for an explicit operator action")
     args = ap.parse_args(argv)
     values = cap._parse_env(args.env)
     try:
@@ -533,7 +571,8 @@ def main(argv: Sequence[str] | None = None, *, run: RunFn = default_run, which: 
             print(line)
         return 0
     try:
-        publish(settings, derivation, run=run, which=which, log=lambda line: print(line, flush=True))
+        publish(settings, derivation, run=run, which=which, log=lambda line: print(line, flush=True),
+                operator_reconcile=args.operator_reconcile)
     except AdmissionFailure as exc:
         print(f"ERROR: admission: {exc}", file=sys.stderr)
         return 2

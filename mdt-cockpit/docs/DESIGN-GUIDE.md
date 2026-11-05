@@ -756,6 +756,31 @@ decoy.
 See the [consumer setup](CONSUMERS.md#host-cgroup-preflight) for the required
 install and rebuild steps.
 
+## MDT-076 admission-cap publication policy
+
+The gate cap follows the limits host-setup actually renders: the effective CPU
+budget is bounded by both `dev.slice`'s `DEV_CPU_QUOTA` and
+`dev-gates.slice`'s `DEV_GATES_CPU_QUOTA`, with auto-derived shares coming from
+`mdt_capacity`. This makes a parent quota pin visible to admission even when
+the gate tier's own configured quota is larger.
+
+`ADMISSION_PUBLISH=auto` is safe for the broad full-install path: it creates a
+cap when none can be read and preserves a differing readable value, which may
+have been deliberately raised for a campaign. The explicit
+`install.sh --admission-only` action is the reconciliation point for that
+default. `missing` always preserves an existing readable value, `replace`
+allows a full install to reconcile differences, and `off` leaves admission
+outside host-setup management. `ADMISSION_MAX_CONCURRENT` remains the value
+source when pinned; the checker warns on a computed mismatch and fails when a
+pin disagrees or when the cap is missing.
+
+The full-install path does not silently lower a manual cap because that
+workflow also applies unrelated host policy. Operators can choose the narrower
+reconcile command when they intend to apply the current formula or pin. The
+[host guide](../host-setup/README.md#run-gate-gates-admission-cap-mdt-076)
+describes the behavior, and the [consumer steps](CONSUMERS.md#run-gate-admission-cap)
+show the command to paste.
+
 ## Narrow cgprofile observer provisioning
 
 The resource observer uses a read-only Unix socket whose group is deliberately

@@ -41,6 +41,16 @@ class DerivationTests(unittest.TestCase):
     def test_double_the_host_doubles_the_cap(self) -> None:
         self.assertEqual(derive(DEDICATED, nproc=8, mem_gib=16).max_concurrent, 4)
 
+    def test_dev_cpu_quota_pin_bounds_the_gates_tier_budget(self) -> None:
+        default = derive(DEDICATED, nproc=8, mem_gib=16)
+        lower_pin = derive({**DEDICATED, "DEV_CPU_QUOTA": "200%"}, nproc=8, mem_gib=16)
+        higher_pin = derive({**DEDICATED, "DEV_CPU_QUOTA": "1200%"}, nproc=8, mem_gib=16)
+        self.assertEqual(default.max_concurrent, 4)
+        self.assertEqual(lower_pin.max_concurrent, 1)
+        self.assertIn("DEV_CPU_QUOTA=200%", lower_pin.basis)
+        self.assertEqual(higher_pin.max_concurrent, 4)
+        self.assertIn("DEV_CPU_QUOTA=1200%", higher_pin.basis)
+
     def test_r1002_hand_raised_four_is_reachable_by_keys_not_by_default(self) -> None:
         # r1002 is also 4 vCPU / 8 GB; the operator raised it to 4 for a dstdns campaign (v1001 stayed at 2)
         self.assertEqual(derive(DEDICATED, nproc=4, mem_gib=8).max_concurrent, 2)
@@ -137,7 +147,7 @@ class ValidatorTests(unittest.TestCase):
             self.assertIsNone(validate(""), key)  # empty = the default, everywhere
 
     def test_accepted_and_refused_values(self) -> None:
-        good = {"ADMISSION_PUBLISH": ["auto", "missing", "off"], "ADMISSION_MAX_CONCURRENT": ["auto", "1", "12"],
+        good = {"ADMISSION_PUBLISH": ["auto", "missing", "replace", "off"], "ADMISSION_MAX_CONCURRENT": ["auto", "1", "12"],
                 "ADMISSION_UNREADABLE_POLICY": ["refuse", "unbudgeted"], "ADMISSION_CPUS_PER_GATE": ["2", "0.5", "1.5"],
                 "ADMISSION_MEMORY_PER_GATE": ["256M", "2G", "1.5G"],
                 "ADMISSION_TICKET_IMAGE": ["tester-unified:local", "ghcr.io/x/y:1.2@sha256:ab"],
@@ -146,7 +156,7 @@ class ValidatorTests(unittest.TestCase):
         bad = {"ADMISSION_PUBLISH": ["yes", "AUTO"], "ADMISSION_MAX_CONCURRENT": ["0", "-1", "two", "1.5"],
                "ADMISSION_UNREADABLE_POLICY": ["allow", "Refuse"], "ADMISSION_CPUS_PER_GATE": ["0", "0.4", "x", "2.55"],
                "ADMISSION_MEMORY_PER_GATE": ["0", "100M", "lots"], "ADMISSION_TICKET_IMAGE": ["a b", "x;y", "-x"],
-               "ADMISSION_RUN_GATE": ["run gate", "$(x)", "a;b"], "ADMISSION_COCKPIT": ["-x", "a b", "a/b"],
+               "ADMISSION_RUN_GATE": ["-run-gate", "run gate", "$(x)", "a;b"], "ADMISSION_COCKPIT": ["-x", "a b", "a/b"],
                "ADMISSION_COCKPIT_USER": ["Root", "a b"]}
         for key, values in good.items():
             for value in values:
@@ -180,10 +190,13 @@ class FakeHost:
     def __init__(self, *, cockpit_running: bool = True, rg_in_cockpit: bool = True, image_present: bool = True,
                  cockpit_image: str = "tester-unified:local", published: adm.Published | None = None,
                  show_rc: int = 0, show_override: str | None = None, set_rc: int = 0, set_text: str = "",
-                 apply_set: bool = True) -> None:
+                 apply_set: bool = True, image_error: str = "", unreadable_existing: bool = False,
+                 show_sequence: list[str] | None = None) -> None:
         self.cockpit_running, self.rg_in_cockpit, self.image_present = cockpit_running, rg_in_cockpit, image_present
         self.cockpit_image, self.published = cockpit_image, published
         self.show_rc, self.show_override, self.set_rc, self.set_text, self.apply_set = show_rc, show_override, set_rc, set_text, apply_set
+        self.image_error, self.unreadable_existing = image_error, unreadable_existing
+        self.show_sequence = list(show_sequence or [])
         self.calls: list[dict] = []
         self.configs: list[str] = []
 
@@ -200,7 +213,7 @@ class FakeHost:
             return adm.Proc(0, self.cockpit_image + "\n")
         if argv[1:3] == ["image", "inspect"]:
             call["image"] = argv[3]
-            return adm.Proc(0 if self.image_present else 1)
+            return adm.Proc(0 if self.image_present else 1, "", self.image_error)
         if argv[1] == "exec" and "command -v" in " ".join(argv):
             return adm.Proc(0 if self.rg_in_cockpit else 1)
         if "admission" in argv:
@@ -213,14 +226,21 @@ class FakeHost:
             if verb[0] == "show":
                 if self.show_override is not None:
                     return adm.Proc(self.show_rc, self.show_override)
+                if self.show_sequence:
+                    return adm.Proc(self.show_rc, self.show_sequence.pop(0))
+                if self.unreadable_existing and self.published is None:
+                    return adm.Proc(self.show_rc, "run-gate admission: no published object\n")
                 return adm.Proc(self.show_rc, show_text(self.published))
             if verb[0] == "set":
                 if self.set_rc == 0 and self.apply_set:
                     flags = dict(zip(verb[1::2], verb[2::2]))
                     gen = (self.published.generation or 0) + 1 if self.published else 1
+                    if self.unreadable_existing and "--replace" not in verb:
+                        return adm.Proc(2, "", "refusing to replace unreadable admission object")
                     if self.published and "--replace" not in verb:
                         return adm.Proc(2, "", "a published admission object already exists; pass --replace")
                     self.published = adm.Published(int(flags["--max-concurrent"]), flags["--unreadable-policy"], gen)
+                    self.unreadable_existing = False
                 return adm.Proc(self.set_rc, "", self.set_text)
         raise AssertionError(f"unexpected call {argv}")
 
@@ -243,9 +263,11 @@ COCKPIT_SETTINGS = adm.parse_settings({"ADMISSION_COCKPIT": "mdt-cockpit"})
 WANT = adm.Derivation(2, "derived", "min(cpu 4 cores / 2 = 2) = 2", "refuse")
 
 
-def do_publish(settings: adm.Settings, host: FakeHost, derivation: adm.Derivation = WANT, which=None) -> tuple[str, list[str]]:
+def do_publish(settings: adm.Settings, host: FakeHost, derivation: adm.Derivation = WANT, which=None,
+               *, operator_reconcile: bool = False) -> tuple[str, list[str]]:
     lines: list[str] = []
-    result = adm.publish(settings, derivation, run=host, which=which or which_with(), log=lines.append)
+    result = adm.publish(settings, derivation, run=host, which=which or which_with(), log=lines.append,
+                         operator_reconcile=operator_reconcile)
     return result, lines
 
 
@@ -308,17 +330,31 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(do_publish(HOST_SETTINGS, host)[0], "unchanged")
         self.assertEqual(sum(1 for v in host.verbs() if v[0] == "set"), 1)
 
-    def test_a_different_value_is_replaced_with_replace(self) -> None:
+    def test_full_install_with_default_auto_keeps_a_different_readable_cap(self) -> None:
         host = FakeHost(published=adm.Published(4, "refuse", 1))
         result, lines = do_publish(HOST_SETTINGS, host)
+        self.assertEqual(result, "kept")
+        self.assertEqual(host.verbs(), [["show"]])
+        self.assertEqual(host.published.max_concurrent, 4)
+        self.assertTrue(any("ADMISSION_PUBLISH=auto" in line and "keeps it" in line for line in lines))
+
+    def test_admission_only_reconciles_a_different_cap_under_default_auto(self) -> None:
+        host = FakeHost(published=adm.Published(4, "refuse", 1))
+        result, lines = do_publish(HOST_SETTINGS, host, operator_reconcile=True)
         self.assertEqual(result, "replaced")
         self.assertIn(["set", "--max-concurrent", "2", "--unreadable-policy", "refuse", "--replace"], host.verbs())
         self.assertEqual(host.published.max_concurrent, 2)
         self.assertTrue(any("4/refuse -> 2/refuse" in line for line in lines))
 
+    def test_replace_mode_reconciles_a_different_cap_on_full_install(self) -> None:
+        settings = adm.parse_settings({"ADMISSION_TICKET_IMAGE": "t:1", "ADMISSION_PUBLISH": "replace"})
+        host = FakeHost(published=adm.Published(4, "refuse", 1))
+        self.assertEqual(do_publish(settings, host)[0], "replaced")
+        self.assertIn(["set", "--max-concurrent", "2", "--unreadable-policy", "refuse", "--replace"], host.verbs())
+
     def test_a_different_policy_alone_is_replaced(self) -> None:
         host = FakeHost(published=adm.Published(2, "unbudgeted", 1))
-        self.assertEqual(do_publish(HOST_SETTINGS, host)[0], "replaced")
+        self.assertEqual(do_publish(HOST_SETTINGS, host, operator_reconcile=True)[0], "replaced")
         self.assertEqual(host.published.unreadable_policy, "refuse")
 
     def test_missing_mode_publishes_when_absent_and_never_replaces(self) -> None:
@@ -330,6 +366,30 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(result, "kept")
         self.assertEqual(host.verbs(), [["show"]])
         self.assertTrue(any("keeps it" in line for line in lines))
+
+    def test_missing_mode_never_replaces_even_for_explicit_reconciliation(self) -> None:
+        settings = adm.parse_settings({"ADMISSION_TICKET_IMAGE": "t:1", "ADMISSION_PUBLISH": "missing"})
+        host = FakeHost(published=adm.Published(4, "refuse", 1))
+        self.assertEqual(do_publish(settings, host, operator_reconcile=True)[0], "kept")
+        self.assertEqual(host.verbs(), [["show"]])
+
+    def test_full_auto_does_not_replace_an_unreadable_object(self) -> None:
+        host = FakeHost(unreadable_existing=True, show_sequence=[
+            "run-gate admission: ciu-admission-3 generation=3 max_concurrent=None unreadable_policy=refuse state=created\n",
+        ])
+        with self.assertRaisesRegex(adm.AdmissionFailure, "refusing to replace unreadable"):
+            do_publish(HOST_SETTINGS, host)
+        self.assertEqual(host.verbs(), [["show"], ["set", "--max-concurrent", "2", "--unreadable-policy", "refuse"]])
+        self.assertTrue(host.unreadable_existing)
+
+    def test_admission_only_replaces_an_unreadable_published_object(self) -> None:
+        host = FakeHost(unreadable_existing=True, show_sequence=[
+            "run-gate admission: ciu-admission-3 generation=3 max_concurrent=None unreadable_policy=refuse state=created\n",
+        ])
+        self.assertEqual(do_publish(HOST_SETTINGS, host, operator_reconcile=True)[0], "replaced")
+        self.assertIn(["set", "--max-concurrent", "2", "--unreadable-policy", "refuse", "--replace"], host.verbs())
+        self.assertEqual(host.published.max_concurrent, 2)
+        self.assertFalse(host.unreadable_existing)
 
     def test_off_touches_nothing(self) -> None:
         host = FakeHost()
@@ -353,6 +413,14 @@ class PublishTests(unittest.TestCase):
             self.assertIn("NOTE", lines[0])
             self.assertIn("--admission-only", lines[0])
             self.assertFalse(host.verbs(), f"{needle}: run-gate must not be invoked")
+
+    def test_docker_daemon_failure_is_not_reported_as_a_missing_ticket_image(self) -> None:
+        host = FakeHost(image_present=False, image_error="Cannot connect to the Docker daemon at unix:///run/docker.sock")
+        result, lines = do_publish(HOST_SETTINGS, host)
+        self.assertEqual(result, "skipped")
+        self.assertIn("Docker daemon", lines[0])
+        self.assertIn("not reachable", lines[0])
+        self.assertNotIn("not present locally", lines[0])
 
     def test_an_explicit_run_gate_path_is_used_on_the_host(self) -> None:
         host = FakeHost()
@@ -391,6 +459,11 @@ class ParseShowTests(unittest.TestCase):
     def test_none_for_no_object(self) -> None:
         self.assertIsNone(adm.parse_show(show_text(None)))
 
+    def test_an_unparseable_published_limit_is_distinguished_from_no_object(self) -> None:
+        text = "run-gate admission: ciu-admission-7 generation=7 max_concurrent=None unreadable_policy=refuse state=created\n"
+        with self.assertRaisesRegex(adm.UnreadablePublished, "unparseable max_concurrent"):
+            adm.parse_show(text)
+
     def test_the_cap_comes_from_the_object_line_not_from_enabled(self) -> None:
         self.assertEqual(adm.parse_show(show_text(adm.Published(1, "unbudgeted"), enabled=False)).max_concurrent, 1)
 
@@ -423,10 +496,10 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(out[0].startswith("WARN "))
         self.assertIn("unreadable_policy=unbudgeted", out[0])
 
-    def test_missing_mode_reports_a_difference_as_info(self) -> None:
+    def test_missing_mode_warns_when_a_published_cap_differs(self) -> None:
         settings = adm.parse_settings({"ADMISSION_TICKET_IMAGE": "t:1", "ADMISSION_PUBLISH": "missing"})
         out = self.lines(settings, FakeHost(published=adm.Published(4, "refuse", 1)))
-        self.assertTrue(out[0].startswith("INFO "), out)
+        self.assertTrue(out[0].startswith("WARN "), out)
 
     def test_off_is_info(self) -> None:
         out = self.lines(adm.parse_settings({"ADMISSION_PUBLISH": "off"}), FakeHost())
@@ -527,6 +600,9 @@ class WiringTests(unittest.TestCase):
         self.check = (ROOT / "scripts" / "check.sh").read_text()
         self.example = (ROOT / "host-setup.env.example").read_text()
         self.readme = (ROOT / "README.md").read_text()
+        self.project_readme = (ROOT.parent / "README.md").read_text()
+        self.design = (ROOT.parent / "docs" / "DESIGN-GUIDE.md").read_text()
+        self.consumers = (ROOT.parent / "docs" / "CONSUMERS.md").read_text()
 
     def test_example_assigns_every_key_with_its_default(self) -> None:
         for key in adm.VALIDATORS:
@@ -558,7 +634,7 @@ class WiringTests(unittest.TestCase):
 
     def test_installer_ships_runs_and_documents_the_step(self) -> None:
         self.assertIn('install -m 0644 "$HERE/mdt_admission.py"', self.install)
-        self.assertRegex(self.install, r'mdt_admission\.py" publish ')
+        self.assertIn('python3 "$HERE/mdt_admission.py" "${args[@]}"', self.install)
         self.assertIn("--admission-only", self.install)
         self.assertIn("ADMISSION_FAILED", self.install)
         self.assertIn("--admission-only", self.readme)
@@ -566,7 +642,7 @@ class WiringTests(unittest.TestCase):
 
     def test_the_admission_step_runs_after_docker_and_never_before_the_slices_exist(self) -> None:
         full = self.install.split('BASELINE_HANDLED=0', 1)[0]
-        self.assertGreater(full.rfind('mdt_admission.py" publish'), full.rfind("systemctl start dev.slice"))
+        self.assertGreater(full.rfind("publish_admission full "), full.rfind("systemctl start dev.slice"))
 
     def test_checker_runs_the_one_implementation_and_counts_its_lines(self) -> None:
         self.assertIn("mdt_admission.py", self.check)
@@ -621,6 +697,71 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0)
         self.assertIn("--admission-only", done.stdout)
         self.assertTrue(re.search(r"ADMISSION_PUBLISH", done.stdout))
+
+    def test_install_admission_function_reconciles_with_fake_run_gate_on_path(self) -> None:
+        function = re.search(r"(?ms)^publish_admission\(\) \{\n.*?^\}", self.install)
+        self.assertIsNotNone(function, "install.sh exposes the admission step as a testable function")
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        fake_bin = tmp / "bin"
+        fake_bin.mkdir()
+        calls = tmp / "calls.log"
+        state = tmp / "published.txt"
+        state.write_text("run-gate admission: ciu-admission-1 generation=1 max_concurrent=4 unreadable_policy=refuse state=created\n")
+        config = tmp / "host-setup.env"
+        config.write_text('HOST_ROLE=dedicated-dev\nADMISSION_TICKET_IMAGE="ticket:local"\n')
+        meminfo = tmp / "meminfo"
+        meminfo.write_text("MemTotal:        8388608 kB\nSwapTotal:             0 kB\n")
+        docker = fake_bin / "docker"
+        docker.write_text("#!/bin/sh\nprintf 'docker %s\\n' \"$*\" >> \"$CALLS\"\n[ \"$1 $2\" = 'image inspect' ]\n")
+        docker.chmod(0o755)
+        run_gate = fake_bin / "run-gate"
+        run_gate.write_text(
+            "#!/bin/sh\n"
+            "printf 'run-gate %s\\n' \"$*\" >> \"$CALLS\"\n"
+            "[ \"$1 $2\" = 'admission show' ] || [ \"$1 $2\" = 'admission set' ] || exit 64\n"
+            "if [ \"$2\" = show ]; then cat \"$STATE\"; exit 0; fi\n"
+            "replace=0; n=; policy=\n"
+            "for arg in \"$@\"; do [ \"$arg\" = --replace ] && replace=1; done\n"
+            "[ ! -f \"$STATE\" ] || [ \"$replace\" -eq 1 ] || { echo 'published object exists; pass --replace' >&2; exit 2; }\n"
+            "while [ \"$#\" -gt 0 ]; do case \"$1\" in --max-concurrent) n=$2; shift 2;; --unreadable-policy) policy=$2; shift 2;; *) shift;; esac; done\n"
+            "printf 'run-gate admission: ciu-admission-2 generation=2 max_concurrent=%s unreadable_policy=%s state=created\\n' \"$n\" \"$policy\" > \"$STATE\"\n"
+        )
+        run_gate.chmod(0o755)
+        shell = function.group(0) + '\npublish_admission operator "$CONFIG" --meminfo "$MEMINFO" --nproc 4\n'
+        env = dict(os.environ, PATH=f"{fake_bin}:{os.environ.get('PATH', '')}", HERE=str(ROOT),
+                   CONFIG=str(config), MEMINFO=str(meminfo), CALLS=str(calls), STATE=str(state))
+        done = subprocess.run(["bash", "-c", shell], capture_output=True, text=True, env=env, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("run-gate admission show", calls.read_text())
+        self.assertRegex(calls.read_text(), r"run-gate admission set --max-concurrent 2 --unreadable-policy refuse --replace")
+        self.assertIn("max_concurrent=2", state.read_text())
+
+    def test_full_and_explicit_install_paths_select_their_publish_policy(self) -> None:
+        self.assertRegex(self.install, r"publish_admission full \"\$CONFIG_PATH\"")
+        self.assertRegex(self.install, r"publish_admission operator /etc/mdt/host-setup\.env")
+
+    def test_publication_modes_and_cross_document_links_stay_in_sync(self) -> None:
+        for mode in adm.PUBLISH_MODES:
+            self.assertIn(f"`{mode}`", self.readme)
+            self.assertIn(mode, self.example)
+            self.assertIn(f"`{mode}`", self.consumers)
+        self.assertIn("DEV_CPU_QUOTA", self.readme)
+        self.assertIn("DEV_GATES_CPU_QUOTA", self.design)
+        self.assertIn("ADMISSION_MAX_CONCURRENT", self.consumers)
+        self.assertIn("sudo ./host-setup/install.sh --admission-only", self.readme)
+        self.assertIn("sudo ./host-setup/install.sh --admission-only", self.consumers)
+        self.assertIn("#mdt-076-admission-cap-publication-policy", self.readme)
+        self.assertIn("## MDT-076 admission-cap publication policy", self.design)
+        self.assertIn("#run-gate-admission-cap", self.readme)
+        self.assertIn("### Run-Gate admission cap", self.consumers)
+
+    def test_focused_host_setup_gate_is_declared_and_discoverable(self) -> None:
+        gate = (ROOT.parent / "run-gate.toml").read_text()
+        self.assertIn("[lanes.host-setup-admission]", gate)
+        self.assertIn("host-setup/tests/test_admission.py", gate)
+        self.assertIn("host-setup/tests/test_wizard_flow.py", gate)
+        self.assertIn("run-gate host-setup-admission", self.project_readme)
 
 
 if __name__ == "__main__":

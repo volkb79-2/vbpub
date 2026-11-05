@@ -34,6 +34,18 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+publish_admission() {
+  local action="$1"
+  shift
+  local args=(publish "$@")
+  case "$action" in
+    full) ;;
+    operator) args+=(--operator-reconcile) ;;
+    *) echo "ERROR: unknown admission publish action: $action" >&2; return 2 ;;
+  esac
+  python3 "$HERE/mdt_admission.py" "${args[@]}"
+}
+
 usage() {
   cat <<'EOF'
 mdt host-setup installer
@@ -122,8 +134,10 @@ Options
                       (MDT-076) from the installed /etc/mdt/host-setup.env and nothing else. The
                       cap is derived from this host's gates tier: max(1, min(CPU cores / 2, gates
                       MemoryHigh / 2G)); ADMISSION_MAX_CONCURRENT pins it, ADMISSION_CPUS_PER_GATE
-                      and ADMISSION_MEMORY_PER_GATE tune the formula, ADMISSION_PUBLISH=off|missing
-                      stops or limits the management. A Docker daemon that was reinstalled has no
+                      and ADMISSION_MEMORY_PER_GATE tune the formula. By default, a full install
+                      only publishes when no readable cap exists; this explicit command reconciles
+                      a differing cap. ADMISSION_PUBLISH=missing|replace|off selects other policies.
+                      A Docker daemon that was reinstalled has no
                       cap, and a project with [admission] enabled then refuses every lane; the full
                       install runs this step too, but publishes only once run-gate (on the host, or
                       in the cockpit named by ADMISSION_COCKPIT) and the ticket image exist, and
@@ -410,7 +424,11 @@ if [ "$ADMISSION_ONLY" = 1 ]; then
   python3 "$HERE/mdt-host-setup-wizard.py" --validate-config /etc/mdt/host-setup.env \
     --example "$HERE/host-setup.env.example" --meminfo-path /proc/meminfo \
     || { echo "ERROR: /etc/mdt/host-setup.env failed strict validation; nothing was changed" >&2; exit 2; }
-  exec python3 "$HERE/mdt_admission.py" publish /etc/mdt/host-setup.env --meminfo /proc/meminfo --nproc "$(nproc)"
+  if publish_admission operator /etc/mdt/host-setup.env --meminfo /proc/meminfo --nproc "$(nproc)"; then
+    exit 0
+  else
+    exit $?
+  fi
 fi
 
 if [ "$RESET" = 1 ] && [ "$WIZARD" != 1 ]; then
@@ -1644,12 +1662,13 @@ systemctl enable mdt-container-io-events-watcher.service         # reactive per-
 
 # run-gate gates admission cap (MDT-076, ADMISSION_* keys): a fresh Docker daemon (every reinstall) has no
 # ciu-admission-<g> object, and a project with [admission] enabled then refuses every lane (no-headroom). Publish
-# the cap host policy yields (idempotent; a missing run-gate / cockpit / ticket image is a printed NOTE and exit
-# 0, because a fresh install precedes them: `install.sh --admission-only` finishes the job later). A publish that
-# was attempted and FAILED is not softened: the rest of the install completes and the run exits non-zero.
+# the cap host policy yields (idempotent; ADMISSION_PUBLISH=auto only creates it when no readable cap exists, while
+# `replace` opts into replacing differences here too). A missing run-gate / cockpit / ticket image is a printed NOTE
+# and exit 0, because a fresh install precedes them: `install.sh --admission-only` finishes the job later. A publish
+# that was attempted and FAILED is not softened: the rest of the install completes and the run exits non-zero.
 echo "== run-gate gates admission cap =="
 ADMISSION_FAILED=0
-python3 "$HERE/mdt_admission.py" publish "$CONFIG_PATH" --meminfo /proc/meminfo --nproc "$_nproc" || ADMISSION_FAILED=1
+publish_admission full "$CONFIG_PATH" --meminfo /proc/meminfo --nproc "$_nproc" || ADMISSION_FAILED=1
 
 BASELINE_HANDLED=0
 if [ "$WIZARD" = 1 ] && [ "$WITH_BASELINE" = 1 ] && [ -f "$BASELINE_STATUS_PATH" ]; then

@@ -805,9 +805,10 @@ cpu_cap    = floor(gates CPU cores / ADMISSION_CPUS_PER_GATE)          # default
 memory_cap = floor(gates MemoryHigh / ADMISSION_MEMORY_PER_GATE)       # default 2G per gate; no term when the tier has no MemoryHigh
 ```
 
-`gates CPU cores` is the tier's own CPUQuota: a `DEV_GATES_CPU_QUOTA` percentage pin (bounded by MDT's cores),
-`auto` or empty = the tier share (`nproc` minus `MDT_EXCLUDED_CPU_CORES` minus `DEV_TIER_EXCLUDED_CPU_CORES`),
-`-` = dev.slice's whole share. `gates MemoryHigh` is what the tier is rendered with: on `HOST_ROLE=dedicated-dev`
+`gates CPU cores` is the effective minimum of the parent `dev.slice` and `dev-gates.slice` CPUQuota. `mdt_capacity`
+supplies the auto-derived shares, while explicit `DEV_CPU_QUOTA` and `DEV_GATES_CPU_QUOTA` percentages cap those
+shares; `-` omits that level's quota. For example, `DEV_CPU_QUOTA=200%` on an 8-core host limits the gate tier to
+2 cores even when its own quota is larger. `gates MemoryHigh` is what the tier is rendered with: on `HOST_ROLE=dedicated-dev`
 the derivation of "Memory of the dedicated-dev role" (`mdt_capacity.dedicated_memory`: dev.slice's High minus the
 protected tiers' MemoryLow, so a leak ends in the tier first), otherwise `DEV_GATES_MEMORY_HIGH`. The defaults are
 planning figures, not limits (the tier is overcommitted by design and PSI is what bounds real load): one gate per
@@ -815,7 +816,8 @@ planning figures, not limits (the tier is overcommitted by design and PSI is wha
 lane. Examples: a 4 vCPU / 8 GB dedicated-dev host (v1001, r1002) gives 2, an 8 vCPU / 16 GB one gives 4, a
 shared-prod host with the example's `DEV_GATES_MEMORY_HIGH=800M` gives the minimum 1. A host that should run more
 (r1002 was hand-raised to 4 for a dstdns campaign) says so in `host-setup.env`: `ADMISSION_MAX_CONCURRENT=4`, or
-`ADMISSION_CPUS_PER_GATE=1` and `ADMISSION_MEMORY_PER_GATE=1G` to keep the formula. 
+`ADMISSION_CPUS_PER_GATE=1` and `ADMISSION_MEMORY_PER_GATE=1G` to keep the formula. See the [publication policy rationale](../docs/DESIGN-GUIDE.md#mdt-076-admission-cap-publication-policy)
+and [pasteable operator steps](../docs/CONSUMERS.md#run-gate-admission-cap).
 `python3 mdt_admission.py derive /etc/mdt/host-setup.env` prints the number and the arithmetic behind it without
 touching anything.
 
@@ -823,8 +825,8 @@ touching anything.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `ADMISSION_PUBLISH` | `auto` | `auto` publishes when absent and replaces a cap that differs; `missing` publishes only when no cap is readable and never replaces; `off` leaves the cap alone and `mdt-host-check.sh` says so |
-| `ADMISSION_MAX_CONCURRENT` | `auto` | `auto` = the formula; a whole number of at least 1 pins the cap (the operator override: a manual `run-gate admission set` is otherwise reverted by the next `auto` run) |
+| `ADMISSION_PUBLISH` | `auto` | `auto`: a full install publishes only when no readable cap exists and keeps a differing readable cap; `sudo ./host-setup/install.sh --admission-only` reconciles differences. `missing`: publish only when no readable cap exists and never replace. `replace`: full install and `--admission-only` replace differences. `off`: leave the cap alone. |
+| `ADMISSION_MAX_CONCURRENT` | `auto` | `auto` = the formula; a whole number of at least 1 pins the desired cap and always takes precedence over the computed value |
 | `ADMISSION_UNREADABLE_POLICY` | `refuse` | published with the cap: what a client does when it cannot read one (`refuse` = `NOT_RUN`, `unbudgeted` = run without a ticket) |
 | `ADMISSION_CPUS_PER_GATE` / `ADMISSION_MEMORY_PER_GATE` | `2` / `2G` | the formula's two budgets |
 | `ADMISSION_COCKPIT` | empty | empty = run-gate on the host; a container name = that running cockpit, as `ADMISSION_COCKPIT_USER` (default `vscode`) |
@@ -832,24 +834,25 @@ touching anything.
 | `ADMISSION_TICKET_IMAGE` | empty | a LOCAL image that provides `/bin/true` (run-gate never pulls it); empty = the cockpit's own image. There is no default on a host without a cockpit |
 
 **What runs, when.** The full install runs the step after the tiers and services are up, and
-`sudo ./install.sh --admission-only` runs only it (strictly validating the installed config first, no wizard, no
+`sudo ./host-setup/install.sh --admission-only` runs only it (strictly validating the installed config first, no wizard, no
 other change). It writes a minimal `run-gate.toml` (`[admission]` with the ticket image and policy; no lanes) into
 a private temporary directory or, for a cockpit, over stdin into one inside the container, exports
 `CGROUP_PARENT_DEV_GATES=dev-gates.slice`, and runs `run-gate admission show` first. A cap equal in value and
-policy is left alone (no new generation: running the installer twice publishes once); an absent one is published
-with `run-gate admission set`; a different one is replaced with `--replace` and the old and new value are printed.
-The cap is read back after every write. Prerequisites a fresh host does not have yet (no docker CLI, no run-gate on
-the host or in the cockpit, the cockpit not running, the ticket image not loaded) are a printed `NOTE` naming the
-missing piece and exit 0: the first full install of a reinstalled host precedes the runner, so run
-`--admission-only` once the runner image and run-gate are there (the reinstall runbook carries this step). A
-publish that was attempted and failed (run-gate refuses, read-back differs, an unreadable existing object that
-`--replace` will not touch) is printed with run-gate's reason; the rest of the install completes and the run exits
-non-zero.
+policy is left alone (no new generation). A missing cap is published with `run-gate admission set`. Under the
+default `auto`, the full install keeps a differing readable cap; the explicit `--admission-only` command reconciles
+it with `--replace`. `replace` opts the full install into the same reconciliation, while `missing` never replaces.
+The explicit `--admission-only` action also uses `--replace` to repair a published object whose limit cannot be
+parsed. The cap is read back after every write. Prerequisites a fresh host does not have yet (Docker CLI missing,
+Docker daemon unavailable, run-gate missing on the host or in the cockpit, cockpit stopped, ticket image absent)
+are distinct printed `NOTE`s and exit 0. After reinstall, operators must run
+`sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist. A publish that was
+attempted and failed (run-gate refuses or read-back differs) is printed with run-gate's reason; the rest of the
+install completes and the run exits non-zero.
 
 **Verification.** `mdt-host-check.sh` reads the cap through the same code: FAIL when no cap is published, OK when it
-equals the host policy, WARN when it differs (a manual `run-gate admission set`), FAIL when it differs while
-`ADMISSION_MAX_CONCURRENT` is pinned, WARN when it cannot be read (run-gate, cockpit or image missing; naming
-which), INFO under `ADMISSION_PUBLISH=off` or a tolerated difference under `missing`. Admission is local to one
+equals the host policy, WARN when it differs, FAIL when it differs while `ADMISSION_MAX_CONCURRENT` is pinned, and
+WARN when a prerequisite prevents reading it (naming which). A difference remains a warning under `missing`;
+`off` reports INFO. Admission is local to one
 Docker daemon: nothing here applies to a remote daemon, and projects that leave `[admission]` off are unaffected
 whatever is published.
 
