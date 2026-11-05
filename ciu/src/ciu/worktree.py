@@ -2167,22 +2167,19 @@ def _clean_in(
     env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
     env.update(identity)
 
-    if plan_only:
-        argv = [sys.executable, "-m", "ciu.cli", "clean", "--dry-run"]
-    else:
-        argv = [sys.executable, "-m", "ciu.cli", "clean"] + (["--yes"] if yes else [])
-        # CIU-191: print the removal plan (containers, volumes, networks by
-        # name, and what is left alone) BEFORE the `--yes` / confirmation gate
-        # acts. A plan failure is not fatal: the real clean enumerates again
-        # and fails closed on anything indeterminate.
-        try:
+    argv = [sys.executable, "-m", "ciu.cli", "clean"]
+    argv += ["--dry-run"] if plan_only else (["--yes"] if yes else [])
+    try:
+        if not plan_only:
+            # CIU-191: print the removal plan (containers, volumes, networks by
+            # name, and what is left alone) BEFORE the `--yes` / confirmation
+            # gate acts. Its exit status is deliberately ignored: the real
+            # clean enumerates again and fails closed on anything
+            # indeterminate.
             _run_cleanup_child(
                 [sys.executable, "-m", "ciu.cli", "clean", "--dry-run"],
                 cwd=worktree, env=env, json_output=json_output,
             )
-        except OSError:  # pragma: no cover - environmental
-            pass
-    try:
         return _run_cleanup_child(
             argv, cwd=worktree, env=env, json_output=json_output
         )
