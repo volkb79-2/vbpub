@@ -1,0 +1,49 @@
+# Every key is required: the sampler has no built-in defaults.
+[sampler]
+tick_ms = 1000              # sampling period
+slow_every_s = 60           # cadence of the limit files (spread across cgroups by serial)
+cgroup_root = "/sys/fs/cgroup"
+proc_root = "/proc"
+sys_root = "/sys"
+socket_path = "/tmp/topos-poc/sampler.sock"
+duration_s = 300            # 0 = run until killed
+stats_path = "/tmp/topos-poc/stats.json"
+
+[process]
+scan = true
+top_cpu = 20
+top_io = 20
+cap = 64                    # hard cap of the enriched union (D state + top CPU + top IO)
+
+[events]
+psi_cpu_some_avg10 = 25.0   # percent; crossing up or down is a hard event
+psi_memory_some_avg10 = 10.0
+psi_io_some_avg10 = 25.0
+events_path = "/tmp/topos-poc/cold/events.jsonl"
+
+[store]
+enabled = true
+tmpfs_dir = "/tmp/topos-poc/tmpfs"   # must be tmpfs in production; hot and warm live here
+cold_dir = "/tmp/topos-poc/cold"     # disk; zstd segments, canonical dictionary
+cold_cap_bytes = 1073741824
+
+[[tier]]
+name = "hot"
+step_s = 1
+keep_s = 60
+segment_s = 10
+medium = "tmpfs"
+
+[[tier]]
+name = "warm"
+step_s = 5
+keep_s = 300
+segment_s = 60
+medium = "tmpfs"
+
+[[tier]]
+name = "cold"
+step_s = 60
+keep_s = 86400
+segment_s = 3600
+medium = "disk"
