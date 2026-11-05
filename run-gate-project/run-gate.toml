@@ -64,7 +64,10 @@ budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
 [lanes.selftest.resources]
-memory = "1g"
+# 2g: the suite's measured peak is ~1021 MiB (release 25.2.0 candidate: footprint
+# peak 1021 MiB, p90 543 MiB), so 1g sat on the limit and produced oom_kill events
+# (lane verdict forced to ERROR) with all 2960 tests green.
+memory = "2g"
 memory_swap = "16g"
 cpus = "3"
 
