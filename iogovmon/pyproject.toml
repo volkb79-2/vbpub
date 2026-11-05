@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
 # Standard library only, by design: it must run on any host with nothing but python3 (>= 3.11 for `tomllib`) and systemd.
-# No first-party dependency (no cli-extended, no iobench, no mdt-cockpit): consumers read `iogovmon status --json`-style output instead of importing it.
+# No first-party dependency (no cli-extended, no iobench, no mdt-cockpit): consumers read `iogovmonctl status --json`-style output instead of importing it.
 dependencies = []
 dynamic = ["version"]
 
@@ -18,7 +18,8 @@ dynamic = ["version"]
 test = ["pytest>=8", "pytest-cov>=6"]
 
 [project.scripts]
-iogovmon = "iogovmon.cli:main"
+iogovmond = "iogovmon.cli:daemon_main"
+iogovmonctl = "iogovmon.cli:control_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

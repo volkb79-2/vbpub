@@ -211,7 +211,7 @@ def analyze(cfg, path: str, as_json: bool = False, lane_filter: str | None = Non
             "passive_peak_write_bps_by_window": {_day(k, cfg): v for k, v in sorted(side["passive_peak"].items())},
         }
         return json.dumps(out, indent=1, sort_keys=True)
-    lines = [f"iogovmon analyze: {summary['records']} records, {summary['first']} .. {summary['last']}"]
+    lines = [f"iogovmonctl analyze: {summary['records']} records, {summary['first']} .. {summary['last']}"]
     if stats.skipped():
         lines.append(f"  skipped while reading: {stats.describe()}")
         for u in stats.unreadable:
@@ -281,7 +281,7 @@ def analyze(cfg, path: str, as_json: bool = False, lane_filter: str | None = Non
 
 def status(cfg, wall) -> str:
     now = wall()
-    lines = ["iogovmon status"]
+    lines = ["iogovmonctl status"]
     try:
         state, problems = clean_state(load_state(cfg.state_file()), now)
     except (safeio.CorruptFile, safeio.UnsafePath) as exc:
@@ -300,7 +300,7 @@ def status(cfg, wall) -> str:
                  f"{'-' if not state.get('next_bench') else dt.datetime.fromtimestamp(state['next_bench'], dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     fail = state.get("bench_fail", {})
     if fail.get("n"):
-        lines.append(f"  bench failures in a row: {fail['n']}" + (" (BENCH LANE DISABLED until `iogovmon annotate --baseline-reset`)" if fail.get("disabled_at") else ""))
+        lines.append(f"  bench failures in a row: {fail['n']}" + (" (BENCH LANE DISABLED until `iogovmonctl annotate --baseline-reset`)" if fail.get("disabled_at") else ""))
     b = state.get("budget")
     if b:
         lines.append(f"  today ({b['day']}): read {b['read_bytes']} B / {cfg.max_read_bytes_per_day}, write {b['write_bytes']} B / {cfg.max_write_bytes_per_day}, "

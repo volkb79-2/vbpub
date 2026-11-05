@@ -6,10 +6,11 @@ Status: IMPLEMENTED in this project, `iogovmon/` (not installed, not enabled any
 `iogov-probe` spec, Astra's critique), [IO-GOVERNOR-DESIGN.md](../../mdt-cockpit/docs/IO-GOVERNOR-DESIGN.md) and the operator's constraints. Operator
 README: [../README.md](../README.md). This note is host-agnostic: no server or host names.
 
-**Naming.** The project was extracted from `mdt-cockpit/iogov` on 2026-11-05 (WP-IGM-a, a pure move and rename). This note keeps its original
-vocabulary in the body: read `iogov` as `iogovmon` (CLI, package, `/etc/iogovmon`, `/var/lib/iogovmon`, user `iogovmon`, `IOGOVMON_*`), `iogov-probe.slice`
-as `iogovmon.slice`, `iogov-*.service|timer` as `iogovmon-*`, and `mdt-cockpit/iogov/` paths as `iogovmon/src/iogovmon/`. The README's rename table is
-the authority. The default `governed_cgroups` is now empty (it was `/sys/fs/cgroup/dev.slice`).
+**Naming.** The project was extracted from `mdt-cockpit/iogov` on 2026-11-05 (WP-IGM-a, a pure move and rename). This note keeps historical
+design references where they describe the original `iogov` implementation. Current names are the package/distribution `iogovmon`, the daemon
+`iogovmond`, the operator CLI `iogovmonctl`, `/etc/iogovmon`, `/var/lib/iogovmon`, user `iogovmon`, and `IOGOVMON_*`. The current unit names are
+`iogovmond-{tick,bench}.*` and `iogovmond.service` in `iogovmon.slice`; `mdt-cockpit/iogov/` paths became `iogovmon/src/iogovmon/`. The README's
+command mapping is the authority. The default `governed_cgroups` is now empty (it was `/sys/fs/cgroup/dev.slice`).
 
 ## 1. What v1 does, and what it does not
 
@@ -31,8 +32,8 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
 - Covariates stored per run (never a lookup table): filesystem fill, mount options, last fstrim time and trimmed bytes if a record
   exists, `discard_max_bytes`, lvm `issue_discards`, an optional provider signal file (used bytes, snapshot time), queue parameters
   (`nr_requests`, `max_sectors_kb`, scheduler), io.cost model/QoS, governed `io.max`/`io.weight`, io.prio availability, and free-form
-  annotations (`iogov annotate`). The queue/iocost/limit values are hashed into a `settings_epoch` on every sample.
-- Protected-side distress episodes (`iogov watch`): a 1 Hz sampler (no probe IO) records a time-series window around every episode
+  annotations (`iogovmonctl annotate`). The queue/iocost/limit values are hashed into a `settings_epoch` on every sample.
+- Protected-side distress episodes (`iogovmond watch`): a 1 Hz sampler (no probe IO) records a time-series window around every episode
   (protected `io.pressure` AND `memory.pressure` stall shares, threads in D state; the same thresholds trigger on either resource), labels
   which stall share dominated (`driver`: memory / io / dstate, a hint, not a diagnosis: a swap-in wait raises both), and `analyze` reports
   how long distress persisted and recovered, also before and after operator-annotated actions: the doc's missing "actuator stopping
@@ -42,8 +43,8 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
   text plots, harm, demand check) and a `status` that includes the report-only **prevention checker** (fill > 60 %, days since fstrim,
   discard mount option / lvm `issue_discards` / `discard_max_bytes`, snapshot age and provider usage when a signal file exists).
 - Crash-safe operation: everything that must survive a crash (budget reservation, next bench time, failure counters) is persisted before the IO it
-  protects; a crashing bench backs off exponentially and disables itself after 5 consecutive crashes until `iogov annotate --baseline-reset`.
-- Bounded memory and retention: the journal is write-mostly; the recognizer keeps compact per-lane aggregates; `iogov prune` (and a daily automatic prune)
+  protects; a crashing bench backs off exponentially and disables itself after 5 consecutive crashes until `iogovmonctl annotate --baseline-reset`.
+- Bounded memory and retention: the journal is write-mostly; the recognizer keeps compact per-lane aggregates; `iogovmonctl prune` (and a daily automatic prune)
   deletes monthly files older than 400 days or beyond 512 MiB (oldest first, never the current month).
 - A `quiet-experiment` **definition and plan printer** for an approved `nr_requests` / `io.max` test. It prints; it executes nothing.
 
@@ -62,6 +63,7 @@ evidence and emits **recommendations** such as "capability shifted down ~20x on 
 
 | Item | Decision | Reason |
 |---|---|---|
+| One console script for services and operators | split into `iogovmond` (`tick`, `watch`, `bench`, `cleanup`) and `iogovmonctl` (planning, reporting, configuration, and administration) | Service units call only daemon commands; operators use the control CLI. Both use the same package and argument parser framework. `python -m iogovmon` remains a combined developer entry point. |
 | Automatic cap/model/profile changes (spec section 6) | dropped; recommend-only | Both external opinions: ship a recorder first. Astra: a lower bound is not a capacity estimate, "lowering takes the minimum" conflates protection with inference. |
 | Candidate A (`vrate` edge), A+, F, D | dropped | vrate sits at the floor with healthy latency because of our own `nr_requests`; both models killed A independently. |
 | Fill-bucket table, `ceiling_shift` as corroboration, 0.7x worst-plateau floor, best-plateau ceiling, 25 %/30 min constants | dropped | Two confounded data points; self-referential evidence; a floor poisoned by one window. Fill is a logged covariate and a prevention warning only. |
@@ -232,7 +234,7 @@ Pure function of the journal (`recognize(records, cfg)`), folded in incrementall
   the runner updates it incrementally and `analyze` streams the journal through the very same `Engine`, so they agree (tested). A baseline changes only through
   an operator reset (`resets.log` + journal note; never expires). Pruning the journal does not change the persisted baseline; `analyze` replays only what is retained.
 - Reference = median of the first 5 valid windows (LEARNING until then), noise sigma = MAD-based with a 0.25 floor, **frozen while alarmed**, replaced
-  only by `iogov annotate --baseline-reset` (median of the latest 3 windows).
+  only by `iogovmonctl annotate --baseline-reset` (median of the latest 3 windows).
 - Two-sided CUSUM, `k_eff = max(0.5, sigma)`, `h_eff = max(2.0, 3 sigma)`, sigma = MAD estimate shrunk toward a prior of 0.5 (weight 5 windows), S capped at 2 h so a long collapse still unwinds. A window counts toward
   confirmation only if S >= h **and the window itself is beyond the slack** (a one-day outlier cannot be confirmed by normal days after it);
   3 consecutive such windows (windows missing in between break the streak) -> `shift_detected` (with factor, direction, "baseline reset suggested"). An alarm clears only after 2
@@ -311,8 +313,8 @@ shift in what the probes measure; whether the game suffers is the `harm` section
 5. **Retention.** Defaults 400 days / 512 MiB (about 240 MiB per year at one tick per 5 minutes). Shorter retention shortens what `analyze` can replay; the persisted baseline is unaffected.
 6. **Raw reads.** Accept the confidentiality cost of read access to one whole disk (section 6), or do not grant the udev ACL (the tick then reports "cannot open read-only" and only
    the scratch-file bench and passive collectors run).
-7. **First bench** with the protected workload idle: enable `iogov-tick.timer` first, run `iogov bench --force` by hand in an idle window and compare
-   `watch` episodes around it, and only then enable `iogov-bench.timer` (its first run is otherwise whenever the gate first passes). Also decide the daily
+7. **First bench** with the protected workload idle: enable `iogovmond-tick.timer` first, run `iogovmond bench --force` by hand in an idle window and compare
+   `watch` episodes around it, and only then enable `iogovmond-bench.timer` (its first run is otherwise whenever the gate first passes). Also decide the daily
    write budget (default 1 GiB, hard maximum 2 GiB).
 8. **A host that is never calm.** The bench gate (system io `some` <= 1 %, `full` <= 0.1 %, nothing in flight) may rarely pass on a host that swaps
    continuously; the write lanes then show as STALE and only the read lanes and passive evidence accumulate. That is the designed failure mode, not a
@@ -335,9 +337,9 @@ Facts that decide it:
 | State/journal/scratch | `/var/lib/iogov` 0700 owned by the user | bind mounts, uid mapping, same modes to maintain |
 | Failure coupling | independent of dockerd | the monitor of a dockerd-hosted game server would itself depend on dockerd, which is the first thing that stalls under the IO pressure it should record |
 | Package integrity | root-owned files in a root-owned directory (`install.sh`) | an image digest pinned in the unit/compose file; equal strength only if pinned and the registry/build path is trusted |
-| Tool requirements | explicit list + `iogov preflight` + `install.sh` (apt names, exit 1) | Python and `systemd-analyze` become self-contained; the host-side items (`acl`, `udev`, systemd units, cgroup v2, PSI) do not |
+| Tool requirements | explicit list + `iogovmonctl preflight` + `install.sh` (apt names, exit 1) | Python and `systemd-analyze` become self-contained; the host-side items (`acl`, `udev`, systemd units, cgroup v2, PSI) do not |
 
-Recommendation: **keep v1 as a host install** (root-owned package, systemd units, one ACL rule), made self-checking by `iogov preflight` and
+Recommendation: **keep v1 as a host install** (root-owned package, systemd units, one ACL rule), made self-checking by `iogovmonctl preflight` and
 `install.sh --dry-run`. The only requirement a container would not absorb is the host's `acl`, and the container would add dockerd as a runtime
 dependency, host cgroup-namespace exposure, uid/bind-mount bookkeeping and a weaker hung-read backstop on a host that carries latency-sensitive
 production workloads. Use a container only for the part that needs no privilege: the offline `analyze`/`report` tools (read-only bind of the journal, no

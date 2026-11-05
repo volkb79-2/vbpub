@@ -88,7 +88,7 @@ def preflight(rt: Runtime) -> str | None:
         safeio.ensure_dir(rt.cfg.journal_dir())
         return None
     except (safeio.UnsafePath, OSError) as exc:
-        return f"iogovmon: refusing to run: {exc}"
+        return f"iogovmond: refusing to run: {exc}"
 
 
 @contextlib.contextmanager
@@ -261,9 +261,9 @@ def _guarded(fn):
         try:
             return fn(rt, *a, **k)
         except safeio.UnsafePath as exc:
-            return _refuse(f"iogovmon: refusing to continue: {exc}")
+            return _refuse(f"iogovmond: refusing to continue: {exc}")
         except Exception as exc:
-            msg = f"iogovmon: internal error, run abandoned: {type(exc).__name__}: {exc}"[:300]
+            msg = f"iogovmond: internal error, run abandoned: {type(exc).__name__}: {exc}"[:300]
             try:  # also in the journal, so `analyze` shows the gap; best effort (the journal may be what failed)
                 rt.journal.append("note", text=msg, kind="error")
             except Exception:
@@ -529,7 +529,7 @@ def plan_text(rt: Runtime) -> str:
     known = [s for _, s in sizes if s]
     region = plan_region(cfg, min(known) if known else None)
     budget = compute_budget(cfg, region.probe_bytes if region.mode == "file" else None, region.mode)
-    lines = ["iogovmon plan (dry run: no device opened, no file created, nothing written)", ""]
+    lines = ["iogovmonctl plan (dry run: no device opened, no file created, nothing written)", ""]
     ks = kill_switch_reason(cfg)
     lines.append(f"kill switch: {'ACTIVE ' + ks if ks else 'not set'}   (flag file: {cfg.kill_switch_file})")
     lines.append(f"identity: uid {os.geteuid()}" + ("  (ROOT: needs allow_root and a root-owned 0700 scratch dir)" if os.geteuid() == 0 else ""))

@@ -250,7 +250,8 @@ depends_on = ["cli-extended"]
 config = "libraries/test-policy/cmru.toml"
 depends_on = []
 
-# iogovmon (iogovmon/, host-tuning WP-IGM-a): the background IO recorder extracted from mdt-cockpit/iogov. Standard library only and
+# iogovmon (iogovmon/, host-tuning WP-IGM-a): the background IO recorder extracted from mdt-cockpit/iogov. Its scripts are `iogovmond` and
+# `iogovmonctl`; package and distribution remain `iogovmon`. Standard library only and
 # independent of every other estate project (no cli-extended, no iobench, no mdt-cockpit), so level L0. Its FIRST release is gated on the
 # live acceptance WP-IGM-ACC (iogovmon/BACKLOG.md IGM-01); registering it here does not authorise a release.
 [orchestration.project.iogovmon]

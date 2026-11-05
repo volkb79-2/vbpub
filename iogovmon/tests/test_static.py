@@ -170,8 +170,8 @@ def test_unit_templates_are_templates_with_documented_tokens_and_hardening():
         assert "TEMPLATE, NOT INSTALLED" in text.splitlines()[0], u.name
         for tok in TOKEN.findall(text):
             assert f"@{tok}@" in readme, (u.name, tok)
-    services = sorted(UNIT_DIR.glob("iogovmon-*.service.in"))
-    assert [u.name for u in services] == ["iogovmon-bench.service.in", "iogovmon-tick.service.in", "iogovmon-watch.service.in"]
+    services = sorted(UNIT_DIR.glob("*.service.in"))
+    assert [u.name for u in services] == ["iogovmond-bench.service.in", "iogovmond-tick.service.in", "iogovmond.service.in"]
     for u in services:
         text = u.read_text()
         for must in ("NoNewPrivileges=yes", "ProtectSystem=strict", "DevicePolicy=closed", "KillSignal=SIGTERM", "Slice=iogovmon.slice"):

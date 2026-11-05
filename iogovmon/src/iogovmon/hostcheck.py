@@ -1,4 +1,4 @@
-"""`iogovmon preflight`: every host tool, package and kernel facility the install steps and the units rely on, checked BEFORE anything is installed.
+"""`iogovmonctl preflight`: every host tool, package and kernel facility the install steps and the units rely on, checked BEFORE anything is installed.
 
 Read-only: it looks files up (PATH search, sysfs/procfs/cgroup reads) and executes nothing. A missing item is reported with the Debian package
 that provides it, and the command exits non-zero, so an operator learns about a missing `acl` before step 3 of the README instead of in the middle of it.
@@ -81,13 +81,13 @@ def run_checks(cfg, path: str | None = None, py_version: tuple = tuple(sys.versi
         detail = ", ".join(f"{d.kname} ({d.node})" for d in disks) if disks else "no disk resolved"
         out.append(Check("disks", bool(disks), detail + ("; " + " | ".join(notes) if notes else "")))
     else:
-        out.append(Check("disks", True, "skipped: neither `devices` nor `data_paths` is configured yet (run `iogovmon devices` after editing the config)",
+        out.append(Check("disks", True, "skipped: neither `devices` nor `data_paths` is configured yet (run `iogovmonctl devices` after editing the config)",
                          required=False))
     return out
 
 
 def render(checks: list[Check]) -> tuple[str, int]:
-    lines = ["iogovmon preflight (read-only: nothing is installed, created or executed)", ""]
+    lines = ["iogovmonctl preflight (read-only: nothing is installed, created or executed)", ""]
     for c in checks:
         tag = "ok     " if c.ok else ("MISSING" if c.required else "absent ")
         lines.append(f"{tag} {c.name}: {c.detail}" + (f"   [apt: {c.package}]" if c.package and not c.ok else ""))

@@ -1,6 +1,6 @@
 """Protected-side distress episodes: the missing 'stopping distance' data, recorded as a time series around each episode.
 
-`iogovmon watch` samples procfs/cgroup files (no probe IO at all) once a second, keeps a short ring of pre-trigger samples and, when
+`iogovmond watch` samples procfs/cgroup files (no probe IO at all) once a second, keeps a short ring of pre-trigger samples and, when
 a protected cgroup shows distress (PSI stall share, threads in D state), records the whole window until it has been quiet for
 `episode_quiet_s`. Later analysis measures how long distress persisted and how long recovery took, e.g. around an operator
 annotation such as "nr_requests 16 -> 8". Distress is an OBSERVATION about the protected workload, never a capacity claim.

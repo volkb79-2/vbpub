@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# iogovmon installer helper: performs README "Install steps" 1-4 for the REPORT-ONLY tick, idempotently, printing every action.
+# iogovmon installer helper: performs README "Install steps" for the REPORT-ONLY tick, idempotently, printing every action.
 #
 #   iogovmon/install.sh --dry-run              # print every action, change nothing (run this first)
 #   sudo iogovmon/install.sh                   # do it
-#   sudo iogovmon/install.sh --enable-tick     # also `systemctl enable --now iogovmon-tick.timer` (README step 5; only after a manual plan + tick)
+#   sudo iogovmon/install.sh --enable-tick     # also `systemctl enable --now iogovmond-tick.timer` (README step 5; only after a manual plan + tick)
 #
-# What it does: preflight (`python3 -m iogovmon preflight`, stops on any missing package) -> service user -> /etc/iogovmon (root 0755), state and
-# scratch dirs (service user 0700) -> a root-owned copy of the package in LIB_DIR -> config skeleton (never overwritten) -> unit/udev
+# What it does: preflight (`iogovmonctl preflight`, stops on any missing package) -> service user -> /etc/iogovmon (root 0755), state and
+# scratch dirs (service user 0700) -> a root-owned copy of the package in LIB_DIR -> `iogovmond` and `iogovmonctl` launchers -> config skeleton (never overwritten) -> unit/udev
 # rendering, `systemd-analyze verify` -> units and the read-only ACL udev rule -> daemon-reload.
 # What it never does: enable or start a bench timer or the watch service, enable the tick timer without --enable-tick, write a cgroup/io/block
 # setting, run docker or touch any container, overwrite an existing config, or use the `disk` group.
@@ -18,6 +18,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)   # the project directory: sr
 SRC_PARENT=$HERE/src                                 # the directory that contains the importable `iogovmon/` package
 USER_NAME=iogovmon
 LIB_DIR=/usr/local/lib/iogovmon-pkg   # a root-owned directory; /usr/local/lib is root:staff 2775 on Debian: use --lib-dir /opt/iogovmon for a stricter parent
+BIN_DIR=/usr/local/bin
 ETC_DIR=/etc/iogovmon
 CONFIG=$ETC_DIR/iogovmon.toml
 KILL_SWITCH=$ETC_DIR/disabled
@@ -28,7 +29,7 @@ RULES_DIR=/etc/udev/rules.d
 DRY=0 STAGE="" ENABLE_TICK=0 SKIP_PRE=0 DISK_NODE="" ID_PATH="" PYBIN="" IO_WEIGHT=50 TICK_INTERVAL=5min
 
 usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
-die() { printf 'iogovmon install: %s\n' "$*" >&2; exit 1; }
+die() { printf 'iogovmon/install.sh: %s\n' "$*" >&2; exit 1; }
 while (($#)); do
   case $1 in
     --dry-run) DRY=1 ;;
@@ -86,6 +87,11 @@ put_file() { # source mode dest-path   (root-owned, replaced only if the content
   if [[ -f $d ]] && cmp -s "$src" "$d" && [[ $(stat -c %a "$d") == "$mode" ]]; then say "unchanged: $d"; return; fi
   run install -m "$mode" "$src" "$d"; chown_to root:root "$d"
 }
+control() { # source-root argv...; use the package's operator entry point during installation
+  local source_root=$1; shift
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$source_root "$PYBIN" -B -c \
+    'from iogovmon.cli import control_main; raise SystemExit(control_main())' "$@"
+}
 
 TMP=$(mktemp -d)
 NEW="" OLD="" DEST=""
@@ -100,7 +106,7 @@ trap cleanup EXIT
 
 say "== 1. preflight"
 if ((SKIP_PRE)); then say "skipped (--skip-preflight)"
-elif ! PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$SRC_PARENT "$PYBIN" -B -m iogovmon preflight; then
+elif ! control "$SRC_PARENT" preflight; then
   die "preflight failed: install the packages it lists, then rerun"
 fi
 
@@ -139,19 +145,34 @@ else
   OLD=""
 fi
 
+say "== 3a. daemon and operator commands"
+ensure_dir 755 root:root "$BIN_DIR"
+cat >"$TMP/iogovmond" <<EOF
+#!/bin/sh
+export PYTHONPATH="$LIB_DIR"
+exec "$PYBIN" -B -c 'from iogovmon.cli import daemon_main; raise SystemExit(daemon_main())' "\$@"
+EOF
+cat >"$TMP/iogovmonctl" <<EOF
+#!/bin/sh
+export PYTHONPATH="$LIB_DIR"
+exec "$PYBIN" -B -c 'from iogovmon.cli import control_main; raise SystemExit(control_main())' "\$@"
+EOF
+put_file "$TMP/iogovmond" 755 "$BIN_DIR/iogovmond"
+put_file "$TMP/iogovmonctl" 755 "$BIN_DIR/iogovmonctl"
+
 say "== 4. configuration skeleton (an existing config is never touched)"
 CFG=$(t "$CONFIG")
 if [[ -e $CFG ]]; then say "unchanged: $CFG exists"
 else put_file "$HERE/iogovmon.toml.example" 644 "$CONFIG"; fi
 if [[ ! -e $CFG || ! -s $CFG ]] || grep -q '^data_paths = \["/var/lib/example-volumes"\]' "$CFG" 2>/dev/null; then
   [[ -n $DISK_NODE ]] || { say "INCOMPLETE: $CONFIG still holds the EXAMPLE data_paths. Edit it (data_paths or devices, protected cgroups), check with"
-    say "  PYTHONPATH=$LIB_DIR python3 -B -m iogovmon --config $CONFIG devices"; say "then rerun this script (or pass --disk-node and --id-path)."; exit 3; }
+    say "  iogovmonctl --config $CONFIG devices"; say "then rerun this script (or pass --disk-node and --id-path)."; exit 3; }
 fi
 
 say "== 5. the one disk: stable node and udev ID_PATH"
 if [[ -z $DISK_NODE ]]; then
   [[ -n $STAGE ]] && CONF_ARG=("--config" "$CFG") || CONF_ARG=("--config" "$CONFIG")
-  mapfile -t DISKS < <(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$([[ -d $DEST/iogovmon ]] && echo "$DEST" || echo "$SRC_PARENT") "$PYBIN" -B -m iogovmon "${CONF_ARG[@]}" devices 2>"$TMP/devices.err" | cut -f2)
+  mapfile -t DISKS < <(control "$([[ -d $DEST/iogovmon ]] && echo "$DEST" || echo "$SRC_PARENT")" "${CONF_ARG[@]}" devices 2>"$TMP/devices.err" | cut -f2)
   if ((${#DISKS[@]} != 1)); then
     sed 's/^/  /' "$TMP/devices.err" >&2 || true
     die "the config resolves ${#DISKS[@]} disk(s); the ACL rule grants exactly one. Fix data_paths/devices or pass --disk-node NODE"
@@ -182,7 +203,7 @@ say "== 6. render units and the udev rule"
 mkdir -p "$TMP/out"
 for f in "$HERE"/units/*.in; do
   name=$(basename "$f" .in)
-  sed -e "s|@IOGOVMON_USER@|$USER_NAME|g" -e "s|@IOGOVMON_PYTHON@|$PYBIN|g" -e "s|@IOGOVMON_PYTHONPATH@|$LIB_DIR|g" \
+  sed -e "s|@IOGOVMON_USER@|$USER_NAME|g" -e "s|@IOGOVMON_PYTHONPATH@|$LIB_DIR|g" \
       -e "s|@IOGOVMON_CONFIG@|$CONFIG|g" -e "s|@IOGOVMON_STATE_DIR@|$STATE_DIR|g" -e "s|@IOGOVMON_SCRATCH_DIR@|$SCRATCH_DIR|g" \
       -e "s|@IOGOVMON_KILL_SWITCH_FILE@|$KILL_SWITCH|g" -e "s|@IOGOVMON_DISK_NODE@|$DISK_NODE|g" -e "s|@IOGOVMON_DISK_ID_PATH@|$ID_PATH|g" \
       -e "s|@IOGOVMON_IO_WEIGHT@|$IO_WEIGHT|g" -e "s|@IOGOVMON_TICK_INTERVAL@|$TICK_INTERVAL|g" \
@@ -198,7 +219,7 @@ fi
 say "== 7. install units (none of them enabled here) and the read-only ACL rule"
 ensure_dir 755 root:root "$UNIT_DIR"
 ensure_dir 755 root:root "$RULES_DIR"
-for u in iogovmon.slice iogovmon-tick.service iogovmon-tick.timer iogovmon-watch.service iogovmon-bench.service iogovmon-bench.timer; do
+for u in iogovmon.slice iogovmond-tick.service iogovmond-tick.timer iogovmond.service iogovmond-bench.service iogovmond-bench.timer; do
   put_file "$TMP/out/$u" 644 "$UNIT_DIR/$u"
 done
 put_file "$TMP/out/99-iogovmon-raw-read.rules" 644 "$RULES_DIR/99-iogovmon-raw-read.rules"
@@ -211,13 +232,13 @@ fi
 
 say "== 8. tick timer"
 if ((ENABLE_TICK)); then
-  if [[ -n $STAGE ]]; then say "SKIP (staging): systemctl enable --now iogovmon-tick.timer"; else run systemctl enable --now iogovmon-tick.timer; fi
+  if [[ -n $STAGE ]]; then say "SKIP (staging): systemctl enable --now iogovmond-tick.timer"; else run systemctl enable --now iogovmond-tick.timer; fi
 else
-  say "not enabled (iogovmon-tick.timer stays off). The bench timer and the watch service are never enabled by this script."
+  say "not enabled (iogovmond-tick.timer stays off). The bench timer and iogovmond.service are never enabled by this script."
 fi
 cat <<NEXT
 
 Next, by hand (README steps 3-5): verify the ACL as $USER_NAME:  sudo -u $USER_NAME dd if=$DISK_NODE bs=4k count=1 iflag=direct of=/dev/null ; sudo -u $USER_NAME test -w $DISK_NODE && echo WRITABLE-STOP
-then  sudo -u $USER_NAME env PYTHONPATH=$LIB_DIR IOGOVMON_CONFIG=$CONFIG $PYBIN -B -m iogovmon plan   and   systemctl start iogovmon-tick.service
+then  sudo -u $USER_NAME env IOGOVMON_CONFIG=$CONFIG iogovmonctl plan   and   systemctl start iogovmond-tick.service
 and only then  $0 --enable-tick.
 NEXT

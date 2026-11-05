@@ -660,7 +660,7 @@ and block-device access the devcontainer does not have; the image may carry read
 ## MDT-031 - iogov -> iobench ceilings bridge (`ceilings.jsonl`, `source: governor`) (2026-10-27)
 
 **MOVED 2026-11-05 to `iogovmon/BACKLOG.md` IGM-07** (full text there; the interface is now fixed by the host-tuning design as
-`iogovmon export ceilings`). Status OPEN. MDT-023's "Next" paragraph reads the export through host-tuning's adapter, not an mdt import.
+`iogovmonctl export ceilings`). Status OPEN. MDT-023's "Next" paragraph reads the export through host-tuning's adapter, not an mdt import.
 
 ## MDT-032 - iogov: `test_prevention_checker_is_quiet_when_healthy_and_says_unknown_when_blind` reads the real filesystem fill (2026-11-02)
 

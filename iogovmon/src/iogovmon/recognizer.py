@@ -314,7 +314,7 @@ class LaneState:
                     self._event("shift_detected", w,
                                 f"capability shifted {dirn} {qual}~{factor:.1f}x on {self.lane}"
                                 + (" (the probe sat at its own rate ceiling: a lower bound, capability >= the measured value)" if lower_bound else "")
-                                + ", baseline reset suggested (verify the cause, then run `iogovmon annotate --baseline-reset`)." + note,
+                                + ", baseline reset suggested (verify the cause, then run `iogovmonctl annotate --baseline-reset`)." + note,
                                 out, direction=dirn, factor=round(factor, 2), factor_is_lower_bound=lower_bound,
                                 baseline_reset_suggested=True, **ctx)
         else:

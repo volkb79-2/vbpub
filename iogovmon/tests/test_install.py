@@ -36,7 +36,7 @@ def test_script_is_valid_bash_and_never_names_docker_or_enables_bench():
     assert "docker" not in text.replace("run docker or touch any container", "")
     for line in text.splitlines():
         if "run systemctl" in line and ("enable" in line or "start" in line):
-            assert "iogovmon-tick.timer" in line and "bench" not in line and "watch" not in line, line
+            assert "iogovmond-tick.timer" in line and "bench" not in line and "iogovmond.service" not in line, line
 
 
 def test_dry_run_prints_every_action_and_changes_nothing(tmp_path):
@@ -46,7 +46,7 @@ def test_dry_run_prints_every_action_and_changes_nothing(tmp_path):
     out = p.stdout
     assert "DRY RUN" in out and "DO:" not in out
     for needle in ("etc/iogovmon", "var/lib/iogovmon/scratch", "usr/local/lib/iogovmon-pkg/iogovmon", "etc/iogovmon/iogovmon.toml",
-                   "iogovmon-tick.timer", "99-iogovmon-raw-read.rules", "iogovmon-bench.timer", "iogovmon.slice"):
+                   "usr/local/bin/iogovmond", "usr/local/bin/iogovmonctl", "iogovmond-tick.timer", "99-iogovmon-raw-read.rules", "iogovmond-bench.timer", "iogovmon.slice"):
         assert re.search(r"WOULD: .*" + re.escape(needle), out), needle
     assert "not enabled" in out and "never enabled" in out
 
@@ -60,15 +60,22 @@ def test_real_staging_run_lays_out_everything_rendered_and_is_idempotent(tmp_pat
     assert oct((tmp_path / "var/lib/iogovmon").stat().st_mode & 0o777) == "0o700"
     unit_dir = tmp_path / "etc/systemd/system"
     names = sorted(x.name for x in unit_dir.iterdir())
-    assert names == ["iogovmon-bench.service", "iogovmon-bench.timer", "iogovmon-tick.service", "iogovmon-tick.timer", "iogovmon-watch.service",
-                     "iogovmon.slice"]
+    assert names == ["iogovmon.slice", "iogovmond-bench.service", "iogovmond-bench.timer", "iogovmond-tick.service", "iogovmond-tick.timer",
+                     "iogovmond.service"]
     for u in unit_dir.iterdir():
         text = u.read_text()
         assert not re.search(r"@IOGOVMON_[A-Z_]+@", text.replace("`@IOGOVMON_*@`", "")), u.name
         assert "TEMPLATE, NOT INSTALLED" not in text and text.startswith("# Rendered by iogovmon/install.sh")
-    tick = (unit_dir / "iogovmon-tick.service").read_text()
+    tick = (unit_dir / "iogovmond-tick.service").read_text()
     assert "DeviceAllow=/dev/null r" in tick and "PYTHONPATH=/usr/local/lib/iogovmon-pkg" in tick and "User=iogovmon" in tick
+    assert "ExecStart=/usr/local/bin/iogovmond tick" in tick and "ExecStopPost=-/usr/local/bin/iogovmond cleanup" in tick
     assert "Slice=iogovmon.slice" in tick
+    watcher = (unit_dir / "iogovmond.service").read_text()
+    assert "ExecStart=/usr/local/bin/iogovmond watch" in watcher
+    for binary, entrypoint in (("iogovmond", "daemon_main"), ("iogovmonctl", "control_main")):
+        launcher = tmp_path / "usr/local/bin" / binary
+        assert oct(launcher.stat().st_mode & 0o777) == "0o755"
+        assert f"from iogovmon.cli import {entrypoint}" in launcher.read_text()
     rule = (tmp_path / "etc/udev/rules.d/99-iogovmon-raw-read.rules").read_text()
     assert 'ENV{ID_PATH}=="pci-0000:00:10.0"' in rule and "setfacl -m u:iogovmon:r" in rule
     assert (tmp_path / "etc/iogovmon/iogovmon.toml").read_text().startswith("# iogovmon configuration")
@@ -95,7 +102,7 @@ def test_a_changed_package_file_is_replaced_on_rerun(tmp_path):
 
 def test_enable_tick_is_the_only_enable_and_is_skipped_in_staging(tmp_path):
     p = run("--dry-run", "--destdir", str(tmp_path), "--enable-tick", *BASE)
-    assert p.returncode == 0 and "enable --now iogovmon-tick.timer" in p.stdout and "bench.timer" not in p.stdout.split("== 8.")[1].split("Next,")[0]
+    assert p.returncode == 0 and "enable --now iogovmond-tick.timer" in p.stdout and "bench.timer" not in p.stdout.split("== 8.")[1].split("Next,")[0]
 
 
 def test_example_config_stops_with_exit_3_before_units_are_installed(tmp_path):
@@ -166,7 +173,7 @@ def test_hostile_values_are_refused_before_anything_is_written(tmp_path, flag, v
     else:
         argv += [flag, value]
     p = run("--destdir", str(stage), *argv)
-    assert p.returncode == 1 and "iogovmon install:" in p.stderr, p.stderr
+    assert p.returncode == 1 and "iogovmon/install.sh:" in p.stderr, p.stderr
     assert tree(stage) == []
 
 

@@ -2,7 +2,7 @@
 
 Standalone background service for ANY Linux host with systemd and cgroup v2: no mdt-cockpit, no host-tuning, no iobench, no docker. Extracted from
 `mdt-cockpit/iogov` (WP-IGM-a of the host-tuning program: a pure move and rename, no behaviour change except the empty `governed_cgroups` default).
-Design and decisions: [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md). Background and the blind opinions (they stay with mdt-cockpit):
+Design and decisions: [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md). Adopter examples: [docs/CONSUMERS.md](docs/CONSUMERS.md). Background and the blind opinions (they stay with mdt-cockpit):
 [../mdt-cockpit/docs/IO-GOVERNOR-SECOND-OPINION-2026-10-27.md](../mdt-cockpit/docs/IO-GOVERNOR-SECOND-OPINION-2026-10-27.md).
 
 **Status: unreleased, never installed anywhere.** The first release is gated on the live acceptance WP-IGM-ACC (real install, 48 h of ticks, journal and
@@ -18,7 +18,7 @@ budget control is the PSI gating of the bench (it starts only below the io-press
 
 ```
 iogovmon/
-  pyproject.toml cmru.toml run-gate.toml assay.toml   packaging (console script `iogovmon`) and the release/gate contracts
+  pyproject.toml cmru.toml run-gate.toml assay.toml   packaging (`iogovmond` + `iogovmonctl`) and the release/gate contracts
   src/iogovmon/
     cli.py runner.py      commands, one tick / one bench, dry-run plan
     rawread.py            read-only raw-disk reads (O_DIRECT), coprime whole-device walk, witness blocks
@@ -39,27 +39,41 @@ iogovmon/
   tests/                pytest, all on fakes and temp dirs (no real device, no cgroup write)
 ```
 
+## Executables
+
+The wheel installs two console scripts. The daemon binary has only commands that run as services or timers; the control binary has the operator
+and inspection commands. Both accept the shared `--config`, `--allow-root`, and `--version` options.
+
+| Binary | Subcommands |
+| --- | --- |
+| `iogovmond` | `tick`, `watch`, `bench`, `cleanup` |
+| `iogovmonctl` | `plan`, `analyze`, `status`, `preflight`, `devices`, `annotate`, `note`, `quiet-experiment`, `prune`, `config` |
+
+`python -m iogovmon` remains a combined developer entry point. It is not installed as a console script. There are no current `install`, `uninstall`,
+`doctor`, `export`, or `stats` subcommands: `install.sh` is the source-tree installer, `preflight` checks host requirements, and future operator
+verbs such as `iogovmonctl install` belong on the control binary.
+
 ## Run it
 
 ```
 pip install iogovmon-*.whl        # or, from a checkout: PYTHONPATH=iogovmon/src python3 -m iogovmon ...
-iogovmon plan                  # DRY RUN: devices, region, lanes, budget numbers, gates. Opens no device, writes nothing.
-iogovmon tick --dry-run        # same output; `bench --dry-run` too
-iogovmon preflight             # BEFORE installing: every missing host tool/package with its apt name; exit 1 if any is missing
-iogovmon devices               # the disks that would be probed (sysfs lookups only); unresolvable paths are explained, never guessed
-iogovmon tick                  # raw 4 KiB reads + passive snapshot (timer: every 5 min); a gated tick still journals the passive snapshot (<= 1 per 15 min)
-iogovmon bench [--force]       # the ~6 h mini write bench (a no-op unless due; --force still honours gates and kill switches)
-iogovmon watch                 # optional resident sampler of protected-side distress episodes
-iogovmon analyze [PATH] [--json] [--lane r_cold] [--no-plots]   # offline: summary, shifts, text plots, harm, demand check
-iogovmon status                # kill switch, last runs, today's budget, recognizer state, prevention checks
-iogovmon annotate "provider optimise run"          # journal annotation (also: --action, --baseline-reset)
-iogovmon quiet-experiment --knob nr_requests --value 8   # prints a plan; executes nothing
-iogovmon prune [--dry-run]     # delete monthly journal files older than 400 days / beyond 512 MiB (also run daily by `tick`)
-iogovmon cleanup               # remove scratch files left by a killed run
-iogovmon config                # effective configuration
+iogovmonctl plan                  # DRY RUN: devices, region, lanes, budget numbers, gates. Opens no device, writes nothing.
+iogovmond tick --dry-run          # same output; `iogovmond bench --dry-run` too
+iogovmonctl preflight             # BEFORE installing: every missing host tool/package with its apt name; exit 1 if any is missing
+iogovmonctl devices               # the disks that would be probed (sysfs lookups only); unresolvable paths are explained, never guessed
+iogovmond tick                    # raw 4 KiB reads + passive snapshot (timer: every 5 min); a gated tick still journals the passive snapshot (<= 1 per 15 min)
+iogovmond bench [--force]         # the ~6 h mini write bench (a no-op unless due; --force still honours gates and kill switches)
+iogovmond watch                   # optional resident sampler of protected-side distress episodes
+iogovmonctl analyze [PATH] [--json] [--lane r_cold] [--no-plots]   # offline: summary, shifts, text plots, harm, demand check
+iogovmonctl status                # kill switch, last runs, today's budget, recognizer state, prevention checks
+iogovmonctl annotate "provider optimise run"     # journal annotation (also: --action, --baseline-reset)
+iogovmonctl quiet-experiment --knob nr_requests --value 8   # prints a plan; executes nothing
+iogovmonctl prune [--dry-run]     # delete monthly journal files older than 400 days / beyond 512 MiB (also run daily by `tick`)
+iogovmond cleanup                 # remove scratch files left by a killed run
+iogovmonctl config                # effective configuration
 ```
 
-The systemd units run `python3 -m iogovmon ...` from a root-owned copy of the package (`install.sh`); the same entry point is the `iogovmon` console script of the wheel.
+The systemd units run `/usr/local/bin/iogovmond` from the root-owned package copy (`install.sh`); the wheel installs the same daemon and control entry points.
 
 Config: `--config FILE`, `$IOGOVMON_CONFIG`, `/etc/iogovmon/iogovmon.toml`, else defaults. Flat TOML; an unknown key or a wrong type is an
 error; a value beyond the hard limits in `config.py` is clamped to the limit (the clamps are printed by `plan` and `config`). Minimum
@@ -83,7 +97,7 @@ The service units are `Type=oneshot`, so their runtime bound is `TimeoutStartSec
 a run stuck in a kernel syscall is killed by that, and the next run cleans up (design note section 5). The rendered units are checked with
 `systemd-analyze verify` by the tests.
 
-`analyze` and `status` are read-only and are run by **root or the service user** (`sudo -u iogovmon python3 -m iogovmon status`): the state directory
+`analyze` and `status` are read-only and are run by **root or the service user** (`sudo -u iogovmon iogovmonctl status`): the state directory
 is 0700 and service-owned, so no third identity can reach it; the readers accept any file owner (root reading the service user's files), open
 every file no-follow with the type checked before the first read (a FIFO or device node planted in the directory cannot hang them), and bound
 what they read (`safeio.MAX_JSON_BYTES`, `journal.MAX_LINE_READ` / `MAX_FILE_BYTES` / `MAX_RECORDS`). A file they cannot read or use is listed
@@ -107,11 +121,10 @@ the config is clamped to the hard limits in `config.py` (the clamps are listed b
 Containers: prefer explicit `container_cgroups = { name = "/sys/fs/cgroup/..." }`. `containers = [...]` alone makes the service read the
 daemon's `config.v2.json` files, which also contain container environment variables (secrets); that access widens what a compromised service sees.
 
-Run the tests: `cd iogovmon && python3 -m pytest tests -q` (needs pytest and, for the install and unit tests, `bash` and `systemd-analyze`). A missing
-optional dependency fails the test (see `tests/_testdeps.py`); `IOGOVMON_ALLOW_MISSING_TEST_DEPS=1` turns that into a skip on a developer machine.
-The gate lanes (`run-gate r0-r1`, `r2`) are declared in `run-gate.toml`.
+Run the tests through the registered gate: `cd iogovmon && run-gate r0-r1`. The lane runs pytest and branch-aware coverage in `tester-unified`;
+`bash` and `systemd-analyze` are required by installer and unit-template checks. The gate lanes are declared in `run-gate.toml`.
 
-## Prerequisites (checked by `iogovmon preflight`, which names the apt package of every missing item and exits 1)
+## Prerequisites (checked by `iogovmonctl preflight`, which names the apt package of every missing item and exits 1)
 
 | Item | Debian package | Needed for |
 | --- | --- | --- |
@@ -136,13 +149,14 @@ its whole disk(s).
 
 ## Installer helper
 
-`install.sh` (in this directory; a source-tree install, the wheel-only `iogovmon install` verb is WP-IGM-b) performs steps 1-4 below for the report-only
+`install.sh` (in this directory; a source-tree install, the wheel-only `iogovmonctl install` verb is WP-IGM-b) performs the setup below for the report-only
 tick, idempotently: `./install.sh --dry-run` prints every action and changes nothing; `sudo ./install.sh` does it (preflight first, stops on any
-missing package); `--enable-tick` additionally enables `iogovmon-tick.timer` (step 5, only after a manual `plan` and one `tick`). It installs a
+missing package); `--enable-tick` additionally enables `iogovmond-tick.timer` (step 5, only after a manual `iogovmonctl plan` and one `iogovmond tick`). It installs a
 root-owned copy of the package (default `/usr/local/lib/iogovmon-pkg`, `--lib-dir` to change; Debian's `/usr/local/lib` is root:staff 2775, so
-`--lib-dir /opt/iogovmon` is stricter), creates the user and 0700 state/scratch directories, a config skeleton (an existing config is never
-overwritten; with the example `data_paths` it stops with exit 3 so you edit it), renders and verifies the units, installs the read-only ACL rule for
-exactly one disk (`--disk-node`/`--id-path`, else taken from the config and `udevadm`). It never enables the bench timer or the watch service, never
+`--lib-dir /opt/iogovmon` is stricter), installs the `iogovmond` and `iogovmonctl` launchers in `/usr/local/bin`, creates the user and 0700
+state/scratch directories, and a config skeleton (an existing config is never overwritten; with the example `data_paths` it stops with exit 3 so
+you edit it). It renders and verifies the units and installs the read-only ACL rule for exactly one disk (`--disk-node`/`--id-path`, else taken
+from the config and `udevadm`). It never enables the bench timer or the watch service, never
 runs docker or touches any container, and `--destdir DIR` stages the files under DIR without useradd/chown/systemctl/udevadm. The manual steps below
 remain the reference.
 
@@ -169,14 +183,14 @@ Deployment as a host install versus a container: design note section 12.
 3. Read-only access to the one disk: render `units/99-iogovmon-raw-read.rules.in` into `/etc/udev/rules.d/`, check with
    `udevadm test`, then `udevadm trigger`. Verify with the service user: reading works (`dd if=<node> bs=4k count=1 iflag=direct of=/dev/null`) and
    `test -w <node>` is false. Do not use the `disk` group and do not add CAP_SYS_RAWIO.
-4. Render `units/*.in` (the services use `Slice=iogovmon.slice`, `StateDirectory=iogovmon`, `ProtectKernelTunables`, `ProtectControlGroups`, an empty `CapabilityBoundingSet`, `PrivateNetwork`, `SystemCallFilter=@system-service`) by replacing the tokens below, install into `/etc/systemd/system/`, `systemctl daemon-reload`.
-   Start with `iogovmon plan` as the service user, then `systemctl start iogovmon-tick.service` once and read its journal records.
-5. Enable `iogovmon-tick.timer` first (read probes and passive evidence only) and, optionally, `iogovmon-watch.service`. Run the FIRST write bench by hand,
-   in a window where the protected workload is idle, as the service user: `python3 -m iogovmon bench --force` (gates and kill switches still apply),
-   and compare `watch` episodes before and after it. Only then enable `iogovmon-bench.timer` (otherwise its first run is whenever the gate first passes).
+4. Install the `iogovmond` and `iogovmonctl` launchers, then render `units/*.in` (the services use `Slice=iogovmon.slice`, `StateDirectory=iogovmon`, `ProtectKernelTunables`, `ProtectControlGroups`, an empty `CapabilityBoundingSet`, `PrivateNetwork`, `SystemCallFilter=@system-service`) into `/etc/systemd/system/`; run `systemctl daemon-reload`.
+   Start with `iogovmonctl plan` as the service user, then `systemctl start iogovmond-tick.service` once and read its journal records.
+5. Enable `iogovmond-tick.timer` first (read probes and passive evidence only) and, optionally, `iogovmond.service`. Run the FIRST write bench by hand,
+   in a window where the protected workload is idle, as the service user: `iogovmond bench --force` (gates and kill switches still apply),
+   and compare `watch` episodes before and after it. Only then enable `iogovmond-bench.timer` (otherwise its first run is whenever the gate first passes).
 6. Let it observe for a week before reading anything into `analyze` (the recognizer needs `baseline_windows` = 5 valid daily windows).
 
-Template tokens: `@IOGOVMON_USER@` service user, `@IOGOVMON_PYTHON@` interpreter path, `@IOGOVMON_PYTHONPATH@` directory containing `iogovmon/`,
+Template tokens: `@IOGOVMON_USER@` service user, `@IOGOVMON_PYTHONPATH@` directory containing `iogovmon/`,
 `@IOGOVMON_CONFIG@` config file, `@IOGOVMON_STATE_DIR@` state dir, `@IOGOVMON_SCRATCH_DIR@` scratch dir, `@IOGOVMON_KILL_SWITCH_FILE@` flag file,
 `@IOGOVMON_DISK_NODE@` stable `/dev/disk/by-id/...` path of the disk, `@IOGOVMON_DISK_ID_PATH@` udev `ID_PATH` of that disk,
 `@IOGOVMON_IO_WEIGHT@` io weight of the slice (default 50, advisory), `@IOGOVMON_TICK_INTERVAL@` tick period (default 5min).
@@ -188,11 +202,11 @@ The scratch directory must be on the filesystem of the data disks (otherwise the
 
 | Old | New |
 | --- | --- |
-| `python -m iogov` (from `mdt-cockpit/`) | `iogovmon` (console script) / `python -m iogovmon` |
+| `python -m iogov` (from `mdt-cockpit/`) | `iogovmond` (service commands) / `iogovmonctl` (operator commands); `python -m iogovmon` is developer-only |
 | `/etc/iogov/iogov.toml`, `$IOGOV_CONFIG` | `/etc/iogovmon/iogovmon.toml`, `$IOGOVMON_CONFIG` |
 | `/var/lib/iogov`, user `iogov` | `/var/lib/iogovmon`, user `iogovmon` |
 | kill switch `/etc/iogov/disabled`, `IOGOV_DISABLE=1` | `/etc/iogovmon/disabled`, `IOGOVMON_DISABLE=1` |
-| units `iogov-{tick,bench,watch}.*`, slice `iogov-probe.slice` | `iogovmon-{tick,bench,watch}.*`, slice `iogovmon.slice` |
+| units `iogov-{tick,bench,watch}.*`, slice `iogov-probe.slice` | `iogovmond-{tick,bench}.*`, `iogovmond.service`, slice `iogovmon.slice` |
 | `99-iogov-raw-read.rules`, tokens `@IOGOV_*@` | `99-iogovmon-raw-read.rules`, `@IOGOVMON_*@` |
 | scratch files `iogov-scratch-*` | `iogovmon-scratch-*` |
 | default `governed_cgroups = ["/sys/fs/cgroup/dev.slice"]` | `[]` |

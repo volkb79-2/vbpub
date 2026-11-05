@@ -1,4 +1,4 @@
-"""`iogovmon preflight`: missing host tools are reported with their apt package before any install step; exit non-zero."""
+"""`iogovmonctl preflight`: missing host tools are reported with their apt package before any install step; exit non-zero."""
 
 from __future__ import annotations
 

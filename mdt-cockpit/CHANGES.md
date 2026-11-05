@@ -5,7 +5,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Changed
-- The IO governor recorder `mdt-cockpit/iogov` moved out into its own independent project `iogovmon/` (host-tuning WP-IGM-a, pure move and rename: console script `iogovmon`, units `iogovmon-*` in `iogovmon.slice`, own cmru release config). mdt-cockpit imports nothing from it; its tests left the `smoke` lane (they run in `iogovmon`'s own `r0-r1` lane), the design note `docs/IO-GOVERNOR-V1-DESIGN.md` is now `iogovmon/docs/DESIGN-GUIDE.md`, backlog items MDT-028..MDT-031 are IGM-04..IGM-07 in `iogovmon/BACKLOG.md`, and `iogov/README.md` is a pointer. Never installed anywhere, so there is no migration.
+- The IO governor recorder `mdt-cockpit/iogov` moved out into its own independent project `iogovmon/` (host-tuning WP-IGM-a, pure move and rename: package/distribution `iogovmon`, console scripts `iogovmond` and `iogovmonctl`, units `iogovmond-*` and `iogovmond.service` in `iogovmon.slice`, own cmru release config). mdt-cockpit imports nothing from it; its tests left the `smoke` lane (they run in `iogovmon`'s own `r0-r1` lane), the design note `docs/IO-GOVERNOR-V1-DESIGN.md` is now `iogovmon/docs/DESIGN-GUIDE.md`, backlog items MDT-028..MDT-031 are IGM-04..IGM-07 in `iogovmon/BACKLOG.md`, and `iogov/README.md` is a pointer. Never installed anywhere, so there is no migration.
 
 ### Fixed
 - Devcontainer templates and vbpub's `.devcontainer/devcontainer.json`: `files.watcherExclude`, `search.exclude` and `git.repositoryScanIgnoredFolders`

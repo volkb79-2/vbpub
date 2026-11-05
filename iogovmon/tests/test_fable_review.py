@@ -17,7 +17,6 @@ import json
 import os
 import re
 import stat
-import sys
 import time
 from pathlib import Path
 
@@ -63,7 +62,7 @@ def test_r1_analyze_and_status_work_for_an_operator_uid(world, monkeypatch):
     stats = ReadStats()
     assert len(list(read_records(cfg.journal_dir(), stats))) == n and not stats.unreadable
     text = analyze(cfg, cfg.journal_dir())
-    assert text.startswith(f"iogovmon analyze: {n} records")
+    assert text.startswith(f"iogovmonctl analyze: {n} records")
     out = status(cfg, env.wall)  # loads state.json and agg.json read-only
     assert "last tick:" in out and "never" not in out.splitlines()[2].split(";")[0]
 
@@ -288,7 +287,7 @@ def test_r8_readme_and_design_note_agree_with_the_code():
     assert "are errors" not in readme and "clamped" in readme  # over-limit values are clamped, not rejected
     assert re.search(r"install -d -o iogovmon -g iogovmon -m 700 /var/lib/iogovmon /var/lib/iogovmon/scratch", readme)  # the scratch dir MUST be 0700
     assert re.search(r"install -d -o root -g root -m 755 /etc/iogovmon", readme)  # never owned by the service user
-    assert "iogovmon-tick.timer` first" in readme and "bench --force" in readme  # the first bench is a manual, idle-window step
+    assert "iogovmond-tick.timer` first" in readme and "iogovmond bench --force" in readme  # the first bench is a manual, idle-window step
     hard = config_mod.HARD_MAX
     assert f"{hard['region_hard_cap'] // (1024 * 1024 * 1024)} GiB" in design and "region_hard_cap" in design
     assert f"{hard['max_read_bytes_per_day'] // (1024 * 1024)} MiB" in design and f"{int(hard['sync4k_iops_max'])}/s" in design
@@ -507,7 +506,7 @@ def test_s4_a_backed_off_tick_is_rate_limited_and_says_backoff(world, monkeypatc
 
 def test_s6_units_have_a_hard_backstop_and_a_killed_bench_is_cleaned_up_by_the_next_run(world, monkeypatch):
     units = PKG / "units"
-    for name, limit in (("iogovmon-tick.service.in", "10min"), ("iogovmon-bench.service.in", "30min")):
+    for name, limit in (("iogovmond-tick.service.in", "10min"), ("iogovmond-bench.service.in", "30min")):
         text = (units / name).read_text()
         assert f"TimeoutStartSec={limit}" in text and re.search(r"^TimeoutStopSec=\d+$", text, re.M) and "ExecStopPost=" in text
     env, clock = make_env()
@@ -541,19 +540,22 @@ def test_s6_units_have_a_hard_backstop_and_a_killed_bench_is_cleaned_up_by_the_n
 
 
 TOKENS = {
-    # IOGOVMON_PYTHON must exist and be executable where the test runs (systemd-analyze verify checks ExecStart=): the test's own interpreter
-    "IOGOVMON_USER": "iogovmon", "IOGOVMON_PYTHON": sys.executable, "IOGOVMON_PYTHONPATH": "/opt/iogovmon", "IOGOVMON_CONFIG": "/etc/iogovmon/iogovmon.toml",
+    "IOGOVMON_USER": "iogovmon", "IOGOVMON_PYTHONPATH": "/opt/iogovmon", "IOGOVMON_CONFIG": "/etc/iogovmon/iogovmon.toml",
     "IOGOVMON_STATE_DIR": "/var/lib/iogovmon", "IOGOVMON_SCRATCH_DIR": "/var/lib/iogovmon/scratch", "IOGOVMON_KILL_SWITCH_FILE": "/etc/iogovmon/disabled",
     "IOGOVMON_DISK_NODE": "/dev/null", "IOGOVMON_DISK_ID_PATH": "pci-0000:00:04.0", "IOGOVMON_IO_WEIGHT": "50", "IOGOVMON_TICK_INTERVAL": "5min",
 }
 
 
 def render_units(into: Path) -> list[Path]:
+    launcher = into / "iogovmond-test-launcher"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o755)
     out = []
     for src in sorted((PKG / "units").glob("*.in")):
         text = src.read_text()
         for tok, val in TOKENS.items():
             text = text.replace(f"@{tok}@", val)
+        text = text.replace("/usr/local/bin/iogovmond", str(launcher))
         assert not re.search(r"@IOGOVMON_[A-Z_]+@", text), src.name  # every real token rendered (the slice's comment mentions `@IOGOVMON_*@`)
         dst = into / src.name[: -len(".in")]
         dst.write_text(text)
@@ -564,7 +566,7 @@ def render_units(into: Path) -> list[Path]:
 def test_t1_oneshot_units_bound_their_runtime_with_timeoutstartsec_not_runtimemaxsec(tmp_path):
     import subprocess
     from _testdeps import require_binary
-    for name, limit in (("iogovmon-tick.service.in", "10min"), ("iogovmon-bench.service.in", "30min")):
+    for name, limit in (("iogovmond-tick.service.in", "10min"), ("iogovmond-bench.service.in", "30min")):
         text = (PKG / "units" / name).read_text()
         assert "Type=oneshot" in text and f"TimeoutStartSec={limit}" in text
         assert not re.search(r"^RuntimeMaxSec=", text, re.M), f"{name}: RuntimeMaxSec= is ignored on Type=oneshot units"

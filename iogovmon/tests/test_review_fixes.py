@@ -658,7 +658,7 @@ def test_m4_seq_read_only_starts_on_a_non_zero_block(world):
 
 def test_m5_service_templates_carry_the_review_hardening():
     from pathlib import Path
-    for name in ("iogovmon-tick", "iogovmon-bench", "iogovmon-watch"):
+    for name in ("iogovmond-tick", "iogovmond-bench", "iogovmond"):
         text = (Path(__file__).resolve().parents[1] / "units" / f"{name}.service.in").read_text()
         for needle in ("ProtectKernelTunables=yes", "ProtectControlGroups=yes", "CapabilityBoundingSet=\n", "PrivateNetwork=yes",
                        "SystemCallFilter=@system-service", "StateDirectory=iogovmon", "UMask=0077"):
