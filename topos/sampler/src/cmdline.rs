@@ -61,7 +61,9 @@ fn looks_secret(name: &str) -> bool {
     }
     // names that mention a secret word but hold no secret
     const COUNT_ENDINGS: &[&str] = &["max-tokens", "num-tokens", "n-tokens", "batched-tokens", "max_tokens", "num_tokens", "n_tokens", "batched_tokens"];
-    if n.contains("tokenizer") || COUNT_ENDINGS.iter().any(|s| n.ends_with(s)) || n.contains("password-stdin") {
+    // the ending must be a whole part of the name: `--admin-tokens` ends in `n-tokens` and is a secret
+    let is_count = COUNT_ENDINGS.iter().any(|s| n.strip_suffix(s).is_some_and(|rest| rest.is_empty() || rest.ends_with(['-', '_'])));
+    if n.contains("tokenizer") || is_count || n.contains("password-stdin") {
         return false;
     }
     // whole parts, not substrings: `-pw`, `--auth` are secret, `--author`, `--authority` are not
@@ -344,6 +346,8 @@ mod redaction_tests {
     fn token_exemptions_are_exact_count_names() {
         assert_eq!(r(&["--max-tokens", "4096", "--max-num-batched-tokens", "8192", "--n_tokens=3"]), "--max-tokens 4096 --max-num-batched-tokens 8192 --n_tokens=3");
         assert_eq!(r(&["--access-tokens=a,b"]), "--access-tokens=<redacted>");
+        assert_eq!(r(&["--admin-tokens=abc", "--session-tokens", "abc"]), "--admin-tokens=<redacted> --session-tokens <redacted>");
+        assert_eq!(r(&["SESSION_TOKENS=abc", "--xmax-tokens=abc"]), "SESSION_TOKENS=<redacted> --xmax-tokens=<redacted>");
         assert_eq!(r(&["--auth-tokens=abc"]), "--auth-tokens=<redacted>");
         assert_eq!(r(&["API_TOKENS=abc"]), "API_TOKENS=<redacted>");
         assert_eq!(r(&["--valid-tokens", "abc"]), "--valid-tokens <redacted>");
