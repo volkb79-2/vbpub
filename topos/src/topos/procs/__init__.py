@@ -2,7 +2,8 @@
 
 Candidate selection is the union of CPU-hot, I/O-hot, selected/pinned and
 recently-hot processes (D-013/D-019). See
-``handoff/P90-bounded-process-sampler.md``.
+``nyxloom-trove/archive/topos-P90-bounded-process-sampler.md``.
+No caller uses this package yet (``docs/STATUS.md``, F031).
 """
 
 from __future__ import annotations

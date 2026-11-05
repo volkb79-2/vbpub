@@ -435,7 +435,8 @@ state_dir = "/run/topos/bpf" # regular runtime state; never place JSON in bpffs
 ## What To Check Before A Release Claim
 
 See the canonical release readiness document at `docs/RELEASE-READINESS.md`
-for the full checklist mapping `TUI-SPEC.md` §9 gates to evidence sources,
+for the full checklist mapping the 2026-07 spec's §9 gates
+(`nyxloom-trove/archive/TUI-SPEC-2026-07.md`) to evidence sources,
 rootless automated check commands, live-host evidence templates, and explicit
 non-claims.
 

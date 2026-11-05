@@ -1556,7 +1556,7 @@ def _resolve_mutual_exclusive_target(
         **P55/P57 composition (P59, merged):** The top-level ``--container``
         collection-path selector is wired differently — it resolves inside the
         collector's ``collect_once()`` against the current sweep's post-enrich
-        entities, not via this helper. See handoff/P59-container-entity-selector-composition.md.
+        entities, not via this helper. See nyxloom-trove/archive/P59-container-entity-selector-composition.md.
 
         **P56 composition:** If/when P56 (``topos squeeze --target``) is
         merged, accept ``--container`` as an alternative to

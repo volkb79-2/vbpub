@@ -1,8 +1,11 @@
 # Decisions inbox — product calls and outcomes
 
-Current state (2026-07-15): **no open decisions**. D-001 through D-019 are all
-decided and translated into the roadmap, backlog and handoffs. New product
-questions receive new monotonic IDs; do not reopen these through an old handoff.
+Current state (2026-11-05): D-001 through D-030 are decided (D-028 in part); D-031,
+D-032 and D-033 are open (see the end of this file). Entries D-001 to D-019 cite the 2026-07 spec
+(`nyxloom-trove/archive/TUI-SPEC-2026-07.md`) and roadmap
+(`nyxloom-trove/archive/ROADMAP-2026-07.md`); the current target is `TUI-SPEC.md`.
+New product questions receive new monotonic IDs; do not reopen these through an old
+handoff.
 
 Purpose: record a *product* decision (not a mechanical contract failure — that
 is BLOCKED) without blocking engineering. An OPEN entry is carved around under
@@ -49,7 +52,7 @@ preserve the dependency-light runtime. Same-distribution static assets will stil
 grow the core wheel; extras cannot make package data conditional. Revisit only
 when demonstrated interface complexity makes the manual client costly.
 
-**DECISION (user, 2026-07-13): (c) React.** Encoded in `docs/ROADMAP.md`
+**DECISION (user, 2026-07-13): (c) React.** Encoded in `nyxloom-trove/archive/ROADMAP-2026-07.md`
 ("Standing user decision (2026-07-13): React, tested via pwmcp", commit
 `f14e9dd`). The framework choice is not open for re-litigation; P69's framework
 section is to be read as packaging-consequence analysis against React, not as a
@@ -62,7 +65,7 @@ first-class area on `main` (42 files) and ships CIU compose templates
 (`pwmcp/ciu.compose.yml.j2`), so the in-repo path is both cleaner than
 cross-repo reuse of dstdns's running instance *and* cheap, which removes the
 resource-constraint argument that motivated option (a). Recorded in
-`handoff/P73-web-ui-read-only-shell.md`.
+`nyxloom-trove/archive/topos-P73-web-ui-read-only-shell.md`.
 
 What survives from the analysis: the packaging consequence is real and now
 lands harder. A Node toolchain enters the release path, and bundled assets grow
@@ -72,7 +75,7 @@ a *release* dependency and never an end-user `pip install` dependency, and must
 report the actual wheel byte delta.
 
 **Context pointers:** `docs/WEB-UI-SCOPING.md` "Framework and stack options";
-`handoff/P69-web-ui-scoping.md` deliverable 1.
+`nyxloom-trove/archive/P69-web-ui-scoping.md` deliverable 1.
 
 **Resume prompt (closed):** the stack question is decided. The live follow-on is
 narrower: "Confirm P73's packaging call - React bundle built at release and
@@ -116,10 +119,10 @@ keys, start or inspect tunnels, or infer an HTTP principal from SSH.
 A shared deployment is a distinct future mode behind an external authenticated
 TLS proxy, with explicit named roles and `operational` as the default
 sensitivity ceiling. A browser-supplied `X-Topos-Principal` is never trusted.
-Encoded in `TUI-SPEC.md` §0.2 and `docs/ROADMAP.md`.
+Encoded in `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2 and `nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
 **Context pointers:** `docs/WEB-UI-SCOPING.md` "Sensitivity and redaction UX"
-and "Trust boundary"; `CONTRACTS.md` §10; `handoff/P67-versioned-read-http-gateway.md`.
+and "Trust boundary"; `CONTRACTS.md` §10; `nyxloom-trove/archive/P67-versioned-read-http-gateway.md`.
 
 **Resume prompt (closed):** "Implement the trusted single-operator loopback
 mode without adding SSH lifecycle or identity handling to Topos."
@@ -151,13 +154,13 @@ choose the release tag boundary.
 local web product, not a status-only page: overview, hierarchy/flat exploration,
 entity detail/history, connection/data status, and lifecycle incidents. Live
 updates may use bounded polling initially. The SemVer/milestone naming question
-remains D-017. Encoded in `docs/ROADMAP.md` and `TUI-SPEC.md` §0.2.
+remains D-017. Encoded in `nyxloom-trove/archive/ROADMAP-2026-07.md` and `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2.
 
 **Context pointers:** `docs/ROADMAP.md:144-166`;
 `docs/WEB-UI-SCOPING.md` "Smallest useful page inventory" and "Draft successor
 handoff headers".
 
-**Resume prompt:** "Discuss D-003 in `topos/docs/DECISIONS-INBOX.md`: choose
+**Resume prompt:** "Discuss D-003 in `nyxloom-trove/decisions.md`: choose
 whether the v2 tag requires the overview, the full four-page read UI, or no web
 surface."
 
@@ -185,9 +188,9 @@ permissions and freshness so automation cannot miss the fallback.
 **DECISION (user, 2026-07-15):** Accepted as recommended. Zero-argument
 interactive Topos always remains usable through a visible local fallback;
 explicit daemon mode fails closed and explicit local mode does not probe.
-Encoded in `TUI-SPEC.md` §0.2 and `docs/ROADMAP.md`.
+Encoded in `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2 and `nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
-**Context pointers:** `handoff/TOPOS-OBSERVABILITY-DISCUSSION.md`; `src/topos/cli.py`
+**Context pointers:** `nyxloom-trove/archive/GROOP-OBSERVABILITY-DISCUSSION.md`; `src/topos/cli.py`
 attach/local branches; `docs/DAEMON.md` client errors.
 
 **Resume prompt:** "Discuss D-004: approve visible fallback for all interactive
@@ -222,11 +225,11 @@ second resolution in memory, plus a batched compressed persistent tier targeting
 measure real compression, bytes written and write amplification; it may adjust
 segment/rollup mechanics to satisfy the caps but may not silently enlarge them.
 Lifecycle facts share this store and these caps (D-008), rather than creating a
-second persistence engine. Encoded in `docs/DAEMON.md`, `TUI-SPEC.md` §0.2 and
-`docs/ROADMAP.md`.
+second persistence engine. Encoded in `docs/DAEMON.md`, `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2 and
+`nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
 **Context pointers:** `src/topos/daemon/broker.py`; `src/topos/record/ring.py`;
-`TUI-SPEC.md` §4.5/§7; gstammtisch 447 KiB measurement.
+`nyxloom-trove/archive/TUI-SPEC-2026-07.md` §4.5/§7; gstammtisch 447 KiB measurement.
 
 **Resume prompt:** "Discuss D-005: approve the two-tier design and select the
 disk-store default (off, 24h/256MiB, or another measured budget)."
@@ -241,10 +244,10 @@ Offer processes both as expandable hierarchy children and as a flat process
 projection, backed by one bounded process model. In hierarchy mode a container
 decorates its cgroup node; in flat container mode it is a row. Never add a child
 identity row that double-counts the same cgroup totals. Encoded in
-`TUI-SPEC.md` §0.2 and `docs/ROADMAP.md` "Product convergence". Sorting scope is
+`nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2 and `nyxloom-trove/archive/ROADMAP-2026-07.md` "Product convergence". Sorting scope is
 tracked separately in D-012.
 
-**Context pointers:** `handoff/TOPOS-OBSERVABILITY-DISCUSSION.md` questions 3-4.
+**Context pointers:** `nyxloom-trove/archive/GROOP-OBSERVABILITY-DISCUSSION.md` questions 3-4.
 
 ## D-007 · 2026-07-15 · product observability session · DECIDED 2026-07-15
 
@@ -254,7 +257,7 @@ tracked separately in D-012.
 historical window summary, raw history, and findings/exit-code gating are
 release-critical. Baseline regression is not a release blocker. All consumers
 reuse one frame query engine rather than recomputing in daemon/MCP/HTTP.
-Encoded in `TUI-SPEC.md` §0.2 and `docs/ROADMAP.md` "Product convergence".
+Encoded in `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2 and `nyxloom-trove/archive/ROADMAP-2026-07.md` "Product convergence".
 
 Baseline regression remains useful for repeatable experiments/CI: compare a
 current recording or selected steady-state window to a separately captured
@@ -262,7 +265,7 @@ baseline and fail on configured absolute/percentage changes. It is poorly suited
 to ad-hoc incident triage when workload and phase are not controlled.
 
 **Context pointers:** `src/topos/report.py`; roadmap P54/P61/P62/P64/P65;
-`handoff/TOPOS-OBSERVABILITY-DISCUSSION.md` question 5.
+`nyxloom-trove/archive/GROOP-OBSERVABILITY-DISCUSSION.md` question 5.
 
 ## D-008 · 2026-07-15 · product observability session · DECIDED 2026-07-15
 
@@ -294,7 +297,7 @@ joins concrete, incarnation-safe container/cgroup identities inside D-005's
 shared history and caps. The UI calls the derived links **Previous instance**
 or **Recent exit** rather than presenting a second storage concept. Ended
 incarnations remain discoverable but never contribute to current totals.
-Encoded in `TUI-SPEC.md` §0.2, `docs/ARCHITECTURE.md` and
+Encoded in `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2, `docs/ARCHITECTURE.md` and
 `docs/OPERATOR-QUESTIONS.md`.
 
 **Context pointers:** Authentik OOM workflow in `docs/OPERATOR-QUESTIONS.md`;
@@ -344,9 +347,9 @@ are configurable. Multiple clients share reference-counted/TTL leases. The UI
 always exposes `disabled`, `available`, `warming`, `live`, `partial`, `stale` or
 `error`, the source, cost/coverage limit, and how to enable unavailable detail.
 Starting observation changes collector activity only; it does not authorize a
-host mutation. Encoded in `TUI-SPEC.md` §0.2/§3.7 and `docs/ROADMAP.md`.
+host mutation. Encoded in `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2/§3.7 and `nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
-**Context pointers:** `docs/OPERATOR-QUESTIONS.md`; `TUI-SPEC.md` Appendix B;
+**Context pointers:** `docs/OPERATOR-QUESTIONS.md`; `nyxloom-trove/archive/TUI-SPEC-2026-07.md` Appendix B;
 `config.py` provider configuration.
 
 **Resume prompt (closed):** "Implement configured provider activation modes and
@@ -376,7 +379,7 @@ bound above and with source, freshness, permissions and historical coverage
 visible. Topos may identify the owning subsystem and explicitly hand off to a
 specialist tool; it need not reproduce unbounded `du`, packet capture, tracing
 or log-search workflows. Encoded in `docs/OPERATOR-QUESTIONS.md` and
-`docs/ROADMAP.md`.
+`nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
 **Context pointers:** `docs/OPERATOR-QUESTIONS.md`; gstammtisch and Authentik
 workflow evidence.
@@ -415,7 +418,7 @@ delivery of its committed React bundle and projected read/history routes on
 loopback. P81 shared redaction is a prerequisite. Frontend logic is exercised by
 pinned Node tests, backend/security by Python tests, shared fixtures connect the
 contracts, and pwmcp covers observable browser behavior. Encoded in
-`docs/ROADMAP.md` and `TUI-SPEC.md` §0.2.
+`nyxloom-trove/archive/ROADMAP-2026-07.md` and `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2.
 
 **Context pointers:** unmerged `feat/topos-web-ui-arch-reflection`;
 `docs/WEB-UI-SCOPING.md`; P67/P73/P77/P81 handoffs.
@@ -446,11 +449,11 @@ rows as if they still formed a tree.
 **DECISION (user, 2026-07-15):** Accepted as recommended. Hierarchy ranking
 uses only registry-approved subtree aggregates and sorts rows within their real
 parent; global ranking is an explicit flat projection that preserves ownership
-columns. Every sort label states its scope. Encoded in `TUI-SPEC.md` §0.2 and
-`docs/ROADMAP.md`.
+columns. Every sort label states its scope. Encoded in `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2 and
+`nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
 **Context pointers:** `src/topos/ui/tree.py`, `table.py`, `grouping.py`;
-`handoff/TOPOS-OBSERVABILITY-DISCUSSION.md` question 8.
+`nyxloom-trove/archive/GROOP-OBSERVABILITY-DISCUSSION.md` question 8.
 
 **Resume prompt (closed):** "Implement scoped hierarchy sorting and explicit
 flat global ranking without visual reparenting."
@@ -489,8 +492,8 @@ PID-to-device attribution remains an optional privileged/eBPF capability.
 **DECISION (user, 2026-07-15):** Accepted with the CPU-hot plus I/O-hot union
 above. `ProcessKey` is boot ID + PID + start time; process CPU uses
 `100% = one logical CPU` and separately labels whole-host share. Missing or
-raced counters are typed unavailable, never zero. Encoded in `TUI-SPEC.md`
-§0.2, `docs/ROADMAP.md`, `docs/ARCHITECTURE.md` and
+raced counters are typed unavailable, never zero. Encoded in `nyxloom-trove/archive/TUI-SPEC-2026-07.md`
+§0.2, `nyxloom-trove/archive/ROADMAP-2026-07.md`, `docs/ARCHITECTURE.md` and
 `docs/OPERATOR-QUESTIONS.md`.
 
 **Context pointers:** `src/topos/collect/procs.py`; `docs/OPERATOR-QUESTIONS.md`.
@@ -519,7 +522,7 @@ or treat it as exact device busy time.
 **DECISION (user, 2026-07-15):** Accepted as recommended. Lightweight per-CPU
 `/proc/stat` rates and sustained-imbalance findings are part of normal host
 collection. Detailed interrupt vectors and topology/frequency inspection are
-on demand. Encoded in `TUI-SPEC.md` §0.2, `docs/ROADMAP.md` and
+on demand. Encoded in `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2, `nyxloom-trove/archive/ROADMAP-2026-07.md` and
 `docs/OPERATOR-QUESTIONS.md`.
 
 **Context pointers:** `src/topos/collect/host.py`; TUI banner §3.0;
@@ -559,10 +562,10 @@ All matching tags are retained. A primary policy that affects thresholds uses
 an explicit numeric priority; conflicting top-priority policies are a typed
 configuration error rather than config-order precedence. Policy/tags may alter
 thresholds, findings, colors and presets, but never totals, ownership or admin
-authorization. The UI shows rule provenance. Encoded in `TUI-SPEC.md` §0.2/
-§3.7 and `docs/ROADMAP.md`.
+authorization. The UI shows rule provenance. Encoded in `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2/
+§3.7 and `nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
-**Context pointers:** `TUI-SPEC.md` §10 question 1; `config.py` tiers;
+**Context pointers:** `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §10 question 1; `config.py` tiers;
 `model.py` Entity tier/CIU/Docker metadata.
 
 **Resume prompt (closed):** "Implement separately provenanced policy tags with
@@ -607,10 +610,10 @@ a separate cluster-security project. Swarm, Nomad, Incus, VM managers and
 higher-level panels remain scenario-driven. The owner-chain adapter contract is
 a prerequisite for new lifecycle mutation, and an unknown/ambiguous/
 unsupported authority always produces a typed refusal. Encoded in
-`docs/LIFECYCLE-ADAPTERS.md`, `TUI-SPEC.md` §0.2/§4.1 and
-`docs/ROADMAP.md`.
+`docs/LIFECYCLE-ADAPTERS.md`, `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2/§4.1 and
+`nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
-**Context pointers:** `docs/LIFECYCLE-ADAPTERS.md`; `TUI-SPEC.md` §4.1/§10
+**Context pointers:** `docs/LIFECYCLE-ADAPTERS.md`; `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §4.1/§10
 question 7; P72/P76/P83; gstammtisch Wings lifecycle warnings.
 
 **Resume prompt (closed):** "Freeze and implement the owner-chain adapter
@@ -640,10 +643,10 @@ capability eras, not package versions. Package SemVer is assigned independently
 when an acceptance scope closes. `operator-console` covers the shared query and
 persistent-history foundation, CPU/I/O process and per-CPU observation,
 lifecycle incidents, the trusted-loopback React product and D-010's versioned
-operator scenario suite. Encoded in `README.md`, `TUI-SPEC.md` §0.1/§0.2 and
-`docs/ROADMAP.md`.
+operator scenario suite. Encoded in `README.md`, `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.1/§0.2 and
+`nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
-**Context pointers:** `pyproject.toml`; `TUI-SPEC.md` §0.1/§0.2; D-003.
+**Context pointers:** `pyproject.toml`; `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.1/§0.2; D-003.
 
 **Resume prompt (closed):** "Use operator-console as the internal acceptance
 milestone and keep package SemVer independent of historical capability eras."
@@ -687,7 +690,7 @@ coverage strip. Add a bounded comparison tray for at most three entities using
 the same metric, scale and window; it is not a free-form dashboard. View state
 is deep-linkable except for credentials. Visual semantics, gaps, resets and
 aggregation scope are fixture/test contracts, not styling conventions. Encoded
-in `TUI-SPEC.md` §0.2 and `docs/ROADMAP.md`.
+in `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2 and `nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
 **Context pointers:** D-003/D-011/D-012; `docs/WEB-UI-SCOPING.md`;
 `docs/OPERATOR-QUESTIONS.md`.
@@ -731,8 +734,8 @@ I/O count, selected/pinned cap, recently-hot grace and hard enriched-union cap
 are all first-class configuration fields with the defaults above. The effective
 values, candidate reasons, cap evictions and coverage are observable. Invalid
 relationships such as a hard cap below the selected/pinned allowance fail
-configuration validation. Encoded in `TUI-SPEC.md` §0.2/§3.7 and
-`docs/ROADMAP.md`.
+configuration validation. Encoded in `nyxloom-trove/archive/TUI-SPEC-2026-07.md` §0.2/§3.7 and
+`nyxloom-trove/archive/ROADMAP-2026-07.md`.
 
 **Context pointers:** D-005/D-009/D-013; `docs/OPERATOR-QUESTIONS.md`;
 `src/topos/collect/procs.py`.

@@ -1,5 +1,9 @@
 # Web UI scoping
 
+> **Parked by D-023 (2026-11-05).** The web UI waits until the TUI is right; the
+> analysis below stands for when it resumes. Package handoffs cited here are in
+> `nyxloom-trove/archive/`.
+
 **Historical analysis, reconciled 2026-07-15.** D-001 through D-019 supersede
 the assumptions and successor recommendations below. P68 was deleted; projected
 polling is the accepted initial transport. P92 now owns capability-token auth,
@@ -40,10 +44,10 @@ already includes it.
 | Operation / current typed access | Browser need | What the merged code returns | Sufficiency and concrete gap |
 |---|---|---|---|
 | `hello` / `request_hello()` | Yes, once at application startup and after reconnect. | Versions, capability list, daemon name/version, request/response/client/history limits [api.py:376-392]; the typed method validates only the outer shapes and returns `DaemonHello` [client.py:544-572]. | Sufficient for a compatibility screen and feature detection. Gap: it gives no authenticated viewer identity, authorization level, redaction policy, or gateway/base-URL configuration. A browser must not infer access rights from this local-daemon identity. |
-| `current` / `request_current()` | Yes; it is the overview and table frame. | Atomic sequence, full serialized frame, and metadata for every metric in that frame [api.py:394-406]. P63 decodes the canonical frame and validates the sensitivity values in `metrics_meta` [client.py:574-590, 690-714]. | Sufficient for a one-frame overview, banner, sortable table, and client-side filtering. **Gap:** it is a one-shot request, not server push; the existing helper itself loops and sleeps for polling [client.py:750-755]. UI v1 must poll it (recommend 5 s, aligned with the existing helper) and show frame timestamp/sequence and stale/error state. P68's proposed versioned subscribe is the proper later remedy [handoff/P68-versioned-current-subscribe-client.md:10-21]. **Gap:** it always transfers the entire frame: there is no query for a compact table projection, entity filter, or selected metric set [api.py:394-406]. At the P53 scale this budgets about 447 KB per poll. |
+| `current` / `request_current()` | Yes; it is the overview and table frame. | Atomic sequence, full serialized frame, and metadata for every metric in that frame [api.py:394-406]. P63 decodes the canonical frame and validates the sensitivity values in `metrics_meta` [client.py:574-590, 690-714]. | Sufficient for a one-frame overview, banner, sortable table, and client-side filtering. **Gap:** it is a one-shot request, not server push; the existing helper itself loops and sleeps for polling [client.py:750-755]. UI v1 must poll it (recommend 5 s, aligned with the existing helper) and show frame timestamp/sequence and stale/error state. P68's proposed versioned subscribe is the proper later remedy [P68 handoff:10-21 (deleted, no longer in the tree)]. **Gap:** it always transfers the entire frame: there is no query for a compact table projection, entity filter, or selected metric set [api.py:394-406]. At the P53 scale this budgets about 447 KB per poll. |
 | `history` / `request_history()` | Yes, but only for a small recent trend/history page; not required to make the first overview useful. | Ordered full frames, bounds, cursor, gap marker, next cursor, and per-response metric metadata [api.py:408-446]. P63 validates increasing sequences, bounds, cursor, and `gap` [client.py:592-668]. | Sufficient for bounded, explicit-gap history. The UI must request a deliberately small `limit` and visibly say "history gap; earlier samples were evicted" when `gap` is true. **Gap:** no aggregate/downsample/metric-or-entity projection exists, so history multiplies full-frame transfer. Its time form is also a one-shot window, not a live feed [api.py:416-433]. P68 addresses live delivery, but not chart-oriented downsampling. |
 | `entity` / `request_entity()` | Yes, on demand when a user opens an entity detail page. | The latest sequence, one `EntityFrame`, and metadata only for that entity's metrics [api.py:448-469]; P63 decodes it into `DaemonEntityResult` [client.py:670-686]. | Sufficient for metric, governance, network, DAMON metadata, and findings that are already embedded in the frame. The server validates the key before in-memory lookup [api.py:452-463]. **Gap:** it has no process list: the TUI gets processes by reading `cgroup_root`/`proc_root` locally [src/topos/ui/drill.py:318-329], which a browser/gateway cannot do. Do not add an arbitrary process endpoint to v1; omit the process block and make that absence explicit. **Gap:** it is current-only; a per-entity historical series still needs client extraction from `history`. |
-| `health` / no P63 versioned typed method yet | Yes, as a small availability/status panel, not as an operational-control page. | P52 calls `build_health_response` only when a health registry exists, otherwise it returns typed `unavailable` [api.py:471-474]. | The wire operation is sufficient for a status page after P67 maps it; the P67 handoff promises health only "once P66 lands" [handoff/P67-versioned-read-http-gateway.md:12-14]. **Gap:** P63 has no versioned typed `request_health()` alongside its other P52 methods, so P67 cannot meet its own "backed exclusively by typed client" rule for this route today [handoff/P67-versioned-read-http-gateway.md:21-26]. Gate the health route on P66 or add that typed method there; do not use the legacy method as a quiet exception. |
+| `health` / no P63 versioned typed method yet | Yes, as a small availability/status panel, not as an operational-control page. | P52 calls `build_health_response` only when a health registry exists, otherwise it returns typed `unavailable` [api.py:471-474]. | The wire operation is sufficient for a status page after P67 maps it; the P67 handoff promises health only "once P66 lands" [nyxloom-trove/archive/P67-versioned-read-http-gateway.md:12-14]. **Gap:** P63 has no versioned typed `request_health()` alongside its other P52 methods, so P67 cannot meet its own "backed exclusively by typed client" rule for this route today [nyxloom-trove/archive/P67-versioned-read-http-gateway.md:21-26]. Gate the health route on P66 or add that typed method there; do not use the legacy method as a quiet exception. |
 
 Cross-cutting gaps are intentional constraints, not reasons to change P52 in
 this package.  All envelope requests are strict, one request/one response
@@ -128,8 +132,8 @@ root-owned, non-client-writable local Unix socket at `0660 root:topos`
 default authorization hook [src/topos/daemon/api.py:177-183].  An HTTP listener
 turns that local Unix identity boundary into a browser-accessible network
 boundary.  P67 currently explicitly places auth/TLS outside scope
-[handoff/P67-versioned-read-http-gateway.md:74-77], and only requires an
-ephemeral *loopback test* [handoff/P67-versioned-read-http-gateway.md:53-60].
+[nyxloom-trove/archive/P67-versioned-read-http-gateway.md:74-77], and only requires an
+ephemeral *loopback test* [nyxloom-trove/archive/P67-versioned-read-http-gateway.md:53-60].
 That is not a production trust contract.
 
 P67 needs these additions before it is dispatched:
@@ -156,7 +160,7 @@ P67 needs these additions before it is dispatched:
    map them only to P63 typed reads; reject POST/PUT/PATCH/DELETE, route
    traversal, unsupported query fields, and non-approved upstreams.  Preserve
    `metrics_meta` rather than stripping it, as P67 already requires
-   [handoff/P67-versioned-read-http-gateway.md:41-51].  Map typed errors to safe
+   [nyxloom-trove/archive/P67-versioned-read-http-gateway.md:41-51].  Map typed errors to safe
    HTTP errors without echoing socket paths or exception text.
 
 These are changes to P67's handoff, not to P52.  P67 should additionally name
@@ -169,7 +173,7 @@ it is a later efficiency/latency improvement.
 
 > **SUPERSEDED (2026-07-13).** The framework is decided: **React**, browser-tested
 > via **pwmcp** (standing user decision, `docs/ROADMAP.md`; D-001 DECIDED in
-> `DECISIONS-INBOX.md`). Read this section as **packaging-consequence analysis
+> `nyxloom-trove/decisions.md`). Read this section as **packaging-consequence analysis
 > against React** -- which is exactly where it still earns its keep: the wheel-growth
 > and Node-toolchain findings below are the real constraints P73 must satisfy, and
 > the third row is the option that was chosen. The recommendation of a static client

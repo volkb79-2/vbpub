@@ -1,6 +1,8 @@
 # topos CONTRACTS — shared interfaces (frozen; changes need maintainer sign-off)
 
-Spec: `TUI-SPEC.md`. These contracts implement spec
+Spec: the `§` references in this file are to the 2026-07 spec,
+`nyxloom-trove/archive/TUI-SPEC-2026-07.md` (the current target design is
+`TUI-SPEC.md`). These contracts implement that spec's
 §3.2 (metric registry), §6.1 (layering), §6.2/§6.3 (permissions/degradation),
 §3.8 (record/replay), and the network provider interface from §3.2/Appendix B.
 
@@ -61,7 +63,7 @@ topos/
   `phase: int|None` (parsed numeric phase number), `source: str` — detection
   tier discriminator: ``"label"`` (label-confirmed guarantee) or ``"inferred"``
   (heuristic, explicitly marked as such). The two tiers are never merged into
-  one boolean. See `dockerjoin.py` for detection logic and `TUI-SPEC.md §4.3`
+  one boolean. See `dockerjoin.py` for detection logic and `nyxloom-trove/archive/TUI-SPEC-2026-07.md §4.3`
   for the spec.
 
 ## 3. Metric registry (`registry.py`) — spec §3.2

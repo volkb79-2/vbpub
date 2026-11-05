@@ -1,7 +1,7 @@
 """topos.query — the unified bounded frame query core (P88).
 
 One aggregation engine over a single typed ``FrameSource`` boundary, consumed by
-CLI/TUI/HTTP/MCP.  See ``handoff/P88-unified-frame-query-core.md``.
+CLI/TUI/HTTP/MCP.  See ``nyxloom-trove/archive/P88-unified-frame-query-core.md``.
 """
 
 from __future__ import annotations

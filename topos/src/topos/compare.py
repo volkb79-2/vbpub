@@ -1,7 +1,7 @@
 """topos compare — informational baseline delta over two P88 summary results (P64).
 
 D-007: baseline regression is explicitly NOT release-critical (see
-``docs/DECISIONS-INBOX.md`` D-007 and ``docs/ROADMAP.md``). This module is a
+``nyxloom-trove/decisions.md`` D-007). This module is a
 pure consumer of two already-computed ``topos query --shape summary`` JSON
 results (a *current* and a *baseline*): it never reads a recording, re-selects
 entities, or re-aggregates frames. Feed it the ``Result.to_jsonable()`` dict

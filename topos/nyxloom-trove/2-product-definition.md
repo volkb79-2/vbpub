@@ -265,7 +265,7 @@ non_goals:
   - Cloning unbounded specialist-tool breadth (a second `top`/`iostat`/BPF suite) instead of closing named `docs/OPERATOR-QUESTIONS.md` gaps.
   - A second aggregation engine built independently in the MCP frontend, HTTP gateway, or browser instead of consuming the shared `topos/query/` core.
   - Multi-user daemon authorization beyond socket/token permissions before an explicitly shared (non-single-operator) deployment is decided.
-  - Production daemon installation execution and service hardening beyond the packaged operator templates plus the non-mutating install-plan renderer.
+  - Unattended or silent daemon installation. The packaged templates and the non-mutating install-plan renderer exist today; an interactive install wizard (offering the daemon envelope of D-024 and `task_delayacct` per D-029) is planned, and every step it takes stays visible and confirmed.
   - Live BPF attach/pin/detach lifecycle ownership before the daemon/helper measurement and privilege work is done.
   - CIU-aware or other environment-specific action authorization implemented as an inferred special case ahead of the lifecycle owner-chain protocol (F033).
   - Any distro-matrix hardening work before the v2 cut is otherwise complete.
@@ -273,19 +273,29 @@ non_goals:
 
 # Product definition v1
 
-This definition distills the shipped v0-v2-foundation implementation plus the
-in-flight operator-console frontier from `docs/ROADMAP.md` and `docs/STATUS.md`
-into schema-tracked features. Status is derived from `docs/STATUS.md`/`README.md`
-work-package table: merged packages are `shipped`, and un-carved or
-dependency-blocked frontier work is `planned`. D-001 through D-019 in
-`docs/DECISIONS-INBOX.md` are the closed product/architecture calls this
-definition assumes; it does not restate them.
+This definition distills the shipped implementation plus the operator-console
+frontier from `docs/STATUS.md`, `docs/PLAN-2026-11-CONSOLE.md` and
+`nyxloom-trove/3-roadmap.md` into schema-tracked features. Status is derived from
+`docs/STATUS.md`: merged work is `shipped`, and un-carved or dependency-blocked
+frontier work is `planned`. The decisions in `nyxloom-trove/decisions.md` (D-001 on,
+with D-020 to D-033 from the 2026-11-05 interview) are the product and architecture
+calls this definition assumes; it does not restate them. Where D-020 on supersedes
+an acceptance line below (history tiers D-025, web parked D-023), the decision wins.
+
+Current state of three features, per `docs/STATUS.md` (2026-11-05):
+- F031 (process projection): the sampler code in `src/topos/procs/` exists, but no
+  caller uses it.
+- F032 (persistent history): `daemon/persist.py` is a writer only, off by default;
+  nothing reads it, and `topos query` has no binding to daemon history.
+- F033 (owner-chain actions): Docker and systemd verbs are wired to the CLI; the
+  Compose, CIU and Wings adapters refuse.
 
 ## Feature-to-package traceability
 
-Preserved for audit trail (source: `README.md` work-packages table and
-`docs/ROADMAP.md`'s Executable frontier). Package IDs are `topos/handoff/`
-history, not part of the schema.
+Preserved for audit trail (source: the 2026-07 work-packages table,
+`nyxloom-trove/archive/README-packages-2026-07.md`, and
+`nyxloom-trove/archive/ROADMAP-2026-07.md`). Package IDs refer to handoffs in
+`nyxloom-trove/archive/`, not part of the schema.
 
 | Feature | Packages |
 |---|---|
@@ -336,6 +346,6 @@ history, not part of the schema.
 P69 (web UI scoping, docs-only) fed D-001..D-003 and the F035/F037/F038 carves
 directly; it is process provenance, not a feature of its own. P68, P80, and P82
 were deleted during the 2026-07-15 reconciliation and are not represented here
-(see `docs/BRANCH-DISPOSITION.md`). P84/P85 (gate-environment pinning, flaky-UI
+(see `nyxloom-trove/archive/BRANCH-DISPOSITION-2026-07.md`). P84/P85 (gate-environment pinning, flaky-UI
 timing fix) are test-infrastructure hygiene, not product capability, and are
 likewise not represented as features.
