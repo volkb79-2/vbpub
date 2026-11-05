@@ -41,11 +41,15 @@ pub const REDACTED: &str = "<redacted>";
 /// look secret. Matched case-insensitively as substrings of the name.
 const SECRET_WORDS: &[&str] = &[
     "password", "passwd", "passphrase", "pwd", "secret", "token", "apikey", "api-key", "api_key", "credential", "private-key", "private_key",
-    "access-key", "access_key", "secret-key", "authorization", "cookie", "bearer",
+    "access-key", "access_key", "secret-key", "authorization", "cookie", "bearer", "psw",
 ];
 
+/// Words containing "pass" that are not about a credential. Anything else containing "pass" is
+/// treated as secret: hiding a harmless value costs little, showing a password does not.
+const PASS_NOT_SECRET: &[&str] = &["bypass", "compass", "passive", "passthrough", "pass-through", "passenger", "encompass", "surpass"];
+
 fn looks_secret(name: &str) -> bool {
-    let n = name.trim_start_matches('-').to_ascii_lowercase();
+    let n = name.trim_start_matches(['-', '+']).to_ascii_lowercase();
     if n.is_empty() {
         return false;
     }
@@ -55,8 +59,19 @@ fn looks_secret(name: &str) -> bool {
     if NOT_THE_SECRET_SUFFIX.iter().any(|s| n.ends_with(s)) || NOT_THE_SECRET_PREFIX.iter().any(|p| n.starts_with(p)) {
         return false;
     }
-    // KEY=VALUE style keys: also anything ending in "key" or with "pass" as a word part
-    SECRET_WORDS.iter().any(|w| n.contains(w)) || n == "pass" || n.starts_with("pass-") || n.starts_with("pass_") || n.ends_with("-pass") || n.ends_with("_pass") || n.ends_with("_key") || n.ends_with("-key") || n == "key"
+    // KEY=VALUE style keys: also anything ending in "key" or containing "pass" (`rconpass`, `adminpass`)
+    let pass = n.contains("pass") && !PASS_NOT_SECRET.iter().any(|w| n.contains(w));
+    SECRET_WORDS.iter().any(|w| n.contains(w)) || pass || n.ends_with("_key") || n.ends_with("-key") || n == "key"
+}
+
+/// `-H "Authorization: Bearer x"` and `Cookie: a=b`: one word holding a secret header.
+fn redact_header(a: &str) -> Option<String> {
+    let (name, _) = a.split_once(':')?;
+    let n = name.trim().to_ascii_lowercase();
+    if n.contains(' ') || !(n.contains("authorization") || n.contains("cookie") || n.ends_with("-token") || n.ends_with("-key")) {
+        return None;
+    }
+    Some(format!("{}: {REDACTED}", name.trim()))
 }
 
 /// `scheme://user:password@host` -> `scheme://user:<redacted>@host`
@@ -75,6 +90,9 @@ fn redact_word(a: &str) -> (String, bool) {
     if let Some(u) = redact_url(a) {
         return (u, false);
     }
+    if let Some(h) = redact_header(a) {
+        return (h, false);
+    }
     // `name=value` (with or without leading dashes)
     if let Some((k, v)) = a.split_once('=') {
         if looks_secret(k) {
@@ -89,14 +107,15 @@ fn redact_word(a: &str) -> (String, bool) {
         }
         return (a.to_string(), false);
     }
-    // `--password hunter2`: the next word is the value
-    (a.to_string(), a.starts_with('-') && looks_secret(a))
+    // `--password hunter2`, `+rcon_password hunter2`: the next word is the value
+    (a.to_string(), (a.starts_with('-') || a.starts_with('+')) && looks_secret(a))
 }
 
 /// Redact secrets in the NUL-separated words of a command line.
 pub fn redact(words: &[&str]) -> Vec<String> {
     let mut out = Vec::with_capacity(words.len());
     let mut hide_next = false;
+    let mut user_next = false;
     for w in words {
         if hide_next {
             hide_next = false;
@@ -106,11 +125,60 @@ pub fn redact(words: &[&str]) -> Vec<String> {
                 continue;
             }
         }
+        // `-u user:password`, as curl takes it
+        if std::mem::take(&mut user_next) {
+            if let Some((user, _)) = w.split_once(':') {
+                out.push(format!("{user}:{REDACTED}"));
+                continue;
+            }
+        }
+        user_next = *w == "-u" || *w == "--user";
+        if let Some(v) = w.strip_prefix("--user=") {
+            if let Some((user, _)) = v.split_once(':') {
+                out.push(format!("--user={user}:{REDACTED}"));
+                continue;
+            }
+        }
         let (r, next) = redact_word(w);
         hide_next = next;
         out.push(r);
     }
     out
+}
+
+#[cfg(test)]
+mod redaction_tests {
+    use super::*;
+
+    fn r(words: &[&str]) -> String {
+        redact(words).join(" ")
+    }
+
+    #[test]
+    fn game_server_arguments_are_hidden() {
+        let line = r(&["WSServer-Linux-Shipping", "Level01_Main", "-PSW=hunter2", "-adminpsw=hunter3", "-log"]);
+        assert!(!line.contains("hunter"), "{line}");
+        assert!(line.contains("Level01_Main") && line.contains("-log"), "{line}");
+        let line = r(&["srcds", "+rcon_password", "hunter2", "+map", "de_dust"]);
+        assert!(!line.contains("hunter"), "{line}");
+        assert!(line.contains("+map de_dust"), "{line}");
+        let line = r(&["server", "Map?listen?ServerPassword=hunter2?ServerAdminPassword=hunter3"]);
+        assert!(!line.contains("hunter"), "{line}");
+        assert!(!r(&["x", "-rconpass", "hunter2"]).contains("hunter"));
+    }
+
+    #[test]
+    fn headers_and_user_pairs_are_hidden() {
+        let line = r(&["curl", "-H", "Authorization: Bearer hunter2", "-u", "bob:hunter3", "--user=amy:hunter4", "http://x/"]);
+        assert!(!line.contains("hunter"), "{line}");
+        assert!(line.contains("bob:") && line.contains("amy:") && line.contains("http://x/"), "{line}");
+    }
+
+    #[test]
+    fn ordinary_words_stay_readable() {
+        let line = r(&["app", "--passive", "--bypass-cache", "-H", "Accept: text/plain", "-u", "root", "--compass=north", "a:b"]);
+        assert_eq!(line, "app --passive --bypass-cache -H Accept: text/plain -u root --compass=north a:b");
+    }
 }
 
 fn read_cmdline(path: &str, max: usize) -> Result<String, u8> {
