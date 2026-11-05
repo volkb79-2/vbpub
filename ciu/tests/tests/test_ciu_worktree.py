@@ -9099,3 +9099,583 @@ def test_permission_retry_checkpoint_time_refresh_rolls_back_when_recheck_fails(
         )
 
     assert checkpoint["checkpoint_time_ns"] == 1
+
+
+# ---------------------------------------------------------------------------
+# CIU-180 / CIU-181 (triage 2026-11-05)
+# ---------------------------------------------------------------------------
+
+
+def _make_primary_facts_outdated(root: Path, write_instance_facts) -> Path:
+    path = write_instance_facts(
+        root, instance_id="7125ab", network="repo-7125ab-network",
+        repo_name=root.name, repo_root=str(root), physical_repo_root=str(root),
+    )
+    path.write_text(
+        "".join(
+            line for line in path.read_text(encoding="utf-8").splitlines(True)
+            if not line.startswith("schema_version")
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+class TestPrimaryFactsOutdated:
+    def test_noop_without_or_with_current_primary_facts(
+        self, tmp_repo, write_instance_facts,
+    ):
+        worktree.require_current_primary_facts(tmp_repo)  # no facts file
+        write_instance_facts(tmp_repo, instance_id="7125ab", network="n")
+        worktree.require_current_primary_facts(tmp_repo)  # current schema
+
+    def test_linked_checkout_refusal_names_primary_root_and_command(
+        self, tmp_repo, write_instance_facts,
+    ):
+        _make_primary_facts_outdated(tmp_repo, write_instance_facts)
+        linked = tmp_repo / ".worktrees" / "wt"
+        assert _git(["worktree", "add", "-b", "wt", str(linked), "main"], tmp_repo).returncode == 0
+        with pytest.raises(worktree.WorktreeError) as excinfo:
+            worktree.require_current_primary_facts(linked)
+        message = str(excinfo.value)
+        assert str(tmp_repo.resolve()) in message
+        assert "ciu env generate" in message and "7125ab" in message
+        assert "still running" in message and "ciu clean --identity" in message
+        with pytest.raises(ValueError, match="ciu env generate"):
+            deploy.resolve_primary_image_references(linked)
+
+    def test_create_and_ensure_refuse_up_front(self, tmp_repo, write_instance_facts):
+        _make_primary_facts_outdated(tmp_repo, write_instance_facts)
+        with pytest.raises(worktree.WorktreeError, match="primary CIU root"):
+            worktree.create(tmp_repo, "new")
+        with pytest.raises(worktree.WorktreeError, match="primary CIU root"):
+            worktree.ensure(tmp_repo, "new")
+        assert not (tmp_repo / ".worktrees" / "new").exists()
+
+
+class TestRemovalDegradesInDevcontainer:
+    def test_clean_helper_preflight_warns_when_systemd_is_not_pid1(
+        self, monkeypatch, capsys,
+    ):
+        from ciu import engine
+
+        monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "dev-interactive.slice")
+        monkeypatch.setattr(
+            engine.governance, "check_slice_unit",
+            lambda _n: (None, "systemd is not PID 1; skipping the slice-existence preflight"),
+        )
+        monkeypatch.setattr(engine.governance, "slice_probe_unavailable", lambda: True)
+        assert engine._root_helper_cgroup_parent() == "dev-interactive.slice"
+        assert "not verified" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("failure", [
+        subprocess.TimeoutExpired(["systemctl"], 5), OSError("exec failed"),
+    ])
+    def test_probe_failure_on_a_real_systemd_host_still_refuses(
+        self, monkeypatch, failure,
+    ):
+        """F1: only 'no systemctl' / 'not PID 1' degrade; a failed real probe is fail-closed."""
+        from ciu import engine, governance
+
+        monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "dev-interactive.slice")
+        monkeypatch.setattr(governance.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        monkeypatch.setattr(governance, "_systemd_is_pid1", lambda: True)
+
+        def failing(*_a, **_k):
+            raise failure
+
+        monkeypatch.setattr(governance.subprocess, "run", failing)
+        assert governance.check_slice_unit("dev-interactive.slice")[0] is None
+        assert governance.slice_probe_unavailable() is False
+        with pytest.raises(RuntimeError, match="not verified loaded"):
+            engine._root_helper_cgroup_parent()
+
+    def test_slice_probe_unavailable_truth_table(self, monkeypatch):
+        from ciu import governance
+
+        monkeypatch.setattr(governance.shutil, "which", lambda _n: None)
+        monkeypatch.setattr(governance, "_systemd_is_pid1", lambda: True)
+        assert governance.slice_probe_unavailable() is True  # no systemctl
+        monkeypatch.setattr(governance.shutil, "which", lambda _n: "/bin/systemctl")
+        monkeypatch.setattr(governance, "_systemd_is_pid1", lambda: False)
+        assert governance.slice_probe_unavailable() is True  # not PID 1
+        monkeypatch.setattr(governance, "_systemd_is_pid1", lambda: True)
+        assert governance.slice_probe_unavailable() is False
+
+    def test_native_readonly_tree_owned_by_caller_removed_without_root_helper(
+        self, tmp_path, monkeypatch,
+    ):
+        from ciu import engine
+
+        vol = tmp_path / "vol-data"
+        (vol / "d").mkdir(parents=True)
+        (vol / "d" / "f").write_text("x", encoding="utf-8")
+        (vol / "d" / "f").chmod(0o444)
+        (vol / "d" / "link").symlink_to(vol / "d" / "f")
+        (vol / "d").chmod(0o555)
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda *_a, **_k: pytest.fail("root helper must not run"),
+        )
+        monkeypatch.setattr(engine, "to_physical_path", lambda p, repo_root=None: p)
+        engine._rmtree_with_fallback(vol, repo_root=tmp_path)
+        assert not vol.exists()
+
+    def test_native_permission_error_still_falls_back_to_helper(self, tmp_path, monkeypatch):
+        from ciu import engine
+
+        vol = tmp_path / "vol-x"
+        vol.mkdir()
+        calls = []
+        monkeypatch.setattr(engine, "to_physical_path", lambda p, repo_root=None: p)
+
+        def deny(_path):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(engine.shutil, "rmtree", deny)
+        monkeypatch.setattr(engine, "privileged_rmtree", lambda *a, **k: calls.append(a))
+        engine._rmtree_with_fallback(vol, repo_root=tmp_path)
+        assert len(calls) == 1
+
+    def test_ownership_scan_refuses_foreign_missing_and_nested_foreign(
+        self, tmp_path, monkeypatch,
+    ):
+        from ciu import engine
+
+        assert engine._tree_owned_by_caller(tmp_path / "missing") is False
+        tree = tmp_path / "t"
+        (tree / "d").mkdir(parents=True)
+        (tree / "d" / "f").write_text("x", encoding="utf-8")
+        assert engine._tree_owned_by_caller(tree) is True
+        real = os.getuid()
+        monkeypatch.setattr(engine.os, "getuid", lambda: real + 1)
+        assert engine._tree_owned_by_caller(tree) is False  # root itself foreign
+        real_lstat = engine.os.lstat
+        monkeypatch.setattr(engine.os, "getuid", lambda: real)
+        owner_of = {str(tree / "d" / "f"): real + 1}
+
+        def lstat(path, *a, **k):
+            info = real_lstat(path, *a, **k)
+            if str(path) in owner_of:
+                return SimpleNamespace(st_uid=owner_of[str(path)], st_mode=info.st_mode)
+            return info
+
+        monkeypatch.setattr(engine.os, "lstat", lstat)
+        assert engine._tree_owned_by_caller(tree) is False  # nested foreign entry
+        # make_writable skips foreign entries and leaves them untouched
+        (tree / "d" / "f").chmod(0o444)
+        engine._make_tree_writable(tree)
+        assert (tree / "d" / "f").stat().st_mode & 0o200 == 0
+        monkeypatch.undo()
+        tree.chmod(0o500)
+        engine._make_tree_writable(tree)
+        assert tree.stat().st_mode & 0o700 == 0o700
+
+    def test_rm_removes_readonly_ignored_file_and_second_rm_names_leftover(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        exclude = worktree._git_common_dir(tmp_repo) / "info" / "exclude"
+        exclude.write_text(exclude.read_text(encoding="utf-8") + "vol-data/\n", encoding="utf-8")
+        (target / "vol-data").mkdir()
+        locked = target / "vol-data" / "ro.dat"
+        locked.write_text("x", encoding="utf-8")
+        locked.chmod(0o444)
+        (target / "vol-data").chmod(0o555)
+        monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 0)
+        worktree.remove(
+            tmp_repo, "wt1", yes=True, discard_protected_state="wt1",
+        )
+        assert not target.exists()
+        # a deregistered checkout directory that is still on disk is named
+        leftover = tmp_repo / ".worktrees" / "ghost"
+        leftover.mkdir()
+        with pytest.raises(worktree.WorktreeRemovalError, match="leftover checkout directory"):
+            worktree.remove(tmp_repo, "ghost")
+
+
+class TestRemovalDryRunAndLeftoverAdoption:
+    """CIU-182: `rm --dry-run`, and `rm NAME` finishing a deregistered checkout."""
+
+    @staticmethod
+    def _deregister(repo: Path, name: str) -> Path:
+        """Drop Git's administration the way a failed `git worktree remove --force` does."""
+        admin = worktree._git_common_dir(repo) / "worktrees" / name
+        assert admin.is_dir()
+        shutil.rmtree(admin)
+        return repo / ".worktrees" / name
+
+    def test_dry_run_reports_blockers_and_leaves_everything_in_place(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        exclude = worktree._git_common_dir(tmp_repo) / "info" / "exclude"
+        exclude.write_text(exclude.read_text(encoding="utf-8") + "vol-data/\n", encoding="utf-8")
+        (target / "vol-data").mkdir()
+        (target / "vol-data" / "f").write_text("x", encoding="utf-8")
+        (target / "dirty.txt").write_text("y", encoding="utf-8")
+        monkeypatch.setattr(
+            worktree, "_clean_in",
+            lambda *a, **k: pytest.fail("a dry run must not clean"),
+        )
+        monkeypatch.setattr(
+            worktree, "_removal_leaks",
+            lambda _p: [{"path": str(target / "vol-data"), "reason": "foreign"}],
+        )
+        monkeypatch.setattr(
+            worktree._shared_worktree(), "mounts_under", lambda _p: [Path("/mnt/x")],
+        )
+        doc = worktree.remove_document(tmp_repo, "wt1", yes=True, dry_run=True)
+        assert doc["status"] == "dry-run"
+        assert doc["adopt_leftover"] is False
+        text = "\n".join(doc["blockers"])
+        assert "mount at or under the checkout: /mnt/x" in text
+        assert "--discard-protected-state wt1" in text
+        assert "--discard-changes wt1" in text
+        assert doc["leaks"] == [{"path": str(target / "vol-data"), "reason": "foreign"}]
+        assert (target / "dirty.txt").is_file()
+        assert target.is_dir()
+
+    def test_dry_run_failure_is_a_removal_error(self, tmp_repo, fake_generate_env, monkeypatch):
+        create_path(tmp_repo, "wt1", base="main")
+
+        def broken(_path):
+            raise worktree.WorktreeError("cannot list")
+
+        monkeypatch.setattr(worktree, "_ignored_state_summary", broken)
+        with pytest.raises(worktree.WorktreeRemovalError, match="cannot list"):
+            worktree.remove_document(tmp_repo, "wt1", dry_run=True)
+
+    def test_leaks_report_unreadable_and_foreign_unwritable_directories(
+        self, tmp_path, monkeypatch,
+    ):
+        if os.geteuid() == 0:
+            pytest.skip("root reads every directory")
+        root = tmp_path / "co"
+        (root / "secret").mkdir(parents=True)
+        (root / "secret" / "f").write_text("x", encoding="utf-8")
+        (root / "empty").mkdir()
+        (root / "foreign" / "inner").mkdir(parents=True)
+        (root / "foreign" / "f").write_text("x", encoding="utf-8")
+        (root / "foreign").chmod(0o555)
+        (root / "secret").chmod(0)
+        try:
+            real = os.getuid()
+            assert [item["path"] for item in worktree._removal_leaks(root)] == [
+                str(root / "secret")
+            ]
+            monkeypatch.setattr(worktree.os, "getuid", lambda: real + 1)
+            leaks = worktree._removal_leaks(root)
+            assert {item["path"] for item in leaks} >= {str(root / "foreign")}
+            reasons = {item["path"]: item["reason"] for item in leaks}
+            assert "not writable by uid" in reasons[str(root / "foreign")]
+            monkeypatch.undo()
+            real_lstat = Path.lstat
+
+            def failing(self, *a, **k):
+                if self == root / "foreign":
+                    raise PermissionError("denied")
+                return real_lstat(self, *a, **k)
+
+            monkeypatch.setattr(Path, "lstat", failing)
+            assert any(
+                item["path"] == str(root / "foreign") and "unreadable" in item["reason"]
+                for item in worktree._removal_leaks(root)
+            )
+        finally:
+            (root / "secret").chmod(0o700)
+            (root / "foreign").chmod(0o755)
+
+    def test_leftover_protected_entries_found_by_name_and_unreadable(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("root reads every directory")
+        root = tmp_path / "co"
+        (root / "a" / "vol-db").mkdir(parents=True)
+        (root / ".assay").mkdir()
+        (root / "sealed").mkdir()
+        (root / "sealed").chmod(0)
+        try:
+            assert worktree._leftover_protected_entries(root) == sorted([
+                str(root / "a" / "vol-db"), str(root / ".assay"), str(root / "sealed"),
+            ])
+        finally:
+            (root / "sealed").chmod(0o700)
+
+    def test_rm_adopts_a_deregistered_leftover_with_exact_consent(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        (target / "vol-keep").mkdir()
+        (target / "vol-keep" / "f").write_text("x", encoding="utf-8")
+        leftover = self._deregister(tmp_repo, "wt1")
+        assert leftover == target
+        monkeypatch.setattr(
+            worktree, "_clean_in",
+            lambda *a, **k: pytest.fail("adoption must not run clean"),
+        )
+        with pytest.raises(worktree.WorktreeRemovalError) as refused:
+            worktree.remove(tmp_repo, "wt1", yes=True)
+        assert "--discard-protected-state wt1" in str(refused.value)
+        assert "--discard-changes wt1" in str(refused.value)
+        plan = worktree.remove_document(tmp_repo, "wt1", dry_run=True)
+        assert plan["adopt_leftover"] is True and plan["blockers"]
+        assert target.is_dir()
+        document = worktree.remove_document(
+            tmp_repo, "wt1", yes=True, discard_protected_state="wt1",
+            discard_changes="wt1",
+        )
+        assert not target.exists()
+        assert document["branch"]["outcome"] == "kept-leftover"
+        assert document["discarded_state"][0]["class"] == "protected"
+        assert document["phase_report"]["phases"]["checkout_deletion"] == "complete"
+        assert worktree._shared_record_for_logical_name(tmp_repo, "wt1") is None
+        branches = subprocess.run(
+            ["git", "branch", "--list", "wt1"], cwd=tmp_repo, text=True,
+            capture_output=True, check=True,
+        ).stdout
+        assert "wt1" in branches
+
+    def test_leftover_without_protected_state_needs_only_change_consent(
+        self, tmp_repo, fake_generate_env,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        self._deregister(tmp_repo, "wt1")
+        doc = worktree.remove_document(tmp_repo, "wt1", discard_changes="wt1")
+        assert doc["discarded_state"] == []
+        assert not target.exists()
+
+    def test_leftover_adoption_refusals(
+        self, tmp_repo, fake_generate_env, monkeypatch, tmp_path,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        self._deregister(tmp_repo, "wt1")
+        shared = worktree._shared_worktree()
+        record = worktree._shared_record_for_logical_name(tmp_repo, "wt1")
+        gitfile = target / ".git"
+        original = gitfile.read_text(encoding="utf-8")
+
+        gitfile.write_text("not a pointer\n", encoding="utf-8")
+        with pytest.raises(worktree.WorktreeRemovalError, match="no `.git` pointer"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        gitfile.write_text("gitdir: " + str(tmp_path / "elsewhere") + "\n", encoding="utf-8")
+        with pytest.raises(worktree.WorktreeRemovalError, match="outside this repository"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        gitfile.write_text(original, encoding="utf-8")
+
+        monkeypatch.setattr(shared, "mounts_under", lambda _p: [Path("/mnt/x")])
+        with pytest.raises(worktree.WorktreeRemovalError, match="mount"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        def broken_mounts(_p):
+            raise shared.WorkspaceError("mountinfo unreadable")
+
+        monkeypatch.setattr(shared, "mounts_under", broken_mounts)
+        with pytest.raises(worktree.WorktreeRemovalError, match="mountinfo unreadable"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        monkeypatch.undo()
+
+        real_read = Path.read_text
+
+        def unreadable(self, *a, **k):
+            if self == gitfile:
+                raise OSError("io")
+            return real_read(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_text", unreadable)
+        with pytest.raises(worktree.WorktreeRemovalError, match="could not read"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        monkeypatch.undo()
+
+        # a record that names another path is not proof of ownership
+        other = replace(record, worktree_path=tmp_path / "other")
+        monkeypatch.setattr(worktree, "_shared_record_for_logical_name", lambda *_a: other)
+        monkeypatch.setattr(worktree, "_instance_record_from_shared", lambda *_a: None)
+        with pytest.raises(worktree.WorktreeRemovalError, match="names"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        monkeypatch.undo()
+        # an escaping name never resolves to <worktrees>/NAME
+        (tmp_repo / ".worktrees" / "x").mkdir()
+        monkeypatch.setattr(worktree, "_shared_record_for_logical_name", lambda *_a: record)
+        monkeypatch.setattr(worktree, "_instance_record_from_shared", lambda *_a: None)
+        with pytest.raises(worktree.WorktreeRemovalError, match="resolves outside"):
+            worktree.remove(tmp_repo, "x/../wt1", discard_changes="wt1")
+        monkeypatch.undo()
+        # an unrecorded directory is only named
+        (tmp_repo / ".worktrees" / "ghost").mkdir()
+        with pytest.raises(worktree.WorktreeRemovalError, match="no shared record proves"):
+            worktree.remove(tmp_repo, "ghost")
+        assert target.is_dir()
+
+    def test_leftover_with_live_administration_is_not_adopted(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        record = worktree._shared_record_for_logical_name(tmp_repo, "wt1")
+        monkeypatch.setattr(worktree, "find_worktree", lambda *_a, **_k: None)
+        monkeypatch.setattr(worktree, "find_instance_record", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            worktree, "_instance_record_from_shared", lambda *_a: None,
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="still has Git administration"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        assert target.is_dir() and record is not None
+
+    def test_detached_leftover_is_refused_and_failed_delete_is_reported(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        from ciu import engine
+
+        target = create_path(tmp_repo, "wt1", base="main")
+        self._deregister(tmp_repo, "wt1")
+        real = worktree._shared_record_for_logical_name(tmp_repo, "wt1")
+        detached = replace(real, branch="HEAD")
+        monkeypatch.setattr(worktree, "_instance_record_from_shared", lambda *_a: None)
+        monkeypatch.setattr(
+            worktree, "_shared_record_for_logical_name", lambda *_a: detached,
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="detached leftover"):
+            worktree.remove(tmp_repo, "wt1")
+        monkeypatch.undo()
+        monkeypatch.setattr(engine, "_rmtree_with_fallback", lambda *_a, **_k: None)
+        with pytest.raises(worktree.WorktreeRemovalError, match="leftover checkout remains"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        assert target.is_dir()
+
+    def test_dry_run_of_a_clean_checkout_has_no_blockers(
+        self, tmp_repo, fake_generate_env,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        doc = worktree.remove_document(tmp_repo, "wt1", dry_run=True)
+        assert doc["status"] == "dry-run"
+        assert doc["blockers"] == [] and doc["leaks"] == []
+        assert doc["removed_path"] == str(target) and target.is_dir()
+
+
+def test_native_rmtree_skips_permission_repair_for_foreign_trees(tmp_path, monkeypatch):
+    from ciu import engine
+
+    vol = tmp_path / "vol-foreign"
+    vol.mkdir()
+    (vol / "f").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(engine, "to_physical_path", lambda p, repo_root=None: p)
+    monkeypatch.setattr(engine, "_tree_owned_by_caller", lambda _p: False)
+    monkeypatch.setattr(
+        engine, "_make_tree_writable",
+        lambda _p: pytest.fail("foreign trees are never chmod'ed"),
+    )
+    engine._rmtree_with_fallback(vol, repo_root=tmp_path)
+    assert not vol.exists()
+
+
+class TestDryRunReadOnlyAndWritableFix:
+    def test_dry_run_leaves_the_git_admin_dir_byte_identical(
+        self, tmp_repo, fake_generate_env,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        (target / "README.md").write_text("changed\n", encoding="utf-8")
+        (target / "new.txt").write_text("untracked\n", encoding="utf-8")
+        os.utime(target / "README.md", (1, 1))  # a stale stat cache invites a refresh
+        admin = worktree._git_common_dir(tmp_repo) / "worktrees" / "wt1"
+
+        def snapshot():
+            return {
+                str(p.relative_to(admin)): (p.stat().st_mtime_ns, p.read_bytes())
+                for p in sorted(admin.rglob("*")) if p.is_file()
+            }
+
+        before = snapshot()
+        doc = worktree.remove_document(tmp_repo, "wt1", dry_run=True)
+        assert doc["uncommitted_changes"]
+        assert snapshot() == before
+        assert "GIT_OPTIONAL_LOCKS" not in os.environ
+
+    def test_dry_run_restores_a_preexisting_optional_locks_value(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        create_path(tmp_repo, "wt1", base="main")
+        monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "1")
+        worktree.remove_document(tmp_repo, "wt1", dry_run=True)
+        assert os.environ["GIT_OPTIONAL_LOCKS"] == "1"
+
+    def test_writable_fix_skips_symlink_root_hardlinks_and_vanished_entries(
+        self, tmp_path, monkeypatch,
+    ):
+        from ciu import engine
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside.chmod(0o500)
+        link_root = tmp_path / "link"
+        link_root.symlink_to(outside)
+        engine._make_tree_writable(link_root)  # symlinked root: untouched
+        assert outside.stat().st_mode & 0o777 == 0o500
+        engine._make_tree_writable(tmp_path / "absent")  # vanished root
+        plain = tmp_path / "plain-file"
+        plain.write_text("x", encoding="utf-8")
+        plain.chmod(0o444)
+        engine._make_tree_writable(plain)  # not a directory
+        assert plain.stat().st_mode & 0o777 == 0o444
+
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        shared = tmp_path / "shared.dat"
+        shared.write_text("x", encoding="utf-8")
+        shared.chmod(0o444)
+        os.link(shared, tree / "hard.dat")
+        own = tree / "own.dat"
+        own.write_text("y", encoding="utf-8")
+        own.chmod(0o444)
+        gone = tree / "gone.dat"
+        gone.write_text("z", encoding="utf-8")
+        real_lstat = engine.os.lstat
+
+        def lstat(path, *a, **k):
+            if str(path) == str(gone):
+                raise FileNotFoundError(path)
+            return real_lstat(path, *a, **k)
+
+        monkeypatch.setattr(engine.os, "lstat", lstat)
+        engine._make_tree_writable(tree)
+        monkeypatch.undo()
+        assert shared.stat().st_mode & 0o222 == 0  # hard-linked inode untouched
+        assert own.stat().st_mode & 0o200
+        outside.chmod(0o700)
+
+    def test_writable_fix_repairs_an_unlistable_root_first(self, tmp_path):
+        from ciu import engine
+
+        if os.geteuid() == 0:
+            pytest.skip("root lists every directory")
+        tree = tmp_path / "tree"
+        (tree / "d").mkdir(parents=True)
+        (tree / "d" / "f").write_text("x", encoding="utf-8")
+        (tree / "d" / "f").chmod(0o444)
+        (tree / "d").chmod(0o555)
+        tree.chmod(0)
+        engine._make_tree_writable(tree)
+        assert tree.stat().st_mode & 0o700 == 0o700
+        assert (tree / "d").stat().st_mode & 0o200
+
+    def test_refused_removal_does_not_loosen_permissions(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        locked = target / "ro.dat"
+        locked.write_text("x", encoding="utf-8")
+        locked.chmod(0o444)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *a, **k: 0)
+        shared = worktree._shared_worktree()
+        seen = {}
+
+        def refuse(_record, **kwargs):
+            seen.update(kwargs)
+            raise shared.WorkspaceError("active lease", category="cleanup-refusal")
+
+        monkeypatch.setattr(shared, "remove_workspace", refuse)
+        with pytest.raises(worktree.WorktreeRemovalError, match="active lease"):
+            worktree.remove(
+                tmp_repo, "wt1", yes=True, discard_changes="wt1",
+                discard_protected_state="wt1",
+            )
+        assert locked.stat().st_mode & 0o200 == 0
+        seen["cleanup"](None)  # the library calls this only after its refusals
+        assert locked.stat().st_mode & 0o200

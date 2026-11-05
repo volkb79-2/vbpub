@@ -33,12 +33,20 @@ builder. No published vbpub image is needed.
 The checked-in level view must match the graph:
 
 ```project-order
-L0: cli-extended, assay, topos, tls-edge, tester-base
+L0: cli-extended, assay, topos, test-policy, tls-edge, tester-base
 L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
 L2: run-gate-project
 L3: cmru
 L4: modern-debian-tools-python-debug, mdt-cockpit
 ```
+
+Every project registered in `cmru.orchestration.toml` appears in this table,
+whether or not it has published a release yet: `test-policy` (L0, no first-party
+dependency) is registered but has no release of its own before TP-01, so a
+bootstrap from zero has nothing to publish for it and nothing downstream waits on
+it. Its place in the table is only the graph's level, which the test compares.
+When you add a project to `cmru.orchestration.toml`, regenerate this block from
+`cmru dependencies` (the `LEVELS` section is the exact text).
 
 Within a level, `project_order` is the explicit order used by the release
 transaction. The graph captures the release chain: Run-Gate follows CGProfile

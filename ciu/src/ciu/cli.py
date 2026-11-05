@@ -932,7 +932,7 @@ def _bake(rest: list[str]) -> int:
             scoped_overrides = bake_tag_overrides(preview.stdout, suffix)
         except (ImageIsolationError, RuntimeError, ValueError) as exc:
             detail = str(exc)
-            if not detail.startswith("[CIU-117]"):
+            if not detail.startswith("[CIU-"):
                 detail = f"[CIU-117] {detail}"
             print(f"[ERROR] ciu bake: {detail}", file=sys.stderr)
             return 2
@@ -1251,6 +1251,10 @@ def _worktree(rest: list[str]) -> int:
         "--root-escalation", action="append", default=[], metavar="BRANCH",
         help="after a confirmed permission failure, retry blocked descendants for this exact branch",
     )
+    p_rm.add_argument(
+        "--dry-run", dest="dry_run", action="store_true", default=False,
+        help="list what removal would do, block on or leave behind; change nothing",
+    )
     p_rm.add_argument("--json", action="store_true", default=False)
 
     p_list = sub.add_parser("list", add_help=False)
@@ -1416,9 +1420,20 @@ def _worktree(rest: list[str]) -> int:
                 discard_protected_state=opts.discard_protected_state,
                 discard_changes=opts.discard_changes,
                 json_output=opts.json,
+                dry_run=opts.dry_run,
             )
             if getattr(opts, "json", False):
                 print(json.dumps(document, sort_keys=True))
+                return 0
+            if opts.dry_run:
+                kind = "adopt and finish leftover" if document["adopt_leftover"] else "remove"
+                print(f"dry run: would {kind} {document['removed_path']}")
+                print(f"branch: {document['branch'].get('name')} ({document['branch']['outcome']})")
+                for blocker in document["blockers"]:
+                    print(f"would be refused: {blocker}")
+                for leak in document["leaks"]:
+                    print(f"would leave behind: {leak['path']} ({leak['reason']})")
+                print("nothing was changed")
                 return 0
             print(f"removed: {document['removed_path']}")
             branch = document["branch"]
@@ -1431,6 +1446,8 @@ def _worktree(rest: list[str]) -> int:
                 )
             elif branch["outcome"] == "kept-by-option":
                 print(f"kept branch: {branch['name']} at {branch['tip']} (--keep-branch)")
+            elif branch["outcome"] == "kept-leftover":
+                print(f"kept branch: {branch['name']} at {branch['tip']} ({branch['reason']})")
             else:
                 print("branch removal: skipped-detached")
             for item in document["removed_by_clean"]:

@@ -990,6 +990,65 @@ def _ensure_network_exists(
         )
 
 
+_OWN_CONTAINER_ID_PATTERN = re.compile(r"/docker/containers/([0-9a-f]{64})/")
+
+
+def _own_container_id() -> str:
+    """CIU-176: the id of the container THIS process runs in, or ``""``.
+
+    Read from ``/proc/self/mountinfo`` (Docker bind-mounts ``resolv.conf`` and
+    ``hostname`` from ``/var/lib/docker/containers/<id>/``). It is a fact of
+    the running process, unlike ``DEVCONTAINER_NAME``, which may be a stale
+    machine fact copied from a checkout generated in a different cockpit.
+    """
+    try:
+        text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = _OWN_CONTAINER_ID_PATTERN.search(text)
+    return match.group(1) if match else ""
+
+
+def _resolve_own_container_name(configured: str) -> str:
+    """CIU-176: the real name of this process's container, else *configured*.
+
+    ``configured`` comes from ``DEVCONTAINER_NAME``/``HOSTNAME`` and can name
+    a container that is not this one (a stale generated machine fact). When
+    the own container id is known and Docker names it differently, the real
+    name wins; an unreadable id keeps *configured*, a failed inspect keeps it
+    with a warning. A *configured* value that is a prefix of the own id (the
+    ``HOSTNAME`` fallback is the 12-hex short id) is the same container, not a
+    mismatch: it resolves to the real name without a warning.
+    """
+    own_id = _own_container_id()
+    if not own_id:
+        return configured
+    result = subprocess.run(
+        ["docker", "inspect", own_id, "--format", "{{.Name}}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    actual = result.stdout.strip().lstrip("/") if result.returncode == 0 else ""
+    if not actual:
+        detail = (result.stderr or "").strip() or "no container name returned"
+        _log_warn(
+            f"could not inspect this process's own container {own_id[:12]} ({detail}); "
+            f"attaching {configured!r} unverified, which may be a stale "
+            "DEVCONTAINER_NAME."
+        )
+        return configured
+    if actual == configured:
+        return configured
+    if configured and own_id.startswith(configured):
+        return actual
+    _log_warn(
+        f"DEVCONTAINER_NAME/HOSTNAME names {configured!r} but this process runs in "
+        f"container {actual!r}; attaching {actual!r}."
+    )
+    return actual
+
+
 def _connect_devcontainer_to_network(network_name: str) -> None:
     """Attach the devcontainer to the named network.
 
@@ -1014,6 +1073,7 @@ def _connect_devcontainer_to_network(network_name: str) -> None:
         _log_warn("Docker not available; skipping devcontainer network attach.")
         return
 
+    container_name = _resolve_own_container_name(container_name)
     inspect = subprocess.run(
         ["docker", "network", "inspect", network_name, "--format", "{{range .Containers}}{{.Name}} {{end}}"],
         capture_output=True,

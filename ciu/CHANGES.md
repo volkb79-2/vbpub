@@ -131,6 +131,20 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- `ciu up` in a managed worktree no longer stops at STEP 13 on the PRIMARY checkout's outdated (schema-v1) generated facts without saying where to repair them; `ciu worktree create`/`ensure` detect it up front, and every refusal now names the primary CIU root and `cd <primary> && ciu env generate` (CIU-180).
+- `ciu worktree rm` / `ciu clean` work in a devcontainer: an inconclusive S6.5 root-helper slice probe (systemd not PID 1) warns and proceeds instead of aborting (CIU-181, CIU-164 design); caller-owned `vol-*` trees have read-only entries made writable before deletion; read-only caller-owned entries (0444 files, 0555 dirs) no longer strand a checkout; a repeat `rm` of a deregistered-but-present checkout names the leftover directory.
+- `ciu worktree rm --dry-run` lists what removal would refuse on or leave behind and changes nothing; a failed checkout deletion now restores the Git registration instead of stranding an unregistered directory; a repeat `rm NAME` adopts and finishes a deregistered leftover under the worktrees dir (shared record, dangling `.git` pointer, no mounts, exact `--discard-protected-state`/`--discard-changes` consents; the branch is kept) (CIU-182). `libraries/worktree`: `remove_workspace` backs up and, after a failed deletion, restores the Git registration (clean refusal if the backup fails); `remove_unrecorded_workspace` accepts the same `cleanup` callback. `rm --dry-run` runs git with `GIT_OPTIONAL_LOCKS=0`. The S6.5 slice preflight degrades only for "no systemctl"/"systemd not PID 1"; a failed probe on a real systemd host refuses. Adoption's resource release is deferred to CIU-183.
+
+- `ciu up` in a worktree whose PRIMARY checkout has no generated facts no longer fails with the misleading `Missing required environment values in <primary>/ciu.global.defaults.toml.j2` (every variable was exported in the worktree; the primary comparison deliberately ignores shell exports): it refuses with `[CIU-176]`, naming the primary root and `cd <primary> && ciu env generate` (CIU-176)
+- A missing-environment refusal raised from a linked worktree's template names the primary checkout's gitignored `.env*` files that the worktree lacks, and how to export them (CIU-176)
+- Behaviour change: `ciu env generate` / worktree preparation now attach the container the process ACTUALLY runs in (own container id from `/proc/self/mountinfo`, name via `docker inspect`), not the one `DEVCONTAINER_NAME` names; a stale machine fact such as `dstdns-devcontainer-vb` in another cockpit is replaced with a warning, a short-id `HOSTNAME` fallback resolves to the real name silently, and a denied `docker inspect` warns and keeps the configured name. A ciu run inside an ephemeral gate container that inherits `ENV_TYPE=devcontainer` therefore attaches that container (CIU-176)
+- `ciu bake` no longer doubles the prefix (`[CIU-117] [CIU-176]`) on refusals that already carry a CIU id
+
+### Adoption / Migration Notes
+- Safe to ignore: additive; the new refusals name the command to run.
+- fix(gate): `[lanes.ciu]` in run-gate.toml declares `resource_observer = "cgprofile"` and `resources.pids = 8192`, so the async R2 mutation lane no longer always ends `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; lane `ciu` (R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) is now documented in run-gate.toml, assay.toml and README (CIU-190).
+
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=30ef50114b6da9ad7a0e72165104e7687f20af18 -->

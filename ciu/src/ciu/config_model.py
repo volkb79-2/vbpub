@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import tomllib
 from pathlib import Path
 from typing import Mapping
@@ -288,9 +289,73 @@ def expand_env_vars_or_fail(
             f"[ERROR] Missing required environment values in {source}: {missing_list}.\n"
             "[ERROR] Run 'ciu env generate', then export the values with "
             "'eval \"$(ciu env print)\"' before running CIU."
+            + _gitignored_env_hint(source)
         )
 
     return expanded
+
+
+def _gitignored_env_hint(source: str) -> str:
+    """CIU-176: say where values missing in a linked worktree usually come from.
+
+    A linked worktree has none of the primary checkout's gitignored ``.env*``
+    files, so a template that needs e.g. ``NAF_GUARD_USER`` fails with only
+    the variable names. The hint names the primary's own ``.env*`` files that
+    this checkout lacks. Pure filesystem reads; ``""`` when *source* is not
+    inside a linked worktree or nothing is missing.
+    """
+    try:
+        return _gitignored_env_hint_unguarded(source)
+    except OSError:
+        # A hint must never replace the refusal it decorates (EACCES on glob).
+        return ""
+
+
+def _gitignored_env_hint_unguarded(source: str) -> str:
+    current = Path(source).resolve().parent
+    for directory in (current, *current.parents):
+        git_entry = directory / ".git"
+        if not git_entry.is_file():
+            continue
+        try:
+            first = git_entry.read_text(encoding="utf-8").splitlines()[0]
+        except (OSError, IndexError, UnicodeDecodeError):
+            return ""
+        if not first.startswith("gitdir:"):
+            return ""
+        # A relative pointer (worktree.useRelativePaths) is relative to the
+        # directory holding the `.git` file, never to the process cwd.
+        gitdir = (directory / first[len("gitdir:"):].strip()).resolve()
+        # <primary>/.git/worktrees/<name> -> <primary>
+        if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
+            return ""
+        primary = gitdir.parent.parent.parent
+        if primary == directory or not primary.is_dir():
+            return ""
+        # The CIU root may sit below the git root: scan both levels.
+        offset = current.relative_to(directory)
+        lacking: list[str] = []
+        for level in dict.fromkeys((Path("."), offset)):
+            for candidate in (primary / level).glob(".env*"):
+                relative = level / candidate.name
+                if (
+                    candidate.is_file()
+                    and not candidate.name.endswith((".example", ".sample", ".template"))
+                    and not (directory / relative).exists()
+                ):
+                    lacking.append(str(relative))
+        lacking.sort()
+        if not lacking:
+            return ""
+        return (
+            f"\n[ERROR] {directory} is a linked worktree: gitignored files are "
+            f"not shared with the primary checkout {primary}. It holds "
+            f"{', '.join(lacking)}, which this worktree lacks; values a template "
+            "needs from them must be exported in the shell (for example "
+            f"`set -a; . {shlex.quote(str(primary / lacking[0]))}; set +a`) or "
+            "copied into the worktree."
+        )
+    return ""
 
 
 # ---------------------------------------------------------------------------

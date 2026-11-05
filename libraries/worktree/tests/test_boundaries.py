@@ -2219,3 +2219,98 @@ def test_finish_workspace_removal_reports_detached_branch_as_skipped(
     )
 
     assert phases[-1] == ("branch_removal", "skipped-detached")
+
+
+def test_failed_checkout_deletion_restores_the_git_registration(repository, tmp_path):
+    """CIU-182: git drops its admin dir then fails to delete; the library re-registers."""
+    if os.geteuid() == 0:
+        pytest.skip("root ignores directory permissions")
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/restore-registration",
+        purpose="test",
+    )
+    blocked = context.worktree_path / "blocked"
+    blocked.mkdir()
+    (blocked / "file.bin").write_bytes(b"x")
+    blocked.chmod(0o500)
+    try:
+        with pytest.raises(WorkspaceError, match="registration was restored"):
+            remove_workspace(context)
+        listed = _git(repository, "worktree", "list", "--porcelain")
+        assert str(context.worktree_path) in listed
+        assert context.record_path.is_file()
+        assert not list(Path(_git(repository, "rev-parse", "--git-common-dir")).resolve()
+                        .glob(".worktree-admin-backup-*"))
+    finally:
+        blocked.chmod(0o700)
+    remove_workspace(context)
+    assert not context.worktree_path.exists()
+    assert not context.record_path.exists()
+
+
+def test_restore_dropped_registration_refusal_edges(repository, tmp_path):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/restore-edges", purpose="test"
+    )
+    admin = Path(_git(context.worktree_path, "rev-parse", "--absolute-git-dir"))
+    backup = tmp_path / "backup"
+    shutil.copytree(admin, backup, symlinks=True)
+    record = core.read_record(context.record_path)
+    # admin still present: nothing to restore
+    assert core._restore_dropped_registration(record, admin, backup) is False
+    # checkout gone: nothing to restore either
+    shutil.rmtree(admin)
+    moved = tmp_path / "moved"
+    context.worktree_path.rename(moved)
+    assert core._restore_dropped_registration(record, admin, backup) is False
+    moved.rename(context.worktree_path)
+    # a backup that cannot be copied leaves no half-restored admin dir
+    assert core._restore_dropped_registration(record, admin, tmp_path / "absent") is False
+    assert not admin.exists()
+    # a restore Git does not accept as a registration is undone
+    (backup / "gitdir").write_text(str(tmp_path / "elsewhere" / ".git") + "\n")
+    assert core._restore_dropped_registration(record, admin, backup) is False
+    assert not admin.exists()
+
+
+def test_restore_repairs_a_partly_deleted_admin_dir_and_skips_hollow_checkouts(
+    repository, tmp_path
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/restore-partial", purpose="test"
+    )
+    admin = Path(_git(context.worktree_path, "rev-parse", "--absolute-git-dir"))
+    backup = tmp_path / "backup"
+    shutil.copytree(admin, backup, symlinks=True)
+    record = core.read_record(context.record_path)
+    (admin / "gitdir").unlink()
+    assert core._restore_dropped_registration(record, admin, backup) is True
+    assert (admin / "gitdir").is_file()
+    # hollow checkout: its .git file is gone, so nothing is re-registered
+    shutil.rmtree(admin)
+    (context.worktree_path / ".git").unlink()
+    assert core._restore_dropped_registration(record, admin, backup) is False
+    assert not admin.exists()
+
+
+def test_remove_workspace_reports_an_unbackupable_admin_dir_cleanly(
+    repository, tmp_path, monkeypatch
+):
+    context = create_workspace(
+        repository, tmp_path / "checkout", branch="test/backup-fails", purpose="test"
+    )
+    monkeypatch.setattr(
+        core.shutil, "copytree",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("unreadable admin file")),
+    )
+    with pytest.raises(WorkspaceError, match="could not back up.*nothing was removed"):
+        remove_workspace(context)
+    assert context.worktree_path.is_dir()
+    assert context.record_path.is_file()
+    monkeypatch.undo()
+    monkeypatch.setattr(
+        core.tempfile, "mkdtemp",
+        lambda **_k: (_ for _ in ()).throw(OSError("read-only common dir")),
+    )
+    with pytest.raises(WorkspaceError, match="could not back up"):
+        remove_workspace(context)

@@ -63,6 +63,7 @@ from . import observer_windows as _observer_windows
 from .records import record
 from .process_tree import ProcessTreeEvidence
 from .result_reports import ReportSummary
+from dataclasses import field
 from datetime import datetime, timezone
 from importlib.resources import files
 from types import MappingProxyType
@@ -1145,6 +1146,13 @@ def _check_file_tuple(value: Any, what: str) -> None:
         raise ValueError(f"{what} must be sorted, got {list(value)}")
 
 
+def _empty_line_map() -> Mapping[str, frozenset[int]]:
+    """Default for the line-map fields. A ``default_factory``, not a shared
+    ``MappingProxyType({})`` default: Python 3.11 rejects any dataclass default
+    whose class is unhashable (``mappingproxy``), 3.12+ only list/dict/set (B229)."""
+    return MappingProxyType({})
+
+
 @record
 class Coverage:
     """The R1 claim payload: changed-line coverage, and why its denominator is
@@ -1217,7 +1225,7 @@ class Coverage:
     #: file contributing none is ABSENT, never present with an empty
     #: frozenset. Non-empty renders the claim ``FAIL``/``UNCLASSIFIED_LINES``
     #: (A-100).
-    unclassified_lines: Mapping[str, frozenset[int]] = MappingProxyType({})
+    unclassified_lines: Mapping[str, frozenset[int]] = field(default_factory=_empty_line_map)
     #: (P07) paths appearing in :attr:`unclassified_lines`, sorted — the
     #: same shape :attr:`files_missing_coverage` already established.
     files_with_unclassified_lines: tuple[str, ...] = ()
@@ -1232,7 +1240,7 @@ class Coverage:
     #: without this an ``allow_excluded=False`` lane's ``FAIL``/
     #: ``EXCLUDED_LINES`` claim could not be independently re-checked at
     #: all, only trusted.
-    excluded_lines: Mapping[str, frozenset[int]] = MappingProxyType({})
+    excluded_lines: Mapping[str, frozenset[int]] = field(default_factory=_empty_line_map)
     #: (P16) paths appearing in :attr:`excluded_lines`, sorted — the same
     #: "always present, possibly empty, sorted" shape
     #: :attr:`files_missing_coverage`/:attr:`files_with_unclassified_lines`
@@ -1262,7 +1270,7 @@ class Coverage:
     #: arc, keyed by path -- same "absent means none" shape as
     #: :attr:`missing_lines`. A file contributing none is absent, never
     #: present with an empty frozenset.
-    missing_branch_lines: Mapping[str, frozenset[int]] = MappingProxyType({})
+    missing_branch_lines: Mapping[str, frozenset[int]] = field(default_factory=_empty_line_map)
     #: (wave-1 §6) paths appearing in :attr:`missing_branch_lines`, sorted --
     #: the same "always present, possibly empty, sorted" discipline every
     #: other ``files_with_*`` summary in this class already keeps.

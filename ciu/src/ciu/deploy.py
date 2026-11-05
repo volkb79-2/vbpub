@@ -45,6 +45,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from dataclasses import dataclass
@@ -685,6 +686,29 @@ def _render_environment_for_checkout(repo_root: Path) -> dict[str, str]:
     return environment
 
 
+def _require_primary_generated_facts(primary_root: Path) -> None:
+    """CIU-176: refuse, naming the primary and the command, when it has no facts.
+
+    The primary's template can only be rendered with the primary's OWN
+    generated facts (shell exports are deliberately scrubbed). Without them
+    the render stopped on "Missing required environment values in
+    <primary>/ciu.global.defaults.toml.j2" although the worktree's shell was
+    fully exported.
+    """
+    from .workspace_env import generated_facts_path
+
+    if generated_facts_path(primary_root).is_file():
+        return
+    raise ValueError(
+        f"[CIU-176] the primary checkout has no generated facts "
+        f"({generated_facts_path(primary_root)}), so its image map cannot "
+        "be compared with this worktree's build. This worktree's own "
+        "template and facts are fine; run `ciu env generate` in the "
+        f"primary CIU root (cd {shlex.quote(str(primary_root))} && "
+        "ciu env generate), then retry."
+    )
+
+
 def resolve_primary_image_references(repo_root: Path) -> set[str]:
     """Resolve the primary checkout's active image map without writing files.
 
@@ -696,6 +720,11 @@ def resolve_primary_image_references(repo_root: Path) -> set[str]:
     from . import image_isolation
 
     primary_root = worktree_pkg.primary_ciu_root(Path(repo_root).resolve())
+    try:
+        worktree_pkg.require_current_primary_facts(Path(repo_root).resolve())
+    except worktree_pkg.WorktreeError as exc:
+        raise ValueError(str(exc)) from exc
+    _require_primary_generated_facts(primary_root)
     document = resolve_identities(
         primary_root,
         render_environ=_render_environment_for_checkout(primary_root),

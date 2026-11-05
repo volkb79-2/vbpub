@@ -59,7 +59,14 @@ if test "$cow_rc" = 3; then
   echo "more than one MDT_COW candidate on $COW_PARENT_DISK; resolve by hand" >&2
   exit 6
 elif test "$cow_rc" = 0; then
+  # Found by label: either carved by an earlier run or created by the installer (debian-install-v2 data_area, a
+  # partition or an LVM LV labelled MDT_COW). Never carve; a volume mounted elsewhere than COW_MOUNT is refused.
   COW_DEVICE=$cow_found
+  cow_mounted_at="$(findmnt -rn -o TARGET --source "$COW_DEVICE" | head -n1 || true)"
+  if test -n "$cow_mounted_at" && test "$cow_mounted_at" != "$COW_MOUNT"; then
+    echo "$COW_DEVICE is mounted at $cow_mounted_at, but COW_MOUNT is $COW_MOUNT; make data_area mount and COW_MOUNT agree" >&2
+    exit 8
+  fi
 elif test -b "$COW_DEVICE" && test "$(lsblk -dn -o PKNAME "$COW_DEVICE")" = "$(basename "$COW_PARENT_DISK")"; then
   # legacy: an unlabelled partition at the configured device; the filesystem checks below refuse anything foreign
   :
@@ -118,7 +125,8 @@ uuid="$(blkid -s UUID -o value "$COW_DEVICE")"
 expected="UUID=$uuid $COW_MOUNT btrfs noatime,user_subvol_rm_allowed 0 0"
 existing="$(awk -v mp="$COW_MOUNT" '$2 == mp && $1 !~ /^#/ {print}' /etc/fstab)"
 if test -n "$existing"; then
-  test "$existing" = "$expected"
+  # an installer-created cow (debian-install-v2 data_area) already has its own fstab line for this volume
+  cow_fstab_entry_ok "$existing" "$expected" "$uuid" "$COW_DEVICE"
 else
   printf '%s\n' "$expected" >> /etc/fstab
 fi
