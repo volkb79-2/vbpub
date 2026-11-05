@@ -36,6 +36,7 @@ KILL_REAP_SECONDS = 10.0
 # Anything else (e.g. -o APT::Update::Pre-Invoke::=...) is arbitrary command
 # execution via apt config and is refused.
 _APT_LOCK_TIMEOUT_RE = re.compile(r"DPkg::Lock::Timeout=[0-9]{1,5}")
+_DD_OPERAND_RE = re.compile(r"(if|of|bs|count|conv)=[^\s=]+")
 _CLOUD_INIT_CLEAN_ARGV = {
     ("clean",),
     ("clean", "--logs", "--seed"),
@@ -47,11 +48,13 @@ _SAFE_COMMANDS = {
     # full-upgrade/-s: the notify-only install-time pending count (simulation).
     "apt-get": {"update", "install", "upgrade", "full-upgrade"},
     "bash": {"-c"},
-    "blkid": set(),
+    # flag-checked since 2026-11-05 (div2-layout-tests): -s/-o value selectors, -t/-U/-L lookups, -p low-level probe
+    "blkid": {"-s", "-o", "-t", "-U", "-L", "-p"},
     "blockdev": {"--getsize64", "--rereadpt"},
     "btrfs": {"filesystem"},
     "curl": set(),
     "cloud-init": set(),
+    # dd has no dash options here; its key=value operands are checked against _DD_OPERAND_RE
     "dd": set(),
     "df": {"-B1", "-h", "--output=used"},
     "dumpe2fs": {"-h"},
@@ -89,12 +92,12 @@ _SAFE_COMMANDS = {
     "lvs": {"--noheadings", "-o"},
     "vgs": {"--noheadings", "-o"},
     "pvs": {"--noheadings", "-o"},
-    "mkswap": set(),
+    "mkswap": {"-L"},
     "modprobe": {"zstd"},
     "mount": {"-t", "-o"},
     "partx": {"-a", "-d", "-u", "--nr"},
     "pip3": {"install"},
-    "resize2fs": set(),
+    "resize2fs": {"-P"},
     "sfdisk": {"--dump", "--force", "--no-reread", "--no-tell-kernel", "-N"},
     "sh": {"-c"},
     "sshd": {"-T"},
@@ -178,10 +181,14 @@ class HostActions:
             if command in {"apt-get", "git", "systemctl"}:
                 if not any(arg in allowed for arg in argv[1:]):
                     raise ActionError(f"{command} operation is not allowlisted")
-            elif command != "blkid" and not all(arg in allowed for arg in argv[1:] if arg.startswith("-")):
+            elif not all(arg in allowed for arg in argv[1:] if arg.startswith("-")):
                 unexpected = [arg for arg in argv[1:] if arg.startswith("-") and arg not in allowed]
                 if unexpected:
                     raise ActionError(f"{command} option(s) are not allowlisted: {unexpected}")
+        if command == "dd":
+            bad = [arg for arg in argv[1:] if not _DD_OPERAND_RE.fullmatch(arg)]
+            if bad:
+                raise ActionError(f"dd operand(s) are not allowlisted: {bad}")
         if not allow_shell and command in {"bash", "sh"}:
             raise ActionError("shell commands are only accepted through write_file templates")
 

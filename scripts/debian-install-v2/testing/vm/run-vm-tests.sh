@@ -95,6 +95,7 @@ expected = {
     'test_real_root_growth_after_table_ahead_of_kernel',
     'test_real_lvm_data_area_on_loop_disk',
     'test_real_partition_data_area_on_loop_disk',
+    'test_real_dev_host_layout_stage_two_with_root_growth_swap_and_cow',
 }
 root = ET.parse('/tmp/debian-install-v2-r1.xml').getroot()
 cases = {case.get('name'): case for case in root.iter('testcase')}

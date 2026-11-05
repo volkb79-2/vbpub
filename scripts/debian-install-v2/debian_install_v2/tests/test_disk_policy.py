@@ -9,6 +9,8 @@ from debian_install_v2.config import Config
 from debian_install_v2.disk_layout import GIB
 from debian_install_v2.installer import Installer, InstallerError
 
+from .argv_guard import validate_argv
+
 
 def make_planner(
     tmp_path: Path,
@@ -569,7 +571,7 @@ def test_swap_on_removes_configured_file_and_logical_volume_after_swapoff(tmp_pa
     monkeypatch.setattr(
         installer,
         "_run",
-        lambda argv, description="", **kwargs: events.append(("run", tuple(argv))) or "",
+        lambda argv, description="", **kwargs: events.append(("run", tuple(validate_argv(argv)))) or "",
     )
     remove_file = installer.actions.remove_file
 
@@ -596,6 +598,7 @@ def test_swap_cleanup_classifies_swapfile_and_lv_without_removing_partition(tmp_
     swap_file = tmp_path / "managed-swapfile"
     swap_file.write_bytes(b"swap")
     def run(argv, *_args, **_kwargs):
+        validate_argv(argv)
         if argv[0] == "/usr/bin/lsblk":
             return {
                 "/dev/vg0/swap": "lvm /dev/vg0/swap\n",
@@ -629,6 +632,7 @@ def test_inactive_fstab_logical_volume_is_removed_only_with_swap_signature(
     installer.actions.dry_run = False
 
     def run(argv, *_args, **_kwargs):
+        validate_argv(argv)
         if argv[0] == "/usr/bin/lsblk":
             return "lvm /dev/vg0/swap\n"
         if argv[0] == "/usr/sbin/blkid":

@@ -121,6 +121,7 @@ class _RecordingActions(HostActions):
         self.fail_enable = fail_enable
 
     def run(self, argv, description="", dangerous=False, **kw):
+        self._validate(list(argv))
         self.calls.append(tuple(argv))
         if self.fail_enable and argv[1:2] == ["enable"]:
             raise ActionError("systemctl exploded")
@@ -236,6 +237,7 @@ class _LockActions(HostActions):
         self.calls = []
 
     def run(self, argv, description="", dangerous=False, **kw):
+        self._validate(list(argv))
         self.calls.append(tuple(argv))
         outcome = self.outcomes.pop(0)
         if outcome:
