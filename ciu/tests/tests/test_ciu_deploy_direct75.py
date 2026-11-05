@@ -20,7 +20,7 @@ def test_clean_warns_on_failed_container_remove_skips_missing_stack_and_degrades
 
     discovery_calls = 0
 
-    def matching(_config, *, all_states=False):
+    def matching(_config, *, all_states=False, **_ownership):
         nonlocal discovery_calls
         assert all_states is True
         discovery_calls += 1

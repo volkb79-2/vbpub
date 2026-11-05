@@ -2081,7 +2081,9 @@ def _run_cleanup_child(
     return result.returncode
 
 
-def _clean_in(worktree: Path, *, yes: bool, json_output: bool = False) -> int:
+def _clean_in(
+    worktree: Path, *, yes: bool, json_output: bool = False, plan_only: bool = False,
+) -> int:
     """Run ``ciu clean`` INSIDE *worktree*, under that worktree's own identity.
 
     A subprocess, not an in-process call, and deliberately so. S1.1 requires
@@ -2120,6 +2122,9 @@ def _clean_in(worktree: Path, *, yes: bool, json_output: bool = False) -> int:
     except WorkspaceEnvError as exc:
         raise WorktreeError(f"[S16] could not read {worktree}: {exc}") from exc
     if outdated is not None:
+        if plan_only:
+            # The retired-identity clean prints its own exact-label prompt.
+            return 0
         # A migration read would create the replacement identity and, later,
         # its network. This checkout is being removed, so clean resources
         # under the old identity directly and leave its generated file alone.
@@ -2162,8 +2167,19 @@ def _clean_in(worktree: Path, *, yes: bool, json_output: bool = False) -> int:
     env = {k: v for k, v in os.environ.items() if k not in _CIU_IDENTITY_ENV_KEYS}
     env.update(identity)
 
-    argv = [sys.executable, "-m", "ciu.cli", "clean"] + (["--yes"] if yes else [])
+    argv = [sys.executable, "-m", "ciu.cli", "clean"]
+    argv += ["--dry-run"] if plan_only else (["--yes"] if yes else [])
     try:
+        if not plan_only:
+            # CIU-191: print the removal plan (containers, volumes, networks by
+            # name, and what is left alone) BEFORE the `--yes` / confirmation
+            # gate acts. Its exit status is deliberately ignored: the real
+            # clean enumerates again and fails closed on anything
+            # indeterminate.
+            _run_cleanup_child(
+                [sys.executable, "-m", "ciu.cli", "clean", "--dry-run"],
+                cwd=worktree, env=env, json_output=json_output,
+            )
         return _run_cleanup_child(
             argv, cwd=worktree, env=env, json_output=json_output
         )
@@ -4572,8 +4588,16 @@ def reap_groups(
 # `CIU_SERVICES_PROFILE` is not a `[ciu.instance.generated]` fact (it is a CLI
 # selection, not a workspace identity value) and stays the one hand-added
 # member on top.
+#
+# CIU-191: the names Docker Compose and the deploy tags read straight from the
+# environment are identity too. A shell that sourced another instance's
+# env files would otherwise steer a child `ciu clean`/`docker compose down`
+# onto that instance's project.
 _CIU_IDENTITY_ENV_KEYS = tuple(GENERATED_FACT_ENV_KEYS.values()) + (
     "CIU_SERVICES_PROFILE",
+    "COMPOSE_PROJECT_NAME",
+    "PROJECT_NAME",
+    "ENVIRONMENT_TAG",
 )
 
 # CIU-75: the exact `[ciu.instance.generated]` facts required to identify the
@@ -6895,6 +6919,57 @@ def _primary_ciu_root_for_record(
     return candidate
 
 
+_AMBIENT_IDENTITY_CHECK_KEYS = (
+    "INSTANCE_ID", "DOCKER_NETWORK_INTERNAL", "PHYSICAL_REPO_ROOT", "REPO_ROOT",
+)
+
+
+def _foreign_ambient_identity(
+    repo_root: Path,
+    record: WorktreeInstanceRecord,
+    ciu_root: Path,
+) -> str | None:
+    """CIU-191: a refusal message when the shell names a THIRD instance.
+
+    The cleanup identity is read from the record and the target checkout only
+    (the child's environment is scrubbed), so ambient identity can no longer
+    steer a removal. Refusing a shell that exports an identity belonging to
+    neither the target worktree nor the primary checkout still catches the
+    wrong-tab slip loudly. The primary's own identity is the normal ambient
+    state of a devcontainer shell and is accepted, because refusing it would
+    refuse every ordinary removal.
+    """
+    from .workspace_env import WorkspaceEnvError, read_instance_identity_env
+
+    allowed: list[Mapping[str, str]] = []
+    try:
+        allowed.append(read_instance_identity_env(ciu_root))
+    except WorkspaceEnvError:
+        return None  # the cleanup itself will report the unreadable identity
+    try:
+        allowed.append(
+            read_instance_identity_env(_primary_ciu_root_for_record(repo_root, record))
+        )
+    except (WorktreeError, WorkspaceEnvError):
+        pass
+    for key in _AMBIENT_IDENTITY_CHECK_KEYS:
+        ambient = os.environ.get(key, "")
+        if not ambient:
+            continue
+        known = {identity.get(key, "") for identity in allowed}
+        if ambient not in known:
+            target = allowed[0].get(key, "")
+            return (
+                f"[CIU-191] the shell exports {key}={ambient!r}, which is neither "
+                f"the identity of {record.logical_name!r} ({key}={target!r}) nor the "
+                "primary checkout's; it belongs to another instance. Nothing was "
+                "cleaned or removed. Run the removal from a clean environment, "
+                f"e.g. `env -u {' -u '.join(_CIU_IDENTITY_ENV_KEYS)} "
+                f"ciu worktree rm {record.logical_name}`"
+            )
+    return None
+
+
 def _cleaned_roots_text(entries: list[dict[str, Any]]) -> str:
     cleaned = [item["root"] for item in entries if item["status"] == "cleaned"]
     return ", ".join(cleaned) if cleaned else "none"
@@ -8314,9 +8389,23 @@ def remove(
                 f"uncommitted changes ({_format_changed_paths(dry_dirty)}); pass "
                 f"--discard-changes {dry_branch_name}"
             )
+        # CIU-191: the dry run also shows the cleanup plan (containers, volumes
+        # and networks by name, and what is left alone) in the child's output.
+        try:
+            dry_ciu_root = managed.ciu_root if managed is not None else None
+            if dry_ciu_root is not None and _ciu_root_marker_present(dry_ciu_root):
+                _clean_in(
+                    dry_ciu_root, yes=False, plan_only=True,
+                    **({"json_output": True} if _json_output else {}),
+                )
+        except WorktreeError as exc:
+            dry_blockers_extra = [f"cleanup plan unavailable: {exc}"]
+        else:
+            dry_blockers_extra = []
         details["branch"] = {key: value for key, value in dry_branch.items() if key != "delete"}
         details["ignored_state"] = dry_ignored
         details["uncommitted_changes"] = dry_dirty
+        dry_blockers.extend(dry_blockers_extra)
         details["dry_run"] = {
             "path": str(wt.path), "adopt_leftover": False,
             "blockers": dry_blockers, "leaks": dry_leaks,
@@ -8486,6 +8575,11 @@ def remove(
             f"the newly changed paths ({_format_changed_paths(early_new_dirty)}) "
             "and retry; no sibling root was cleaned"
         )
+    if managed is not None and marker_present and not rootless_managed:
+        foreign_ambient = _foreign_ambient_identity(repo_root, managed, ciu_root)
+        if foreign_ambient is not None:
+            mark("resource_cleanup", "refused-ambient-identity")
+            raise fail(foreign_ambient)
     try:
         sibling_roots = _sibling_committed_roots(wt.path, ciu_root)
     except WorktreeError as exc:

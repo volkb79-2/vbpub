@@ -3210,7 +3210,11 @@ class TestWorktreeSubprocessEnvironment:
 
         assert set(worktree._CIU_IDENTITY_ENV_KEYS) == set(
             GENERATED_FACT_ENV_KEYS.values()
-        ) | {"CIU_SERVICES_PROFILE"}
+        ) | {
+            "CIU_SERVICES_PROFILE",
+            # CIU-191: names Compose and the deploy tags read from the shell.
+            "COMPOSE_PROJECT_NAME", "PROJECT_NAME", "ENVIRONMENT_TAG",
+        }
         assert "PUBLIC_FQDN" in worktree._CIU_IDENTITY_ENV_KEYS
 
     def test_generate_env_strips_primary_instance_identity(self, tmp_path, monkeypatch):
@@ -9316,7 +9320,9 @@ class TestRemovalDryRunAndLeftoverAdoption:
         (target / "dirty.txt").write_text("y", encoding="utf-8")
         monkeypatch.setattr(
             worktree, "_clean_in",
-            lambda *a, **k: pytest.fail("a dry run must not clean"),
+            lambda *a, plan_only=False, **k: (
+                0 if plan_only else pytest.fail("a dry run must not clean")
+            ),
         )
         monkeypatch.setattr(
             worktree, "_removal_leaks",

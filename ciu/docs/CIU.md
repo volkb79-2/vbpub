@@ -70,7 +70,7 @@ selected by the active/explicit profile; it deliberately has no `--dir` flag.
 | `ciu env generate` · `ciu env print` | `--root-folder PATH` |
 | `ciu render` | `--profile NAME`, `--root-folder PATH` |
 | `ciu up` | `--profile NAME` \| `--dir PATH` \| `--layout NAME`; `--phases N,M`, `--dry-run`, `--yes`, `--ignore-errors`, `--no-preflight`; remote: `--host NAME`, `--thin`, `--bootstrap`, `--rollback` |
-| `ciu clean` | `--profile NAME`, `--yes`, `--ignore-errors`, `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.instance.toml.j2` / `ciu.instance.generated.toml`) |
+| `ciu clean` | `--profile NAME`, `--yes`, `--ignore-errors`, `--dry-run` (print the removal plan, change nothing), `--vanilla` (also reset `ciu.global.toml` / `ciu.env` / `ciu.global.instance.toml.j2` / `ciu.instance.generated.toml`) |
 | `ciu secrets list\|reset\|host` | `--dir PATH`; `reset` also accepts `--name N`, `--yes`; `host HOST (--materialize \| --list \| --path NAME)` |
 | `ciu check` | `--profile NAME`, `--phases N,M`, `--live` (also probe live state) |
 | `ciu graph` | `--format mermaid\|dot` or `--json`, `--profile NAME`, `--phases N,M` |
