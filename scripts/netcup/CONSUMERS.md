@@ -300,13 +300,17 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   while an R2 campaign there may resume (r1002's default cockpit run-gate is 24.3.0, see the host board).
 - **Results**, copied to `<out-dir>/<id>/` (default `/home/vscode/vbpub-release-program-20261027/remote-gates`): `job.log`, `lane.log`,
   `lane-detail.log` (the lane's own log), `artifacts/` (`.assay/verdict*.json`, `progress*.jsonl`, `coverage*.json`, `.run-gate/**/*.log`),
-  `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` (read it as a separate
-  step); the command exits with the lane's exit code.
+  `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` for PASS and FAIL; any
+  other verdict appends `; reason <text>` (and possibly ` [hint: ...]`). Parse it with `verdict (\w+); exit_code (\d+)`, never anchored at the end of the
+  line (read it as a separate step); the command exits with the lane's exit code.
 - **Lane declaration checks (before anything is shipped).** The committed `run-gate.toml` / `assay.toml` are read locally and a run that is
   certain to fail is refused with exit 2 and the reason: `--base` for an assay lane that declares its comparison base (`judge.base_source =
   "declared"`, or a `judge.base` without `base_source = "request"`; assay refuses `--request-base`, so drop `--base`); a lane in an exec-mode
   environment with no `container_name` (run-gate needs the worktree's own `ciu up` test-runner stack, which a throwaway host checkout never has
-  and this helper does not start; `--allow-exec-env` overrides); a lane name that is declared nowhere only warns. `--min-run-gate VER` raises or lowers the
+  and this helper does not start; `--allow-exec-env` overrides); a lane name that is declared nowhere only warns. The effective environment follows run-gate: the lane's own `environment`, else
+  the `[assay] environment` default for assay lanes, `[assay.import].environment` for imported lanes (an `[assay.import]` lane is declared, never
+  warned about; its `--base` check reads `assay.toml` under the same name), and every member of a `kind = "sequence"` lane. Only a provably exec-mode
+  environment without `container_name` is refused. `--min-run-gate VER` raises or lowers the
   profile's run-gate floor for one run. The vbpub profile floors the host run-gate at 25.0.1 and falls back to the `gate-tools2502` venv, so r1002's
   default 24.3.0 is not used for estate lanes (add a newer venv with `runner/setup-cockpit-run-gate.sh`; a miss prints that command).
 - **Local `main`.** The throwaway checkout is detached and has no branches, but lanes declare `base = "main"` (assay.toml of nyxloom,

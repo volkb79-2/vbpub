@@ -186,6 +186,89 @@ def test_exec_environment_from_the_central_root_config_counts(tmp_path):
         rg.lane_checks(ctx_for(tmp_path, [])[0], st, "p", "l1", False, False)
 
 
+# ---- inherited environments, imported lanes, sequence members ----
+
+EXEC_ENV = '[environments.test-runner]\nmode = "exec"\n'
+
+
+def test_assay_lane_inherits_the_assay_default_environment(tmp_path):
+    st = tree(tmp_path, EXEC_ENV + '[assay]\nenvironment = "test-runner"\n[lanes.g]\nkind = "assay"\n')
+    with pytest.raises(rg.GateError, match="exec-mode environment 'test-runner'"):
+        rg.lane_checks(ctx_for(tmp_path, [])[0], st, "p", "g", False, False)
+    rg.lane_checks(ctx_for(tmp_path, [])[0], st, "p", "g", False, True)
+
+
+def test_assay_default_environment_does_not_apply_to_other_kinds_or_explicit_environments(tmp_path):
+    cfg = (EXEC_ENV + '[environments.ok]\nmode = "exec"\ncontainer_name = "c"\n[assay]\nenvironment = "test-runner"\n'
+           '[lanes.cmd]\nkind = "command"\n[lanes.own]\nkind = "assay"\nenvironment = "ok"\n')
+    st = tree(tmp_path, cfg)
+    for lane in ("cmd", "own"):
+        rg.lane_checks(ctx_for(tmp_path, [])[0], st, "p", lane, False, False)
+
+
+def test_central_assay_default_is_used_when_the_project_has_none(tmp_path):
+    st = tree(tmp_path, '[lanes.g]\nkind = "assay"\n', root=EXEC_ENV + '[assay]\nenvironment = "test-runner"\n')
+    with pytest.raises(rg.GateError, match="exec-mode environment 'test-runner'"):
+        rg.lane_checks(ctx_for(tmp_path, [])[0], st, "p", "g", False, False)
+
+
+@pytest.mark.parametrize("lanes", ['"all"', '["auth", "other"]'])
+def test_imported_lane_is_declared_and_uses_the_import_environment(tmp_path, lanes):
+    cfg = EXEC_ENV + f'[assay]\ncommand = ["assay"]\npins = {{}}\n[assay.import]\nenvironment = "test-runner"\nlanes = {lanes}\n'
+    st = tree(tmp_path, cfg)
+    ctx, out = ctx_for(tmp_path, [])
+    with pytest.raises(rg.GateError, match="exec-mode environment 'test-runner'"):
+        rg.lane_checks(ctx, st, "p", "auth", False, False)
+    assert out == []  # no false "not declared" warning
+    rg.lane_checks(ctx, st, "p", "auth", False, True)
+
+
+def test_imported_lane_base_check_reads_assay_toml_under_the_lane_name(tmp_path):
+    cfg = '[environments.e]\nmode = "ephemeral"\n[assay]\n[assay.import]\nenvironment = "e"\nlanes = ["auth"]\n'
+    st = tree(tmp_path, cfg, '[lanes.auth.judge]\nbase = "main"\n')
+    ctx, out = ctx_for(tmp_path, [])
+    with pytest.raises(rg.GateError, match="assay lane 'auth'.*declares its comparison base"):
+        rg.lane_checks(ctx, st, "p", "auth", True, False)
+    rg.lane_checks(ctx, st, "p", "auth", False, False)
+    assert out == []
+
+
+def test_lane_outside_an_explicit_import_list_still_warns(tmp_path):
+    st = tree(tmp_path, '[assay.import]\nenvironment = "e"\nlanes = ["auth"]\n')
+    ctx, out = ctx_for(tmp_path, [])
+    rg.lane_checks(ctx, st, "p", "zzz", False, False)
+    assert len(out) == 1 and "'zzz' is not declared" in out[0]
+
+
+@pytest.mark.parametrize("cfg,root", [('[lanes.l]\nkind = "command"\n', "assay = 3\n"), ('[assay]\nimport = 3\n[lanes.l]\nkind = "command"\n', None)])
+def test_malformed_assay_and_import_tables_are_ignored(tmp_path, cfg, root):
+    rg.lane_checks(ctx_for(tmp_path, [])[0], tree(tmp_path, cfg, root=root), "p", "l", False, False)
+
+
+SEQ = EXEC_ENV + '[environments.ok]\nmode = "ephemeral"\n[assay]\nenvironment = "ok"\n[assay.import]\nenvironment = "test-runner"\nlanes = ["imp"]\n'
+
+
+def test_sequence_members_are_checked(tmp_path):
+    cfg = SEQ + ('[lanes.fine]\nkind = "assay"\n[lanes.bad]\nkind = "command"\nenvironment = "test-runner"\n'
+                 '[lanes.seq]\nkind = "sequence"\nlanes = ["fine", "bad"]\n')
+    st = tree(tmp_path, cfg)
+    with pytest.raises(rg.GateError, match=r"lane 'seq' \(member 'bad' of the sequence\) runs in the exec-mode"):
+        rg.lane_checks(ctx_for(tmp_path, [])[0], st, "p", "seq", False, False)
+
+
+def test_sequence_with_an_imported_member_is_checked(tmp_path):
+    st = tree(tmp_path, SEQ + '[lanes.seq]\nkind = "sequence"\nlanes = ["imp"]\n')
+    with pytest.raises(rg.GateError, match="member 'imp'"):
+        rg.lane_checks(ctx_for(tmp_path, [])[0], st, "p", "seq", False, False)
+
+
+def test_sequence_that_is_clean_cyclic_or_names_unknown_members_passes(tmp_path):
+    cfg = SEQ + ('[lanes.fine]\nkind = "assay"\n[lanes.a]\nkind = "sequence"\nlanes = ["b", "fine", "ghost", 7]\n'
+                 '[lanes.b]\nkind = "sequence"\nlanes = ["a", "b"]\n')
+    st = tree(tmp_path, cfg)
+    rg.lane_checks(ctx_for(tmp_path, [])[0], st, "p", "a", False, False)
+
+
 # ---- (3) the reason on the final line ----
 
 CMRU = ("run-gate: WARN: main-checkout opt-in\n"

@@ -324,7 +324,23 @@ def lane_checks(ctx: Ctx, st: dict, proj: str, lane: str, base_given: bool, allo
     top = Path(st["top"])
     project = _toml(top / proj / "run-gate.toml")
     central = _toml(top / "run-gate.root.toml")
-    decl = (project.get("lanes") or {}).get(lane) or (central.get("lanes") or {}).get(lane)
+    # run-gate: `cfg.get("assay", central.get("assay", {}))` is the [assay] defaults table (environment, command, pins, import)
+    assay_cfg = project.get("assay", central.get("assay", {}))
+    assay_cfg = assay_cfg if isinstance(assay_cfg, dict) else {}
+    declared = {**(central.get("lanes") or {}), **(project.get("lanes") or {})}
+    imp = assay_cfg.get("import")
+    imp = imp if isinstance(imp, dict) else {}
+    imported = imp.get("lanes")
+
+    def find(name: str) -> Optional[dict]:
+        """The lane as run-gate resolves it: declared, else an `[assay.import]` lane (kind assay, assay_lane = its name, the import environment)."""
+        if isinstance(declared.get(name), dict):
+            return declared[name]
+        if imp.get("environment") and (imported == "all" or (isinstance(imported, list) and name in imported)):
+            return {"kind": "assay", "environment": imp["environment"], "assay_lane": name}
+        return None
+
+    decl = find(lane)
     if decl is None:
         if project or central:
             ctx.say(f"WARNING: lane {lane!r} is not declared in {proj}/run-gate.toml or run-gate.root.toml; run-gate will report an unknown lane")
@@ -338,14 +354,32 @@ def lane_checks(ctx: Ctx, st: dict, proj: str, lane: str, base_given: bool, allo
                 f"--base refused: assay lane {alane!r} (run-gate lane {lane!r}) declares its comparison base "
                 f"(judge.base = {judge.get('base', '?')!r}, base_source 'declared') and assay refuses --request-base; "
                 "drop --base (or set judge.base_source = \"request\" in assay.toml)", 2)
-    env_name = decl.get("environment")
-    env = ((project.get("environments") or {}).get(env_name) or (central.get("environments") or {}).get(env_name) or {}) if env_name else {}
-    if env.get("mode") == "exec" and not env.get("container_name") and not allow_exec:
-        raise GateError(
-            f"lane {lane!r} runs in the exec-mode environment {env_name!r} without a declared container_name: run-gate needs the "
-            "worktree's own started stack (`ciu up --dir <test-runner stack> --deploy`), which a throwaway host checkout never has "
-            "and this helper does not start. Run it on the controller, use a container-mode variant of the lane, or pass "
-            "--allow-exec-env to try anyway", 2)
+    if allow_exec:
+        return
+    seen: set = set()
+
+    def check_env(name: str, d: dict) -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        if d.get("kind") == "sequence":
+            for member in d.get("lanes") or []:
+                m = find(member) if isinstance(member, str) else None
+                if m is not None:
+                    check_env(member, m)
+            return
+        # run-gate gives an assay lane without its own `environment` the [assay] default
+        env_name = d.get("environment") or (assay_cfg.get("environment") if d.get("kind") == "assay" else None)
+        env = ((project.get("environments") or {}).get(env_name) or (central.get("environments") or {}).get(env_name) or {}) if env_name else {}
+        if env.get("mode") == "exec" and not env.get("container_name"):
+            via = "" if name == lane else f" (member {name!r} of the sequence)"
+            raise GateError(
+                f"lane {lane!r}{via} runs in the exec-mode environment {env_name!r} without a declared container_name: run-gate needs the "
+                "worktree's own started stack (`ciu up --dir <test-runner stack> --deploy`), which a throwaway host checkout never has "
+                "and this helper does not start. Run it on the controller, use a container-mode variant of the lane, or pass "
+                "--allow-exec-env to try anyway", 2)
+
+    check_env(lane, decl)
 
 
 TAG_GLOB = "refs/tags/*-v[0-9]*"  # release tags of every project (run-gate-v25.1.0, assay-v7.2.0, ...)
