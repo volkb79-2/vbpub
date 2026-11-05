@@ -12,8 +12,8 @@ OPEN-HYPOTHESIS (cause not proven), CANDIDATE (found by static reading, no failu
 (deterministic).
 
 The table layout, the status grammar and the ID rule are a stable format, defined in `FORMATS.md` and checked by
-`tests/test_ledger.py`. Hashes verified against `main` on 2026-11-05: a3505563a and 8bbc11d4d are on `main`;
-871f614a4 is not.
+`tests/test_ledger.py`. Whether a FIXED hash is on `main` is checked by hand when the row is written:
+`git merge-base --is-ancestor <hash> main`.
 
 | ID | Test / location | Signature | Root cause | Status |
 |---|---|---|---|---|

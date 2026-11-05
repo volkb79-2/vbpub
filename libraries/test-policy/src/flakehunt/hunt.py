@@ -341,6 +341,13 @@ def render(report: dict) -> str:
     return head
 
 
+def _pids_limit(text: str) -> int:
+    try:
+        return int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an integer (--pids-limit / ${ENV_PIDS_LIMIT})") from None
+
+
 def parse_args(argv: Sequence[str]) -> tuple[Options, argparse.Namespace]:
     if "--" in argv:
         split = list(argv).index("--")
@@ -357,7 +364,8 @@ def parse_args(argv: Sequence[str]) -> tuple[Options, argparse.Namespace]:
     parser.add_argument("--workdir", default="/work")
     parser.add_argument("--cgroup-parent", default=os.environ.get(ENV_CGROUP_PARENT, ""),
                         help=f"host slice for every container (required in container mode; or ${ENV_CGROUP_PARENT}; no default)")
-    parser.add_argument("--pids-limit", type=int, default=int(os.environ.get(ENV_PIDS_LIMIT, "0")),
+    # argparse applies `type` to a string default too, so a bad $FLAKEHUNT_PIDS_LIMIT is a clean usage error (exit 2).
+    parser.add_argument("--pids-limit", type=_pids_limit, default=os.environ.get(ENV_PIDS_LIMIT, "0"),
                         help=f"docker --pids-limit (required in container mode; or ${ENV_PIDS_LIMIT}; no default)")
     parser.add_argument("--docker", default="docker")
     parser.add_argument("--cpus", type=float, default=0.25, help="slow-cpu/combo lane cpu.max in cores")

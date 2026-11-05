@@ -229,6 +229,12 @@ def test_host_owned_limits_have_no_default_and_come_from_cli_or_environment(monk
     monkeypatch.setenv(hunt.ENV_PIDS_LIMIT, "321")
     from_env, _ = hunt.parse_args(["--image", "i", "--", "t.py"])
     assert (from_env.cgroup_parent, from_env.pids_limit) == ("env.slice", 321)
+    monkeypatch.setenv(hunt.ENV_PIDS_LIMIT, "many")
+    for mode in ("container", "inner"):  # the default is parsed in every mode
+        with pytest.raises(SystemExit) as excinfo:
+            hunt.main(["--mode", mode, "--", "t.py"])
+        assert excinfo.value.code == hunt.EXIT_ERROR
+    monkeypatch.setenv(hunt.ENV_PIDS_LIMIT, "321")
     explicit, _ = hunt.parse_args(["--image", "i", "--cgroup-parent", "cli.slice", "--pids-limit", "9", "--", "t.py"])
     assert (explicit.cgroup_parent, explicit.pids_limit) == ("cli.slice", 9)
 
