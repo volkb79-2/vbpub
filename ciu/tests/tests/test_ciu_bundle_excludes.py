@@ -121,10 +121,7 @@ _PATTERNS = [
 ]
 
 
-@pytest.mark.skipif(not (shutil.which("rsync") and shutil.which("tar")), reason="rsync/tar missing")
-@pytest.mark.parametrize("patterns", _PATTERNS, ids=["none", "mandatory", "mandatory+host-globs"])
-def test_tar_fallback_ships_the_same_file_set_as_real_rsync(tmp_path, patterns):
-    src = tmp_path / "src"
+def _build_fixture(src):
     src.mkdir()
     for rel in _FIXTURE_FILES:
         if rel in ("sub/.git",):  # sub/.git is a directory (sub/.git/c)
@@ -140,6 +137,36 @@ def test_tar_fallback_ships_the_same_file_set_as_real_rsync(tmp_path, patterns):
     (src / "deep" / "dironly").mkdir()
     (src / "deep" / "dironly" / "g").write_text("g")
 
+
+def _tar_names(src, patterns):
+    ball = activate.make_tarball(str(src), excludes=patterns)
+    try:
+        with tarfile.open(ball) as tar:
+            return sorted(n.removeprefix("./") for n in tar.getnames() if n != ".")
+    finally:
+        Path(ball).unlink()
+
+
+# Golden file set recorded from real rsync for _PATTERNS[2]; keeps the glob/dir-only branches
+# of the tar fallback covered (and asserted) on images without rsync, where the live
+# equivalence test below is skipped.
+_GOLDEN_HOST_GLOBS = [
+    "a", "b", "c", "deep", "keep.txt", "q", "q/x", "q/x/y", "stack", "sub", "sub/keep.txt",
+    "wt", "x", "x/y",
+]
+
+
+def test_tar_fallback_matches_recorded_rsync_file_set_without_rsync(tmp_path):
+    _build_fixture(tmp_path / "src")
+    assert _tar_names(tmp_path / "src", _PATTERNS[2]) == _GOLDEN_HOST_GLOBS
+
+
+@pytest.mark.skipif(not (shutil.which("rsync") and shutil.which("tar")), reason="rsync/tar missing")
+@pytest.mark.parametrize("patterns", _PATTERNS, ids=["none", "mandatory", "mandatory+host-globs"])
+def test_tar_fallback_ships_the_same_file_set_as_real_rsync(tmp_path, patterns):
+    src = tmp_path / "src"
+    _build_fixture(src)
+
     dst = tmp_path / "dst"
     dst.mkdir()
     cmd = ["rsync", "-a"]
@@ -150,12 +177,7 @@ def test_tar_fallback_ships_the_same_file_set_as_real_rsync(tmp_path, patterns):
         str(p.relative_to(dst)) for p in dst.rglob("*")
     )
 
-    ball = activate.make_tarball(str(src), excludes=patterns)
-    try:
-        with tarfile.open(ball) as tar:
-            via_tar = sorted(n.removeprefix("./") for n in tar.getnames() if n != ".")
-    finally:
-        Path(ball).unlink()
+    via_tar = _tar_names(src, patterns)
 
     assert via_tar == via_rsync
 

@@ -114,6 +114,8 @@ budget_per_attempt = "20m"
 # sweep, which stays on lane `ciu` (needs the cgroup observer). Run it as
 # `run-gate --base <previous release tag or main> ciu-gate`.
 [lanes.ciu-gate]
+# No --maxfail: this lane has no R2 mutants to cut short, and fail-fast can leave coverage.json
+# incomplete (assay warning), hiding the full set of failures and uncovered lines.
 scope = "S1"
 rigor = ["R0", "R1", "R3"]
 enforcement = "gate"
@@ -121,7 +123,7 @@ argv = [
   "/opt/tester-venv/bin/python", "-m", "pytest", "tests",
   "--cov=ciu", "-n", "0", "--dist", "loadfile", "--cov-branch",
   "--cov-report=term-missing", "--cov-report=json:coverage.json",
-  "--cov-fail-under=100", "--maxfail=1", "-rs",
+  "--cov-fail-under=100", "-rs",
 ]
 env = { PYTHONPATH = "src:../cmru/src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["CGROUP_PARENT_DEV_BACKGROUND", "HOME", "PATH", "TERM", "LANG"]
