@@ -11,7 +11,12 @@ from textual.widgets import Static
 from topos.collect.procs import list_processes
 from topos.config import ToposConfig
 from topos.damon.control import (
+    APPROVAL_TEXT,
+    DamonControlError,
     confirmation_text,
+    default_state_dir,
+    is_confirmed,
+    owned_markers,
     plan_start_session,
     start_planned_session,
     stop_owned_sessions,
@@ -112,17 +117,57 @@ class DrillDownScreen(Screen[None]):
         )
 
     def action_stop_topos_damon(self) -> None:
+        # D-08: stop is a mutation like start, so it goes through the same
+        # typed confirmation screen and reports partial results.
         try:
-            stopped = stop_owned_sessions(
-                damon_root=self.damon_root,
-                state_dir=self.damon_state_dir,
-                all_mine=True,
-                require_root=self.damon_require_root,
-            )
+            owned = owned_markers(self.damon_state_dir or default_state_dir())
         except Exception as exc:
             self._control_notice = f"\n\nDAMON CONTROL\n  stop unavailable: {exc}\n"
+            self._refresh_body()
+            return
+        if not owned:
+            self._control_notice = "\n\nDAMON CONTROL\n  no topos-owned DAMON session to stop\n"
+            self._refresh_body()
+            return
+
+        def apply_confirmed(value: str) -> str:
+            if not is_confirmed(value):
+                raise DamonControlError(f"typed confirmation must be {APPROVAL_TEXT}")
+            stopped_idx: list[int] = []
+            try:
+                stopped = stop_owned_sessions(
+                    damon_root=self.damon_root,
+                    state_dir=self.damon_state_dir,
+                    all_mine=True,
+                    require_root=self.damon_require_root,
+                    stopped_report=stopped_idx,
+                )
+            except Exception as exc:
+                done = ", ".join(str(i) for i in stopped_idx) or "none"
+                raise DamonControlError(
+                    f"stop failed after stopping kdamond(s): {done}; error: {exc}"
+                ) from exc
+            return f"stopped {stopped} topos-owned DAMON session(s)"
+
+        plan_text = (
+            "Stop ALL topos-owned DAMON sessions (not only this entity's):\n"
+            + "\n".join(f"  {marker.name}" for marker in owned)
+            + f"\nType {APPROVAL_TEXT} to stop them:"
+        )
+        self.app.push_screen(
+            DamonConfirmScreen(
+                title="DAMON STOP",
+                plan_text=plan_text,
+                apply_confirmed=apply_confirmed,
+            ),
+            self._on_stop_result,
+        )
+
+    def _on_stop_result(self, result: str | None) -> None:
+        if result is None:
+            self._control_notice = "\n\nDAMON CONTROL\n  stop cancelled\n"
         else:
-            self._control_notice = f"\n\nDAMON CONTROL\n  stopped {stopped} topos-owned DAMON session(s)\n"
+            self._control_notice = f"\n\nDAMON CONTROL\n  {result}\n"
         self._refresh_body()
 
     def _on_control_result(self, result: str | None) -> None:

@@ -514,3 +514,226 @@ def test_run_squeeze_with_production_writer_refuses_target_outside_cgroup_root(t
     )
     assert result.stop_reason == "error"
     assert not (outside / "memory.high").exists()
+
+
+# --------------------------------------------------------------- C-10 / C-11
+
+from conftest import fixture_root  # noqa: E402
+from topos.config import DamonConfig  # noqa: E402
+from topos.damon import control  # noqa: E402
+
+_GAME_KEY = "system.slice/docker-" + "a" * 64 + ".scope"
+
+
+def _damon_tree(tmp_path: Path) -> Path:
+    root = tmp_path / "kdamonds"
+    root.mkdir()
+    (root / "nr_kdamonds").write_text("1\n")
+    (root / "0").mkdir()
+    (root / "0" / "state").write_text("off\n")
+    return root
+
+
+def _start(tmp_path: Path, damon_root: Path, state_dir: Path):
+    return control.start_entity_session(
+        _GAME_KEY,
+        cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+        damon_root=damon_root,
+        state_dir=state_dir,
+        config=DamonConfig(),
+        confirmed_text=control.APPROVAL_TEXT,
+        require_root=False,
+    )
+
+
+def test_teardown_writes_nr_contexts_zero_and_never_removes_the_contexts_tree(tmp_path):
+    damon_root = _damon_tree(tmp_path)
+    state_dir = tmp_path / "state"
+    _start(tmp_path, damon_root, state_dir)
+    attr = damon_root / "0" / "contexts" / "0" / "operations"
+    assert attr.exists()
+    assert control.stop_owned_sessions(
+        damon_root=damon_root, state_dir=state_dir, all_mine=True, require_root=False
+    ) == 1
+    # sysfs attribute files cannot be unlinked, so teardown must leave them alone
+    assert attr.exists()
+    assert (damon_root / "0" / "contexts" / "nr_contexts").read_text().strip() == "0"
+    assert (damon_root / "0" / "state").read_text().strip() == "off"
+
+
+def test_marker_is_written_before_the_sysfs_writes(tmp_path, monkeypatch):
+    damon_root = _damon_tree(tmp_path)
+    state_dir = tmp_path / "state"
+    seen: list[bool] = []
+    real = control._write_sysfs
+
+    def spy(path, value):
+        seen.append((state_dir / "damon" / "kdamond-0.json").exists())
+        real(path, value)
+
+    monkeypatch.setattr(control, "_write_sysfs", spy)
+    _start(tmp_path, damon_root, state_dir)
+    assert seen and all(seen)
+
+
+def test_failed_sysfs_write_leaves_a_marker_so_the_kdamond_can_be_stopped(tmp_path, monkeypatch):
+    damon_root = _damon_tree(tmp_path)
+    state_dir = tmp_path / "state"
+
+    def boom(path, value):
+        raise OSError("sysfs write failed")
+
+    monkeypatch.setattr(control, "_write_sysfs", boom)
+    with pytest.raises(OSError):
+        _start(tmp_path, damon_root, state_dir)
+    assert (state_dir / "damon" / "kdamond-0.json").exists()
+
+
+def test_markers_record_boot_id_and_other_boot_markers_are_ignored_and_removed(
+    tmp_path, monkeypatch
+):
+    damon_root = _damon_tree(tmp_path)
+    state_dir = tmp_path / "state"
+    monkeypatch.setattr(control, "_current_boot_id", lambda: "boot-A")
+    session = _start(tmp_path, damon_root, state_dir)
+    assert json.loads(session.marker_path.read_text())["boot_id"] == "boot-A"
+    assert control.owned_markers(state_dir) == [session.marker_path]
+
+    monkeypatch.setattr(control, "_current_boot_id", lambda: "boot-B")
+    assert control.owned_markers(state_dir) == []
+    assert not session.marker_path.exists()
+    # the stale marker no longer blocks a new session on the same slot
+    (damon_root / "0" / "state").write_text("off\n")  # the old kdamond died with the boot
+    assert _start(tmp_path, damon_root, state_dir).kdamond_idx == 0
+
+
+def test_legacy_marker_without_boot_id_is_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr(control, "_current_boot_id", lambda: "boot-B")
+    marker = tmp_path / "state" / "damon" / "kdamond-0.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps({"owner": "topos", "kdamond_idx": 0}))
+    assert control.owned_markers(tmp_path / "state") == [marker]
+
+
+# --------------------------------------------------------------------- C-13
+
+
+def _docker_fixture(tmp_path: Path, lines: list[bytes]) -> Path:
+    d = tmp_path / "fx" / "containers" / ("c" * 64)
+    d.mkdir(parents=True)
+    (d / ("c" * 64 + "-json.log")).write_bytes(b"".join(lines))
+    return tmp_path / "fx"
+
+
+def _read_docker(fx: Path, **kw):
+    from topos.inspect_files.reader import build_inspect_read
+
+    return build_inspect_read(
+        "docker-json-log",
+        "c" * 64,
+        inspect_files=True,
+        admin=True,
+        fixture_root=fx,
+        is_root=lambda: True,
+        **kw,
+    )
+
+
+def test_docker_log_read_returns_the_tail_not_the_head(tmp_path):
+    lines = [f"line-{i:05d}\n".encode() for i in range(5000)]
+    fx = _docker_fixture(tmp_path, lines)
+    result = _read_docker(fx, max_bytes=1000, max_lines=5000)
+    out = result.content.splitlines()
+    assert out[-1] == "line-04999"
+    assert "line-00000" not in result.content
+    assert out[0].startswith("line-")  # whole lines only, partial first line dropped
+    assert len(out[0]) == len("line-00000")
+    assert result.truncated_bytes is True
+
+
+def test_docker_log_tail_honours_max_lines(tmp_path):
+    fx = _docker_fixture(tmp_path, [f"l{i}\n".encode() for i in range(10)])
+    result = _read_docker(fx, max_lines=3)
+    assert result.content.splitlines() == ["l7", "l8", "l9"]
+    assert result.truncated_lines is True
+
+
+def test_small_docker_log_is_returned_whole(tmp_path):
+    fx = _docker_fixture(tmp_path, [b"a\n", b"b\n"])
+    result = _read_docker(fx)
+    assert result.content == "a\nb\n" or result.content == "a\nb"
+    assert not result.truncated_bytes and not result.truncated_lines
+
+
+# --------------------------------------------------------------------- C-14
+
+
+def test_journald_snapshot_honours_the_callers_max_bytes():
+    import sys
+
+    from topos.inspect_files import reader
+
+    child = "import sys\nwhile True:\n    sys.stdout.buffer.write(b'y' * 4096)\n    sys.stdout.flush()"
+    real = reader._default_journald_runner
+
+    def runner(argv, *, timeout, max_bytes=65536):
+        return real((sys.executable, "-c", child), timeout=30, max_bytes=max_bytes)
+
+    # unit tests inject nothing into the production path, so drive the runner via argv rewrite
+    original = reader._default_journald_runner
+    reader._default_journald_runner = runner  # type: ignore[assignment]
+    try:
+        result = reader._run_journald_snapshot("ssh.service", max_lines=100000, max_bytes=500)
+    finally:
+        reader._default_journald_runner = original
+    assert len(result.content.encode()) <= 500
+    assert result.truncated_bytes is True
+
+
+# --------------------------------------------------------------------- C-15
+
+
+def test_cgroup_target_allows_systemd_escaped_backslash_names():
+    from topos.inspect_files.catalog import _normalise_cgroup_target
+
+    name = "system.slice/system-systemd\\x2dfsck.slice"
+    assert _normalise_cgroup_target(name) == name
+    with pytest.raises(ValueError):
+        _normalise_cgroup_target("system.slice/../x")
+
+
+# --------------------------------------------------------------------- C-16
+
+
+def test_kill_preview_refuses_protected_and_invalid_targets_like_execute():
+    from topos.actions.kill_ops import build_kill_preview
+
+    with pytest.raises(ValueError, match="protected"):
+        build_kill_preview("docker-kill", "game", protected_check=lambda k, t: True)
+    with pytest.raises(ValueError):
+        build_kill_preview("docker-kill", "a/b", protected_check=lambda k, t: False)
+    plan = build_kill_preview("docker-kill", "game", protected_check=lambda k, t: False)
+    assert plan.argv[-1] == "game"
+
+
+# --------------------------------------------------------------------- C-08
+
+
+def test_container_selector_resolves_to_container_id_for_docker_kinds(monkeypatch):
+    from topos import cli
+
+    key = f"system.slice/docker-{FULL_ID}.scope"
+    monkeypatch.setattr(cli, "_resolve_container_target", lambda name: key)
+    for kind in ("docker-stop", "docker-kill", "docker-json-log"):
+        assert cli._resolve_mutual_exclusive_target(None, "game", "action", kind) == FULL_ID
+    # cgroup-files and no-kind callers keep the cgroup key
+    assert cli._resolve_mutual_exclusive_target(None, "game", "inspect-files", "cgroup-files") == key
+    assert cli._resolve_mutual_exclusive_target(None, "game", "squeeze") == key
+
+
+def test_container_id_passes_the_docker_target_validators():
+    from topos.actions.catalog import ActionKind, validate_target
+    from topos.inspect_files.catalog import _validate_docker_target
+
+    validate_target(ActionKind.DOCKER_STOP, FULL_ID)
+    _validate_docker_target(FULL_ID)

@@ -35,6 +35,21 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(actions): the Docker owner / protected-ID gate is always on; omitting `owner_inspect` uses the production `docker inspect` (B-039)
 - fix(actions): Docker verbs run by the inspected canonical full ID instead of the raw name, closing the rename race (B-040)
 - fix(collect): io_cap_saturation_pct is judged per device against that device's own io.max cap, with the device attributed (B-012)
+- fix(actions): systemd verbs on `docker-<id>.scope`/`libpod-<id>.scope` get the same owner/protected decision as the docker verbs; `protected_services` applies to every systemd verb (name and key forms); poweroff/reboot/halt/kexec/rescue/emergency/shutdown/default `.target` are refused (C-01)
+- fix(squeeze): `--relax-to` is validated up front; a failed restore is retried once, reported as `restore_failed` (exit 3, loud stderr with the stuck value), never as restored (C-02)
+- fix(squeeze): SIGHUP/SIGQUIT/SIGPIPE restore like SIGTERM and unwind (end audit record written, no `os._exit`); a recovery file is written before the first write and `topos squeeze --recover [--target PATH]` restores from it (C-03)
+- fix(squeeze): step<=0, floor<0 and start<floor are rejected; the first write is clamped to the floor (C-04)
+- fix(squeeze): target must resolve under the cgroup root and own a regular `memory.high`; the writer never creates the file (C-06)
+- fix(actions): `action execute --expect-current VALUE` (incl. `max`) on systemd-set-property; systemd `infinity` reads as `max`; the fresh value is always read and recorded in the audit record (C-07)
+- fix(cli): `--container` resolves to the container ID for docker kinds (C-08)
+- fix(actions): owner inspect uses the absolute docker binary, scrubbed env, `--type container --` and a 10 s timeout that fails closed (C-09)
+- fix(actions): owner-gate argv binding replaces only the final argv element (C-12)
+- fix(inspect-files): cgroup-files accepts systemd-escaped `\` in cgroup names (C-15)
+- fix(actions): an audit append after a torn partial line starts on a fresh line; the new audit file's directory entry is fsynced (C-18)
+- fix(damon): teardown writes `nr_contexts=0` instead of `rmtree` on sysfs (C-10); the marker is written before the sysfs writes and carries `boot_id`, markers from another boot are ignored and removed (C-11)
+- fix(inspect-files): docker-json-log returns the tail of the log (C-13); journald read streams with a hard byte cap and honours `--max-bytes` (C-14)
+- fix(actions): `action preview` for kill applies the same target validation and protected-service refusal as execute (C-16)
+- fix(ui): `s` in the drill screen opens the typed DAMON confirmation and reports which sessions were stopped if a later one fails (D-08)
 <!-- cmru: pending release notes end -->
 
 ## [0.4.2] - 2026-10-21
