@@ -194,3 +194,13 @@ def test_mounted_drill_screen_reports_public_confirmation_cancellation(tmp_path:
             assert "DAMON CONTROL\n  start cancelled" in str(screen.query_one("#drill-body", Static).render())
 
     asyncio.run(run())
+
+
+def test_drill_metric_block_uses_table_formatting_not_raw_integers(tmp_path: Path) -> None:
+    frame = _frame()
+    frame.entities[KEY].metrics["anon"] = MetricValue(148094976, "exact")
+    frame.entities[KEY].metrics["cpu_pct"] = MetricValue(12.5, "derived")
+    text = _render(frame, HistoryRing(capacity=4, tracked_metrics=("ram",)), tmp_path)
+    assert "148094976" not in text
+    assert "141.2MiB" in text
+    assert "12.5%" in text
