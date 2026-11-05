@@ -45,6 +45,13 @@ class RedirectFstab(HostActions):
     def write_file(self, path, content, mode=0o644):
         super().write_file(self.fstab_copy if path == "/etc/fstab" else path, content, mode)
 
+    def run(self, argv, *args, **kwargs):
+        # `mount <dir>` resolves the entry from the fstab; point it at the redirected copy.
+        argv = list(argv)
+        if len(argv) == 2 and argv[0] == "/usr/bin/mount":
+            argv = [argv[0], "-T", self.fstab_copy, argv[1]]
+        return super().run(argv, *args, **kwargs)
+
 
 @REAL_VM_SWAP_TEST_SKIP
 def test_real_lvm_data_area_on_loop_disk(tmp_path, monkeypatch):
@@ -128,4 +135,64 @@ def test_real_lvm_data_area_on_loop_disk(tmp_path, monkeypatch):
         subprocess.run(["lvremove", "-f", "-y", VG], check=False, capture_output=True)
         subprocess.run(["vgremove", "-f", "-y", VG], check=False, capture_output=True)
         subprocess.run(["pvremove", "-f", "-y", f"{loop}p2"], check=False, capture_output=True)
+        subprocess.run(["losetup", "--detach", loop], check=False)
+
+
+@REAL_VM_SWAP_TEST_SKIP
+def test_real_partition_data_area_on_loop_disk(tmp_path):
+    """data_area=partition: real mkfs.btrfs labelled MDT_COW on the data partition, mounted via fstab, detected by the carve."""
+    img = tmp_path / "data-partition.img"
+    sh("truncate", "-s", "6G", str(img))
+    data_start = 1024000
+    data_size = 4 * lp.SECTORS_PER_GIB
+    plan = (
+        "label: gpt\nunit: sectors\n\n"
+        'start=2048, size=409600, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root"\n'
+        f'start={data_start}, size={data_size}, type={lp.LINUX_FS_TYPE_GUID}, name="{lp.COW_LABEL}"\n'
+        f'start={data_start + data_size + 2048}, size=524288, '
+        'type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name="swap"\n'
+    )
+    sh("sfdisk", "--force", str(img), input=plan)
+    loop = sh("losetup", "--find", "--show", "--partscan", str(img))
+    sh("udevadm", "settle")
+    fstab_copy = tmp_path / "fstab"
+    fstab_copy.write_text("", encoding="utf-8")
+    try:
+        installer = make_planner(tmp_path, disk_gib=6, root_gib=1, swap_policy="on", swap_disk_total_gb=1)
+        object.__setattr__(installer.config, "disk_layout", "dev-host")
+        object.__setattr__(installer.config, "data_area", "partition")
+        object.__setattr__(installer.config, "data_partition", {"fs": "btrfs", "mount": MOUNT, "label": lp.COW_LABEL})
+        installer.actions = RedirectFstab(str(fstab_copy))
+        installer.root_disk = os.path.basename(loop)
+        installer.root_partition_path = f"{loop}p1"
+        installer.root_number = 1
+        installer._disk_facts = lambda: (6 * lp.SECTORS_PER_GIB, 2048, 409600)
+        installer._live_partition_entries = type(installer)._live_partition_entries.__get__(installer)
+        installer._plan_swap_partitions = lambda **_k: ([(data_start + data_size + 2048, 524288)], 409600)
+        installer._data_area_layout = lambda *_a: (2, data_start, data_size)
+        installer._read_fstab_lines = lambda: []
+        steps: list[tuple[str, str]] = []
+        installer._mark_step = lambda name, status, detail="": steps.append((name, status))
+        if shutil.which("mkfs.btrfs"):
+            installer._packages = lambda *_a: None  # tools already in the guest image
+
+        installer._configure_data_area()
+
+        assert steps[-1] == ("data_area", "success"), steps
+        data = f"{loop}p2"
+        assert sh("blkid", "-s", "TYPE", "-o", "value", data) == "btrfs"
+        assert sh("blkid", "-s", "LABEL", "-o", "value", data) == lp.COW_LABEL
+        assert sh("findmnt", "-n", "-o", "FSTYPE", MOUNT) == "btrfs"
+        assert f"LABEL={lp.COW_LABEL} {MOUNT} btrfs noatime,user_subvol_rm_allowed,nofail 0 0" in fstab_copy.read_text("utf-8")
+        rows = sh("lsblk", "-P", "-o", "PATH,PARTLABEL,FSTYPE,LABEL", loop).splitlines()
+        cows = [row for row in rows if 'FSTYPE="btrfs"' in row and f'LABEL="{lp.COW_LABEL}"' in row]
+        assert len(cows) == 1 and f"{loop}p2" in cows[0]
+
+        uuid_before = sh("blkid", "-s", "UUID", "-o", "value", data)
+        steps.clear()
+        installer._configure_data_area()  # rerun converges: no second mkfs
+        assert sh("blkid", "-s", "UUID", "-o", "value", data) == uuid_before
+        assert steps[-1] == ("data_area", "success")
+    finally:
+        subprocess.run(["umount", MOUNT], check=False, capture_output=True)
         subprocess.run(["losetup", "--detach", loop], check=False)
