@@ -9503,3 +9503,28 @@ class TestRemovalDryRunAndLeftoverAdoption:
         with pytest.raises(worktree.WorktreeRemovalError, match="leftover checkout remains"):
             worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
         assert target.is_dir()
+
+    def test_dry_run_of_a_clean_checkout_has_no_blockers(
+        self, tmp_repo, fake_generate_env,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        doc = worktree.remove_document(tmp_repo, "wt1", dry_run=True)
+        assert doc["status"] == "dry-run"
+        assert doc["blockers"] == [] and doc["leaks"] == []
+        assert doc["removed_path"] == str(target) and target.is_dir()
+
+
+def test_native_rmtree_skips_permission_repair_for_foreign_trees(tmp_path, monkeypatch):
+    from ciu import engine
+
+    vol = tmp_path / "vol-foreign"
+    vol.mkdir()
+    (vol / "f").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(engine, "to_physical_path", lambda p, repo_root=None: p)
+    monkeypatch.setattr(engine, "_tree_owned_by_caller", lambda _p: False)
+    monkeypatch.setattr(
+        engine, "_make_tree_writable",
+        lambda _p: pytest.fail("foreign trees are never chmod'ed"),
+    )
+    engine._rmtree_with_fallback(vol, repo_root=tmp_path)
+    assert not vol.exists()
