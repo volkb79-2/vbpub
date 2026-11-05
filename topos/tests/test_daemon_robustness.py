@@ -512,3 +512,23 @@ def test_gateway_caps_concurrent_handlers_and_answers_busy(
         gateway.shutdown()
         gateway.server_close()
         thread.join(timeout=2.0)
+
+
+def test_operator_interrupt_clears_producer_failure_but_signals_do_not() -> None:
+    class _Server:
+        def shutdown(self) -> None:
+            pass
+
+    failed = ShutdownCoordinator(_Server())
+    failed.on_producer_terminal("exhausted")
+    assert failed.producer_failed is True
+
+    interrupted = ShutdownCoordinator(_Server())
+    interrupted.on_producer_terminal("failed")
+    interrupted.operator_interrupt()
+    assert interrupted.producer_failed is False
+
+    fresh = ShutdownCoordinator(_Server())
+    fresh.operator_interrupt()
+    assert fresh.producer_failed is False
+    assert fresh.reason == "KeyboardInterrupt"
