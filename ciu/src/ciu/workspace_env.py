@@ -948,6 +948,36 @@ def _docker_available() -> bool:
     return result.returncode == 0
 
 
+_NETWORK_POOL_EXHAUSTED_MARKERS = (
+    "all predefined address pools have been fully subnetted",
+    "could not find an available, non-overlapping ipv4 address pool",
+)
+
+
+def _network_pool_remedy(detail: str) -> str:
+    """CIU-199: the actionable remedy for a daemon address-pool exhaustion.
+
+    The daemon error alone ("all predefined address pools have been fully
+    subnetted") does not say that the cause is the NUMBER of user-defined
+    networks on the host, not this checkout. CIU never removes networks it
+    does not own to make room, so the remedy is operator-directed.
+    """
+    lowered = detail.lower()
+    if not any(marker in lowered for marker in _NETWORK_POOL_EXHAUSTED_MARKERS):
+        return ""
+    return (
+        "\n[CIU-199] the Docker daemon has no free subnet left for a new "
+        "network: too many user-defined networks exist on this host. No "
+        "network was created and none was removed. Free subnets by removing "
+        "networks nobody uses (`docker network ls`, then `docker network rm "
+        "<exact name>` for an EMPTY one that belongs to a finished run; "
+        "`ciu worktree reap` surveys leftovers of removed worktrees), or ask "
+        "the host operator to widen `default-address-pools` in the daemon "
+        "configuration. Until the network exists `ciu up` cannot start this "
+        "checkout's stack."
+    )
+
+
 def _ensure_network_exists(
     network_name: str,
     *,
@@ -985,8 +1015,10 @@ def _ensure_network_exists(
         check=False,
     )
     if create.returncode != 0:
+        detail = (create.stderr or "").strip()
         raise WorkspaceEnvError(
-            f"Failed to create docker network {network_name}: {create.stderr.strip()}"
+            f"Failed to create docker network {network_name}: {detail}"
+            + _network_pool_remedy(detail)
         )
 
 

@@ -200,6 +200,8 @@ the technical detail below it.
 ## [Unreleased]
 
 ### Fixed
+- `ciu worktree adopt` (and the `ensure` resume of an adopted checkout) no longer refuses its own env-generation child (CIU-197). An adopt writes `recovery-required` as its durable no-reset marker, and the runtime-network verifier accepted only `allocating`, so every adopt of a checkout with a CIU root ended `recovery-required` with "managed worktree is 'recovery-required'; run `ciu worktree ensure`" and `ensure` hit the same refusal. The allocation-time verifier now also accepts an ADOPTED `recovery-required` record; `ciu up`/`ciu worktree up` still refuse it, and a non-adopted `recovery-required` record is still refused everywhere. Reproduced in a scratch repo (no host pool exhaustion needed) and verified fixed by `ensure` resuming it to `ready`.
+- A Docker address-pool exhaustion while creating the instance network ("all predefined address pools have been fully subnetted") now says what it means and what to do: too many user-defined networks on the host, nothing was created or removed, remove an EMPTY finished-run network by exact name (`ciu worktree reap` surveys leftovers) or ask the host operator to widen the daemon `default-address-pools` (CIU-199). The failure stays a warning during `env generate`/worktree preparation, as before.
 - Test-strength closeout of the ciu 7.22.0 R2 mutation survivors (CIU-195): new tests pin the both-tags requirement of `_known_stack_projects`, the flushed no-Docker-socket INFO line and the stdout fallback of the runtime-network probe error; the `.gitignore` chain guard in `engine._gitignore_text_ignores` drops a provably dead `root != stack` conjunct. No behaviour change.
 
 ## [7.20.0] - 2026-11-04
