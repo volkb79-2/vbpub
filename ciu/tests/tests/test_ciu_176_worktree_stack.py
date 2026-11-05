@@ -59,6 +59,12 @@ class TestPrimaryWithoutGeneratedFacts:
         assert "Missing required environment" not in message
 
 
+    def test_present_generated_facts_pass(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(deploy, "_require_primary_generated_facts", _REAL_REQUIRE_FACTS)
+        (tmp_path / "ciu.instance.generated.toml").write_text("", encoding="utf-8")
+        assert deploy._require_primary_generated_facts(tmp_path) is None
+
+
 class TestMissingEnvHint:
     @staticmethod
     def _expand(template: Path) -> str:
