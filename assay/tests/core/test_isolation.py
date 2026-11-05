@@ -2579,6 +2579,55 @@ def test_tiered_limits_fire_at_exactly_the_full_walk_thresholds(
         assert tiered == full, (index, limits)
 
 
+def _total_cap_limits(cap: int) -> SnapshotLimits:
+    base = DEFAULT_SNAPSHOT_LIMITS
+    return dataclasses.replace(
+        base,
+        max_total_object_bytes=cap,
+        max_blob_bytes=min(base.max_blob_bytes, cap),
+        max_total_tree_blob_bytes=min(base.max_total_tree_blob_bytes, cap),
+    )
+
+
+def test_tiered_total_object_bytes_refusal_matches_full_at_the_measured_boundary(
+    tmp_path: Path,
+) -> None:
+    """B220: the per-candidate `max_total_object_bytes` refusal itself.
+
+    The byte total the isolation layer counts is not the number plain git
+    reports for a child, so the boundary is found by bisection on the real
+    outcome instead of being computed. The base snapshot always fits (the
+    child adds objects), so the largest failing cap refuses the replacement
+    through the added-objects total in `tiered` and through the closure total
+    in `full`, with the same terminal and message."""
+    path, data = "other.txt", b"a replacement that adds a few bytes\n"
+    low, high = 1, 1024 * 1024  # high passes, low fails (the base needs > 1 byte)
+    probe = 0
+    while high - low > 1:
+        middle = (low + high) // 2
+        probe += 1
+        outcome = _outcome(
+            tmp_path, "full", _total_cap_limits(middle), path, data, f"bisect{probe}"
+        )
+        if outcome[0] == "ok":
+            high = middle
+        else:
+            low = middle
+    assert _outcome(
+        tmp_path, "full", _total_cap_limits(high), path, data, "boundary-pass"
+    )[0] == "ok"
+    for cap, tag in ((low, "fail"), (high, "pass")):
+        full = _outcome(tmp_path, "full", _total_cap_limits(cap), path, data, f"f-{tag}")
+        tiered = _outcome(tmp_path, "tiered", _total_cap_limits(cap), path, data, f"t-{tag}")
+        assert tiered == full, cap
+    refused = _outcome(
+        tmp_path, "tiered", _total_cap_limits(low), path, data, "t-refused"
+    )
+    assert refused[0] == "materialize", refused
+    assert refused[2] == ReasonCode.SNAPSHOT_LIMIT_EXCEEDED
+    assert "max_total_object_bytes" in str(refused[3])
+
+
 def test_tiered_limits_refuse_what_the_full_walk_refuses(tmp_path: Path) -> None:
     """The differential above would be vacuous if nothing were ever refused."""
     path, data = "sub/dir/deep.txt", b"x" * 500
