@@ -21,6 +21,74 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.23.0] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=b7681dbfa30cedf88d609bdac80737650c1b41d7 -->
+
+### Added
+- feat(ciu): rm --dry-run, restore registration on failed delete, adopt deregistered leftover (CIU-182) (89971967f)
+
+### Fixed
+- fix(ciu): pin CGROUP_PARENT_DEV_BACKGROUND per test; governance tests no longer read the runner env (CIU-193, FL-13) (2934a07a9)
+- fix(ciu): empty id exports are unset in env generate; restore os.environ around every test (CIU-192, flaky CONTAINER_UID gate failure) (dcb79dd81)
+- fix(ciu): review fixes F1-F5,F7 for CIU-176 (short-id match, warn on denied inspect, no global stub, bake prefix, hardened env hint, adopt-without-DOCKER_GID test) (ffd937926)
+- fix(ciu): worktree stack start - primary without generated facts refuses with remedy, missing .env* hint, attach the real own container (CIU-176) (50b93a8d4)
+- fix(gate): ciu R2 lane declares resource_observer=cgprofile + pids; ciu vs ciu-gate documented (CIU-190) (37fb0daa5)
+- fix(ciu): review fixes F1-F8 (fail-closed slice probe, read-only dry-run, writable-fix hardening, admin restore edges, docs) (dbb931e91)
+- fix(ciu): primary outdated facts refusal names primary root (CIU-180); worktree rm/clean degrade in devcontainer, read-only entries (CIU-181); file CIU-180..182 (ddcbf8539)
+
+### Changed
+- Merge branch 'ciu-flake2-20261105' (e6c4f7ce1)
+- chore(ciu): renumber CIU-193 -> CIU-194 (id collision with ciu-191 branch) (2e2ca15b1)
+- ciu: CIU-191 docs for the review fixes; file CIU-193 (down/--stop not label-filtered) (c2c6931e7)
+- ciu: CIU-191 review fixes: network ownership by own labels, linked-worktree strict rule, no-id refusal; file CIU-193 (e71543ae4)
+- Merge branch 'main' into ciu-191-20261105 (ca82623e0)
+- ciu: pin the legacy volume-listing failure and the vanished-network skip directly (CIU-191) (290dc5e34)
+- ciu: no coverage pragma on the CIU-191 plan child; one OSError handler (2374f2e0a)
+- ciu: fix mocks for the CIU-191 ownership kwargs; cover the dry-run plan branches (b1b02582f)
+- ciu: worktree rm / clean never touch another instance's objects (CIU-191) (69d341eb0)
+- backlog: ciu CIU-191 worktree rm hit main stacks; run-gate RG-167/168; pwmcp PWMCP-34 (found in netcup-api-filter@3786024) (452149954)
+- Merge branch 'ciu-findings-20261105' (3cd885f61)
+- Merge branch 'ciu-176-20261105' (2acdd9dce)
+- Merge main into ciu-findings-20261105; update CIU-184..187 against ciu-176 and ciu-triage (fb5b24966)
+- Merge branch 'ciu-r2-observer-20261105' (4addecb08)
+- Merge branch 'main' into ciu-triage-20261105 (a3ae66eb0)
+- backlog: ciu CIU-176 managed worktree cannot start a stack (found in netcup-api-filter@38f8731) (f0c60dadc)
+- Merge main into ciu-triage-20261105 (34cff169d)
+
+### Documentation
+- docs(ciu): CIU-176 status wording (4334615c4)
+- docs(ciu): renumber CP0 findings CIU-176..179 -> CIU-184..187 (CIU-176 is the operator's worktree-stack finding; CIU-180..183 used on ciu-triage) (592068e7f)
+- docs(ciu): file CIU-176..179 from dstdns CP0 (adopt/ensure loop, worktree up pull-denied, bake env message, rm flags) (e59508f0c)
+
+### Testing
+- test(ciu): enroll fixture images come from mirror.gcr.io (digest-pinned; DinD sidecar has no registry credentials and hit Docker Hub's per-IP 429) (b7681dbfa)
+- test(ciu): pin mtimes in the permission-retry new-protected-state test, cover both refusal paths (CIU-196) (2c9a10e67)
+- test(ciu): cover the present-facts return of the primary facts check (CIU-176) (139572e66)
+- test(ciu): cover dry-run clean checkout and foreign-tree rmtree branches (CIU-182 coverage) (265eef22e)
+- test(ciu): CIU-164 uid-1000 hostdir acceptance case; backlog status (d472dd56a)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- Release-gate flake: the permission-retry "new protected state after the checkpoint" test no longer depends on filesystem timestamp granularity; it pins mtimes and covers both refusal paths (CIU-196). Test-only; production safety checks unchanged.
+- `ciu worktree rm` / `ciu clean` no longer remove another instance's containers, volumes or networks when the deploy tags are shared (CIU-191). A name prefix (`naf-dev-`) or compose project name selected EVERY checkout's objects with the same tags, so removing a never-started worktree tore down the main project's running stacks. Clean now removes a prefix- or project-matched container or volume only when its `ciu.instance`/`ciu.repo-root` ownership labels name the cleaned checkout (an unlabelled match is left alone in a worktree instance), and keeps a compose network whose own ownership labels are not the cleaned checkout's (or that still has an endpoint it cannot prove is its own) instead of removing or disconnecting it. A linked git worktree always takes this strict rule, even for a sibling CIU root without a lifecycle record, and a worktree whose facts file records no instance id is refused. `ciu down`/`--stop` is not yet label-filtered (CIU-193). `ciu clean --dry-run` prints the plan (what is removed by name, what is left and why) and changes nothing; `ciu worktree rm` prints it before the confirmation/`--yes` gate and in `--dry-run`. The child clean's environment also drops `COMPOSE_PROJECT_NAME`, `PROJECT_NAME` and `ENVIRONMENT_TAG`, and `worktree rm` refuses a shell that exports a third instance's identity, naming the `env -u ...` command to run instead.
+- `ciu up` in a managed worktree no longer stops at STEP 13 on the PRIMARY checkout's outdated (schema-v1) generated facts without saying where to repair them; `ciu worktree create`/`ensure` detect it up front, and every refusal now names the primary CIU root and `cd <primary> && ciu env generate` (CIU-180).
+- `ciu worktree rm` / `ciu clean` work in a devcontainer: an inconclusive S6.5 root-helper slice probe (systemd not PID 1) warns and proceeds instead of aborting (CIU-181, CIU-164 design); caller-owned `vol-*` trees have read-only entries made writable before deletion; read-only caller-owned entries (0444 files, 0555 dirs) no longer strand a checkout; a repeat `rm` of a deregistered-but-present checkout names the leftover directory.
+- `ciu worktree rm --dry-run` lists what removal would refuse on or leave behind and changes nothing; a failed checkout deletion now restores the Git registration instead of stranding an unregistered directory; a repeat `rm NAME` adopts and finishes a deregistered leftover under the worktrees dir (shared record, dangling `.git` pointer, no mounts, exact `--discard-protected-state`/`--discard-changes` consents; the branch is kept) (CIU-182). `libraries/worktree`: `remove_workspace` backs up and, after a failed deletion, restores the Git registration (clean refusal if the backup fails); `remove_unrecorded_workspace` accepts the same `cleanup` callback. `rm --dry-run` runs git with `GIT_OPTIONAL_LOCKS=0`. The S6.5 slice preflight degrades only for "no systemctl"/"systemd not PID 1"; a failed probe on a real systemd host refuses. Adoption's resource release is deferred to CIU-183.
+
+- `ciu up` in a worktree whose PRIMARY checkout has no generated facts no longer fails with the misleading `Missing required environment values in <primary>/ciu.global.defaults.toml.j2` (every variable was exported in the worktree; the primary comparison deliberately ignores shell exports): it refuses with `[CIU-176]`, naming the primary root and `cd <primary> && ciu env generate` (CIU-176)
+- A missing-environment refusal raised from a linked worktree's template names the primary checkout's gitignored `.env*` files that the worktree lacks, and how to export them (CIU-176)
+- Behaviour change: `ciu env generate` / worktree preparation now attach the container the process ACTUALLY runs in (own container id from `/proc/self/mountinfo`, name via `docker inspect`), not the one `DEVCONTAINER_NAME` names; a stale machine fact such as `dstdns-devcontainer-vb` in another cockpit is replaced with a warning, a short-id `HOSTNAME` fallback resolves to the real name silently, and a denied `docker inspect` warns and keeps the configured name. A ciu run inside an ephemeral gate container that inherits `ENV_TYPE=devcontainer` therefore attaches that container (CIU-176)
+- `ciu bake` no longer doubles the prefix (`[CIU-117] [CIU-176]`) on refusals that already carry a CIU id
+- `ciu env generate` treats an exported but EMPTY `USER_UID`, `USER_GID`, `DOCKER_UID`, `CONTAINER_UID` or `CONTAINER_GID` as unset (it used to record `container_uid = ""`, which every later verb rejected with "Missing required workspace environment variables: CONTAINER_UID"); `0` stays valid (CIU-192)
+- Test suite: `os.environ` is snapshotted and restored around every test, so a verb's bootstrap can no longer leak identity/machine facts into the next test of an xdist worker (the root of an intermittent release-gate failure, CIU-192)
+- Test suite: `CGROUP_PARENT_DEV_BACKGROUND` is pinned for every test instead of being read from the runner, so four governance tests (`test_gen_to_vault_*`, `test_builtin_ksm_*`) no longer fail the release gate in a container that does not forward the variable (they had passed only through the environment leak CIU-192 removed; CIU-194)
+
+### Adoption / Migration Notes
+- Safe to ignore: additive; the new refusals name the command to run.
+- fix(gate): `[lanes.ciu]` in run-gate.toml declares `resource_observer = "cgprofile"` and `resources.pids = 8192`, so the async R2 mutation lane no longer always ends `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; lane `ciu` (R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) is now documented in run-gate.toml, assay.toml and README (CIU-190).
+<!-- cmru: pending release notes end -->
+
 ## [7.22.0] - 2026-11-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=a985f22b9f878cd4166ded5956863dcb0590522e -->
@@ -133,22 +201,6 @@ the technical detail below it.
 
 ### Fixed
 - Test-strength closeout of the ciu 7.22.0 R2 mutation survivors (CIU-195): new tests pin the both-tags requirement of `_known_stack_projects`, the flushed no-Docker-socket INFO line and the stdout fallback of the runtime-network probe error; the `.gitignore` chain guard in `engine._gitignore_text_ignores` drops a provably dead `root != stack` conjunct. No behaviour change.
-- `ciu worktree rm` / `ciu clean` no longer remove another instance's containers, volumes or networks when the deploy tags are shared (CIU-191). A name prefix (`naf-dev-`) or compose project name selected EVERY checkout's objects with the same tags, so removing a never-started worktree tore down the main project's running stacks. Clean now removes a prefix- or project-matched container or volume only when its `ciu.instance`/`ciu.repo-root` ownership labels name the cleaned checkout (an unlabelled match is left alone in a worktree instance), and keeps a compose network whose own ownership labels are not the cleaned checkout's (or that still has an endpoint it cannot prove is its own) instead of removing or disconnecting it. A linked git worktree always takes this strict rule, even for a sibling CIU root without a lifecycle record, and a worktree whose facts file records no instance id is refused. `ciu down`/`--stop` is not yet label-filtered (CIU-193). `ciu clean --dry-run` prints the plan (what is removed by name, what is left and why) and changes nothing; `ciu worktree rm` prints it before the confirmation/`--yes` gate and in `--dry-run`. The child clean's environment also drops `COMPOSE_PROJECT_NAME`, `PROJECT_NAME` and `ENVIRONMENT_TAG`, and `worktree rm` refuses a shell that exports a third instance's identity, naming the `env -u ...` command to run instead.
-- `ciu up` in a managed worktree no longer stops at STEP 13 on the PRIMARY checkout's outdated (schema-v1) generated facts without saying where to repair them; `ciu worktree create`/`ensure` detect it up front, and every refusal now names the primary CIU root and `cd <primary> && ciu env generate` (CIU-180).
-- `ciu worktree rm` / `ciu clean` work in a devcontainer: an inconclusive S6.5 root-helper slice probe (systemd not PID 1) warns and proceeds instead of aborting (CIU-181, CIU-164 design); caller-owned `vol-*` trees have read-only entries made writable before deletion; read-only caller-owned entries (0444 files, 0555 dirs) no longer strand a checkout; a repeat `rm` of a deregistered-but-present checkout names the leftover directory.
-- `ciu worktree rm --dry-run` lists what removal would refuse on or leave behind and changes nothing; a failed checkout deletion now restores the Git registration instead of stranding an unregistered directory; a repeat `rm NAME` adopts and finishes a deregistered leftover under the worktrees dir (shared record, dangling `.git` pointer, no mounts, exact `--discard-protected-state`/`--discard-changes` consents; the branch is kept) (CIU-182). `libraries/worktree`: `remove_workspace` backs up and, after a failed deletion, restores the Git registration (clean refusal if the backup fails); `remove_unrecorded_workspace` accepts the same `cleanup` callback. `rm --dry-run` runs git with `GIT_OPTIONAL_LOCKS=0`. The S6.5 slice preflight degrades only for "no systemctl"/"systemd not PID 1"; a failed probe on a real systemd host refuses. Adoption's resource release is deferred to CIU-183.
-
-- `ciu up` in a worktree whose PRIMARY checkout has no generated facts no longer fails with the misleading `Missing required environment values in <primary>/ciu.global.defaults.toml.j2` (every variable was exported in the worktree; the primary comparison deliberately ignores shell exports): it refuses with `[CIU-176]`, naming the primary root and `cd <primary> && ciu env generate` (CIU-176)
-- A missing-environment refusal raised from a linked worktree's template names the primary checkout's gitignored `.env*` files that the worktree lacks, and how to export them (CIU-176)
-- Behaviour change: `ciu env generate` / worktree preparation now attach the container the process ACTUALLY runs in (own container id from `/proc/self/mountinfo`, name via `docker inspect`), not the one `DEVCONTAINER_NAME` names; a stale machine fact such as `dstdns-devcontainer-vb` in another cockpit is replaced with a warning, a short-id `HOSTNAME` fallback resolves to the real name silently, and a denied `docker inspect` warns and keeps the configured name. A ciu run inside an ephemeral gate container that inherits `ENV_TYPE=devcontainer` therefore attaches that container (CIU-176)
-- `ciu bake` no longer doubles the prefix (`[CIU-117] [CIU-176]`) on refusals that already carry a CIU id
-- `ciu env generate` treats an exported but EMPTY `USER_UID`, `USER_GID`, `DOCKER_UID`, `CONTAINER_UID` or `CONTAINER_GID` as unset (it used to record `container_uid = ""`, which every later verb rejected with "Missing required workspace environment variables: CONTAINER_UID"); `0` stays valid (CIU-192)
-- Test suite: `os.environ` is snapshotted and restored around every test, so a verb's bootstrap can no longer leak identity/machine facts into the next test of an xdist worker (the root of an intermittent release-gate failure, CIU-192)
-- Test suite: `CGROUP_PARENT_DEV_BACKGROUND` is pinned for every test instead of being read from the runner, so four governance tests (`test_gen_to_vault_*`, `test_builtin_ksm_*`) no longer fail the release gate in a container that does not forward the variable (they had passed only through the environment leak CIU-192 removed; CIU-194)
-
-### Adoption / Migration Notes
-- Safe to ignore: additive; the new refusals name the command to run.
-- fix(gate): `[lanes.ciu]` in run-gate.toml declares `resource_observer = "cgprofile"` and `resources.pids = 8192`, so the async R2 mutation lane no longer always ends `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; lane `ciu` (R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) is now documented in run-gate.toml, assay.toml and README (CIU-190).
 
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->
