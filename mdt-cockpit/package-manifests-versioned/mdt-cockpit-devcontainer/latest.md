@@ -7,12 +7,12 @@ Stable documentation landing page for `mdt-cockpit-devcontainer`.
 - Target: `trixie-py314-php85-vsc`
 - Debian: `trixie`
 - Python: `3.14`
-- Build date: `20261104`
-- Versioned manifest: https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit-devcontainer/trixie-py3.14-php8.5-20261104.md
+- Build date: `20261105`
+- Versioned manifest: https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit-devcontainer/trixie-py3.14-php8.5-20261105.md
 - Family index: https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit-devcontainer/README.md
 
 ## Other Release Pages
 
-- `trixie-py314-php85-vsc`: https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit-devcontainer/trixie-py3.14-php8.5-20261104.md
+- `trixie-py314-php85-vsc`: https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit-devcontainer/trixie-py3.14-php8.5-20261105.md
 
 This stable page exists so OCI metadata can point to one durable documentation URL while the release-specific manifests remain versioned.
