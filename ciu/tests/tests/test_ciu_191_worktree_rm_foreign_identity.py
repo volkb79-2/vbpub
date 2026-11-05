@@ -582,3 +582,19 @@ def test_rm_dry_run_json_keeps_the_plan_off_stdout(tmp_repo, fake_generate_env, 
     )
     worktree.remove_document(tmp_repo, "one", dry_run=True, json_output=True)
     assert seen == [{"yes": False, "plan_only": True, "json_output": True}]
+
+
+def test_network_that_vanishes_between_exists_and_inspect_is_skipped(monkeypatch):
+    """A concurrent teardown won: not an error, nothing disconnected or removed."""
+    calls = []
+    monkeypatch.setattr(deploy, "_network_exists", lambda _n: True)
+    monkeypatch.setattr(deploy, "_network_endpoints", lambda _n: None)
+    monkeypatch.setattr(deploy.procutil, "docker", lambda *a, **k: calls.append(a) or _proc())
+    assert deploy._remove_identity_networks(["gone"]) == ([], [])
+    assert calls == []
+
+
+def test_unowned_stack_volume_listing_failure_raises(monkeypatch):
+    monkeypatch.setattr(deploy.procutil, "docker", lambda *a, **k: _proc(1, "", "down"))
+    with pytest.raises(ValueError, match="docker volume ls failed for compose project 'p'"):
+        deploy._list_stack_project_volumes(["p"])
