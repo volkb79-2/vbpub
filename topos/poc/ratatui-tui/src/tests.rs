@@ -256,7 +256,7 @@ mod fake {
                             break;
                         }
                         n += 1;
-                        // the view must ask for its fields in compact form (the answer is 15x smaller)
+                        // the view must ask for its fields in compact form (about 6x smaller on r1002)
                         if req["compact"] != true || !req["fields"].as_array().is_some_and(|f| f.iter().any(|x| x == "mem.current") && f.iter().any(|x| x == "limit.*")) {
                             json!({"ok": false, "protocol": 1, "epoch": epoch, "error": {"code": "bad_request", "message": "view must send fields and compact"}})
                         } else {

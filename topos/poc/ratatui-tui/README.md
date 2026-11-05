@@ -58,9 +58,10 @@ Keys: `?` help, `n` noise (all/middle/hot), `/` filter, `s`/`S` sort (or click a
   (root = `pids.d_state`); process rows from `current.procs`; zswap rates from `vm.zswp*` and `zswap.*` counters
   (pages/s); IO lines from `dev:*` (partitions folded into their disk); effective memory.min computed along the
   ancestor chain; memory stack from `memstack.*`.
-- Cost (measured on a 4-vCPU host, 79 cgroups, 1 Hz): the `current` answer is about 480 KB; parsing and converting it takes
-  about 14 ms per tick on the feed thread (shown in the status line as `feed ... parse ...`), a full-screen draw 1.4 ms (260x60),
-  so the live TUI uses roughly 2.5% of one core. The protocol has no field filter yet, so the parse is the main cost.
+- Cost: with `fields` and `compact` (next point) the `current` answer is about 87 KB on a host with about 100 cgroups and
+  entities; the full answer there is about 530 KB. Decoding it takes about 0.6 ms, measured offline on a captured r1002 answer.
+  A full-screen draw takes 1.4 ms (260x60). The live parse cost per tick is shown in the status line as `feed ... parse ...`.
+  The earlier 14 ms per tick and 2.5% of a core were measured before the field filter existed.
 - Request shape: `current` is asked with `fields` (exactly the metrics the view shows; `limit.*` and `zswap.reject_*`
   as prefixes) and `compact` (bare gauges, `[delta, rate]` counters, no `raw`, `not_applicable` left out). A metric
   missing from a compact reply reads `n/a`, except io.cost off and a disk with no await, which read `·`.
