@@ -143,6 +143,7 @@ the technical detail below it.
 - `ciu bake` no longer doubles the prefix (`[CIU-117] [CIU-176]`) on refusals that already carry a CIU id
 - `ciu env generate` treats an exported but EMPTY `USER_UID`, `USER_GID`, `DOCKER_UID`, `CONTAINER_UID` or `CONTAINER_GID` as unset (it used to record `container_uid = ""`, which every later verb rejected with "Missing required workspace environment variables: CONTAINER_UID"); `0` stays valid (CIU-192)
 - Test suite: `os.environ` is snapshotted and restored around every test, so a verb's bootstrap can no longer leak identity/machine facts into the next test of an xdist worker (the root of an intermittent release-gate failure, CIU-192)
+- Test suite: `CGROUP_PARENT_DEV_BACKGROUND` is pinned for every test instead of being read from the runner, so four governance tests (`test_gen_to_vault_*`, `test_builtin_ksm_*`) no longer fail the release gate in a container that does not forward the variable (they had passed only through the environment leak CIU-192 removed; CIU-194)
 
 ### Adoption / Migration Notes
 - Safe to ignore: additive; the new refusals name the command to run.
