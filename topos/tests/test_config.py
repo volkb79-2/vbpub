@@ -131,3 +131,83 @@ weights = "not-a-dict"
         "io_cap_saturation_pct": 0.0,
         "network_loss_pct": 0.0,
     }
+
+
+# --- D-05 / D-04: one ConfigError, strict values, unknown-key warnings -------
+
+from topos.config import ConfigError  # noqa: E402
+
+
+def _write(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "config.toml"
+    path.write_text(text)
+    return path
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[general\n",
+        "[general]\ninterval = 0\n",
+        "[general]\ninterval = -3\n",
+        "[general]\ninterval = 0.05\n",
+        "[general]\ninterval = nan\n",
+        '[general]\ninterval = "abc"\n',
+        '[general]\ndefault_view = "wide"\n',
+        '[history.daemon]\ncompression = "gzip"\n',
+        '[damon]\npaddr_enabled = "true"\n',
+        "[history]\nfull_resolution_seconds = 0\n",
+        "[history]\nfull_resolution_seconds = -5\n",
+        "[history]\nentity_grace_seconds = -1\n",
+        "[processes]\nhard_cap = 0\n",
+        "[history.daemon]\nmax_age_days = -1\n",
+    ],
+)
+def test_invalid_config_raises_config_error(tmp_path: Path, text: str) -> None:
+    path = _write(tmp_path, text)
+    with pytest.raises(ConfigError) as info:
+        load(path, warn=lambda _line: None)
+    assert info.value.path == path
+    assert info.value.message
+
+
+def test_interval_floor_is_accepted_exactly(tmp_path: Path) -> None:
+    assert load(_write(tmp_path, "[general]\ninterval = 0.1\n")).interval == 0.1
+
+
+def test_unknown_keys_warn_once_per_key(tmp_path: Path) -> None:
+    path = _write(tmp_path, "[general]\ninterval = 2\nintervall = 3\n[bogus]\nx = 1\n[history.daemon]\nenabeld = true\n")
+    lines: list[str] = []
+    cfg = load(path, warn=lines.append)
+    assert cfg.interval == 2.0
+    assert len(lines) == 3
+    assert any("general.intervall" in line for line in lines)
+    assert any("[bogus]" in line for line in lines)
+    assert any("history.daemon.enabeld" in line for line in lines)
+
+
+def test_unsupported_known_keys_warn_no_effect(tmp_path: Path) -> None:
+    path = _write(tmp_path, '[hotkeys]\nprofile = "htop"\n[colors]\nwarn = "red"\n[history]\ndownsample_interval_seconds = 30\n')
+    lines: list[str] = []
+    load(path, warn=lines.append)
+    joined = "\n".join(lines)
+    assert "hotkeys is accepted but has no effect yet" in joined
+    assert "colors is accepted but has no effect yet" in joined
+    assert "history.downsample_interval_seconds is accepted but has no effect yet" in joined
+
+
+def test_valid_config_emits_no_warnings(tmp_path: Path) -> None:
+    lines: list[str] = []
+    load(_write(tmp_path, '[general]\ninterval = 2\ndefault_view = "container"\n[damon]\npaddr_enabled = true\n'), warn=lines.append)
+    assert lines == []
+
+
+def test_missing_file_loads_defaults(tmp_path: Path) -> None:
+    assert load(tmp_path / "absent.toml").interval == 5.0
+
+
+def test_config_view_modes_match_ui_view_modes() -> None:
+    from topos import config as config_mod
+    from topos.ui.table import VIEW_MODES
+
+    assert config_mod._VIEW_MODES == VIEW_MODES

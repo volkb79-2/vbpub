@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import sys
@@ -15,7 +16,7 @@ from topos.bpf_gate import report_to_jsonable, render_report, run_bpf_gate
 from topos.collect.collector import Collector
 from topos.collect.cgroup import _validate_slice_name
 from topos.collect.dockerjoin import ContainerResolveError, resolve_container_key
-from topos.config import BpfSnapshotConfig, load
+from topos.config import MIN_INTERVAL_SECONDS, BpfSnapshotConfig, ConfigError, load
 from topos.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
 from topos.damon.passive import DEFAULT_DAMON_ROOT
 from topos.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
@@ -505,6 +506,14 @@ def _main_squeeze(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except ConfigError as exc:
+        print(f"topos: config {exc.path}: {exc.message}", file=sys.stderr)
+        return 2
+
+
+def _main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if raw_argv[:1] == ["damon"]:
         return _main_damon(raw_argv[1:])
@@ -546,6 +555,25 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.duration is not None and args.frames is not None:
         print_cli_error("--duration and --frames are mutually exclusive")
+        return 2
+    if (args.duration is not None or args.frames is not None) and not (args.headless and args.record is not None):
+        print_cli_error("--duration and --frames are only supported with --headless --record FILE")
+        return 2
+    if args.duration is not None and not args.duration > 0:
+        print_cli_error("--duration must be greater than 0")
+        return 2
+    if args.frames is not None and args.frames < 1:
+        print_cli_error("--frames must be at least 1")
+        return 2
+    if args.interval is not None:
+        if not args.interval >= MIN_INTERVAL_SECONDS:
+            print_cli_error(f"--interval must be at least {MIN_INTERVAL_SECONDS:g} seconds")
+            return 2
+        if not args.headless:
+            # The headless driver applies --interval itself.
+            config = dataclasses.replace(config, interval=args.interval)
+    if args.replay is None and (args.step or args.speed != 1.0) and args.attach is None:
+        print_cli_error("--speed and --step require --replay")
         return 2
     # Validate --slice early so bad values are rejected before collector work
     if args.slice is not None:
