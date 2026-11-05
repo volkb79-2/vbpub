@@ -102,7 +102,7 @@ features:
   - id: F017
     title: Daemon attach and deployment UX
     acceptance:
-      - When `--attach` is used with no explicit socket, it defaults to `/run/topos/topos.sock`; `topos daemon preflight|install-plan|current|status` and daemon client error messages give actionable next steps without performing installation or mutation.
+      - When `--attach` is used with no explicit socket, it defaults to `/run/topos/observe/topos.sock`; `topos daemon preflight|install-plan|current|status` and daemon client error messages give actionable next steps without performing installation or mutation.
     status: shipped
     milestone: M4
   - id: F018

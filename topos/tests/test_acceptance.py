@@ -1268,7 +1268,7 @@ def test_mcp_smoke_does_not_unlink_a_caller_supplied_socket(
 ) -> None:
     """Teardown must not delete a socket this process did not create.
 
-    ``--socket /run/topos/topos.sock`` must not remove the packaged system
+    ``--socket /run/topos/observe/topos.sock`` must not remove the packaged system
     daemon's socket on exit.
     """
     import topos.acceptance as acceptance

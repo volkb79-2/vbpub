@@ -48,6 +48,8 @@ collection is planned pending a proof of concept (D-026).
   evidence sources, live-host templates, and explicit non-claims.
 - `docs/DAEMON.md`, `docs/INSPECT-FILES.md`, `docs/WEB-UI-SCOPING.md` (parked),
   `docs/BACKLOG.md` (older narrative ledger).
+- `docs/DESIGN-GUIDE.md` — why the host daemon uses systemd socket activation.
+- `docs/CONSUMERS.md` — copyable service config, unit, and client examples.
 - `pwmcp-instance/README.md` — pinned browser-test service, CIU lifecycle and
   network/security constraints for future web acceptance.
 - `nyxloom-trove/` — handoffs, reports and decisions; finished ones are in
@@ -81,9 +83,21 @@ systemd service, not a container image: it observes the host cgroup hierarchy,
 Docker metadata, optional BPF state, and optional DAMON sysfs control.  Putting
 those powers in a privileged container would add an image boundary without
 meaningfully reducing host authority.  The installed `topos.service`,
-`topos.tmpfiles`, and `topos.slice` templates instead create a group-readable
-Unix socket for clients and bound the daemon to 256 MiB `MemoryHigh`, 512 MiB
-`MemoryMax`, 1 GiB swap, 512 tasks, and low CPU weight.
+`topos-observe.socket`, `topos.slice`, and sysusers files let systemd own the
+group-readable socket at `/run/topos/observe/topos.sock`; private daemon state
+lives under `/run/topos/state/`. The daemon receives its `observe` listener
+through systemd socket activation. Its unit bounds it to 256 MiB `MemoryHigh`,
+512 MiB `MemoryMax`, 1 GiB swap, 512 tasks, and low CPU weight. See the
+[daemon design guide](docs/DESIGN-GUIDE.md) for the reasoning and
+[consumer guide](docs/CONSUMERS.md) for install and client examples.
+
+The `toposd` admin entry point provides `run`, `unit print`, `unit check`, and
+`config check`. `toposd run` requires the activated socket; use
+`toposd run --self-bind --socket PATH` only for tests and development. The old
+`/run/topos/topos.sock` path is no longer served, so an upgrading host needs a
+fresh install. `toposd install`, `uninstall`, and `doctor` are coming in the
+same release. The existing `topos daemon preflight`, `install-plan`, and
+`status` commands remain available in this package.
 
 Without a daemon, the client still works in direct mode: `topos --once`, the
 live TUI, record/replay, report, query, and rootless readable metrics collect

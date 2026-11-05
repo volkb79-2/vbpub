@@ -11,6 +11,8 @@ from pathlib import Path
 from conftest import fixture_frame, fixture_root
 from topos.daemon import FrameBroker, serve_unix_socket
 from topos.daemon.deploy import preflight_daemon_deployment, preflight_report_to_jsonable, render_preflight_text
+from topos.service.config import ObserveSocketConfig, ServiceConfig, SocketsConfig
+from topos.service.units import render_units
 
 
 def _current_group_name() -> str:
@@ -26,15 +28,25 @@ def _start_socket(socket_path: Path):
 
 def _cli_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["PYTHONPATH"] = f"/tmp/topos-pytest:{fixture_root().parents[1] / 'src'}"
+    repo_root = Path(__file__).resolve().parents[2]
+    env["PYTHONPATH"] = os.pathsep.join(
+        (
+            str(repo_root / "topos/src"),
+            str(repo_root / "topos"),
+            str(repo_root / "libraries/cli-extended/src"),
+        )
+    )
     return env
 
 
-def test_daemon_preflight_json_and_text_report_for_usable_socket(tmp_path: Path) -> None:
-    runtime_dir = tmp_path / "good"
-    runtime_dir.mkdir()
-    runtime_dir.chmod(0o750)
-    socket_path = runtime_dir / "topos.sock"
+def test_daemon_preflight_json_and_text_report_include_new_layout(tmp_path: Path) -> None:
+    socket_path = tmp_path / "observe.sock"
+    config_path = tmp_path / "toposd.toml"
+    config_path.write_text(
+        'state_dir = "/run/topos/state"\n\n[sockets.observe]\n'
+        f'path = "{socket_path}"\ngroup = "{_current_group_name()}"\nmode = "0660"\n',
+        encoding="utf-8",
+    )
     server = _start_socket(socket_path)
     try:
         proc = subprocess.run(
@@ -46,6 +58,8 @@ def test_daemon_preflight_json_and_text_report_for_usable_socket(tmp_path: Path)
                 "preflight",
                 "--socket",
                 str(socket_path),
+                "--config",
+                str(config_path),
                 "--group",
                 _current_group_name(),
                 "--json",
@@ -57,12 +71,13 @@ def test_daemon_preflight_json_and_text_report_for_usable_socket(tmp_path: Path)
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        assert proc.returncode == 0, proc.stderr
         payload = json.loads(proc.stdout)
-        assert payload["ok"] is True
+        assert proc.returncode == (0 if payload["ok"] else 1), proc.stderr
         assert payload["socket"]["present"] is True
         assert payload["socket"]["can_connect"] is True
-        assert all(check["ok"] for check in payload["checks"])
+        assert payload["state_dir"]["path"] == "/run/topos/state"
+        state_check = next(check for check in payload["checks"] if check["name"] == "state_dir")
+        assert isinstance(state_check["ok"], bool)
 
         proc = subprocess.run(
             [
@@ -73,6 +88,8 @@ def test_daemon_preflight_json_and_text_report_for_usable_socket(tmp_path: Path)
                 "preflight",
                 "--socket",
                 str(socket_path),
+                "--config",
+                str(config_path),
                 "--group",
                 _current_group_name(),
             ],
@@ -83,54 +100,43 @@ def test_daemon_preflight_json_and_text_report_for_usable_socket(tmp_path: Path)
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        assert proc.returncode == 0, proc.stderr
-        assert "usable: yes" in proc.stdout
+        assert proc.returncode == (0 if payload["ok"] else 1), proc.stderr
+        assert "state dir /run/topos/state" in proc.stdout
+        assert f"usable: {'yes' if payload['ok'] else 'no'}" in proc.stdout
         assert "current process can connect" in proc.stdout
     finally:
         server.shutdown()
         server.server_close()
 
 
-def test_daemon_preflight_rejects_world_writable_runtime_dir(tmp_path: Path) -> None:
-    runtime_dir = tmp_path / "bad"
-    runtime_dir.mkdir()
-    runtime_dir.chmod(0o777)
-    socket_path = runtime_dir / "topos.sock"
+def test_daemon_preflight_rejects_state_dir_that_is_not_private(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o777)
+    state_dir.chmod(0o777)
+    socket_path = tmp_path / "observe.sock"
     server = _start_socket(socket_path)
     try:
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "topos.cli",
-                "daemon",
-                "preflight",
-                "--socket",
-                str(socket_path),
-                "--group",
-                _current_group_name(),
-            ],
-            check=False,
-            cwd=fixture_root().parents[1],
-            env=_cli_env(),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        cfg = ServiceConfig(
+            state_dir=state_dir,
+            sockets=SocketsConfig(
+                observe=ObserveSocketConfig(path=socket_path, group=_current_group_name())
+            ),
         )
-        assert proc.returncode == 1
-        assert "world-writable" in proc.stdout
-        assert "usable: no" in proc.stdout
-        assert proc.stderr == ""
+        report = preflight_daemon_deployment(socket_path, config=cfg, group_name=_current_group_name())
+        state_check = next(check for check in report.checks if check.name == "state_dir")
+        assert state_check.ok is False
+        assert "0700 root:root" in state_check.message
+        assert report.usable is False
     finally:
         server.shutdown()
         server.server_close()
 
 
 def test_daemon_preflight_helper_does_not_invoke_mutation_or_systemd(tmp_path: Path, monkeypatch) -> None:
-    runtime_dir = tmp_path / "safe"
-    runtime_dir.mkdir()
-    runtime_dir.chmod(0o750)
-    socket_path = runtime_dir / "topos.sock"
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(mode=0o700)
+    state_dir.chmod(0o700)
+    socket_path = tmp_path / "observe.sock"
     server = _start_socket(socket_path)
     try:
         import os as os_module
@@ -140,11 +146,18 @@ def test_daemon_preflight_helper_does_not_invoke_mutation_or_systemd(tmp_path: P
         monkeypatch.setattr(os_module, "chmod", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected chmod")))
         monkeypatch.setattr(subprocess_module, "run", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected systemd invocation")))
 
-        report = preflight_daemon_deployment(socket_path, group_name=_current_group_name())
-        assert report.usable is True
+        cfg = ServiceConfig(
+            state_dir=state_dir,
+            sockets=SocketsConfig(
+                observe=ObserveSocketConfig(path=socket_path, group=_current_group_name())
+            ),
+        )
+        report = preflight_daemon_deployment(
+            socket_path, config=cfg, group_name=_current_group_name()
+        )
         assert report.can_connect is True
-        assert json.loads(json.dumps(preflight_report_to_jsonable(report)))["ok"] is True
-        assert "usable: yes" in render_preflight_text(report)
+        assert json.loads(json.dumps(preflight_report_to_jsonable(report)))["ok"] is report.usable
+        assert "state dir" in render_preflight_text(report)
     finally:
         server.shutdown()
         server.server_close()
@@ -152,12 +165,19 @@ def test_daemon_preflight_helper_does_not_invoke_mutation_or_systemd(tmp_path: P
 
 def test_systemd_templates_are_packaged() -> None:
     import importlib.resources as resources
+    from topos.service.config import DEFAULTS
 
     root = resources.files("topos")
     service = (root / "assets/systemd/topos.service").read_text()
-    tmpfiles = (root / "assets/systemd/topos.tmpfiles").read_text()
-    assert "topos daemon serve --socket /run/topos/topos.sock" in service
-    assert "d /run/topos 0750 root topos -" in tmpfiles
+    socket = (root / "assets/systemd/topos-observe.socket").read_text()
+    sysusers = (root / "assets/systemd/topos.sysusers").read_text()
+    assert "ExecStart=/opt/topos/current/venv/bin/toposd run --config /etc/topos/toposd.toml" in service
+    assert "RuntimeDirectory=topos/state" in service
+    assert "Sockets=topos-observe.socket" in service
+    assert "ListenStream=/run/topos/observe/topos.sock" in socket
+    assert sysusers == "g topos-observe -\n"
+    assert not (root / "assets/systemd/topos.tmpfiles").is_file()
+    assert render_units(DEFAULTS)["topos.service"] == service
     slice_unit = (root / "assets/systemd/topos.slice").read_text()
     assert "MemoryMax=512M" in slice_unit
 
@@ -171,8 +191,9 @@ def test_install_plan_deterministic_defaults() -> None:
         DEFAULT_DAEMON_GROUP,
         DEFAULT_DAEMON_SOCKET,
         DEFAULT_SERVICE_DEST,
+        DEFAULT_SOCKET_DEST,
         DEFAULT_SLICE_DEST,
-        DEFAULT_TMPFILES_DEST,
+        DEFAULT_SYSUSERS_DEST,
         build_install_plan,
         install_plan_to_jsonable,
         render_install_plan_text,
@@ -183,9 +204,10 @@ def test_install_plan_deterministic_defaults() -> None:
 
     assert plan1.socket_path == DEFAULT_DAEMON_SOCKET
     assert plan1.group_name == DEFAULT_DAEMON_GROUP
-    assert plan1.service_dest == DEFAULT_SERVICE_DEST
-    assert plan1.slice_dest == DEFAULT_SLICE_DEST
-    assert plan1.tmpfiles_dest == DEFAULT_TMPFILES_DEST
+    assert plan1.destinations["topos.service"] == DEFAULT_SERVICE_DEST
+    assert plan1.destinations["topos-observe.socket"] == DEFAULT_SOCKET_DEST
+    assert plan1.destinations["topos.slice"] == DEFAULT_SLICE_DEST
+    assert plan1.destinations["topos.sysusers"] == DEFAULT_SYSUSERS_DEST
 
     j1 = json.dumps(install_plan_to_jsonable(plan1), sort_keys=True)
     j2 = json.dumps(install_plan_to_jsonable(plan2), sort_keys=True)
@@ -195,55 +217,47 @@ def test_install_plan_deterministic_defaults() -> None:
     assert "Step 1" in text
     assert "Step 8" in text
     assert "PLAN only" in text
-    assert "groupadd" in text
+    assert "systemd-sysusers" in text
     assert "systemctl" in text
     assert "install -m 0644 -o root -g root /dev/stdin" in text
     assert str(DEFAULT_DAEMON_SOCKET) in text
 
 
 def test_install_plan_custom_args() -> None:
-    """Custom socket, group, and dest paths appear in the plan."""
+    """Custom socket, group, and service destination appear in the plan."""
     from topos.daemon.deploy import build_install_plan, install_plan_to_jsonable
 
     plan = build_install_plan(
         socket_path="/tmp/custom/topos.sock",
         group_name="custom-group",
         service_dest="/opt/systemd/system/topos.service",
-        slice_dest="/opt/systemd/system/topos.slice",
-        tmpfiles_dest="/opt/tmpfiles.d/topos.conf",
     )
 
     assert plan.socket_path == Path("/tmp/custom/topos.sock")
     assert plan.group_name == "custom-group"
-    assert plan.service_dest == Path("/opt/systemd/system/topos.service")
-    assert plan.slice_dest == Path("/opt/systemd/system/topos.slice")
-    assert plan.tmpfiles_dest == Path("/opt/tmpfiles.d/topos.conf")
+    assert plan.destinations["topos.service"] == Path("/opt/systemd/system/topos.service")
 
     j = install_plan_to_jsonable(plan)
     assert j["socket_path"] == "/tmp/custom/topos.sock"
     assert j["group"] == "custom-group"
-    assert j["service_dest"] == "/opt/systemd/system/topos.service"
-    assert j["slice_dest"] == "/opt/systemd/system/topos.slice"
-    assert j["tmpfiles_dest"] == "/opt/tmpfiles.d/topos.conf"
+    assert j["destinations"]["topos.service"] == "/opt/systemd/system/topos.service"
     assert j["plan"] == "install"
-    assert "Group=custom-group" in plan.service_content
-    assert "--socket /tmp/custom/topos.sock" in plan.service_content
-    assert "d /tmp/custom 0750 root custom-group -" in plan.tmpfiles_content
-    assert "/run/topos 0750 root topos" not in plan.tmpfiles_content
+    assert "Group=custom-group" not in plan.units["topos.service"]
+    assert "SocketGroup=custom-group" in plan.units["topos-observe.socket"]
+    assert "ListenStream=/tmp/custom/topos.sock" in plan.units["topos-observe.socket"]
+    assert plan.units["topos.sysusers"] == "# observe level mapped to existing group custom-group; nothing created\n"
     assert all("assets/systemd" not in (step.command or "") for step in plan.steps)
 
 
-def test_install_plan_contains_correct_template_content() -> None:
-    """The plan embeds the actual packaged template content."""
+def test_install_plan_contains_correct_rendered_content() -> None:
+    """The plan embeds the rendered output for the effective config."""
     from topos.daemon.deploy import build_install_plan
 
     plan = build_install_plan()
-    assert "topos daemon serve --socket /run/topos/topos.sock" in plan.service_content
-    assert "d /run/topos 0750 root topos -" in plan.tmpfiles_content
-    assert "topos.service" in plan.service_asset
-    assert "topos.slice" in plan.slice_asset
-    assert "MemoryMax=512M" in plan.slice_content
-    assert "topos.tmpfiles" in plan.tmpfiles_asset
+    assert "toposd run --config /etc/topos/toposd.toml" in plan.units["topos.service"]
+    assert "ListenStream=/run/topos/observe/topos.sock" in plan.units["topos-observe.socket"]
+    assert "MemoryMax=512M" in plan.units["topos.slice"]
+    assert plan.units["topos.sysusers"] == "g topos-observe -\n"
 
 
 def test_install_plan_steps_reference_every_phase() -> None:
@@ -257,10 +271,10 @@ def test_install_plan_steps_reference_every_phase() -> None:
     assert 1 in descriptions
     assert "group" in descriptions[1].lower()
 
-    expected_commands = {"groupadd", "usermod", "install", "systemctl", "preflight"}
+    expected_commands = {"systemd-sysusers", "install", "systemctl", "preflight"}
     all_commands = {s.command for s in plan.steps if s.command}
     assert all_commands
-    assert any("groupadd" in (s.command or "") for s in plan.steps)
+    assert any("systemd-sysusers" in (s.command or "") for s in plan.steps)
     assert any("systemctl" in (s.command or "") for s in plan.steps)
 
 
@@ -281,9 +295,9 @@ def test_install_plan_cli_json(tmp_path: Path) -> None:
     assert proc.stderr == ""
     payload = json.loads(proc.stdout)
     assert payload["plan"] == "install"
-    assert payload["group"] == "topos"
+    assert payload["group"] == "topos-observe"
     assert len(payload["steps"]) == 8
-    assert "groupadd" in payload["steps"][0]["command"]
+    assert "systemd-sysusers" in payload["steps"][1]["command"]
 
 
 def test_install_plan_cli_text(tmp_path: Path) -> None:

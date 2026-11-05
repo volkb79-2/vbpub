@@ -1014,9 +1014,9 @@ def test_persisting_frame_stream_feeds_both_ram_and_disk_tiers(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# `topos daemon serve` CLI wiring: startup health reporting, the
+# `toposd run --self-bind` wiring: startup health reporting, the
 # _persisting_frame_stream tee, and the shutdown flush -- exercised through
-# _main_daemon end-to-end, one server.serve_forever() iteration at a time
+# the service CLI, one server.serve_forever() iteration at a time
 # (matches the pattern in test_cli_daemon_lifecycle_boundaries.py's
 # _wire_one_shot_server, duplicated locally to keep this file self-contained).
 # ---------------------------------------------------------------------------
@@ -1046,7 +1046,7 @@ def _wire_one_shot_daemon(monkeypatch, cli, observed: dict, broker_cls: type):
     monkeypatch.setattr(cli, "FrameBroker", make_broker)
     monkeypatch.setattr(cli, "DaemonApi", lambda *a, **k: None)
     monkeypatch.setattr(
-        cli, "serve_versioned_unix_socket", lambda _path, broker, api=None: FakeServer(broker)
+        cli, "serve_versioned_unix_socket", lambda _path, broker, api=None, **_kwargs: FakeServer(broker)
     )
 
 
@@ -1075,7 +1075,8 @@ class _FakeCliBroker:
 def test_cli_daemon_serve_reports_healthy_persistent_history_and_flushes_on_shutdown(
     tmp_path, monkeypatch
 ):
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import HistoryConfig, PersistConfig, ToposConfig
 
     history_dir = tmp_path / "history"
@@ -1094,7 +1095,7 @@ def test_cli_daemon_serve_reports_healthy_persistent_history_and_flushes_on_shut
     monkeypatch.setattr(cli, "load", lambda _path: config)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
 
     assert observed["closed"] is True
     assert observed["mid_run_state"] == "healthy"
@@ -1106,7 +1107,8 @@ def test_cli_daemon_serve_reports_healthy_persistent_history_and_flushes_on_shut
 
 
 def test_cli_daemon_serve_reports_degraded_persistent_history_at_startup(tmp_path, monkeypatch):
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import HistoryConfig, PersistConfig, ToposConfig
 
     history_dir = tmp_path / "history"
@@ -1126,7 +1128,7 @@ def test_cli_daemon_serve_reports_degraded_persistent_history_at_startup(tmp_pat
     monkeypatch.setattr(cli, "Collector", FakeCollector)
 
     with mock.patch("pathlib.Path.mkdir", side_effect=PermissionError(13, "Permission denied")):
-        assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+        assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
 
     assert observed["closed"] is True
     assert observed["mid_run_state"] == "degraded"
@@ -1134,7 +1136,8 @@ def test_cli_daemon_serve_reports_degraded_persistent_history_at_startup(tmp_pat
 
 
 def test_cli_daemon_serve_marks_persistent_history_disabled_when_not_enabled(tmp_path, monkeypatch):
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import ToposConfig
 
     config = ToposConfig(cgroup_root=tmp_path / "cgroup")  # history.daemon.enabled defaults to False
@@ -1149,7 +1152,7 @@ def test_cli_daemon_serve_marks_persistent_history_disabled_when_not_enabled(tmp
     monkeypatch.setattr(cli, "load", lambda _path: config)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
 
     assert observed["closed"] is True
     assert observed["mid_run_state"] == "disabled"

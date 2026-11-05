@@ -24,6 +24,42 @@ For test/dev without installing:
 PYTHONPATH=topos/src python3 -m topos.cli --once --json
 ```
 
+## Host daemon service
+
+The production daemon is started by `topos-observe.socket` and receives its
+`observe` listening descriptor from systemd. The default client path is
+`/run/topos/observe/topos.sock`; private daemon state lives under
+`/run/topos/state/` as `0700 root:root`. The old path
+`/run/topos/topos.sock` is no longer served, so an upgrading host needs a
+fresh install.
+
+Check the config and render the socket, service, slice, and sysusers files:
+
+```bash
+toposd config check --config /etc/topos/toposd.toml
+toposd unit print --config /etc/topos/toposd.toml
+```
+
+Once those files are installed, start the service and check the installed
+rendering and client access:
+
+```bash
+systemd-sysusers
+systemctl daemon-reload
+systemctl enable --now topos-observe.socket topos.service
+toposd unit check --config /etc/topos/toposd.toml
+topos daemon preflight
+topos daemon status
+```
+
+For tests and development, bind an explicit socket with
+`toposd run --self-bind --socket /tmp/topos-observe.sock`. The `--socket`
+override requires `--self-bind`. `toposd run` without `--self-bind` requires
+the systemd-passed listener. `topos daemon serve` has been removed.
+`toposd install`, `uninstall`, and `doctor` are coming in the same release;
+the existing `topos daemon preflight`, `install-plan`, and `status` commands
+remain available.
+
 ## Common Commands
 
 Collect one frame as JSON:
@@ -167,7 +203,7 @@ Attach to a running daemon (interactive TUI or one-shot):
 ```bash
 topos --attach                                   # default socket, interactive UI
 topos --attach --once --json                     # default socket, one frame
-topos --attach /run/topos/topos.sock             # explicit socket
+topos --attach /run/topos/observe/topos.sock     # explicit socket
 ```
 
 Run the daemon deployment preflight check:
@@ -429,7 +465,7 @@ enabled = false
 root = "/sys/fs/bpf/topos"
 interval = 30.0
 map_name = "topos_cgroup_skb"
-state_dir = "/run/topos/bpf" # regular runtime state; never place JSON in bpffs
+state_dir = "/run/topos/state/bpf" # regular runtime state; never place JSON in bpffs
 ```
 
 ## What To Check Before A Release Claim

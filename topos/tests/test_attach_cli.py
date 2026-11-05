@@ -228,9 +228,9 @@ def test_default_socket_attach_error_guidance(tmp_path: Path) -> None:
     from topos.daemon.client import DaemonConnectError
     from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
 
-    exc = DaemonConnectError("cannot connect to /run/topos/topos.sock: No such file or directory")
+    exc = DaemonConnectError(f"cannot connect to {DEFAULT_DAEMON_SOCKET}: No such file or directory")
     msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
-    assert "cannot connect to /run/topos/topos.sock" in msg
+    assert f"cannot connect to {DEFAULT_DAEMON_SOCKET}" in msg
     assert "Try: topos daemon preflight" in msg
     assert "topos daemon install-plan" in msg
 
@@ -255,7 +255,7 @@ def test_protocol_error_guidance(tmp_path: Path) -> None:
     from topos.daemon.client import DaemonProtocolError
     from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
 
-    exc = DaemonProtocolError("daemon at /run/topos/topos.sock returned malformed JSON on line 1")
+    exc = DaemonProtocolError(f"daemon at {DEFAULT_DAEMON_SOCKET} returned malformed JSON on line 1")
     msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
     assert "compatible topos daemon" in msg
     assert "daemon logs" in msg
@@ -268,7 +268,7 @@ def test_response_error_guidance(tmp_path: Path) -> None:
     from topos.daemon.client import DaemonResponseError
     from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
 
-    exc = DaemonResponseError("daemon at /run/topos/topos.sock returned an error: denied")
+    exc = DaemonResponseError(f"daemon at {DEFAULT_DAEMON_SOCKET} returned an error: denied")
     msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
     assert "compatible topos daemon" in msg
     assert "daemon logs" in msg

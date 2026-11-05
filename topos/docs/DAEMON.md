@@ -14,11 +14,32 @@ unchanged — see "Protocol compatibility" below.
 
 ## Socket
 
-Recommended production path: `/run/topos/topos.sock`.
+The production listener is owned by the systemd socket unit
+`topos-observe.socket` at `/run/topos/observe/topos.sock`. The unit creates
+the path as `root:topos-observe`, mode `0660` by default, and passes its
+listening descriptor to `topos.service` with the name `observe`. Daemon state
+is kept separately under `/run/topos/state/`, mode `0700 root:root`.
 
-Recommended ownership: `root:topos`, mode `0660`. Users who may read
-daemon-approved full telemetry join the `topos` group. The socket directory
-should be root-owned and not writable by clients.
+`/etc/topos/toposd.toml` configures `state_dir` and the observe socket's path,
+group, and mode. If the default config file is absent, built-in defaults apply.
+The old path `/run/topos/topos.sock` is no longer served; an upgrading host
+needs a fresh install.
+
+## Service entry point
+
+`toposd run` adopts the named socket passed by systemd and refuses to start
+without it. For tests and development, use
+`toposd run --self-bind --socket PATH`; `--socket` is valid only with
+`--self-bind`. The self-bind mode uses the configured mode, removes only a
+stale socket node, and unlinks the node it owns at shutdown. It never changes
+the parent directory's owner or mode. `topos daemon serve` has been removed.
+
+`toposd unit print [--config PATH] [--unit NAME]` renders the socket, service,
+slice, and sysusers files from the config. `toposd unit check [--config PATH]
+[--root DIR] [--diff]` compares them with installed files. `toposd config check
+[--config PATH] [--json]` validates the service config. `toposd install`,
+`uninstall`, and `doctor` are coming in the same release. The existing `topos
+daemon preflight`, `install-plan`, and `status` commands remain available.
 
 ## Protocol
 
@@ -105,7 +126,7 @@ and attached to the connection context; it appears in every audit/rate-limit
 record produced for that client. An authorization hook
 (`Callable[[PeerCredentials, str], tuple[ErrorCode, str] | None]`) is
 injectable for tests. Default policy: socket-group read access enforced by
-the OS (mode 0660 root:topos). The hook receives `(peer, op)` and may deny
+the OS (mode 0660 root:topos-observe). The hook receives `(peer, op)` and may deny
 with a typed error. Mutation-shaped ops are rejected before the hook runs.
 
 **Peer-credential read failure** (platform or race): the connection is served
@@ -276,7 +297,7 @@ group-protected socket:
 
 ```bash
 topos gateway serve \
-  --daemon-socket /run/topos/topos.sock \
+  --daemon-socket /run/topos/observe/topos.sock \
   --principal dashboard:operational
 ```
 
@@ -324,7 +345,7 @@ traces.
 
 ## Background Producer
 
-On `topos daemon serve` the daemon creates a `FrameBroker` with the live
+On `toposd run` the daemon creates a `FrameBroker` with the live
 collector stream and immediately starts a background producer thread. The
 producer continuously advances the collector, publishing each frame into a
 bounded sequenced history (`--history-size`, default 120).  The producer runs
@@ -338,11 +359,9 @@ from history.
 
 ## Socket
 
-Recommended production path: `/run/topos/topos.sock`.
-
-Recommended ownership: `root:topos`, mode `0660`. Users who may read
-daemon-approved full telemetry join the `topos` group. The socket directory
-should be root-owned and not writable by clients.
+The production path is `/run/topos/observe/topos.sock`; systemd owns the
+socket node. Clients need membership in the configured observe group to read
+daemon-approved telemetry.
 
 ## Protocol
 
@@ -371,7 +390,7 @@ live collection. The attach client is read-only and only speaks the P16 broker
 protocol.
 
 When no explicit socket path is given, `--attach` defaults to the packaged
-default daemon socket (`/run/topos/topos.sock`).
+default daemon socket (`/run/topos/observe/topos.sock`).
 
 Common forms:
 
@@ -379,9 +398,9 @@ Common forms:
 topos --attach                              # default socket, interactive UI
 topos --attach --once --json                # default socket, one canonical frame
 topos --attach --ui-smoke                   # default socket, UI smoke test
-topos --attach /run/topos/topos.sock        # explicit socket, interactive UI
-topos --attach /run/topos/topos.sock --once --json
-topos --attach /run/topos/topos.sock --ui-smoke
+topos --attach /run/topos/observe/topos.sock        # explicit socket, interactive UI
+topos --attach /run/topos/observe/topos.sock --once --json
+topos --attach /run/topos/observe/topos.sock --ui-smoke
 ```
 
 `--attach --once --json` prints one canonical frame JSON payload and is the
@@ -477,41 +496,47 @@ Key characteristics:
 ## Deployment Checklist
 
 Before deploying, run `topos daemon install-plan` to see the ordered
-operator steps, exact commands, and destination paths for the packaged
-templates. The plan is read-only — it describes what to do without
-changing any host state.
+operator steps, exact commands, and destination paths rendered from
+`/etc/topos/toposd.toml`. The plan is read-only — it describes what to do
+without changing any host state.
 
 After reviewing the plan, proceed with the checklist below.
 
-The packaged operator templates live under `src/topos/assets/systemd/`:
+The packaged default rendering lives under `src/topos/assets/systemd/`:
 
-- `topos.service` starts `topos daemon serve --socket /run/topos/topos.sock`
-  as a root daemon with a group-readable socket.
-- `topos.tmpfiles` creates `/run/topos` with `0750 root:topos`.
+- `topos-observe.socket` creates `/run/topos/observe/topos.sock` as
+  `root:topos-observe`, mode `0660`, and passes it to the service as `observe`.
+- `topos.service` starts `toposd run --config /etc/topos/toposd.toml` and
+  creates `/run/topos/state` as `0700 root:root`.
+- `topos.slice` bounds the host daemon, and `topos.sysusers` declares the
+  default observe group.
 
 Before enabling the service:
 
-1. Create the `topos` group.
-2. Add the approved non-root users who should attach to the daemon socket.
-3. Install the service and tmpfiles templates.
-4. Start the daemon.
-5. Run `topos daemon preflight --socket /run/topos/topos.sock` from the client
-   account to confirm that the runtime directory, socket permissions, and
-   group membership are usable.
+1. Install `/etc/topos/toposd.toml` and run `toposd config check`.
+2. Review `toposd unit print`, install its socket, service, slice, and sysusers
+   output, then run `systemd-sysusers`.
+3. Run `systemctl daemon-reload` and enable `topos-observe.socket` and
+   `topos.service`.
+4. Add approved non-root clients to the configured observe group.
+5. Run `toposd unit check` and `topos daemon preflight` from the client
+   account.
 
-The preflight command is read-only. It inspects the socket path, parent
-directory, group membership, and local connectability without mutating host
-state or invoking systemd.
+`unit check` and preflight are read-only. They inspect rendered files, the
+state directory, socket owner/group/mode, group membership, and local
+connectability without invoking systemd. The old path
+`/run/topos/topos.sock` is no longer served; an upgrading host needs a fresh
+install.
 
 ## Troubleshooting Daemon Client Errors
 
 When `topos --attach ...` or `topos daemon current ...` fails, the CLI prints
 the original error followed by actionable guidance:
 
-### Default socket (`/run/topos/topos.sock`)
+### Default socket (`/run/topos/observe/topos.sock`)
 
 ```
-cannot connect to /run/topos/topos.sock: No such file or directory
+cannot connect to /run/topos/observe/topos.sock: No such file or directory
 
 Try: topos daemon preflight
 If the daemon is not installed: topos daemon install-plan
@@ -528,7 +553,7 @@ Try: topos daemon preflight --socket /tmp/custom.sock
 ### Protocol/response errors
 
 ```
-daemon at /run/topos/topos.sock returned malformed JSON on line 1
+daemon at /run/topos/observe/topos.sock returned malformed JSON on line 1
 
 Check that the process at the socket is a compatible topos daemon
 and review the daemon logs for errors.

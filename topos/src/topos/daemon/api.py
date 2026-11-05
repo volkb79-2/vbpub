@@ -663,13 +663,16 @@ class EnvelopeUnixServer(BrokerUnixServer):
         broker: FrameBroker,
         api: DaemonApi,
         *,
-        mode: int = 0o660,
+        owned_path: Path | None = None,
+        bind_and_activate: bool = True,
     ) -> None:
         self.api = api
         # Reuse the parent's bounded client slot / timeout machinery.
         super().__init__(
             socket_path,
             broker,
+            owned_path=owned_path,
+            bind_and_activate=bind_and_activate,
             request_timeout_s=api.limits.request_timeout_s,
             max_clients=api.limits.max_clients,
         )
@@ -777,11 +780,42 @@ def serve_versioned_unix_socket(
     *,
     mode: int = 0o660,
 ) -> EnvelopeUnixServer:
-    """Create and bind a versioned Unix-socket server (P52)."""
+    """Create and bind a self-owned versioned Unix socket (P52)."""
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     unlink_stale_socket(socket_path)
-    server = EnvelopeUnixServer(socket_path, broker, api, mode=mode)
-    os.chmod(socket_path, mode)
+    server = EnvelopeUnixServer(socket_path, broker, api, owned_path=socket_path)
+    try:
+        os.chmod(socket_path, mode)
+    except BaseException:
+        server.server_close()
+        raise
+    return server
+
+
+def serve_versioned_listener(
+    listener: socket.socket,
+    broker: FrameBroker,
+    api: DaemonApi,
+    *,
+    owned_path: Path | None,
+) -> EnvelopeUnixServer:
+    """Serve an already-listening Unix socket without binding or changing its node."""
+    socket_path = Path(listener.getsockname())
+    server = EnvelopeUnixServer(
+        socket_path,
+        broker,
+        api,
+        owned_path=owned_path,
+        bind_and_activate=False,
+    )
+    try:
+        server.socket.close()
+        server.socket = listener
+        server.server_address = listener.getsockname()
+        listener.set_inheritable(False)
+    except BaseException:
+        server.server_close()
+        raise
     return server
 
 
@@ -805,5 +839,6 @@ __all__ = [
     "metric_metadata",
     "metric_sensitivity",
     "read_peer_credentials",
+    "serve_versioned_listener",
     "serve_versioned_unix_socket",
 ]

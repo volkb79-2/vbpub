@@ -14,7 +14,7 @@ from typing import Callable
 
 import pytest
 
-import topos.cli as cli
+import topos.daemon.run as cli
 import topos.providers.net_bpf as net_bpf
 from topos.config import BpfSnapshotConfig, ToposConfig
 
@@ -196,12 +196,10 @@ def test_daemon_cli_bpf_root_runs_one_periodic_iteration_with_bounded_failure_co
     cli_state = tmp_path / "cli-state"
     monkeypatch.setattr(cli, "load", lambda _path: config)
 
-    assert cli._main_daemon(
-        [
-            "serve", "--socket", str(tmp_path / "topos.sock"),
-            "--bpf-root", str(cli_root), "--bpf-interval", "1",
-            "--bpf-state-dir", str(cli_state),
-        ]
+    from conftest import run_toposd_self_bind
+    assert run_toposd_self_bind(
+        tmp_path / "topos.sock",
+        "--bpf-root", cli_root, "--bpf-interval", "1", "--bpf-state-dir", cli_state,
     ) == 0
 
     # CLI arguments select the CLI root/state and the documented default map;
@@ -241,7 +239,8 @@ def test_daemon_cli_uses_enabled_config_bpf_selection_when_cli_root_is_absent(
     observed, bpf_stop = _wire_daemon(monkeypatch, tmp_path, _BridgeScenario("success", None))
     monkeypatch.setattr(cli, "load", lambda _path: config)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    from conftest import run_toposd_self_bind
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
 
     assert observed["bridge_root"] == config_root
     assert observed["initial"] == ("configured_map", config_state)

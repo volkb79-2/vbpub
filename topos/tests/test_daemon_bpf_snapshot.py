@@ -891,19 +891,19 @@ def test_daemon_bpf_state_dir_from_config(tmp_path: Path) -> None:
         "[bpf_snapshot]\n"
         'enabled = true\n'
         'root = "/sys/fs/bpf/topos"\n'
-        'state_dir = "/run/topos/bpf"\n'
+        'state_dir = "/run/topos/state/bpf"\n'
     )
     config = load(config_file)
     assert config.bpf_snapshot.enabled is True
-    assert str(config.bpf_snapshot.state_dir) == "/run/topos/bpf"
+    assert str(config.bpf_snapshot.state_dir) == "/run/topos/state/bpf"
 
 
 def test_daemon_bpf_state_dir_default_when_not_set(tmp_path: Path) -> None:
-    """When state_dir is not set in config, the default /run/topos/bpf is used."""
+    """When state_dir is not set in config, the default /run/topos/state/bpf is used."""
     from topos.config import BpfSnapshotConfig
 
     cfg = BpfSnapshotConfig(enabled=True, root=Path("/sys/fs/bpf/topos"))
-    assert str(cfg.state_dir) == "/run/topos/bpf"
+    assert str(cfg.state_dir) == "/run/topos/state/bpf"
 
 
 def test_bpf_provider_with_state_dir(tmp_path: Path) -> None:
@@ -970,7 +970,8 @@ def test_daemon_enabled_bridge_uses_configured_root_and_shuts_down(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Exercise the enabled serve wiring without BPF privileges or a live socket."""
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import BpfSnapshotConfig, ToposConfig
 
     bpf_root = tmp_path / "pins"
@@ -1033,9 +1034,9 @@ def test_daemon_enabled_bridge_uses_configured_root_and_shuts_down(
     monkeypatch.setattr(cli, "load", lambda _path: config)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
     monkeypatch.setattr(cli, "BpfSnapshotBridge", FakeBridge)
-    monkeypatch.setattr(cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: server)
+    monkeypatch.setattr(cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None, **_kwargs: server)
 
-    assert cli._main_daemon(["serve", "--socket", str(socket_path)]) == 0
+    assert run_toposd_self_bind(socket_path) == 0
     assert observed == {
         "root": bpf_root,
         "cgroup_root": cgroup_root,

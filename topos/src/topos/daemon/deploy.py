@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.resources as resources
 import grp
 import json
 import os
@@ -10,14 +9,16 @@ import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
-DEFAULT_DAEMON_SOCKET = Path("/run/topos/topos.sock")
-DEFAULT_DAEMON_GROUP = "topos"
+from topos.service.config import DEFAULTS, ServiceConfig, load_config, parse_config
+from topos.service.units import render_units
+
+
+DEFAULT_DAEMON_SOCKET = Path("/run/topos/observe/topos.sock")
+DEFAULT_DAEMON_GROUP = DEFAULTS.sockets.observe.group
 DEFAULT_SERVICE_DEST = Path("/etc/systemd/system/topos.service")
+DEFAULT_SOCKET_DEST = Path("/etc/systemd/system/topos-observe.socket")
 DEFAULT_SLICE_DEST = Path("/etc/systemd/system/topos.slice")
-DEFAULT_TMPFILES_DEST = Path("/etc/tmpfiles.d/topos.conf")
-SERVICE_ASSET = "assets/systemd/topos.service"
-SLICE_ASSET = "assets/systemd/topos.slice"
-TMPFILES_ASSET = "assets/systemd/topos.tmpfiles"
+DEFAULT_SYSUSERS_DEST = Path("/etc/sysusers.d/topos.conf")
 
 
 @dataclass(frozen=True)
@@ -37,10 +38,10 @@ class DaemonPreflightReport:
     current_uid: int
     current_gid: int
     supplemental_groups: tuple[int, ...]
-    runtime_dir: Path
-    runtime_dir_owner: str | None
-    runtime_dir_group: str | None
-    runtime_dir_mode: str | None
+    state_dir: Path
+    state_dir_owner: str | None
+    state_dir_group: str | None
+    state_dir_mode: str | None
     socket_present: bool
     socket_owner: str | None
     socket_group: str | None
@@ -52,69 +53,73 @@ class DaemonPreflightReport:
 
 
 def preflight_daemon_deployment(
-    socket_path: Path | str = DEFAULT_DAEMON_SOCKET,
+    socket_path: Path | str | None = None,
     *,
-    group_name: str = DEFAULT_DAEMON_GROUP,
+    group_name: str | None = None,
+    config_path: Path | str | None = None,
+    config: ServiceConfig | None = None,
     connect_timeout_s: float = 1.0,
 ) -> DaemonPreflightReport:
-    socket_path = Path(socket_path)
-    runtime_dir = socket_path.parent
+    cfg = config if config is not None else load_config(config_path)
+    socket_config = cfg.sockets.observe
+    socket_path = Path(socket_path) if socket_path is not None else socket_config.path
+    group_name = group_name if group_name is not None else socket_config.group
+    expected_mode = socket_config.mode
+    state_dir = cfg.state_dir
     current_user, current_uid, current_gid, supplemental_groups = _current_identity()
 
     checks: list[PreflightCheck] = []
 
-    runtime_dir_owner = runtime_dir_group = runtime_dir_mode = None
+    state_dir_owner = state_dir_group = state_dir_mode = None
     try:
-        runtime_stat = runtime_dir.stat()
+        state_stat = state_dir.stat()
     except OSError as exc:
         checks.append(
             PreflightCheck(
-                name="runtime_dir",
+                name="state_dir",
                 ok=False,
-                message=f"runtime directory {runtime_dir} is not available: {exc.strerror or exc}",
-                remedy="create it with the packaged tmpfiles rule before starting the daemon",
-                details={"path": str(runtime_dir), "error": str(exc)},
+                message=f"state directory {state_dir} is not available: {exc.strerror or exc}",
+                remedy="start the topos service so systemd creates the configured state directory",
+                details={"path": str(state_dir), "error": str(exc)},
             )
         )
     else:
-        runtime_dir_owner = _user_label(runtime_stat.st_uid)
-        runtime_dir_group = _group_label(runtime_stat.st_gid)
-        runtime_dir_mode = _mode_label(runtime_stat.st_mode)
-        if not stat.S_ISDIR(runtime_stat.st_mode):
+        state_dir_owner = _user_label(state_stat.st_uid)
+        state_dir_group = _group_label(state_stat.st_gid)
+        state_dir_mode = _mode_label(state_stat.st_mode)
+        if not stat.S_ISDIR(state_stat.st_mode):
             checks.append(
                 PreflightCheck(
-                    name="runtime_dir",
+                    name="state_dir",
                     ok=False,
-                    message=f"runtime path {runtime_dir} exists but is not a directory",
-                    remedy="remove the path and create /run/topos as a directory",
+                    message=f"state path {state_dir} exists but is not a directory",
+                    remedy="remove the conflicting path and let the topos service create its state directory",
                     details={
-                        "path": str(runtime_dir),
-                        "mode": runtime_dir_mode,
-                        "owner": runtime_dir_owner,
-                        "group": runtime_dir_group,
+                        "path": str(state_dir),
+                        "mode": state_dir_mode,
+                        "owner": state_dir_owner,
+                        "group": state_dir_group,
                     },
                 )
             )
         else:
-            unsafe = bool(runtime_stat.st_mode & stat.S_IWOTH)
-            ok = not unsafe
-            message = f"runtime directory {runtime_dir} is {runtime_dir_mode} {runtime_dir_owner}:{runtime_dir_group}"
-            remedy = None
-            if unsafe:
-                message = f"runtime directory {runtime_dir} is world-writable ({runtime_dir_mode})"
-                remedy = "tighten /run/topos to 0750 root:topos via tmpfiles or systemd runtime directory settings"
+            ok = state_stat.st_uid == 0 and state_stat.st_gid == 0 and state_dir_mode == "0700"
+            message = (
+                f"state directory {state_dir} is 0700 root:root"
+                if ok
+                else f"state directory {state_dir} must be 0700 root:root (is {state_dir_mode} {state_dir_owner}:{state_dir_group})"
+            )
             checks.append(
                 PreflightCheck(
-                    name="runtime_dir",
+                    name="state_dir",
                     ok=ok,
                     message=message,
-                    remedy=remedy,
+                    remedy=None if ok else f"set {state_dir} to 0700 root:root",
                     details={
-                        "path": str(runtime_dir),
-                        "mode": runtime_dir_mode,
-                        "owner": runtime_dir_owner,
-                        "group": runtime_dir_group,
-                        "world_writable": unsafe,
+                        "path": str(state_dir),
+                        "mode": state_dir_mode,
+                        "owner": state_dir_owner,
+                        "group": state_dir_group,
                     },
                 )
             )
@@ -127,7 +132,7 @@ def preflight_daemon_deployment(
                 name="daemon_group",
                 ok=False,
                 message=f"daemon group {group_name!r} does not exist",
-                remedy="create the topos group and add approved users before enabling the daemon",
+                remedy="install the configured group with systemd-sysusers or map observe to an existing group",
                 details={"group": group_name},
             )
         )
@@ -161,14 +166,14 @@ def preflight_daemon_deployment(
     socket_is_socket: bool | None = None
     can_connect: bool | None = None
     try:
-        socket_stat = socket_path.stat()
+        socket_stat = socket_path.lstat()
     except OSError as exc:
         checks.append(
             PreflightCheck(
                 name="socket",
                 ok=False,
                 message=f"socket {socket_path} is not present: {exc.strerror or exc}",
-                remedy=f"start `topos daemon serve --socket {socket_path}` or point preflight at the deployed socket",
+                remedy="start topos-observe.socket and topos.service, or point preflight at the deployed socket",
                 details={"path": str(socket_path), "error": str(exc)},
             )
         )
@@ -184,7 +189,7 @@ def preflight_daemon_deployment(
                     name="socket",
                     ok=False,
                     message=f"{socket_path} exists but is not a Unix socket",
-                    remedy="remove the path and let the daemon create its socket",
+                    remedy="remove the conflicting path and let topos-observe.socket create the socket",
                     details={
                         "path": str(socket_path),
                         "mode": socket_mode,
@@ -194,16 +199,32 @@ def preflight_daemon_deployment(
                 )
             )
         else:
+            socket_owner_ok = socket_stat.st_uid == 0
+            socket_group_ok = socket_group == group_name
+            socket_mode_ok = socket_mode == expected_mode
+            socket_ok = socket_owner_ok and socket_group_ok and socket_mode_ok
+            if socket_ok:
+                message = f"socket {socket_path} is {socket_mode} root:{socket_group}"
+                remedy = None
+            else:
+                message = (
+                    f"socket {socket_path} must be {expected_mode} root:{group_name} "
+                    f"(is {socket_mode} {socket_owner}:{socket_group})"
+                )
+                remedy = "check sockets.observe.group and mode in toposd.toml, then restart topos-observe.socket"
             checks.append(
                 PreflightCheck(
                     name="socket",
-                    ok=True,
-                    message=f"socket {socket_path} is present as {socket_mode} {socket_owner}:{socket_group}",
+                    ok=socket_ok,
+                    message=message,
+                    remedy=remedy,
                     details={
                         "path": str(socket_path),
                         "mode": socket_mode,
                         "owner": socket_owner,
                         "group": socket_group,
+                        "expected_mode": expected_mode,
+                        "expected_group": group_name,
                     },
                 )
             )
@@ -238,10 +259,10 @@ def preflight_daemon_deployment(
         current_uid=current_uid,
         current_gid=current_gid,
         supplemental_groups=supplemental_groups,
-        runtime_dir=runtime_dir,
-        runtime_dir_owner=runtime_dir_owner,
-        runtime_dir_group=runtime_dir_group,
-        runtime_dir_mode=runtime_dir_mode,
+        state_dir=state_dir,
+        state_dir_owner=state_dir_owner,
+        state_dir_group=state_dir_group,
+        state_dir_mode=state_dir_mode,
         socket_present=socket_present,
         socket_owner=socket_owner,
         socket_group=socket_group,
@@ -263,11 +284,11 @@ def preflight_report_to_jsonable(report: DaemonPreflightReport) -> dict[str, obj
         },
         "group": {"name": report.group_name},
         "ok": report.usable,
-        "runtime_dir": {
-            "group": report.runtime_dir_group,
-            "mode": report.runtime_dir_mode,
-            "owner": report.runtime_dir_owner,
-            "path": str(report.runtime_dir),
+        "state_dir": {
+            "group": report.state_dir_group,
+            "mode": report.state_dir_mode,
+            "owner": report.state_dir_owner,
+            "path": str(report.state_dir),
         },
         "socket": {
             "can_connect": report.can_connect,
@@ -295,7 +316,7 @@ def render_preflight_text(report: DaemonPreflightReport) -> str:
     lines = [
         f"topos daemon preflight: {report.socket_path}",
         f"user {report.current_user} uid={report.current_uid} gid={report.current_gid} groups={_group_list_label(report.supplemental_groups)}",
-        f"runtime dir {report.runtime_dir} {report.runtime_dir_mode or 'unavailable'} {report.runtime_dir_owner or '-'}:{report.runtime_dir_group or '-'}",
+        f"state dir {report.state_dir} {report.state_dir_mode or 'unavailable'} {report.state_dir_owner or '-'}:{report.state_dir_group or '-'}",
     ]
     for check in report.checks:
         prefix = "OK" if check.ok else "FAIL"
@@ -346,16 +367,12 @@ def render_preflight_json(report: DaemonPreflightReport) -> str:
     return json.dumps(preflight_report_to_jsonable(report), sort_keys=True)
 
 
-# ── Install Plan (P25) ────────────────────────────────────────────────────────
+# ── Install Plan ────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class InstallPlanStep:
-    """A single step in the daemon deployment install plan.
-
-    The step describes what an operator should do; it is never executed by
-    the install-plan command itself.
-    """
+    """A single read-only operator step in the deployment plan."""
 
     order: int
     description: str
@@ -365,170 +382,116 @@ class InstallPlanStep:
 
 @dataclass(frozen=True)
 class DaemonInstallPlan:
-    """Non-mutating install plan for the packaged daemon deployment templates."""
+    """Non-mutating plan rendered from the daemon's effective config."""
 
     socket_path: Path
     group_name: str
-    service_dest: Path
-    slice_dest: Path
-    tmpfiles_dest: Path
-    service_asset: str
-    slice_asset: str
-    tmpfiles_asset: str
-    service_content: str
-    slice_content: str
-    tmpfiles_content: str
+    socket_mode: str
+    state_dir: Path
+    destinations: dict[str, Path]
+    units: dict[str, str]
     steps: tuple[InstallPlanStep, ...]
     warnings: tuple[str, ...]
 
 
-def _read_asset(asset_path: str) -> str:
-    """Read a packaged asset file using importlib.resources."""
-    pkg = resources.files("topos")
-    return (pkg / asset_path).read_text()
-
-
 def build_install_plan(
     *,
-    socket_path: Path | str = DEFAULT_DAEMON_SOCKET,
-    group_name: str = DEFAULT_DAEMON_GROUP,
+    config_path: Path | str | None = None,
+    config: ServiceConfig | None = None,
+    socket_path: Path | str | None = None,
+    group_name: str | None = None,
     service_dest: Path | str = DEFAULT_SERVICE_DEST,
-    slice_dest: Path | str = DEFAULT_SLICE_DEST,
-    tmpfiles_dest: Path | str = DEFAULT_TMPFILES_DEST,
 ) -> DaemonInstallPlan:
-    """Build a non-mutating install plan for the packaged daemon templates.
-
-    The plan describes ordered operator steps, referencing the packaged
-    systemd service, resource slice, and tmpfiles templates.  No host state is
-    inspected or modified.
-    """
-    socket_path = Path(socket_path)
-    service_dest = Path(service_dest)
-    slice_dest = Path(slice_dest)
-    tmpfiles_dest = Path(tmpfiles_dest)
-
-    service_content = _render_service_content(
-        _read_asset(SERVICE_ASSET),
-        socket_path=socket_path,
-        group_name=group_name,
-    )
-    slice_content = _read_asset(SLICE_ASSET)
-    tmpfiles_content = _render_tmpfiles_content(
-        _read_asset(TMPFILES_ASSET),
-        runtime_dir=socket_path.parent,
-        group_name=group_name,
-    )
-
+    """Build a read-only systemd installation plan from toposd.toml."""
+    cfg = config if config is not None else load_config(config_path)
+    if socket_path is not None or group_name is not None:
+        socket = cfg.sockets.observe
+        path = Path(socket_path) if socket_path is not None else socket.path
+        group = group_name if group_name is not None else socket.group
+        source = "\n".join(
+            [
+                f"state_dir = {json.dumps(str(cfg.state_dir))}",
+                "",
+                "[sockets.observe]",
+                f"path = {json.dumps(str(path))}",
+                f"group = {json.dumps(group)}",
+                f"mode = {json.dumps(socket.mode)}",
+            ]
+        )
+        cfg = parse_config(source)
+    units = render_units(cfg)
+    destinations = {
+        "topos-observe.socket": DEFAULT_SOCKET_DEST,
+        "topos.service": Path(service_dest),
+        "topos.slice": DEFAULT_SLICE_DEST,
+        "topos.sysusers": DEFAULT_SYSUSERS_DEST,
+    }
     steps = (
         InstallPlanStep(
-            order=1,
-            description=f"Create the system group {group_name!r} for daemon socket access",
-            command=f"groupadd --system {group_name}",
-            warning=(
-                f"If the group {group_name!r} already exists, skip this step."
-            ),
+            1,
+            f"Install the rendered sysusers file to {destinations['topos.sysusers']}",
+            _install_heredoc_command(units["topos.sysusers"], destinations["topos.sysusers"]),
         ),
         InstallPlanStep(
-            order=2,
-            description=(
-                "Add each approved non-root user to the daemon group so they "
-                "can attach to the socket"
-            ),
-            command=f"usermod -aG {group_name} <username>",
-            warning=(
-                "Repeat for every user who should read daemon telemetry. "
-                "Users must log out and back in for the group change to take effect."
-            ),
+            2,
+            "Create any declared system groups with systemd-sysusers",
+            "systemd-sysusers",
+            "Mapped existing groups are not created.",
         ),
         InstallPlanStep(
-            order=3,
-            description=(
-                f"Install the systemd resource slice to {slice_dest} "
-                "(bounds the daemon's CPU, memory, and task count)"
-            ),
-            command=_install_heredoc_command(slice_content, slice_dest),
-            warning="Review the resource limits for this host before copying.",
+            3,
+            f"Install the observe socket unit to {destinations['topos-observe.socket']}",
+            _install_heredoc_command(units["topos-observe.socket"], destinations["topos-observe.socket"]),
         ),
         InstallPlanStep(
-            order=4,
-            description=(
-                f"Install the tmpfiles configuration to {tmpfiles_dest} "
-                f"(ensures {socket_path.parent} is created with 0750 root:{group_name})"
-            ),
-            command=_install_heredoc_command(tmpfiles_content, tmpfiles_dest),
-            warning="Review the rendered tmpfiles content before copying.",
+            4,
+            f"Install the daemon service unit to {destinations['topos.service']}",
+            _install_heredoc_command(units["topos.service"], destinations["topos.service"]),
         ),
         InstallPlanStep(
-            order=5,
-            description=(
-                f"Install the systemd service unit to {service_dest}"
-            ),
-            command=_install_heredoc_command(service_content, service_dest),
-            warning="Review the rendered service unit before enabling; verify ExecStart and socket path.",
+            5,
+            f"Install the resource slice to {destinations['topos.slice']}",
+            _install_heredoc_command(units["topos.slice"], destinations["topos.slice"]),
+        ),
+        InstallPlanStep(6, "Reload systemd's unit definitions", "systemctl daemon-reload"),
+        InstallPlanStep(
+            7,
+            "Enable and start socket activation and the continuously running daemon",
+            "systemctl enable --now topos-observe.socket topos.service",
         ),
         InstallPlanStep(
-            order=6,
-            description="Reload systemd so it picks up the new service unit",
-            command="systemctl daemon-reload",
-        ),
-        InstallPlanStep(
-            order=7,
-            description="Enable and start the topos daemon service",
-            command="systemctl enable --now topos.service",
-            warning=(
-                "The daemon runs as root and binds the group-readable socket. "
-                "Verify with: topos daemon preflight"
-            ),
-        ),
-        InstallPlanStep(
-            order=8,
-            description=(
-                "Verify the deployment with the read-only preflight command "
-                "from a non-root client account"
-            ),
-            command=f"topos daemon preflight --socket {socket_path}",
-            warning=(
-                "Run this from a non-root user in the daemon group to confirm "
-                "the socket is reachable."
-            ),
+            8,
+            "Check the deployed socket from an authorized client account",
+            "topos daemon preflight",
         ),
     )
-
-    warnings = (
-        "This is a PLAN, not an installer. No host state has been modified.",
-        f"The daemon socket at {socket_path} will be group-readable by {group_name!r}.",
-        "Template files are rendered from the packaged topos assets; verify paths before copying.",
-    )
-
     return DaemonInstallPlan(
-        socket_path=socket_path,
-        group_name=group_name,
-        service_dest=service_dest,
-        slice_dest=slice_dest,
-        tmpfiles_dest=tmpfiles_dest,
-        service_asset=SERVICE_ASSET,
-        slice_asset=SLICE_ASSET,
-        tmpfiles_asset=TMPFILES_ASSET,
-        service_content=service_content,
-        slice_content=slice_content,
-        tmpfiles_content=tmpfiles_content,
+        socket_path=cfg.sockets.observe.path,
+        group_name=cfg.sockets.observe.group,
+        socket_mode=cfg.sockets.observe.mode,
+        state_dir=cfg.state_dir,
+        destinations=destinations,
+        units=units,
         steps=steps,
-        warnings=warnings,
+        warnings=(
+            "This is a PLAN, not an installer. No host state has been modified.",
+            "Install /etc/topos/toposd.toml with the same values used to render these units.",
+            f"The observe socket is {cfg.sockets.observe.mode} root:{cfg.sockets.observe.group} at {cfg.sockets.observe.path}.",
+        ),
     )
+
 
 
 def install_plan_to_jsonable(plan: DaemonInstallPlan) -> dict[str, object]:
     """Convert an install plan to a JSON-serializable dict (deterministic)."""
     return {
         "group": plan.group_name,
+        "mode": plan.socket_mode,
         "plan": "install",
-        "service_asset": plan.service_asset,
-        "service_content": plan.service_content,
-        "service_dest": str(plan.service_dest),
-        "slice_asset": plan.slice_asset,
-        "slice_content": plan.slice_content,
-        "slice_dest": str(plan.slice_dest),
+        "state_dir": str(plan.state_dir),
         "socket_path": str(plan.socket_path),
+        "destinations": {name: str(path) for name, path in plan.destinations.items()},
+        "units": plan.units,
         "steps": [
             {
                 "command": step.command,
@@ -538,24 +501,8 @@ def install_plan_to_jsonable(plan: DaemonInstallPlan) -> dict[str, object]:
             }
             for step in plan.steps
         ],
-        "tmpfiles_asset": plan.tmpfiles_asset,
-        "tmpfiles_content": plan.tmpfiles_content,
-        "tmpfiles_dest": str(plan.tmpfiles_dest),
         "warnings": list(plan.warnings),
     }
-
-
-def _render_service_content(template: str, *, socket_path: Path, group_name: str) -> str:
-    rendered = template.replace("Group=topos", f"Group={group_name}")
-    rendered = rendered.replace("--socket /run/topos/topos.sock", f"--socket {socket_path}")
-    rendered = rendered.replace("the topos group", f"the {group_name} group")
-    return rendered
-
-
-def _render_tmpfiles_content(template: str, *, runtime_dir: Path, group_name: str) -> str:
-    rendered = template.replace("the topos group", f"the {group_name} group")
-    rendered = rendered.replace("d /run/topos 0750 root topos -", f"d {runtime_dir} 0750 root {group_name} -")
-    return rendered
 
 
 def _install_heredoc_command(content: str, dest: Path) -> str:
@@ -569,10 +516,9 @@ def render_install_plan_text(plan: DaemonInstallPlan) -> str:
         "topos daemon install plan",
         "=" * 60,
         f"socket path : {plan.socket_path}",
-        f"daemon group : {plan.group_name}",
-        f"service unit : {plan.service_dest}",
-        f"resource slice: {plan.slice_dest}",
-        f"tmpfiles conf: {plan.tmpfiles_dest}",
+        f"socket access: {plan.socket_mode} root:{plan.group_name}",
+        f"state dir    : {plan.state_dir}",
+        *[f"{name:20} {path}" for name, path in plan.destinations.items()],
         "",
         "--- plan steps (read-only; no host mutation) ---",
         "",

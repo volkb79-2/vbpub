@@ -25,6 +25,15 @@ def fixture_frame():
     return frame_from_jsonable(payload)
 
 
+def run_toposd_self_bind(socket_path: Path, *options: object) -> int:
+    """Run the daemon through its explicit test/development CLI mode."""
+    from topos.service.cli import main
+
+    argv = ["run", "--self-bind", "--socket", str(socket_path)]
+    argv.extend(str(option) for option in options)
+    return main(argv)
+
+
 def _mcp_extra_installed() -> bool:
     import importlib.util
 

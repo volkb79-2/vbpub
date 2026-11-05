@@ -12,11 +12,11 @@ import topos.cli as cli
 
 def test_daemon_preflight_renders_json_and_uses_usability_exit(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     report = SimpleNamespace(usable=False)
-    monkeypatch.setattr(cli, "preflight_daemon_deployment", lambda socket, group_name: report)
-    monkeypatch.setattr(cli, "preflight_report_to_jsonable", lambda value: {"usable": value.usable, "group": "topos"})
+    monkeypatch.setattr(cli, "preflight_daemon_deployment", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(cli, "preflight_report_to_jsonable", lambda value: {"usable": value.usable, "group": "topos-observe"})
 
     assert cli._main_daemon(["preflight", "--json"]) == 1
-    assert json.loads(capsys.readouterr().out) == {"group": "topos", "usable": False}
+    assert json.loads(capsys.readouterr().out) == {"group": "topos-observe", "usable": False}
 
 
 def test_daemon_preflight_reports_operational_error(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

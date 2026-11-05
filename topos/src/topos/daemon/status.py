@@ -167,7 +167,7 @@ def _check_protocol(socket_path: Path, *, now: Callable[[], float] = time.time) 
 def build_daemon_status(
     socket_path: Path = DEFAULT_DAEMON_SOCKET,
     *,
-    group_name: str = DEFAULT_DAEMON_GROUP,
+    group_name: str | None = None,
 ) -> DaemonStatusReport:
     """Build a combined daemon deployment and protocol status report.
 
@@ -189,10 +189,15 @@ def build_daemon_status(
         pass
 
     protocol = _check_protocol(socket_path)
+    effective_group = (
+        preflight.group_name
+        if preflight is not None
+        else group_name if group_name is not None else DEFAULT_DAEMON_GROUP
+    )
 
     return DaemonStatusReport(
         socket_path=Path(socket_path),
-        group_name=group_name,
+        group_name=effective_group,
         preflight=preflight,
         protocol=protocol,
     )

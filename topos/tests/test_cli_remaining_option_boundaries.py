@@ -86,11 +86,11 @@ def test_daemon_preflight_text_uses_renderer_and_exit_contract(
 ) -> None:
     """A usable preflight renders human text and exits successfully."""
     report = SimpleNamespace(usable=True)
-    calls: list[tuple[object, str]] = []
+    calls: list[tuple[object, str, object]] = []
     monkeypatch.setattr(
         cli,
         "preflight_daemon_deployment",
-        lambda socket, group_name: calls.append((socket, group_name)) or report,
+        lambda socket, group_name, config_path: calls.append((socket, group_name, config_path)) or report,
     )
     monkeypatch.setattr(
         cli,
@@ -99,5 +99,5 @@ def test_daemon_preflight_text_uses_renderer_and_exit_contract(
     )
 
     assert cli._main_daemon(["preflight", "--socket", "/run/custom.sock", "--group", "ops"]) == 0
-    assert calls == [(Path("/run/custom.sock"), "ops")]
+    assert calls == [(Path("/run/custom.sock"), "ops", None)]
     assert capsys.readouterr().out == "daemon deployment is ready\n"

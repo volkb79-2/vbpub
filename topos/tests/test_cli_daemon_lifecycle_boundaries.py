@@ -1,4 +1,4 @@
-"""Deterministic lifecycle boundaries for ``topos daemon serve``.
+"""Deterministic lifecycle boundaries for ``toposd run --self-bind``.
 
 The daemon CLI owns the composition of optional BPF and paddr components.  The
 tests deliberately replace every privileged or long-running collaborator: no
@@ -50,7 +50,7 @@ def _wire_one_shot_server(monkeypatch: pytest.MonkeyPatch, cli, observed: dict) 
     monkeypatch.setattr(cli, "FrameBroker", make_broker)
     monkeypatch.setattr(cli, "DaemonApi", _FakeApi)
     monkeypatch.setattr(
-        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: FakeServer()
+        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None, **_kwargs: FakeServer()
     )
 
 
@@ -58,7 +58,8 @@ def test_daemon_serve_reports_bpf_initialization_failure_and_still_stops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A BPF setup exception is component-scoped; daemon shutdown remains clean."""
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import BpfSnapshotConfig, ToposConfig
 
     config = ToposConfig(
@@ -81,7 +82,7 @@ def test_daemon_serve_reports_bpf_initialization_failure_and_still_stops(
     monkeypatch.setattr(cli, "Collector", FakeCollector)
     monkeypatch.setattr(cli, "BpfSnapshotBridge", FailingBridge)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
 
     output = capsys.readouterr().out
     assert "Failed to start BPF snapshot bridge: bridge setup denied" in output
@@ -111,7 +112,8 @@ def test_daemon_serve_paddr_lifecycle_records_outcome_and_shutdown_failure(
     expected_code: str | None,
 ) -> None:
     """paddr ownership is started/adopted then reported accurately at cleanup."""
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import DamonConfig, ToposConfig
     from topos.daemon.paddr_lifecycle import PaddrLifecycleOutcome
     import topos.daemon.paddr_lifecycle as lifecycle_module
@@ -145,7 +147,7 @@ def test_daemon_serve_paddr_lifecycle_records_outcome_and_shutdown_failure(
     monkeypatch.setattr(cli, "Collector", FakeCollector)
     monkeypatch.setattr(lifecycle_module, "DaemonPaddrLifecycle", FakeLifecycle)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
 
     output = capsys.readouterr().out
     assert "Daemon-owned paddr session" in output
@@ -160,7 +162,8 @@ def test_daemon_serve_paddr_lifecycle_records_outcome_and_shutdown_failure(
 def test_daemon_serve_exits_two_and_closes_history_when_socket_is_in_use(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import HistoryConfig, PersistConfig, ToposConfig
     from topos.daemon.broker import SocketInUseError
 
@@ -192,6 +195,6 @@ def test_daemon_serve_exits_two_and_closes_history_when_socket_is_in_use(
     monkeypatch.setattr(cli, "load", lambda _path: config)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 2
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 2
     assert "socket is served by another daemon" in capsys.readouterr().err
     assert closed == [True]

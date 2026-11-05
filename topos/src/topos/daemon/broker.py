@@ -443,14 +443,17 @@ class BrokerUnixServer(socketserver.ThreadingUnixStreamServer):
         socket_path: Path,
         broker: FrameBroker,
         *,
+        owned_path: Path | None = None,
+        bind_and_activate: bool = True,
         request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
         max_clients: int = DEFAULT_MAX_CLIENTS,
     ) -> None:
         self.socket_path = socket_path
+        self.owned_path = owned_path
         self.broker = broker
         self.request_timeout_s = request_timeout_s
         self._client_slots = threading.BoundedSemaphore(max_clients)
-        super().__init__(str(socket_path), _BrokerHandler)
+        super().__init__(str(socket_path), _BrokerHandler, bind_and_activate=bind_and_activate)
 
     def busy_payload(self, request: socket.socket) -> dict[str, Any]:
         """Reply body for a rejected connection (legacy shape; envelope server overrides)."""
@@ -499,7 +502,8 @@ class BrokerUnixServer(socketserver.ThreadingUnixStreamServer):
 
     def server_close(self) -> None:
         super().server_close()
-        self.socket_path.unlink(missing_ok=True)
+        if self.owned_path is not None:
+            self.owned_path.unlink(missing_ok=True)
 
 
 class TotalDeadline:
@@ -583,6 +587,7 @@ def serve_unix_socket(
     server = BrokerUnixServer(
         socket_path,
         broker,
+        owned_path=socket_path,
         request_timeout_s=request_timeout_s,
         max_clients=max_clients,
     )

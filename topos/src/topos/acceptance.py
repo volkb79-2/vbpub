@@ -696,7 +696,14 @@ def run_tui_smoke(
     ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
     t0 = time.monotonic()
 
-    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parent.parent)}
+    source_path = str(Path(__file__).resolve().parent.parent)
+    inherited_pythonpath = os.environ.get("PYTHONPATH")
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(
+            part for part in (source_path, inherited_pythonpath) if part
+        ),
+    }
 
     try:
         cp = subprocess.run(
@@ -1013,8 +1020,8 @@ def run_mcp_smoke(
     try:
         # --- Start daemon ---
         daemon_cmd = [
-            sys.executable, "-m", "topos.cli",
-            "daemon", "serve",
+            sys.executable, "-m", "topos.service.cli",
+            "run", "--self-bind",
             "--socket", str(daemon_socket),
         ]
         try:

@@ -310,7 +310,7 @@ duplicating registry prose.
   audit/rate-limit record produced for that client.
 - An authorization hook (`Callable[[PeerCredentials, str], tuple[ErrorCode,
   str] | None]`) is injectable for tests. Default policy: socket-group read
-  access enforced by the OS (mode 0660 root:topos). The hook receives
+  access enforced by the OS (mode 0660 root:topos-observe). The hook receives
   `(peer, op)` and may deny with a typed error. Mutation-shaped ops are
   rejected before the hook runs.
 - Peer-credential read failure (platform or race): the connection is served

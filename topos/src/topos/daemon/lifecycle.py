@@ -1,6 +1,6 @@
 """Daemon process shutdown coordination (SIGTERM, producer death).
 
-``topos daemon serve`` runs ``server.serve_forever()`` on the main thread and
+``toposd run`` runs ``server.serve_forever()`` on the main thread and
 cleans up in a ``finally`` block. Two events must drive that same path:
 
 * SIGTERM/SIGINT (``systemctl stop`` sends SIGTERM, which by default kills the

@@ -66,7 +66,7 @@ class _FakeBroker:
 
 
 def _wire_serve(monkeypatch, tmp_path: Path, serve_forever_body):
-    import topos.cli as cli
+    import topos.daemon.run as cli
     from topos.config import ToposConfig
 
     observed: dict = {"stopped": threading.Event()}
@@ -110,7 +110,8 @@ def test_sigterm_runs_the_shutdown_path_and_restores_handlers(
     )
     before = signal.getsignal(signal.SIGTERM)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "t.sock")]) == 0
+    from conftest import run_toposd_self_bind
+    assert run_toposd_self_bind(tmp_path / "t.sock") == 0
 
     assert observed["closed"] is True
     assert observed["broker"].events == ["start", "stop", "join"]
@@ -129,7 +130,8 @@ def test_producer_death_stops_the_daemon_with_nonzero_exit(
 
     cli, observed = _wire_serve(monkeypatch, tmp_path, body)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "t.sock")]) == 1
+    from conftest import run_toposd_self_bind
+    assert run_toposd_self_bind(tmp_path / "t.sock") == 1
 
     assert observed["closed"] is True
     assert observed["broker"].events == ["start", "stop", "join"]
@@ -460,7 +462,8 @@ def test_bpf_start_failure_health_message_names_the_cause(
     monkeypatch.setattr(cli, "load", lambda _path: config)
     monkeypatch.setattr(cli, "BpfSnapshotBridge", _FailingBridge)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "t.sock")]) == 0
+    from conftest import run_toposd_self_bind
+    assert run_toposd_self_bind(tmp_path / "t.sock") == 0
 
     bpf = observed["broker"].health_registry.snapshot().by_name("bpf_snapshot_bridge")
     assert bpf is not None and bpf.error is not None

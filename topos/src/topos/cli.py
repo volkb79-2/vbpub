@@ -25,7 +25,6 @@ from topos.daemon.deploy import (
     DEFAULT_DAEMON_GROUP,
     DEFAULT_DAEMON_SOCKET,
     DEFAULT_SERVICE_DEST,
-    DEFAULT_TMPFILES_DEST,
     build_install_plan,
     install_plan_to_jsonable,
     preflight_daemon_deployment,
@@ -123,39 +122,33 @@ def parse_snapshot_args(argv: list[str]) -> argparse.Namespace:
 def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     parser = ToposArgumentParser(prog="topos daemon")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    serve = subparsers.add_parser("serve", help="serve read-only frames over a Unix socket")
-    serve.add_argument("--socket", type=Path, required=True, help="Unix socket path")
-    serve.add_argument("--config", type=Path, default=None, help="load config from PATH instead of the default XDG location")
-    serve.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
-    serve.add_argument("--history-size", type=int, default=120, help="bounded in-memory frame history")
-    serve.add_argument("--bpf-root", type=Path, default=None, help="BPF pin root for periodic snapshot refresh (disabled by default)")
-    serve.add_argument("--bpf-interval", type=float, default=30.0, help="BPF snapshot refresh interval in seconds (default: 30.0)")
-    serve.add_argument("--bpf-state-dir", type=Path, default=None, help="BPF snapshot output directory (default: /run/topos/bpf)")
     preflight = subparsers.add_parser("preflight", help="check daemon deployment readiness")
     preflight.add_argument(
         "--socket",
         type=Path,
-        default=DEFAULT_DAEMON_SOCKET,
+        default=None,
         help="daemon socket path to inspect",
     )
+    preflight.add_argument("--config", type=Path, default=None, help="toposd config file")
     preflight.add_argument(
         "--group",
         type=str,
-        default=DEFAULT_DAEMON_GROUP,
+        default=None,
         help="expected daemon socket group",
     )
     preflight.add_argument("--json", action="store_true", help="emit JSON instead of text")
     install_plan = subparsers.add_parser("install-plan", help="show a safe install plan for the packaged daemon templates")
+    install_plan.add_argument("--config", type=Path, default=None, help="toposd config file")
     install_plan.add_argument(
         "--socket",
         type=Path,
-        default=DEFAULT_DAEMON_SOCKET,
+        default=None,
         help="daemon socket path for the planned deployment",
     )
     install_plan.add_argument(
         "--group",
         type=str,
-        default=DEFAULT_DAEMON_GROUP,
+        default=None,
         help="expected daemon socket group",
     )
     install_plan.add_argument(
@@ -163,12 +156,6 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
         type=Path,
         default=DEFAULT_SERVICE_DEST,
         help="destination path for the systemd service unit",
-    )
-    install_plan.add_argument(
-        "--tmpfiles-dest",
-        type=Path,
-        default=DEFAULT_TMPFILES_DEST,
-        help="destination path for the tmpfiles configuration",
     )
     install_plan.add_argument("--json", action="store_true", help="emit JSON instead of text")
     current = subparsers.add_parser("current", help="print one canonical frame from the daemon socket as JSON")
@@ -190,7 +177,7 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     status.add_argument(
         "--group",
         type=str,
-        default=DEFAULT_DAEMON_GROUP,
+        default=None,
         help=f"expected daemon group (default: {DEFAULT_DAEMON_GROUP})",
     )
     status.add_argument("--json", action="store_true", help="emit JSON instead of text")
@@ -1745,373 +1732,15 @@ def _main_gateway(argv: list[str]) -> int:
     return 0
 
 
-def _persisting_frame_stream(source: Iterator[Frame], store: PersistentHistoryStore) -> Iterator[Frame]:
-    """Tee each frame to the P91 persistent store as it flows to the broker.
-
-    ``store.append`` never raises — a disk-full/read-only condition degrades
-    the store instead (O7) — so this wrapper cannot turn a persistence problem
-    into a collection outage. Frames reach the store in the same order and
-    exactly once, matching what the RAM tier ring receives (Contract 2: one
-    canonical frame stream, persisted once).
-    """
-    for frame in source:
-        store.append(frame)
-        yield frame
-
-
 def _main_daemon(argv: list[str]) -> int:
     args = parse_daemon_args(argv)
-    if args.command == "serve":
-        config = load(args.config)
-        collector = Collector(cgroup_root=args.cgroup_root, config=config)
-
-        # Create component health registry and wire it into the broker
-        health_registry = ComponentHealthRegistry()
-        health_registry.mark_starting("collector", detail="collector initialized")
-
-        history_store = PersistentHistoryStore(config.history.daemon)
-        if config.history.daemon.enabled:
-            history_stats = history_store.stats()
-            if history_stats.degraded:
-                health_registry.record_degraded(
-                    "persistent_history",
-                    detail=f"persistent history degraded at startup: {history_stats.degraded_reason}",
-                    error=ComponentError(
-                        message="persistent history degraded at startup",
-                        error_code="persistent_history_degraded",
-                    ),
-                )
-            else:
-                health_registry.record_success(
-                    "persistent_history",
-                    detail=f"recovery_state={history_stats.recovery_state} segments={history_stats.segment_count}",
-                )
-        else:
-            health_registry.mark_disabled("persistent_history", detail="disabled by default (see P91-REPORT.md)")
-
-        frame_stop = threading.Event()
-        frame_stream: Iterator[Frame] = live_frame_stream(collector, stop_event=frame_stop)
-        if config.history.daemon.enabled:
-            frame_stream = _persisting_frame_stream(frame_stream, history_store)
-        # SIGTERM/SIGINT and producer death both drive the one shutdown path
-        # below (the ``finally``); producer death additionally exits non-zero.
-        from topos.daemon.lifecycle import ShutdownCoordinator
-
-        shutdown = ShutdownCoordinator()
-        broker = FrameBroker(
-            frame_stream,
-            history_size=args.history_size,
-            health_registry=health_registry,
-            stop_callback=frame_stop.set,
-            terminal_callback=shutdown.on_producer_terminal,
-        )
-        api = DaemonApi(
-            broker,
-            limits=ApiLimits(history_capacity=args.history_size),
-            health_registry=health_registry,
-        )
-        from topos.daemon.broker import SocketInUseError
-
-        try:
-            server = serve_versioned_unix_socket(args.socket, broker, api)
-        except SocketInUseError as exc:
-            print(f"topos daemon: {exc}", file=sys.stderr, flush=True)
-            if config.history.daemon.enabled:
-                history_store.close()
-            return 2
-        shutdown.bind_server(server)
-        print(f"serving read-only topos frames on {args.socket}", flush=True)
-
-        # Default-disabled components
-        health_registry.mark_disabled("bpf_snapshot_bridge", detail="disabled by default")
-        health_registry.mark_disabled("paddr_lifecycle", detail="disabled by default")
-
-        # BPF snapshot bridge (disabled by default)
-        bpf_bridge: BpfSnapshotBridge | None = None
-        bpf_thread: threading.Thread | None = None
-        _bpf_stop = threading.Event()
-
-        bpf_enabled = False
-        bpf_root: Path | None = None
-        bpf_interval = 30.0
-
-        # Check CLI args first, then config, then stay disabled
-        if args.bpf_root is not None:
-            bpf_enabled = True
-            bpf_root = args.bpf_root
-            bpf_interval = max(5.0, args.bpf_interval)
-        elif config.bpf_snapshot.enabled and config.bpf_snapshot.root is not None:
-            bpf_enabled = True
-            bpf_root = config.bpf_snapshot.root
-            bpf_interval = max(5.0, config.bpf_snapshot.interval)
-
-        if bpf_enabled and bpf_root is not None:
-            health_registry.mark_starting("bpf_snapshot_bridge", detail="starting BPF snapshot bridge")
-            try:
-                map_name = config.bpf_snapshot.map_name if not args.bpf_root else "topos_cgroup_skb"
-                state_dir: Path = (
-                    args.bpf_state_dir
-                    if args.bpf_state_dir is not None
-                    else config.bpf_snapshot.state_dir
-                )
-                bpf_bridge = BpfSnapshotBridge(
-                    bpf_root,
-                    command_runner=None,
-                    cgroup_root=collector.cgroup_root,
-                )
-                # Restore last known good snapshot from disk if available
-                bpf_bridge.restore_last_known_good(state_dir)
-
-                # Integrate BpfProvider at highest rank into the Collector
-                from topos.providers.net_bpf import BpfProvider as BpfProv
-                from topos.providers.net_bpf import staleness_limit_s
-
-                bpf_provider = BpfProv(
-                    bpf_root=bpf_root,
-                    state_dir=state_dir,
-                    max_age_s=staleness_limit_s(bpf_interval),
-                )
-                # Rebuild network_providers with BPF first, then existing
-                existing_providers = collector.network_providers or ()
-                collector.network_providers = (
-                    bpf_provider,
-                    *existing_providers,
-                )
-
-                print(
-                    f"BPF snapshot bridge enabled: root={bpf_root} "
-                    f"map={map_name} interval={bpf_interval}s "
-                    f"state_dir={state_dir}",
-                    flush=True,
-                )
-
-                # Perform an immediate pre-thread refresh (best-effort)
-                try:
-                    bpf_bridge.refresh_and_write(map_name, state_dir)
-                    print("BPF snapshot refreshed on startup", flush=True)
-                    health_registry.record_success("bpf_snapshot_bridge", detail="initial BPF refresh succeeded")
-                except BpfSnapshotError as exc:
-                    if bpf_bridge.last_valid_snapshot is not None:
-                        health_registry.record_degraded(
-                            "bpf_snapshot_bridge",
-                            detail="initial BPF refresh failed; preserving last valid snapshot",
-                            error=ComponentError(
-                                message=f"initial BPF refresh failed: {exc}",
-                                error_code="bpf_initial_refresh_failed",
-                            ),
-                        )
-                    else:
-                        health_registry.record_failure(
-                            "bpf_snapshot_bridge",
-                            detail="initial BPF refresh failed; no valid snapshot",
-                            error=ComponentError(
-                                message=f"initial BPF refresh failed: {exc}",
-                                error_code="bpf_initial_refresh_failed",
-                            ),
-                        )
-                    print(
-                        f"BPF snapshot initial refresh failed "
-                        f"(continuing with periodic retry): {exc}",
-                        flush=True,
-                    )
-
-                def _bpf_refresh_loop() -> None:
-                    while not _bpf_stop.wait(bpf_interval):
-                        try:
-                            snapshot = bpf_bridge.refresh(map_name)
-                            bpf_bridge.write_snapshot(snapshot, state_dir)
-                            health_registry.record_success(
-                                "bpf_snapshot_bridge",
-                                detail="BPF refresh succeeded",
-                            )
-                        except BpfSnapshotError as exc:
-                            last = bpf_bridge.last_valid_snapshot
-                            if last is not None:
-                                health_registry.record_degraded(
-                                    "bpf_snapshot_bridge",
-                                    detail="BPF refresh failed; preserving last valid snapshot",
-                                    error=ComponentError(
-                                        message=f"BPF refresh failed: {exc}",
-                                        error_code="bpf_refresh_failed",
-                                    ),
-                                )
-                                print(
-                                    f"BPF snapshot refresh failed "
-                                    f"(preserving last valid): {exc}",
-                                    flush=True,
-                                )
-                            else:
-                                health_registry.record_failure(
-                                    "bpf_snapshot_bridge",
-                                    detail="BPF refresh failed; no valid snapshot",
-                                    error=ComponentError(
-                                        message=f"BPF refresh failed: {exc}",
-                                        error_code="bpf_refresh_failed",
-                                    ),
-                                )
-                                print(
-                                    f"BPF snapshot refresh failed: {exc}",
-                                    flush=True,
-                                )
-                        except Exception as exc:
-                            health_registry.record_failure(
-                                "bpf_snapshot_bridge",
-                                detail="BPF refresh encountered an unexpected error",
-                                error=ComponentError(
-                                    message=f"BPF refresh encountered an unexpected error: {exc}",
-                                    error_code="bpf_unexpected_error",
-                                ),
-                            )
-                            print(
-                                f"BPF snapshot unexpected error: {exc}",
-                                flush=True,
-                            )
-
-                bpf_thread = threading.Thread(
-                    target=_bpf_refresh_loop, daemon=True
-                )
-                bpf_thread.start()
-            except Exception as exc:
-                health_registry.record_failure(
-                    "bpf_snapshot_bridge",
-                    detail="failed to start BPF snapshot bridge",
-                    error=ComponentError(
-                        message=f"failed to start BPF snapshot bridge: {exc}",
-                        error_code="bpf_start_failed",
-                    ),
-                )
-                print(
-                    f"Failed to start BPF snapshot bridge: {exc}",
-                    flush=True,
-                )
-
-        # Daemon-owned paddr lifecycle (disabled by default via [damon] paddr_enabled)
-        from topos.daemon.paddr_lifecycle import (
-            DaemonPaddrLifecycle,
-            PaddrLifecycleOutcome,
-            PaddrLifecycleStartError,
-        )
-
-        paddr_lifecycle = DaemonPaddrLifecycle(
-            config=config.damon,
-            damon_root=getattr(collector, "damon_root", DEFAULT_DAMON_ROOT),
-        )
-        if config.damon.paddr_enabled:
-            health_registry.mark_starting("paddr_lifecycle", detail="starting paddr lifecycle")
-            try:
-                paddr_lifecycle.start()
-                match paddr_lifecycle.outcome:
-                    case PaddrLifecycleOutcome.STARTED:
-                        health_registry.record_success("paddr_lifecycle", detail="paddr session started")
-                        print("Daemon-owned paddr session started", flush=True)
-                    case PaddrLifecycleOutcome.ADOPTED:
-                        health_registry.record_success("paddr_lifecycle", detail="paddr session adopted")
-                        print("Daemon-owned paddr session adopted", flush=True)
-            except Exception as exc:
-                health_registry.record_failure(
-                    "paddr_lifecycle",
-                    detail="paddr lifecycle start failed",
-                    error=ComponentError(
-                        message=f"paddr lifecycle start failed: {exc}",
-                        error_code=(
-                            "paddr_start_failed"
-                            if isinstance(exc, PaddrLifecycleStartError)
-                            else "paddr_unexpected_start_error"
-                        ),
-                    ),
-                )
-                print(
-                    f"Paddr lifecycle start failed "
-                    f"(daemon continues without paddr): {exc}",
-                    flush=True,
-                )
-
-        restore_signals = shutdown.install_signal_handlers()
-        try:
-            # Start only after all collector providers and daemon-owned
-            # components are configured. The socket is not accepting handler
-            # work until serve_forever starts below.
-            broker.start()
-            server.serve_forever()
-        except KeyboardInterrupt:
-            shutdown.operator_interrupt()
-        finally:
-            restore_signals()
-            if shutdown.producer_failed:
-                print(f"topos daemon exiting: {shutdown.reason}", file=sys.stderr, flush=True)
-            broker.stop()
-            collector_stopped = False
-            try:
-                broker.join(timeout=5.0)
-                collector_stopped = True
-            except FrameBrokerError as exc:
-                health_registry.record_failure(
-                    "collector",
-                    detail="collector producer did not stop cleanly",
-                    error=ComponentError(
-                        message=f"collector producer did not stop cleanly: {exc}",
-                        error_code="collector_shutdown_failed",
-                    ),
-                )
-                print(f"Collector producer shutdown failed: {exc}", flush=True)
-            if bpf_thread is not None:
-                health_registry.mark_stopping("bpf_snapshot_bridge", detail="shutting down BPF bridge")
-                _bpf_stop.set()
-                bpf_thread.join(timeout=5.0)
-                if bpf_thread.is_alive():
-                    health_registry.record_failure(
-                        "bpf_snapshot_bridge",
-                        detail="BPF bridge did not stop before the shutdown deadline",
-                        error=ComponentError(
-                            message="BPF bridge shutdown timed out",
-                            error_code="bpf_shutdown_timeout",
-                        ),
-                    )
-                else:
-                    health_registry.mark_stopped("bpf_snapshot_bridge", detail="BPF bridge stopped")
-            if paddr_lifecycle.started:
-                adopted = paddr_lifecycle.outcome is PaddrLifecycleOutcome.ADOPTED
-                health_registry.mark_stopping("paddr_lifecycle", detail="stopping paddr lifecycle")
-                try:
-                    stopped = paddr_lifecycle.stop()
-                    if stopped:
-                        print(
-                            f"Stopped {stopped} daemon-owned paddr "
-                            f"session",
-                            flush=True,
-                        )
-                    health_registry.mark_stopped(
-                        "paddr_lifecycle",
-                        detail=(
-                            "daemon lifecycle stopped; adopted paddr session remains active"
-                            if adopted
-                            else "paddr lifecycle stopped"
-                        ),
-                    )
-                except Exception as exc:
-                    health_registry.record_failure(
-                        "paddr_lifecycle",
-                        detail="paddr lifecycle stop failed",
-                        error=ComponentError(
-                            message=f"paddr lifecycle stop failed: {exc}",
-                            error_code="paddr_stop_failed",
-                        ),
-                    )
-                    print(
-                        f"Failed to stop paddr session: {exc}",
-                        flush=True,
-                    )
-            if collector_stopped:
-                health_registry.mark_stopped("collector", detail="collector stopped")
-            if config.history.daemon.enabled:
-                health_registry.mark_stopping("persistent_history", detail="flushing persistent history")
-                history_store.close()
-                health_registry.mark_stopped("persistent_history", detail="persistent history flushed")
-            server.server_close()
-        return 1 if shutdown.producer_failed else 0
     if args.command == "preflight":
         try:
-            report = preflight_daemon_deployment(args.socket, group_name=args.group)
+            report = preflight_daemon_deployment(
+                args.socket,
+                group_name=args.group,
+                config_path=args.config,
+            )
         except (OSError, RuntimeError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 2
@@ -2126,7 +1755,7 @@ def _main_daemon(argv: list[str]) -> int:
                 socket_path=args.socket,
                 group_name=args.group,
                 service_dest=args.service_dest,
-                tmpfiles_dest=args.tmpfiles_dest,
+                config_path=args.config,
             )
         except (OSError, RuntimeError, ValueError) as exc:
             print(str(exc), file=sys.stderr)

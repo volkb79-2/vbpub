@@ -26,9 +26,8 @@ About 60 fixes from the deep review are in topos 0.6.0.
    history is write-only and `topos query` reads recordings only.
 4. Unit with the self-protection envelope; install flow, and the wizard question
    for `kernel.task_delayacct`.
-5. `mdt-cockpit` mounts `/run/topos` (done, on main; takes effect with the next image
-   and a host-setup re-run, which also installs the drop-in that keeps the directory
-   when the unit stops). Still open: zero-argument source selection; visible fallback;
+5. `mdt-cockpit` mounts `/run/topos/observe` for the socket and `/run/topos/state`
+   remains private service state. Still open: zero-argument source selection; visible fallback;
    a clear message when a container sees only its own namespace. No daemon installs on
    r1002 or v1001 without coordinating with the agent that controls them (D-034).
 6. Build and release: Rust image pinned in the build, a `cmru` step for a static

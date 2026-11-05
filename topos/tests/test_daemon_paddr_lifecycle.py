@@ -536,7 +536,8 @@ def test_lifecycle_properties(tmp_path: Path) -> None:
 
 def test_lifecycle_daemon_serve_integration(tmp_path: Path) -> None:
     """Daemon serve CLI creates and starts the lifecycle when paddr_enabled."""
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import ToposConfig
 
     d_root = _damon_root(tmp_path, slots=("off",))
@@ -576,7 +577,7 @@ def test_lifecycle_daemon_serve_integration(tmp_path: Path) -> None:
     monkeypatch.setattr(cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: server)
 
     try:
-        assert cli._main_daemon(["serve", "--socket", str(socket_path)]) == 0
+        assert run_toposd_self_bind(socket_path) == 0
     finally:
         monkeypatch.undo()
 
