@@ -357,6 +357,14 @@ def _default_docker_gid(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_ambient_own_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CIU-176: tests never read the real cockpit's own container id."""
+    from ciu import workspace_env
+
+    monkeypatch.setattr(workspace_env, "_own_container_id", lambda: "")
+
+
+@pytest.fixture(autouse=True)
 def _ciu_test_suite_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Re-assert the CIU-87 product-side gate for every test body.
 
