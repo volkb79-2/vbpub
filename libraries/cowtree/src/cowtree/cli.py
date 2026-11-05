@@ -26,6 +26,7 @@ _ERROR_EXIT_CODES = {
     "tree-invalid": 10,
     "unrepairable": 11,
     "level-unavailable": 12,
+    "key-collision": 13,
 }
 
 
@@ -50,9 +51,13 @@ def _parser() -> argparse.ArgumentParser:
         sub = cache_commands.add_parser(name, help=help_text)
         sub.add_argument("--root", required=True, help="the cache directory (explicit; no environment is read)")
         sub.add_argument("--json", action="store_true")
+        sub.add_argument(
+            "--allow-non-tmpfs", action="store_true",
+            help="explicit opt-out of the rule that the cache root must be on a tmpfs (private disk cache)",
+        )
         return sub
 
-    cache_cmd("survey", "list keys, sizes, live leases and idle time")
+    cache_cmd("survey", "list keys, sizes, lease state and idle time")
     cache_gc = cache_cmd("gc", "remove idle, unleased, unmounted keys and stale scratch")
     cache_gc.add_argument("--idle", type=float, default=3600.0, metavar="SECONDS", help="minimum idle time (default 3600)")
     cache_verify = cache_cmd("verify", "check a key against its manifest")
@@ -72,7 +77,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _cache_command(args) -> int:
-    cache = Cache(args.root)
+    cache = Cache(args.root, require_tmpfs=not args.allow_non_tmpfs)
     if args.cache_command == "survey":
         rows = cache.survey()
         if args.json:

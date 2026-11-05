@@ -65,6 +65,12 @@ class KeyMissing(CowError):
     code = "key-missing"
 
 
+class KeyCollision(CowError):
+    """``ensure`` found the key published with a different content identity than the caller's."""
+
+    code = "key-collision"
+
+
 class TreeInvalid(CowError):
     """A published tree no longer matches its verification manifest."""
 

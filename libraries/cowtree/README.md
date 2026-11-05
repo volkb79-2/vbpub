@@ -38,6 +38,7 @@ guide](DESIGN-GUIDE.md#cli-exit-statuses).
 | 10 | `tree-invalid` | A published tree no longer matches its manifest |
 | 11 | `unrepairable` | An overlay entry cannot be repaired from the template |
 | 12 | `level-unavailable` | No provisioning level is usable (or the pinned one is not) |
+| 13 | `key-collision` | `ensure` found the key published with a different content identity |
 
 ZFS uses the reflink backend when block cloning is available; cowtree does not
 provide a native ZFS dataset backend.
@@ -95,7 +96,8 @@ No vbpub knowledge needed. `pip install` your project (cowtree is stdlib only), 
 from cowtree import Provisioner, Settings, decide
 
 settings = Settings(                      # level="auto": best usable of A, B, C, D
-    shared_root="/var/cache/mytool/trees", upper_root="/var/cache/mytool/uppers",
+    shared_root="/srv/mytool-trees",       # level A: must be on a tmpfs (else set allow_non_tmpfs_shared_root=True)
+    upper_root="/var/cache/mytool/uppers",
     docker_socket="/var/run/docker.sock",  # level A (omit all three to skip it)
     tmpfs_dir="/dev/shm",                  # level B
     clone_dir="/var/cache/mytool/clone",   # level C
@@ -117,7 +119,7 @@ gc), `overlay_volume` / `worker_volume` / `create_worker` / `reuse_worker` /
 
 ```console
 cowtree probe --shared-root D --upper-root U --docker-socket S --tmpfs-dir /dev/shm --copy-dir C
-cowtree cache survey|gc|verify --root D
+cowtree cache survey|gc|verify --root D [--allow-non-tmpfs]
 ```
 
 ### Behaviour of the pieces
@@ -128,22 +130,78 @@ cowtree cache survey|gc|verify --root D
   hash or symlink target), and renames the directory into place. Concurrent
   callers wait, then reuse the winner's tree; a failed build removes its scratch.
   `seal=True` additionally chmods the tree read-only (off by default: the mount
-  is the read-only protection, and a chmod forces full-file copy-ups).
-  `verify(key)` re-hashes the tree and raises `tree-invalid` on drift.
-- **Lease and release.** `lease(key, owner)` holds a flock on its own lease
-  file, which records pid, start time, boot id, pid namespace, host and owner.
-  The kernel drops the flock with the holder, so liveness is immune to pid
-  reuse and needs no heartbeat; `heartbeat()` only refreshes the idle clock.
-  `lease(key, owner, pid=N)` records an external holder judged by pid plus start
-  time, and a holder in another boot or pid namespace is conservatively kept
-  alive. `release()` / the context manager removes the lease.
+  is the read-only protection, and a chmod forces full-file copy-ups; the
+  chmod caveat below applies). `verify(key)` re-hashes the tree and raises
+  `tree-invalid` on drift. `survey`, `verify` and `require_complete` are
+  read-only: they never create `.locks` or anything else, so they work on a
+  root the caller cannot write.
+- **Key collisions.** Keys are chosen by the caller; `ensure` trusts them. Use
+  a collision-resistant hash (at least 128 bits) over everything that decides
+  the content. For a guard, pass `identity="<hash inputs or source revision>"`:
+  it is recorded in `COMPLETE`, and a later `ensure` with a different identity
+  (or against a key published without one) raises `key-collision` instead of
+  silently reusing another tree.
+- **On-disk layout.** The layout is exactly that of
+  `HOST-CONTRACT.md` item 3 (beside this file), so a host GC written to the
+  contract (for example mdt-cockpit's `mdt_tree_cache.py`) honours cowtree's
+  leases: `<key>/{COMPLETE,tree/,.lease,.last-used}`, builds in
+  `<key>.tmp-<token>`, cowtree-internal locks in `.locks/`. Only `tree/` is
+  sealed; the key directory stays group-writable. Every directory and file
+  cowtree creates gets an explicit mode (`0770`/`0660`, the root's setgid bit
+  kept) regardless of the umask, so a group-shared root works at umask 022.
+  Files your `build` writes into `tree/` keep the modes you give them: make them
+  group-readable for the other lessees.
+- **Lease and release.** `lease(key, owner)` touches `.last-used`, then holds
+  `LOCK_SH` (flock) on `<key>/.lease` until `release()` or the holder's death:
+  the kernel drops the flock with the holder, so there is no stale lease, no
+  pid-reuse hazard and no heartbeat (`heartbeat()` only refreshes the idle
+  clock). After the lock it re-validates (the lease inode is still the one at
+  `<key>/.lease` and `COMPLETE` still resolves), because a host GC may remove
+  the key between `open` and `flock`; a removed key raises `key-missing`.
+  `owner` is an in-memory label. The flock is shared by `fork()` without
+  exec; an external process that cannot hold the descriptor has no lease
+  mode (pid leases were dropped because the host contract defines only
+  flock): keep the lessee alive in the process that needs the key.
 - **GC policy** (`cowtree cache gc --root D --idle SECONDS`, one global GC lock,
-  each key under its own exclusive lock taken without waiting): scratch and
-  incomplete keys are removed; dead leases are pruned; a key with a live
-  lease, idle below the threshold, or named by any `/proc/self/mountinfo` row
-  (a bind of it or below, or an overlay `lowerdir=`/`upperdir=`/`workdir=`) is
-  kept; anything else is renamed to scratch and removed by exact path. Foreign
-  entries are never touched.
+  each key under its own exclusive lock taken without waiting): the root must
+  still be a tmpfs (below); scratch and incomplete keys are removed; a key
+  whose `<key>/.lease` cannot be locked `LOCK_EX|LOCK_NB` has a live lessee and
+  is kept (a lease that is not a regular file keeps it too, and the lock is
+  held until the key is gone); a key idle below the threshold is kept; a key
+  named by **any process's** `/proc/<pid>/mountinfo` row (a bind of it or
+  below, or an overlay `lowerdir=`/`upperdir=`/`workdir=`) is kept, and so is
+  every key when some process's mountinfo cannot be read; anything else is
+  renamed to scratch and removed by exact path. Foreign entries are never
+  touched. The lease is the primary guard (a mount taken after the mountinfo
+  scan is protected only by a lease taken **before** it), the mountinfo scan
+  the second line.
+- **tmpfs rule.** The shared cache is a tmpfs area. `Cache(root, require_tmpfs=...)`
+  has no default: `True` refuses a root that is not on `tmpfs`/`ramfs` (at
+  construction and again at every `gc`), so GC can never delete from a real
+  disk; `False` is the explicit opt-out for a private cache on a normal
+  filesystem (CLI: `--allow-non-tmpfs`; `Settings.allow_non_tmpfs_shared_root`
+  for level A; levels C and D are private disk directories and opt out
+  internally, level B requires its tmpfs).
+- **tmpfs charging.** A tmpfs page is charged to the cgroup of the process that
+  first writes it, not to the one that later reads it (reads never charge,
+  mounting never charges). When the writing cgroup is removed (a finished lane
+  scope) the charge moves to its parent. Populate the cache from a **persistent**
+  slice (for example `systemd-run --slice=tree-cache.slice -- python build.py`,
+  or `docker run --cgroup-parent tree-cache.slice`), never from inside a lane, or
+  the first lane is charged for the shared pages and can be OOM-killed with a
+  half-built key (GC then removes the scratch). Without a persistent slice the
+  charge lands on whichever parent is left; cowtree cannot place a process in
+  a cgroup for you.
+- **chmod and copy-up.** In an overlay, any chmod issued through the merged
+  view on a lower file, even to the mode it already has, copies the whole
+  file up into the upper (overlayfs `metacopy` is off here), and a tree-wide
+  chmod therefore turns every lower file into a private copy. `seal=True`
+  strips the write bits of every entry, so a consumer that has to write or
+  normalise modes through an overlay ends up chmod-ing (`chmod u+w`, `cp -p`,
+  `tar` extraction, package installers) and loses the sharing it came for.
+  Seal only trees that are consumed by plain copies (levels B-D) or by
+  read-only mounts; never rely on `seal` to protect an overlay lower, the
+  mount's read-only flag does that.
 - **Overlay recipe (level A).** `worker_volume` builds the measured
   `docker volume create --driver local --opt type=overlay --opt device=overlay
   --opt o=lowerdir=...,upperdir=...,workdir=...,redirect_dir=on,xino=auto`

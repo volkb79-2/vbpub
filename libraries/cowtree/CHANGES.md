@@ -11,9 +11,13 @@ internal library, not a separately published release target.
 
 ### Added
 - Add the shared keyed-tree mechanism (AD2-3): `cowtree.cache` (`Cache.ensure`
-  atomic publish with a verification manifest, flock and pid leases safe against
-  pid reuse, `release`, holder-checked `gc` that honours leases and
-  `/proc/self/mountinfo` binds and overlay `lowerdir=`, `survey`, `verify`,
+  atomic publish with a verification manifest and an optional `identity=` guard
+  (`key-collision`, exit 13), flock leases on `<key>/.lease` in the layout of
+  `HOST-CONTRACT.md` item 3 (a host GC honours them; interop tested against the
+  shipped `mdt_tree_cache.py`), `release`, holder-checked `gc` that honours
+  leases and every process's mountinfo (binds and overlay `lowerdir=`),
+  mandatory `require_tmpfs=` (explicit opt-out; CLI `--allow-non-tmpfs`),
+  explicit umask-independent `0770`/`0660` modes, read-only `survey`/`verify`,
   plain-path configuration), `cowtree.provision` (standalone `Settings`,
   capability `Probes`, `decide` picking and reporting degradation levels A
   overlay, B tmpfs copy, C reflink, D copy, and a `Provisioner` giving every

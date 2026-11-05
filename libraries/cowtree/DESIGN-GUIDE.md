@@ -160,14 +160,27 @@ update before the final directory fsync, or re-read the manifest on error.
 ## Shared keyed trees (AD2-3)
 
 Lock order is fixed: the global GC lock, then one key lock; leases are taken
-under a shared key lock and GC removes under an exclusive one, so a lease can
-never race a removal. State (`last-used`, lease files) lives in `.state/<key>`
-beside the key so a sealed key directory never blocks lease writes. Lock files
-under `.locks` are zero-byte and retained (unlinking a lock file races with
-waiters); a tmpfs root clears them on reboot. GC conservatism: anything it
-cannot judge (a pid lease from another boot or pid namespace, a key still
-named in mountinfo, a busy key lock) is kept, so a false negative costs disk
-and a false positive is impossible without a live holder disappearing.
+under a shared key lock and GC removes under an exclusive one. The cross-tool
+guard is the host contract's: a lease is `LOCK_SH` on `<key>/.lease`, GC takes
+`LOCK_EX|LOCK_NB` on it and holds it until the key is gone, and a lessee
+re-validates after its `flock` (same inode at `<key>/.lease`, `COMPLETE`
+still resolving), so a foreign GC that never sees `.locks/<key>` is still
+safe. `.last-used` and `.lease` live in the key directory (as the contract
+says); only `tree/` is sealed, never the key directory, so they stay usable.
+All created directories and files get explicit modes (`0770`/`0660`, setgid
+kept) because the umask would otherwise strip the group bits of the shared
+design. Lock files under `.locks` are zero-byte and retained (unlinking a lock
+file races with waiters); a tmpfs root clears them on reboot. Read-only
+commands (`survey`, `verify`) create nothing. The mountinfo holder check reads
+every process's table (a bind in another mount namespace is invisible to our
+own), but the lease stays the primary guard: it is the only thing that protects
+a mount taken after the scan. GC conservatism: anything it cannot judge (a
+lease that is not a regular file, a key still named in mountinfo, an
+unreadable process entry, a busy key lock, a root that is no longer a tmpfs)
+is kept, so a false negative costs disk and a false positive is impossible
+without a live holder disappearing. Interop is tested against the shipped
+host GC (`tests/test_cache.py`, which loads `mdt_tree_cache.py` when present)
+and against a reference GC written from the contract text.
 Overlay hazards (`redirect_dir=on` needs a root mount; the upper's mode and
 owner become the merged root's; an upper is bound to one lower) are encoded in
 `cowtree.overlay` rather than left to callers.

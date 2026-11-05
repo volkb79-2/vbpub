@@ -153,29 +153,36 @@ def _cache_env(tmp_path):
     root = tmp_path / "tree-cache"
     root.mkdir(mode=0o770)
     from cowtree.cache import Cache
-    cache = Cache(str(root))
+    cache = Cache(str(root), require_tmpfs=False)
     cache.ensure("a" * 16, lambda tree: open(tree + "/f", "w").write("x"))
     return str(root)
 
 
 def test_cache_cli_survey_gc_verify(tmp_path, capsys):
     root = _cache_env(tmp_path)
-    assert cli.main(["cache", "survey", "--root", root]) == 0
+    assert cli.main(["cache", "survey", "--root", root, "--allow-non-tmpfs"]) == 0
     assert "kind=key" in capsys.readouterr().out
-    assert cli.main(["cache", "survey", "--root", root, "--json"]) == 0
+    assert cli.main(["cache", "survey", "--root", root, "--allow-non-tmpfs", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)[0]["files"] == 1
-    assert cli.main(["cache", "verify", "--root", root, "a" * 16]) == 0
+    assert cli.main(["cache", "verify", "--root", root, "--allow-non-tmpfs", "a" * 16]) == 0
     assert "digest: " in capsys.readouterr().out
-    assert cli.main(["cache", "verify", "--root", root, "a" * 16, "--shallow", "--json"]) == 0
+    assert cli.main(["cache", "verify", "--root", root, "--allow-non-tmpfs", "a" * 16, "--shallow", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["ok"] is True
-    assert cli.main(["cache", "verify", "--root", root, "b" * 16, "--json"]) == 9
+    assert cli.main(["cache", "verify", "--root", root, "--allow-non-tmpfs", "b" * 16, "--json"]) == 9
     assert json.loads(capsys.readouterr().err)["error"] == "key-missing"
-    assert cli.main(["cache", "gc", "--root", root]) == 0
+    assert cli.main(["cache", "gc", "--root", root, "--allow-non-tmpfs"]) == 0
     assert "a" * 16 + ": kept: idle" in capsys.readouterr().out
-    assert cli.main(["cache", "gc", "--root", root, "--json"]) == 0
+    assert cli.main(["cache", "gc", "--root", root, "--allow-non-tmpfs", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)[0]["status"] == "kept"
-    assert cli.main(["cache", "gc", "--root", root, "--idle", "0"]) == 0
+    assert cli.main(["cache", "gc", "--root", root, "--allow-non-tmpfs", "--idle", "0"]) == 0
     assert "removed" in capsys.readouterr().out
+
+
+def test_cache_cli_refuses_a_non_tmpfs_root_by_default(tmp_path, monkeypatch, capsys):
+    root = _cache_env(tmp_path)
+    monkeypatch.setattr("cowtree.cache.mount_fstype", lambda path, text: "ext4")
+    assert cli.main(["cache", "gc", "--root", root, "--json"]) == 3
+    assert "not a tmpfs" in capsys.readouterr().err
 
 
 def test_cache_cli_requires_explicit_root(capsys):

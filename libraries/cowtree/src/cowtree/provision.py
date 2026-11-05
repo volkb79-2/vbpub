@@ -64,6 +64,9 @@ class Settings:
     tmpfs_dir: str | None = None
     clone_dir: str | None = None
     copy_dir: str | None = None
+    #: Explicit opt-out for level A: the shared root is normally a tmpfs (HOST-CONTRACT item 1) and the cache refuses
+    #: anything else. Set True only for a private shared root on a normal filesystem.
+    allow_non_tmpfs_shared_root: bool = False
 
 
 def _read_mountinfo() -> str:
@@ -241,15 +244,23 @@ class Provisioner:
             self._work_root = os.path.join(base, "cowtree-workers")
             for directory in (cache_root, self._work_root):
                 os.makedirs(directory, mode=0o770, exist_ok=True)
-        self.cache = Cache(cache_root, mountinfo=mountinfo)
+        # A and B hold the shared keyed trees in a tmpfs (A: the host's shared area, B: the tmpfs work dir): refuse to
+        # run on anything else unless the caller opts out. C and D are private disk work directories by definition.
+        require_tmpfs = (
+            not settings.allow_non_tmpfs_shared_root if self.level == "A" else self.level == "B"
+        )
+        self.cache = Cache(cache_root, require_tmpfs=require_tmpfs, mountinfo=mountinfo)
         self._docker = ["docker", *(["--host", f"unix://{settings.docker_socket}"] if settings.docker_socket else [])]
 
     # -- publish / lease
-    def publish(self, key: str, build: Callable[[str], None], *, owner: str | None = None, seal: bool = False) -> Published:
-        return self.cache.ensure(key, build, owner=owner, seal=seal)
+    def publish(
+        self, key: str, build: Callable[[str], None], *, owner: str | None = None, seal: bool = False,
+        identity: str | None = None,
+    ) -> Published:
+        return self.cache.ensure(key, build, owner=owner, seal=seal, identity=identity)
 
-    def lease(self, key: str, owner: str, *, pid: int | None = None) -> Lease:
-        return self.cache.lease(key, owner, pid=pid)
+    def lease(self, key: str, owner: str) -> Lease:
+        return self.cache.lease(key, owner)
 
     # -- workers
     def worker(self, token: str, index: int, key: str, *, target: str | None = None) -> WorkerSlot:

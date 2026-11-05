@@ -10,6 +10,7 @@ from .detect import ENV_MODE, ENV_ROOT, Area, Capabilities, detect
 from .errors import (
     BackendFailed,
     CacheBusy,
+    KeyCollision,
     KeyMissing,
     TreeInvalid,
     Unrepairable,
@@ -49,6 +50,7 @@ __all__ = [
     "Cache",
     "CacheBusy",
     "CacheGcItem",
+    "KeyCollision",
     "KeyMissing",
     "Lease",
     "OverlayVolume",

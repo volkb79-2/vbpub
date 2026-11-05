@@ -32,7 +32,7 @@ def env(tmp_path):
     upper = tmp_path / "upper"
     root.mkdir(mode=0o770)
     upper.mkdir(mode=0o770)
-    cache = Cache(str(root))
+    cache = Cache(str(root), require_tmpfs=False)
     cache.ensure(KEY, _build)
     cache.ensure(KEY2, _build)
     return SimpleNamespace(cache=cache, upper=str(upper), tmp=tmp_path)

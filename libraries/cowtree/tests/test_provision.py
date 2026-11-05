@@ -5,10 +5,12 @@ import stat
 
 import pytest
 from cowtree import adapters, provision
-from cowtree.errors import BackendFailed, KeyMissing, PathRefused
+from cowtree.errors import BackendFailed, KeyMissing, PathRefused, RootInvalid
 from cowtree.provision import LevelUnavailable, Probes, Provisioner, Settings, decide
 
 KEY = "a" * 16
+ALL_TMPFS = "1 0 0:50 / / rw - tmpfs tmpfs rw\n"
+ALL_EXT4 = "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n"
 
 
 def _build(tree):
@@ -151,7 +153,7 @@ def test_levels_b_c_d_give_identical_trees(tmp_path, monkeypatch, level):
     _fake_clone(monkeypatch)
     directory = _dir(tmp_path, "base")
     settings = Settings(level=level, tmpfs_dir=directory, clone_dir=directory, copy_dir=directory)
-    prov = Provisioner(settings, probes=_probes())
+    prov = Provisioner(settings, probes=_probes(), mountinfo=lambda: ALL_TMPFS)
     assert prov.level == level and prov.decision.report()["level"] == level
     published = prov.publish(KEY, _build, owner="lane")
     published.lease.release()
@@ -184,7 +186,7 @@ def test_worker_requires_published_key(tmp_path):
 def test_level_a_docker_mode_uses_socket_and_fake_runner(tmp_path):
     runner = FakeRunner()
     settings = Settings(level="A", shared_root=_dir(tmp_path, "s"), upper_root=_dir(tmp_path, "u"),
-                        docker_socket="/run/custom.sock")
+                        docker_socket="/run/custom.sock", allow_non_tmpfs_shared_root=True)
     prov = Provisioner(settings, probes=_probes(), runner=runner, cleanup_image="img")
     prov.publish(KEY, _build)
     slot = prov.worker("tok", 0, KEY)
@@ -203,7 +205,8 @@ def test_level_a_docker_mode_uses_socket_and_fake_runner(tmp_path):
 def test_level_a_mount_mode(tmp_path):
     runner = FakeRunner()
     target = _dir(tmp_path, "mnt")
-    settings = Settings(level="A", shared_root=_dir(tmp_path, "s"), upper_root=_dir(tmp_path, "u"), overlay_via="mount")
+    settings = Settings(level="A", shared_root=_dir(tmp_path, "s"), upper_root=_dir(tmp_path, "u"), overlay_via="mount",
+                        allow_non_tmpfs_shared_root=True)
     prov = Provisioner(settings, probes=_probes(), runner=runner)
     assert prov._docker == ["docker"]
     prov.publish(KEY, _build)
@@ -222,7 +225,8 @@ def test_level_a_mount_mode(tmp_path):
 
 def test_runner_failure_is_typed(tmp_path):
     runner = FakeRunner(status=32)
-    settings = Settings(level="A", shared_root=_dir(tmp_path, "s"), upper_root=_dir(tmp_path, "u"), overlay_via="mount")
+    settings = Settings(level="A", shared_root=_dir(tmp_path, "s"), upper_root=_dir(tmp_path, "u"), overlay_via="mount",
+                        allow_non_tmpfs_shared_root=True)
     prov = Provisioner(settings, probes=_probes(), runner=runner)
     prov.publish(KEY, _build)
     with pytest.raises(BackendFailed, match="mount exited 32"):
@@ -246,3 +250,15 @@ def test_library_modules_read_no_vbpub_env_names():
     for name in ("cache", "overlay", "provision"):
         text = (pathlib.Path(provision.__file__).parent / f"{name}.py").read_text()
         assert "MDT_" not in text and "os.environ" not in text and "getenv" not in text and "dev-cache" not in text
+
+
+def test_shared_cache_refuses_a_non_tmpfs_root_unless_opted_out(tmp_path):
+    shared = _dir(tmp_path, "s")
+    settings = Settings(level="A", shared_root=shared, upper_root=_dir(tmp_path, "u"), docker_socket="/d.sock")
+    with pytest.raises(RootInvalid, match="not a tmpfs"):
+        Provisioner(settings, probes=_probes(), mountinfo=lambda: ALL_EXT4)
+    Provisioner(settings, probes=_probes(), mountinfo=lambda: ALL_TMPFS)
+    from dataclasses import replace
+    Provisioner(replace(settings, allow_non_tmpfs_shared_root=True), probes=_probes(), mountinfo=lambda: ALL_EXT4)
+    # level D is a private disk directory: no tmpfs requirement
+    Provisioner(Settings(level="D", copy_dir=_dir(tmp_path, "p")), probes=_probes(), mountinfo=lambda: ALL_EXT4)
