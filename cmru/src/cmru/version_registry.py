@@ -835,12 +835,15 @@ def oci_candidates(
     if cutoff is not None:
         ordered = sorted(matched, key=lambda item: _semver_key(item[1]), reverse=True)
         for _key, group in groupby(ordered, key=lambda item: _semver_key(item[1])):
-            eligible = False
+            keys: set[str] = set()
             for tag, version in group:
                 stamp, age_source = client.tag_timestamp(tag)
                 _merge_oci_candidate(result, Candidate(version=version, released_at=stamp, age_source=age_source, tag=tag))
-                eligible = eligible or stamp <= cutoff
-            if eligible:
+                keys.add(normalized_version(version))
+            # Stop only when the MERGED candidate (newest stamp per normalised
+            # key) is eligible; one old spelling of a version whose other
+            # spelling is too new must fall back to an older version.
+            if any(result[key].released_at <= cutoff for key in keys):
                 break
         return result
     with ThreadPoolExecutor(max_workers=8) as pool:

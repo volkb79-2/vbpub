@@ -761,10 +761,14 @@ of every matching tag. Aligned (multi-source) targets still scan every matching 
 100 per 3600 s anonymous per IP, 200 authenticated (`username_env`/`password_env`); a 21-target project can still need
 more than one window. A registry HTTP 429 with a `Retry-After` of at most 60 s is retried (3 times); any other 429 (Docker
 Hub sends `ratelimit-limit`/`ratelimit-remaining` and no `Retry-After`) stops the run with **exit 5** and a message naming
-the limit headers. `cmru versions resolve` saves every target it finished to
+the limit headers. The retry bound is per request (3 retries of at most 60 s each, so at most 180 s for one request), not
+per run: there is no cumulative sleep budget, and Docker Hub sends no `Retry-After`, so against Hub a 429 fails at once.
+`cmru versions resolve` saves every target it finished to
 `$XDG_CACHE_HOME/cmru/versions-resume-<hash>.json` (default `~/.cache`; outside the repository), and the same command
 rerun after the window reuses those targets (unchanged declaration, same age window, saved within 24 h) and resolves only
-the rest; a completed non-dry-run resolve deletes the file. `versions check` never reads it.
+the rest; a completed non-dry-run resolve deletes the file. Rolling-tag targets and overrides whose `expires` falls within
+the 24 h window are never saved or reused (re-resolved every run), and `--dry-run` never writes the file. `versions check`
+never reads it.
 
 Optional Jinja2 outputs let a project render another format from the same resolution. Each
 `versions.outputs.<id>` table has `template`, `path`, and `dated_path`; both output paths are

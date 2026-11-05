@@ -508,9 +508,11 @@ class _ResumeStore:
     cache that cannot be written must not hide the rate-limit message.
     """
 
-    def __init__(self, path: Path, now: datetime):
+    def __init__(self, path: Path, now: datetime, *, persist: bool = True):
         self.path = path
         self.now = now
+        # A dry run must not leave entries a later real resolve would reuse.
+        self.persist = persist
         self.entries: dict[str, dict[str, Any]] = {}
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
@@ -540,10 +542,26 @@ class _ResumeStore:
             return None
         return result if self.now - result.resolved_at <= RESUME_TTL else None
 
+    def reusable(self, target: Mapping[str, object]) -> bool:
+        """False for targets whose result is time- or tag-movement-dependent.
+
+        Rolling OCI tags can move their digest within the TTL; an override
+        whose ``expires`` date falls inside the TTL window must be re-checked.
+        """
+        oci = target.get("oci")
+        if isinstance(oci, dict) and oci.get("selection", "semver") == "rolling":
+            return False
+        expires = target.get("expires")
+        if expires is not None and str(expires) <= (self.now + RESUME_TTL).date().isoformat():
+            return False
+        return True
+
     def put(self, owner: str, fingerprint: str, result: TargetResult) -> None:
         self.entries[self._key(owner, result.target_id)] = {
             "fingerprint": fingerprint, "result": _result_record(result),
         }
+        if not self.persist:
+            return
         try:
             _write_text_atomic(self.path, json.dumps({"schema": 1, "entries": self.entries}, indent=1, sort_keys=True) + "\n")
         except OSError:
@@ -566,8 +584,9 @@ def _resolve_targets(
     for target_id, target in targets.items():
         if not isinstance(target, dict):
             raise VersionsError(f"target {target_id!r} is not a table")
-        fingerprint = _ResumeStore.fingerprint(target, age_window_days, owner) if resume else ""
-        cached = resume.get(owner, target_id, fingerprint) if resume else None
+        usable = bool(resume) and resume.reusable(target)
+        fingerprint = _ResumeStore.fingerprint(target, age_window_days, owner) if usable else ""
+        cached = resume.get(owner, target_id, fingerprint) if usable else None
         if cached is not None:
             results[target_id] = cached
             reused += 1
@@ -576,7 +595,7 @@ def _resolve_targets(
             target_id, target, age_window_days=age_window_days,
             resolved_at=resolved_at, owner=owner,
         )
-        if resume:
+        if usable:
             resume.put(owner, fingerprint, results[target_id])
     if reused:
         print(f"cmru versions: reused {reused} target(s) from an earlier interrupted run ({owner})", file=sys.stderr)
@@ -1990,6 +2009,11 @@ def _resolve_all_for_command(
         if resume is None:
             raise
         saved = len(resume.entries)
+        if not resume.persist:
+            raise VersionsRateLimitedError(
+                f"{exc}. Rate limited during a dry run: nothing saved; rerun after the rate-limit window "
+                "(Docker Hub's window is 3600 s)"
+            ) from exc
         raise VersionsRateLimitedError(
             f"{exc}. Rate limited: {saved} target(s) resolved and saved to {resume.path}; "
             "rerun the same command after the rate-limit window to continue "
@@ -2079,7 +2103,7 @@ def _run_resolve(
     dry_run: bool,
 ) -> list[str]:
     resolved_at = datetime.now(timezone.utc).replace(microsecond=0)
-    resume = _ResumeStore(_resume_path(context.config_path), resolved_at)
+    resume = _ResumeStore(_resume_path(context.config_path), resolved_at, persist=not dry_run)
     root_results, project_results, declarations = _resolve_all_for_command(
         forge, projects, resolved_at=resolved_at, resume=resume,
     )

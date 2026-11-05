@@ -133,6 +133,24 @@ def test_cutoff_scan_finishes_a_group_of_equal_versions_before_stopping(monkeypa
     assert set(found) == {"1.0", "1.0.0"}
 
 
+@pytest.mark.parametrize("old_tag, new_tag", [("v1.1.0", "1.1.0"), ("1.1.0", "v1.1.0")])
+def test_cutoff_scan_falls_back_when_merged_spelling_is_too_new(monkeypatch, old_tag, new_tag):
+    # Two spellings of one version normalise to the same key; the merge keeps the newest
+    # stamp (too new), so the scan must continue to the older eligible version.
+    stamps = {old_tag: OLD, new_tag: FRESH, "1.0.0": OLD, "0.9.0": OLD}
+    asked: list[str] = []
+    monkeypatch.setattr(registry._OCIClient, "tag_list", lambda _self: list(stamps))
+    monkeypatch.setattr(
+        registry._OCIClient, "tag_timestamp", lambda _self, tag: (asked.append(tag) or stamps[tag], "fixture"),
+    )
+    found = registry.oci_candidates(
+        {"image": "ghcr.io/acme/app", "tag": "{version}"}, "*", NOW - timedelta(days=14),
+    )
+    assert set(asked) == {old_tag, new_tag, "1.0.0"}
+    assert found["1.1.0"].released_at == FRESH
+    assert found["1.0.0"].released_at == OLD
+
+
 def test_candidates_forwards_cutoff_only_to_oci(monkeypatch):
     seen: list[object] = []
     monkeypatch.setattr(registry, "oci_candidates", lambda source, constraint, cutoff=None: seen.append(cutoff) or {})
@@ -289,6 +307,63 @@ def test_rate_limit_saves_partial_results_and_rerun_resumes(monkeypatch, tmp_pat
     )
     assert calls == ["oci.c"] and set(root) == {"oci.a", "oci.b", "oci.c"}
     assert "reused 2 target(s)" in capsys.readouterr().err
+
+
+def _resolve_counting(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        versions, "_resolve_target",
+        lambda target_id, target, **kw: calls.append(target_id) or _result(target_id, kw["resolved_at"]),
+    )
+    return calls
+
+
+def _run(targets, store, at=NOW):
+    return versions._resolve_targets(targets, age_window_days=14, resolved_at=at, owner="root", resume=store)
+
+
+def test_rolling_targets_are_never_saved_or_reused(monkeypatch, tmp_path):
+    calls = _resolve_counting(monkeypatch)
+    rolling = {"mode": "single", "constraint": "*", "oci": {"image": "x/y", "tag": "latest", "selection": "rolling"}}
+    store = versions._ResumeStore(tmp_path / "r.json", NOW)
+    _run({"oci.r": rolling, "oci.s": _oci_target()}, store)
+    assert list(store.entries) == [store._key("root", "oci.s")]
+    later = versions._ResumeStore(store.path, NOW + timedelta(hours=1))
+    calls.clear()
+    _run({"oci.r": rolling, "oci.s": _oci_target()}, later, NOW + timedelta(hours=1))
+    assert calls == ["oci.r"]
+
+
+def test_override_expiring_inside_the_window_is_rechecked(monkeypatch, tmp_path):
+    calls = _resolve_counting(monkeypatch)
+    soon = _oci_target(version="3.20.1", reason="r", expires="2026-11-06")
+    far = _oci_target(version="3.20.1", reason="r", expires="2026-12-01")
+    store = versions._ResumeStore(tmp_path / "r.json", NOW)
+    _run({"oci.soon": soon, "oci.far": far}, store)
+    assert list(store.entries) == [store._key("root", "oci.far")]
+    later = versions._ResumeStore(store.path, NOW + timedelta(hours=1))
+    calls.clear()
+    _run({"oci.soon": soon, "oci.far": far}, later, NOW + timedelta(hours=1))
+    assert calls == ["oci.soon"]
+
+
+def test_dry_run_store_writes_nothing_a_real_resolve_could_reuse(monkeypatch, tmp_path):
+    calls = _resolve_counting(monkeypatch)
+    path = tmp_path / "r.json"
+    dry = versions._ResumeStore(path, NOW, persist=False)
+    _run({"oci.a": _oci_target()}, dry)
+    assert not path.exists() and dry.entries
+    real = versions._ResumeStore(path, NOW)
+    calls.clear()
+    _run({"oci.a": _oci_target()}, real)
+    assert calls == ["oci.a"]
+
+
+def test_dry_run_rate_limit_message_does_not_claim_a_saved_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(versions, "_resolve_target", lambda *a, **k: (_ for _ in ()).throw(versions.VersionsRateLimitedError("429")))
+    store = versions._ResumeStore(tmp_path / "r.json", NOW, persist=False)
+    with pytest.raises(versions.VersionsRateLimitedError, match="nothing saved"):
+        versions._resolve_all_for_command(_forge("oci.a"), [], resolved_at=NOW, resume=store)
 
 
 def test_rate_limit_without_resume_store_propagates_unchanged(monkeypatch):
