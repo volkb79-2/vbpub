@@ -48,6 +48,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -93,6 +94,20 @@ from .workspace_env import (  # P8 contract — relied on exactly, never edited 
 
 # Global logger instance (configured after parsing config).
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PreparedStack:
+    """The rendered inputs shared by ``ciu up`` and stack-scoped one-shots."""
+
+    working_dir: Path
+    repo_root: Path
+    project: str
+    file_args: list[str]
+    compose_env: dict[str, str]
+    rendered_compose: str
+    ownership_path: Path | None
+    config: dict[str, Any]
 
 
 # ===========================================================================
@@ -1870,6 +1885,7 @@ def main_execution(
     compose_profiles: Optional[list[str]] = None,
     ciu_context: Optional[dict] = None,
     primary_image_references: set[str] | Callable[[], set[str]] | None = None,
+    _prepare_only: bool = False,
 ) -> dict:
     """Run the S8.3 pipeline for one stack. Returns a result dict with 'status'.
 
@@ -2345,18 +2361,34 @@ def main_execution(
                 ownership_path.read_text(encoding="utf-8"), materialized
             )
 
+        compose_env = composefile.compose_process_env(
+            specs, materialized, compose_profiles=compose_profiles
+        )
+        file_args = composefile.compose_file_args(working_dir, overlay_path)
+        if ownership_path is not None:
+            file_args += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
+        project = compose_project_name(global_config, working_dir)
+
         # ---- Step 16: compose up (S8.1) ----
+        if _prepare_only:
+            print("[STEP 16/17] Preparing rendered service; skipping compose up", flush=True)
+            prepared = PreparedStack(
+                working_dir=working_dir,
+                repo_root=repo_root,
+                project=project,
+                file_args=file_args,
+                compose_env=compose_env,
+                rendered_compose=rendered_compose,
+                ownership_path=ownership_path,
+                config=composefile.redact_config(merged, specs),
+            )
+            result["prepared_stack"] = prepared
+            result["config"] = prepared.config
+            return result
         if dry_run:
             print("[STEP 16/17] --dry-run: skipping docker compose up", flush=True)
         else:
             print("[STEP 16/17] Starting stack (docker compose up -d)...", flush=True)
-            compose_env = composefile.compose_process_env(
-                specs, materialized, compose_profiles=compose_profiles
-            )
-            file_args = composefile.compose_file_args(working_dir, overlay_path)
-            if ownership_path is not None:
-                file_args += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
-            project = compose_project_name(global_config, working_dir)
             guard_container_name_owners(
                 rendered_compose,
                 expected_project=project,
@@ -2439,6 +2471,40 @@ def main_execution(
     finally:
         # S8.4 / B10: always restore cwd on every path.
         os.chdir(original_cwd)
+
+
+def prepare_stack(
+    working_dir: Path,
+    *,
+    compose_file: str = CIU_COMPOSE_TEMPLATE,
+    define_root: Optional[Path] = None,
+    skip_hostdir_check: bool = False,
+    skip_hooks: bool = False,
+    compose_profiles: Optional[list[str]] = None,
+    ciu_context: Optional[dict] = None,
+    primary_image_references: set[str] | Callable[[], set[str]] | None = None,
+) -> PreparedStack:
+    """Render a stack exactly as ``ciu up`` does, without starting Compose.
+
+    Preparation still performs the normal environment, secret, hook, configfile,
+    leak-scan, overlay, and ownership-label work. It deliberately skips the
+    optional reset and both Compose lifecycle hooks because no stack is started.
+    """
+    result = main_execution(
+        working_dir=working_dir,
+        compose_file=compose_file,
+        define_root=define_root,
+        skip_hostdir_check=skip_hostdir_check,
+        skip_hooks=skip_hooks,
+        compose_profiles=compose_profiles,
+        ciu_context=ciu_context,
+        primary_image_references=primary_image_references,
+        _prepare_only=True,
+    )
+    prepared = result.get("prepared_stack")
+    if not isinstance(prepared, PreparedStack):
+        raise ComposeError("[S8.3] stack preparation completed without rendered Compose inputs")
+    return prepared
 
 
 def run_shipped(
