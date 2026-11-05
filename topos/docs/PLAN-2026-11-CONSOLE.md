@@ -17,18 +17,19 @@ About 60 fixes from the deep review are in topos 0.6.0.
 
 1. **Rust sampler** (done, on branch `topos-sampler-poc-20261105`, not on main):
    collection, rates, hot/warm/cold tiers, hard events, socket; three review rounds.
-   Operator approved Rust (D-026) on: 1.4x less CPU, 2.5-10x less memory.
+   Operator approved Rust (D-026). The finished sampler uses about 1.2x less CPU than
+   the lean Python yardstick and 1.6-7x less memory (Evidence).
 2. Still open for the sampler: slow enrichment (docker identity, systemd origin and
    drift), `topos --once` through it, and the D-024 envelope measured on a host.
 3. Read path: `topos query`, TUI backfill and MCP read the tiers. Today persistent
    history is write-only and `topos query` reads recordings only.
 4. Unit with the self-protection envelope; install flow, and the wizard question
    for `kernel.task_delayacct`.
-5. `mdt-cockpit` mounts `/run/topos`; zero-argument source selection; visible
-   fallback; a clear message when a container sees only its own namespace. No daemon
-   installs on r1002 or v1001 without coordinating with the agent that controls them
-   (D-034). The unit's `RuntimeDirectory=` removes the directory on stop, which would
-   strand directory mounts, so the unit must keep it.
+5. `mdt-cockpit` mounts `/run/topos` (done, on main; takes effect with the next image
+   and a host-setup re-run, which also installs the drop-in that keeps the directory
+   when the unit stops). Still open: zero-argument source selection; visible fallback;
+   a clear message when a container sees only its own namespace. No daemon installs on
+   r1002 or v1001 without coordinating with the agent that controls them (D-034).
 6. Build and release: Rust image pinned in the build, a `cmru` step for a static
    musl binary, a run-gate lane. Containers only; no toolchain in the cockpit.
 
@@ -70,7 +71,6 @@ parked web UI.
 | Item | Waits on |
 |---|---|
 | TUI engine: Textual line widget or ratatui | ratatui PoC vs the swapped Python table |
-| Sampler language final go | Sampler PoC numbers |
 | Final column list | Using the PoCs |
 | Drawing: which techniques | Drawing PoC in real terminals |
 | Milestone definition | The above |
