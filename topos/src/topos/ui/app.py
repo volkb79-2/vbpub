@@ -11,7 +11,7 @@ from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.timer import Timer
-from textual.widgets import Input, Static
+from textual.widgets import Footer, Input, Static
 
 from topos.config import ToposConfig, load
 from topos.damon.passive import DEFAULT_DAMON_ROOT
@@ -31,6 +31,16 @@ from .table import SORT_ORDER, VIEW_MODES, available_profiles, normalize_profile
 from .tree import render_data_table_tree
 
 MIN_REPLAY_DELAY_S = 0.001
+DEFAULT_RETRY_MAX_S = 30.0
+
+
+def _default_retry_delay(attempt: int) -> float:
+    """Exponential backoff (1s, 2s, 4s ... capped) for sources without their own policy."""
+    return min(DEFAULT_RETRY_MAX_S, float(2 ** min(attempt, 5)))
+
+
+def _is_sentinel(row_key: str | None) -> bool:
+    return row_key is not None and row_key.startswith("__empty__")
 
 
 class FilterScreen(Screen[str | None]):
@@ -127,7 +137,15 @@ class ToposApp(App[None]):
         self.damon_state_dir = damon_state_dir
         self.damon_require_root = damon_require_root
         self.ring = ring or HistoryRing.from_config(self.config)
+        # A one-shot iterator cannot be restarted after a failure; a re-iterable
+        # source (``__iter__`` without ``__next__``) is asked for a fresh
+        # stream on every retry.
+        self._frame_source_raw = frame_source
         self._frame_source = iter(frame_source)
+        self._source_error: str | None = None
+        self._stop_event = threading.Event()
+        self._history_last_ts: float | None = None
+        self._table_width = 0
         self._source_label = source_label
         self._replay_driver = replay_driver
         self._replay_paused = replay_driver is not None and replay_step
@@ -146,7 +164,6 @@ class ToposApp(App[None]):
         self.selected_key: str | None = None
         self._visible_row_keys: tuple[str, ...] = ()
         self._collapsed_tree_keys: set[str] = set()
-        self._worker_done = threading.Event()
         self._recent_frames: deque[Frame] = deque(maxlen=max(1, self.config.snapshots.frames))
         self._snapshot_systemctl_show = snapshot_systemctl_show
         self._snapshot_docker_inspect = snapshot_docker_inspect
@@ -159,6 +176,7 @@ class ToposApp(App[None]):
         yield Static(id="banner")
         yield MouseTable(id="body-table")
         yield Static(id="status")
+        yield Footer()
 
     def on_mount(self) -> None:
         if self._replay_driver is not None:
@@ -169,35 +187,97 @@ class ToposApp(App[None]):
         self.run_worker(self._consume_frames, thread=True, exclusive=True)
         self._refresh_status(f"mode={self._source_label} waiting for frames")
 
+    def on_unmount(self) -> None:
+        # Stop the frame-source worker: the app's own retry wait and, when the
+        # source exposes one, its collection loop.
+        self._stop_event.set()
+        source_stop = getattr(self._frame_source_raw, "stop_event", None)
+        if isinstance(source_stop, threading.Event):
+            source_stop.set()
+
     def _consume_frames(self) -> None:
-        try:
-            for frame in self._frame_source:
-                self.call_from_thread(self._apply_frame, frame)
-        finally:
-            self._worker_done.set()
+        stream = self._frame_source
+        attempt = 0
+        while not self._stop_event.is_set():
+            try:
+                for frame in stream:
+                    if self._stop_event.is_set():
+                        return
+                    attempt = 0
+                    self.call_from_thread(self._apply_frame, frame)
+                return
+            except Exception as exc:  # noqa: BLE001 - any source failure must stay in the UI
+                if self._stop_event.is_set():
+                    return
+                retryable = not hasattr(self._frame_source_raw, "__next__")
+                delay = 0.0
+                if retryable:
+                    policy = getattr(self._frame_source_raw, "retry_delay", _default_retry_delay)
+                    delay = float(policy(attempt))
+                attempt += 1
+                message = str(exc) or type(exc).__name__
+                retry_note = f"retrying in {delay:.0f}s" if retryable and delay >= 1 else ("retrying" if retryable else "not retrying")
+                self.call_from_thread(self._on_source_failed, message, retry_note)
+                if not retryable:
+                    return
+                if self._stop_event.wait(delay):
+                    return
+                try:
+                    stream = iter(self._frame_source_raw)
+                except Exception as restart_exc:  # noqa: BLE001
+                    stream = iter(())
+                    self.call_from_thread(self._on_source_failed, str(restart_exc) or type(restart_exc).__name__, "retrying")
+
+    def _on_source_failed(self, message: str, retry_note: str) -> None:
+        self._source_error = f"{message} ({retry_note})"
+        if self.current_frame is not None:
+            self._refresh_view()
+        else:
+            self._refresh_status(self._status_text())
 
     def _apply_frame(self, frame: Frame) -> None:
         self.current_frame = frame
         self.frames_received += 1
-        self.ring.append_frame(frame)
+        self._source_error = None
+        # Replay stepping can revisit or rewind frames; only strictly newer
+        # frames extend the history so sparklines never see duplicates or
+        # out-of-order samples.
+        if self._history_last_ts is None or frame.ts > self._history_last_ts:
+            self.ring.append_frame(frame)
+            self._history_last_ts = frame.ts
         self._recent_frames.append(frame)
+        self._collapsed_tree_keys.intersection_update(frame.entities)
         if self.selected_key not in frame.entities:
             self.selected_key = None
         self._refresh_view()
+
+    def on_table_width_changed(self, width: int) -> None:
+        """The table widget got a new width: re-choose columns for it."""
+        if width != self._table_width:
+            self._table_width = width
+            self._refresh_view()
 
     def _refresh_view(self) -> None:
         frame = self.current_frame
         if frame is None:
             return
         banner_snapshot = render_banner(frame, self.config, collapsed=self.banner_collapsed)
-        self.query_one("#banner", Static).update("\n".join(banner_snapshot.lines))
-        width = max(80, self.size.width or 80)
+        banner_lines = list(banner_snapshot.lines)
+        if self._source_error is not None:
+            banner_lines.insert(0, f"!! STALE - mode={self._source_label} source failed: {self._source_error}")
+        self.query_one("#banner", Static).update("\n".join(banner_lines))
+        width = self.query_one("#body-table", MouseTable).size.width or self.size.width or 80
+        self._table_width = width
         self._populate_table(frame, width=width)
-        if self.selected_key not in self._visible_row_keys and self._visible_row_keys:
-            self.selected_key = self._visible_row_keys[0]
+        real_keys = self._real_row_keys()
+        if self.selected_key not in real_keys and real_keys:
+            self.selected_key = real_keys[0]
         mt = self.query_one("#body-table", MouseTable)
         mt.update_cursor_from_key(self.selected_key)
         self._refresh_status(self._status_text())
+
+    def _real_row_keys(self) -> tuple[str, ...]:
+        return tuple(key for key in self._visible_row_keys if not _is_sentinel(key))
 
     def _populate_table(self, frame: Frame, *, width: int) -> None:
         kwargs = {
@@ -244,6 +324,9 @@ class ToposApp(App[None]):
         """Handle cursor move — update the selected key."""
         event.stop()
         if event.row_key is None:
+            return
+        if _is_sentinel(event.row_key.value):
+            self.selected_key = None
             return
         self.selected_key = event.row_key.value
 
@@ -365,7 +448,7 @@ class ToposApp(App[None]):
         if not math.isfinite(parsed):
             self._refresh_status(f"invalid jump input: '{stripped}' — use a finite frame number or epoch timestamp")
             return
-        if '.' not in stripped:
+        if parsed.is_integer():
             frame_num = int(parsed)
             if 1 <= frame_num <= self._replay_driver.total:
                 self._replay_paused = True
@@ -386,17 +469,15 @@ class ToposApp(App[None]):
     def action_replay_speed_down(self) -> None:
         self._set_replay_speed(-1)
 
-    def action_reserved_v2_action(self) -> None:
-        self._refresh_status("v2 admin actions are not available in this build; requires future --admin mode")
-
     def _move_selection(self, delta: int) -> None:
-        if not self._visible_row_keys:
+        real_keys = self._real_row_keys()
+        if not real_keys:
             return
-        if self.selected_key not in self._visible_row_keys:
-            self.selected_key = self._visible_row_keys[0]
+        if self.selected_key not in real_keys:
+            self.selected_key = real_keys[0]
         else:
-            index = self._visible_row_keys.index(self.selected_key)
-            self.selected_key = self._visible_row_keys[(index + delta) % len(self._visible_row_keys)]
+            index = real_keys.index(self.selected_key)
+            self.selected_key = real_keys[(index + delta) % len(real_keys)]
         self.query_one("#body-table", MouseTable).move_cursor(
             row=self._visible_row_keys.index(self.selected_key)
         )
@@ -549,9 +630,14 @@ class ToposApp(App[None]):
 
     def _status_text(self) -> str:
         frame = self.current_frame
-        rows = len(self._visible_row_keys)
+        rows = len(self._real_row_keys())
         dir_char = "v" if self.sort_reverse else "^"
         if self._replay_driver is None:
+            if self._source_error is not None:
+                prefix = f"mode={self._source_label} source failed: {self._source_error}"
+                if frame is None:
+                    return prefix
+                return f"{prefix} | STALE ts={frame.ts:.3f} frames={self.frames_received}"
             if frame is None:
                 return f"mode={self._source_label} waiting for frames"
             return (

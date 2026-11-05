@@ -264,8 +264,6 @@ PageUp/PageDown for scrolling, and all function keys.
   separately gated. The P46 CLI requires `--admin`, typed `--confirm EXECUTE`,
   root, strict target validation, and a fail-closed mandatory audit-first
   execution kernel. See Safety Model below for the full gate chain.
-- Pressing a reserved v2 admin key in the TUI reports that the action is
-  unavailable in the current build instead of failing silently.
 - `topos action preview --kind docker-restart --target NAME --admin --json`
   prints an exact argv preview and never executes it. Omit `--admin` to verify
   that the preview is denied. Use `--audit-log PATH` to append an explicit

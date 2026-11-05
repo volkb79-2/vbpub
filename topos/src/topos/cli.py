@@ -366,6 +366,31 @@ def _attach_frame_source(socket_path: Path, *, poll_interval_s: float) -> Iterat
         time.sleep(interval_s)
 
 
+class _RestartableSource:
+    """Frame source the UI can restart after a failure.
+
+    The first stream is created eagerly; every later ``iter()`` builds a fresh
+    one. ``stop_event`` is set by the UI on quit so a live collection loop
+    ends instead of running on behind the closed screen.
+    """
+
+    def __init__(self, make_stream, *, retry_delay) -> None:
+        self.stop_event = threading.Event()
+        self._make_stream = make_stream
+        self.retry_delay = retry_delay
+        self._first = make_stream(self.stop_event)
+
+    def __iter__(self):
+        if self._first is not None:
+            first, self._first = self._first, None
+            return iter(first)
+        return iter(self._make_stream(self.stop_event))
+
+
+def _attach_retry_delay(attempt: int) -> float:
+    return min(30.0, float(2 ** min(attempt, 5)))
+
+
 def _replay_frame_source(driver: ReplayDriver, *, speed: float, step: bool) -> Iterator:
     for replay_frame in driver.play(speed=speed, step=step):
         yield replay_frame.frame
@@ -615,7 +640,10 @@ def _main(argv: list[str] | None = None) -> int:
                 _print_frame_json(frame, args.pretty_json)
                 return 0
             ui_code = _run_ui(
-                _attach_frame_source(args.attach, poll_interval_s=config.interval),
+                _RestartableSource(
+                    lambda _stop: _attach_frame_source(args.attach, poll_interval_s=config.interval),
+                    retry_delay=_attach_retry_delay,
+                ),
                 config=config,
                 cgroup_root=None,
                 smoke=args.ui_smoke,
@@ -676,14 +704,17 @@ def _main(argv: list[str] | None = None) -> int:
                         max_frames=args.frames,
                     )
                     return exit_code
-                stream = live_frame_stream(collector, writer=writer)
                 if args.once:
+                    stream = live_frame_stream(collector, writer=writer)
                     frame = next(stream)
                     if args.json:
                         _print_frame_json(frame, args.pretty_json)
                     return 0
                 ui_code = _run_ui(
-                    stream,
+                    _RestartableSource(
+                        lambda stop: live_frame_stream(collector, writer=writer, stop_event=stop),
+                        retry_delay=lambda _attempt: float(config.interval),
+                    ),
                     config=config,
                     cgroup_root=args.cgroup_root,
                     smoke=args.ui_smoke,
@@ -703,7 +734,10 @@ def _main(argv: list[str] | None = None) -> int:
         try:
             collector = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args))  # type: ignore[arg-type]
             ui_code = _run_ui(
-                live_frame_stream(collector),
+                _RestartableSource(
+                    lambda stop: live_frame_stream(collector, stop_event=stop),
+                    retry_delay=lambda _attempt: float(config.interval),
+                ),
                 config=config,
                 cgroup_root=args.cgroup_root,
                 smoke=args.ui_smoke,
