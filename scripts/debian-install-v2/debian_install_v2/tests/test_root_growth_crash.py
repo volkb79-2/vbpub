@@ -13,6 +13,7 @@ from debian_install_v2.disk_layout import GIB
 from debian_install_v2.installer import Installer, InstallerError
 from debian_install_v2 import installer as installer_module
 
+from .argv_guard import validate_argv
 from .test_disk_policy import make_planner
 from .test_inuse_partition_editor_r1 import REAL_VM_SWAP_TEST_SKIP
 
@@ -41,6 +42,7 @@ class FakeHost:
         self.success_with_small_fs = False
 
     def run(self, argv, description="", dangerous=False, input=None, timeout=None):
+        validate_argv(argv)  # production allowlist, so drift fails here (v1001 2026-11-05)
         self.counter += 1
         index = self.counter
         if self.crash_at == index and self.crash_when == "before":

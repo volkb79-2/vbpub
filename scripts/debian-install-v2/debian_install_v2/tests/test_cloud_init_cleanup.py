@@ -15,6 +15,8 @@ from debian_install_v2.installer import (
 )
 from debian_install_v2.state import StateStore
 
+from .argv_guard import validate_argv
+
 
 def _installer(mode: str) -> Installer:
     installer = object.__new__(Installer)
@@ -125,7 +127,11 @@ def test_retain_mode_does_not_plan_cache_changes():
 
 def test_cleanup_failure_is_not_recorded_as_success():
     installer = _installer("clean")
-    installer.actions.run = Mock(side_effect=ActionError("cloud-init failed"))
+    def failing_run(argv, *_a, **_k):
+        validate_argv(argv)  # the real cloud-init argv must still be allowlisted
+        raise ActionError("cloud-init failed")
+
+    installer.actions.run = failing_run
 
     with pytest.raises(ActionError, match="cloud-init failed"):
         installer._cleanup_cloud_init_cache()

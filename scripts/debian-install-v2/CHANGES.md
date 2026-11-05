@@ -4,6 +4,19 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Tests / hardening (div2-layout-tests)
+- Every fake or mocked run path in the installer tests now validates its argv through the production
+  `HostActions._validate` (`tests/argv_guard.py`), so allowlist drift fails unit tests. This is the
+  class of bug behind the 2026-11-05 v1001 stage-two failure (`sfdisk -N` / `--no-tell-kernel`).
+- `tests/test_layout_argv_coverage.py`: an AST scan validates every literal installer argv (executed
+  or not), and a stateful walk of the 512 GiB dev-host plan (gap-branch root growth, four tail swaps,
+  MDT_COW btrfs) runs through the validator.
+- `tests/test_layout_vm.py` (lane `r1-vm-real-commit`): real stage-two steps on a loop disk with the
+  production allowlist: sfdisk -N + partx + resize2fs gap growth, mkswap/swapon at the disk end,
+  mkfs.btrfs MDT_COW + fstab + mount.
+- Allowlist: `mkswap` (-L), `resize2fs` (-P), `blkid` (-s -o -t -U -L -p) now have flag allowlists;
+  `dd` operands are limited to if/of/bs/count/conv.
+
 ### Added (NC-13 data area)
 - `data_area = none | partition | lvm` (+ `data_partition`, `data_lvm`): the installer
   creates the middle data partition itself, directly in front of the end-of-disk
