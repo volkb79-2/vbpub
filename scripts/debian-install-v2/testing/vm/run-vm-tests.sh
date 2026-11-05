@@ -94,6 +94,7 @@ expected = {
     'test_real_gpt_commit_via_loop_device_materializes_partition_nodes',
     'test_real_root_growth_after_table_ahead_of_kernel',
     'test_real_lvm_data_area_on_loop_disk',
+    'test_real_partition_data_area_on_loop_disk',
 }
 root = ET.parse('/tmp/debian-install-v2-r1.xml').getroot()
 cases = {case.get('name'): case for case in root.iter('testcase')}
