@@ -33,6 +33,11 @@ About 60 fixes from the deep review are in topos 0.6.0.
    r1002 or v1001 without coordinating with the agent that controls them (D-034).
 6. Build and release: Rust image pinned in the build, a `cmru` step for a static
    musl binary, a run-gate lane. Containers only; no toolchain in the cockpit.
+7. Protocol: stays JSON for now, because decoding takes about 1 ms a tick (Evidence).
+   First make the reply smaller: leave out zeros, send limits only when they change,
+   drop rates the client can derive. Columnar arrays, chosen by a request field,
+   only if ticks get faster or hosts are remote. In the Python view the conversion
+   after decoding costs more than the decoding.
 
 ### Stream B: the screen
 
@@ -116,7 +121,8 @@ Measured on 2026-11-05.
 | Lean Python yardstick at 1 Hz, r1002 | 2.03% of a core, 74.7 MB (a compact ring was put near 17 MB; no recorded run) |
 | Full view on live r1002 data, 170x48 | Textual 72-77 ms, ratatui 0.84 ms per frame |
 | Full view on live r1002 data, 260x60 | Textual 88 ms, ratatui 1.69 ms per frame |
-| `current` reply, r1002 | 564 KB; 37 KB with `fields` and `compact` |
+| `current` reply, r1002 | 564 KB; about 90 KB with the view's `fields` and `compact` (37 KB with a narrower field list) |
+| Decoding the 90 KB reply, then reading every value | Rust 0.64 ms; Python `json` 1.1 ms, `orjson` 0.6 ms; the Python view's conversion afterwards 5.5 ms |
 
 The frame benchmarks measure the table only with no terminal writes, so treat them
 as ratios. The controller was under load during the Textual runs.
