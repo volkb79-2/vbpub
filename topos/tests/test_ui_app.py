@@ -155,7 +155,7 @@ def test_pilot_metric_columns_shown_at_standard_terminal_sizes(size) -> None:
             await _wait_for_frame(app)(pilot)
             await pilot.pause()
             table = app.query_one("#body-table", MouseTable)
-            labels = [str(c.label) for c in table.columns.values()]
+            labels = list(table.column_labels)
             assert labels[0] == "NAME"
             assert "RAM" in labels
             assert "CPU%" in labels
@@ -1127,18 +1127,15 @@ GAME_KEY_2 = "besteffort.slice/docker-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 
 def _column_click_offset(table, column_key: str) -> tuple[int, int]:
-    region = table._get_column_region(table._col_keys.index(column_key))
-    return (
-        region.x - table.scroll_offset.x + max(1, region.width // 2),
-        0,
-    )
+    start, width = table.column_span(column_key)
+    return (start - table.scroll_offset.x + max(1, width // 2), 0)
 
 
 def _row_click_offset(table, row_index: int) -> tuple[int, int]:
-    region = table._get_row_region(row_index)
+    # Line 0 is the fixed header; data row N is on line N + 1 - scroll_y.
     return (
         max(1, min(5, table.size.width - 1)),
-        region.y - table.scroll_offset.y,
+        row_index + 1 - table.scroll_offset.y,
     )
 
 
@@ -1652,11 +1649,11 @@ def test_resize_refreshes_columns_and_narrow_widths_are_not_floored() -> None:
         app = _make_app()
         async with app.run_test(size=(200, 40)) as pilot:
             await _wait_for_frame(app)(pilot)
-            wide = len(app.query_one("#body-table").columns)
+            wide = len(app.query_one("#body-table").column_keys)
             await pilot.resize_terminal(70, 40)
-            await _wait_or_timeout(pilot, lambda: len(app.query_one("#body-table").columns) < wide)
+            await _wait_or_timeout(pilot, lambda: len(app.query_one("#body-table").column_keys) < wide)
             # Narrow widths drop the optional tiers but keep the first tier.
-            assert len(app.query_one("#body-table").columns) == 5
+            assert len(app.query_one("#body-table").column_keys) == 5
 
     asyncio.run(run())
 

@@ -314,10 +314,10 @@ class ToposApp(App[None]):
     def _refresh_status(self, text: str) -> None:
         self.query_one("#status", Static).update(text)
 
-    def on_data_table_header_selected(self, event: MouseTable.HeaderSelected) -> None:
+    def on_mouse_table_header_selected(self, event: MouseTable.HeaderSelected) -> None:
         """Handle a header click: sort by that column, toggling direction if already active."""
         event.stop()
-        col_key = event.column_key.value
+        col_key = event.column_key
         if col_key == self.sort_by:
             self.sort_reverse = not self.sort_reverse
         else:
@@ -325,20 +325,20 @@ class ToposApp(App[None]):
             self.sort_reverse = col_key != "name"  # name asc by default; numeric desc
         self._refresh_view()
 
-    def on_data_table_row_highlighted(self, event: MouseTable.RowHighlighted) -> None:
+    def on_mouse_table_row_highlighted(self, event: MouseTable.RowHighlighted) -> None:
         """Handle cursor move — update the selected key."""
         event.stop()
         if event.row_key is None:
             return
-        if _is_sentinel(event.row_key.value):
+        if _is_sentinel(event.row_key):
             self.selected_key = None
             return
-        self.selected_key = event.row_key.value
+        self.selected_key = event.row_key
 
-    def on_data_table_row_selected(self, event: MouseTable.RowSelected) -> None:
-        """Handle a row activation (Enter, double-click, or click-on-highlighted)."""
+    def on_mouse_table_row_selected(self, event: MouseTable.RowSelected) -> None:
+        """Handle a row activation (Enter or click)."""
         event.stop()
-        rk = event.row_key.value
+        rk = event.row_key
         if not rk.startswith("__empty__"):
             self.selected_key = rk
             self.action_open_drill()

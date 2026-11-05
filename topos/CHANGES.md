@@ -97,6 +97,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(topos/daemon): the busy reply runs on a short bounded helper thread, not the accept thread (G-09)
 - fix(topos/damon): listing owned markers tolerates an undeletable stale marker (G-10)
 - fix(topos/daemon): an operator KeyboardInterrupt of the serving loop is a clean stop (exit 0) even if the producer had already ended (gate follow-up to B-02)
+- perf(topos/ui): the body table is a line-rendered `ScrollView` (`MouseTable.render_line`) instead of Textual's `DataTable` (about 495 ms to 33 ms CPU per frame at 79 rows, 170x48); `tools/poc/ui_frame_bench.py` measures it
+- feat(topos/ui): the `auto` profile drops columns by priority (fixed order, `[columns.priorities]` overrides) instead of width tiers; explicit profiles drop by priority rather than clip when narrow
 <!-- cmru: pending release notes end -->
 
 ## [0.4.2] - 2026-10-21
