@@ -4,6 +4,72 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
+     folds pending notes into the version section in the disposable release candidate.
+     KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file
+     carries no 6.0.0 draft. The operator upgrade guide is `docs/UPGRADING-6.0.md`; the
+     pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`.
+
+     6.0.0 release notes (LANDPREP, 2026-10-06): `cmru release` generates the `## [6.0.0]`
+     section below from the commit subjects since `cmru-v5.5.0`; a hand-written 6.0.0 section
+     cannot coexist with it (the generator refuses to overwrite one). The pre-wave hand-written
+     [Unreleased] bullets (versions/age-window, OCI rolling tags, secret-overlay and mutation
+     hardening) describe work already shipped in 5.5.0 or covered by those commit subjects, so
+     nothing from them is lost by leaving this body empty. The breaking changes (command
+     grammar, exit codes, retired cmru-agent/cmru-controller, cli-extended as a wheel
+     dependency) are in `docs/UPGRADING-6.0.md`.
+
+     PROVISIONAL RELEASE: the R2 mutation campaign for 6.0.0 was postponed by operator
+     decision 2026-10-06 and is tracked as KI-62 (`KNOWN_ISSUES_TODO_BACKLOG.md`); the
+     release ran `gate-provisional`, whose evidence carries `.assay/mutation-postponed-cmru.json`.
+     The release-notes commit subject (`docs(cmru): 6.0.0 release notes ...`) states this in the
+     generated Documentation list. TODO(cmru-6.0 post-release): once KI-62 is closed, append a
+     one-line pointer to the 6.0.x notes.
+
+     HOTFIX (KI-63, 2026-10-06): the release-gate secret-overlay inventory no longer aborts on
+     a directory owned by another uid that it cannot list (e.g. the live Mattermost postgres
+     volume); it skips it with a stderr WARN. The release-notes generator picks this up from
+     the `fix(cmru): ...` commit subject. -->
+
+<!-- cmru: pending release notes begin -->
+
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [7.2.2] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=fc596963b611bad5dc6b7c428fbb00b8a401e7f0 -->
+
+### Added
+- feat(assay): R2 lanes declare jobs_max and run-gate jobs=auto (assay-jobs audit) (fe53428a8)
+- feat(cmru): body handlers publish the rigor record (appendix + <prefix>-v<V>-rigor.json), rigor C-2 (25ec3b93c)
+- feat(cmru): version.exclude_paths + always-ignored rigor/ paths (KI-118, rigor C-3) and optional release.record_step (rigor C-1); KI-120 superseded (5b12d429e)
+- feat(cmru): Docker Hub request economy for versions resolve (KI-121) (5291c7c2e)
+
+### Fixed
+- fix(pwmcp): review fixes: instance deploy/rollback via get.py update --scope user, skew FAIL on major.minor only, platform limit, refuse reinstall of current, unreachable reason; cmru KI-127, PWMCP-36 (17a631297)
+- fix(cmru): hub-economy review fixes (KI-121): merged-candidate early stop, resume reuse limits, dry-run no resume, retry-bound docs (9f4ca48b7)
+- fix(cmru): bootstrap doc level table lists rigor-record at L1; first-release R2 test expects jobs_max=2 (732265ed7)
+- fix(cmru): rigor C-2 fails closed on GitHub immutable releases before any write or asset delete (3aca74e64)
+- fix(cmru): rigor kwargs only passed when a record exists (unchanged call shape) (5107a578e)
+- fix(cmru): rigor C-1/C-3 review of the first gate run (VersionSpec field order, assay targets, test expectation) (cb7769436)
+
+### Changed
+- backlog: renumber cmru KI-127 -> KI-128 (id collision with get-py entry) (725a78596)
+- backlog: cmru KI-127 docker credential store for versions resolve (found in netcup-api-filter@68ea380) (9d3443d4b)
+- merge main; renumber client-version backlog to PWMCP-37/38/39; fold in operator PWMCP-34 (wire protocol docs, gateway rejection bodies, network reach) (570db5368)
+- backlog: cmru KI-126 per-interpreter bundle builder; run-gate RG-165/RG-166 exec-mode docs (c70641b6f)
+- Merge branch 'cmru-hub-economy-20261105' (a985f22b9)
+- Merge branch 'rigor-c2-20261105' (b9a8773e2)
+
+### Documentation
+- docs(cmru): list test-policy in the bootstrap project-order block; name the doc in the failure message (75ba154c0)
+
+### Testing
+- test(cmru): exit-code inventory includes RATE_LIMITED (KI-121) (7a525c61c)
+
+<!-- cmru: pending release notes begin -->
 - `docs/BOOTSTRAP-FROM-ZERO.md`'s `project-order` block lists `test-policy` (L0), registered in `cmru.orchestration.toml`
   by the flakehunt merge; its absence failed `test_the_bootstrap_doc_order_agrees_with_the_graph` in the 7.2.2 release gate.
   The test's failure message now names the doc and the `cmru dependencies` LEVELS section to copy, and the guide says
@@ -37,39 +103,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - `tools/local_baseline_facts.py` + `docs/CONSUMERS.md`: how to start the `mutation` lane outside a release (builds `CMRU_ASSAY_BASELINE_FACTS`
   from local `cmru-v*` tags; the R1 pin must equal the selected tag).
-
-<!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
-     folds pending notes into the version section in the disposable release candidate.
-     KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file
-     carries no 6.0.0 draft. The operator upgrade guide is `docs/UPGRADING-6.0.md`; the
-     pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`.
-
-     6.0.0 release notes (LANDPREP, 2026-10-06): `cmru release` generates the `## [6.0.0]`
-     section below from the commit subjects since `cmru-v5.5.0`; a hand-written 6.0.0 section
-     cannot coexist with it (the generator refuses to overwrite one). The pre-wave hand-written
-     [Unreleased] bullets (versions/age-window, OCI rolling tags, secret-overlay and mutation
-     hardening) describe work already shipped in 5.5.0 or covered by those commit subjects, so
-     nothing from them is lost by leaving this body empty. The breaking changes (command
-     grammar, exit codes, retired cmru-agent/cmru-controller, cli-extended as a wheel
-     dependency) are in `docs/UPGRADING-6.0.md`.
-
-     PROVISIONAL RELEASE: the R2 mutation campaign for 6.0.0 was postponed by operator
-     decision 2026-10-06 and is tracked as KI-62 (`KNOWN_ISSUES_TODO_BACKLOG.md`); the
-     release ran `gate-provisional`, whose evidence carries `.assay/mutation-postponed-cmru.json`.
-     The release-notes commit subject (`docs(cmru): 6.0.0 release notes ...`) states this in the
-     generated Documentation list. TODO(cmru-6.0 post-release): once KI-62 is closed, append a
-     one-line pointer to the 6.0.x notes.
-
-     HOTFIX (KI-63, 2026-10-06): the release-gate secret-overlay inventory no longer aborts on
-     a directory owned by another uid that it cannot list (e.g. the live Mattermost postgres
-     volume); it skips it with a stderr WARN. The release-notes generator picks this up from
-     the `fix(cmru): ...` commit subject. -->
-
-<!-- cmru: pending release notes begin -->
-
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [7.2.1] - 2026-11-04
 <!-- cmru: generated -->
