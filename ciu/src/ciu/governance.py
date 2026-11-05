@@ -788,6 +788,16 @@ def _systemd_is_pid1() -> bool:
     return Path("/run/systemd/system").is_dir()
 
 
+def slice_probe_unavailable() -> bool:
+    """True when the slice probe cannot work HERE (no systemctl, systemd not PID 1).
+
+    Distinguishes the environmental inconclusive result (a devcontainer) from a
+    probe that failed on a real systemd host (timeout, OSError), which callers
+    that must fail closed (the S6.5 root helper, CIU-181) have to refuse.
+    """
+    return shutil.which("systemctl") is None or not _systemd_is_pid1()
+
+
 def check_slice_unit(slice_name: str) -> tuple[bool | None, str]:
     """Probe whether a systemd slice UNIT is loaded on this host (D-G9 check 1).
 

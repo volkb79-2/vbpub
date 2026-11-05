@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
+from . import layout_policy
 from .notify import NotifyConfigError, effective_backend, validate_host_label, validate_webhook_url
 
 _LOG = logging.getLogger("debian_install_v2.config")
@@ -107,6 +108,15 @@ class Config:
     # between root and the END-of-disk swap stays unallocated for the Btrfs cow
     # area (~1/3 of the disk) and reserve. Swap is last in both layouts.
     disk_layout: Literal["full-root", "dev-host"] = "full-root"
+    # Flexible DATA AREA between root and the end-of-disk swap (README "Data
+    # area"). `none`: nothing is created. `partition`: one partition with one
+    # filesystem, keys fs/size_gb|size_fraction/mount/label (defaults: btrfs,
+    # 1/3 of the disk, /srv/cow, MDT_COW). `lvm`: one PV partition + VG + LVs,
+    # keys vg/pv_size_gb|pv_size_fraction/lvs=[{name,size_gb,fs,mount,label}].
+    # Needs swap_policy=on, root_resize_policy=resize and a capped root.
+    data_area: Literal["none", "partition", "lvm"] = "none"
+    data_partition: dict = field(default_factory=dict)
+    data_lvm: dict = field(default_factory=dict)
     preserve_root_size_gb: int = 10
     zswap_compressor: Literal["zstd", "lz4", "lzo-rle"] = "zstd"
     zswap_pool_percent: int = 25
@@ -471,6 +481,16 @@ def validate_config(config: Config) -> None:
             "disk_layout=dev-host requires swap_policy=on and root_resize_policy=resize "
             "(swap is placed at the end of the disk, root is sized by the layout rule)"
         )
+    try:
+        area = layout_policy.parse_data_area(config.data_area, config.data_partition, config.data_lvm)
+        if area.mode != "none":
+            layout_policy.validate_data_area_prereqs(
+                swap_policy=config.swap_policy,
+                root_resize_policy=config.root_resize_policy,
+                root_capped=config.disk_layout == "dev-host" or config.root_max_size_gb is not None,
+            )
+    except layout_policy.LayoutPolicyError as exc:
+        raise ConfigError(str(exc)) from exc
     if not 5 <= config.zswap_pool_percent <= 60:
         raise ConfigError("zswap_pool_percent must be from 5 to 60")
     if not 0 <= config.swap_priority <= 32767:

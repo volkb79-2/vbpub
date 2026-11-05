@@ -421,8 +421,9 @@ def test_generate_env_does_not_swallow_git_failure_in_a_git_checkout(monkeypatch
             discover_git_context=lambda _root: (_ for _ in ()).throw(RuntimeError("git unavailable"))
         ),
     )
-    with pytest.raises(RuntimeError, match="git unavailable"):
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="git unavailable") as raised:
         workspace_env.generate_ciu_env(tmp_path)
+    assert isinstance(raised.value.__cause__, RuntimeError)
 
 
 def test_atomic_facts_writer_supports_unmasked_mode(tmp_path):

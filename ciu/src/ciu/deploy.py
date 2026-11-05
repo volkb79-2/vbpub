@@ -197,18 +197,27 @@ def resolve_repo_root(
         raise WorkspaceEnvError(str(exc)) from exc
 
 
-def load_global_config(repo_root: Path, *, write_rendered: bool = True) -> dict:
+def load_global_config(
+    repo_root: Path,
+    *,
+    write_rendered: bool = True,
+    environ: Optional[dict[str, str]] = None,
+) -> dict:
     """Render the global chain ONCE per invocation (S3.3, working_dir=repo_root).
 
     Then reject [deploy.groups] (S7.5) so the operator gets the profiles
     pointer immediately at config load.
+
+    ``environ`` (CIU-168) renders against that mapping instead of the process
+    environment; the remote verbs use it to supply placeholders for the control
+    host's machine facts, which a push to another host never consumes.
     """
-    if write_rendered:
-        global_cfg = config_model.render_global_chain(repo_root, repo_root)
-    else:
-        global_cfg = config_model.render_global_chain(
-            repo_root, repo_root, write_rendered=False,
-        )
+    render_kwargs: dict = {}
+    if not write_rendered:
+        render_kwargs["write_rendered"] = False
+    if environ is not None:
+        render_kwargs["environ"] = environ
+    global_cfg = config_model.render_global_chain(repo_root, repo_root, **render_kwargs)
     profiles_pkg.reject_groups(global_cfg)
     return global_cfg
 
@@ -501,6 +510,7 @@ def resolve_identities(
                     f"[S18] selected shipped stack {rel!r} has no {SHIPPED_COMPOSE}"
                 )
             rendered_compose = compose_path.read_text(encoding="utf-8")
+            scope_config = profile.config
         else:
             stack_cfg = config_model.render_stack(
                 stack_dir,
@@ -511,6 +521,7 @@ def resolve_identities(
                 environ=render_environ,
             )
             merged = config_model.deep_merge(profile.config, stack_cfg)
+            scope_config = merged
             root_key = config_model.validate_stack_shape(stack_cfg)
             if render_environ is not None:
                 engine.auto_generate_values(merged, repo_root=repo_root)
@@ -567,7 +578,7 @@ def resolve_identities(
                     f"[CIU-117] cannot read the primary image map for {rel!r}: {exc}"
                 ) from exc
         scoped_compose = engine.scope_worktree_compose_images(
-            repo_root, rendered_compose
+            repo_root, rendered_compose, **worktree_pkg.image_scope_kwargs(scope_config)
         )
         if scoped_compose != rendered_compose:
             rendered_compose = scoped_compose
@@ -685,6 +696,10 @@ def resolve_primary_image_references(repo_root: Path) -> set[str]:
     from . import image_isolation
 
     primary_root = worktree_pkg.primary_ciu_root(Path(repo_root).resolve())
+    try:
+        worktree_pkg.require_current_primary_facts(Path(repo_root).resolve())
+    except worktree_pkg.WorktreeError as exc:
+        raise ValueError(str(exc)) from exc
     document = resolve_identities(
         primary_root,
         render_environ=_render_environment_for_checkout(primary_root),
@@ -3876,7 +3891,7 @@ def _check_stack_config(
         else:
             try:
                 rendered_compose = engine.scope_worktree_compose_images(
-                    repo_root, rendered_compose
+                    repo_root, rendered_compose, **worktree_pkg.image_scope_kwargs(merged)
                 )
             except (RuntimeError, ValueError) as exc:
                 report.fail("compose-render", f"[CIU-117] {exc}", stack=rel)
@@ -4795,6 +4810,80 @@ def _network_exists(network: str) -> bool:
     )
 
 
+def _workspace_network_attached(network: str) -> bool:
+    """True when the workspace network still has an attached endpoint (CIU-171).
+
+    Indeterminate state (daemon or parse failure) counts as attached: the keep
+    is the safe side, removal never happens on a guess.
+    """
+    try:
+        endpoints = _network_endpoints(network)
+    except ValueError as exc:
+        warn(f"workspace network endpoint check failed for {network!r}: {exc}")
+        return True
+    return bool(endpoints)
+
+
+_STACK_MARKERS = (
+    "ciu.toml.j2", "ciu.toml", "docker-compose.yml", "docker-compose.yml.j2",
+    "docker-compose.yaml", "compose.yml", "compose.yaml",
+)
+_STACK_SCAN_SKIP = frozenset({"node_modules", "__pycache__"})
+
+
+def _known_stack_projects(repo_root: Path, config: dict) -> list[str]:
+    """Exact S8.7 compose project names of EVERY stack directory under *repo_root*.
+
+    The tagged network sweep (CIU-171) must find the networks of a stack that was
+    deployed outside the profile selection (``up --dir``, a pushed bundle) without
+    ever matching on a name prefix: ``dstdns-prod-`` is also the prefix of the env
+    tag ``prod-x``'s projects. A project belongs to THIS bundle only when it is
+    ``{project}-{env}-{stack dir basename}`` of a stack directory that exists here.
+    Hidden directories, ``vol-*`` data directories and ``node_modules`` are not scanned.
+    """
+    deploy_cfg = config.get("deploy", {})
+    if not deploy_cfg.get("project_name") or not deploy_cfg.get("environment_tag"):
+        return []
+    names: set[str] = set()
+    for current, dirs, files in os.walk(repo_root):
+        dirs[:] = [
+            d for d in dirs
+            if not d.startswith(".") and not d.startswith("vol-") and d not in _STACK_SCAN_SKIP
+        ]
+        if Path(current) != Path(repo_root) and any(m in files for m in _STACK_MARKERS):
+            names.add(engine.compose_project_name(config, Path(current)))
+    return sorted(names)
+
+
+def _tagged_project_networks(
+    repo_root: Path, config: dict, known_projects: list[str],
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Networks of this bundle's stacks outside the selection (S7.8, CIU-171).
+
+    Matches the compose project LABEL VALUE exactly against the stack directories
+    found on disk (:func:`_known_stack_projects`), never a name prefix, and never
+    disconnects anything: a network that still has an attached endpoint after the
+    project's containers were removed belongs to someone else (a shared network,
+    another environment's stack, the devcontainer) and is returned as *kept*
+    ``(name, reason)`` instead. Raises ``ValueError`` on a daemon failure.
+    """
+    candidates = [p for p in _known_stack_projects(repo_root, config) if p not in known_projects]
+    removable: list[str] = []
+    kept: list[tuple[str, str]] = []
+    for net in _list_stack_project_networks(candidates):
+        try:
+            endpoints = _network_endpoints(net)
+        except ValueError as exc:
+            kept.append((net, f"endpoints could not be read: {exc}"))
+            continue
+        if endpoints:
+            names = ", ".join(sorted(e["name"] for e in endpoints))
+            kept.append((net, f"still has foreign endpoint(s): {names}"))
+            continue
+        removable.append(net)
+    return removable, kept
+
+
 def _list_stack_project_networks(stack_projects: list[str]) -> list[str]:
     """Networks compose created for the given S8.7 projects (label filter).
 
@@ -5317,9 +5406,15 @@ def action_clean(
         identity_network = ""
     keep_networks: dict[str, str] = {}
     if identity_network and not is_instance:
-        keep_networks[identity_network] = (
-            "workspace network of the main workspace (devcontainer residence)"
-        )
+        # CIU-171: the main workspace keeps its network only while something (the
+        # devcontainer) is actually attached to it; a standalone or pushed bundle
+        # has no residence to keep it for.
+        if _workspace_network_attached(identity_network):
+            keep_networks[identity_network] = (
+                "workspace network of the main workspace (devcontainer residence)"
+            )
+        else:
+            info(f"workspace network {identity_network} has no attached devcontainer; removing it")
     target_networks: list[str] = []
     if identity_network and identity_network not in keep_networks:
         target_networks.append(identity_network)
@@ -5330,6 +5425,17 @@ def action_clean(
         for net in _list_stack_project_networks(stack_projects):
             if net not in target_networks and net not in keep_networks:
                 target_networks.append(net)
+        # CIU-171: a stack deployed outside the profile selection (`up --dir`, a
+        # pushed bundle) owns compose networks the selection never names; the
+        # tagged S7.8 prefix finds them the same way it finds its containers.
+        if tagged:
+            sweep, sweep_kept = _tagged_project_networks(repo_root, config, stack_projects)
+            for net in sweep:
+                if net not in target_networks and net not in keep_networks:
+                    target_networks.append(net)
+            for net, reason in sweep_kept:
+                if net not in target_networks and net not in keep_networks:
+                    keep_networks[net] = reason
     except ValueError as exc:
         error(str(exc))
         rc = 1

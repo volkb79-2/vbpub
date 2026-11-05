@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.3.0] - 2026-11-04
+<!-- cmru: generated -->
+<!-- cmru: source-end=4592355aa4161af965e5ab75ea88bdd1d4a44eff -->
+
+### Added
+- feat(tnt): VM device list/update/delete (TNT-60), verified disk-image import and upload (TNT-61); fake zpool.scrub.run strict (TNT-56) (92264f617)
+
+### Fixed
+- fix(tnt): TNT-58 host-agnostic live docs, TNT-59 vm-lab placeholder (1ed0c09a9)
+
+### Changed
+- tnt tests: _wait_for treats not-yet-mounted widgets as not ready (fix load-dependent NoMatches flake) (224e1f359)
+- Merge branch 'backlog-platform-20261104' (e69a27940)
+- tnt design: vanilla v27, patch-only features detected at runtime (operator decision 2026-11-04) (d0cb8a2f3)
+- tnt backlog: VM device verbs and disk-image import (TNT-60, TNT-61) (477e2337c)
+
+### Documentation
+- docs(tnt): mark TNT-56, TNT-58, TNT-59, TNT-60, TNT-61 fixed (9034d8073)
+- docs(tnt): file TNT-60..62; keep the standalone TrueNAS VM client as prior art (0b0481e67)
+- docs(tnt): file TNT-59 (VM files structure) (3de476e9c)
+- docs(tnt): mark TNT-54 done (tmux in tester-unified, real-terminal checks green) (0afd395fd)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - TNT-56: the fake server's `zpool.scrub.run` validates its payload strictly (exactly `pool_name`, `scan_type`, `action`, `threshold`), so payload drift fails offline.
 - TNT-58: `docs/CONSUMERS.md` and `docs/LIVE-TESTING.md` no longer name private hosts or lock paths (`TNT_LIVE_HOST_LOCK` is an operator-chosen file); the host-name test now scans every `docs/*.md`.
@@ -10,8 +35,7 @@
 ### Added
 - TNT-60: `tnt vm device list/update/delete`. Updates and deletes are reviewed plans with a device drift probe; disk changes need a stopped VM; delete keeps the backing zvol unless `--zvol` (or `--raw-file`) is given and the data is named in a second typed confirmation (`--confirm-second`). The fake server keeps `vm.devices` consistent on update and delete.
 - TNT-61: `tnt vm disk-image-size`, `tnt vm disk-import` and `tnt files put`. Import creates a new zvol disk on a stopped VM (autostart off), runs `vm.device.convert` as a tracked job, then sets the boot order; a failed conversion keeps the device and zvol and says not to start the VM. `files put` uploads a sha256-verified file from the repository `downloads/` folder through the API upload endpoint and never overwrites. The import and upload methods are probed at runtime and refused with a clear message where the host does not list them (vanilla v27); they are not reported as capability gaps.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.2.0] - 2026-11-01
 <!-- cmru: generated -->

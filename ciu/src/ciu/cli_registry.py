@@ -611,9 +611,11 @@ def _worktree_cli() -> Any:
             "requires exact branch consent for changes or protected ignored state."
         ),
         group=VerbGroup.MODIFICATION.value, mutating=True, include_progress=False,
+        dry_run=True,
+        dry_run_help="list what removal would do, refuse on or leave behind; change nothing",
         arguments=(logical,), options=rm, examples=("ciu worktree rm pkg-under-test --yes",),
         handler=adapter(["worktree", "rm"], rm, (logical,), json_tokens=["--json"], yes=True,
-                        positional_first=True),
+                        dry_run=True, positional_first=True),
     ))
     registry.register(VerbSpec(
         "list", description="List linked checkouts.", group=VerbGroup.EXPLORATION.value,
@@ -835,12 +837,12 @@ def build_cli() -> Any:
     # ---- STACK ORCHESTRATION -------------------------------------------------------
     up_options = (
         PROFILE, PHASES, ROOT, IGNORE_ERRORS,
-        value("--dir", "deploy ONE stack directory (engine mode)", "PATH", group="MODE",
-              xgroup="up-mode"),
+        value("--dir", "deploy ONE stack directory (engine mode; with --host, the stack inside "
+                       "the pushed bundle)", "PATH", group="MODE"),
         value("--layout", "push-deploy a named [deploy.layouts.<name>] host-to-bundles plan",
-              "NAME", group="MODE", xgroup="up-mode"),
+              "NAME", group="MODE"),
         value("--host", "push-deploy to a host from the inventory (.ciu.hosts.toml)", "NAME",
-              group="MODE", xgroup="up-mode"),
+              group="MODE"),
         flag("--thin", "docker-optional: push an artifact to bundle_dir, then run the host's shell "
                        "activation contract (S14.6)", group="REMOTE"),
         flag("--bootstrap", "(with --thin) run the 'bootstrap' verb before 'apply'", group="REMOTE",
@@ -883,14 +885,17 @@ def build_cli() -> Any:
             Requires("--rollback", ("--thin",), "--rollback needs the --thin activation path"),
             Conflicts(("--layout", "--profile"),
                       "a layout owns the host order and the bundles (S7.5c)"),
+            Conflicts(("--layout", "--host"),
+                      "a layout owns the host order and the bundles (S7.5c)"),
+            Conflicts(("--layout", "--dir"),
+                      "a layout owns the host order and the bundles (S7.5c)"),
         ),
     ))
     down_options = (
         PROFILE, PHASES, ROOT, PROTECTED,
-        value("--dir", "stop only the selected stack's running Compose project", "PATH",
-              group="MODE", xgroup="down-mode"),
-        value("--host", "run the stop action on a configured remote host", "NAME", group="MODE",
-              xgroup="down-mode"),
+        value("--dir", "stop only the selected stack's running Compose project (with --host, "
+                       "the stack inside the pushed bundle)", "PATH", group="MODE"),
+        value("--host", "run the stop action on a configured remote host", "NAME", group="MODE"),
     )
     register(VerbSpec(
         "down", description="Stop project containers; volumes are preserved (`ciu clean` removes them).",
@@ -954,8 +959,10 @@ def build_cli() -> Any:
                      "NAME", group="REMOTE")
     thin_opt = flag("--thin", "(with --gate --host) run the docker-optional 'health' activation "
                               "verb (S14.6)", group="REMOTE")
+    dir_opt = value("--dir", "(with --gate) gate ONE stack directory (with --host, the stack inside "
+                             "the pushed bundle)", "PATH", group="SELECTION")
     status_options = (
-        PROFILE, ROOT,
+        PROFILE, ROOT, dir_opt,
         flag("--gate", "run the S7.7 health gate over the selection: the exit status is the "
                        "verdict (0 healthy, 1 not)", group="MODE", xgroup="status-mode"),
         flag("--preflight", "probe the rendered compose images for missing healthcheck tools",
@@ -963,7 +970,7 @@ def build_cli() -> Any:
         strict_opt, PHASES, host_opt, thin_opt,
     )
     report_handler = adapter(["status"], (PROFILE, ROOT), json_tokens=["--json"])
-    gate_handler = adapter(["health"], (PROFILE, ROOT, PHASES, host_opt, thin_opt))
+    gate_handler = adapter(["health"], (PROFILE, ROOT, dir_opt, PHASES, host_opt, thin_opt))
     preflight_handler = adapter(["health", "--preflight"], (ROOT, strict_opt))
 
     def status_handler(args: argparse.Namespace, runtime: Any) -> int | None:
@@ -991,6 +998,7 @@ def build_cli() -> Any:
             Requires("--thin", ("--host",), "--thin applies to the --host path"),
             Requires("--host", ("--gate",), "a remote verdict is the --gate form"),
             Requires("--phases", ("--gate",), "phases restrict the health gate"),
+            Requires("--dir", ("--gate",), "--dir selects the stack the health gate checks"),
             Conflicts(("--json", "--gate"), "the gate's verdict is its exit status"),
             Conflicts(("--json", "--preflight"), "the preflight report is text"),
         ),

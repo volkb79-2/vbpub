@@ -1111,11 +1111,14 @@ class TestCliUpHostRouting:
         sync_calls = []
         exec_calls = []
 
-        def fake_ssh_sync(host_cfg, local_dir, remote_dir, *, config, repo_root, admin=False):
+        def fake_ssh_sync(host_cfg, local_dir, remote_dir, *, config, repo_root, admin=False, excludes=None):
             sync_calls.append({"local": local_dir, "remote": remote_dir})
             return 0
 
         def fake_ssh_exec(host_cfg, argv, *, config, repo_root, interactive=False, admin=False):
+            if argv[0].startswith("command -v"):  # CIU-169 preflight probe
+                assert "mkdir -p /opt/app" in argv[0]
+                return 0
             exec_calls.append({"argv": argv})
             return 0
 

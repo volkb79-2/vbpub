@@ -783,6 +783,21 @@ def test_stop_stack_refuses_stack_outside_the_selected_root(resolvable_repo, mon
         deploy.stop_stack(repo, "../outside")
 
 
+def test_stop_stack_refuses_a_stack_outside_the_deploy_selection_and_names_the_profile(
+    resolvable_repo, monkeypatch
+):
+    """CIU-170 residue: a stack the selection omits (optional, profile not passed) is
+    refused with [S18] before any Docker call, and the message says to pass --profile."""
+    repo, _stack, _global = resolvable_repo
+    monkeypatch.setattr(
+        deploy.procutil,
+        "docker",
+        lambda *_a, **_kw: pytest.fail("unselected stack must refuse before Docker"),
+    )
+    with pytest.raises(ValueError, match=r"\[S18\].*not in the current deploy selection.*--profile"):
+        deploy.stop_stack(repo, "tools/not-selected")
+
+
 @pytest.mark.parametrize(
     ("rows", "message"),
     [

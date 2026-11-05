@@ -353,6 +353,11 @@ class Installer:
                 f"Root size cap: {_code(str(plan['root_max_size_gb']))} GiB; "
                 "space between root and the end-of-disk swap remains unallocated"
             )
+        if plan["data_area"] != "none":
+            plan_lines.append(
+                f"Data area: {_code(str(plan['data_area']))} directly in front of the end-of-disk swap "
+                "(see README \"Data area\")"
+            )
         if plan["swap_policy"] == "on":
             plan_lines.append(
                 f"Swap allocation: {_code(retained_swap)}, {_code(tail_swap)} "
@@ -763,6 +768,7 @@ class Installer:
             "root_resize_policy": self.config.root_resize_policy,
             "root_max_size_gb": self.config.root_max_size_gb,
             "disk_layout": self.config.disk_layout,
+            "data_area": self.config.data_area,
             "swap_policy": self.config.swap_policy,
             "swap_total_gb": swap_total,
             "swap_retained_before_root_gb": retained_total_gb,
@@ -1868,7 +1874,10 @@ MaxFileSec=1month
             end = start + int(entry["size"]) if "size" in entry else 0
             if number != self.root_number and start < before_end and end > int(root_current["start"]):
                 raise InstallerError(f"partition {number} overlaps the current root partition")
-            if number != self.root_number and start >= before_end and not self._is_swap_partition(entry):
+            if (
+                number != self.root_number and start >= before_end
+                and not self._is_swap_partition(entry) and not self._is_data_partition(entry)
+            ):
                 raise InstallerError(
                     f"unsupported disk layout: non-swap partition {number} follows root"
                 )
@@ -1959,6 +1968,7 @@ MaxFileSec=1month
             number for number, entry in entries.items()
             if number != self.root_number
             and not self._is_swap_partition(entry)
+            and not self._is_data_partition(entry)
             and "start" in entry and int(entry["start"]) >= root_end
         ]
         if self.config.swap_policy in {"on", "off"} and unknown_after_root:
@@ -2135,11 +2145,32 @@ MaxFileSec=1month
                     "(swap_policy=on with at least one new swap partition) so the "
                     "space between root and swap is the unallocated cow/reserve area"
                 )
+        data_extent: list[tuple[int, int]] = []
+        area = self._data_area_cfg()
+        if area.mode != "none":
+            if self.config.swap_policy != "on" or not partitions:
+                raise InstallerError(
+                    "data_area needs managed tail swap (swap_policy=on with at least one new swap "
+                    "partition): the data area sits directly in front of the end-of-disk swap"
+                )
+            if root_size_cap is None:
+                raise InstallerError("data_area needs a capped root (disk_layout=dev-host or root_max_size_gb)")
+            try:
+                data_plan = layout_policy.plan_data_area(
+                    area,
+                    disk_sectors=disk_sectors,
+                    root_end=root_start + target_root_size,
+                    first_swap_start=min(start for start, _size in partitions),
+                )
+            except layout_policy.LayoutPolicyError as exc:
+                raise InstallerError(str(exc)) from exc
+            data_extent = [(data_plan.start, data_plan.size)]
         if self.config.swap_policy == "on" and partitions:
             try:
                 layout_policy.validate_swap_last(
                     list(partitions),
                     [(root_start, target_root_size)]
+                    + data_extent
                     + [
                         (int(entry["start"]), int(entry["size"]))
                         for entry in preserved_before_root.values()
@@ -2223,6 +2254,43 @@ MaxFileSec=1month
             }
         dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"])
         return self._parse_partition_entries(dump)
+
+    def _data_area_cfg(self) -> layout_policy.DataArea:
+        try:
+            return layout_policy.parse_data_area(
+                self.config.data_area, self.config.data_partition, self.config.data_lvm
+            )
+        except layout_policy.LayoutPolicyError as exc:
+            raise InstallerError(str(exc)) from exc
+
+    def _is_data_partition(self, entry: dict[str, str]) -> bool:
+        """The installer-managed data-area partition (type GUID and GPT name match the config)."""
+        area = self._data_area_cfg()
+        return (
+            area.mode != "none"
+            and (entry.get("type") or "").lower() == area.type_guid.lower()
+            and entry.get("name", "") == area.partlabel
+        )
+
+    def _data_area_layout(
+        self,
+        swap_partitions: list[tuple[int, int]],
+        reserved_numbers: Iterable[int],
+    ) -> tuple[int, int, int] | None:
+        """(partition number, start, size) of the data area, directly in front of the first swap."""
+        area = self._data_area_cfg()
+        if area.mode == "none" or not swap_partitions:
+            return None
+        disk_sectors, _root_start, _root_size = self._disk_facts()
+        first_swap = min(start for start, _size in swap_partitions)
+        try:
+            plan = layout_policy.plan_data_area(
+                area, disk_sectors=disk_sectors, root_end=0, first_swap_start=first_swap,
+            )
+        except layout_policy.LayoutPolicyError as exc:
+            raise InstallerError(str(exc)) from exc
+        number = self._tail_swap_numbers(len(swap_partitions) + 1, reserved_numbers)[-1]
+        return number, plan.start, plan.size
 
     @staticmethod
     def _is_swap_partition(entry: dict[str, str]) -> bool:
@@ -2653,6 +2721,14 @@ MaxFileSec=1month
         if not inserted:
             rebuilt.append(f"size={new_root_size}")
         lines.append(f"{prefix}{self.root_number} : " + ", ".join(rebuilt))
+        data_layout = self._data_area_layout(partitions, preserved_before_root)
+        if data_layout is not None:
+            area = self._data_area_cfg()
+            number, start, size = data_layout
+            lines.append(
+                f"{prefix}{number} : start={start}, size={size}, type={area.type_guid}, "
+                f'name="{area.partlabel}"'
+            )
         for number, (start, size) in zip(
             self._tail_swap_numbers(len(partitions), preserved_before_root), partitions
         ):
@@ -2701,17 +2777,18 @@ MaxFileSec=1month
                 for number, entry in plan_entries.items()
             }
             if current_geometry != plan_geometry:
+                self._refuse_to_disturb_data_partitions(current_entries, plan_entries)
                 self.actions.write_file(str(backup_dir / backup_name), current_dump, 0o600)
                 backup_digest = hashlib.sha256(current_dump.encode("utf-8")).hexdigest()
                 self.actions.write_file(str(backup_dir / checksum_name), f"{backup_digest}  {backup_name}\n", 0o644)
                 self.actions.write_file(plan_path, plan_text)
                 old_numbers = {
                     number for number, entry in current_entries.items()
-                    if self._is_swap_partition(entry)
+                    if self._is_swap_partition(entry) or self._is_data_partition(entry)
                 }
                 new_numbers = {
                     number for number, entry in plan_entries.items()
-                    if self._is_swap_partition(entry)
+                    if self._is_swap_partition(entry) or self._is_data_partition(entry)
                 }
                 changed_numbers = {
                     number for number in old_numbers & new_numbers
@@ -2743,6 +2820,32 @@ MaxFileSec=1month
             0o600,
         )
         self._mark_step("partitions", "planned" if self.actions.dry_run else "success", plan_path)
+
+    def _refuse_to_disturb_data_partitions(
+        self,
+        current_entries: dict[int, dict[str, str]],
+        plan_entries: dict[int, dict[str, str]],
+    ) -> None:
+        """A rerun must never delete, renumber or resize a data-area partition that already holds a signature.
+
+        The data partition number follows the swap partitions, so a changed swap count moves it. Only a partition
+        that is provably blank (blkid exit 2) may be re-planned; an unreadable probe counts as "in use".
+        """
+        for number, entry in current_entries.items():
+            if not self._is_data_partition(entry):
+                continue
+            planned = plan_entries.get(number)
+            if planned is not None and self._is_data_partition(planned) and (
+                self._geometry_for_comparison(entry) == self._geometry_for_comparison(planned)
+            ):
+                continue
+            signature = self._blkid_value(f"{self._partition_base}{number}", "TYPE")
+            if signature:
+                raise InstallerError(
+                    f"refusing to delete or resize data-area partition {number}: it holds a {signature} signature "
+                    "and the requested layout (for example a changed swap partition count) would move or change it. "
+                    "Keep the layout of the installed host, or migrate the data and wipe the partition by hand first"
+                )
 
     def _write_and_verify_partition_plan(
         self,
@@ -3686,6 +3789,137 @@ MaxFileSec=1month
             f"{len(layout)} native GPT swaps activated ({len(retained)} retained before root)",
         )
 
+    def _blkid_value(self, device: str, tag: str) -> str:
+        """blkid tag of a device, "" when blank (blkid exits 2 on a blank device)."""
+        if self.actions.dry_run:
+            return ""
+        try:
+            return self._run(["/usr/sbin/blkid", "-s", tag, "-o", "value", device])
+        except ActionError as exc:
+            # blkid exits 2 only when it found no matching tag (a blank device). Any other failure
+            # (I/O error, missing device node, probe error) is NOT blank: fail closed.
+            if "action failed (2)" in str(exc):
+                return ""
+            raise InstallerError(f"cannot determine whether {device} is blank (blkid failed): {exc}") from exc
+
+    def _devices_with_label(self, label: str) -> list[str]:
+        """Block devices whose filesystem label is `label` (blkid exit 2 = none)."""
+        if self.actions.dry_run:
+            return []
+        try:
+            out = self._run(["/usr/sbin/blkid", "-t", f"LABEL={label}", "-o", "device"])
+        except ActionError as exc:
+            if "action failed (2)" in str(exc):
+                return []
+            raise InstallerError(f"cannot list devices labelled {label} (blkid failed): {exc}") from exc
+        return [line.strip() for line in out.splitlines() if line.strip()]
+
+    def _ensure_data_filesystem(self, device: str, fs: str, label: str | None) -> None:
+        """mkfs only on a BLANK device; the same fs again is kept; anything else is refused."""
+        existing = self._blkid_value(device, "TYPE")
+        if existing == fs:
+            return
+        if existing:
+            raise InstallerError(
+                f"refusing to format {device} as {fs}: it already holds a {existing} signature"
+            )
+        label_args = ["-L", label] if label else []
+        self._run([f"/usr/sbin/mkfs.{fs}", *label_args, device], f"mkfs.{fs} {device}", dangerous=True)
+
+    def _data_mount_entry(self, source: str, mount: str, fs: str) -> str:
+        options = "noatime,user_subvol_rm_allowed,nofail" if fs == "btrfs" else "defaults,nofail"
+        return f"{source} {mount} {fs} {options} 0 2" if fs == "ext4" else f"{source} {mount} {fs} {options} 0 0"
+
+    def _configure_data_area(self) -> None:
+        """Create filesystem / LVM on the data-area partition the table already holds, mount it, persist fstab."""
+        area = self._data_area_cfg()
+        if area.mode == "none":
+            self._mark_step("data_area", "not_needed", "data_area=none")
+            return
+        self._packages(layout_policy.data_area_packages(area), "data-area")
+        disk_sectors, root_start, root_size = self._disk_facts()
+        live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        before_root = self._partitions_before_root(live, root_start)
+        tail_partitions, _target_root_size = self._plan_swap_partitions()
+        layout = self._data_area_layout(tail_partitions, before_root)
+        if layout is None:
+            raise InstallerError("data_area is configured but the plan has no data partition")
+        number, _start, _size = layout
+        device = f"{self._partition_base}{number}"
+        if not self.actions.dry_run and not self._is_data_partition(live.get(number, {})):
+            raise InstallerError(f"expected data-area partition {number} ({area.partlabel}) is not in the partition table")
+        mounts: list[tuple[str, str, str]] = []  # (fstab source, mount point, fs)
+        if area.mode == "partition":
+            self._ensure_data_filesystem(device, area.fs, area.label)
+            others = [d for d in self._devices_with_label(area.label) if os.path.realpath(d) != os.path.realpath(device)]
+            if others:
+                raise InstallerError(
+                    f"label {area.label} is also on {', '.join(others)}: an ambiguous cow label would leave "
+                    f"{area.mount} on the root filesystem; wipe or relabel the stale device and rerun"
+                )
+            uuid = self._blkid_value(device, "UUID")
+            mounts.append((f"UUID={uuid}" if uuid else f"LABEL={area.label}", area.mount, area.fs))
+        else:
+            pv_type = self._blkid_value(device, "TYPE")
+            if pv_type not in {"", "LVM2_member"}:
+                raise InstallerError(f"refusing to make {device} an LVM physical volume: it holds a {pv_type} signature")
+            if pv_type == "":
+                self._run(["/usr/sbin/pvcreate", "-y", device], f"pvcreate {device}", dangerous=True)
+            existing_vg_pvs = ""
+            if not self.actions.dry_run:
+                try:
+                    existing_vg_pvs = self._run(["/usr/sbin/vgs", "--noheadings", "-o", "pv_name", area.vg])
+                except ActionError:
+                    existing_vg_pvs = ""
+            if existing_vg_pvs:
+                if device not in existing_vg_pvs.split():
+                    raise InstallerError(f"volume group {area.vg} already exists on other physical volumes: {existing_vg_pvs}")
+            else:
+                self._run(["/usr/sbin/vgcreate", area.vg, device], f"vgcreate {area.vg}", dangerous=True)
+            have: set[str] = set()
+            if not self.actions.dry_run:
+                try:
+                    have = set(self._run(["/usr/sbin/lvs", "--noheadings", "-o", "lv_name", area.vg]).split())
+                except ActionError:
+                    have = set()
+            self._run(["/usr/sbin/vgchange", "-ay", area.vg], f"activate {area.vg}")
+            for lv in area.lvs:
+                if lv.name not in have:
+                    self._run(
+                        ["/usr/sbin/lvcreate", "-y", "-n", lv.name, "-L", f"{lv.size_gb}G", area.vg],
+                        f"lvcreate {area.vg}/{lv.name}", dangerous=True,
+                    )
+            self._run(["/usr/bin/udevadm", "settle"], "wait for LV device nodes")
+            for lv in area.lvs:
+                if lv.fs == "none":
+                    continue  # left unformatted on purpose (e.g. for zfs, which is not managed here)
+                lv_device = f"/dev/{area.vg}/{lv.name}"
+                self._ensure_data_filesystem(lv_device, lv.fs, lv.label)
+                mounts.append((lv_device, lv.mount or "", lv.fs))
+        wanted = {mount for _source, mount, _fs in mounts}
+        retained = [
+            line for line in self._read_fstab_lines()
+            if not (line.strip() and not line.lstrip().startswith("#") and len(line.split()) >= 2 and line.split()[1] in wanted)
+        ]
+        entries = [self._data_mount_entry(source, mount, fs) for source, mount, fs in mounts]
+        self.actions.write_file("/etc/fstab", "\n".join(retained + entries + [""]), 0o644)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload fstab-generated units")
+        for _source, mount, _fs in mounts:
+            self._run(["/usr/bin/mkdir", "-p", mount], f"create {mount}")
+            mounted = False
+            if not self.actions.dry_run:
+                try:
+                    self._run(["/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE", mount])
+                    mounted = True
+                except ActionError:
+                    mounted = False
+            if not mounted:
+                self._run(["/usr/bin/mount", mount], f"mount {mount}", dangerous=True)
+        self._mark_step(
+            "data_area", "planned" if self.actions.dry_run else "success",
+            f"{area.mode} on {device}: " + ", ".join(f"{mount} ({fs})" for _s, mount, fs in mounts),
+        )
+
     def _grow_root_to_plan(self) -> None:
         """Grow the root partition/filesystem after its final boundary is present."""
         _disk_sectors, root_start, current_size = self._disk_facts()
@@ -4595,6 +4829,15 @@ MaxFileSec=1month
         }
         if actual != expected:
             return False
+        data_layout = self._data_area_layout(planned_partitions, before_root)
+        if data_layout is not None:
+            number, start, size = data_layout
+            entry = live.get(number, {})
+            if not (
+                self._is_data_partition(entry)
+                and entry.get("start") == str(start) and entry.get("size") == str(size)
+            ):
+                return False
         self._mark_step("partitions", "success", "swap partitions already match the requested count and geometry")
         return True
 
@@ -4680,6 +4923,8 @@ MaxFileSec=1month
         self._grow_root_to_plan()
         self._configure_root_cap_boot_guards()
         self._activate_swap_partitions()
+        if self.config.data_area != "none":
+            self._configure_data_area()
         self._health_gate_swap_devices()
         # While the host is still idle (apt timers not released yet, no workload
         # started): advisory, never stops the install.

@@ -446,7 +446,16 @@ def _root_helper_cgroup_parent() -> str:
             f"CGROUP_PARENT_DEV_INTERACTIVE is not a slice unit name: {parent!r}"
         )
     loaded, note = governance.check_slice_unit(parent)
-    if loaded is not True:
+    if loaded is None and governance.slice_probe_unavailable():
+        # CIU-181 (CIU-164): ONLY an environmental inconclusive probe (no systemctl,
+        # systemd not PID 1 as in a devcontainer) degrades as its own note says:
+        # warn, skip the slice check, still run the helper. A "not loaded" result
+        # AND a probe that failed on a real systemd host (timeout, OSError) refuse.
+        print(
+            f"[WARN] S6.5 root helper cgroup parent {parent!r} not verified: {note}",
+            file=sys.stderr, flush=True,
+        )
+    elif loaded is not True:
         raise RuntimeError(
             f"S6.5 root helper cgroup parent {parent!r} is not verified loaded: {note}"
         )
@@ -598,6 +607,55 @@ def privileged_rmtree(
         raise
 
 
+def _tree_owned_by_caller(root: Path) -> bool:
+    """True when *root* and every entry below it is owned by the calling uid."""
+    uid = os.getuid()
+    try:
+        if root.lstat().st_uid != uid:
+            return False
+        for current, dirs, files in os.walk(root, followlinks=False):
+            for name in (*dirs, *files):
+                if os.lstat(os.path.join(current, name)).st_uid != uid:
+                    return False
+    except OSError:
+        return False
+    return True
+
+
+def _make_tree_writable(root: Path) -> None:
+    """Add owner rwx to directories and owner w to files below *root* (CIU-181).
+
+    Read-only (0444/0555) entries otherwise block ``rmtree``. Only entries the
+    caller owns are touched; symlinks are never followed (a symlinked *root* is
+    left alone), regular files with other hard links are skipped because the
+    inode is shared with paths outside the tree, and the root itself is repaired
+    first so a 0500/0000 root can be listed.
+    """
+    uid = os.getuid()
+    try:
+        root_info = os.lstat(root)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        return
+    if root_info.st_uid == uid and root_info.st_mode & 0o700 != 0o700:
+        os.chmod(root, root_info.st_mode | 0o700)
+    for current, dirs, files in os.walk(root, followlinks=False):
+        for name in (*dirs, *files):
+            path = os.path.join(current, name)
+            try:
+                info = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != uid:
+                continue
+            if not stat.S_ISDIR(info.st_mode) and info.st_nlink > 1:
+                continue
+            extra = 0o700 if stat.S_ISDIR(info.st_mode) else 0o200
+            if info.st_mode & extra != extra:
+                os.chmod(path, info.st_mode | extra)
+
+
 def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
     """Remove *vol_dir*, routing through the S6.5 root helper whenever DooD applies (CIU-9).
 
@@ -649,6 +707,8 @@ def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
         return
 
     # Native host (S1.9): logical == physical, so a local rmtree is trustworthy.
+    if _tree_owned_by_caller(vol_dir):
+        _make_tree_writable(vol_dir)
     try:
         shutil.rmtree(vol_dir)
         return
@@ -1505,12 +1565,24 @@ def scope_worktree_compose_images(
     repo_root: Path, rendered_compose: str, *,
     primary_image_references: set[str] | Callable[[], set[str]] | None = None,
     check_primary_image_map: bool = False,
+    declared_images: frozenset[str] = frozenset(),
 ) -> str:
-    """Apply CIU-117's linked-worktree image tags to rendered Compose text."""
-    if not image_isolation.compose_may_require_image_scoping(rendered_compose):
+    """Apply CIU-117's linked-worktree image tags to rendered Compose text.
+
+    *declared_images* (CIU-173, ``[ciu.worktree] project_images``) names images the
+    project builds although no rendered service carries ``build:``; they are scoped
+    like build-declared ones, and a stack that uses one needs the checkout identity.
+    """
+    if not image_isolation.compose_may_require_image_scoping(rendered_compose) and not (
+        declared_images
+        and image_isolation.compose_uses_images(rendered_compose, declared_images)
+    ):
         return rendered_compose
     suffix = worktree.resolve_worktree_image_tag_suffix(repo_root)
-    scoped = image_isolation.scope_compose_images(rendered_compose, suffix)
+    scoped = (
+        image_isolation.scope_compose_images(rendered_compose, suffix, declared_images)
+        if declared_images else image_isolation.scope_compose_images(rendered_compose, suffix)
+    )
     if suffix is not None and check_primary_image_map:
         candidates = image_isolation.project_built_image_references(scoped)
         if candidates:
@@ -2185,6 +2257,7 @@ def main_execution(
             rendered_compose,
             primary_image_references=primary_image_references,
             check_primary_image_map=not dry_run,
+            **worktree.image_scope_kwargs(merged),
         )
         if compose_template.suffix == ".j2":
             # S8.4: atomic write via tmp sibling + os.replace (no partial write).
@@ -2419,6 +2492,7 @@ def run_shipped(
             shipped_compose,
             primary_image_references=primary_image_references,
             check_primary_image_map=not dry_run,
+            **worktree.image_scope_kwargs(global_config),
         )
         try:
             shipped_image_override = image_isolation.compose_image_override(
@@ -2548,6 +2622,49 @@ def run_shipped(
         os.chdir(original_cwd)
 
 
+_CIU_IGNORE_LINES = frozenset({
+    ".ciu", ".ciu/", "/.ciu", "/.ciu/", "**/.ciu", "**/.ciu/", ".ciu/*", "**/.ciu/*",
+})
+
+
+def _gitignore_text_ignores(stack_dir: Path, bundle_root: Optional[Path] = None) -> bool:
+    """True when the ``.gitignore`` files of the bundle ignore ``<stack_dir>/.ciu``.
+
+    A push-deployed bundle (S14.2) carries the project's ``.gitignore`` files but
+    its git metadata is excluded or foreign, so ``git check-ignore`` cannot answer
+    there. The shipped text is the same declaration the control host's check
+    passed on (CIU-169). Only files from *bundle_root* down to *stack_dir* count
+    (an unrelated ``/.gitignore`` or ``/opt/ciu/.gitignore`` above the bundle never
+    satisfies the secrets guard; without a root only the stack's own file counts),
+    applied in order with last-match-wins like git, so a later ``!.ciu`` negation
+    un-ignores. A rooted pattern (``/.ciu``) only counts in the stack's own file.
+    """
+    stack = stack_dir.resolve()
+    root = bundle_root.resolve() if bundle_root is not None else stack
+    chain = [stack]
+    if root != stack and root in stack.parents:
+        chain = [stack, *(p for p in stack.parents if root in (p, *p.parents))]
+    ignored = False
+    for directory in reversed(chain):
+        candidate = directory / ".gitignore"
+        if not candidate.is_file():
+            continue
+        try:
+            lines = candidate.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for raw in lines:
+            line = raw.strip()
+            negated = line.startswith("!")
+            pattern = line[1:] if negated else line
+            if pattern not in _CIU_IGNORE_LINES:
+                continue
+            if pattern.startswith("/") and directory != stack:
+                continue
+            ignored = not negated
+    return ignored
+
+
 def _check_gitignore(stack_dir: Path) -> None:
     """S1.7 — abort when ``<stack>/.ciu`` is not gitignored inside a git work tree.
 
@@ -2583,6 +2700,9 @@ def _check_gitignore(stack_dir: Path) -> None:
     ignored_dir = procutil.run_cmd(["git", "check-ignore", "-q", str(ciu_dir)], check=False)
     if ignored_dir.returncode == 0:
         return
+    env_root = os.environ.get("REPO_ROOT")
+    if _gitignore_text_ignores(stack_dir, Path(env_root) if env_root else None):
+        return  # a pushed bundle ships the .gitignore text but not always a usable repo (CIU-169)
     raise ValueError(
         f"[S1.7] {ciu_dir} is not gitignored. CIU machine-owned artifacts must be "
         "ignored. Add `**/.ciu/` to your .gitignore and retry."

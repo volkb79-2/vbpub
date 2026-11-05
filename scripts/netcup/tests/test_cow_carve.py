@@ -144,6 +144,67 @@ def test_two_cow_candidates_are_never_resolved_by_guessing():
     assert "several cow candidates" in res.stderr
 
 
+# installer-created data area (debian-install-v2 data_area=lvm): the PV partition carries PARTLABEL=MDT_LVM_PV, the LVs are
+# lsblk children of it (PATH=/dev/mapper/<vg>-<lv>); only the LV with filesystem LABEL=MDT_COW is the cow
+LSBLK_LVM_COW = (
+    LSBLK_FRESH
+    + 'PATH="/dev/vda8" PARTLABEL="MDT_LVM_PV" FSTYPE="LVM2_member" LABEL=""\n'
+    + 'PATH="/dev/mapper/vg_data-cow" PARTLABEL="" FSTYPE="btrfs" LABEL="MDT_COW"\n'
+    + 'PATH="/dev/mapper/vg_data-spare" PARTLABEL="" FSTYPE="" LABEL=""\n'
+)
+LSBLK_LVM_NO_COW = (
+    LSBLK_FRESH
+    + 'PATH="/dev/vda8" PARTLABEL="MDT_LVM_PV" FSTYPE="LVM2_member" LABEL=""\n'
+    + 'PATH="/dev/mapper/vg_data-spare" PARTLABEL="" FSTYPE="" LABEL=""\n'
+)
+LSBLK_EXT4_COW_PARTITION = LSBLK_FRESH + 'PATH="/dev/vda8" PARTLABEL="MDT_COW" FSTYPE="ext4" LABEL="MDT_COW"\n'
+LSBLK_LVM_AND_PARTITION_COW = LSBLK_LVM_COW + 'PATH="/dev/vda9" PARTLABEL="MDT_COW" FSTYPE="btrfs" LABEL="MDT_COW"\n'
+
+
+def test_installer_created_cow_lv_is_detected_by_label_and_nothing_is_carved():
+    res = bash("cow_select_device", LSBLK_LVM_COW)
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == "/dev/mapper/vg_data-cow"
+
+
+def test_lvm_without_a_labelled_cow_lv_still_means_carve_from_the_reserve():
+    # the PV partition and an unlabelled spare LV are never mistaken for a cow
+    assert bash("cow_select_device", LSBLK_LVM_NO_COW).returncode == 1
+
+
+def test_installer_created_ext4_cow_is_found_so_no_second_cow_is_carved():
+    res = bash("cow_select_device", LSBLK_EXT4_COW_PARTITION)
+    assert res.returncode == 0 and res.stdout.strip() == "/dev/vda8"
+
+
+def test_lv_cow_plus_partition_cow_is_ambiguous():
+    assert bash("cow_select_device", LSBLK_LVM_AND_PARTITION_COW).returncode == 3
+
+
+@pytest.mark.parametrize(
+    ("existing", "ok"),
+    [
+        ("UUID=u1 /srv/cow btrfs noatime,user_subvol_rm_allowed 0 0", True),  # what provision-runner.sh writes
+        ("LABEL=MDT_COW /srv/cow btrfs noatime,user_subvol_rm_allowed,nofail 0 0", True),  # installer, partition
+        ("/dev/vg_data/cow /srv/cow btrfs noatime,user_subvol_rm_allowed,nofail 0 0", True),  # installer, LV
+        ("UUID=u1 /srv/cow btrfs defaults,nofail 0 0", True),
+        ("UUID=other /srv/cow btrfs defaults 0 0", False),
+        ("LABEL=MDT_COW /srv/cow ext4 defaults 0 2", False),
+        ("/dev/sdz9 /srv/cow btrfs defaults 0 0", False),
+    ],
+)
+def test_existing_fstab_line_for_the_cow_mount(existing, ok):
+    expected = "UUID=u1 /srv/cow btrfs noatime,user_subvol_rm_allowed 0 0"
+    res = bash(f'cow_fstab_entry_ok "{existing}" "{expected}" u1 /dev/vg_data/cow')
+    assert (res.returncode == 0) is ok
+
+
+def test_provision_script_skips_carving_for_an_installer_cow_and_checks_its_mount_point():
+    text = PROVISION.read_text(encoding="utf-8")
+    assert "cow_fstab_entry_ok" in text
+    assert "make data_area mount and COW_MOUNT agree" in text
+
+
 def test_provision_script_wires_the_helpers_and_keeps_the_guards():
     text = PROVISION.read_text(encoding="utf-8")
     assert 'source "$here/cow-carve.sh"' in text

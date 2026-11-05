@@ -9,16 +9,39 @@
 # =============================================================================
 schema_version = 1
 
+# LANE DISTINCTION (CIU-190):
+#   `ciu`      = the ASYNC R2 mutation lane (R0-R3, native mutation + liveness). It is
+#                NOT a release gate; run it only on the latest release, as a campaign.
+#                Native R2 with liveness needs the cgroup observer, hence
+#                resource_observer = "cgprofile" and resources.pids below; without them
+#                the verdict is always NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE.
+#   `ciu-gate` = the RELEASE gate (R0+R1+R3, no mutation, no observer needed).
+# Same observer pattern as pwmcp/run-gate.toml [lanes.r2] and
+# run-gate-project/run-gate.toml [lanes.assay-r2].
 [lanes.ciu]
 kind = "assay"
 assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
 environment = "tester-unified"
+resource_observer = "cgprofile"
 budget = "8h"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the
 # verdict records the exact runtime assay version and source commit.
 
 [lanes.ciu.resources]
+cpus = "3"
+memory = "2g"
+memory_swap = "16g"
+pids = 8192
+
+# Release gate (R0+R1+R3, no R2 mutation; assay.toml [lanes.ciu-gate]). Outer budget = assay budget (90m) + 10m.
+[lanes.ciu-gate]
+kind = "assay"
+assay_lane = "ciu-gate"
+environment = "tester-unified"
+budget = "100m"
+
+[lanes.ciu-gate.resources]
 cpus = "3"
 memory = "2g"
 memory_swap = "16g"

@@ -5922,7 +5922,7 @@ loud error only when `CIU_MAX_CONCURRENT_WORKTREES` is set (a cap that cannot be
 
 ## CIU-164 — in a devcontainer the S6.5 root helper preflight always fails, so `ciu up` cannot create a hostdir owned by any uid but the operator's
 
-**Status: OPEN (filed 2026-11-04, ops-vss-20261104; `voice-screen-share/jitsi-server`, ciu 7.19.0).**
+**Status: FIXED on branch ciu-triage-20261105 (unreleased; filed 2026-11-04, ops-vss-20261104; `voice-screen-share/jitsi-server`, ciu 7.19.0).** The inconclusive-probe degrade is CIU-181's `_root_helper_cgroup_parent` change; the acceptance case (uid 1000 hostdir through the helper, one warning, no systemd PID 1) is `test_hostdir_uid_1000_created_through_helper_without_systemd_pid1` in `test_ciu_engine_deeper6.py` (docker mocked; the fake-`systemctl` shim form is covered by the governance probe tests).
 
 **Observed.** `ciu up` stops at step 8 with `[ERROR] S6.5 root helper cgroup parent 'dev-interactive.slice' is not verified loaded: systemctl is
 present but systemd is not PID 1 in this mount namespace (...) — governed cgroup slices cannot be checked from inside this container; skipping
@@ -5974,7 +5974,7 @@ primary checkout without losing its data (the old volumes stay behind, unreferen
 
 ## CIU-168 — `ciu ssh` / `ciu up --host` need a fully generated local `ciu.env` (incl. `DOCKER_GID`) and a committed git repo on the control host
 
-**Status: OPEN (filed 2026-11-04, ops-v1001-20261104; measured on ciu 7.19.0 pushing a throwaway `whoami` stack from the mdt-cockpit devcontainer to v1001).**
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** The remote verbs render the global config with inert placeholders for the control host's machine/identity keys and write nothing, so no `ciu.env`, `DOCKER_GID`, docker group or local network is needed; an unborn git HEAD in `ciu env generate` is a tagged `[S2.8]` error. Test: `test_remote_config_load_needs_no_machine_facts_and_writes_nothing`, `test_generate_ciu_env_reports_an_unborn_head_as_a_tagged_error`. Not proven: a live `ciu up --host` from a Docker-less control host (dstdns P8).**
 
 **Observed.** On a control host that only SSHes (no Docker daemon, no docker group): `ciu ssh v1001 -- true` stops with `could not load global configuration for remote
 operation: Missing required environment values ... CONTAINER_GID, CONTAINER_UID, DOCKER_GID, DOCKER_NETWORK_INTERNAL`. `DOCKER_GID=990 ciu env generate` is the only way
@@ -5988,7 +5988,7 @@ Load the global config with placeholders for the four values (or lazily), never 
 
 ## CIU-169 — push-deploy preconditions are not checked or documented: `ciu` must be on the remote non-login PATH, `bundle_dir`'s parent must exist, and `**/.ciu/` must be gitignored although `.git` is not shipped
 
-**Status: OPEN (filed 2026-11-04, ops-v1001-20261104).**
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** One-RTT preflight (`command -v <remote_ciu>`, `mkdir -p bundle_dir`) with remedy text, new host key `remote_ciu`, and the S1.7 guard accepts the shipped `.gitignore` text when `git check-ignore` cannot answer. The `--thin` scp/tar path is NOT covered by the preflight (its own mkdir exists in activate.py). Review follow-up (F3/F4/F5): a leading `~/` in `bundle_dir`/`remote_ciu` is expanded deliberately (`~user`, whitespace and a non-string `remote_ciu` are refused with exit 2 before anything is sent, also before the preflight mkdir), the remote verb chain fails closed when `ciu env print` fails, and the gitignore text guard only trusts files from the bundle root down and honours `!` negations.**
 
 **Observed.** Three consecutive failures of `ciu up --host v1001 --dir whoami` against a fresh Debian host with ciu installed in a user venv: (1) the remote command `ciu env generate ...` finds no `ciu`
 (non-login SSH PATH does not include `~/.local/bin` or a venv); (2) `rsync: mkdir "/home/runner/ciu-remote-test/current" failed: No such file or directory` because rsync creates only the last
@@ -6000,7 +6000,7 @@ path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.
 
 ## CIU-170 — `ciu health --host` rejects `--dir`, and `ciu down --host --dir STACK` runs remotely outside the bundle (no ciu root, no env)
 
-**Status: OPEN (filed 2026-11-04, ops-v1001-20261104; SPEC S14.2 and FEATURES.md both list `--dir`/`--profile` after `--host` for up, down and health).**
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** Root cause was two-fold: the 7.20 registry declared `--dir`/`--host` mutually exclusive on `up` and `down` (and `status` had no `--dir`), and `render`/`down`/`status --gate --host` ran outside the bundle. Now all three run `cd <bundle_dir> && eval "$(ciu env print)" && ciu ...` and accept `--dir`; `status --gate --dir` also works locally. The former residue (`[S18] --stack ... is not in the current deploy selection`) is by design per SPEC S10.2a: `down --dir` resolves the stack through the deploy selection, so an optional stack needs `--profile NAME`; the remote `down --host H --dir S --profile P` forwards the profile verbatim and the refusal text names `--profile` (tests: `test_remote_down_dir_forwards_the_profile_that_declares_an_optional_stack`, `test_stop_stack_refuses_a_stack_outside_the_deploy_selection_and_names_the_profile`). A non-optional stack (dstdns `whoami` case) was not reproducible offline; confirm on v1001 in P8.**
 
 **Observed.** `ciu health --host v1001 --dir whoami` fails with `ciu: error: unrecognized arguments: --dir whoami`. `ciu down --host v1001 --dir whoami` connects but the remote command runs in the login directory:
 `[no-ciu-root] no CIU root above /home/runner; expected ciu.global.defaults.toml.j2`. Only `ciu up` does the `cd <bundle_dir> && ciu env generate && ciu render` chain. Manual teardown needed
@@ -6012,7 +6012,7 @@ path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.
 
 ## CIU-171 — `ciu clean` leaves the compose default network and the workspace network of a remote or standalone bundle
 
-**Status: OPEN (filed 2026-11-04, ops-v1001-20261104).**
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** The main-workspace network keep now requires an attached endpoint; compose networks of the bundle's stack directories outside the selection are removed, matched by exact compose-project label value (review F1: no prefix match, so `prod` never touches `prod-x`; a network with a foreign attached endpoint is kept and named, never disconnected). Tests: `test_tagged_sweep_*` (prod vs prod-x, shared network with a foreign container), `test_main_workspace_network_without_a_devcontainer_is_removed`, `test_clean_removes_tagged_project_networks_of_a_stack_outside_the_selection`.**
 
 **Observed.** After `ciu up --host v1001 --dir whoami` and `ciu clean -y` on the target the container is gone but `v1001-remote-test-rt-whoami_default` (the compose default network of the stack) and `current-qokpsa-network` (created by
 `ciu env generate`, "kept: ... workspace network of the main workspace (devcontainer residence)") remain, in a bundle that is not a devcontainer. S6.4 promises "zero project containers and volumes remain"; networks are outside that invariant but pin an address pool (`docker_default_address_pools`) on small hosts.
@@ -6032,7 +6032,7 @@ path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.
 
 ## CIU-173 — CIU-117 image-ref suffixing applies only to services with `build:`, `extends` or `include`; a stack without them runs main's `:local` in a worktree
 
-**Status: OPEN (filed 2026-11-05 from the dstdns cmru-p2 run on ciu 7.21.0; evidence `reports/dstdns-cmru-p2-REPORT.md`, "CIU-117 finding"). Severity: P2 (C03-F06 false-green trap).**
+**Status: PARTIALLY FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; the acceptance text asks for automatic classification from the images table, which is NOT implemented; only the declared-list route works).** Design chosen: declaration, not Bake-plan inference: `[ciu.worktree] project_images = [...]` (effective config, add-only) scopes listed images of a build-free stack; documented in SPEC S17.6. dstdns must add the list to its config.**
 
 **Observed.** `engine.scope_worktree_compose_images` returns early unless a rendered service has `build:`, `extends` or `include` (`image_isolation.compose_may_require_image_scoping`).
 dstdns compose has no `build:` by policy (AGENTS 4.3), and `ciu check` in the worktree printed no `[CIU-117]` notice. A linked worktree therefore bakes `dstdns/<svc>:local-<suffix>`
@@ -6046,7 +6046,7 @@ in the main checkout nothing changes.
 
 ## CIU-174 — after a failed `ciu worktree create` preparation the checkout and its record remain, and a manual `git worktree remove` leaves a stale shared-registry record whose refusal names no remedy
 
-**Status: OPEN (filed 2026-11-05; evidence `reports/fix-ciu-161-REPORT.md`, branch fix-ciu-161-20261105). Severity: P3.**
+**Status: PARTIALLY FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; the remedy text is tested, but the acceptance claim that the named command succeeds after a manual `git worktree remove` is not proven).** Chosen: keep the partial allocation (it is the resumable `ensure` state) and name `ciu worktree ensure NAME` / `ciu worktree rm NAME`; the stale-record "already recorded" refusal names the same. Not done: automatic rollback of checkout+record on preparation failure, and a registry prune for a record whose checkout is gone without a CIU record (verify that `ensure` restores it in P8).**
 
 **Observed.** When worktree preparation fails (CIU-161), the created checkout and its worktree record stay behind. Removing the checkout by hand with `git worktree remove` leaves the record in
 the shared workspace registry, and the next create at that path refuses with "physical workspace path is already recorded" without naming a remedy (`ciu worktree rm <name>` or a registry repair command).
@@ -6058,7 +6058,7 @@ record and the remedy (`ciu worktree rm <name>`, and for a record whose path no 
 
 ## CIU-184 — `ciu worktree adopt` fails on `DOCKER_GID not found` and leaves a `recovery-required` record that `ensure` cannot resume (circular)
 
-**Status: OPEN (filed 2026-11-05 from dstdns CP0, installed ciu 7.21.0 and the unreleased source; evidence `reports/dstdns-cp0-CONTINUATION.md` F1). Severity: P2. Related: CIU-160, CIU-161, CIU-172.**
+**Status: FIXED 2026-11-05 by CIU-161 plus the adopt-without-DOCKER_GID test on branch ciu-176-20261105 (reference commit `ffd937926`; unreleased, not yet merged to main). Filed from dstdns CP0, installed ciu 7.21.0; evidence `reports/dstdns-cp0-CONTINUATION.md` F1. Severity: P2. Related: CIU-160, CIU-161, CIU-172, CIU-176.** Re-check on that branch: `adopt` and `ensure` prepare through `_generate_env_in`, which sets `CIU_PREPARE_WITHOUT_DOCKER_GID=1` (CIU-161), so the missing-`DOCKER_GID` step no longer fails; `test_adopt_prepares_without_a_docker_gid` (`tests/tests/test_ciu_worktree_create_without_docker_gid.py`) pins that an `adopt` whose env-generation child has no `DOCKER_GID` reaches state `ready`. The loop described below came from the installed 7.21.0 wheel (older than the source). A different failing step in adopt/ensure is not covered by this closure and would be a new entry.
 
 **Observed.** `ciu worktree adopt` of a plain `git worktree add` checkout fails in its env generation with `DOCKER_GID not found` when the caller shell lacks `DOCKER_GID`. The record is left `recovery-required`. `ciu worktree ensure <name>` then repeats the same env generation and refuses with the same recovery-required state, so the loop never closes. The unreleased source (CIU-161 fix) repairs `create` but `adopt` still fails after one failed attempt because the record already exists. Only `ciu worktree rm` (which itself needs two tries, CIU-187) clears it.
 
@@ -6068,7 +6068,7 @@ record and the remedy (`ciu worktree rm <name>`, and for a record whose path no 
 
 ## CIU-185 — `ciu worktree up` on a stack whose images were never baked under the plain `:local` ref stops with a registry `pull access denied`, and would otherwise run main's stale image
 
-**Status: OPEN (filed 2026-11-05 from dstdns CP0; evidence `reports/dstdns-cp0-REPORT.md` "Stack bring-up". Companion of CIU-173, which is the root cause and gets this live confirmation). Severity: P2 (stale-image false-green trap).**
+**Status: PARTIALLY FIXED (filed 2026-11-05 from dstdns CP0; evidence `reports/dstdns-cp0-REPORT.md` "Stack bring-up"). Severity: P2 (stale-image false-green trap). Root cause CIU-173 is PARTIALLY FIXED on main: `[ciu.worktree] project_images = [...]` (`worktree.declared_project_images`, `engine.scope_worktree_compose_images`) suffixes the listed refs of a build-free stack in a linked worktree, so once dstdns declares its images the rendered refs are `:local-<id>` and neither the pull nor main's stale `:local` is used. Still OPEN: the independent early refusal (a missing suffixed image fails before any pull and names `ciu bake`): no such message or pre-pull check exists in `src/ciu` (grep for `ciu bake` in engine/worktree/image_isolation/deploy finds none); and no automatic classification from the images table (CIU-173).**
 
 **Observed.** Compose names `dstdns/<svc>:local`; `ciu bake` in a worktree writes `dstdns/<svc>:local-<id>` (CIU-173 confirmed live). `ciu worktree up` for a service whose `:local` tag never existed failed with `pull access denied for dstdns/test-runner-ui` (a registry pull of a local-only image); for services whose `:local` existed from main's older bake it silently ran that stale image (the 2026-10-16 test-runner). The manual remedy was `docker tag dstdns/<svc>:local-<id> dstdns/<svc>:local` for every project image, which is only safe when exactly one stack is live.
 
@@ -6078,7 +6078,7 @@ record and the remedy (`ciu worktree rm <name>`, and for a record whose path no 
 
 ## CIU-186 — `ciu bake` in a worktree reports `Missing required environment values in <MAIN>/ciu.global.defaults.toml.j2` until `eval "$(ciu env print)"` is exported; the message names the wrong file
 
-**Status: OPEN (filed 2026-11-05 from dstdns CP0; evidence `reports/dstdns-cp0-CONTINUATION.md` F2). Severity: P3.**
+**Status: PARTIALLY FIXED on branch ciu-176-20261105 (reference commits `50b93a8d4`, `ffd937926`; unreleased, not yet merged to main). Filed from dstdns CP0; evidence `reports/dstdns-cp0-CONTINUATION.md` F2. Severity: P3.** Same code path as CIU-176: `ciu bake` in a worktree calls `deploy.resolve_primary_image_references`, which renders the PRIMARY's `ciu.global.defaults.toml.j2` from the primary's own generated facts (`_render_environment_for_checkout` scrubs the legacy identity exports), so the file named in the message is the main checkout's by design. Fixed there: when the primary has no `ciu.instance.generated.toml`, `_require_primary_generated_facts` raises `[CIU-176]` naming the primary root and `cd <primary> && ciu env generate` instead of the misleading "Missing required environment values"; `bake` no longer doubles the prefix (`[CIU-117] [CIU-176]`); tests `test_refuses_naming_primary_root_and_command`, `test_bake_surfaces_the_refusal_without_a_doubled_prefix` (`tests/tests/test_ciu_176_worktree_stack.py`). Still OPEN: that branch does not explain why exporting `ciu env print` made bake succeed here (the primary comparison ignores identity exports, so the primary evidently had facts and the missing keys were non-identity shell values); a missing-env refusal raised while rendering the primary's template still names the primary template without saying the value must come from the shell, and the worktree-only `.env*` hint does not apply to it. Not verified against dstdns; needs a repro with a primary that has generated facts.
 
 **Observed.** In a worktree created by `ciu worktree create`, `ciu bake` stops with `Missing required environment values in <main checkout>/ciu.global.defaults.toml.j2` although the missing values are instance facts of the worktree. Exporting `eval "$(ciu env print | grep -E '^(export )?[A-Z_]+=')"` first makes bake succeed (all 11 images, exit 0). The message points at the main checkout's template, not at the worktree or the missing keys' source.
 
@@ -6088,10 +6088,70 @@ record and the remedy (`ciu worktree rm <name>`, and for a record whose path no 
 
 ## CIU-187 — `ciu worktree rm` after `ciu up` needs two or three tries, a committed tree and `--discard-protected-state <branch>`; the first refusals do not say so
 
-**Status: OPEN (filed 2026-11-05 from dstdns CP0; evidence `reports/dstdns-cp0-CONTINUATION.md` F4). Severity: P3. Related: CIU-164 (`ciu clean` exit 1 after complete cleanup), CIU-174.**
+**Status: PARTIALLY FIXED on main via the ciu-triage merge (`9beede8e4`, unreleased); filed from dstdns CP0, evidence `reports/dstdns-cp0-CONTINUATION.md` F4. Severity: P3. Related: CIU-164, CIU-174, CIU-181, CIU-182, CIU-183.** Fixed: `ciu clean` aborting in a devcontainer on the S6.5 root-helper preflight (CIU-181 / CIU-164, `test_clean_helper_preflight_warns_when_systemd_is_not_pid1`); 0444 files stranding the checkout (CIU-181, `test_rm_removes_readonly_ignored_file_and_second_rm_names_leftover`); a deregistered-but-present leftover is restored or finished by a repeat `rm` (CIU-182, `test_rm_adopts_a_deregistered_leftover_with_exact_consent`, `libraries/worktree/tests/test_boundaries.py`); `rm NAME --dry-run` lists the blockers and the exact `--discard-protected-state <branch>` / `--discard-changes <branch>` flags in one call without changing anything (`test_dry_run_reports_blockers_and_leaves_everything_in_place`). The protected-state refusal already names `--discard-protected-state <branch>` (`worktree.py`, "protected ignored state remains in ..."). Still OPEN: (a) the `ignored state changed since the initial inventory; review the reported inventory and retry` refusal (worktree.py) names no flag, and the observation that a first `rm` after `up` only establishes identity is not shown fixed; (b) the root-owned `vol-redis-data/appendonlydir` leftover: CIU-181 makes the root helper usable in a devcontainer, but no test covers a container-owned subtree surviving a one-call `rm` (CIU-183 also leaves adoption's resource release deferred); (c) `ciu clean` exit 1 after a complete cleanup is not shown fixed (CIU-164 covers only the preflight abort).
 
 **Observed.** After `ciu up`, `ciu worktree rm <name> --yes --keep-branch` refuses with `ignored state changed` (the stack's `vol-*` data), then needs `--discard-protected-state <branch>` and a committed tree; the first attempt only establishes identity, a second or third removes the stack. `ciu clean` exits 1 although the cleanup completed. A root-owned `vol-redis-data/appendonlydir` also survived the removal and needed a privileged exact-path remove via a throwaway container (the devcontainer cannot delete it).
 
 **Design.** One guided command: `rm` states the exact flags it needs in the first refusal, completes in one invocation, and removes container-owned volume content through the same helper that created it (or lists the exact leftover paths).
 
 **Acceptance criteria.** Test: up then `rm <name> --yes --discard-protected-state <branch>` removes containers, networks, volumes and the directory in one call; the refusal without the flag names it.
+## CIU-180 — `ciu up` in a managed worktree refuses on the PRIMARY checkout's outdated generated facts, naming a file outside the worktree and a command that cannot fix it
+
+**Status: FIXED 2026-11-05 (branch ciu-triage-20261105). Severity: P2.** Reported from another project on ciu 7.21.0 in a devcontainer.
+
+**Observed.** `ciu up --dir STACK` in a linked worktree stopped at STEP 13/17 with `[S3.1c] <PRIMARY>/ciu.instance.generated.toml has outdated identity '7125ab'; ... Run ciu env generate`. The file is the primary root's (a schema-v1, header-less record written by an older ciu); `deploy.resolve_primary_image_references` (CIU-117 image-map comparison) reads it strictly through `_render_environment_for_checkout(primary_root)`, and `ciu env generate` in the worktree cannot repair another checkout. Dry-run passed (no primary read). Candidate sites checked: reference-root reads and `read_generated_facts(..., allow_repair=False)` in deploy/worktree; only the image-map path reads the primary's facts during `ciu up`.
+
+**Fix.** `worktree.require_current_primary_facts(repo_root)`: if the primary CIU root has a generated-facts file that is not current, raise `[CIU-180]` naming the primary root and `cd <primary> && ciu env generate`. Called up front by `worktree.create` and `worktree.ensure` (before any side effect) and by `resolve_primary_image_references` (raised as the ValueError that path already surfaces), so a stale primary is detected at create time, not at STEP 13.
+
+**Related.** CIU-172 (v1 record migration by `ensure`, still OPEN), CIU-166, CIU-160/161 (fixed on fix-ciu-161-20261105), CIU-174. Not yet fixed elsewhere: neither ciu-remote-deploy-20261105 nor ciu-findings-20261105 touches this path.
+
+## CIU-181 — `ciu worktree rm` cannot clean up in a devcontainer: the S6.5 root-helper preflight aborts `ciu clean`, and read-only ignored files strand the checkout
+
+**Status: FIXED 2026-11-05 (branch ciu-triage-20261105; unreleased; the open remainder was split out as CIU-182, also fixed). Severity: P2.** Reported from another project on ciu 7.21.0.
+
+**Observed.** `ciu clean` (run by `rm`) stopped at `S6.5 root helper cgroup parent 'dev-interactive.slice' is not verified loaded: systemctl is present but systemd is not PID 1 ...` even though the `vol-*` dirs belong to the caller's uid. This is the CIU-164 preflight hit by clean instead of up. With `--force`, git deregistered the worktree but 13 MB of 0444 gitignored files stayed.
+
+**Fix (done).** (1) `engine._root_helper_cgroup_parent`: an ENVIRONMENTAL inconclusive slice probe (`governance.slice_probe_unavailable()`: no systemctl / systemd not PID 1) now warns and proceeds, as its own message says; a definite `False` AND a probe that failed on a real systemd host (5 s timeout, OSError) still refuse. This is the CIU-164 design for every helper caller (up, clean, reset). CIU-164's acceptance (helper creates a uid-1000 hostdir) is tested separately and CIU-164 is FIXED. (2) `engine._rmtree_with_fallback` (native host): a caller-owned `vol-*` tree has read-only entries made writable before the local rmtree; a PermissionError still falls back to the helper. In DooD the helper stays mandatory (CIU-9 doctrine, test-pinned), but with (1) it now runs in a devcontainer instead of aborting. (3) `worktree.remove` makes caller-owned read-only entries of the checkout writable before `git worktree remove`, so 0444 files / 0555 dirs no longer fail the deletion (test proven red without it). (4) A repeat `rm` of a deregistered-but-present checkout names the leftover directory and the manual remedy instead of the bare "no worktree named".
+
+**Related.** CIU-164, CIU-174, CIU-182.
+
+## CIU-182 — `ciu worktree rm --force` can deregister a checkout it then fails to delete; `rm` has no `--dry-run` listing what `--force` would leak
+
+**Status: FIXED 2026-11-05 (branch ciu-triage-20261105; unreleased). Severity: P3.** Implemented: (a) `worktree.remove_workspace` copies the Git admin directory before `git worktree remove --force` and restores it when deletion fails without a permission-recovery offer, so the registration survives and `rm` can be retried; (b) `ciu worktree rm NAME --dry-run [--json]` lists blockers (mounts, protected state, uncommitted changes) and entries that would be left behind (unreadable or foreign-owned unwritable directories) and changes nothing; (c) `rm NAME` adopts and finishes a deregistered `.worktrees/NAME` directory when its shared record, dangling `.git` pointer, no mounts, and the exact `--discard-protected-state BRANCH` (protected names) and `--discard-changes BRANCH` consents all hold; the branch is always kept.
+
+**Observed.** `git worktree remove --force` drops the administrative registration even when deleting the working tree fails (root cause lives in git plus `libraries/worktree` `remove_workspace`, which runs git first). After CIU-181 the common trigger (read-only caller-owned files) is gone, but a checkout holding foreign-uid entries still leaves a registered-nowhere directory on a failed delete (the leftover is now named, but there is no retry path).
+
+**Design (implemented).** (a) `libraries/worktree.remove_workspace` backs up the Git admin directory (a failed backup is a clean refusal before git runs), runs `git worktree remove --force`, and on a failed deletion restores or repairs the registration (never for a hollow checkout, never when a permission-recovery offer applies); (b) `rm --dry-run` lists blockers detectable without side effects (mounts, protected state, uncommitted changes) and entries that would be left behind; it runs git with `GIT_OPTIONAL_LOCKS=0` and changes nothing, but it does not predict an active lease, `ciu clean` refusals or `--root-escalation` outcomes; (c) `rm NAME` adopts a deregistered leftover under the stated safety rules. Permission loosening of the checkout now runs as the library's pre-removal callback, after every library refusal.
+
+**Acceptance criteria.** A checkout with a foreign-uid entry: `rm --force` fails leaving the registration; fixing ownership and re-running completes it; `rm --dry-run` lists the entry without changing anything.
+
+## CIU-183 — adopting a deregistered leftover does not release the dead instance's Docker/port/lease records
+
+**Status: OPEN (filed 2026-11-05, from the CIU-182 review). Severity: P3.** `rm NAME` adoption (CIU-182 c) marks `resource_cleanup` and `lease_release` as `skipped-leftover`: it assumes the first `rm` already cleaned resources (the registration is dropped last), but it cannot prove it, and `vol-*` removal could run under a still-running container. Design: before deleting, run the identity clean from the shared record's instance id (as the no-marker branch of `remove` does via `_clean_with_primary_identity`) and release the allocation/port records, refusing when containers still exist. Acceptance: a leftover whose instance still has containers is refused with `ciu clean --identity X`; a clean one is adopted and its records released.
+
+## CIU-175 — non-thin `ciu up --host` pushes `.ciu/` (host secrets), `ciu.env` and ignores the host's `bundle_excludes`
+
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** Found in the dstdns P8 review (finding 1), ciu 7.21.0. Severity: P1 (secret exposure). Every push (rsync, tar+scp, `--thin`) now excludes `.git`, `.ciu` (file/dir/symlink, any depth), `ciu.env` and `vol-*` unconditionally and applies `bundle_excludes` on top (`activate.bundle_excludes_for`, `cli._push_host`); SPEC S14.2/S14.6 and CHANGES updated. Review follow-up (F2/F4/F6): the tar fallback now has rsync's pattern semantics (equivalence test against real tar+rsync), `vol-*` joined the mandatory set, and a rendered `ciu.toml`/`ciu.compose.yml` is documented as pushed unless excluded (not verified whether Vault-resolved values reach them). Tests: `tests/tests/test_ciu_bundle_excludes.py` (incl. a real rsync run against temp dirs) and the `remote_dispatch` pair.
+
+**Observed.** `cli._push_host` called `ssh_sync` with no `excludes`; only `--thin` honoured `bundle_excludes`, so a full-stack push shipped the control host's `.ciu/` (e.g. the GHCR read token) and `ciu.env`, and per-host protections such as the instance file were ignored.
+
+**Acceptance criteria.** The generated rsync command never transfers `.ciu/` and leaves a pre-existing target instance file named in `bundle_excludes` neither overwritten nor deleted.
+
+## CIU-176 - a managed worktree of a standalone-root repo cannot start a stack: `ciu up --dir` renders the MAIN checkout's `ciu.global.defaults.toml.j2` and refuses on missing env
+
+**Status:** OPEN; severity: major (blocks per-worktree gate runners). Found adopting run-gate in netcup-api-filter (`netcup-api-filter@38f8731`, ciu 7.21.0, mdt cockpit, `DOCKER_HOST=unix:///run/docker-api/docker.sock`).
+
+**Repro.** naf is a standalone root (`standalone_root = true`). From main: `ciu worktree create rg --base feat-run-gate --branch rg-gate` succeeds (worktree `.worktrees/rg`, `ciu.env` generated). In that worktree: `eval "$(ciu env print)"` (REPO_ROOT, PHYSICAL_REPO_ROOT, DOCKER_NETWORK_INTERNAL, PUBLIC_FQDN all set), then `ciu up --dir tooling/test-runner --yes` (also with `--root-folder "$PWD"` and an absolute `--dir`). Steps 1-12 pass; step 13 "Rendering compose template" fails: `Missing required environment values in /workspaces/netcup-api-filter/ciu.global.defaults.toml.j2: DOCKER_NETWORK_INTERNAL, PHYSICAL_REPO_ROOT, PUBLIC_FQDN, REPO_ROOT`. The path named is the MAIN checkout's template, not the worktree's own copy, although every required variable is exported.
+
+**Related findings from the same session (fix or split).**
+1. `ciu worktree adopt rg <path>` of a checkout whose full `ciu env generate` fails ends `recovery-required`; `ciu worktree ensure rg` then re-runs the same step and fails identically (circular, no new diagnostic), and `ciu env generate` inside the checkout refuses with "managed worktree is 'recovery-required'". `ciu worktree rm` then needs `--discard-changes <branch>` (the generated `ciu.instance.generated.toml` counts as a change when the consumer does not gitignore it) and `--force` (`ciu clean` cannot render). Wanted: a recovery path that can make progress, and the generated file treated as non-dirt.
+2. The adopt-time failure text was `DOCKER_GID not found. Ensure docker group exists or set DOCKER_GID.` although the Docker socket named by `DOCKER_HOST` exists and `workspace_env._detect_docker_gid` would read its group; that message is not in the current source tree (installed wheel differs from the checkout?). The mdt cockpit has gid 994 but no `docker` group name.
+3. `ciu worktree create` tries to connect a hardcoded devcontainer name (`dstdns-devcontainer-vb`) to the new network and warns `No such container` in any other cockpit; the name must be derived (own container id / hostname), never fixed.
+4. A worktree has none of the main checkout's gitignored `.env.*` files, so `NAF_GUARD_USER` (required by the root template) is missing until the operator sources main's `.env.guard`; the refusal does not say where the value comes from.
+Acceptance: `ciu worktree create` + `ciu up --dir <stack>` works in a worktree of a standalone-root repo with only documented inputs, and a test pins the worktree-local template resolution.
+
+## CIU-190 - the `ciu` R2 mutation lane always ended NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE (no `resource_observer`)
+
+**Status: FIXED 2026-11-05 on branch ciu-r2-observer-20261105 (unreleased; config-only, no src change).** Found by the R2 board agent on r1002 (ciu 7.22.0). `[lanes.ciu]` in run-gate.toml lacked `resource_observer = "cgprofile"` while assay.toml sets `liveness = true`; adding the observer also requires `resources.pids`. Fix: both keys added (pattern of pwmcp/run-gate-project R2 lanes); the `ciu` (async R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) distinction is explicit in run-gate.toml, assay.toml and README; pinned by `test_run_gate_ciu_lane_declares_cgroup_observer_for_r2` in `tests/tests/test_ciu_documentation_contract.py`.
+
+**Acceptance criteria.** An R2 campaign on lane `ciu` reaches mutation judgment instead of NO_MEASUREMENT; `ciu-gate` is unchanged and declares no observer.

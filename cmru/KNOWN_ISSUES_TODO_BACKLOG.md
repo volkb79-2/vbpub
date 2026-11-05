@@ -2830,3 +2830,62 @@ Placement: `rigor/` joins the release-control files ignored by S12.2 change dete
 so cmru writes the record as a release asset bound to the tag and appends it as a commit to the promote push; later levels (R2, staging, promotion) are ordinary
 `chore(rigor):` commits made by the same verb. Oracle tests: schema validation, record/index regeneration idempotent, `check` fails on missing record, missing tag
 record, stale index, and a claimed level without verdict hash; `record` never commits evidence bytes. Docs: SPEC section, CONSUMERS reference, the cmru-cli skill.
+
+## KI-121 - Docker Hub request economy for `cmru versions resolve` (OCI): newest-first scan, 429 handling, resume
+
+**Status:** PARTIALLY FIXED 2026-11-05 (branch `cmru-hub-economy-20261105`); the remaining parts are KI-122..KI-124. Origin: dstdns P3 resolved 21 docker.io targets and
+exhausted Hub's budget (anonymous 100 manifest GETs per 3600 s per IP, authenticated 200) after about 4 targets: cmru fetched the index and every per-platform child
+manifest of every matching tag, and the first HTTP 429 aborted the whole resolve with nothing saved.
+
+**Design (decided).**
+1. Candidate filtering before manifest fetches: for a target with exactly one source, an OCI source and `mode = "single"`, `candidates()` receives the age cutoff;
+   matching tags (template, constraint) are sorted newest-first by SemVer key, grouped by equal key, and examined one group at a time until a group has a tag at or
+   older than the cutoff. Selection (`max` by version key over the eligible pool) is unchanged, so the result equals the full scan's. Aligned multi-source targets and
+   exact overrides keep the full scan (an aligned target needs the intersection; overrides fetch one version).
+2. HEAD: NOT implemented. Docker Hub's manifest responses carry no `Last-Modified`, so age comes from child manifests/config blobs that need GET; HEAD would only
+   save the digest. Verification attempt 2026-11-05: all HEADs from the controller IP returned 429 with `ratelimit-remaining: 0;w=3600` while the IP was exhausted
+   (a HEAD cannot be told apart from a GET in that state, so "HEAD is not counted" stays unverified here); `tags/list` returned 200 in the same state (consistent with
+   being unmetered); no `Retry-After` header was sent, only `ratelimit-limit`/`ratelimit-remaining` (with `;w=3600`) and `x-ratelimit-*`. See KI-124.
+3. 429: `RegistryRateLimitedError` (carries `retry_after`, `window`) from both request paths. `_OCIClient._authorized_request` retries up to 3 times when `Retry-After`
+   is at most 60 s; otherwise it is raised at once (sleeping a pull window inside a command looks like a hang). `versions` maps it to `VersionsRateLimitedError`, CLI exit
+   code **5** (`exit_codes.RATE_LIMITED`; 3 remains "registry unavailable"). `resolve` writes each finished target to a resume file
+   (`$XDG_CACHE_HOME/cmru/versions-resume-<sha256(config path)[:16]>.json`, outside the repository; keyed by owner + target id; fingerprint = declaration without its
+   `resolved` block + age window + owner; 24 h TTL; best-effort writes) and the rerun reuses valid entries; a completed non-dry-run resolve deletes the file; `check` never reads it.
+Tests: `tests/test_versions_rate_limit.py` (100% line+branch on the changed code). Docs: `docs/CONSUMERS.md` versions section.
+
+## KI-122 - `cmru versions resolve`: resolve a subset of targets (`--target ID`, repeatable) and an optional per-run request budget
+
+**Status:** OPEN; severity: enhancement. The verb takes only a project. Wanted: repeatable `--target ID`, and `--request-budget N` (stop cleanly with exit 5 and the resume file after N
+registry requests, printing progress per target) so a 21-target project can be spread across rate-limit windows deliberately instead of by hitting the 429.
+
+## KI-123 - OCI tag listing aborts at `MAX_REGISTRY_ITEMS` (5000) tags
+
+**Status:** OPEN; severity: minor. `otel/opentelemetry-collector-contrib` lists more than 5000 tags and the whole resolve aborts. Wanted: make the cap a per-source option
+(`max_tags`) or filter pages by the target's template as they arrive (counting only matching tags), keeping a documented hard ceiling. `tags/list` is not pull-metered on Hub, so paging is cheap.
+
+## KI-124 - OCI scan follow-ups: HEAD evidence, aligned targets, per-tag evidence cache
+
+**Status:** OPEN; severity: enhancement. (a) Re-verify when the IP budget is available whether HEAD manifests are uncounted (headers `ratelimit-remaining` before/after a burst of HEADs and of GETs
+against one tag) and, if so, use HEAD for digest/existence of rolling and override targets. (b) Aligned (multi-source) targets still examine every matching tag; stop early when
+the other sources' pools bound the candidates. (c) Cache per-tag age evidence (immutable once published) across runs, keyed by image + digest, so a rerun never refetches a settled tag.
+(d) Skip platform children when the index annotations already carry `org.opencontainers.image.created`.
+
+## KI-125 - a pre-release-only PyPI package aborts the whole resolve instead of skipping/allowing the target
+
+**Status:** OPEN; severity: minor. `opentelemetry-instrumentation-*` publish only `0.NNbN` pre-releases, which cmru excludes, so the target fails with "no age-eligible version"
+and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, or a documented skip that leaves the package unconstrained. Also check (dstdns P3 finding B) whether
+`versions init` ignores extras (`sqlalchemy[asyncio]` -> greenlet not guaranteed in constraints.txt) and (finding D) the ~865-line `[...resolved]` diff noise written into a hand-maintained `cmru.toml`.
+
+## KI-126 - `bundle.toml` cannot build a per-interpreter bundle, so every variant consumer hand-rolls its tarball builder
+
+**Status:** OPEN; severity: enhancement (adoption friction; found adopting cmru in netcup-api-filter, `netcup-api-filter@38f8731`). CHANGES checked: nothing in `[Unreleased]` or 7.x covers it.
+
+**Observed.** `bundle.toml` (`bundle.py`) copies files/dirs, optionally builds the project wheel, and writes one deterministic archive. FEAT-01 publishes N variant assets and `get.py --variant` installs one, but nothing builds them. The two variant consumers each wrote their own builder for the same four steps: netcup-api-filter `scripts/build_webhosting_tarball.py` (py311; before that py39/py311) and tls-edge `scripts/build-artifact.sh` (py313/py314). pwmcp uses `bundle.toml` but has no variants.
+
+**The shared shape (what a default should cover).**
+1. For each declared variant, run the build under that interpreter's ABI (the runner for the variant: a container, not the controller's Python).
+2. Vendor the dependency closure for that ABI: `pip download --only-binary=:all: --python-version V --platform ... -r <manifest>` into a declared dir, extracting or keeping wheels (installer `[[wheels]]` already consumes wheels).
+3. An optional project stage step between copy and archive (naf seeds a SQLite database while the ABI's C extensions import; tls-edge stages a ciu stack).
+4. Write the manifest (`bundle-manifest`), then the deterministic archive named `<prefix>-v<version>-<variant>.tar.xz`.
+
+**Wanted.** A `[[variants]]`-aware bundle build: `cmru handler bundle-build` (or `bundle.toml` keys) with `vendor_requirements = ["requirements-runtime.txt"]`, `platforms = [...]`, `stage = [argv]`, and a per-variant `exec_prefix` argv (for example `["docker","exec","-w","{root}","{container}"]`) so the step runs in the project's runner while cmru keeps the archive, manifest, naming and publish. Per-variant interpreter versions come from the existing `[[project.X.variants]] build_arg`. Acceptance: naf and tls-edge delete their builders, and a new project with one `bundle.toml` plus a requirements manifest releases a vendored per-interpreter tarball. Do not add secrets or host-specific limits to the config.

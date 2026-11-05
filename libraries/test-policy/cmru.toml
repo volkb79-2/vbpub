@@ -1,0 +1,45 @@
+# test-policy release contract -- parsed ONLY by cmru. Tags `test-policy-v*`; a wheel and its sha256 go to
+# GitHub Releases only, never PyPI. Standard library plus pytest (no first-party dependency).
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+TEST_POLICY_RELEASE_NOTES = "## estate-test-policy wheel\n\nThe `estate_test_policy` pytest plugin (fixed sleeps, sub-120 s timeouts, wall-time assertions, thread/fd/child leaks) and the `flakehunt` stress-repeat runner. See `libraries/test-policy/CHANGES.md` for the full entry.\n\n**Read before installing**\n- The wheel registers the plugin through the `pytest11` entry point with `--estate-policy=fail` as the default, so installing it into an image makes every test in that image subject to the policy. Roll it out per project with `-p no:estate_test_policy` or `--estate-policy=warn` until the project is clean (README, TP-10).\n- `flakehunt` container mode needs `--cgroup-parent` and `--pids-limit` from the host (no defaults); only the `slow-cpu` recipe has been validated against real docker so far (see README Limits).\n\n**Install (wheel)**\n```bash\npython -m pip install --no-index --find-links . estate_test_policy-*.whl\n```"
+
+[project]
+id = "test-policy"
+description = "estate-test-policy -- pytest policy plugin and flakehunt"
+template_revision = 4
+prefix = "test-policy-v"
+artifacts = ["wheel"]
+scm_dist = "estate-test-policy"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "test-policy: r0-r1 (unit + 100% branch coverage)", argv = ["run-gate", "r0-r1"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "test-policy: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "test-policy: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "test-policy", "--cwd", ".", "--notes-env", "TEST_POLICY_RELEASE_NOTES"], cwd = "." },
+]
