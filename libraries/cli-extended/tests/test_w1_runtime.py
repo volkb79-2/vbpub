@@ -584,7 +584,7 @@ def test_cx29_invalid_attributes_fall_back_to_the_plain_rendering():
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(0, 1), (-2, 1), (300, 1), (True, 1), (False, 1), (1, 1), (255, 255), (7, 7)],
+    [(0, 1), (-2, 1), (300, 1), (True, 1), (False, 1), (1, 1), (2, 2), (254, 254), (255, 255), (256, 1), (7, 7)],
 )
 def test_cx29_exit_codes_outside_1_to_255_fall_back_to_one(value, expected):
     class _Coded(Exception):

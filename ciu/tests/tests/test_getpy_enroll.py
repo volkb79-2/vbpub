@@ -680,7 +680,9 @@ class TestEnrollHostProbes:
 
 ENROLL_FIXTURE_IMAGE = "ciu-enroll-fixture:local"
 ENROLL_FIXTURE_DOCKERFILE = """\
-FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+# mirror.gcr.io serves the same digest-pinned content without Docker Hub's per-IP pull limit
+# (the enroll gate runs in an isolated DinD sidecar with no registry credentials).
+FROM mirror.gcr.io/library/debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 RUN apt-get update \\
  && apt-get install -y --no-install-recommends \\
         openssh-server python3 iproute2 hostname passwd \\

@@ -2379,7 +2379,15 @@ def _check_b162_process_tree_evidence(
         descendants = []
     descendant_pids: list[int] = []
     for descendant in descendants:
-        if not isinstance(descendant, dict) or set(descendant) != {"pid", "ppid", "comm"}:
+        if not isinstance(descendant, dict) or set(descendant) not in (
+            {"pid", "ppid", "comm"}, {"pid", "ppid", "comm", "cmdline"}
+        ) or (
+            "cmdline" in descendant
+            and (
+                not isinstance(descendant["cmdline"], list)
+                or any(not isinstance(item, str) for item in descendant["cmdline"])
+            )
+        ):
             failures.append(
                 f"native mutation.{bucket} entry has malformed descendant identity"
             )

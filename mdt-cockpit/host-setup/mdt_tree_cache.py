@@ -289,10 +289,20 @@ def merge_capacity_json(path: Path, plan: Plan) -> str:
 
 
 # ---------------------------------------------------------------------------------------------------- render
+# The units/*.in templates this module renders (install.sh's render() does NOT know their keys: it renders the rest).
+# One list, used by planned_units(), `templates` (test-render.sh) and the unit tests, so a template added here cannot be
+# rendered by one path and skipped by another.
+OWNED_TEMPLATES = ("dev-cache.slice.in", "mdt-tree-cache-gc.service.in", "mdt-tree-cache-gc.timer.in", "mdt-tree-area.mount.in")
+_TOKEN_RE = re.compile(r"@[A-Za-z_][A-Za-z0-9_]*@")
+
+
 def _render(template: Path, subs: dict[str, str]) -> str:
     text = template.read_text(encoding="utf-8")
     for k, v in subs.items():
         text = text.replace(f"@{k}@", v)
+    left = sorted(set(_TOKEN_RE.findall(text)))
+    if left:  # a key added to a template without being wired here must stop the install, never ship a literal token
+        raise TreeCacheError(f"{template.name}: unresolved placeholder(s) {' '.join(left)}")
     # same semantics as install.sh render(): a directive whose value is empty is dropped
     return "\n".join(line for line in text.split("\n") if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*=", line))
 
@@ -302,16 +312,16 @@ def planned_units(plan: Plan, units_dir: Path, values: dict[str, str]) -> dict[s
     if not plan.enabled:
         return {}
     out = {
-        SLICE: _render(units_dir / "dev-cache.slice.in", {"DEV_CACHE_MEMORY_LOW": plan.cache_low,
+        SLICE: _render(units_dir / OWNED_TEMPLATES[0], {"DEV_CACHE_MEMORY_LOW": plan.cache_low,
                                                            "DEV_CACHE_ZSWAP_WRITEBACK": plan.zswap_writeback}),
-        "mdt-tree-cache-gc.service": _render(units_dir / "mdt-tree-cache-gc.service.in", {"TREE_CACHE_ROOT": plan.cache_root}),
-        "mdt-tree-cache-gc.timer": _render(units_dir / "mdt-tree-cache-gc.timer.in", {"MDT_TREE_CACHE_GC_INTERVAL": plan.gc_interval}),
+        "mdt-tree-cache-gc.service": _render(units_dir / OWNED_TEMPLATES[1], {"TREE_CACHE_ROOT": plan.cache_root}),
+        "mdt-tree-cache-gc.timer": _render(units_dir / OWNED_TEMPLATES[2], {"MDT_TREE_CACHE_GC_INTERVAL": plan.gc_interval}),
     }
     areas = [("cache", plan.cache_root, plan.cache_size, plan.cache_inodes)]
     if plan.upper_root:
         areas.append(("upper", plan.upper_root, plan.upper_size, plan.upper_inodes))
     for kind, root, size, inodes in areas:
-        out[mount_unit_name(root)] = _render(units_dir / "mdt-tree-area.mount.in", {
+        out[mount_unit_name(root)] = _render(units_dir / OWNED_TEMPLATES[3], {
             "TREE_KIND": kind, "TREE_WHERE": root, "TREE_SIZE": str(size), "TREE_INODES": str(inodes), "TREE_GID": str(plan.gid)})
     return out
 
@@ -745,7 +755,7 @@ def _load(args: argparse.Namespace) -> tuple[dict[str, str], Plan]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("cmd", choices=["plan", "render", "activate", "gc", "check"])
+    p.add_argument("cmd", choices=["plan", "render", "activate", "gc", "check", "templates"])
     p.add_argument("--config", type=Path, default=Path("/etc/mdt/host-setup.env"))
     p.add_argument("--meminfo", type=Path, default=Path("/proc/meminfo"))
     p.add_argument("--role", default=None, help="override HOST_ROLE (the installer passes its own detection)")
@@ -758,6 +768,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--proc", type=Path, default=Path("/proc"))
     p.add_argument("--dry-run", action="store_true")
     args = p.parse_args(argv)
+    if args.cmd == "templates":  # needs no config: the template names this module renders, one per line
+        print("\n".join(OWNED_TEMPLATES))
+        return 0
     values, plan = _load(args)
     if args.cmd == "plan":
         print(f"TREE_CACHE_ENABLED={1 if plan.enabled else 0}")

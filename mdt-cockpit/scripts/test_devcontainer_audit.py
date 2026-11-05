@@ -169,3 +169,49 @@ def test_the_template_readme_points_at_the_docker_hub_login_and_the_host_inspect
     assert "mdt-cgroup-io-limits.sh" in readme
     consumers = " ".join((ROOT / "docs" / "CONSUMERS.md").read_text().split())
     assert "host-escape -- /usr/local/sbin/mdt-cgroup-io-limits.sh" in consumers
+
+
+def _run_args_of(path: Path) -> list:
+    return bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))["runArgs"]
+
+
+def test_topos_socket_directory_is_a_runargs_bind_never_a_mount_and_matches_the_tmpfiles_rule() -> None:
+    """`mounts` is Docker --mount (refuses a missing source); `-v` auto-creates it, so a host
+    whose host-setup predates mdt-topos.conf still starts. The initializer's BIND_RE parses only
+    `source=...,target=...,type=bind`, so it must not see /run/topos either."""
+    rule = (HS / "units" / "mdt-topos.conf").read_text()
+    directory, mode, owner, group = re.search(r"(?m)^d (/\S+) (\d+) (\S+) (\S+) -$", rule).groups()
+    assert (directory, mode, owner, group) == ("/run/topos", "0750", "root", "docker")
+    assert "/run/topos" not in _mounts()
+    assert f"{directory}:{directory}:ro" in TEMPLATE["runArgs"]
+    assert TEMPLATE["runArgs"][TEMPLATE["runArgs"].index(f"{directory}:{directory}:ro") - 1] == "-v"
+    assert "--group-add" in TEMPLATE["runArgs"]
+    assert "REFUSES" in TEMPLATE_TEXT and "auto-creates a missing source" in " ".join(TEMPLATE_TEXT.split())
+
+
+def test_topos_runarg_is_identical_in_all_three_devcontainer_files() -> None:
+    files = [
+        ROOT / "templates" / "devcontainer.json",
+        ROOT / "templates" / "host-folder" / "devcontainer.json",
+        ROOT.parent / ".devcontainer" / "devcontainer.json",
+    ]
+    for path in files:
+        args = _run_args_of(path)
+        assert args[args.index("/run/topos:/run/topos:ro") - 1] == "-v", path
+        assert "source=/run/topos" not in path.read_text(encoding="utf-8"), path
+
+
+def test_install_applies_the_topos_tmpfiles_rule_and_check_covers_it() -> None:
+    install = "\n".join(
+        line for line in (HS / "install.sh").read_text().splitlines() if not line.lstrip().startswith("#")
+    )
+    assert 'install -m 0644 "$HERE/units/mdt-topos.conf" /etc/tmpfiles.d/mdt-topos.conf' in install
+    assert "systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf" in install
+    # Only a drop-in for a service installed elsewhere: host-setup never starts topos.
+    assert 'install -m 0644 "$HERE/units/mdt-topos-service.conf"' in install
+    assert "/etc/systemd/system/topos.service.d/50-mdt-socket-group.conf" in install
+    assert "enable --now topos" not in install and "start topos" not in install
+    dropin = (HS / "units" / "mdt-topos-service.conf").read_text()
+    assert "Group=docker" in dropin and "RuntimeDirectoryPreserve=yes" in dropin
+    check = (HS / "scripts" / "check.sh").read_text()
+    assert 'TOPOS_DIR=/run/topos' in check and '"$tp_mode" = "750"' in check and 'root:docker' in check

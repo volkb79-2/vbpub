@@ -3262,6 +3262,50 @@ class TestExecMode:
         assert run_gate.container_mode_alternatives(
             tables, {}, exclude="d") == ["a"]
         assert run_gate.container_mode_hint([]) == ""
+        hint = run_gate.container_mode_hint(["tester", "other"])
+        assert "container-mode environment" in hint
+        assert "'tester', 'other'" in hint
+
+    def test_finish_echoes_sanitised_last_output_for_exit_map_errors(
+            self, tmp_path, capsys):
+        """In-process cover of the verdict-line `last_output` field (RG-165b)."""
+        log = tmp_path / "lane.log"
+        log.write_bytes(b"setup ok\n\x1b[31mboom\x1b[0m verdict PASS; "
+                        b"exit_code 0 password=hunter2\n")
+        result = run_gate.LaneResult(
+            "ERROR", 7, "command-exit-map", str(log), _lane_name="suite")
+        assert run_gate.finish(result) == 2
+        line = capsys.readouterr().out.strip().splitlines()[-1]
+        assert re.findall(r"verdict (\w+); exit_code (\d+)", line) == [
+            ("ERROR", "7")]
+        assert 'last_output "boom verdict PASS, exit_code 0 ' in line
+        assert "hunter2" not in line and "\x1b" not in line
+        # No log text, no field; other reasons never read the log.
+        empty = tmp_path / "empty.log"
+        empty.write_bytes(b"")
+        run_gate.finish(run_gate.LaneResult(
+            "ERROR", 7, "command-exit-map", str(empty), _lane_name="suite"))
+        assert "last_output" not in capsys.readouterr().out
+
+    def test_assay_probe_dry_run_notes_runtime_cow_decision(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "build_env_probe_argv",
+                            lambda *_a, **_k: ["docker", "exec", "r", "true"])
+        lane = {"kind": "assay", "environment": "runner"}
+        env = {"mode": "exec", "image": "runner"}
+        args = (None, lane, env, "runner", "[environments.runner]",
+                tmp_path, tmp_path, tmp_path, "slice")
+        run_gate.assure_assay_state_root(
+            *args, resolved_container_name="r1", dry_run=True,
+            resource_settings={"cowtree": {"mode": "auto"}})
+        assert "decided at run time after `docker inspect`" in \
+            capsys.readouterr().out
+        run_gate.assure_assay_state_root(
+            *args, resolved_container_name="r1", dry_run=True,
+            resource_settings={"cowtree": {"mode": "off"}})
+        out = capsys.readouterr().out
+        assert "assay state root preflight" in out
+        assert "decided at run time" not in out
 
     def test_last_log_line_returns_last_nonempty_line(self, tmp_path):
         log = tmp_path / "x.log"
@@ -16303,6 +16347,78 @@ class TestListJsonDerivedRigor:
                                           Path("run-gate.toml"), None)
         assert facts["cov"]["rigor"] is None
         assert "docker not on PATH" in facts["cov"]["rigor_reason"]
+
+    @staticmethod
+    def _stub_probe(monkeypatch, env, docker):
+        """lane_rigor_facts with the environment and docker presence fixed."""
+        asked = []
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda _n: docker)
+        monkeypatch.setattr(run_gate, "resolve_environment",
+                            lambda *_a: (env, "cfg"))
+        monkeypatch.setattr(run_gate, "resolve_worktree_scope",
+                            lambda *_a: (Path("."), Path("."), Path("."), None))
+        monkeypatch.setattr(
+            run_gate, "assay_inventory",
+            lambda *a, **_k: (asked.append(a[0]) or
+                              {"lanes": [{"name": "cov", "rigor": ["R1"],
+                                          "rigor_reachable": ["R1", "R2"]}]},
+                              None))
+        lanes = {"cov": {"kind": "assay", "environment": "runner",
+                         "assay_lane": "cov"}}
+        facts = run_gate.lane_rigor_facts(lanes, Path("."), {}, {},
+                                          Path("run-gate.toml"), None)
+        return facts["cov"], asked
+
+    def test_a_host_environment_is_asked_even_without_docker(
+            self, monkeypatch):
+        # A host-mode environment resolves to {} and never needs docker:
+        # missing docker must not mark it unavailable (`env and not docker`).
+        fact, asked = self._stub_probe(monkeypatch, {}, None)
+        assert asked == [None]
+        assert fact["rigor"] == ["R1"]
+        assert fact["rigor_basis"] == "assay-declared"
+
+    def test_a_container_environment_is_asked_when_docker_is_present(
+            self, monkeypatch):
+        fact, asked = self._stub_probe(monkeypatch, {"mode": "ephemeral"},
+                                       "/usr/bin/docker")
+        assert asked == ["/usr/bin/docker"]
+        assert fact["rigor"] == ["R1"]
+        assert fact["rigor_reachable"] == ["R1", "R2"]
+        assert fact["rigor_reason"] is None
+
+    def test_list_json_is_key_sorted_and_flushed(self, monkeypatch):
+        lanes = {"b": {"kind": "command", "environment": "x"},
+                 "a": {"kind": "sequence", "lanes": ["b"]}}
+        monkeypatch.setattr(run_gate, "sequence_environment_names",
+                            lambda *_a: ["x"])
+        flushes = []
+
+        class Out:
+            def __init__(self):
+                self.text = []
+
+            def write(self, s):
+                self.text.append(s)
+                return len(s)
+
+            def flush(self):
+                flushes.append(len(self.text))
+
+        out = Out()
+        monkeypatch.setattr(sys, "stdout", out)
+        assert run_gate.cmd_list_json(lanes, Path("."), {}, {},
+                                      Path("run-gate.toml"), None) == 0
+        text = "".join(out.text)
+        doc = json.loads(text)
+        # sort_keys=True: top-level keys and every row's keys are ordered.
+        assert text.index('"lanes"') < text.index('"schema"')
+        assert list(doc) == sorted(doc)
+        for row in doc["lanes"]:
+            assert list(row) == sorted(row)
+        # flush=True: the listing is flushed once it is fully written.
+        assert flushes and flushes[-1] == len(out.text)
 
     def test_a_worktree_that_cannot_be_resolved_is_unavailable(
             self, tmp_path, monkeypatch, capsys):

@@ -16,6 +16,7 @@ from __future__ import annotations
 import ctypes
 import math
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -43,6 +44,21 @@ _PR_GET_CHILD_SUBREAPER = 37
 _CLEANUP_SECONDS = 10.0
 _OUTPUT_TAIL_BYTES = 64 * 1024
 _MAX_RECORDED_DESCENDANTS = 10_000
+# Diagnostic command line recorded for an outliving descendant (B233): bounded
+# so a hostile or enormous argv cannot bloat the verdict.
+_MAX_CMDLINE_ARGS = 16
+_MAX_CMDLINE_ARG_CHARS = 200
+_SECRET_WORDS = r"(?:token|secret|passw(?:or)?d|passwd|api[-_]?key|credential|authorization)"
+_SECRET_NAME = re.compile(r"(?i)" + _SECRET_WORDS)
+# NAME=value / NAME: value / --flag=value for a secret-like NAME anywhere in an item.
+_SECRET_ASSIGN = re.compile(r"(?i)([\w.-]*" + _SECRET_WORDS + r"[\w.-]*\s*[=:]\s*)\S.*")
+_BEARER = re.compile(r"(?i)\b(bearer|basic)\s+\S+")
+_URL_USERINFO = re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s@]+@")
+# Flags whose NEXT argument is a credential or a free-form carrier of one.
+_VALUE_FLAGS = frozenset({"-H", "--header", "-u", "--user", "-p", "--proxy-user", "--env"})
+_SHELL_STRING_FLAGS = frozenset({"-c", "-e", "-E"})
+_SHELL_PREFIX_CHARS = 24
+_REDACTED = "<redacted>"
 _WINDOW_LOCK = threading.RLock()
 _UNPROVEN_CLEANUP = False
 _WINDOW_HOST_CANDIDATE_FD = "ASSAY_WINDOW_HOST_CANDIDATE_FD"
@@ -109,10 +125,21 @@ class ProcessTreeDescendant:
     pid: int
     ppid: int | None
     comm: str | None
+    cmdline: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if type(self.pid) is not int or self.pid < 1:
             raise ValueError("process-tree descendant pid must be a positive integer")
+        if self.cmdline is not None and (
+            not isinstance(self.cmdline, tuple)
+            or len(self.cmdline) > _MAX_CMDLINE_ARGS + 1
+            or any(not isinstance(item, str) for item in self.cmdline)
+            or self.comm is None
+        ):
+            raise ValueError(
+                "process-tree descendant cmdline must be a bounded tuple of "
+                "strings on a complete identity"
+            )
         if (self.ppid is None) != (self.comm is None):
             raise ValueError("process-tree descendant identity must be complete or omitted")
         if self.ppid is not None and (type(self.ppid) is not int or self.ppid < 1):
@@ -122,12 +149,35 @@ class ProcessTreeDescendant:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "ProcessTreeDescendant":
-        if set(value) != {"pid", "ppid", "comm"}:
+        if set(value) not in ({"pid", "ppid", "comm"}, {"pid", "ppid", "comm", "cmdline"}):
             raise ValueError("process-tree descendant has an invalid field set")
-        return cls(pid=value["pid"], ppid=value["ppid"], comm=value["comm"])  # type: ignore[arg-type]
+        raw = value.get("cmdline")
+        if raw is not None and (
+            not isinstance(raw, (list, tuple))
+            or any(not isinstance(item, str) for item in raw)
+        ):
+            raise ValueError("process-tree descendant cmdline must be a list of strings")
+        return cls(
+            pid=value["pid"],  # type: ignore[arg-type]
+            ppid=value["ppid"],  # type: ignore[arg-type]
+            comm=value["comm"],  # type: ignore[arg-type]
+            cmdline=None if raw is None else tuple(raw),
+        )
 
     def to_dict(self) -> dict[str, object]:
-        return {"pid": self.pid, "ppid": self.ppid, "comm": self.comm}
+        out: dict[str, object] = {"pid": self.pid, "ppid": self.ppid, "comm": self.comm}
+        if self.cmdline is not None:
+            out["cmdline"] = list(self.cmdline)
+        return out
+
+    def describe(self) -> str:
+        """One-line rendering for verdict detail and progress diagnostics."""
+        if self.ppid is None:
+            return f"pid={self.pid} (identity unavailable)"
+        text = f"pid={self.pid} ppid={self.ppid} comm={self.comm}"
+        if self.cmdline:
+            text += " argv=" + " ".join(self.cmdline)
+        return text
 
 
 @record
@@ -252,9 +302,69 @@ def _process_identity(pid: int) -> ProcessTreeDescendant:
             pid=pid,
             ppid=int(fields[1]),
             comm=raw[opening + 1 : closing],
+            cmdline=_read_cmdline(pid),
         )
     except (IndexError, ValueError):
         return ProcessTreeDescendant(pid=pid, ppid=None, comm=None)
+
+
+def _redact_item(text: str) -> str:
+    text = _URL_USERINFO.sub(lambda m: m.group(1) + _REDACTED + "@", text)
+    text = _BEARER.sub(lambda m: m.group(1) + " " + _REDACTED, text)
+    text = _SECRET_ASSIGN.sub(lambda m: m.group(1) + _REDACTED, text)
+    if re.match(r"-p.", text) and not text.startswith("--"):
+        text = "-p" + _REDACTED  # `mysql -pSECRET`
+    return text
+
+
+def sanitize_cmdline(raw: bytes) -> tuple[str, ...] | None:
+    """Bound and redact a raw ``/proc/<pid>/cmdline`` for the verdict.
+
+    Best effort, not a guarantee. Redacted: the value of ``NAME=value`` /
+    ``NAME: value`` for a secret-like name anywhere in an argument, ``Bearer``
+    and ``Basic`` tokens, URL userinfo, ``-pSECRET``, and the argument after
+    ``-H/--header/-u/--user/-p/-e/--env`` or after any flag whose own name looks
+    secret. A free-form string after ``-c``/``-e``/``-E`` (``sh -c "..."``)
+    keeps only a short redacted prefix. Each argument and the argument count
+    are truncated. ``None`` when empty (kernel threads, zombies).
+    """
+    if not raw:
+        return None
+    parts = raw.rstrip(b"\0").split(b"\0")
+    out: list[str] = []
+    redact_next = False
+    shell_next = False
+    for part in parts[:_MAX_CMDLINE_ARGS]:
+        text = part.decode("utf-8", "backslashreplace")
+        if redact_next:
+            text = _REDACTED
+            redact_next = False
+            shell_next = False
+        elif shell_next:
+            prefix = _redact_item(text[:_SHELL_PREFIX_CHARS])
+            text = prefix + ("...<redacted shell string>" if len(text) > _SHELL_PREFIX_CHARS else "")
+            shell_next = False
+        else:
+            text = _redact_item(text)
+            if text in _VALUE_FLAGS or (text.startswith("-") and _SECRET_NAME.search(text) and "=" not in text):
+                redact_next = True
+            elif text in _SHELL_STRING_FLAGS:
+                shell_next = True
+        if len(text) > _MAX_CMDLINE_ARG_CHARS:
+            text = text[:_MAX_CMDLINE_ARG_CHARS] + "..."
+        out.append(text)
+    if len(parts) > _MAX_CMDLINE_ARGS:
+        out.append("...")
+    return tuple(out)
+
+
+def _read_cmdline(pid: int) -> tuple[str, ...] | None:
+    """Best-effort diagnostic argv; never raises (the process may be gone)."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            return sanitize_cmdline(handle.read(8192))
+    except OSError:
+        return None
 
 
 def _subreaper_state() -> bool:

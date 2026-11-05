@@ -23,7 +23,12 @@ from typing import Any, BinaryIO, Mapping, Sequence
 from . import observer_windows
 from . import runner as _runner
 from .errors import AssayError, Outcome, ReasonCode
-from .process_tree import ProcessTreeDescendant, ProcessTreeError, ProcessTreeEvidence
+from .process_tree import (
+    ProcessTreeDescendant,
+    ProcessTreeError,
+    ProcessTreeEvidence,
+    _read_cmdline,
+)
 
 __all__ = ["can_host", "run_window"]
 
@@ -534,7 +539,10 @@ def _process_group_members(
             opening = raw.find("(")
             comm = raw[opening + 1 : close] if opening >= 0 else ""
             identity = (
-                ProcessTreeDescendant(pid=pid, ppid=ppid, comm=comm)
+                ProcessTreeDescendant(
+                    pid=pid, ppid=ppid, comm=comm,
+                    cmdline=_read_cmdline(pid),
+                )
                 if ppid is not None and comm
                 else ProcessTreeDescendant(pid=pid, ppid=None, comm=None)
             )

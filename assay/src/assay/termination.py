@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import enum
 import signal
-from typing import Literal
+from typing import Literal, Sequence
 
 from .errors import Outcome, ReasonCode
 from .process_tree import ProcessTreeEvidence
@@ -120,6 +120,7 @@ def detail(
     limits: ResourceLimitEvidence | None = None,
     observation_reasons: tuple[str, ...] = (),
     returncode: int | None = None,
+    leaked_descendants: Sequence[str] = (),
 ) -> str | None:
     """Render deterministic refusal detail for infrastructure terminations."""
     if termination is Termination.KILLED_EXTERNALLY:
@@ -129,6 +130,8 @@ def detail(
     if termination is Termination.SELF_SIGNALED:
         return None
     if termination is Termination.LEAKED:
+        if leaked_descendants:
+            return "leaked-process-tree: " + "; ".join(leaked_descendants)
         return "leaked-process-tree"
     if termination is Termination.LIMIT_EVENT:
         events = () if limits is None else tuple(

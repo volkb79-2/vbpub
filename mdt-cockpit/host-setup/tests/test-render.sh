@@ -132,9 +132,18 @@ type render >/dev/null 2>&1 || fail "render() was not defined after sourcing the
 pass "render()/RENDER_VARS extracted from install.sh and guarded (anchors + host-mutation scan)"
 
 # --- render every units/*.in template ----------------------------------------
+# Templates owned by mdt_tree_cache.py (dev-cache.slice, tree mounts, GC units): install.sh's render()
+# does not know their keys; the live install renders them with mdt_tree_cache.py, so this test does too
+# (the same code path, below) instead of pushing them through the bash renderer.
+OWNED_TEMPLATES="$("$MDT_TEST_PYTHON" "$HERE/mdt_tree_cache.py" templates)" \
+  || fail "mdt_tree_cache.py templates failed"
+[ -n "$OWNED_TEMPLATES" ] || fail "mdt_tree_cache.py reports no owned templates"
 rendered_any=0
 for tmpl in "$HERE"/units/*.in; do
   [ -e "$tmpl" ] || continue
+  if printf '%s\n' "$OWNED_TEMPLATES" | grep -qxF "$(basename "$tmpl")"; then
+    continue
+  fi
   rendered_any=1
   dst="$TMP/$(basename "${tmpl%.in}")"
   render "$tmpl" "$dst"
@@ -145,6 +154,30 @@ for tmpl in "$HERE"/units/*.in; do
 done
 [ "$rendered_any" = 1 ] || fail "no units/*.in templates found under $HERE/units"
 pass "every rendered unit is free of unresolved @VAR@ placeholders"
+
+# The tree-cache-owned templates, rendered by the exact code the installer runs
+# (mdt_tree_cache.py render), from the shipped example, as dedicated-dev. No host
+# mutation: scratch systemd dir and capacity json under $TMP.
+TC_SYSD="$TMP/tree-cache-systemd"; mkdir -p "$TC_SYSD"
+"$MDT_TEST_PYTHON" "$HERE/mdt_tree_cache.py" render --config "$EXAMPLE" --role dedicated-dev --gid 1 \
+  --units-dir "$HERE/units" --systemd-dir "$TC_SYSD" --capacity-json "$TMP/tree-cache-capacity.json" >/dev/null \
+  || fail "mdt_tree_cache.py render failed on the shipped example"
+for tmpl in $OWNED_TEMPLATES; do
+  case "$tmpl" in
+    mdt-tree-area.mount.in) ;;  # one unit per tree root, name derived from the path
+    *) [ -f "$TC_SYSD/${tmpl%.in}" ] || fail "mdt_tree_cache.py did not render ${tmpl%.in}" ;;
+  esac
+done
+[ -n "$(ls "$TC_SYSD")" ] || fail "mdt_tree_cache.py rendered nothing"
+if grep -HE '@[A-Za-z_][A-Za-z0-9_]*@' "$TC_SYSD"/*; then
+  fail "a tree-cache unit rendered with an unresolved placeholder (see above)"
+fi
+grep -qxF 'MemoryZSwapWriteback=yes' "$TC_SYSD/dev-cache.slice" \
+  || fail "dev-cache.slice did not render DEV_CACHE_ZSWAP_WRITEBACK=yes"
+# DEV_CACHE_MEMORY_LOW ships empty: no MemoryLow line at all (not an empty or literal one)
+! grep -q '^MemoryLow=' "$TC_SYSD/dev-cache.slice" \
+  || fail "dev-cache.slice renders MemoryLow= although DEV_CACHE_MEMORY_LOW ships empty"
+pass "tree-cache-owned units render via mdt_tree_cache.py from the shipped example, no unresolved placeholders"
 
 # The managed daemon's TOML is rendered by the same install.sh helper but is
 # deliberately not a systemd unit. Exercise it explicitly so the new
@@ -302,6 +335,8 @@ pass "no units/*.in template mentions the withdrawn dev-infra.slice"
 # --- (5) install.sh actually renders + (for *.slice) starts each template --
 # (round-1 review B6: rendering a template correctly here does not prove
 # install.sh's own render()/systemctl start calls include it.)
+INSTALL_NONCOMMENTS_EARLY="$TMP/install-noncomments-early.sh"
+grep -v '^\s*#' "$INSTALL_SH" > "$INSTALL_NONCOMMENTS_EARLY"
 JOINED_INSTALL="$(sed ':a;N;$!ba;s/\\\n/ /g' "$INSTALL_SH")"   # collapse `\`-continued
                                                                 # lines to one logical
                                                                 # line each, so a name on
@@ -310,6 +345,14 @@ JOINED_INSTALL="$(sed ':a;N;$!ba;s/\\\n/ /g' "$INSTALL_SH")"   # collapse `\`-co
                                                                 # is still found
 for tmpl in "$HERE"/units/*.in; do
   base="$(basename "${tmpl%.in}")"
+  if printf '%s\n' "$OWNED_TEMPLATES" | grep -qxF "$(basename "$tmpl")"; then
+    # rendered and started by mdt_tree_cache.py (render, then activate after daemon-reload)
+    grep -qE 'python3 "\$HERE/mdt_tree_cache\.py" render .*--units-dir "\$HERE/units"' "$INSTALL_NONCOMMENTS_EARLY" \
+      || fail "install.sh never runs mdt_tree_cache.py render for $base"
+    grep -qE 'python3 "\$HERE/mdt_tree_cache\.py" activate' "$INSTALL_NONCOMMENTS_EARLY" \
+      || fail "install.sh never runs mdt_tree_cache.py activate for $base"
+    continue
+  fi
   grep -qF "units/$(basename "$tmpl")" "$INSTALL_SH" \
     || fail "install.sh never renders units/$(basename "$tmpl")"
   case "$base" in
@@ -327,7 +370,17 @@ pass "install.sh renders every units/*.in, and starts every *.slice"
 DERIVED_RENDER_VARS="IO_SD_DEV"
 grep -qE 'IO_SD_DEV=\$\(_mdt_io_systemd_dev ' "$INSTALL_SH" \
   || fail "install.sh no longer derives IO_SD_DEV with _mdt_io_systemd_dev, so the derived-variable exemption in check (6) is invalid"
-for v in $(grep -ohE '@[A-Z_][A-Z0-9_]*@' "$HERE"/units/*.in | tr -d '@' | sort -u); do
+# The tree-cache-owned templates use python-derived tokens (TREE_*, resolved from the plan) next to a few
+# env keys; mdt_tree_cache.py _render() refuses any token it was not given, and the render above proved
+# the example drives all of them. Here: the env keys it consumes must be in the example too.
+for v in DEV_CACHE_MEMORY_LOW DEV_CACHE_ZSWAP_WRITEBACK MDT_TREE_CACHE_GC_INTERVAL; do
+  grep -qE "^#? ?${v}=" "$EXAMPLE" || fail "${v}= is not documented in host-setup.env.example"
+done
+NONOWNED_TEMPLATES=()
+for tmpl in "$HERE"/units/*.in; do
+  printf '%s\n' "$OWNED_TEMPLATES" | grep -qxF "$(basename "$tmpl")" || NONOWNED_TEMPLATES+=("$tmpl")
+done
+for v in $(grep -ohE '@[A-Z_][A-Z0-9_]*@' "${NONOWNED_TEMPLATES[@]}" | tr -d '@' | sort -u); do
   case " $DERIVED_RENDER_VARS " in *" $v "*) continue ;; esac
   grep -qE "^${v}=" "$EXAMPLE" || fail "@$v@ has no ${v}= line in host-setup.env.example -- an upgraded host would render it silently dropped/unbounded (B3's failure mode)"
 done

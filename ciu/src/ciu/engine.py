@@ -2642,7 +2642,9 @@ def _gitignore_text_ignores(stack_dir: Path, bundle_root: Optional[Path] = None)
     stack = stack_dir.resolve()
     root = bundle_root.resolve() if bundle_root is not None else stack
     chain = [stack]
-    if root != stack and root in stack.parents:
+    # CIU-195: ``root in stack.parents`` already implies ``root != stack`` (a path is never
+    # its own parent), so the former extra ``root != stack`` conjunct was dead (R2 survivor).
+    if root in stack.parents:
         chain = [stack, *(p for p in stack.parents if root in (p, *p.parents))]
     ignored = False
     for directory in reversed(chain):

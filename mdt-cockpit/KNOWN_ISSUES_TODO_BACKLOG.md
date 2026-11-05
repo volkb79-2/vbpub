@@ -1421,3 +1421,8 @@ with no score, not a parse of the challenge HTML.
 5. `DEV_CACHE_MEMORY_LOW` default is empty: size it from the first measured populate (M-6 / AD2-6).
 6. The upper area (`/srv/tree-upper`, 10 % of RAM) is one shared tmpfs with no per-lane limit: one lane filling it gives ENOSPC to the others. run-gate (AD2-5) must classify ENOSPC in an upper as infrastructure/inconclusive, never a product failure.
 7. On a host without swap the two tmpfs areas (up to 35 % of RAM by default, at most 50 %) are unevictable.
+
+## MDT-075 - test-render.sh stopped on unresolved `@DEV_CACHE_*@` in dev-cache.slice.in (2026-11-05)
+
+**Status:** DONE on branch `mdt-render-dev-cache-20261105`. Root cause: the AD2-2 templates (`dev-cache.slice.in`, tree mounts, GC units) are rendered live by `mdt_tree_cache.py`, but `tests/test-render.sh` pushed every `units/*.in` through install.sh's bash `render()`, whose `RENDER_VARS` does not (and must not) carry their keys. Fix: `mdt_tree_cache.OWNED_TEMPLATES` is the single list; `test-render.sh` skips those in the bash loop and renders them with `mdt_tree_cache.py render` (the installer's own code path) from the shipped example, failing on any `@X@`; `_render()` now raises on a token it was not given, so the live install also refuses to ship one. `tests/test_tree_cache.py::TemplateWiringTests` asserts every template is wired to exactly one renderer. No behaviour change on a host (empty `DEV_CACHE_MEMORY_LOW` still drops the `MemoryLow=` line, `DEV_CACHE_ZSWAP_WRITEBACK` defaults to yes).
+**Open.** None. Hosts need no re-run for this fix (test-only plus an install-time guard).

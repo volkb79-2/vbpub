@@ -1122,6 +1122,17 @@ def test_b162_refusals(bucket, entry, message):
         ("hung", {"process_tree_evidence": _tree(leader_status="timeout-killed")}),
         ("budget_exceeded", {"process_tree_evidence": _tree(leader_status="not-started")}),
         ("crashed", {"process_tree_evidence": _tree(leader_status="signaled", outliving_descendants=2, descendants_signalled=2)}),
+        (
+            "crashed",
+            {
+                "process_tree_evidence": _tree(
+                    leader_status="signaled",
+                    outliving_descendants=1,
+                    descendants_signalled=1,
+                    descendants=[{"pid": 5, "ppid": 1, "comm": "c", "cmdline": ["sleep", "5"]}],
+                )
+            },
+        ),
     ],
 )
 def test_b162_accepts_clean_or_classified_trees(bucket, entry):
@@ -1137,6 +1148,14 @@ def test_b162_accepts_clean_or_classified_trees(bucket, entry):
         (_tree(descendants=[{"pid": 1, "ppid": None, "comm": "child"}]), "incomplete descendant identity"),
         (_tree(descendants=[{"pid": 1, "ppid": 0, "comm": "child"}]), "invalid descendant ppid"),
         (_tree(descendants=[{"pid": 1, "ppid": 1, "comm": ""}]), "invalid descendant comm"),
+        (
+            _tree(descendants=[{"pid": 1, "ppid": 1, "comm": "c", "cmdline": "sleep"}]),
+            "malformed descendant identity",
+        ),
+        (
+            _tree(descendants=[{"pid": 1, "ppid": 1, "comm": "c", "cmdline": ["a", 2]}]),
+            "malformed descendant identity",
+        ),
         (
             _tree(
                 outliving_descendants=2,

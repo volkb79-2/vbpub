@@ -839,6 +839,16 @@ def test_known_stack_projects_scans_stack_dirs_only(tmp_path):
     assert deploy._known_stack_projects(tmp_path, {"deploy": {}}) == []
 
 
+@pytest.mark.parametrize("missing", ["project_name", "environment_tag"])
+def test_known_stack_projects_needs_both_tags_each_one_alone_is_refused(tmp_path, missing):
+    # CIU-195: with `or`->`and` in the guard, ONE absent tag would still enumerate names
+    # (`proj-env-a` built from a half-empty identity); either tag alone must refuse.
+    _stack(tmp_path, "apps/a")
+    config = _config()
+    config["deploy"].pop(missing)
+    assert deploy._known_stack_projects(tmp_path, config) == []
+
+
 def test_tagged_project_network_listing_daemon_failure_is_an_error(monkeypatch, tmp_path):
     _stack(tmp_path, "apps/a")
     monkeypatch.setattr(deploy.procutil, "docker", lambda *a, **k: _proc(1, "", "daemon down"))

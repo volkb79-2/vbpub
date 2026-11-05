@@ -688,5 +688,66 @@ class WiringTests(TmpCase):
             self.assertTrue(tc.OWN_MARK_SLICE in head or tc.OWN_MARK_MOUNT in head, name)
 
 
+class TemplateWiringTests(TmpCase):
+    """Every units/*.in is resolvable by exactly one renderer from the shipped example: a template key that is
+    wired into neither install.sh's RENDER_VARS nor mdt_tree_cache.py cannot be added silently."""
+    UNITS = ROOT / "units"
+    TOKEN = re.compile(r"@[A-Za-z_][A-Za-z0-9_]*@")
+
+    def example_env(self) -> dict[str, str]:
+        return cap._parse_env(ROOT / "host-setup.env.example")
+
+    def render_vars(self) -> set[str]:
+        m = re.search(r'^RENDER_VARS="(.*?)"$', (ROOT / "install.sh").read_text(), re.S | re.M)
+        self.assertIsNotNone(m)
+        return set(m.group(1).replace("\\\n", " ").split())
+
+    def test_owned_list_is_exactly_the_templates_planned_units_reads(self) -> None:
+        seen: list[str] = []
+        real = tc._render
+        tc._render = lambda template, subs: (seen.append(template.name), real(template, subs))[1]
+        try:
+            plan = plan_for(self.example_env())
+            tc.planned_units(plan, self.UNITS, self.example_env())
+        finally:
+            tc._render = real
+        self.assertEqual(sorted(set(seen)), sorted(tc.OWNED_TEMPLATES))
+
+    def test_every_template_is_wired_to_a_renderer_and_renders_without_a_token(self) -> None:
+        env = self.example_env()
+        env["HOST_ROLE"] = "dedicated-dev"
+        units = tc.planned_units(plan_for(env), self.UNITS, env)
+        self.assertEqual(len(units), 5, sorted(units))  # slice, gc service + timer, cache + upper mount
+        for name, text in units.items():
+            self.assertEqual(self.TOKEN.findall(text), [], name)
+        rv = self.render_vars()
+        for tmpl in sorted(self.UNITS.glob("*.in")):
+            if tmpl.name in tc.OWNED_TEMPLATES:
+                continue
+            missing = {t.strip("@") for t in self.TOKEN.findall(tmpl.read_text())} - rv
+            self.assertEqual(missing, set(), f"{tmpl.name}: placeholders neither in install.sh RENDER_VARS nor owned by mdt_tree_cache.py")
+
+    def test_cache_slice_documented_defaults(self) -> None:
+        env = self.example_env()
+        env["HOST_ROLE"] = "dedicated-dev"
+        text = tc.planned_units(plan_for(env), self.UNITS, env)["dev-cache.slice"]
+        self.assertNotRegex(text, r"(?m)^MemoryLow=")  # empty = no protection: the line is dropped
+        self.assertIn("MemoryZSwapWriteback=yes\n", text)
+        env.update(DEV_CACHE_MEMORY_LOW="512M", DEV_CACHE_ZSWAP_WRITEBACK="no")
+        text = tc.planned_units(plan_for(env), self.UNITS, env)["dev-cache.slice"]
+        self.assertIn("MemoryLow=512M\n", text)
+        self.assertIn("MemoryZSwapWriteback=no\n", text)
+
+    def test_render_refuses_a_token_it_was_not_given(self) -> None:
+        t = self.tmp / "x.in"
+        t.write_text("[Slice]\nMemoryLow=@NOT_WIRED@\n")
+        with self.assertRaises(tc.TreeCacheError):
+            tc._render(t, {"OTHER": "1"})
+
+    def test_templates_cli_lists_the_owned_templates(self) -> None:
+        out = subprocess.run([*CLI, "templates"], check=True, capture_output=True, text=True).stdout.split()
+        self.assertEqual(out, list(tc.OWNED_TEMPLATES))
+
+
 if __name__ == "__main__":
     unittest.main()
