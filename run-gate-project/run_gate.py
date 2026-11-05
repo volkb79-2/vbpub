@@ -440,6 +440,10 @@ def finish(result: LaneResult) -> int:
             details.append(f"exit_code {result.exit_code}")
         if result.reason:
             details.append(f"reason {result.reason}")
+            if result.reason == "command-exit-map":
+                last = last_log_line(log_path)
+                if last:
+                    details.append(f"last_output {last}")
         if log_path:
             details.append(f"log {log_path}")
         print(f"run-gate: lane {result._lane_name!r} " + "; ".join(details),
@@ -7653,6 +7657,27 @@ def lane_evidence_directory(lane_name: str) -> Path:
     (B108 phase 2) share it so one run id names all of a run's evidence."""
     safe_lane = re.sub(r"[^A-Za-z0-9_.-]+", "_", lane_name).strip("._") or "lane"
     return evidence_dir() / "lanes" / safe_lane
+
+
+def last_log_line(path: object, limit: int = 4096) -> str | None:
+    """Last non-empty line of a lane's combined-output log (RG-165b), or None.
+
+    Reads only the final `limit` bytes. Used to say WHY a command lane mapped
+    to ERROR on the verdict line itself."""
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - limit))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        line = line.strip()
+        if line:
+            return line[:300]
+    return None
 
 
 def allocate_lane_log(lane_name: str, run_id: str) -> Path | None:
@@ -16019,8 +16044,32 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                                                      project_dir))
 
 
+def container_mode_alternatives(*tables: dict, exclude: str = "") -> list[str]:
+    """Names of declared `mode = "ephemeral"` environments (RG-165a).
+
+    An exec lane that cannot find its persistent runner can often be pointed
+    at one of these instead (a throwaway container needs no ciu stack)."""
+    names: set[str] = set()
+    for table in tables:
+        for name, decl in (table or {}).get("environments", {}).items():
+            if (isinstance(decl, dict) and decl.get("mode") == "ephemeral"
+                    and name != exclude):
+                names.add(name)
+    return sorted(names)
+
+
+def container_mode_hint(alternatives: list[str] | None) -> str:
+    if not alternatives:
+        return ""
+    return (" — or run the lane in a container-mode environment that needs "
+            "no ciu stack: declared mode = \"ephemeral\" environment(s) "
+            + ", ".join(repr(name) for name in alternatives))
+
+
 def resolve_container_name(env_name: str, env: dict, repo: Path,
-                           worktree: Path, env_source: str) -> tuple[str, str, str]:
+                           worktree: Path, env_source: str,
+                           alternatives: list[str] | None = None
+                           ) -> tuple[str, str, str]:
     """Resolve the persistent container name for an exec-mode environment.
 
     Returns (name, human-readable source, START REMEDY). The remedy names the
@@ -16044,9 +16093,13 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
     if not worktree_toml.is_file():
         fail(f"exec-mode environment '{env_name}' needs a declared "
              f"container_name or this worktree's rendered {worktree_toml} "
-             f"with [deploy]; start this worktree's own test-runner — run "
+             f"with [deploy]. That file exists only in a ciu-managed "
+             f"worktree (create it with 'ciu worktree create' or "
+             f"'ciu worktree adopt') or in the main checkout; a plain "
+             f"'git worktree add' checkout cannot run exec lanes. In a "
+             f"ciu-managed worktree start this worktree's own test-runner — run "
              f"'ciu up --dir <test-runner stack> --deploy --healthcheck' "
-             f"from {worktree}")
+             f"from {worktree}" + container_mode_hint(alternatives))
     global_toml = worktree_toml
     try:
         with open(global_toml, "rb") as fh:
@@ -16072,7 +16125,8 @@ def resolve_container_name(env_name: str, env: dict, repo: Path,
             ciu_remedy
     fail(f"cannot derive container name from {global_toml}: need "
          f"[deploy] project_name+environment_tag OR network_name ending '-network'; "
-         f"or declare container_name on the environment")
+         f"or declare container_name on the environment"
+         + container_mode_hint(alternatives))
 
 
 def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
@@ -18708,8 +18762,12 @@ def _dispatch(argv: list[str] | None = None, *,
                 # after the shared-infra locks above) before the exec ever
                 # starts.
                 container_name, container_name_src, container_start_remedy = \
-                    resolve_container_name(lane_environment_name(lane), env,
-                                           repo, worktree, env_source)
+                    resolve_container_name(
+                        lane_environment_name(lane), env, repo, worktree,
+                        env_source,
+                        alternatives=container_mode_alternatives(
+                            cfg, central,
+                            exclude=lane_environment_name(lane)))
                 exec_lock_fd = acquire_exec_lock(container_name, args.lane,
                                                  args.dry_run, lock_deadline)
                 budget_started_epoch, budget_started_monotonic = admit_now()

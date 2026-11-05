@@ -2119,6 +2119,44 @@ project's own deployment authority; ciu-derived → the ciu lifecycle naming
 the config file (never a vbpub-specific remedy for another project's tree).
 The old `testing-exec.sh` shim is retired — run-gate execs directly.
 
+**Container-name derivation rule (RG-165).** For an exec environment with no
+declared `container_name`, run-gate resolves the name from the judged
+worktree's rendered `<worktree>/ciu.global.toml` `[deploy]` table:
+
+1. `<deploy.project_name>-<deploy.environment_tag>-<ENVIRONMENT NAME>`;
+2. else, if `deploy.network_name` ends in `-network`, that name without the
+   suffix, then `-<ENVIRONMENT NAME>` (`<prefix>-<env>`);
+3. else the lane is refused (nothing is guessed).
+
+`<ENVIRONMENT NAME>` is the `[environments.<name>]` key the lane's
+`environment = "<name>"` selects, and it must equal the ciu SERVICE name of the
+runner, because ciu names a service's container `<project>-<tag>-<service>`.
+A project with several runners (for example one per Python version) therefore
+names the ciu services and the run-gate environments identically:
+
+```toml
+# ciu stack services:   test-runner-py311, test-runner-py313
+[environments.test-runner-py311]
+mode = "exec"
+[environments.test-runner-py313]
+mode = "exec"
+[lanes.tests-py311]
+kind = "command"
+environment = "test-runner-py311"   # -> myproj-ab12cd-test-runner-py311
+```
+
+A declared `container_name` bypasses the derivation (and is wrong for the next
+worktree; see below). When a runner cannot be found, the refusal also lists the
+project's declared `mode = "ephemeral"` (container-mode) environments, which
+need no ciu stack, as an alternative.
+
+**A plain `git worktree add` checkout cannot run exec lanes (RG-166).** The
+rendered `<worktree>/ciu.global.toml` exists only in a ciu-managed worktree
+(`ciu worktree create`, or `ciu worktree adopt` for an existing checkout) or
+in the main checkout. In a plain worktree `run-gate <lane> --dry-run` refuses
+(exit 2) and running `ciu up` there cannot help; either create or adopt the
+worktree through ciu, or run the lane from a container-mode environment.
+
 **Worktree config and runner follow the JUDGED TREE (RG-47/RG-65/RG-79).**
 When invoking from a main checkout with `--worktree PATH`, run-gate derives
 the project directory as `PATH` plus that project's path relative to the Git
@@ -2130,9 +2168,10 @@ SHA-256 (plus the central config path/hash when used).
 
 For an exec lane whose name is derived from CIU, run-gate reads only the
 judged worktree's rendered `<worktree>/ciu.global.toml`. If your worktrees
-get their own isolated stacks (`ciu worktree create` — each with its own
-rendered config, network and `test-runner`), a missing file refuses with a
-remedy to start that worktree's runner using
+get their own isolated stacks (`ciu worktree create` or `ciu worktree adopt`
+— each with its own rendered config, network and `test-runner`; a plain
+`git worktree add` checkout has no such file and cannot run exec lanes), a
+missing file refuses with a remedy to start that worktree's runner using
 `ciu up --dir <test-runner stack> --deploy --healthcheck`. This remedy
 requires CIU 7.15.2 or newer (CIU-124). A stopped runner gets the same remedy
 before `docker exec`. run-gate never falls back to

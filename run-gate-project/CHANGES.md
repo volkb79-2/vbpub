@@ -9,6 +9,13 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Fixed
+- fix(run-gate): the exec-mode "no ciu.global.toml" refusal states that the file exists only in a ciu-managed worktree (`ciu worktree create|adopt`) or the main checkout, and names the project's declared `mode = "ephemeral"` environments as alternatives (RG-166, RG-165a)
+- fix(run-gate): a `command-exit-map` ERROR verdict line echoes the last non-empty line of the lane's combined output as `last_output` (RG-165b)
+
+### Documentation
+- docs(run-gate): CONSUMERS.md states the exec-mode container-name derivation rule (`<project_name>-<environment_tag>-<environment name>`, environment name = ciu service name, several runners) and the plain-`git worktree add` limitation; DESIGN-GUIDE cross-reference (RG-165, RG-166)
+
 <!-- cmru: release history -->
 
 ## [25.1.1] - 2026-11-04

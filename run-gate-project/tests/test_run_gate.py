@@ -3229,6 +3229,69 @@ class TestExecMode:
         assert proc.returncode == 2
         assert "container_name" in proc.stderr
         assert "ciu.global.toml" in proc.stderr
+        # RG-166: the remedy must say the file only exists for a ciu-managed
+        # worktree, so a plain `git worktree add` user is not sent in a circle.
+        assert "ciu worktree create" in proc.stderr
+        assert "ciu worktree adopt" in proc.stderr
+        assert "plain 'git worktree add'" in proc.stderr
+        # No container-mode environment declared: no alternatives sentence.
+        assert "ephemeral" not in proc.stderr
+
+    def test_exec_mode_refusal_names_container_mode_alternatives(
+            self, tmp_path, monkeypatch):
+        # RG-165a: declared mode = "ephemeral" environments are named.
+        repo = make_repo(tmp_path)
+        cfg = EXEC_LANE.replace(
+            '[lanes.suite]',
+            '[environments.tmpbox]\n    image = "box:latest"\n'
+            '    mode = "ephemeral"\n\n    [lanes.suite]')
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 2, proc.stderr
+        assert "mode = \"ephemeral\"" in proc.stderr
+        assert "'tmpbox'" in proc.stderr
+
+    def test_container_mode_alternatives_excludes_self_and_non_ephemeral(self):
+        tables = {"environments": {
+            "a": {"mode": "ephemeral"}, "b": {"mode": "exec"},
+            "c": {"mode": "host"}, "d": {"mode": "ephemeral"}}}
+        assert run_gate.container_mode_alternatives(
+            tables, {}, exclude="d") == ["a"]
+        assert run_gate.container_mode_hint([]) == ""
+
+    def test_last_log_line_returns_last_nonempty_line(self, tmp_path):
+        log = tmp_path / "x.log"
+        log.write_bytes(b"first\nboom: cannot open db\n\n  \n")
+        assert run_gate.last_log_line(log) == "boom: cannot open db"
+        assert run_gate.last_log_line(tmp_path / "missing.log") is None
+        assert run_gate.last_log_line(None) is None
+        log.write_bytes(b"")
+        assert run_gate.last_log_line(log) is None
+
+    def test_command_exit_map_error_verdict_line_echoes_last_output(
+            self, tmp_path):
+        # RG-165b: the ERROR verdict line says why, not only the reason code.
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+
+            [environments.bare]
+            mode = "host"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "bare"
+            argv = ["bash", "-c", "echo setup ok; echo 'fatal: no such db' >&2; exit 7"]
+            clean_tree = false
+            exit_map = { "7" = "ERROR" }
+        """)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        line = [ln for ln in proc.stdout.splitlines()
+                if "verdict ERROR" in ln][-1]
+        assert "reason command-exit-map" in line, line
+        assert "last_output fatal: no such db" in line, line
 
     def test_exec_mode_declared_name_wins(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
