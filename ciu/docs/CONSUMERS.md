@@ -678,7 +678,13 @@ identity only, never from the shell: ambient `INSTANCE_ID`/`REPO_ROOT`/
 `COMPOSE_PROJECT_NAME`/`ENVIRONMENT_TAG` are dropped from the child, a shell
 exporting a third instance's identity is refused, and containers/volumes that
 share the deploy tags but carry another instance's `ciu.instance` label are
-left alone (CIU-191). `ciu worktree rm NAME --dry-run` (and `ciu clean
+left alone (CIU-191); a compose network is judged by its OWN `ciu.instance`/
+`ciu.repo-root` labels (the shared `com.docker.compose.project` label is not
+ownership), so a stopped foreign stack's network survives too. The plan and the
+clean are two separate processes: the clean re-enumerates and applies the same
+filters, so anything that appeared in between is judged by labels, never by the
+printed list. `ciu down`/`--stop` is not yet label-filtered (CIU-193).
+`ciu worktree rm NAME --dry-run` (and `ciu clean
 --dry-run`) print the plan: what is removed by name and what is left, with the
 reason.
 
