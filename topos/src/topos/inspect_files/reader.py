@@ -30,9 +30,12 @@ Journald reads use:
 from __future__ import annotations
 
 import dataclasses
+import io
 import os
+import selectors
 import stat
 import subprocess
+import time
 from pathlib import Path
 from collections.abc import Callable
 from typing import IO
@@ -400,6 +403,42 @@ def _bounded_read(
     return text, truncated_bytes_flag, truncated_lines_flag, total_bytes, total_lines
 
 
+def _tail_window(
+    buf: IO[bytes],
+    *,
+    budget: int,
+    max_lines: int,
+) -> tuple[IO[bytes], bool, bool]:
+    """Return a stream over the last *budget* bytes / *max_lines* lines of *buf*.
+
+    The partial first line of the window is dropped (unless the window holds no
+    newline at all).  The two flags say whether earlier content was left out by
+    the byte window / by the line limit.  *buf* is closed here once copied.
+    """
+    size = buf.seek(0, os.SEEK_END)
+    start = max(0, size - budget)
+    if start > 0:
+        buf.seek(start - 1)
+        if buf.read(1) != b"\n":
+            buf.readline()  # drop the partial first line
+            if buf.tell() < size:
+                start = buf.tell()
+            # else: no newline in the window; keep the partial line as is
+    buf.seek(start)
+    data = buf.read(size - start)
+    buf.close()
+    skipped_bytes = start > 0
+    skipped_lines = False
+    parts = data.split(b"\n")
+    lines = [p + b"\n" for p in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    if len(lines) > max_lines:
+        lines = lines[-max_lines:]
+        skipped_lines = True
+    return io.BytesIO(b"".join(lines)), skipped_bytes, skipped_lines
+
+
 def _bound_rendered_text(
     text: str,
     *,
@@ -454,21 +493,29 @@ class _JournaldRunResult:
     timed_out: bool
 
 
+_JOURNAL_STDERR_CAP = 16 * 1024
+
+
 def _default_journald_runner(
     argv: tuple[str, ...],
     *,
     timeout: float,
+    max_bytes: int = _DEFAULT_MAX_BYTES,
 ) -> _JournaldRunResult:
     """Run a fixed journalctl argv via subprocess with bounded timeout.
 
-    Uses ``shell=False``, a minimal environment, and bounded capture.
+    Uses ``shell=False``, a minimal environment, and a *bounded* stream: at most
+    ``max_bytes + 1`` bytes of stdout are retained and the child is killed as
+    soon as that cap is reached (a capped read is reported as success so the
+    caller's renderer marks it truncated); stderr is capped separately.
     """
+    started = time.monotonic()
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             list(argv),
-            capture_output=True,
             stdin=subprocess.DEVNULL,
-            timeout=timeout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             shell=False,
             close_fds=True,
             env={
@@ -476,20 +523,57 @@ def _default_journald_runner(
                 "LANG": "C.UTF-8",
             },
         )
-        return _JournaldRunResult(
-            stdout=proc.stdout.decode("utf-8", errors="replace"),
-            stderr=proc.stderr.decode("utf-8", errors="replace"),
-            returncode=proc.returncode,
-            timed_out=False,
-        )
-    except subprocess.TimeoutExpired:
-        return _JournaldRunResult(
-            stdout="", stderr="", returncode=None, timed_out=True,
-        )
     except OSError as exc:
         return _JournaldRunResult(
             stdout="", stderr=f"OSError: {exc}", returncode=None, timed_out=False,
         )
+
+    caps = {"out": max_bytes + 1, "err": _JOURNAL_STDERR_CAP}
+    data = {"out": bytearray(), "err": bytearray()}
+    selector = selectors.DefaultSelector()
+    assert proc.stdout is not None and proc.stderr is not None
+    selector.register(proc.stdout, selectors.EVENT_READ, "out")
+    selector.register(proc.stderr, selectors.EVENT_READ, "err")
+    timed_out = False
+    capped = False
+    try:
+        while selector.get_map():
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                timed_out = True
+                break
+            for key, _ in selector.select(min(remaining, 0.5)):
+                chunk = os.read(key.fileobj.fileno(), 8192)  # type: ignore[union-attr]
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                room = caps[key.data] - len(data[key.data])
+                data[key.data].extend(chunk[:room])
+                if key.data == "out" and len(data["out"]) >= caps["out"]:
+                    capped = True
+            if capped:
+                break
+    finally:
+        selector.close()
+        if timed_out or capped:
+            proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        proc.stdout.close()
+        proc.stderr.close()
+    if timed_out:
+        return _JournaldRunResult(
+            stdout="", stderr="", returncode=None, timed_out=True,
+        )
+    return _JournaldRunResult(
+        stdout=bytes(data["out"]).decode("utf-8", errors="replace"),
+        stderr=bytes(data["err"]).decode("utf-8", errors="replace"),
+        returncode=0 if capped else proc.returncode,
+        timed_out=False,
+    )
 
 
 # Pattern: a systemd unit name that was already validated by catalog.
@@ -523,6 +607,7 @@ def _run_journald_snapshot(
     max_lines: int,
     timeout: float = _DEFAULT_JOURNAL_TIMEOUT,
     runner: Callable[..., _JournaldRunResult] | None = None,
+    max_bytes: int = _DEFAULT_MAX_BYTES,
 ) -> InspectFilesReadResult | InspectFilesReadError:
     """Run a bounded journalctl snapshot for a validated systemd unit.
 
@@ -574,8 +659,11 @@ def _run_journald_snapshot(
     )
 
     # ---- Run ----
-    active_runner = runner or _default_journald_runner
-    result = active_runner(argv, timeout=timeout)
+    if runner is None:
+        # C-14: the production runner streams with a hard byte cap.
+        result = _default_journald_runner(argv, timeout=timeout, max_bytes=max_bytes)
+    else:
+        result = runner(argv, timeout=timeout)
 
     # ---- Process result ----
     if result.timed_out:
@@ -602,7 +690,7 @@ def _run_journald_snapshot(
     # we also enforce via _bound_rendered_text).
     bounded_content, trunc_b, trunc_l = _bound_rendered_text(
         result.stdout,
-        max_bytes=_DEFAULT_MAX_BYTES,
+        max_bytes=max_bytes,
         max_lines=max_lines,
     )
 
@@ -812,6 +900,7 @@ def build_inspect_read(
                 max_lines=max_lines,
                 timeout=journal_timeout,
                 runner=journald_runner,
+                max_bytes=max_bytes,
             )
 
         else:
@@ -876,6 +965,15 @@ def build_inspect_read(
         try:
             # Reserve framing overhead in aggregate before reading content.
             read_agg_bytes = agg_bytes + header_cost
+            skipped_head = False
+            skipped_head_lines = False
+            if ik == InspectFilesKind.DOCKER_JSON_LOG:
+                # C-13: a log is read for its end, not its oldest lines.
+                buf, skipped_head, skipped_head_lines = _tail_window(
+                    buf,
+                    budget=max(1, max_bytes - read_agg_bytes),
+                    max_lines=max_lines,
+                )
             text, trunc_b, trunc_l, agg_bytes, agg_lines = _bounded_read(
                 buf,
                 max_bytes=max_bytes,
@@ -883,6 +981,8 @@ def build_inspect_read(
                 aggregate_bytes=read_agg_bytes,
                 aggregate_lines=agg_lines,
             )
+            trunc_b = trunc_b or skipped_head
+            trunc_l = trunc_l or skipped_head_lines
             results.append({
                 "path": pstr,
                 "error": None,

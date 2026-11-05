@@ -63,20 +63,32 @@ def test_default_journald_runner_returns_decoded_successful_process_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The fixed runner returns bounded decoded output from its fixed argv."""
-    run = Mock(
-        return_value=types.SimpleNamespace(
-            stdout=b"entry\xff\n", stderr=b"warning\n", returncode=0
-        )
-    )
-    monkeypatch.setattr(reader.subprocess, "run", run)
+    import sys
 
-    result = _default_journald_runner(("/usr/bin/journalctl", "--no-pager"), timeout=2)
+    child = (
+        "import sys;"
+        "sys.stdout.buffer.write(b'entry\\xff\\n');"
+        "sys.stderr.buffer.write(b'warning\\n')"
+    )
+
+    result = _default_journald_runner((sys.executable, "-c", child), timeout=30)
 
     assert result == _JournaldRunResult(
         stdout="entry\ufffd\n", stderr="warning\n", returncode=0, timed_out=False
     )
-    assert run.call_args.args[0] == ["/usr/bin/journalctl", "--no-pager"]
-    assert run.call_args.kwargs["shell"] is False
+
+
+def test_default_journald_runner_stops_reading_at_the_byte_cap() -> None:
+    """C-14: an endless writer is killed at the caller's cap, not buffered."""
+    import sys
+
+    child = "import sys\nwhile True:\n    sys.stdout.buffer.write(b'x' * 4096)\n    sys.stdout.flush()"
+
+    result = _default_journald_runner((sys.executable, "-c", child), timeout=30, max_bytes=100)
+
+    assert result.timed_out is False
+    assert result.returncode == 0
+    assert len(result.stdout) == 101  # cap + 1 so the renderer can flag truncation
 
 
 def test_invalid_kind_stays_typed_for_early_limit_and_gate_refusals(tmp_path: Path) -> None:

@@ -913,6 +913,19 @@ def test_pilot_damon_stop_surface_stops_only_topos_owned_sessions(tmp_path: Path
             assert (state_dir / "damon" / "kdamond-1.json").exists()
             await pilot.press("s")
             await pilot.pause()
+            # D-08: a single keypress must not stop anything; it opens the typed confirmation
+            from topos.ui.damon_control import DamonConfirmScreen
+
+            assert isinstance(app.screen, DamonConfirmScreen)
+            assert (state_dir / "damon" / "kdamond-1.json").exists()
+            app.screen.query_one("#damon-confirm-input", Input).value = "nope"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)  # wrong text keeps the screen
+            assert (state_dir / "damon" / "kdamond-1.json").exists()
+            app.screen.query_one("#damon-confirm-input", Input).value = APPROVAL_TEXT
+            await pilot.press("enter")
+            await pilot.pause()
             assert isinstance(app.screen, DrillDownScreen)
 
         assert (damon_root / "0" / "state").read_text().strip() == "on"
@@ -1423,5 +1436,70 @@ def test_p50_container_view_keys_work() -> None:
             await pilot.press("right")
             await pilot.pause()
             assert app.view_mode == "container"
+
+    asyncio.run(run())
+
+
+def test_pilot_drill_stop_cancel_leaves_sessions_running_and_partial_failure_is_reported(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """D-08: escape cancels the stop; a mid-loop failure names the sessions already stopped."""
+    async def run() -> None:
+        from topos.damon import control
+        from topos.ui.damon_control import DamonConfirmScreen
+
+        damon_root = _damon_root(tmp_path, slots=("on", "off"))
+        state_dir = tmp_path / "state"
+        app = ToposApp(
+            iter([fixture_frame()]),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            damon_root=damon_root,
+            damon_state_dir=state_dir,
+            damon_require_root=False,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            app.selected_key = GAME_KEY
+            app._refresh_view()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("d")
+            await pilot.pause()
+            app.screen.query_one("#damon-confirm-input", Input).value = APPROVAL_TEXT
+            await pilot.press("enter")
+            await pilot.pause()
+            marker = state_dir / "damon" / "kdamond-1.json"
+            assert marker.exists()
+
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, DrillDownScreen)
+            assert marker.exists()
+
+            # second marker whose teardown fails: the first one's stop must be reported
+            (state_dir / "damon" / "kdamond-0.json").write_text(
+                '{"owner":"topos","kdamond_idx":0,"damon_root":"%s"}' % damon_root
+            )
+            real = control._teardown_kdamond
+
+            def flaky(root, idx):
+                if idx == 1:
+                    raise OSError("EPERM")
+                real(root, idx)
+
+            monkeypatch.setattr(control, "_teardown_kdamond", flaky)
+            await pilot.press("s")
+            await pilot.pause()
+            app.screen.query_one("#damon-confirm-input", Input).value = APPROVAL_TEXT
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)
+            body = _static_text(app.screen.query_one("#damon-confirm-body", Static))
+            assert "stop failed after stopping kdamond(s): 0" in body
 
     asyncio.run(run())

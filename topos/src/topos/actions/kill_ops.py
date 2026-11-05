@@ -146,8 +146,13 @@ def build_kill_preview(
     signal: str = "TERM",
     *,
     force: bool = False,
+    protected_check: Callable[[str, str], bool] | None = None,
 ) -> KillPlan:
     """Build a structured preview plan for a kill action.
+
+    The preview applies the same target validation and protected-entity
+    refusal as ``execute_kill`` (C-16), so it never shows a clean plan that
+    execution would refuse.
 
     Args:
         kind: ``"docker-kill"`` or ``"systemd-kill"``.
@@ -169,6 +174,19 @@ def build_kill_preview(
         raise ValueError(
             "KILL signal requires --force (data-loss prevention gate)"
         )
+
+    from topos.actions.catalog import validate_target
+
+    validate_target(action_kind, target)
+    check = protected_check or _default_protected_check
+    try:
+        is_protected = check(kind, target)
+    except Exception as exc:
+        raise ValueError(
+            f"protected-service check failed ({type(exc).__name__}); kill refused"
+        ) from None
+    if is_protected is not False:
+        raise ValueError("target is a protected service; kill refused")
 
     argv = build_kill_argv(action_kind, target, validated_signal)
 

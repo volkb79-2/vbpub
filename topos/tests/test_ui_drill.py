@@ -160,7 +160,17 @@ def test_mounted_drill_screen_surfaces_unavailable_damon_controls(tmp_path: Path
             assert "DAMON CONTROL\n  start unavailable:" in str(screen.query_one("#drill-body", Static).render())
             await pilot.press("s")
             await pilot.pause()
-            assert "DAMON CONTROL\n  stop unavailable:" in str(screen.query_one("#drill-body", Static).render())
+            # D-08: stop opens the typed confirmation; the failure is reported inside it
+            from textual.widgets import Input
+
+            from topos.ui.damon_control import DamonConfirmScreen
+
+            assert isinstance(app.screen, DamonConfirmScreen)
+            app.screen.query_one("#damon-confirm-input", Input).value = "START"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)
+            assert "stop failed" in str(app.screen.query_one("#damon-confirm-body", Static).render())
 
     asyncio.run(run())
 

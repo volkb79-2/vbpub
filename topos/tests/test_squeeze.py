@@ -831,8 +831,11 @@ class TestCliSqueezeArgs:
     def test_target_required(self) -> None:
         from topos.cli import parse_squeeze_args
 
-        with pytest.raises(SystemExit):
-            parse_squeeze_args(["--admin", "--confirm", "SQUEEZE"])
+        # --target is only optional for --recover; the runner refuses without it.
+        from topos.cli import _main_squeeze
+
+        assert parse_squeeze_args(["--recover"]).target is None
+        assert _main_squeeze(["--admin", "--confirm", "SQUEEZE"]) == 2
 
     def test_admin_required_by_gate(self, tmp_path: Path) -> None:
         """CLI dispatch returns error when --admin is missing."""

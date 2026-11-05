@@ -14,6 +14,7 @@ import json
 import math
 import os
 import pwd
+import re
 import selectors
 import stat
 import subprocess
@@ -224,7 +225,7 @@ def _open_safe_audit(path: Path, *, require_root_owner: bool) -> TextIO:
             if require_root_owner and existing.st_uid != 0:
                 raise _AuditError("production audit target is not root-owned")
         leaf_flags = (
-            os.O_WRONLY
+            os.O_RDWR  # readable so a torn last line can be detected (C-18)
             | os.O_APPEND
             | os.O_CREAT
             | os.O_CLOEXEC
@@ -241,6 +242,9 @@ def _open_safe_audit(path: Path, *, require_root_owner: bool) -> TextIO:
             if require_root_owner and leaf_stat.st_uid != 0:
                 raise _AuditError("production audit target is not root-owned")
             os.fchmod(fd, 0o600)
+            if existing is None:
+                # C-18: make the new directory entry durable, not just its data.
+                os.fsync(parent_fd)
             return os.fdopen(fd, "a", encoding="utf-8", newline="\n")
         except BaseException:
             os.close(fd)
@@ -258,6 +262,7 @@ def _audit_record(
     clock: Callable[[], float],
     stage: str,
     result: ExecuteResult | None = None,
+    extra: dict[str, str] | None = None,
 ) -> dict[str, object]:
     timestamp = float(clock())
     if not math.isfinite(timestamp):
@@ -282,6 +287,9 @@ def _audit_record(
                 "duration_s": round(max(0.0, min(result.duration_s, _MAX_TIMEOUT)), 3),
             }
         )
+    if extra:
+        for key, value in extra.items():
+            record[_bound_audit_text(key)] = _bound_audit_text(value)
     return record
 
 
@@ -289,10 +297,29 @@ def _write_json_record(fh: TextIO, record: dict[str, object]) -> None:
     line = json.dumps(record, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
     if len(line) > 4096:
         raise _AuditError("audit record exceeds bounded size")
-    fh.write(line)
+    # C-18: a previous partial write (ENOSPC) may have left the file without a
+    # trailing newline; start on a fresh line so this record stays parseable.
+    prefix = "" if _ends_with_newline(fh) else "\n"
+    fh.write(prefix + line)
     fh.write("\n")
     fh.flush()
     os.fsync(fh.fileno())
+
+
+def _ends_with_newline(fh: TextIO) -> bool:
+    try:
+        fd = os.dup(fh.fileno())
+    except (OSError, ValueError, AttributeError):
+        return True
+    try:
+        size = os.fstat(fd).st_size
+        if size == 0:
+            return True
+        return os.pread(fd, 1, size - 1) == b"\n"
+    except OSError:
+        return True
+    finally:
+        os.close(fd)
 
 
 def _write_execution_audit_pre(
@@ -337,6 +364,7 @@ def _write_execution_audit_post(
     argv: tuple[str, ...],
     result: ExecuteResult,
     clock: Callable[[], float],
+    extra: dict[str, str] | None = None,
 ) -> None:
     try:
         _write_json_record(
@@ -349,6 +377,7 @@ def _write_execution_audit_post(
                 clock=clock,
                 stage="post",
                 result=result,
+                extra=extra,
             ),
         )
     except BaseException as exc:
@@ -621,11 +650,11 @@ class _OwnerSafetyGate:
         """Replace the accepted target token with the inspected canonical ID."""
         if self.full_id is None:
             return argv
-        if self._target not in argv[1:]:
+        # C-12: the target is the final argv element; replace only that, so a
+        # container named like a verb or signal ("stop", "TERM") cannot rewrite it.
+        if len(argv) < 2 or argv[-1] != self._target:
             raise ValueError("target token not found in argv; cannot bind canonical ID")
-        return (argv[0],) + tuple(
-            self.full_id if token == self._target else token for token in argv[1:]
-        )
+        return argv[:-1] + (self.full_id,)
 
 
 def _make_owner_safety_gate(
@@ -637,22 +666,91 @@ def _make_owner_safety_gate(
     return _OwnerSafetyGate(kind, target, owner_inspect, owner_protected_services)
 
 
+_CONTAINER_SCOPE_RE = re.compile(r"^(?:docker|libpod)-([0-9a-f]{64})\.scope$")
+_FORBIDDEN_SYSTEMD_TARGETS = frozenset(
+    f"{name}.target"
+    for name in (
+        "poweroff",
+        "reboot",
+        "halt",
+        "kexec",
+        "rescue",
+        "emergency",
+        "shutdown",
+        "default",
+    )
+)
+# The Docker verb whose owner/protected decision a systemd verb on a container
+# scope must match.
+_SYSTEMD_TO_DOCKER_KIND = {
+    "systemd-start": "docker-start",
+    "systemd-stop": "docker-stop",
+    "systemd-restart": "docker-restart",
+    "systemd-kill": "docker-kill",
+    "systemd-set-property": "docker-update",
+}
+
+
+def _protected_key_forms(unit: str) -> set[str]:
+    forms = {unit, f"system.slice/{unit}", f"/system.slice/{unit}"}
+    match = _CONTAINER_SCOPE_RE.match(unit)
+    if match:
+        forms.add(match.group(1))
+        forms.add(match.group(1)[:12])
+    return forms
+
+
 def _make_systemd_owner_gate(
     kind: str,
     target: str,
     owner_lookup: Callable[[str], object] | None,
+    owner_inspect: Callable[[str], object] | None = None,
+    owner_protected_services: Collection[str] | None = None,
 ) -> Gate:
-    """P93 protocol gate for systemd verbs (start/stop/restart/kill/set-property).
+    """Gate for systemd verbs (start/stop/restart/kill/set-property).
 
-    A no-op today (``owner_lookup`` is always ``None`` in production: no
-    "which higher owner manages this unit" detector exists yet, see
-    ``lifecycle_adapters.SystemdAdapter``). Wiring it as a real post-audit
-    gate -- rather than leaving systemd verbs outside the protocol entirely
-    -- means a future owner-above-systemd adapter (Podman/Quadlet) plugs in
-    here without another migration pass.
+    Refuses power/rescue/default ``.target`` units unconditionally, applies
+    ``protected_services`` (name and key forms) to every systemd verb, and maps
+    ``docker-<id>.scope`` / ``libpod-<id>.scope`` to the container ID so the
+    same owner/protected decision as the docker verbs applies.
+
+    ``owner_lookup`` is the P93 seam for a future owner-above-systemd adapter
+    (Podman/Quadlet); it is ``None`` in production.
     """
 
     def gate() -> _GateRefusal | None:
+        from topos.actions import owner_safety
+
+        if not kind.startswith("systemd-"):
+            return None
+        if target in _FORBIDDEN_SYSTEMD_TARGETS:
+            return _GateRefusal(
+                f"systemd target {target!r} is a power/rescue target; refused"
+            )
+        try:
+            services = (
+                owner_protected_services
+                if owner_protected_services is not None
+                else owner_safety.default_protected_services()
+            )
+            services_set = set(services)
+        except BaseException as exc:
+            return _GateRefusal(
+                f"protected-service list could not be loaded ({type(exc).__name__}); "
+                "systemd action refused"
+            )
+        if services_set & _protected_key_forms(target):
+            return _GateRefusal("target is a protected service; systemd action refused")
+        scope = _CONTAINER_SCOPE_RE.match(target)
+        docker_kind = _SYSTEMD_TO_DOCKER_KIND.get(kind)
+        if scope is not None and docker_kind is not None:
+            refusal = _OwnerSafetyGate(
+                docker_kind, scope.group(1), owner_inspect, services_set
+            )()
+            if refusal is not None:
+                return _GateRefusal(
+                    f"{refusal.message} (unit {target} is a container scope)"
+                )
         if owner_lookup is None:
             return None
         from topos.actions.lifecycle import (
@@ -688,6 +786,7 @@ def _execute_gated(
     pre_audit_gates: tuple[Gate, ...] = (),
     post_audit_gates: tuple[Gate, ...] = (),
     argv_binder: Callable[[tuple[str, ...]], tuple[str, ...]] | None = None,
+    audit_extra: dict[str, str] | None = None,
 ) -> ExecuteResult:
     """Run the single P46 gate/audit/runner sequence for every action verb.
 
@@ -793,6 +892,7 @@ def _execute_gated(
                 argv=spec.argv,
                 result=audited_refusal,
                 clock=now,
+                extra=audit_extra,
             )
         except _AuditError:
             pass
@@ -862,6 +962,7 @@ def _execute_gated(
             argv=spec.argv,
             result=result,
             clock=now,
+            extra=audit_extra,
         )
     except BaseException as exc:
         try:
@@ -969,7 +1070,13 @@ def execute_plan(
         post_audit_gates=(
             target_revalidation_gate,
             owner_gate,
-            _make_systemd_owner_gate(kind, target, systemd_owner_lookup),
+            _make_systemd_owner_gate(
+                kind,
+                target,
+                systemd_owner_lookup,
+                owner_inspect,
+                owner_protected_services,
+            ),
         ),
         argv_binder=owner_gate.bind_argv,
     )
@@ -1029,8 +1136,16 @@ def execute_set_property(
     planned_current_value: str | None = None,
     current_value_reader: Callable[[str], str | None] | None = None,
     systemd_owner_lookup: Callable[[str], object] | None = None,
+    expect_current: str | None = None,
+    owner_inspect: Callable[[str], object] | None = None,
+    owner_protected_services: Collection[str] | None = None,
 ) -> ExecuteResult:
     """Execute a systemd memory.high set-property action through the P46 gates.
+
+    ``expect_current`` (CLI ``--expect-current``; ``max`` allowed) is the
+    value the operator planned against and is an alias of
+    ``planned_current_value``.  The fresh value is always read and recorded
+    in the post audit record as ``fresh_current``.
 
     Reuses the P46 root/admin/typed-confirmation, absolute argv, timeout,
     result bounds, and fail-closed audit contract.  Additionally validates
@@ -1110,27 +1225,41 @@ def execute_set_property(
             _make_plan_stub("systemd-set-property", unit, argv),
         )
 
+    expected_value = expect_current if expect_current is not None else planned_current_value
+    audit_extra: dict[str, str] = {}
+
+    def _canonical_current(value: str) -> str:
+        return "max" if value == "infinity" else value
+
     def stale_revalidation_gate() -> _GateRefusal | None:
-        if current_value_reader is None and planned_current_value is None:
-            return None
         reader = current_value_reader or _default_current_value_reader
         try:
-            fresh_current_value = reader(unit)
+            raw_fresh = reader(unit)
         except BaseException as exc:
             return _GateRefusal(
                 f"current memory.high value could not be read ({type(exc).__name__}); "
                 "preview again before execution"
             )
-        if (
-            planned_current_value is not None
-            and fresh_current_value is not None
-            and fresh_current_value != planned_current_value
-        ):
-            return _GateRefusal(
-                f"current memory.high value changed ({planned_current_value} -> {fresh_current_value}); "
-                "preview again with the fresh value",
-                outcome="stale",
-            )
+        fresh_current_value = (
+            _canonical_current(raw_fresh) if isinstance(raw_fresh, str) else None
+        )
+        audit_extra["fresh_current"] = (
+            fresh_current_value if fresh_current_value is not None else "unreadable"
+        )
+        if expected_value is not None:
+            audit_extra["expected_current"] = expected_value
+            if fresh_current_value is None:
+                return _GateRefusal(
+                    "current memory.high value is unreadable but an expected value "
+                    "was given; preview again before execution",
+                    outcome="stale",
+                )
+            if fresh_current_value != _canonical_current(expected_value):
+                return _GateRefusal(
+                    f"current memory.high value changed ({expected_value} -> {fresh_current_value}); "
+                    "preview again with the fresh value",
+                    outcome="stale",
+                )
         return None
 
     return _execute_gated(
@@ -1149,8 +1278,15 @@ def execute_set_property(
         pre_audit_gates=(property_gate, unit_gate, value_gate, persistence_gate),
         post_audit_gates=(
             stale_revalidation_gate,
-            _make_systemd_owner_gate("systemd-set-property", unit, systemd_owner_lookup),
+            _make_systemd_owner_gate(
+                "systemd-set-property",
+                unit,
+                systemd_owner_lookup,
+                owner_inspect,
+                owner_protected_services,
+            ),
         ),
+        audit_extra=audit_extra,
     )
 
 
@@ -1287,7 +1423,13 @@ def execute_kill(
         timeout=timeout,
         build_spec=build_spec,
         pre_audit_gates=(signal_gate, force_gate, protected_gate, action_kind_gate),
-        post_audit_gates=(target_revalidation_gate, owner_gate),
+        post_audit_gates=(
+            target_revalidation_gate,
+            owner_gate,
+            _make_systemd_owner_gate(
+                kind, target, None, owner_inspect, owner_protected_services
+            ),
+        ),
         argv_binder=owner_gate.bind_argv,
     )
 

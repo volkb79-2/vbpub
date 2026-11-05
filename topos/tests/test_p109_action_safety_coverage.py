@@ -187,20 +187,24 @@ def test_nameless_identity_is_matched_by_canonical_id() -> None:
     )
 
 
-def test_default_owner_inspect_delegates_once_and_returns_payload(
+def test_default_owner_inspect_runs_one_docker_inspect_and_returns_payload(
     monkeypatch, real_docker_inspect
 ) -> None:
+    import json
+    import subprocess
+
     from topos.actions import owner_safety
-    from topos.collect import dockerjoin
 
     expected = [{"Id": FULL_ID, "Name": "/worker"}]
-    calls: list[str] = []
+    calls: list[list[str]] = []
 
-    def inspect(target: str) -> object:
-        calls.append(target)
-        return expected
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(expected).encode(), stderr=b""
+        )
 
-    monkeypatch.setattr(dockerjoin, "default_docker_inspect", inspect)
+    monkeypatch.setattr(subprocess, "run", run)
 
-    assert owner_safety.default_owner_inspect("accepted-target") is expected
-    assert calls == ["accepted-target"]
+    assert owner_safety.default_owner_inspect("accepted-target") == expected
+    assert len(calls) == 1 and calls[0][-1] == "accepted-target"
