@@ -39,6 +39,8 @@ pub struct Process {
     /// sweeps only for candidates (previous enriched union, CPU time rose, D state, new).
     pub full_sweep_every_s: u64,
     pub cmdline_max: usize,
+    /// A pid whose command-line read failed or timed out is not asked again for this long (X-06).
+    pub cmdline_backoff_ms: u64,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -69,6 +71,10 @@ pub struct StoreCfg {
     pub tmpfs_dir: String,
     pub cold_dir: String,
     pub cold_cap_bytes: u64,
+    /// Refuse to start when `tmpfs_dir` is not on a tmpfs (X-03); false only warns.
+    pub require_tmpfs: bool,
+    /// Bytes the writer queue may hold; the oldest frames are dropped (and counted) beyond it (X-05).
+    pub writer_queue_bytes: u64,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -100,6 +106,12 @@ impl Config {
         }
         if c.process.cap == 0 || c.process.full_sweep_every_s == 0 {
             return Err("process.cap and process.full_sweep_every_s must be > 0".into());
+        }
+        if c.process.cmdline_backoff_ms == 0 {
+            return Err("process.cmdline_backoff_ms must be > 0".into());
+        }
+        if c.store.writer_queue_bytes < 65536 {
+            return Err("store.writer_queue_bytes must be >= 65536".into());
         }
         let p = &c.protocol;
         if p.max_request_bytes < 64 || p.max_response_bytes < 4096 || p.max_clients == 0 {

@@ -24,9 +24,9 @@ use std::fs;
 /// Threads read per process, and task-file reads per tick.
 pub const TASK_THREADS_MAX: usize = 1024;
 pub const TASK_READ_BUDGET: u32 = 4096;
-/// A cmdline request unanswered for this long is shown as a timeout; retried after the second.
+/// A cmdline request unanswered for this long is shown as a timeout; it is asked again only
+/// after `process.cmdline_backoff_ms`, and never while its read is still in flight.
 pub const CMD_TIMEOUT_MS: u64 = 2_000;
-pub const CMD_RETRY_MS: u64 = 30_000;
 
 /// A value with a state (see `stc`).
 #[derive(Clone, Copy, Debug)]
@@ -604,7 +604,8 @@ impl PScan {
                         false
                     }
                     2 => si.sweep,
-                    _ => si.now_ms.saturating_sub(p.cmd_since) > CMD_RETRY_MS,
+                    // failed or timed out: not asked again for the configured backoff (X-06)
+                    _ => si.now_ms.saturating_sub(p.cmd_since) > cfg.process.cmdline_backoff_ms,
                 };
                 if ask {
                     if let Some(w) = &self.workers {

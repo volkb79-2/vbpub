@@ -9,6 +9,7 @@
 //! of the longest tier cannot be referenced by any stored segment, so its id is freed
 //! and reused. A freed slot is an empty line in `ents.dict`. Metric names are bounded
 //! by the kernel's key set and are never collected.
+use crate::util::{perr, PErr};
 use std::collections::HashMap;
 
 /// Rollup companions of a gauge `m` (max, min, p95) have the ids `ROLLUP_BASE + 3*m + k`.
@@ -17,6 +18,23 @@ pub const ROLLUP_BASE: u32 = 1 << 24;
 
 pub fn rollup_ids(m: u32) -> [u32; 3] {
     [ROLLUP_BASE + 3 * m, ROLLUP_BASE + 3 * m + 1, ROLLUP_BASE + 3 * m + 2]
+}
+
+/// Companion of metric `m` in rollup frames: how many of the bucket's ticks held a value (X-13).
+/// Derived like the rollup ids, never interned; the range lies above every rollup id.
+pub const COVER_BASE: u32 = 1 << 26;
+
+pub fn cover_id(m: u32) -> u32 {
+    COVER_BASE + m
+}
+
+/// Count header of a dictionary file (S-09): the first line, fixed width so it can be updated in
+/// place after an append: `#TOPOS-DICT 1 n=<20 digits>\n`, n = number of lines after it.
+pub const HEADER_PREFIX: &str = "#TOPOS-DICT 1 n=";
+pub const HEADER_LEN: usize = HEADER_PREFIX.len() + 20 + 1;
+
+pub fn header(n: usize) -> String {
+    format!("{HEADER_PREFIX}{n:020}\n")
 }
 
 /// Names are stored one per line: a newline or carriage return can not be represented, so
@@ -170,10 +188,20 @@ impl Dict {
         self.version += 1;
     }
 
-    /// Load from `dir`. Every loaded entity counts as seen at `now_s`.
+    /// Load from `dir`, ignoring damage (tests). Every loaded entity counts as seen at `now_s`.
+    #[cfg(test)]
     pub fn load(dir: &str, now_s: u64) -> Dict {
+        Dict::from_lists(read_lists(dir), now_s)
+    }
+
+    /// Like `load`, but a damaged dictionary is an error (start-up refuses).
+    pub fn load_checked(dir: &str, now_s: u64) -> Result<Dict, PErr> {
+        Ok(Dict::from_lists(read_lists_checked(dir)?, now_s))
+    }
+
+    fn from_lists(lists: (Vec<(String, bool)>, Vec<String>), now_s: u64) -> Dict {
         let mut d = Dict::default();
-        let (mets, ents) = read_lists(dir);
+        let (mets, ents) = lists;
         for (n, c) in mets {
             d.met(&n, c);
         }
@@ -197,24 +225,53 @@ impl Dict {
 
 /// Line-oriented dictionary reader. A last line without its newline is a torn append
 /// (power loss, ENOSPC) and is ignored, so it can never merge with the next appended entry.
+#[cfg(test)]
 pub fn read_lists(dir: &str) -> (Vec<(String, bool)>, Vec<String>) {
-    let complete = |t: &str| -> usize { t.rfind('\n').map(|p| p + 1).unwrap_or(0) };
-    let mut mets = Vec::new();
-    let mut ents = Vec::new();
-    if let Ok(t) = std::fs::read_to_string(format!("{dir}/mets.dict")) {
-        let t = &t[..complete(&t)];
-        for l in t.lines() {
-            if let Some((k, n)) = l.split_once(' ') {
-                mets.push((n.to_string(), k == "C"));
+    read_lists_checked(dir).unwrap_or_default()
+}
+
+/// The lines of one dictionary file (header stripped). A file whose header declares more lines
+/// than it holds lost part of itself: reading it would hand out ids for the wrong names, so it
+/// is an error, not a short list (S-09). A header BEHIND the lines is a crash between the
+/// append and the count update and is accepted. A file without a header is a pre-header one.
+fn read_dict_file(dir: &str, name: &str) -> Result<Vec<String>, PErr> {
+    let b = match crate::fsafe::read_small(dir, name, 1 << 30) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(perr("dict_io", format!("{dir}/{name}: {e}"))),
+    };
+    let t = String::from_utf8_lossy(&b);
+    let t = &t[..t.rfind('\n').map(|p| p + 1).unwrap_or(0)];
+    let (mut body, mut declared) = (t, None);
+    if t.starts_with(HEADER_PREFIX) {
+        let digits = t.get(HEADER_PREFIX.len()..HEADER_LEN - 1).filter(|_| t.len() >= HEADER_LEN && t.as_bytes()[HEADER_LEN - 1] == b'\n');
+        match digits.and_then(|d| if d.bytes().all(|c| c.is_ascii_digit()) { d.parse::<usize>().ok() } else { None }) {
+            Some(n) => {
+                declared = Some(n);
+                body = &t[HEADER_LEN..];
             }
+            None => return Err(perr("dict_header_corrupt", format!("{dir}/{name}: the count header is damaged; move the dictionaries aside (history ids would be wrong)"))),
         }
     }
-    if let Ok(t) = std::fs::read_to_string(format!("{dir}/ents.dict")) {
-        let t = &t[..complete(&t)];
-        ents = t.split('\n').map(|s| s.to_string()).collect();
-        if ents.last().map(|s| s.is_empty()).unwrap_or(false) {
-            ents.pop(); // trailing newline
+    let lines: Vec<String> = body.split('\n').map(|s| s.to_string()).collect();
+    let lines: Vec<String> = lines[..lines.len().saturating_sub(1)].to_vec(); // body ends with a newline
+    if let Some(n) = declared {
+        if lines.len() < n {
+            return Err(perr(
+                "dict_short",
+                format!("{dir}/{name} holds {} lines but its header says {n}: part of the dictionary was lost; move the dictionaries and segments aside, or restore them", lines.len()),
+            ));
         }
     }
-    (mets, ents)
+    Ok(lines)
+}
+
+/// Both dictionaries, or the reason one of them cannot be trusted.
+pub fn read_lists_checked(dir: &str) -> Result<(Vec<(String, bool)>, Vec<String>), PErr> {
+    let mets = read_dict_file(dir, "mets.dict")?
+        .into_iter()
+        .filter_map(|l| l.split_once(' ').map(|(k, n)| (n.to_string(), k == "C")))
+        .collect();
+    let ents = read_dict_file(dir, "ents.dict")?;
+    Ok((mets, ents))
 }

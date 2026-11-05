@@ -17,6 +17,8 @@ DEFAULT_SLICE_DEST = Path("/etc/systemd/system/topos.slice")
 DEFAULT_TMPFILES_DEST = Path("/etc/tmpfiles.d/topos.conf")
 SERVICE_ASSET = "assets/systemd/topos.service"
 SLICE_ASSET = "assets/systemd/topos.slice"
+LEGACY_SLICE_ASSET = "assets/systemd/topos-legacy.slice"
+LEGACY_SLICE_NAME = "topos-legacy.slice"
 TMPFILES_ASSET = "assets/systemd/topos.tmpfiles"
 
 
@@ -380,6 +382,11 @@ class DaemonInstallPlan:
     tmpfiles_content: str
     steps: tuple[InstallPlanStep, ...]
     warnings: tuple[str, ...]
+    # X-07: topos.service runs in topos-legacy.slice; without this unit systemd creates an
+    # implicit slice with NO limits, so the plan must install it too.
+    legacy_slice_dest: Path = Path("/etc/systemd/system/topos-legacy.slice")
+    legacy_slice_asset: str = LEGACY_SLICE_ASSET
+    legacy_slice_content: str = ""
 
 
 def _read_asset(asset_path: str) -> str:
@@ -413,6 +420,8 @@ def build_install_plan(
         group_name=group_name,
     )
     slice_content = _read_asset(SLICE_ASSET)
+    legacy_slice_dest = slice_dest.parent / LEGACY_SLICE_NAME
+    legacy_slice_content = _read_asset(LEGACY_SLICE_ASSET)
     tmpfiles_content = _render_tmpfiles_content(
         _read_asset(TMPFILES_ASSET),
         runtime_dir=socket_path.parent,
@@ -443,10 +452,15 @@ def build_install_plan(
         InstallPlanStep(
             order=3,
             description=(
-                f"Install the systemd resource slice to {slice_dest} "
-                "(bounds the daemon's CPU, memory, and task count)"
+                f"Install the systemd resource slices to {slice_dest} (the sampler envelope) and "
+                f"{legacy_slice_dest} (the slice topos.service runs in; bounds the daemon's "
+                "CPU weight, memory, and task count)"
             ),
-            command=_install_heredoc_command(slice_content, slice_dest),
+            command=(
+                _install_heredoc_command(slice_content, slice_dest)
+                + "\n"
+                + _install_heredoc_command(legacy_slice_content, legacy_slice_dest)
+            ),
             warning="Review the resource limits for this host before copying.",
         ),
         InstallPlanStep(
@@ -514,6 +528,9 @@ def build_install_plan(
         tmpfiles_content=tmpfiles_content,
         steps=steps,
         warnings=warnings,
+        legacy_slice_dest=legacy_slice_dest,
+        legacy_slice_asset=LEGACY_SLICE_ASSET,
+        legacy_slice_content=legacy_slice_content,
     )
 
 
@@ -521,6 +538,9 @@ def install_plan_to_jsonable(plan: DaemonInstallPlan) -> dict[str, object]:
     """Convert an install plan to a JSON-serializable dict (deterministic)."""
     return {
         "group": plan.group_name,
+        "legacy_slice_asset": plan.legacy_slice_asset,
+        "legacy_slice_content": plan.legacy_slice_content,
+        "legacy_slice_dest": str(plan.legacy_slice_dest),
         "plan": "install",
         "service_asset": plan.service_asset,
         "service_content": plan.service_content,

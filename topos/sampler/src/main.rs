@@ -2,6 +2,7 @@ mod cfg;
 mod cmdline;
 mod collect;
 mod dict;
+mod fsafe;
 mod procs;
 mod selfmon;
 mod serve;
@@ -52,6 +53,8 @@ fn store_status(sh: Option<&writer::Shared>) -> (serve::StoreStatus, writer::WIn
         corrupt_frame_reads: CTR.corrupt_reads.load(Ordering::Relaxed),
         frames_skipped: CTR.frames_skipped.load(Ordering::Relaxed),
         last_error: store::last_error(),
+        tmpfs_dir_is_tmpfs: store::tmpfs_state(),
+        notes: store::startup_notes(),
         ..Default::default()
     };
     let mut info = writer::WInfo::default();
@@ -59,6 +62,8 @@ fn store_status(sh: Option<&writer::Shared>) -> (serve::StoreStatus, writer::WIn
         info = sh.info();
         s.enabled = true;
         s.queue_len = sh.queue_len();
+        s.queue_bytes = sh.queue_bytes();
+        s.dropped_bytes = sh.dropped_bytes.load(Ordering::SeqCst);
         s.dropped_frames = sh.dropped_frames.load(Ordering::SeqCst);
         s.lag_ms = sh.lag_ms();
         s.last_job_us = info.last_job_us;
@@ -90,9 +95,21 @@ fn main() {
     };
     util::install_stop_handlers();
     let use_store = cfg.store.enabled && !once;
+    // X-02: the instance lock comes first, before any file of the store is opened, truncated or
+    // deleted; then the data directories are validated (X-01, X-03). A refusal changes nothing.
+    let started = if once {
+        None
+    } else {
+        match store::start(&cfg) {
+            Ok(s) => Some(s),
+            Err(e) => refuse(&e),
+        }
+    };
     let dict = if use_store {
-        let _ = std::fs::create_dir_all(&cfg.store.cold_dir);
-        dict::Dict::load(&cfg.store.cold_dir, util::wall_ms() / 1000)
+        match dict::Dict::load_checked(&cfg.store.cold_dir, util::wall_ms() / 1000) {
+            Ok(d) => d,
+            Err(e) => refuse(&e),
+        }
     } else {
         dict::Dict::default()
     };
@@ -101,17 +118,19 @@ fn main() {
     // The writer thread owns the store and a mirror of the dictionary; sampling never does disk IO.
     let mut writer_thread = None;
     let mut shared: Option<Arc<writer::Shared>> = None;
-    if !once {
-        let store = match store::Store::open(&cfg, lm, le) {
+    let mut instance = None;
+    if let Some(st) = started {
+        let store = match store::Store::open_with(&cfg, &st.dirs, lm, le) {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("store error: {e}");
-                std::process::exit(2);
-            }
+            Err(e) => refuse(&e),
         };
+        instance = Some(st.inst);
         if cfg.store.enabled {
-            let mirror = dict::Dict::load(&cfg.store.cold_dir, 0);
-            let sh = writer::Shared::new(WRITER_QUEUE);
+            let mirror = match dict::Dict::load_checked(&cfg.store.cold_dir, 0) {
+                Ok(d) => d,
+                Err(e) => refuse(&e),
+            };
+            let sh = writer::Shared::new(WRITER_QUEUE, cfg.store.writer_queue_bytes);
             match writer::spawn(sh.clone(), store, mirror) {
                 Ok(h) => writer_thread = Some(h),
                 Err(e) => {
@@ -125,8 +144,8 @@ fn main() {
     let mut col = collect::Collector::new(cfg.clone(), dict, start);
     col.procs.sync_cmdline = once; // --once is two ticks: no time for the helper pool
     let ctx = Arc::new(serve::Ctx::new(cfg.clone(), selfmon::cgroup_view(&cfg)));
-    if !once {
-        if let Err(e) = serve::spawn(ctx.clone()) {
+    if let Some(inst) = instance {
+        if let Err(e) = serve::spawn(ctx.clone(), inst) {
             eprintln!("socket error: {e}");
             std::process::exit(2);
         }
@@ -187,6 +206,7 @@ fn main() {
             sh.submit(writer::Job { ts_ms: wall, dt_ms, frame: snap.frame.clone(), events, delta });
         }
         ctx.publish(snap);
+        ctx.beat();
         let tsubmit = t1.elapsed().as_micros();
         record_work(&mut works, want_stats, work_us);
         tcg += col.t_cg;
@@ -251,5 +271,11 @@ fn main() {
         maxcg, col.procs.total, col.procs.io_read, overruns, skipped, col.resets,
         dropped, store::CTR.write_errors.load(Ordering::Relaxed)
     );
-    let _ = std::fs::write(&cfg.sampler.stats_path, out);
+    let _ = fsafe::write_file(&cfg.sampler.stats_path, out.as_bytes());
+}
+
+/// A refused start-up: typed code and reason on stderr, exit 2, nothing changed.
+fn refuse(e: &util::PErr) -> ! {
+    eprintln!("topos-sampler: refused to start [{}]: {}", e.code, e.msg);
+    std::process::exit(2);
 }
