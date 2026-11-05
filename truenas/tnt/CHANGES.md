@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- TNT-57: `tnt task scrub pause|cancel` and TUI "Pause/Cancel running scrub" (planned only while the pool has a running scrub).
+- TNT-60 (TUI): List, Update and Delete device operations in the Virtual Machines view; the plan review now shows and requires the second typed confirmation when a device delete also destroys a zvol or raw file (previously only the CLI could supply it).
+- TNT-30: `assay.toml` and an `r2` run-gate lane for the mutation campaign (not part of the release gate).
+
 <!-- cmru: release history -->
 
 ## [0.3.0] - 2026-11-04

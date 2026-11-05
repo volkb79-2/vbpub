@@ -43,7 +43,8 @@ OPERATIONS = {
                    ("Release selected", "release"), ("Rollback selected", "rollback"), ("Delete selected", "delete")),
     "containers": (("Create container", "create"), ("Update selected", "update"), ("Start selected", "start"),
                     ("Stop selected", "stop"), ("Restart selected", "restart"), ("Delete selected", "delete")),
-    "vm": (("Create VM", "create"), ("Update selected", "update"), ("Add device", "device"), ("Start selected", "start"),
+    "vm": (("Create VM", "create"), ("Update selected", "update"), ("Add device", "device"), ("List devices", "devices"),
+           ("Update device", "device-update"), ("Delete device", "device-delete"), ("Start selected", "start"),
            ("Stop selected", "stop"), ("Restart selected", "restart"), ("Power off selected", "poweroff"),
            ("Suspend selected", "suspend"), ("Resume selected", "resume"), ("Console/VNC info", "console"),
            ("Delete selected", "delete")),
@@ -56,7 +57,8 @@ OPERATIONS = {
     "snapshot-tasks": (("Create task", "create"), ("Run selected now", "run"),
                         ("Enable selected", "enable"), ("Disable selected", "disable"), ("Delete selected", "delete")),
     "scrub-tasks": (("Create schedule", "create"), ("Update selected", "update"),
-                    ("Run selected now", "run"), ("Delete selected", "delete")),
+                    ("Run selected now", "run"), ("Pause running scrub", "pause"),
+                    ("Cancel running scrub", "cancel"), ("Delete selected", "delete")),
     "replication": (("Run selected now", "run"), ("Enable selected", "enable"), ("Disable selected", "disable")),
     "cloud-sync": (("Run selected now", "run"), ("Enable selected", "enable"), ("Disable selected", "disable")),
     "apps": (("Start selected", "start"), ("Stop selected", "stop"), ("Restart selected", "restart"),
@@ -348,6 +350,24 @@ class WorkflowView(Vertical):
                 return workflows.vm_update_action(str(name), data)
             if operation == "device":
                 return workflows.vm_device_create_action(str(name), data)
+            if operation == "devices":
+                return workflows.vm_devices_read_action(str(name))
+            if operation in {"device-update", "device-delete"}:
+                device_id = data.pop("device_id", None)
+                if isinstance(device_id, bool) or not isinstance(device_id, int):
+                    raise ValueError('put the integer device ID in the action data as {"device_id": N, ...}')
+                if operation == "device-update":
+                    unknown = set(data) - {"order", "attributes", "title"}
+                    if unknown:
+                        raise ValueError(f"unsupported device update fields: {sorted(unknown)}")
+                    kwargs = {key: data[key] for key in ("order", "attributes", "title") if key in data}
+                    return workflows.vm_device_update_action(str(name), device_id, **kwargs)
+                unknown = set(data) - {"delete_zvol", "delete_raw_file", "force"}
+                if unknown:
+                    raise ValueError(f"unsupported device delete fields: {sorted(unknown)}")
+                return workflows.vm_device_delete_action(
+                    str(name), device_id, delete_zvol=data.get("delete_zvol") is True,
+                    delete_raw_file=data.get("delete_raw_file") is True, force=data.get("force") is True)
             if operation in {"start", "stop", "restart", "poweroff", "suspend", "resume"}:
                 return workflows.vm_lifecycle_action(str(name), operation)
             return workflows.vm_delete_action(str(name))
@@ -408,6 +428,8 @@ class WorkflowView(Vertical):
                 return workflows.scrub_task_update_action(task_id, data)
             if operation == "run":
                 return workflows.scrub_task_run_action(task_id)
+            if operation in {"pause", "cancel"}:
+                return workflows.scrub_task_control_action(task_id, operation)
             if operation == "delete":
                 return workflows.scrub_task_delete_action(task_id)
         if self.key == "replication":
@@ -525,6 +547,10 @@ class PlanReview(ModalScreen[None]):
                 yield Static(f"Type this exact target to confirm:\n{self.plan.action.confirm_target}",
                              id="plan-confirm-target")
                 yield Input(placeholder="Type confirmation text exactly", id="plan-confirm")
+            if self.plan.action.confirm_second:
+                yield Static(f"This also destroys data. Type this exact name as the second confirmation:\n"
+                             f"{self.plan.action.confirm_second}", id="plan-confirm-second-target")
+                yield Input(placeholder="Type second confirmation exactly", id="plan-confirm-second")
             with Horizontal():
                 yield Button("Apply plan", id="plan-apply", variant="primary")
                 yield Button("Cancel", id="plan-cancel")
@@ -542,10 +568,13 @@ class PlanReview(ModalScreen[None]):
         confirmation = None
         if self.plan.action.confirm_target:
             confirmation = self.query_one("#plan-confirm", Input).value
+        second = None
+        if self.plan.action.confirm_second:
+            second = self.query_one("#plan-confirm-second", Input).value
         methods = {call.method for call in self.plan.action.calls}
         self.query_one("#plan-apply", Button).disabled = True
         self.query_one("#plan-progress", Static).update("Applying reviewed plan…")
-        self._apply_plan(confirmation, bool(methods & {"system.reboot", "system.shutdown", "update.run"}))
+        self._apply_plan(confirmation, bool(methods & {"system.reboot", "system.shutdown", "update.run"}), second)
 
     def action_cancel(self) -> None:
         self.dismiss()
@@ -553,7 +582,7 @@ class PlanReview(ModalScreen[None]):
             self.parent_view._plan_cancelled(self.plan)
 
     @work(thread=True, exclusive=True)
-    def _apply_plan(self, confirmation: str | None, system_action: bool) -> None:
+    def _apply_plan(self, confirmation: str | None, system_action: bool, second: str | None = None) -> None:
         lease = begin_session_work(self)
         if lease is None or lease.session is None:
             report_unavailable(
@@ -563,9 +592,10 @@ class PlanReview(ModalScreen[None]):
             return
         methods = {call.method for call in self.plan.action.calls}
         calls_before = len(self.session.rpc.calls)
+        extra = {"typed_second_confirmation": second} if self.plan.action.confirm_second else {}
         try:
             result = apply_plan(
-                self.plan, lease.session.rpc, allow_write=True, typed_confirmation=confirmation,
+                self.plan, lease.session.rpc, allow_write=True, typed_confirmation=confirmation, **extra,
                 job_progress=lambda job: post_session_callback(self, lease, "_show_job_progress", job),
                 cancelled=lease.cancelled.is_set)
         except Exception as exc:

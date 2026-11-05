@@ -312,7 +312,10 @@ Run-now uses the v27 `zpool.scrub.run` job with `START`, full `SCRUB`, and thres
 the exact pool is not boot-pool, is `ONLINE` or `DEGRADED`, and has no active scrub/resilver. Middleware documents that
 START can still return silently without starting when a validation fact changes after preflight; the recorded job
 outcome therefore does not claim scan activity was observed. `pool.scrub.run` and `pool.scrub.scrub` are deprecated
-and are not used by this workflow. Vanilla v27 exposes no SMART test-task method, so SMART task management is absent.
+and are not used by this workflow. Pause and cancel (TNT-57) use the same method with `PAUSE` and `CANCEL`, and are
+planned only while the schedule's pool reports a running `SCRUB`. In the TUI, the Virtual Machines view lists, updates
+and deletes devices (TNT-60); a delete that also destroys a zvol or raw file shows a second typed-confirmation field in
+the plan review. Vanilla v27 exposes no SMART test-task method, so SMART task management is absent.
 The API signatures and no-op conditions are linked in
 [v27 method evidence](API-METHODS-V27.md#pool-scrub-tasks-and-conditional-menu-probes).
 

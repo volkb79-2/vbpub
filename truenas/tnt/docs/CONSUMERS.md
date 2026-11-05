@@ -366,6 +366,8 @@ cat > scrub-update.json <<'JSON'
 JSON
 tnt task scrub update 1 --host lab --file scrub-update.json --allow-write
 tnt task scrub run 1 --host lab --allow-write
+tnt task scrub pause 1 --host lab --allow-write     # only while the pool's scrub is running
+tnt task scrub cancel 1 --host lab --allow-write
 tnt task scrub delete 1 --host lab --allow-write --confirm 'tank scrub schedule [1]'
 ```
 
