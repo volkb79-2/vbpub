@@ -199,6 +199,9 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- Test-strength closeout of the ciu 7.22.0 R2 mutation survivors (CIU-195): new tests pin the both-tags requirement of `_known_stack_projects`, the flushed no-Docker-socket INFO line and the stdout fallback of the runtime-network probe error; the `.gitignore` chain guard in `engine._gitignore_text_ignores` drops a provably dead `root != stack` conjunct. No behaviour change.
+
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=30ef50114b6da9ad7a0e72165104e7687f20af18 -->
