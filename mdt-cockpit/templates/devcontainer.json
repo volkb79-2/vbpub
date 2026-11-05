@@ -281,8 +281,9 @@
         // The VS Code server keeps terminal processes alive across a window reload or a dropped SSH
         // connection (not across a server restart: container restart/rebuild, OOM kill, server update).
         "terminal.integrated.enablePersistentSessions": true,
-        // Do not scan these generated trees for nested Git repositories (hundreds of worktrees).
-        "git.repositoryScanIgnoredFolders": ["node_modules", ".worktrees", ".run-gate"],
+        // Do not scan these generated trees for nested Git repositories (hundreds of worktrees; gate
+        // and assay scratch trees hold throwaway repositories).
+        "git.repositoryScanIgnoredFolders": ["node_modules", ".worktrees", ".run-gate", ".assay"],
         // Opt-in terminal key and tmux settings, and the client-side font/keybindings, are shipped as
         // copy-in files: templates/vscode/README.md.
         // Keep VS Code's inotify watcher off generated trees. Each watched directory costs one
@@ -290,6 +291,14 @@
         // and run/test output dwarf the real source tree. Without these, the watcher exhausts the
         // limit ("unable to watch for file changes ... ENOSPC"). Trade-off: the Source Control view
         // does not live-refresh inside a worktree under .worktrees/. Trim to your repo's layout.
+        // The same events drive extension rescans: an extension watcher on a plain glob (such as the
+        // Python Environments extension's marker-file watcher on "**/{*.py,*.pyi,pyproject.toml,...}",
+        // which re-runs a file search, up to a whole-workspace walk, on every create/delete) receives
+        // them from this watcher, so an excluded tree no longer triggers it. Patterns match relative
+        // to each workspace folder.
+        // These settings reach ~/.vscode-server/data/Machine/settings.json, which lives in the
+        // persisted home; a rebuild does not rewrite an existing file. After changing this block,
+        // merge it into that file, or move the file away before the rebuild (templates/vscode/README.md).
         "files.watcherExclude": {
           "**/.git/objects/**": true,
           "**/.git/subtree-cache/**": true,
@@ -300,6 +309,7 @@
           "**/.venv/**": true,
           "**/__pycache__/**": true,
           "**/.hypothesis/**": true,
+          "**/.assay/**": true,
           "**/artifacts/**": true,
           "**/downloads/**": true,
           // evidence/ and logs/ may hold tracked files: the explorer will not live-refresh there (git is unaffected).
@@ -309,8 +319,14 @@
         "search.exclude": {
           "**/.worktrees": true,
           "**/.run-gate": true,
+          "**/.assay": true,
           "**/pytest-of-*": true
-        }
+        },
+        // Extension file searches (workspace.findFiles, run as `rg --files`) follow symlinks by
+        // default, so a link into another tree walks that tree again. An extension that passes its
+        // own exclude pattern gets neither files.exclude nor search.exclude, which leaves this as the
+        // setting that shrinks those walks. Trade-off: Find in Files does not enter symlinked folders.
+        "search.followSymlinks": false
       },
       "extensions": [
         // Python & linting
