@@ -529,10 +529,15 @@ def test_operator_interrupt_clears_producer_failure_but_signals_do_not() -> None
     failed.on_producer_terminal("exhausted")
     assert failed.producer_failed is True
 
-    interrupted = ShutdownCoordinator(_Server())
-    interrupted.on_producer_terminal("failed")
-    interrupted.operator_interrupt()
-    assert interrupted.producer_failed is False
+    ended = ShutdownCoordinator(_Server())
+    ended.on_producer_terminal("exhausted")
+    ended.operator_interrupt()
+    assert ended.producer_failed is False
+
+    crashed = ShutdownCoordinator(_Server())
+    crashed.on_producer_terminal("failed")
+    crashed.operator_interrupt()
+    assert crashed.producer_failed is True
 
     fresh = ShutdownCoordinator(_Server())
     fresh.operator_interrupt()

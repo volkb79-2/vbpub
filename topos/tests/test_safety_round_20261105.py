@@ -6,6 +6,7 @@ Everything uses fakes and tmp_path; nothing touches cgroupfs, /sys or docker.
 from __future__ import annotations
 
 import json
+import os
 import signal
 import subprocess
 from pathlib import Path
@@ -1052,6 +1053,30 @@ def test_restore_guard_restores_even_without_signal_masking_and_tolerates_undele
     guard.restore()
     assert writes == ["max"]
     assert guard.restore_failed is False
+
+
+@pytest.mark.parametrize("write_fails", [True, False])
+def test_signal_during_restore_write_keeps_the_outcome_truthful(tmp_path, write_fails):
+    """A signal arriving mid-write fires at the unmask; the bookkeeping must be done by then."""
+    rec = tmp_path / "rec.json"
+    rec.write_text("{}")
+
+    def writer(_path, _name, _value):
+        os.kill(os.getpid(), signal.SIGTERM)
+        if write_fails:
+            raise OSError(22, "EINVAL")
+
+    guard = squeeze._RestoreGuard("/cg/x", "max", writer=writer, recovery_path=rec)
+    previous = signal.getsignal(signal.SIGTERM)
+    guard.__enter__()
+    try:
+        with pytest.raises(squeeze._Terminated):
+            guard.restore()
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+    assert guard.restore_failed is write_fails
+    assert rec.exists() is write_fails
 
 
 def test_run_squeeze_with_production_writer_derives_the_default_recovery_path(

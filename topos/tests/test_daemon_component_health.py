@@ -677,7 +677,8 @@ def test_daemon_serve_health_tracks_collector_lifecycle(
     monkeypatch.setattr(
         cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: FakeServer(_broker)
     )
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    # The collector really failed, so the interrupt must not turn this into a clean exit.
+    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 1
 
     states = [entry["components"][0]["state"] for entry in observed]
     assert states == ["starting", "healthy", "failed"]
@@ -711,6 +712,9 @@ def test_daemon_serve_initial_bpf_failure_reflects_last_valid_snapshot(
             self.cgroup_root = cgroup_root or config.cgroup_root
             self.config = config
             self.network_providers = ()
+
+        def collect_once(self):
+            return fixture_frame()
 
     class FakeBridge:
         def __init__(self, *args, **kwargs) -> None:
