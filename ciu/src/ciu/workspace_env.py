@@ -2109,12 +2109,16 @@ def generate_ciu_env(
     public_values = _detect_public_fqdn(repo_root, require_fqdn=False)
 
     user_name = os.environ.get("USER_NAME", os.environ.get("USER", ""))
-    user_uid = os.environ.get("USER_UID", str(os.getuid()))
-    user_gid = os.environ.get("USER_GID", str(os.getgid()))
-    docker_uid = os.environ.get("DOCKER_UID", user_uid)
+    # CIU-192: an exported-but-EMPTY id (`USER_UID=`) is "not set", never a
+    # value: `.get(key, default)` returned "" and persisted it as
+    # `container_uid = ""`, which every later bootstrap rejects as "Missing
+    # required workspace environment variables: CONTAINER_UID". "0" stays valid.
+    user_uid = os.environ.get("USER_UID") or str(os.getuid())
+    user_gid = os.environ.get("USER_GID") or str(os.getgid())
+    docker_uid = os.environ.get("DOCKER_UID") or user_uid
 
-    container_uid = os.environ.get("CONTAINER_UID", user_uid)
-    container_gid = os.environ.get("CONTAINER_GID", docker_gid)
+    container_uid = os.environ.get("CONTAINER_UID") or user_uid
+    container_gid = os.environ.get("CONTAINER_GID") or docker_gid
 
     python_exec = os.environ.get("PYTHON_EXECUTABLE", sys.executable)
     pip_exec = os.environ.get("PIP_EXECUTABLE") or shutil.which("pip") or ""
