@@ -75,11 +75,13 @@ fn looks_secret(name: &str) -> bool {
         }
     }
     // `tokenizer` is not a secret word, but the rest of the name may hold one: `--tokenizer-secret`,
-    // `HF_TOKENIZER_API_KEY`. The name gets shorter on each call, so this ends.
+    // `HF_TOKENIZER_API_KEY`. A `-` in its place keeps the parts apart (`toktokenizeren` is not `token`).
+    // The name gets shorter on each call, so this ends.
     if n.contains("tokenizer") {
-        return looks_secret(&n.replace("tokenizer", ""));
+        return looks_secret(&n.replace("tokenizer", "-"));
     }
-    if n.contains("password-stdin") {
+    // `docker login --password-stdin` takes no value; `--password-stdin-secret=x` is still judged
+    if n.strip_suffix("password-stdin").is_some_and(|rest| rest.is_empty() || rest.ends_with(['-', '_'])) {
         return false;
     }
     // whole parts, not substrings: `-pw`, `--auth` are secret, `--author`, `--authority` are not
@@ -370,6 +372,7 @@ mod redaction_tests {
         // `tokenizer` itself is no secret, the rest of the name is still judged
         assert_eq!(r(&["--tokenizer-secret=abc", "HF_TOKENIZER_API_KEY=abc"]), "--tokenizer-secret=<redacted> HF_TOKENIZER_API_KEY=<redacted>");
         assert_eq!(r(&["--tokenizer-password", "abc", "--tokenizer-name", "bert"]), "--tokenizer-password <redacted> --tokenizer-name bert");
+        assert_eq!(r(&["--toktokenizeren", "bert", "--password-stdin-secret=abc"]), "--toktokenizeren bert --password-stdin-secret=<redacted>");
         assert_eq!(r(&["--auth-tokens=abc"]), "--auth-tokens=<redacted>");
         assert_eq!(r(&["API_TOKENS=abc"]), "API_TOKENS=<redacted>");
         assert_eq!(r(&["--valid-tokens", "abc"]), "--valid-tokens <redacted>");
