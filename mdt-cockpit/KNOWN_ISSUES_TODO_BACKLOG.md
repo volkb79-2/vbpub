@@ -1435,7 +1435,7 @@ with no score, not a parse of the challenge HTML.
 **Open.**
 1. A supported refresh: for example a finalize step that merges the template's `customizations.vscode.settings` into the machine settings file (template keys win, user-only keys kept), or a `mdt` verb that does the same. It needs a source for the effective settings inside the container (the workspace `devcontainer.json` as JSONC, or the metadata label).
 2. A check that warns when a template key is missing from the machine settings file.
-## MDT-076 - nothing in host provisioning publishes the run-gate gates cap; a reinstalled runner host refuses every dstdns lane (2026-11-05)
+## MDT-077 - nothing in host provisioning publishes the run-gate gates cap; a reinstalled runner host refuses every dstdns lane (2026-11-05)
 
 **Status:** DONE on branch `mdt-admission-20261105` (found on v1001 after the 2026-11-05 reinstall; review findings addressed in the fix round). The finding text was first filed on `mdt-admission-cap-gap-20261105` (`5e37e9cf8`); this entry supersedes it.
 **Symptom.** dstdns sets `[admission] enabled = true`, `unreadable_policy = "refuse"`. On a fresh Docker daemon no `ciu-admission-<g>` object exists, so every lane ends `NOT_RUN no-headroom` ("no gates limit is published and unreadable_policy=refuse"); the v1001 dstdns chain retried 11+ times at 3-minute intervals while the host sat ~65% idle.

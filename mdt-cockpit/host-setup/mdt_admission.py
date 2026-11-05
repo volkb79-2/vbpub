@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish the daemon-wide run-gate gates cap from host capacity (MDT-076).
+"""Publish the daemon-wide run-gate gates cap from host capacity (MDT-077).
 
 run-gate's count admission (``[admission] enabled = true`` in a consumer's run-gate.toml) reads one
 Docker-daemon object: a never-started ``ciu-admission-<generation>`` container whose label

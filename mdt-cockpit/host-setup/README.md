@@ -786,7 +786,7 @@ at install time. All four memory controls may be omitted. The manual path requir
 complete valid config; the wizard writes its candidate only after the prompts
 complete and the installer backs up any existing config only after validation.
 
-### run-gate gates admission cap (MDT-076)
+### run-gate gates admission cap (MDT-077)
 
 run-gate's count admission is a project switch (`[admission] enabled = true` in the consumer's `run-gate.toml`,
 dstdns sets it). The cap it enforces is not in any file: it is a Docker-daemon object, a never-started
@@ -1045,7 +1045,7 @@ the test stacks.
 | `scripts/mdt-slice-memory-min-low-audit.py` | `/usr/local/sbin/` | read-only audit of only `memory.min`/`memory.low` — logs a `[WARN]` when an ancestor makes a value ineffective |
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | shared Linux-derived `io.cost` coefficient matrix against a persistent file → `/var/lib/mdt/io-baseline.env` (identity-bound benchmark results) |
 | `mdt-host-setup-wizard.py` (a sibling of `install.sh`, not under `scripts/`, because it is never installed onto the host) | not installed — run from this directory via `install.sh --wizard`, or directly as `sudo ./mdt-host-setup-wizard.py` to reconfigure an already-installed host | interactive `/etc/mdt/host-setup.env` builder (see Quick start); template surgery on `host-setup.env.example`, never generated from scratch |
-| `mdt_admission.py` | `/usr/local/sbin/mdt_admission.py` | derives the run-gate gates admission cap from host capacity and publishes it (`install.sh`, `install.sh --admission-only`); read by `mdt-host-check.sh` (MDT-076) |
+| `mdt_admission.py` | `/usr/local/sbin/mdt_admission.py` | derives the run-gate gates admission cap from host capacity and publishes it (`install.sh`, `install.sh --admission-only`); read by `mdt-host-check.sh` (MDT-077) |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
 | `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | the LEGACY BFQ path, kept only while `IO_ROOT_SCHEDULER` is not set; with it set, `60-mdt-io-scheduler.rules` replaces it and the module file is installed only for `bfq` |
 | (merged, not copied) | `/etc/docker/daemon.json` | `cgroup-parent` (D-G7 default) + `live-restore`/log rotation — this is the file's ONE owner now; every key is merged in, nothing else in the file is touched |
@@ -1476,7 +1476,7 @@ effective cgroupfs values (including `io.bfq.weight` next to `io.weight` —
 under BFQ only the former is what schedules), zswap-writeback policy,
 `dev.slice`'s `io.max` + baseline device/target identity, the `docker-.scope.d` backstop's
 presence, BFQ scheduler, timer enablement, and lists every running
-container's cgroup parent, and the published run-gate gates admission cap against the host policy (MDT-076,
+container's cgroup parent, and the published run-gate gates admission cap against the host policy (MDT-077,
 above). Exit 0 = no failures (warnings possible).
 
 The one failure it reports as FAIL rather than WARN is a missing

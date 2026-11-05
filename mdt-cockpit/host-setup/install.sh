@@ -12,7 +12,7 @@
 #   sudo ./install.sh --wizard --reset      # re-seed answers from this example
 #   sudo ./install.sh --with-baseline       # remeasure in a quiet disk window
 #   sudo ./install.sh --observer-only       # provision the cgprofile observer directory only
-#   sudo ./install.sh --admission-only      # (re)publish the run-gate gates admission cap only (MDT-076)
+#   sudo ./install.sh --admission-only      # (re)publish the run-gate gates admission cap only (MDT-077)
 # Run these commands from the Docker host shell, never from a devcontainer;
 # container root cannot apply the host's systemd, cgroup, or /etc policy.
 #
@@ -131,7 +131,7 @@ Options
                       drain deadline, naming the sessions it aborts. Never
                       implied by an environment variable.
   --admission-only    Publish (or reconcile) the daemon-wide run-gate gates admission cap
-                      (MDT-076) from the installed /etc/mdt/host-setup.env and nothing else. The
+                      (MDT-077) from the installed /etc/mdt/host-setup.env and nothing else. The
                       cap is derived from this host's gates tier: max(1, min(CPU cores / 2, gates
                       MemoryHigh / 2G)); ADMISSION_MAX_CONCURRENT pins it, ADMISSION_CPUS_PER_GATE
                       and ADMISSION_MEMORY_PER_GATE tune the formula. By default, a full install
@@ -408,7 +408,7 @@ if [ "$CGPROFILE_ONLY" = 1 ]; then
   exec bash "$HERE/scripts/mdt-cgprofile-install.sh" "${_cgprofile_args[@]}"
 fi
 
-# --admission-only (MDT-076): (re)publish the run-gate gates cap from the installed host policy, nothing else.
+# --admission-only (MDT-077): (re)publish the run-gate gates cap from the installed host policy, nothing else.
 # Run it after the runner/cockpit exists: a fresh install cannot publish before run-gate and the ticket image
 # are there (the full install then says so and exits 0), a reinstall loses the cap with the Docker daemon.
 if [ "$ADMISSION_ONLY" = 1 ]; then
@@ -1470,7 +1470,7 @@ install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-
 # check.sh renders the expected cgpd.toml through the installer's --print-config (MDT-055 drift check).
 install -m 0755 "$HERE/scripts/mdt-cgprofile-install.sh" /usr/local/sbin/mdt-cgprofile-install.sh
 install -m 0644 "$HERE/mdt_capacity.py"                 /usr/local/sbin/mdt_capacity.py
-# The gates admission cap (MDT-076): derived from the same capacity, published by `install.sh` and read by mdt-host-check.sh.
+# The gates admission cap (MDT-077): derived from the same capacity, published by `install.sh` and read by mdt-host-check.sh.
 install -m 0644 "$HERE/mdt_admission.py"                /usr/local/sbin/mdt_admission.py
 install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
 install -D -m 0644 "$HERE/etc/profile.d/mdt-buildkit.sh" /etc/profile.d/mdt-buildkit.sh
@@ -1660,7 +1660,7 @@ else
 fi
 systemctl enable mdt-container-io-events-watcher.service         # reactive per-container IO caps (docker events)
 
-# run-gate gates admission cap (MDT-076, ADMISSION_* keys): a fresh Docker daemon (every reinstall) has no
+# run-gate gates admission cap (MDT-077, ADMISSION_* keys): a fresh Docker daemon (every reinstall) has no
 # ciu-admission-<g> object, and a project with [admission] enabled then refuses every lane (no-headroom). Publish
 # the cap host policy yields (idempotent; ADMISSION_PUBLISH=auto only creates it when no readable cap exists, while
 # `replace` opts into replacing differences here too). A missing run-gate / cockpit / ticket image is a printed NOTE

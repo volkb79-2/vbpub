@@ -1201,7 +1201,7 @@ else
   done <<<"$_tree_out"
 fi
 
-echo "== run-gate gates admission cap (MDT-076) =="
+echo "== run-gate gates admission cap (MDT-077) =="
 # One implementation (mdt_admission.py check): the Docker daemon publishes the cap run-gate's count admission reads
 # (ciu-admission-<g>, label gates.max_concurrent). A reinstalled host has none and every lane of a project with
 # [admission] enabled ends NOT_RUN no-headroom, so a missing cap is a FAIL; a value that differs from the host policy

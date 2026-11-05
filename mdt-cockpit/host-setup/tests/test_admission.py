@@ -1,4 +1,4 @@
-"""MDT-076: host-setup publishes the run-gate gates admission cap from host capacity.
+"""MDT-077: host-setup publishes the run-gate gates admission cap from host capacity.
 
 Hermetic: pure derivation over env dicts and fake host totals; every host effect (docker, run-gate) goes through a
 fake ``run`` callable. Nothing here starts a container, reads the real /proc or touches /etc/mdt."""
@@ -662,7 +662,7 @@ class WiringTests(unittest.TestCase):
 
     def test_the_checker_section_maps_every_level_and_survives_a_crashing_helper(self) -> None:
         text = self.check
-        start = text.index('echo "== run-gate gates admission cap (MDT-076) =="')
+        start = text.index('echo "== run-gate gates admission cap (MDT-077) =="')
         section = text[start:text.index('echo "== per-host CPU benchmark (HB-3) =="')]
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
@@ -752,7 +752,7 @@ class WiringTests(unittest.TestCase):
         self.assertIn("sudo ./host-setup/install.sh --admission-only", self.readme)
         self.assertIn("sudo ./host-setup/install.sh --admission-only", self.consumers)
         self.assertIn("#mdt-076-admission-cap-publication-policy", self.readme)
-        self.assertIn("## MDT-076 admission-cap publication policy", self.design)
+        self.assertIn("## MDT-077 admission-cap publication policy", self.design)
         self.assertIn("#run-gate-admission-cap", self.readme)
         self.assertIn("### Run-Gate admission cap", self.consumers)
 

@@ -756,7 +756,7 @@ decoy.
 See the [consumer setup](CONSUMERS.md#host-cgroup-preflight) for the required
 install and rebuild steps.
 
-## MDT-076 admission-cap publication policy
+## MDT-077 admission-cap publication policy
 
 The gate cap follows the limits host-setup actually renders: the effective CPU
 budget is bounded by both `dev.slice`'s `DEV_CPU_QUOTA` and
