@@ -744,6 +744,12 @@ def _task_protocol_cli(ident: CliIdentity, opener: SessionOpener, kind: str) -> 
                                 group=VerbGroup.MODIFICATION.value, arguments=(id_arg,), options=write_options,
                                 handler=lambda a, r: _workflow_action(a, r, opener,
                                     lambda s: s.workflows.scrub_task_run_action(a.task_id))))
+        for verb, text in (("pause", "Pause the running scrub on the schedule's pool."),
+                           ("cancel", "Cancel the running scrub on the schedule's pool.")):
+            child.register(VerbSpec(verb, None, text, group=VerbGroup.MODIFICATION.value, arguments=(id_arg,),
+                                    options=write_options,
+                                    handler=lambda a, r, verb=verb: _workflow_action(a, r, opener,
+                                        lambda s: s.workflows.scrub_task_control_action(a.task_id, verb))))
         child.register(VerbSpec("delete", None, "Delete a pool scrub schedule (typed confirmation required).",
                                 group=VerbGroup.MODIFICATION.value, arguments=(id_arg,), options=write_options,
                                 handler=lambda a, r: _workflow_action(a, r, opener,
