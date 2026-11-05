@@ -16,14 +16,57 @@ Use ONE of the two key profiles, not both.
 The VS Code window runs on your Windows machine and the VS Code server runs in the container. A
 setting is read from the layer that owns it:
 
-- `.vscode/settings.json` in the workspace, or the devcontainer's `customizations.vscode.settings`:
-  applies to everyone who opens this workspace in the container.
-- Remote/machine settings (`~/.vscode-server/data/Machine/settings.json` in the container): this
-  container only, kept in the persisted home.
+- `.vscode/settings.json` in a workspace folder: that folder, for everyone who opens it.
+- The `"settings"` of a `.code-workspace` file: every folder of that multi-root workspace.
+- The devcontainer's `customizations.vscode.settings`: written into the remote/machine settings file
+  below, which a rebuild does not rewrite (see next section).
+- Remote/machine settings (`~/.vscode-server/data/Machine/settings.json` in the container): every
+  workspace opened in this container, kept in the persisted home.
 - User settings on Windows: every window of yours.
 - Keybindings and fonts are client-side: `keybindings.json`, and `terminal.integrated.fontFamily` (the
   font must be installed on Windows; for an icon-heavy prompt use a Nerd Font family name exactly as
   Windows lists it).
+
+## Template settings and the persisted home
+
+The home, including `~/.vscode-server`, survives a rebuild. A rebuild does not rewrite an existing
+`~/.vscode-server/data/Machine/settings.json`, so a setting added to the template's
+`customizations.vscode.settings` after that file was created never takes effect: a container created
+2026-11-03 carried `files.watcherExclude` in its `devcontainer.metadata` label while its machine
+settings, written 2026-10-23, did not (MDT-076). Two ways to apply a changed block:
+
+- Merge it into `~/.vscode-server/data/Machine/settings.json` by hand, then run `Developer: Reload Window`.
+- Move the file away (`mv ~/.vscode-server/data/Machine/settings.json{,.bak}`), rebuild, then copy back
+  any keys of your own from the `.bak` file.
+
+Check the result: `grep -c watcherExclude ~/.vscode-server/data/Machine/settings.json` prints 1.
+
+## A home folder in a multi-root workspace
+
+`/home/vscode` can stay a folder of a `.code-workspace` while its tool state is kept out of watching
+and searching. Resource settings (`files.watcherExclude`, `search.exclude`, `search.followSymlinks`)
+are read per folder, so put them in that folder's own `/home/vscode/.vscode/settings.json`. It lives
+in the persisted home and affects no other folder:
+
+```jsonc
+{
+  "files.watcherExclude": {
+    ".vscode-server/**": true, ".cache/**": true, ".npm/**": true,
+    ".codex/**": true, ".codex2/**": true, ".claude/**": true
+  },
+  "search.exclude": {
+    ".vscode-server": true, ".cache": true, ".npm": true,
+    ".codex": true, ".codex2": true, ".claude": true
+  },
+  "search.followSymlinks": false
+}
+```
+
+Still not covered: an extension's own file search (`workspace.findFiles` with its own exclude) and a
+language server's own indexer walk the folder regardless; `search.followSymlinks: false` keeps those
+walks from following links out of it. An extension that activates on `workspaceContains:` can also be
+activated by a file there (Terraform was, by `.tf` files in Codex's plugin cache); disable such an
+extension's server per folder, for example `"terraform.languageServer.enable": false`.
 
 ## Verify before you rely on it
 
