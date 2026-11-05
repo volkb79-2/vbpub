@@ -172,18 +172,60 @@ def test_safe_audit_rejects_unsafe_parent_component(monkeypatch: pytest.MonkeyPa
     assert calls["close"] == [10, 11]
 
 
-def test_safe_audit_creates_private_component_with_nofollow(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_safe_audit_creates_private_directory_and_file_on_real_filesystem(tmp_path: Path) -> None:
     import topos.actions.execute as execute
 
-    calls = _fake_audit_os(
-        monkeypatch,
-        component_results={"logs": [FileNotFoundError("logs"), 11]},
-    )
-    fh = execute._open_safe_audit(Path("/logs/audit.jsonl"), require_root_owner=False)
-    assert calls["mkdir"] == [(("logs", 0o700), {"dir_fd": 10})]
-    assert [entry[0] for entry in calls["open"]] == ["/", "logs", "logs", "audit.jsonl"]
-    assert calls["fchmod"] == [(12, 0o600)]
+    target = tmp_path / "logs" / "audit.jsonl"
+    fh = execute._open_safe_audit(target, require_root_owner=False)
+    fh.write("x\n")
     fh.close()
+
+    assert stat.S_IMODE((tmp_path / "logs").stat().st_mode) == 0o700
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_text() == "x\n"
+
+
+def test_safe_audit_refuses_symlinked_parent_component(tmp_path: Path) -> None:
+    import topos.actions.execute as execute
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    (tmp_path / "logs").symlink_to(elsewhere)
+
+    with pytest.raises(OSError):  # O_NOFOLLOW on a symlinked directory component
+        execute._open_safe_audit(tmp_path / "logs" / "audit.jsonl", require_root_owner=False)
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_safe_audit_refuses_symlinked_leaf(tmp_path: Path) -> None:
+    import topos.actions.execute as execute
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    logs = tmp_path / "logs"
+    logs.mkdir(mode=0o700)
+    (logs / "audit.jsonl").symlink_to(victim)
+
+    with pytest.raises(execute._AuditError, match="not a regular file"):
+        execute._open_safe_audit(logs / "audit.jsonl", require_root_owner=False)
+    assert victim.read_text() == "keep"
+
+
+def test_safe_audit_refuses_group_writable_parent_and_broad_leaf(tmp_path: Path) -> None:
+    import topos.actions.execute as execute
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    logs.chmod(0o770)
+    with pytest.raises(execute._AuditError, match="not a private directory"):
+        execute._open_safe_audit(logs / "audit.jsonl", require_root_owner=False)
+
+    logs.chmod(0o700)
+    leaf = logs / "audit.jsonl"
+    leaf.write_text("")
+    leaf.chmod(0o644)
+    with pytest.raises(execute._AuditError, match="permissions are too broad"):
+        execute._open_safe_audit(leaf, require_root_owner=False)
 
 
 @pytest.mark.parametrize(
