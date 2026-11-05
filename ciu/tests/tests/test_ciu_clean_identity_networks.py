@@ -96,7 +96,8 @@ class FakeDocker:
                 containers = {
                     ep["id"]: {"Name": ep["name"]} for ep in self.networks[name]
                 }
-                return _proc(0, json.dumps([{"Name": name, "Containers": containers}]), "")
+                return _proc(0, json.dumps([{"Name": name, "Containers": containers,
+                                         "Labels": {"ciu.instance": "abc123"}}]), "")
             if sub == "disconnect":
                 ep = args[3]
                 if ep in self.fail_disconnect_for:

@@ -4442,6 +4442,9 @@ class _CleanOwner:
     instance_id: Optional[str]
     repo_root: Optional[str]
     is_instance: bool
+    # A worktree instance whose facts were READ but carry no instance id: its
+    # shared-tag objects cannot be attributed, so a tagged clean refuses.
+    unattributable: bool = False
 
 
 _NO_LABEL = ("", "<no value>")
@@ -4456,10 +4459,11 @@ def _clean_owner(repo_root: Path) -> Optional[_CleanOwner]:
     from .workspace_env import WorkspaceEnvError, read_generated_facts
 
     is_instance = _is_worktree_instance(repo_root)
+    readable = True
     try:
         facts = read_generated_facts(repo_root, allow_repair=False)
     except WorkspaceEnvError:
-        facts = {}
+        facts, readable = {}, False
     instance_id = facts.get("instance_id") or None
     physical = facts.get("physical_repo_root") or None
     if instance_id is None and not is_instance:
@@ -4468,6 +4472,13 @@ def _clean_owner(repo_root: Path) -> Optional[_CleanOwner]:
         instance_id=instance_id,
         repo_root=os.path.normpath(physical) if physical else None,
         is_instance=is_instance,
+        # A never-generated checkout (no facts file) owns nothing, so the
+        # strict filter removes nothing and the clean proceeds; only a facts
+        # file that exists yet records no id is refused.
+        unattributable=(
+            is_instance and readable and instance_id is None
+            and generated_facts_path(repo_root).exists()
+        ),
     )
 
 
@@ -4723,7 +4734,30 @@ def _is_worktree_instance(repo_root: Path) -> bool:
     workspace may deliberately keep its own network (devcontainer residence)
     but must then SAY so.
     """
-    return (repo_root / worktree_pkg.WORKTREE_INSTANCE_RECORD).is_file()
+    if (repo_root / worktree_pkg.WORKTREE_INSTANCE_RECORD).is_file():
+        return True
+    # CIU-191: the record is written per CIU root, and a multi-root checkout's
+    # sibling root may not carry one. A LINKED git worktree is never the main
+    # checkout, so it takes the strict (instance) ownership rule either way.
+    return _is_linked_git_worktree(repo_root)
+
+
+def _is_linked_git_worktree(repo_root: Path) -> bool:
+    """True when *repo_root* is inside a linked git worktree (git-dir != common-dir)."""
+    import subprocess
+
+    def rev(flag: str) -> Optional[str]:
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute", flag],
+                capture_output=True, text=True, check=False,
+            )
+        except OSError:
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+
+    git_dir, common = rev("--git-dir"), rev("--git-common-dir")
+    return bool(git_dir and common and os.path.realpath(git_dir) != os.path.realpath(common))
 
 
 def _stack_compose_project(repo_root: Path, config: dict, stack_dir: Path) -> str:
@@ -4947,6 +4981,26 @@ def _endpoint_foreign_reason(name: str, owner: _CleanOwner) -> Optional[str]:
     )
 
 
+def _network_foreign_reason(network: str, owner: _CleanOwner) -> Optional[str]:
+    """None when *network*'s own ownership labels name *owner*, else why not.
+
+    Compose also stamps ``com.docker.compose.project`` on a network, but that
+    is shared by every checkout with the same deploy tags and is NOT ownership
+    proof. A network that cannot be inspected is not provably the owner's.
+    """
+    inspect = procutil.docker(["network", "inspect", network], capture=True, check=False)
+    if inspect.returncode != 0:
+        return "could not be inspected"
+    try:
+        data = json.loads(inspect.stdout)
+        labels = (data[0].get("Labels") or {}) if isinstance(data, list) and data else {}
+    except (json.JSONDecodeError, AttributeError):
+        return "could not be inspected"
+    return _owner_verdict(
+        owner, str(labels.get("ciu.instance", "")), str(labels.get("ciu.repo-root", "")),
+    )
+
+
 def _split_foreign_endpoint_networks(
     networks: list[str],
     owner: Optional[_CleanOwner],
@@ -4960,7 +5014,9 @@ def _split_foreign_endpoint_networks(
     endpoint before removing a network, which is only correct when the endpoint
     is this owner's own. A network with an endpoint that is neither in
     *removing* (containers this same clean is removing) nor provably *owner*'s
-    belongs to someone else and is KEPT, never disconnected. *exempt* (the
+    belongs to someone else and is KEPT, never disconnected, and a network
+    whose own ownership labels are not the owner's is kept regardless of
+    endpoints. *exempt* (the
     checkout's own identity network) is always removable.
     """
     if owner is None:
@@ -4972,6 +5028,12 @@ def _split_foreign_endpoint_networks(
             # The instance-unique identity network is this checkout's by name;
             # a devcontainer attached to it is detached by design (CIU-43).
             removable.append(net)
+            continue
+        # CIU-191: the network's OWN labels decide first; a stopped foreign
+        # stack leaves its network with no running endpoint to betray it.
+        own_reason = _network_foreign_reason(net, owner)
+        if own_reason is not None:
+            kept.append((net, f"not this checkout's network: {own_reason}"))
             continue
         try:
             endpoints = _network_endpoints(net)
@@ -5649,6 +5711,13 @@ def action_clean(
     owner = _clean_owner(repo_root)
     name_owner = owner if tagged else None
     skipped: list[tuple[str, str]] = []
+    if tagged and owner is not None and owner.unattributable:
+        error(
+            f"[CIU-191] {repo_root} is a managed worktree but records no instance id, "
+            "so the objects that share its deploy tags cannot be attributed to it; "
+            "refusing to clean. Run `ciu env generate` in that worktree first."
+        )
+        return 1
     if plan_only:
         # `--dry-run`: print the plan and stop. The destructive passes below
         # never run, and the real clean does not re-print it (the plan is the

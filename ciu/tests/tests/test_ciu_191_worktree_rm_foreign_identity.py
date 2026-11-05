@@ -73,6 +73,12 @@ class SharedDaemon:
             "naf-wt-network": [],
         }
         self.network_projects = {"naf-dev_default": "naf-dev", "naf-wt-network": "naf-dev"}
+        # network -> (instance label, repo-root label); compose's own project
+        # label is deliberately NOT ownership.
+        self.network_owners = {
+            "naf-dev_default": (MAIN_ID, MAIN_ROOT),
+            "naf-wt-network": (WT_ID, WT_ROOT),
+        }
         self.calls: list[list[str]] = []
         self.fail_inspect: set[str] = set()
 
@@ -122,7 +128,12 @@ class SharedDaemon:
                 if name not in self.networks:
                     return _proc(1, "", "no such network")
                 containers = {f"id-{e}": {"Name": e} for e in self.networks[name]}
-                return _proc(0, json.dumps([{"Name": name, "Containers": containers}]))
+                labels = {"ciu.instance": inst, "ciu.repo-root": root} if (
+                    (inst := self.network_owners.get(name, ("", ""))[0]) is not None
+                    and (root := self.network_owners.get(name, ("", ""))[1]) is not None
+                    and inst
+                ) else {}
+                return _proc(0, json.dumps([{"Name": name, "Containers": containers, "Labels": labels}]))
             if sub == "disconnect":
                 self.networks[name] = [e for e in self.networks[name] if e != args[3]]
                 return _proc(0)
@@ -260,6 +271,7 @@ def test_network_endpoint_listing_failure_keeps_the_network(monkeypatch):
         raise ValueError("unparsable")
 
     monkeypatch.setattr(deploy, "_network_endpoints", broken)
+    monkeypatch.setattr(deploy, "_network_foreign_reason", lambda *_a: None)
     owner = deploy._CleanOwner(WT_ID, WT_ROOT, True)
     removable, kept = deploy._split_foreign_endpoint_networks(["n"], owner)
     assert removable == []
@@ -292,7 +304,7 @@ def test_plan_names_networks_kept_for_foreign_endpoints_and_unowned_identity(
 ):
     repo = _checkout(tmp_path, instance=True, instance_id=WT_ID, root=WT_ROOT)
     daemon = SharedDaemon()
-    daemon.network_projects["naf-dev_default"] = "naf-dev"
+    daemon.network_owners["naf-dev_default"] = (WT_ID, WT_ROOT)  # ours, foreign endpoint
     _run(monkeypatch, repo, daemon, plan_only=True)
     out = capsys.readouterr().out
     assert "NOT touching network naf-dev_default: still has foreign endpoint(s): naf-dev-app" in out
@@ -393,7 +405,7 @@ def test_clean_owner_is_none_without_any_identity(tmp_path):
 def test_clean_owner_with_unreadable_facts_in_an_instance(tmp_path):
     (tmp_path / "ciu.worktree-instance.json").write_text("{}", encoding="utf-8")
     owner = deploy._clean_owner(tmp_path)
-    assert owner == deploy._CleanOwner(None, None, True)
+    assert owner == deploy._CleanOwner(None, None, True, False)  # never generated
 
 
 # ---------------------------------------------------------------------------
@@ -598,3 +610,72 @@ def test_unowned_stack_volume_listing_failure_raises(monkeypatch):
     monkeypatch.setattr(deploy.procutil, "docker", lambda *a, **k: _proc(1, "", "down"))
     with pytest.raises(ValueError, match="docker volume ls failed for compose project 'p'"):
         deploy._list_stack_project_volumes(["p"])
+
+
+def test_stopped_foreign_network_with_the_same_compose_project_survives(
+    monkeypatch, tmp_path, capsys
+):
+    """F1: main's stack is stopped, so its network lists no running endpoint;
+    the compose project label is shared and is NOT ownership. Labels decide."""
+    repo = _checkout(tmp_path, instance=True, instance_id=WT_ID, root=WT_ROOT)
+    daemon = SharedDaemon()
+    daemon.networks["naf-dev_default"] = []
+    assert _run(monkeypatch, repo, daemon) == 0
+    assert "naf-dev_default" in daemon.networks
+    assert "naf-wt-network" not in daemon.networks
+
+
+def test_unlabelled_network_is_kept_in_a_worktree_but_removed_by_main(
+    monkeypatch, tmp_path
+):
+    repo = _checkout(tmp_path / "wt", instance=True, instance_id=WT_ID, root=WT_ROOT) \
+        if (tmp_path / "wt").mkdir() is None else None
+    daemon = SharedDaemon()
+    daemon.networks["naf-dev_default"] = []
+    del daemon.network_owners["naf-dev_default"]
+    _run(monkeypatch, repo, daemon)
+    assert "naf-dev_default" in daemon.networks
+
+
+def test_uninspectable_network_is_kept(monkeypatch):
+    owner = deploy._CleanOwner(WT_ID, WT_ROOT, True)
+    monkeypatch.setattr(deploy.procutil, "docker", lambda *a, **k: _proc(1, "", "x"))
+    assert deploy._network_foreign_reason("n", owner) == "could not be inspected"
+    monkeypatch.setattr(deploy.procutil, "docker", lambda *a, **k: _proc(0, "not json"))
+    assert deploy._network_foreign_reason("n", owner) == "could not be inspected"
+    monkeypatch.setattr(deploy.procutil, "docker", lambda *a, **k: _proc(0, "[]"))
+    assert "unlabelled" in deploy._network_foreign_reason("n", owner)
+
+
+def test_worktree_whose_facts_record_no_instance_id_refuses(monkeypatch, tmp_path, capsys):
+    repo = _checkout(tmp_path, instance=True, instance_id="", root=WT_ROOT)
+    daemon = SharedDaemon()
+    assert _run(monkeypatch, repo, daemon) == 1
+    assert "records no instance id" in capsys.readouterr().out
+    assert daemon.mutations() == []
+
+
+def test_linked_git_worktree_takes_the_strict_rule_without_a_record(tmp_path):
+    """F3: a sibling CIU root of a linked worktree may carry no record file."""
+    import subprocess as sp
+
+    main = tmp_path / "main"
+    main.mkdir()
+    for cmd in (["init", "-q", "-b", "main"], ["-c", "user.name=t", "-c", "user.email=t@t",
+                "commit", "-q", "--allow-empty", "-m", "i"]):
+        sp.run(["git", "-C", str(main), *cmd], check=True, capture_output=True)
+    linked = tmp_path / "linked"
+    sp.run(["git", "-C", str(main), "worktree", "add", "-q", "-b", "b", str(linked)],
+           check=True, capture_output=True)
+    (linked / "sibling").mkdir()
+    assert deploy._is_worktree_instance(linked / "sibling") is True
+    assert deploy._is_worktree_instance(main) is False
+    assert deploy._is_worktree_instance(tmp_path / "nowhere-not-git") is False
+
+
+def test_missing_git_binary_is_not_a_linked_worktree(monkeypatch, tmp_path):
+    def boom(*a, **k):
+        raise OSError("no git")
+
+    monkeypatch.setattr("subprocess.run", boom)
+    assert deploy._is_linked_git_worktree(tmp_path) is False
