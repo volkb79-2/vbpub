@@ -1015,7 +1015,10 @@ def _resolve_own_container_name(configured: str) -> str:
     ``configured`` comes from ``DEVCONTAINER_NAME``/``HOSTNAME`` and can name
     a container that is not this one (a stale generated machine fact). When
     the own container id is known and Docker names it differently, the real
-    name wins; an unreadable id or failed inspect keeps *configured*.
+    name wins; an unreadable id keeps *configured*, a failed inspect keeps it
+    with a warning. A *configured* value that is a prefix of the own id (the
+    ``HOSTNAME`` fallback is the 12-hex short id) is the same container, not a
+    mismatch: it resolves to the real name without a warning.
     """
     own_id = _own_container_id()
     if not own_id:
@@ -1027,8 +1030,18 @@ def _resolve_own_container_name(configured: str) -> str:
         check=False,
     )
     actual = result.stdout.strip().lstrip("/") if result.returncode == 0 else ""
-    if not actual or actual == configured:
+    if not actual:
+        detail = (result.stderr or "").strip() or "no container name returned"
+        _log_warn(
+            f"could not inspect this process's own container {own_id[:12]} ({detail}); "
+            f"attaching {configured!r} unverified, which may be a stale "
+            "DEVCONTAINER_NAME."
+        )
         return configured
+    if actual == configured:
+        return configured
+    if configured and own_id.startswith(configured):
+        return actual
     _log_warn(
         f"DEVCONTAINER_NAME/HOSTNAME names {configured!r} but this process runs in "
         f"container {actual!r}; attaching {actual!r}."

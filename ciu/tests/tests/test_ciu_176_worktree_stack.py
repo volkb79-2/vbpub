@@ -42,12 +42,8 @@ def tmp_repo(tmp_path: Path) -> Path:
     return repo
 
 
-_REAL_REQUIRE_FACTS = deploy._require_primary_generated_facts  # before the autouse stub
-
-
 class TestPrimaryWithoutGeneratedFacts:
-    def test_refuses_naming_primary_root_and_command(self, tmp_repo, monkeypatch):
-        monkeypatch.setattr(deploy, "_require_primary_generated_facts", _REAL_REQUIRE_FACTS)
+    def test_refuses_naming_primary_root_and_command(self, tmp_repo):
         linked = tmp_repo / ".worktrees" / "wt"
         assert _git(["worktree", "add", "-b", "wt", str(linked), "main"], tmp_repo).returncode == 0
         with pytest.raises(ValueError) as excinfo:
@@ -59,10 +55,64 @@ class TestPrimaryWithoutGeneratedFacts:
         assert "Missing required environment" not in message
 
 
-    def test_present_generated_facts_pass(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(deploy, "_require_primary_generated_facts", _REAL_REQUIRE_FACTS)
+    def test_present_generated_facts_pass(self, tmp_path):
         (tmp_path / "ciu.instance.generated.toml").write_text("", encoding="utf-8")
         assert deploy._require_primary_generated_facts(tmp_path) is None
+
+    def test_bake_surfaces_the_refusal_without_a_doubled_prefix(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        from ciu import cli, dev, image_isolation, worktree
+
+        repo = tmp_path / "repo"
+        primary = tmp_path / "primary"
+        repo.mkdir()
+        primary.mkdir()
+        monkeypatch.setattr(dev, "resolve_repo_root", lambda *_a, **_kw: repo)
+        monkeypatch.setattr(worktree, "resolve_worktree_image_tag_suffix", lambda *_a, **_kw: "id")
+        monkeypatch.setattr(worktree, "primary_ciu_root", lambda _root: primary)
+        monkeypatch.setattr(deploy, "load_global_config", lambda *_a, **_kw: {})
+        monkeypatch.setattr(
+            cli.subprocess, "run",
+            lambda *_a, **_kw: subprocess.CompletedProcess([], 0, "{}", ""),
+        )
+        monkeypatch.setattr(image_isolation, "bake_scoped_tags", lambda *_a, **_kw: {"app:dev-id"})
+        assert cli._bake(["app"]) == 2
+        err = capsys.readouterr().err
+        assert "[CIU-176]" in err and "ciu env generate" in err
+        assert "[CIU-117] [CIU-176]" not in err
+
+    def test_deploy_surfaces_the_refusal(self, monkeypatch, tmp_path):
+        from types import SimpleNamespace
+
+        from ciu import worktree
+
+        primary = tmp_path / "primary"
+        primary.mkdir()
+        profile = SimpleNamespace(name="test", config={}, compose_profiles=[])
+        entry = {
+            "path": "tools/app", "name": "app",
+            "service": {"profiles": [], "env_overrides": {}},
+        }
+        monkeypatch.setattr(worktree, "primary_ciu_root", lambda _root: primary)
+        monkeypatch.setattr(deploy, "profile_env", lambda _profile: {})
+        monkeypatch.setattr(deploy, "group_by_phase", lambda _selection: [("1", [entry])])
+        monkeypatch.setattr(deploy.profiles_pkg, "render_ciu_context", lambda *_a: {})
+        monkeypatch.setattr(deploy.phases_pkg, "service_shipped", lambda _service: False)
+        seen: list[str] = []
+
+        def run_stack(*_args, primary_image_references, **_kwargs):
+            with pytest.raises(ValueError, match=r"\[CIU-176\]") as excinfo:
+                primary_image_references()
+            seen.append(str(excinfo.value))
+            return True
+
+        monkeypatch.setattr(deploy, "_run_stack", run_stack)
+        assert deploy.action_deploy(
+            tmp_path, profile, [entry], dry_run=False, ignore_errors=False,
+            health_after_phase=False, update_cert_permission=False, no_preflight=True,
+        ) == 0
+        assert len(seen) == 1
 
 
 class TestMissingEnvHint:
@@ -126,6 +176,50 @@ class TestMissingEnvHint:
         )
         assert "linked worktree" not in self._expand(checkout / "t.j2")
 
+    def test_unreadable_primary_never_replaces_the_refusal(self, tmp_path, monkeypatch):
+        primary = tmp_path / "primary"
+        linked = tmp_path / "linked"
+        (primary / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        linked.mkdir()
+        (linked / ".git").write_text(
+            f"gitdir: {primary / '.git' / 'worktrees' / 'wt'}\n", encoding="utf-8"
+        )
+
+        def denied(self, pattern):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(Path, "glob", denied)
+        assert "NAF_GUARD_USER" in self._expand(linked / "t.j2")
+
+    def test_relative_gitdir_pointer_resolves_against_the_checkout(
+        self, tmp_path, monkeypatch
+    ):
+        primary = tmp_path / "primary"
+        linked = tmp_path / "linked"
+        (primary / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        linked.mkdir()
+        (linked / ".git").write_text(
+            "gitdir: ../primary/.git/worktrees/wt\n", encoding="utf-8"
+        )
+        (primary / ".env.guard").write_text("X=1\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path / "primary" / ".git")  # an unrelated cwd
+        message = self._expand(linked / "t.j2")
+        assert ".env.guard" in message and str(primary) in message
+
+    def test_sub_root_env_files_are_named_and_the_command_is_quoted(self, tmp_path):
+        primary = tmp_path / "my primary"
+        linked = tmp_path / "linked"
+        (primary / ".git" / "worktrees" / "wt").mkdir(parents=True)
+        (primary / "sub").mkdir()
+        (linked / "sub").mkdir(parents=True)
+        (linked / ".git").write_text(
+            f"gitdir: {primary / '.git' / 'worktrees' / 'wt'}\n", encoding="utf-8"
+        )
+        (primary / "sub" / ".env.guard").write_text("X=1\n", encoding="utf-8")
+        message = self._expand(linked / "sub" / "t.j2")
+        assert "sub/.env.guard" in message
+        assert f"'{primary}/sub/.env.guard'" in message
+
     def test_missing_primary_directory_adds_no_hint(self, tmp_path):
         linked = tmp_path / "linked"
         linked.mkdir()
@@ -179,19 +273,48 @@ class TestOwnContainerAttach:
         assert calls == [["docker", "inspect", "c" * 64, "--format", "{{.Name}}"]]
         assert "naf-cockpit" in capsys.readouterr().out
 
-    def test_matching_unknown_or_failed_inspect_keeps_configured_name(self, monkeypatch):
+    def test_matching_or_unknown_own_id_keeps_configured_name_silently(
+        self, monkeypatch, capsys
+    ):
         monkeypatch.setattr(workspace_env, "_own_container_id", lambda: "")
         assert workspace_env._resolve_own_container_name("x") == "x"
         monkeypatch.setattr(workspace_env, "_own_container_id", lambda: "c" * 64)
-        for result in (
-            subprocess.CompletedProcess([], 0, "/x\n", ""),
+        monkeypatch.setattr(
+            workspace_env.subprocess, "run",
+            lambda *_a, **_k: subprocess.CompletedProcess([], 0, "/x\n", ""),
+        )
+        assert workspace_env._resolve_own_container_name("x") == "x"
+        assert capsys.readouterr().out == ""
+
+    def test_short_id_hostname_fallback_resolves_to_the_name_without_warning(
+        self, monkeypatch, capsys
+    ):
+        own = "abcdef012345" + "0" * 52
+        monkeypatch.setattr(workspace_env, "_own_container_id", lambda: own)
+        monkeypatch.setattr(
+            workspace_env.subprocess, "run",
+            lambda *_a, **_k: subprocess.CompletedProcess([], 0, "/naf-cockpit\n", ""),
+        )
+        assert workspace_env._resolve_own_container_name("abcdef012345") == "naf-cockpit"
+        assert capsys.readouterr().out == ""
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            subprocess.CompletedProcess([], 1, "", "permission denied on containers/json"),
+            subprocess.CompletedProcess([], 1, "", ""),
             subprocess.CompletedProcess([], 0, "\n", ""),
-            subprocess.CompletedProcess([], 1, "", "err"),
-        ):
-            monkeypatch.setattr(
-                workspace_env.subprocess, "run", lambda *_a, _r=result, **_k: _r
-            )
-            assert workspace_env._resolve_own_container_name("x") == "x"
+        ],
+    )
+    def test_failed_inspect_warns_and_keeps_the_configured_name(
+        self, monkeypatch, capsys, result
+    ):
+        monkeypatch.setattr(workspace_env, "_own_container_id", lambda: "c" * 64)
+        monkeypatch.setattr(workspace_env.subprocess, "run", lambda *_a, **_k: result)
+        assert workspace_env._resolve_own_container_name("x") == "x"
+        out = capsys.readouterr().out
+        assert "could not inspect this process's own container" in out
+        assert "'x' unverified" in out
 
     @pytest.mark.usefixtures("real_network_side_effects")
     def test_connect_uses_the_resolved_real_container(self, monkeypatch):

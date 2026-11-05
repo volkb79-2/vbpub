@@ -932,7 +932,7 @@ def _bake(rest: list[str]) -> int:
             scoped_overrides = bake_tag_overrides(preview.stdout, suffix)
         except (ImageIsolationError, RuntimeError, ValueError) as exc:
             detail = str(exc)
-            if not detail.startswith("[CIU-117]"):
+            if not detail.startswith("[CIU-"):
                 detail = f"[CIU-117] {detail}"
             print(f"[ERROR] ciu bake: {detail}", file=sys.stderr)
             return 2

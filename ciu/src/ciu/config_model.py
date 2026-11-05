@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import tomllib
 from pathlib import Path
 from typing import Mapping
@@ -303,6 +304,14 @@ def _gitignored_env_hint(source: str) -> str:
     this checkout lacks. Pure filesystem reads; ``""`` when *source* is not
     inside a linked worktree or nothing is missing.
     """
+    try:
+        return _gitignored_env_hint_unguarded(source)
+    except OSError:
+        # A hint must never replace the refusal it decorates (EACCES on glob).
+        return ""
+
+
+def _gitignored_env_hint_unguarded(source: str) -> str:
     current = Path(source).resolve().parent
     for directory in (current, *current.parents):
         git_entry = directory / ".git"
@@ -314,20 +323,28 @@ def _gitignored_env_hint(source: str) -> str:
             return ""
         if not first.startswith("gitdir:"):
             return ""
-        gitdir = Path(first[len("gitdir:"):].strip())
+        # A relative pointer (worktree.useRelativePaths) is relative to the
+        # directory holding the `.git` file, never to the process cwd.
+        gitdir = (directory / first[len("gitdir:"):].strip()).resolve()
         # <primary>/.git/worktrees/<name> -> <primary>
         if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
             return ""
         primary = gitdir.parent.parent.parent
         if primary == directory or not primary.is_dir():
             return ""
-        lacking = sorted(
-            candidate.name
-            for candidate in primary.glob(".env*")
-            if candidate.is_file()
-            and not candidate.name.endswith((".example", ".sample", ".template"))
-            and not (directory / candidate.name).exists()
-        )
+        # The CIU root may sit below the git root: scan both levels.
+        offset = current.relative_to(directory)
+        lacking: list[str] = []
+        for level in dict.fromkeys((Path("."), offset)):
+            for candidate in (primary / level).glob(".env*"):
+                relative = level / candidate.name
+                if (
+                    candidate.is_file()
+                    and not candidate.name.endswith((".example", ".sample", ".template"))
+                    and not (directory / relative).exists()
+                ):
+                    lacking.append(str(relative))
+        lacking.sort()
         if not lacking:
             return ""
         return (
@@ -335,8 +352,8 @@ def _gitignored_env_hint(source: str) -> str:
             f"not shared with the primary checkout {primary}. It holds "
             f"{', '.join(lacking)}, which this worktree lacks; values a template "
             "needs from them must be exported in the shell (for example "
-            f"`set -a; . {primary}/{lacking[0]}; set +a`) or copied into the "
-            "worktree."
+            f"`set -a; . {shlex.quote(str(primary / lacking[0]))}; set +a`) or "
+            "copied into the worktree."
         )
     return ""
 

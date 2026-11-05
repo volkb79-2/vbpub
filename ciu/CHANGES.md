@@ -138,7 +138,8 @@ the technical detail below it.
 
 - `ciu up` in a worktree whose PRIMARY checkout has no generated facts no longer fails with the misleading `Missing required environment values in <primary>/ciu.global.defaults.toml.j2` (every variable was exported in the worktree; the primary comparison deliberately ignores shell exports): it refuses with `[CIU-176]`, naming the primary root and `cd <primary> && ciu env generate` (CIU-176)
 - A missing-environment refusal raised from a linked worktree's template names the primary checkout's gitignored `.env*` files that the worktree lacks, and how to export them (CIU-176)
-- `ciu env generate` / worktree preparation attach the devcontainer the process really runs in (own container id from `/proc/self/mountinfo`), not a stale `DEVCONTAINER_NAME` machine fact such as `dstdns-devcontainer-vb` in another cockpit (CIU-176)
+- Behaviour change: `ciu env generate` / worktree preparation now attach the container the process ACTUALLY runs in (own container id from `/proc/self/mountinfo`, name via `docker inspect`), not the one `DEVCONTAINER_NAME` names; a stale machine fact such as `dstdns-devcontainer-vb` in another cockpit is replaced with a warning, a short-id `HOSTNAME` fallback resolves to the real name silently, and a denied `docker inspect` warns and keeps the configured name. A ciu run inside an ephemeral gate container that inherits `ENV_TYPE=devcontainer` therefore attaches that container (CIU-176)
+- `ciu bake` no longer doubles the prefix (`[CIU-117] [CIU-176]`) on refusals that already carry a CIU id
 
 ### Adoption / Migration Notes
 - Safe to ignore: additive; the new refusals name the command to run.

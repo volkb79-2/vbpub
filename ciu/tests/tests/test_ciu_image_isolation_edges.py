@@ -892,7 +892,10 @@ def test_resolve_identities_revalidates_scoped_compose(
         {"resolved": {"identities": {"stack": {"app": {"image": " "}}}}},
     ],
 )
-def test_primary_image_map_rejects_malformed_identity_shapes(monkeypatch, tmp_path, document):
+def test_primary_image_map_rejects_malformed_identity_shapes(
+    monkeypatch, tmp_path, document, write_instance_facts,
+):
+    write_instance_facts(tmp_path, instance_id="main-id", network="n")  # CIU-176: facts exist
     monkeypatch.setattr(deploy.worktree_pkg, "primary_ciu_root", lambda _root: tmp_path)
     monkeypatch.setattr(deploy, "_render_environment_for_checkout", lambda _root: {})
     monkeypatch.setattr(deploy, "resolve_identities", lambda *_a, **_kw: document)
@@ -900,7 +903,10 @@ def test_primary_image_map_rejects_malformed_identity_shapes(monkeypatch, tmp_pa
         deploy.resolve_primary_image_references(tmp_path)
 
 
-def test_primary_image_map_skips_services_without_images(monkeypatch, tmp_path):
+def test_primary_image_map_skips_services_without_images(
+    monkeypatch, tmp_path, write_instance_facts,
+):
+    write_instance_facts(tmp_path, instance_id="main-id", network="n")  # CIU-176: facts exist
     monkeypatch.setattr(deploy.worktree_pkg, "primary_ciu_root", lambda _root: tmp_path)
     monkeypatch.setattr(deploy, "_render_environment_for_checkout", lambda _root: {})
     monkeypatch.setattr(

@@ -365,17 +365,6 @@ def _no_ambient_own_container(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _primary_generated_facts_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CIU-176: tests of the primary image map stub its render, not its facts file.
-
-    ``test_ciu_176_worktree_stack`` restores the real check to pin the refusal.
-    """
-    from ciu import deploy
-
-    monkeypatch.setattr(deploy, "_require_primary_generated_facts", lambda _root: None)
-
-
-@pytest.fixture(autouse=True)
 def _ciu_test_suite_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     """Re-assert the CIU-87 product-side gate for every test body.
 
