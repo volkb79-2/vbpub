@@ -245,6 +245,14 @@ The SHA256 digest is also embedded in the release notes for a quick manual check
 "Latest" is resolved by scanning `pwmcp-v*` releases for the highest semver. The thin `pwmcp-latest` release contains only `latest.json` — a JSON pointer to the current versioned release — with no bundle duplication.
 
 
+### Client assets and the client-only install (PWMCP-35)
+
+Each release also publishes `pwmcp-client-install.py` and the `pwmcp_client-<version>-py3-none-any.whl`
+(each with a `.sha256` sidecar), staged by `scripts/publish-bundle.py` from the exact wheel the bundle
+ships. `pwmcp-client-install.py` installs only the client from the verified bundle (no docker/ciu/stack);
+see the README section "Client install and upgrade", including moving an installed
+`/srv/pwmcp-instance` to a new release and re-running `pwmcp skills install`.
+
 ## P03: Shared Browser Mode Vars
 
 New `[pwmcp.unified]` ciu vars (all opt-in; defaults preserve pre-P03

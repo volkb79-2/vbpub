@@ -59,6 +59,13 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "contract.json").write_text(json.dumps(CONTRACT), encoding="utf-8")
     monkeypatch.setattr(diagnostics, "verify_installed_playwright", lambda contract: "1.63.4")
+    # The replayed contract is release 1.63.0-r2; the client under test is pinned to the matching
+    # version so the (separately tested) skew policy does not leak into every reviewed case.
+    from cli_extended import CliIdentity
+
+    monkeypatch.setattr(
+        cli_module, "identity", lambda *a, **k: CliIdentity("PWMCP", "1.63.0.post2", "client utility", "pwmcp")
+    )
     return tmp_path
 
 

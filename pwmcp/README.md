@@ -118,6 +118,75 @@ release link. A `~/.local/bin/pwmcp` symlink exposes it on the default user's
 existing PATH, and the absolute launcher path also works when an agent shell
 does not inherit PATH.
 
+## Client install and upgrade
+
+The client is **one wheel, `pwmcp-client`**, with two faces: the **`pwmcp` CLI** (console script
+`pwmcp_client.cli:main`: `contract`, `versions`, `doctor`, `inspect`, `ocr`, `skills`) and the
+**`pwmcp_client` Python library** (`BrowserLease`, `load_contract`, `PwmcpContract`, `PwmcpError`,
+`PwmcpUnavailable`, `VersionMismatch`). Installing the wheel gives both.
+
+**Versioning: 1:1 with the server release.** The wheel version is generated at release time from the
+server release (`client/src/pwmcp_client/VERSION`, one mapping helper in `pwmcp_client/release.py`):
+`1.64.1-r2` becomes `1.64.1.post2` (PEP 440 reads `-rN` as the post-release segment, so
+`packaging.version.Version("1.64.1-r2") == Version("1.64.1.post2")`). Two wheels with different
+content therefore never share a version, and `pip` can tell and upgrade. Roll the client out together
+with the server it talks to. `pwmcp --version` prints the exact network-free `pwmcp 1.64.1.post2`
+line the shared CLI contract requires; **`pwmcp versions`** adds the server:
+`pwmcp 1.64.1.post2 (server 1.64.1-r2)` or `(server unreachable)`.
+
+**Compatibility policy** (what `pwmcp.contract.json` guarantees). The contract's
+`playwright.protocol` (`<major>.<minor>` of Playwright) is the wire-protocol guarantee: a client
+whose pinned `playwright` is the server's Playwright version drives the server's browser. The
+r-number only versions pwmcp's own helpers and contract fields. `pwmcp doctor` has a `skew` check:
+
+| client vs server | doctor | meaning |
+|---|---|---|
+| same release | OK | nothing to do |
+| same Playwright, different `-rN` | WARN | works; upgrade the older side when convenient |
+| different Playwright version | FAIL | hard incompatibility (the client's pinned `playwright` cannot drive the server) |
+
+### Client only (a server runs elsewhere)
+
+For a consumer that only talks to a pwmcp server (no docker, no ciu, no compose, no stack tree),
+use the release asset `pwmcp-client-install.py`. It downloads the release bundle, verifies its SHA-256,
+extracts only `manifest.json` and `wheels/`, verifies every wheel against the manifest, builds a private
+venv with `pip install --no-index --require-hashes` (pwmcp-client plus its exact pinned
+dependencies, including that release's Playwright) and links `~/.local/bin/pwmcp`:
+
+```bash
+base=https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v1.64.1-r2
+curl -fsSLO "$base/pwmcp-client-install.py"; curl -fsSL "$base/pwmcp-client-install.py.sha256"   # check it
+python3 pwmcp-client-install.py --version 1.64.1-r2      # private repo: --github-token-file FILE
+pwmcp skills install && pwmcp doctor --contract http://pwmcp-host:3000/contract
+```
+
+Upgrade = run it again with the new release (releases live side by side under
+`~/.local/share/pwmcp-client/releases/`; `current` and the launcher switch atomically), then
+`pwmcp skills install`. `--bundle FILE` installs from a local bundle (offline).
+
+Release assets per `pwmcp-v<release>`: `pwmcp-v<release>.tar.xz` (+ `.sha256`; the stack bundle,
+which also contains `wheels/`), `get.py` (+ `.sha256`; full stack installer),
+`pwmcp-client-install.py` (+ `.sha256`; client-only installer) and
+`pwmcp_client-<version>-py3-none-any.whl` (+ `.sha256`; the client wheel itself). `pip install` of that
+wheel alone needs `cli-extended` (GitHub Releases only, not on PyPI) to be installable first, which is why
+the installer above is the supported path.
+
+### Upgrading an installed instance (`/srv/pwmcp-instance`)
+
+The full-stack instance is managed by the CMRU installer: `sudo python3 /srv/pwmcp-instance/bin/pwmcp-installer update`
+(or `get.py update --version pwmcp-v<release>`) installs the new release beside the old one, switches
+the `current` symlink atomically and installs the new release's `pwmcp` launcher and client wheel into
+its own venv; `rollback` returns to the previous release. Afterwards, as the user that runs the CLI:
+
+```bash
+pwmcp --version            # the new client version
+pwmcp skills install       # refresh the packaged agent skills; 'doctor' reports "N skill(s) not current" until you do
+pwmcp doctor               # contract, playwright, skew and skills all OK
+```
+
+Recreate the stack containers from the new `current` (`ciu up` in the instance root) so the server
+runs the same release as the client; `pwmcp versions` then shows matching pairs.
+
 ## Consumer Connection
 
 ### Playwright `connect()` (test suites)
@@ -795,14 +864,15 @@ and [local verification example](docs/CONSUMERS.md#local-console-corpus).
 ### CLI diagnostics
 
 The `pwmcp` client is registered on the shared cli-extended grammar (`contract`,
-`doctor`, `inspect`, `skills`; see [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md)). Help starts with
+`versions`, `doctor`, `inspect`, `ocr`, `skills`; see [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md)). Help starts with
 `PWMCP <version> — client utility`; a usage error prints its `[ERROR]` diagnostic first,
 then the identity-headed usage, and exits 2. The version has one source,
-`client/src/pwmcp_client/VERSION`, which is also the wheel's metadata version; the CLI
+`client/src/pwmcp_client/VERSION` (generated from the server release at release time, see
+[Client install and upgrade](#client-install-and-upgrade)), which is also the wheel's metadata version; the CLI
 refuses to run if installed metadata and that file disagree (no literal fallback).
 `pwmcp --version` prints exactly one `pwmcp <version>` line on stdout, exits 0, and writes
 nothing to stderr. `pwmcp contract` output is unchanged; `pwmcp doctor` now reports named
-checks (`contract`, `playwright`, `skills`). The client wheel depends on the `cli-extended`
+checks (`contract`, `playwright`, `skew`, `skills`). The client wheel depends on the `cli-extended`
 wheel, which is published to GitHub Releases only; install it first (see
 [`docs/USAGE.md`](docs/USAGE.md)). The release-step scripts (`build-push.py`,
 `scripts/*.py`) use the same installed library and accept `--dry-run`.

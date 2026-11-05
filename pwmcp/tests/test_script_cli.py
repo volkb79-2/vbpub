@@ -335,6 +335,11 @@ def test_publish_bundle_body(
     assert "Expected prepared bundle" in capsys.readouterr().err
 
     (tmp_path / "pwmcp-v1.2.3-r4.tar.xz").write_bytes(b"x")
+    with pytest.raises(SystemExit):
+        module.main([])
+    assert "expected exactly one pwmcp_client wheel" in capsys.readouterr().err
+    (tmp_path / "bundle" / "wheels").mkdir(parents=True)
+    (tmp_path / "bundle" / "wheels" / "pwmcp_client-1.2.3.post4-py3-none-any.whl").write_bytes(b"w")
     calls: list[dict[str, object]] = []
 
     def publish(gh: object, **kwargs: object) -> dict[str, str]:
@@ -347,6 +352,22 @@ def test_publish_bundle_body(
     out = capsys.readouterr().out
     assert calls[0]["version"] == "1.2.3-r4" and calls[0]["prefix"] == "pwmcp"
     assert "PWMCP_BUNDLE_SHA256=abc" in out and "git tag -a pwmcp-v1.2.3-r4" in out
+    # the client-only assets ride along: the wheel and the installer, each with a SHA256 sidecar
+    extras = sorted(Path(p).name for p in calls[0]["extra_assets"])
+    assert extras == [
+        "get.py", "get.py.sha256",
+        "pwmcp-client-install.py", "pwmcp-client-install.py.sha256",
+        "pwmcp_client-1.2.3.post4-py3-none-any.whl", "pwmcp_client-1.2.3.post4-py3-none-any.whl.sha256",
+    ]
+
+
+def test_stage_client_assets_requires_the_installer(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    module = _load(SCRIPTS / "publish-bundle.py", "pwmcp_script_cli_publish_bundle_assets")
+    (tmp_path / "bundle" / "wheels").mkdir(parents=True)
+    (tmp_path / "bundle" / "wheels" / "pwmcp_client-1.2.3.post4-py3-none-any.whl").write_bytes(b"w")
+    with pytest.raises(SystemExit):
+        module.stage_client_assets(tmp_path, tmp_path / "absent.py")
+    assert "absent.py is missing" in capsys.readouterr().err
 
 
 # --- AC-24/AC-25 for the scripts: installed packages, no source-path hacks -----------

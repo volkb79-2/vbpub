@@ -45,6 +45,16 @@ service to its CIU network. Rewriting only after the allowlist check retains
 hostname validation without changing the established unauthenticated,
 internal-network access policy. See [security controls](SECURITY.md#internal-mode-access-control).
 
+## Client version projection
+
+The client wheel is versioned 1:1 with the server release: `client/src/pwmcp_client/VERSION` is generated
+by `scripts/resolve-playwright-version.py` from the release (`1.64.1-r2` -> `1.64.1.post2`, the PEP 440
+spelling of the same string) through the one helper in `pwmcp_client/release.py`, which the resolver loads
+by path and the CLI imports. `--check` fails when the file differs from the mapped contract release, and the
+file is listed in `[project.release] commit_generated` beside the other generated client projections.
+`pwmcp doctor` compares client and server through the same helper (same Playwright = compatible, different
+r-number = WARN, different Playwright = FAIL).
+
 ## Client dependency projections
 
 The client wheel declares its runtime dependencies directly in

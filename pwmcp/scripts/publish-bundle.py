@@ -36,6 +36,7 @@ from _vars import load_vars, run_script, script_cli  # noqa: E402
 PWMCP_DIR = Path(__file__).resolve().parent.parent
 DIST_DIR = PWMCP_DIR / "dist"
 GET_PY = PWMCP_DIR / "get.py"
+CLIENT_INSTALLER = "pwmcp-client-install.py"
 
 
 def log(msg: str) -> None:
@@ -56,6 +57,27 @@ def find_bundle(dist_dir: Path, pwmcp_version: str) -> Path:
     if not expected.exists():
         fail(f"Expected prepared bundle {expected}; run CMRU's pwmcp build phase first.")
     return expected
+
+
+def stage_client_assets(dist_dir: Path, installer: Path) -> list[Path]:
+    """Client-only release assets (+ SHA256 sidecars): the pwmcp-client wheel and the client-only installer.
+
+    The wheel is the exact one the bundle ships (``dist/bundle/wheels``), so the standalone asset and the
+    bundle's copy are byte-identical. A consumer that only talks to a server elsewhere uses
+    ``pwmcp-client-install.py`` (documented in README); the wheel is published for ``pip install`` users.
+    """
+    wheels = sorted((dist_dir / "bundle" / "wheels").glob("pwmcp_client-*.whl"))
+    if len(wheels) != 1:
+        fail(f"expected exactly one pwmcp_client wheel in {dist_dir / 'bundle' / 'wheels'}, found {len(wheels)}; run the build phase")
+    if not installer.is_file():
+        fail(f"{installer} is missing")
+    staged = []
+    for source in (wheels[0], installer):
+        target = dist_dir / source.name
+        if target.resolve() != source.resolve():
+            shutil.copy2(source, target)
+        staged.extend([target, write_sha256_sidecar(target)])
+    return staged
 
 
 def _publish(_args: argparse.Namespace) -> None:
@@ -80,6 +102,8 @@ def _publish(_args: argparse.Namespace) -> None:
     shutil.copy2(GET_PY, get_py_asset)
     get_py_sidecar = write_sha256_sidecar(get_py_asset)
 
+    client_assets = stage_client_assets(DIST_DIR, PWMCP_DIR / CLIENT_INSTALLER)
+
     gh = GitHubReleases(owner, repo, token)
     result = publish_versioned(
         gh,
@@ -87,7 +111,7 @@ def _publish(_args: argparse.Namespace) -> None:
         version=pwmcp_version,
         asset_path=bundle_path,
         notes=f"pwmcp {pwmcp_version}",
-        extra_assets=[get_py_asset, get_py_sidecar],
+        extra_assets=[get_py_asset, get_py_sidecar, *client_assets],
         latest_pointer=True,
     )
 
@@ -105,7 +129,7 @@ def build_cli() -> RegisteredCli:
         long_name="stack bundle publish",
         description="Publish the prepared pwmcp stack bundle to GitHub Releases (immutable release plus latest pointer).",
         handler=_publish,
-        preview=lambda _args: "would publish the PWMCP bundle and get.py (+ SHA256 sidecars) as the immutable release and refresh pwmcp-latest",
+        preview=lambda _args: "would publish the PWMCP bundle, get.py, the pwmcp-client wheel and pwmcp-client-install.py (+ SHA256 sidecars) as the immutable release and refresh pwmcp-latest",
     )
 
 
