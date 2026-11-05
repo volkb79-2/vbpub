@@ -11,7 +11,7 @@ All notable changes to debian-install-v2 are recorded here.
 - `tests/test_layout_argv_coverage.py`: an AST scan validates every literal installer argv (executed
   or not), and a stateful walk of the 512 GiB dev-host plan (gap-branch root growth, four tail swaps,
   MDT_COW btrfs) runs through the validator.
-- `tests/test_layout_vm.py` (lane `r1-vm-real-commit`): real stage-two steps on a loop disk with the
+- `tests/test_data_area_vm.py::test_real_dev_host_layout_stage_two_with_root_growth_swap_and_cow` (existing lane `r1-vm-real-commit`): real stage-two steps on a loop disk with the
   production allowlist: sfdisk -N + partx + resize2fs gap growth, mkswap/swapon at the disk end,
   mkfs.btrfs MDT_COW + fstab + mount.
 - Allowlist: `mkswap` (-L), `resize2fs` (-P), `blkid` (-s -o -t -U -L -p) now have flag allowlists;

@@ -78,8 +78,7 @@ run_with_timeout 15m "$HERE/run-vm-harness.sh" ssh "$RUN" -- \
        debian_install_v2/tests/test_inuse_partition_editor.py \
        debian_install_v2/tests/test_inuse_partition_editor_r1.py \
        debian_install_v2/tests/test_root_growth_crash.py \
-       debian_install_v2/tests/test_data_area_vm.py \
-       debian_install_v2/tests/test_layout_vm.py -q \
+       debian_install_v2/tests/test_data_area_vm.py -q \
        --junitxml=/tmp/debian-install-v2-r1.xml
      sudo env VBPUB_REQUIRE_OS_INTEGRATION=1 \
        PYTHONPATH='$GUEST_SRC' python3 -m pytest \
