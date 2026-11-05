@@ -26,6 +26,26 @@ operator-owned and later edits are left alone. The workspace operation still
 prepares all committed roots, while ordinary stack verbs resolve the nearest
 root above their invocation directory.
 
+### Global-only roots and stack cleanup
+
+`ciu.global.defaults.toml.j2` is the committed CIU-root marker. The per-stack
+`ciu.defaults.toml.j2` marks a native stack; a shipped `docker-compose.yml`
+also names a stack, while `ciu.install.override.toml.j2` does not. A root can
+therefore own global configuration and an identity without owning a stack.
+Keeping it in root discovery preserves the root's lifecycle identity and lets
+its global settings remain available. Direct `ciu clean` in that root is a
+successful no-op with `[INFO] global-only root: nothing to clean`. A nested CIU
+root has its own identity and cleanup, even when its parent root is global-only.
+
+Worktree removal discovers roots from the target checkout's committed tree.
+When there are sibling roots, it runs `ciu clean --dry-run` for every sibling
+and for the selected root before the first cleanup. Without `--force`, a
+nonzero plan refuses removal before any root is cleaned; `--dry-run` shows the
+root-plan blockers. A single-root removal keeps `ciu clean`'s existing
+stack-level preflight. The root preflight doesn't make later cleanups atomic,
+but prevents a known failure in a later root from stranding an earlier root
+after a partial teardown.
+
 The schema-v5 record keeps `initial_overlay_pending` separate from the
 worktree's lifecycle state. It starts true and is cleared in the same record
 write that first publishes `ready`. Root repair can later move a ready record

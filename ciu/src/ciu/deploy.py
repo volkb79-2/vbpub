@@ -66,6 +66,8 @@ from .config_constants import (
     GLOBAL_CONFIG_INSTANCE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
     INSTANCE_GENERATED_FACTS,
+    SHIPPED_COMPOSE,
+    STACK_CONFIG_DEFAULTS,
     STACK_CONFIG_RENDERED,
     WORKSPACE_ENV,
 )
@@ -5635,6 +5637,42 @@ def _print_clean_plan(
     return rc
 
 
+def _root_has_cleanable_stack(repo_root: Path) -> bool:
+    """Whether this CIU root owns a native or shipped stack to clean.
+
+    A global defaults marker defines a CIU root, while a stack defaults marker
+    defines a native stack. Nested CIU roots are separate owners and are not
+    counted here; worktree removal discovers and cleans each one separately.
+    The shipped compose filename is included because shipped stacks do not
+    have a CIU stack defaults template.
+    """
+    root = Path(repo_root).resolve()
+    ignored_directories = {
+        ".assay", ".git", ".run-gate", ".worktrees", "__pycache__",
+        "artifacts", "node_modules",
+    }
+
+    def raise_walk_error(exc: OSError) -> None:
+        raise exc
+
+    for current, directories, files in os.walk(
+        root, topdown=True, onerror=raise_walk_error, followlinks=False,
+    ):
+        current_path = Path(current)
+        if current_path != root and GLOBAL_CONFIG_DEFAULTS in files:
+            directories[:] = []
+            continue
+        if STACK_CONFIG_DEFAULTS in files or SHIPPED_COMPOSE in files:
+            return True
+        directories[:] = [
+            name for name in directories
+            if name not in ignored_directories
+            and not name.startswith("vol-")
+            and not (current_path / name).is_symlink()
+        ]
+    return False
+
+
 def action_clean(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -5687,6 +5725,14 @@ def action_clean(
     half-torn-down workspace would take away the very record naming what is
     still standing.
     """
+    root_path = Path(repo_root).resolve()
+    if (
+        (root_path / GLOBAL_CONFIG_DEFAULTS).is_file()
+        and not _root_has_cleanable_stack(root_path)
+    ):
+        info("global-only root: nothing to clean")
+        return 0
+
     info("=" * 60)
     info("CLEAN: removing containers, volumes, and rendered artifacts")
     info("=" * 60)

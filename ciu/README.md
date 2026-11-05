@@ -43,6 +43,15 @@ root. `ciu worktree create` scans the selected base commit with `git ls-tree`,
 so ignored or uncommitted `ciu.global.instance.toml.j2` overlays cannot create
 an accidental runtime root.
 
+The global defaults file marks a CIU root; `ciu.defaults.toml.j2` marks a
+native stack inside it. A root that has global defaults but no stack is valid:
+`ciu clean` prints `[INFO] global-only root: nothing to clean` and exits 0.
+For multi-root worktrees, removal uses `ciu clean --dry-run` to plan every
+sibling and the selected root before its first cleanup; `--dry-run` reports the
+same root-plan blockers. See the
+[design rationale](docs/DESIGN-GUIDE.md#global-only-roots-and-stack-cleanup)
+and [removal example](docs/CONSUMERS.md#5-remove-and-read-the-removal-document).
+
 The shared workspace identity is a six-character lower-case base-36 value
 derived from the physical checkout path. A nested CIU root receives its own
 path-derived identity; generated facts are written to the exact, versioned
