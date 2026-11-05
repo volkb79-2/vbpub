@@ -2157,6 +2157,29 @@ in the main checkout. In a plain worktree `run-gate <lane> --dry-run` refuses
 (exit 2) and running `ciu up` there cannot help; either create or adopt the
 worktree through ciu, or run the lane from a container-mode environment.
 
+**Runner stdout and the placement handshake (RG-167).** A lane that declares
+`resources.memory` runs behind a placement wrapper that prints one private
+readiness line (`\x1eRUN_GATE_PLACEMENT_READY:<per-placement nonce>`). Other
+complete lines the environment prints first (an `LD_PRELOAD` shim such as
+ciu's `ksm-optin`, a profile script) are ignored, up to 64 KiB; only the exact
+marker line with the nonce of that placement is accepted, a marker-shaped line
+with another nonce is refused, and a missing marker is still an error that
+quotes the last ignored lines. Stdout therefore need not be clean.
+
+**Copy-on-write root in an exec runner (RG-168).** The cockpit exports
+`MDT_COW_ROOT` (a host path). For an exec lane run-gate forwards
+`COWTREE_MODE=auto` and `MDT_COW_ROOT` only when the runner container mounts
+that path (it reads the running container's `docker inspect` mount
+destinations; a destination equal to the path or a parent of it counts).
+Otherwise both are dropped and the plan line says so:
+`resource env (forwarded: ..., not forwarded (no mount): COWTREE_MODE,
+MDT_COW_ROOT)`, and assay uses its own storage path inside the runner instead
+of refusing with `MDT_COW_ROOT does not exist`. A runner that should use
+copy-on-write must mount the root at the identical path; a lane that wants it
+off explicitly sets `resources = { cowtree = { mode = "off" } }` (an
+environment accepts only `resources.cpus`). `COWTREE_MODE=off` is always
+forwarded.
+
 **Worktree config and runner follow the JUDGED TREE (RG-47/RG-65/RG-79).**
 When invoking from a main checkout with `--worktree PATH`, run-gate derives
 the project directory as `PATH` plus that project's path relative to the Git

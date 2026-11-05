@@ -1949,21 +1949,64 @@ def cowtree_mount_flags(settings: dict, mode: str) -> list[str]:
     return ["--mount", f"type=bind,source={root},target={root}"]
 
 
+def container_mount_destinations(docker: str, container: str) -> list[str]:
+    """In-container mount destinations of a running container (RG-168)."""
+    result = subprocess.run(
+        [docker, "inspect", "--format",
+         "{{range .Mounts}}{{println .Destination}}{{end}}", container],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()[-1:] or \
+            [f"exit {result.returncode}"]
+        fail_infra(f"cannot inspect mounts of container {container!r} to "
+                   f"decide whether MDT_COW_ROOT is reachable: {detail[0]}")
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def path_is_mounted(path: str, destinations: list[str]) -> bool:
+    """True when `path` is a mount destination or lies beneath one.
+
+    A root-filesystem destination ("/") is not evidence of a dedicated mount.
+    """
+    return any(dest not in ("", "/")
+               and (path == dest or path.startswith(dest.rstrip("/") + "/"))
+               for dest in destinations)
+
+
 def resource_forwarded_env(settings: dict, mode: str,
-                           consumer: str | None = None) -> dict[str, str]:
-    """Translate effective settings to run-gate facts and consumer-owned env keys."""
+                           consumer: str | None = None,
+                           exec_mounts: "list[str] | Callable[[], list[str]] | None" = None,
+                           not_forwarded: list[str] | None = None
+                           ) -> dict[str, str]:
+    """Translate effective settings to run-gate facts and consumer-owned env keys.
+
+    RG-168: in exec mode the host's MDT_COW_ROOT is only meaningful when the
+    runner container mounts that same path.  With `exec_mounts` (the target
+    container's mount destinations) given, an unmounted root is NOT forwarded
+    together with `COWTREE_MODE=auto` (the pair would make assay demand a
+    path that does not exist in the container); the dropped names are
+    appended to `not_forwarded`.  `COWTREE_MODE=off` is always forwarded.
+    """
     forwarded = {}
     if "io_sync" in settings:
         forwarded["RUN_GATE_IO_SYNC"] = settings["io_sync"]
     if consumer is None or consumer == "cowtree":
         cowtree = settings.get("cowtree", {})
         if isinstance(cowtree, dict) and "mode" in cowtree:
-            forwarded["COWTREE_MODE"] = cowtree["mode"]
             root = os.environ.get(MDT_COW_ROOT_ENV_VAR)
-            if cowtree["mode"] == "auto" and root is not None:
-                if mode == "ephemeral":
-                    _validate_cow_root(root)
-                forwarded[MDT_COW_ROOT_ENV_VAR] = root
+            if (mode == "exec" and exec_mounts is not None
+                    and cowtree["mode"] == "auto" and root is not None
+                    and not path_is_mounted(
+                        root, exec_mounts() if callable(exec_mounts)
+                        else exec_mounts)):
+                if not_forwarded is not None:
+                    not_forwarded.extend(["COWTREE_MODE", MDT_COW_ROOT_ENV_VAR])
+            else:
+                forwarded["COWTREE_MODE"] = cowtree["mode"]
+                if cowtree["mode"] == "auto" and root is not None:
+                    if mode == "ephemeral":
+                        _validate_cow_root(root)
+                    forwarded[MDT_COW_ROOT_ENV_VAR] = root
     if consumer is None or consumer == "vm":
         vm = settings.get("vm", {})
         if isinstance(vm, dict) and "disk_cache" in vm:
@@ -1971,11 +2014,17 @@ def resource_forwarded_env(settings: dict, mode: str,
     return forwarded
 
 
-def log_resource_forwarded_env(forwarded: dict[str, str]) -> None:
+def log_resource_forwarded_env(forwarded: dict[str, str],
+                               not_forwarded: list[str] | None = None) -> None:
     """Disclose resource env names only; values can contain operator data."""
-    if forwarded:
-        print(f"run-gate: resource env (forwarded: "
-              f"{', '.join(sorted(forwarded))})", flush=True)
+    if forwarded or not_forwarded:
+        parts = []
+        if forwarded:
+            parts.append(f"forwarded: {', '.join(sorted(forwarded))}")
+        if not_forwarded:
+            parts.append(f"not forwarded (no mount): "
+                         f"{', '.join(sorted(not_forwarded))}")
+        print(f"run-gate: resource env ({', '.join(parts)})", flush=True)
 
 
 def inspect_eatmydata_library(docker: str, image: str) -> str:
@@ -7780,6 +7829,8 @@ class StdinForwarder:
 
 
 PLACEMENT_BARRIER_TIMEOUT_SECONDS = 300.0
+# RG-167: unrelated lines tolerated before the readiness marker.
+PLACEMENT_BARRIER_MAX_PREAMBLE_BYTES = 64 * 1024
 
 
 def placement_barrier_shell_argv(command: list[str], nonce: str) -> list[str]:
@@ -7835,11 +7886,23 @@ def wait_for_placement_barrier(proc: subprocess.Popen, nonce: str,
     stream = getattr(proc, "stdout", None)
     if stream is None:
         raise GateInfraError("placement wrapper has no readiness stream")
-    expected = b"\x1eRUN_GATE_PLACEMENT_READY:" + nonce.encode() + b"\n"
+    token = b"\x1eRUN_GATE_PLACEMENT_READY:"
+    expected = token + nonce.encode() + b"\n"
     deadline = time.monotonic() + timeout
     line = bytearray()
     fd = stream.fileno()
-    while len(line) <= 256:
+    # RG-167: the wrapper shares stdout with anything the target environment
+    # prints before it (an LD_PRELOAD shim, a profile script).  Only a line
+    # that is exactly the marker (RS control byte + per-placement nonce)
+    # counts; other complete lines are ignored, bounded so a chatty or hostile
+    # stream still fails.  A marker-shaped line with a different nonce is a
+    # protocol error, never ignored.
+    ignored = 0
+    ignored_tail: list[str] = []
+    while True:
+        if len(line) > 256:
+            raise GateInfraError(
+                "placement wrapper readiness marker exceeded 256 bytes")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise GateInfraError(
@@ -7850,19 +7913,29 @@ def wait_for_placement_barrier(proc: subprocess.Popen, nonce: str,
                 f"placement wrapper did not become ready within {timeout:g}s")
         chunk = os.read(fd, 1)
         if not chunk:
-            detail = line.decode("utf-8", errors="replace").strip()
+            tail = ignored_tail + [line.decode("utf-8", errors="replace")]
+            detail = " | ".join(t.strip() for t in tail if t.strip())
             raise GateInfraError(
                 "placement wrapper exited before readiness" +
                 (f": {detail[:200]}" if detail else ""))
         line.extend(chunk)
         if chunk == b"\n":
-            if bytes(line) != expected:
+            if bytes(line) == expected:
+                return
+            if line.startswith(token):
                 detail = line.decode("utf-8", errors="replace").strip()
                 raise GateInfraError(
                     "placement wrapper emitted an invalid readiness marker" +
                     (f": {detail[:200]}" if detail else ""))
-            return
-    raise GateInfraError("placement wrapper readiness marker exceeded 256 bytes")
+            ignored += len(line)
+            if ignored > PLACEMENT_BARRIER_MAX_PREAMBLE_BYTES:
+                raise GateInfraError(
+                    "placement wrapper printed more than "
+                    f"{PLACEMENT_BARRIER_MAX_PREAMBLE_BYTES} bytes of "
+                    "non-marker output before its readiness marker")
+            ignored_tail = (ignored_tail + [
+                line.decode("utf-8", errors="replace")])[-3:]
+            line = bytearray()
 
 
 def spawn_placement_barrier(argv: list[str], nonce: str, **popen_kwargs
@@ -8729,7 +8802,8 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
                          worktree: Path, env_source: str, slice_name: str,
                          script: str,
                          resolved_container_name: str | None = None,
-                         resource_settings: dict | None = None
+                         resource_settings: dict | None = None,
+                         inspect_mounts: bool = True
                          ) -> list[str]:
     """The ONE way run-gate runs a short, synchronous probe command INSIDE
     a lane's environment (RG-25's `assay lanes --json` inventory and its
@@ -8765,7 +8839,10 @@ def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
         if name is None:
             name, _src, _remedy = resolve_container_name(env_name, env, repo,
                                                          worktree, env_source)
-        forwarded = resource_forwarded_env(resource_settings or {}, "exec")
+        forwarded = resource_forwarded_env(
+            resource_settings or {}, "exec",
+            exec_mounts=((lambda: container_mount_destinations(docker, name))
+                         if inspect_mounts else None))
         env_flags = [arg for key, value in forwarded.items()
                      for arg in ("-e", f"{key}={value}")]
         return [docker, "exec", *env_flags, "--workdir", str(repo), name,
@@ -13049,7 +13126,8 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
             docker or "docker", env, env_name, repo, worktree, env_source,
             slice_name, assay_state_probe_script(state_root, state_dir),
             resolved_container_name=resolved_container_name,
-            resource_settings=resource_settings)
+            resource_settings=resource_settings,
+            inspect_mounts=not dry_run)
         if dry_run:
             probe_resource_env = resource_forwarded_env(
                 resource_settings or {}, env.get("mode", "host"))
@@ -16190,7 +16268,12 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     argv += env_flags_by_name(
         {key: os.environ[key] for key in env.get("forward_env", [])
          if os.environ.get(key)}, docker_env_values)
-    resource_env = {**resource_forwarded_env(resource_settings or {}, "exec"),
+    skipped_resource_env: list[str] = []
+    resource_env = {**resource_forwarded_env(
+                        resource_settings or {}, "exec",
+                        exec_mounts=lambda: container_mount_destinations(
+                            docker, name),
+                        not_forwarded=skipped_resource_env),
                     **lane_workers_env(lane)}
     argv += env_flags_by_name(resource_env, docker_env_values)
     # RG-55/contract Sec 4.1: same position, same rule as the ephemeral path.
@@ -16213,7 +16296,7 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
           f"slice {slice_name or '(none)'} ({slice_src})",
           flush=True)
     log_forwarded_env(env, "exec")  # names only, never values (RG-19)
-    log_resource_forwarded_env(resource_env)
+    log_resource_forwarded_env(resource_env, skipped_resource_env)
     if lane.get("budget"):
         print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
               f"after admission and lock waits)", flush=True)

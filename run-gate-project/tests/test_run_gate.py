@@ -27868,8 +27868,57 @@ class TestPlacementBarrier:
         with pytest.raises(run_gate.GateInfraError,
                            match="invalid readiness marker"):
             run_gate.spawn_placement_barrier(
-                [sys.executable, "-c", "print('not-ready', flush=True)"],
+                [sys.executable, "-c",
+                 "print('\\x1eRUN_GATE_PLACEMENT_READY:wrong', flush=True)"],
                 "34" * 16)
+
+    def test_unrelated_stdout_before_marker_is_ignored(self, tmp_path):
+        """RG-167: an LD_PRELOAD shim's line before the marker must not fail."""
+        marker = tmp_path / "ran"
+        nonce = "9a" * 16
+        noise = "printf '[ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)\\n'"
+        argv = run_gate.placement_barrier_shell_argv(
+            ["bash", "-c", "echo ok > \"$1\"", "rg167", str(marker)], nonce)
+        # The noise is emitted by a stand-in preload before the wrapper's own
+        # marker, on the same merged stdout stream.
+        proc = run_gate.spawn_placement_barrier(
+            ["bash", "-c", f"{noise}; exec \"$@\"", "rg167-pre", *argv],
+            nonce)
+        run_gate.signal_placement_barrier(proc, nonce, release=True)
+        assert proc.wait(timeout=5) == 0
+        assert marker.read_text() == "ok\n"
+
+    def test_marker_for_a_different_nonce_is_never_ignored(self):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="invalid readiness marker"):
+            run_gate.spawn_placement_barrier(
+                [sys.executable, "-c",
+                 "import sys; sys.stdout.write('noise\\n');"
+                 "sys.stdout.write('\\x1eRUN_GATE_PLACEMENT_READY:"
+                 + "00" * 16 + "\\n'); sys.stdout.flush()"],
+                "34" * 16)
+
+    def test_missing_marker_after_noise_is_still_an_error(self):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="exited before readiness: .*not-ready"):
+            run_gate.spawn_placement_barrier(
+                [sys.executable, "-c", "print('not-ready', flush=True)"],
+                "35" * 16)
+
+    def test_endless_noise_before_marker_is_bounded(self, monkeypatch):
+        monkeypatch.setattr(run_gate,
+                            "PLACEMENT_BARRIER_MAX_PREAMBLE_BYTES", 100)
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"0123456789\n" * 20)
+        stream = os.fdopen(read_fd, "rb", buffering=0)
+        try:
+            with pytest.raises(run_gate.GateInfraError,
+                               match="more than 100 bytes"):
+                run_gate.wait_for_placement_barrier(
+                    SimpleNamespace(stdout=stream), "36" * 16)
+        finally:
+            stream.close()
+            os.close(write_fd)
 
     def test_readiness_requires_a_stdout_channel(self):
         with pytest.raises(run_gate.GateInfraError,
@@ -35686,6 +35735,79 @@ class TestCowtreeAndIoSyncResources:
         assert run_gate.resource_forwarded_env(settings, "ephemeral") == {
             "COWTREE_MODE": "auto", "MDT_COW_ROOT": root,
             "RUN_GATE_IO_SYNC": "strict"}
+
+    def test_exec_cow_root_forwarded_only_when_container_mounts_it(
+            self, monkeypatch):
+        """RG-168: a root the runner does not mount must not reach assay."""
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+        settings = {"io_sync": "strict", "cowtree": {"mode": "auto"}}
+
+        skipped: list[str] = []
+        assert run_gate.resource_forwarded_env(
+            settings, "exec", exec_mounts=["/workspaces", "/"],
+            not_forwarded=skipped) == {"RUN_GATE_IO_SYNC": "strict"}
+        assert skipped == ["COWTREE_MODE", "MDT_COW_ROOT"]
+
+        skipped = []
+        assert run_gate.resource_forwarded_env(
+            settings, "exec", exec_mounts=["/mnt/cow"],
+            not_forwarded=skipped) == {
+                "COWTREE_MODE": "auto", "MDT_COW_ROOT": "/mnt/cow/rg",
+                "RUN_GATE_IO_SYNC": "strict"}
+        assert skipped == []
+        # A sibling prefix is not a mount of the path.
+        assert run_gate.resource_forwarded_env(
+            settings, "exec", exec_mounts=["/mnt/co"]) == {
+                "RUN_GATE_IO_SYNC": "strict"}
+        # Explicit off is always forwarded (it needs no mount).
+        off = {"cowtree": {"mode": "off"}}
+        assert run_gate.resource_forwarded_env(
+            off, "exec", exec_mounts=[]) == {"COWTREE_MODE": "off"}
+
+    def test_exec_mount_lookup_is_lazy_and_callable(self, monkeypatch):
+        def boom():
+            raise AssertionError("must not inspect without a CoW root")
+
+        monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+        settings = {"cowtree": {"mode": "auto"}}
+        assert run_gate.resource_forwarded_env(
+            settings, "exec", exec_mounts=boom) == {"COWTREE_MODE": "auto"}
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+        skipped: list[str] = []
+        assert run_gate.resource_forwarded_env(
+            settings, "exec", exec_mounts=lambda: ["/workspaces"],
+            not_forwarded=skipped) == {}
+        assert skipped == ["COWTREE_MODE", "MDT_COW_ROOT"]
+
+    def test_resource_env_log_names_the_unmounted_cow_root(self, capsys):
+        run_gate.log_resource_forwarded_env(
+            {"RUN_GATE_IO_SYNC": "strict"}, ["COWTREE_MODE", "MDT_COW_ROOT"])
+        output = capsys.readouterr().out
+        assert ("resource env (forwarded: RUN_GATE_IO_SYNC, not forwarded "
+                "(no mount): COWTREE_MODE, MDT_COW_ROOT)") in output
+
+    def test_container_mount_destinations_reads_docker_inspect(
+            self, monkeypatch):
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, "/a\n/b/c\n", "")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_run)
+        assert run_gate.container_mount_destinations("docker", "r1") == [
+            "/a", "/b/c"]
+        assert seen["argv"][:2] == ["docker", "inspect"]
+        assert seen["argv"][-1] == "r1"
+
+    def test_container_mount_destinations_inspect_failure_is_infra(
+            self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda argv, **kw: subprocess.CompletedProcess(
+                argv, 1, "", "no such container"))
+        with pytest.raises(BaseException):
+            run_gate.container_mount_destinations("docker", "r1")
 
     def test_cow_off_sets_no_bind(self, monkeypatch):
         monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
