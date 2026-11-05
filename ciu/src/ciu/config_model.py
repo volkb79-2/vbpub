@@ -288,9 +288,57 @@ def expand_env_vars_or_fail(
             f"[ERROR] Missing required environment values in {source}: {missing_list}.\n"
             "[ERROR] Run 'ciu env generate', then export the values with "
             "'eval \"$(ciu env print)\"' before running CIU."
+            + _gitignored_env_hint(source)
         )
 
     return expanded
+
+
+def _gitignored_env_hint(source: str) -> str:
+    """CIU-176: say where values missing in a linked worktree usually come from.
+
+    A linked worktree has none of the primary checkout's gitignored ``.env*``
+    files, so a template that needs e.g. ``NAF_GUARD_USER`` fails with only
+    the variable names. The hint names the primary's own ``.env*`` files that
+    this checkout lacks. Pure filesystem reads; ``""`` when *source* is not
+    inside a linked worktree or nothing is missing.
+    """
+    current = Path(source).resolve().parent
+    for directory in (current, *current.parents):
+        git_entry = directory / ".git"
+        if not git_entry.is_file():
+            continue
+        try:
+            first = git_entry.read_text(encoding="utf-8").splitlines()[0]
+        except (OSError, IndexError, UnicodeDecodeError):
+            return ""
+        if not first.startswith("gitdir:"):
+            return ""
+        gitdir = Path(first[len("gitdir:"):].strip())
+        # <primary>/.git/worktrees/<name> -> <primary>
+        if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
+            return ""
+        primary = gitdir.parent.parent.parent
+        if primary == directory or not primary.is_dir():
+            return ""
+        lacking = sorted(
+            candidate.name
+            for candidate in primary.glob(".env*")
+            if candidate.is_file()
+            and not candidate.name.endswith((".example", ".sample", ".template"))
+            and not (directory / candidate.name).exists()
+        )
+        if not lacking:
+            return ""
+        return (
+            f"\n[ERROR] {directory} is a linked worktree: gitignored files are "
+            f"not shared with the primary checkout {primary}. It holds "
+            f"{', '.join(lacking)}, which this worktree lacks; values a template "
+            "needs from them must be exported in the shell (for example "
+            f"`set -a; . {primary}/{lacking[0]}; set +a`) or copied into the "
+            "worktree."
+        )
+    return ""
 
 
 # ---------------------------------------------------------------------------
