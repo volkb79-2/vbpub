@@ -3681,9 +3681,12 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
     # MDTC-02: the default base is tester-base (the floating MDT cockpit image is no longer the
     # gate environment); the zero-release path stays an explicit --base-image.
     assert re.search(r"^ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local$", dockerfile, re.MULTILINE)
-    assert "mdt-cockpit" not in "\n".join(
+    code_lines = "\n".join(
         line for line in dockerfile.splitlines() if not line.lstrip().startswith("#")
     )
+    # Neither the retired MDT image nor its mdt-cockpit successor is a gate input.
+    assert "modern-debian-tools-python-debug" not in code_lines
+    assert "mdt-cockpit" not in code_lines
     assert "FROM ${TESTER_UNIFIED_BASE_IMAGE}" in dockerfile
     assert "docker compose version" in dockerfile
     assert 'packages="$packages docker-cli"' in dockerfile
@@ -3875,6 +3878,7 @@ def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():
     assert "FROM ${WHEEL_BUILDER_BASE_IMAGE}" in dockerfile
     assert_tester_base_has_no_published_vbpub_input(REPO_ROOT)
     assert "apt-get install -y --no-install-recommends ca-certificates git passwd" in dockerfile
+    assert "ghcr.io/volkb79-2/modern-debian-tools-python-debug" not in dockerfile
     assert "ghcr.io/volkb79-2/mdt-cockpit-devcontainer" not in dockerfile
     for document in (readme, design, consumers):
         assert "CMRU_BOOTSTRAP_CLI_EXTENDED=source" in document
