@@ -21,6 +21,26 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.23.1] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=a6d377dde5f2aeac40f85a0847d69629fc31f240 -->
+
+### Fixed
+- fix(ciu): adopt no longer refuses its own env child (CIU-197); pool-exhaustion remedy (CIU-199); file CIU-198 open (49750b8ed)
+
+### Changed
+- Merge origin/main into ciu-survivors-20261105 (keep CIU-195 and CIU-196 entries) (58d4d0478)
+
+### Testing
+- test(ciu): kill R2 survivors of ciu 7.22.0 (CIU-195) (00ff099ab)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- `ciu worktree adopt` (and the `ensure` resume of an adopted checkout) no longer refuses its own env-generation child (CIU-197). An adopt writes `recovery-required` as its durable no-reset marker, and the runtime-network verifier accepted only `allocating`, so every adopt of a checkout with a CIU root ended `recovery-required` with "managed worktree is 'recovery-required'; run `ciu worktree ensure`" and `ensure` hit the same refusal. The allocation-time verifier now also accepts an ADOPTED `recovery-required` record; `ciu up`/`ciu worktree up` still refuse it, and a non-adopted `recovery-required` record is still refused everywhere. Reproduced in a scratch repo (no host pool exhaustion needed) and verified fixed by `ensure` resuming it to `ready`.
+- A Docker address-pool exhaustion while creating the instance network ("all predefined address pools have been fully subnetted") now says what it means and what to do: too many user-defined networks on the host, nothing was created or removed, remove an EMPTY finished-run network by exact name (`ciu worktree reap` surveys leftovers) or ask the host operator to widen the daemon `default-address-pools` (CIU-199). The failure stays a warning during `env generate`/worktree preparation, as before.
+- Test-strength closeout of the ciu 7.22.0 R2 mutation survivors (CIU-195): new tests pin the both-tags requirement of `_known_stack_projects`, the flushed no-Docker-socket INFO line and the stdout fallback of the runtime-network probe error; the `.gitignore` chain guard in `engine._gitignore_text_ignores` drops a provably dead `root != stack` conjunct. No behaviour change.
+<!-- cmru: pending release notes end -->
+
 ## [7.23.0] - 2026-11-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=b7681dbfa30cedf88d609bdac80737650c1b41d7 -->
@@ -198,11 +218,6 @@ the technical detail below it.
 <!-- cmru: pending release notes end -->
 
 ## [Unreleased]
-
-### Fixed
-- `ciu worktree adopt` (and the `ensure` resume of an adopted checkout) no longer refuses its own env-generation child (CIU-197). An adopt writes `recovery-required` as its durable no-reset marker, and the runtime-network verifier accepted only `allocating`, so every adopt of a checkout with a CIU root ended `recovery-required` with "managed worktree is 'recovery-required'; run `ciu worktree ensure`" and `ensure` hit the same refusal. The allocation-time verifier now also accepts an ADOPTED `recovery-required` record; `ciu up`/`ciu worktree up` still refuse it, and a non-adopted `recovery-required` record is still refused everywhere. Reproduced in a scratch repo (no host pool exhaustion needed) and verified fixed by `ensure` resuming it to `ready`.
-- A Docker address-pool exhaustion while creating the instance network ("all predefined address pools have been fully subnetted") now says what it means and what to do: too many user-defined networks on the host, nothing was created or removed, remove an EMPTY finished-run network by exact name (`ciu worktree reap` surveys leftovers) or ask the host operator to widen the daemon `default-address-pools` (CIU-199). The failure stays a warning during `env generate`/worktree preparation, as before.
-- Test-strength closeout of the ciu 7.22.0 R2 mutation survivors (CIU-195): new tests pin the both-tags requirement of `_known_stack_projects`, the flushed no-Docker-socket INFO line and the stdout fallback of the runtime-network probe error; the `.gitignore` chain guard in `engine._gitignore_text_ignores` drops a provably dead `root != stack` conjunct. No behaviour change.
 
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->
