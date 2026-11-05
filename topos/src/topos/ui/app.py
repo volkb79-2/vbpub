@@ -90,6 +90,11 @@ class GlossaryScreen(Screen[None]):
         self.dismiss(None)
 
 
+# Integer-valued jump inputs at or above this (about 1973 as epoch seconds) are
+# timestamps, never frame numbers.
+_EPOCH_LIKE_MIN = 1e8
+
+
 class ToposApp(App[None]):
     CSS = """
     Screen {
@@ -448,17 +453,17 @@ class ToposApp(App[None]):
         if not math.isfinite(parsed):
             self._refresh_status(f"invalid jump input: '{stripped}' — use a finite frame number or epoch timestamp")
             return
-        if parsed.is_integer():
-            frame_num = int(parsed)
-            if 1 <= frame_num <= self._replay_driver.total:
-                self._replay_paused = True
-                self._cancel_replay_timer()
-                self._apply_frame(self._replay_driver.seek(frame_num - 1))
-                return
+        if parsed.is_integer() and 1 <= parsed <= self._replay_driver.total:
+            self._replay_paused = True
+            self._cancel_replay_timer()
+            self._apply_frame(self._replay_driver.seek(int(parsed) - 1))
+            return
+        if parsed.is_integer() and parsed < _EPOCH_LIKE_MIN:
             self._refresh_status(
-                f"invalid frame number: {frame_num} — must be between 1 and {self._replay_driver.total}"
+                f"invalid frame number: {int(parsed)} — must be between 1 and {self._replay_driver.total}"
             )
             return
+        # Anything else (including integer-valued epoch timestamps) is a timestamp.
         self._replay_paused = True
         self._cancel_replay_timer()
         self._apply_frame(self._replay_driver.seek_timestamp(parsed))

@@ -336,7 +336,10 @@ def owned_markers(state_dir: Path) -> list[Path]:
         except (OSError, ValueError, AttributeError):
             recorded = None
         if isinstance(recorded, str) and recorded != boot_id:
-            marker.unlink(missing_ok=True)
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass  # read-only listing (non-root / read-only state dir): just skip it
             continue
         kept.append(marker)
     return kept

@@ -740,6 +740,21 @@ def test_legacy_marker_without_boot_id_is_kept(tmp_path, monkeypatch):
     assert control.owned_markers(tmp_path / "state") == [marker]
 
 
+def test_owned_markers_listing_tolerates_an_undeletable_stale_marker(tmp_path, monkeypatch):
+    stale = tmp_path / "state" / "damon" / "kdamond-0.json"
+    stale.parent.mkdir(parents=True)
+    stale.write_text(json.dumps({"owner": "topos", "boot_id": "boot-A"}))
+    monkeypatch.setattr(control, "_current_boot_id", lambda: "boot-B")
+
+    def deny(self, missing_ok=False):
+        raise PermissionError("read-only state dir")
+
+    monkeypatch.setattr(Path, "unlink", deny)
+    assert control.owned_markers(tmp_path / "state") == []  # listed as not-ours, no raise
+    monkeypatch.undo()
+    assert stale.exists()
+
+
 # --------------------------------------------------------------------- C-13
 
 

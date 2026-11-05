@@ -456,13 +456,34 @@ class BrokerUnixServer(socketserver.ThreadingUnixStreamServer):
         """Reply body for a rejected connection (legacy shape; envelope server overrides)."""
         return _error_response("server busy")
 
-    def process_request(self, request: socket.socket, client_address: Any) -> None:
-        if not self._client_slots.acquire(blocking=False):
+    _busy_repliers = threading.BoundedSemaphore(16)
+
+    def _reply_busy(self, request: socket.socket) -> None:
+        try:
             try:
                 request.sendall(json.dumps(self.busy_payload(request), separators=(",", ":")).encode() + b"\n")
             except (OSError, ValueError, TypeError):
                 pass
             self.shutdown_request(request)
+        finally:
+            self._busy_repliers.release()
+
+    def process_request(self, request: socket.socket, client_address: Any) -> None:
+        if not self._client_slots.acquire(blocking=False):
+            # G-09: the reply may wait briefly for the client's request line;
+            # never do that on the accept thread. A bounded number of short
+            # repliers run; beyond that the connection is just closed.
+            if not self._busy_repliers.acquire(blocking=False):
+                self.shutdown_request(request)
+                return
+            try:
+                threading.Thread(
+                    target=self._reply_busy, args=(request,), name="topos-busy-reply", daemon=True
+                ).start()
+            except BaseException:
+                self._busy_repliers.release()
+                self.shutdown_request(request)
+                raise
             return
         try:
             super().process_request(request, client_address)

@@ -616,6 +616,46 @@ def test_pilot_replay_jump_prompt_with_timestamp() -> None:
     asyncio.run(run())
 
 
+def test_pilot_replay_jump_integer_valued_epoch_timestamp_seeks() -> None:
+    async def run() -> None:
+        fixture = fixture_frame()
+        base = Frame(
+            schema_version=fixture.schema_version,
+            ts=1730000000.0,
+            interval_s=fixture.interval_s,
+            host=fixture.host,
+            entities=fixture.entities,
+        )
+        later_ts = 1730000010.0
+        later = Frame(
+            schema_version=base.schema_version,
+            ts=later_ts,
+            interval_s=base.interval_s,
+            host=base.host,
+            entities=base.entities,
+        )
+        app = ToposApp(
+            (),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            replay_driver=ReplayDriver([base, later]),
+            replay_step=True,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("j")
+            await pilot.pause()
+            input_widget = app.screen.query_one("#jump-input", Input)
+            input_widget.value = str(int(later_ts))
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "frame=2/2" in _status_text(app)
+            assert "invalid" not in _status_text(app)
+
+    asyncio.run(run())
+
+
 def test_pilot_replay_jump_in_non_replay_mode_shows_unavailable_message() -> None:
     async def run() -> None:
         app = _make_app()
