@@ -293,6 +293,16 @@ def test_o3_pid_reuse_never_joins_history_end_to_end(tmp_path: Path) -> None:
     # The old incarnation's row must not reappear under the new key's entity.
     assert key_a.entity_key() != key_b.entity_key()
 
+    # Once the newcomer is active its rate is computed against ITS OWN first
+    # sample (utime 150), never against the old incarnation's baseline (utime 100,
+    # which would give 150 ticks of delta instead of 100).
+    clock[0] = 15.0
+    tree.write_pid(pid, comm="reincarnated", utime=250, starttime=999)
+    tick_c = sampler.sample({})
+    reused_row = tick_c.frame.entities[key_b.entity_key()]
+    assert reused_row.process["comm"] == "reincarnated"
+    assert reused_row.metrics["proc_cpu_pct"].v == pytest.approx((100 / procfs.CLK_TCK) / 5.0 * 100.0)
+
 
 def test_o3_process_key_identity_pure() -> None:
     old = ProcessKey(pid=42, start_ticks=100, boot_id="boot-a")

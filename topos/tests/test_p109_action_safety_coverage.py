@@ -206,5 +206,21 @@ def test_default_owner_inspect_runs_one_docker_inspect_and_returns_payload(
 
     monkeypatch.setattr(subprocess, "run", run)
 
+    kwargs_seen: list[dict] = []
+
+    def run_capture(argv, **kwargs):
+        kwargs_seen.append(kwargs)
+        return run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run_capture)
     assert owner_safety.default_owner_inspect("accepted-target") == expected
-    assert len(calls) == 1 and calls[0][-1] == "accepted-target"
+    assert len(calls) == 1
+    from topos.actions.catalog import DOCKER_EXECUTABLE
+
+    # Absolute docker binary, container objects only, `--` before the target.
+    assert calls[0] == [DOCKER_EXECUTABLE, "inspect", "--type", "container", "--", "accepted-target"]
+    assert calls[0][0].startswith("/")
+    kwargs = kwargs_seen[0]
+    assert kwargs["env"] == dict(owner_safety.INSPECT_ENV)  # scrubbed, no DOCKER_HOST/CONTEXT
+    assert kwargs["timeout"] == owner_safety._INSPECT_TIMEOUT_S
+    assert kwargs["shell"] is False
