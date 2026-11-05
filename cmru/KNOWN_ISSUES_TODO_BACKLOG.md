@@ -2875,3 +2875,17 @@ the other sources' pools bound the candidates. (c) Cache per-tag age evidence (i
 **Status:** OPEN; severity: minor. `opentelemetry-instrumentation-*` publish only `0.NNbN` pre-releases, which cmru excludes, so the target fails with "no age-eligible version"
 and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, or a documented skip that leaves the package unconstrained. Also check (dstdns P3 finding B) whether
 `versions init` ignores extras (`sqlalchemy[asyncio]` -> greenlet not guaranteed in constraints.txt) and (finding D) the ~865-line `[...resolved]` diff noise written into a hand-maintained `cmru.toml`.
+
+## KI-126 - `bundle.toml` cannot build a per-interpreter bundle, so every variant consumer hand-rolls its tarball builder
+
+**Status:** OPEN; severity: enhancement (adoption friction; found adopting cmru in netcup-api-filter, `netcup-api-filter@38f8731`). CHANGES checked: nothing in `[Unreleased]` or 7.x covers it.
+
+**Observed.** `bundle.toml` (`bundle.py`) copies files/dirs, optionally builds the project wheel, and writes one deterministic archive. FEAT-01 publishes N variant assets and `get.py --variant` installs one, but nothing builds them. The two variant consumers each wrote their own builder for the same four steps: netcup-api-filter `scripts/build_webhosting_tarball.py` (py311; before that py39/py311) and tls-edge `scripts/build-artifact.sh` (py313/py314). pwmcp uses `bundle.toml` but has no variants.
+
+**The shared shape (what a default should cover).**
+1. For each declared variant, run the build under that interpreter's ABI (the runner for the variant: a container, not the controller's Python).
+2. Vendor the dependency closure for that ABI: `pip download --only-binary=:all: --python-version V --platform ... -r <manifest>` into a declared dir, extracting or keeping wheels (installer `[[wheels]]` already consumes wheels).
+3. An optional project stage step between copy and archive (naf seeds a SQLite database while the ABI's C extensions import; tls-edge stages a ciu stack).
+4. Write the manifest (`bundle-manifest`), then the deterministic archive named `<prefix>-v<version>-<variant>.tar.xz`.
+
+**Wanted.** A `[[variants]]`-aware bundle build: `cmru handler bundle-build` (or `bundle.toml` keys) with `vendor_requirements = ["requirements-runtime.txt"]`, `platforms = [...]`, `stage = [argv]`, and a per-variant `exec_prefix` argv (for example `["docker","exec","-w","{root}","{container}"]`) so the step runs in the project's runner while cmru keeps the archive, manifest, naming and publish. Per-variant interpreter versions come from the existing `[[project.X.variants]] build_arg`. Acceptance: naf and tls-edge delete their builders, and a new project with one `bundle.toml` plus a requirements manifest releases a vendored per-interpreter tarball. Do not add secrets or host-specific limits to the config.

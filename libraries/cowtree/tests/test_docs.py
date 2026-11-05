@@ -33,6 +33,14 @@ def test_public_vocabulary_is_documented():
         "64 kib",
         "root-invalid",
         "lease",
+        "mdt_tree_cache_root",
+        "mdt_tree_upper_root",
+        "cowtree cache gc",
+        "redirect_dir=on",
+        "complete",
+        "volume-opt=o=",
+        "repair_entry",
+        "tree-invalid",
     ):
         assert value in docs
 
