@@ -399,7 +399,7 @@ def test_handler_builds_all_variants(tmp_path, monkeypatch, capsys):
     handlers.cmd_bundle_build(_args(bundle_toml, cmru_toml))
     out = capsys.readouterr().out
     assert sorted(p.name for p in (tmp_path / "dist").glob("*.tar.xz")) == [
-        "demo-v1.2.3-py311.tar.xz", "demo-v1.2.3-py313.tar.xz"]
+        "demo-v1.2.3-py311.tar.xz", "demo-v1.2.3-py313.tar.xz", "stale-v0.0.1-py311.tar.xz"]
     assert out.count("[INFO] Built") == 2
     with tarfile.open(tmp_path / "dist" / "demo-v1.2.3-py313.tar.xz") as tf:
         manifest = json.loads(tf.extractfile("bundle/manifest.json").read())
@@ -410,6 +410,47 @@ def test_handler_builds_one_named_variant(tmp_path, monkeypatch):
     bundle_toml, cmru_toml = _project(tmp_path, monkeypatch, "two")
     handlers.cmd_bundle_build(_args(bundle_toml, cmru_toml, variant="py313"))
     assert [p.name for p in (tmp_path / "dist").glob("*.tar.xz")] == ["demo-v1.2.3-py313.tar.xz"]
+
+
+def test_handler_named_variant_keeps_sibling_archives(tmp_path, monkeypatch):
+    bundle_toml, cmru_toml = _project(tmp_path, monkeypatch, "two")
+    handlers.cmd_bundle_build(_args(bundle_toml, cmru_toml))
+    sibling = tmp_path / "dist" / "demo-v1.2.3-py311.tar.xz"
+    before = sibling.read_bytes()
+    own = tmp_path / "dist" / "demo-v1.2.3-py313.tar.xz"
+    own.write_bytes(b"corrupt")
+    handlers.cmd_bundle_build(_args(bundle_toml, cmru_toml, variant="py313"))
+    assert sibling.read_bytes() == before
+    assert own.read_bytes() != b"corrupt" and tarfile.is_tarfile(own)
+
+
+def test_archive_name_is_validated_before_vendor_and_stage(tmp_path, monkeypatch):
+    config = _write(tmp_path, VENDOR + STAGE)
+    monkeypatch.setenv("VERSION", "1/2")
+    recorder = Recorder()
+    with pytest.raises(ValueError, match="single filename"):
+        bundle.run_bundle(config, variant=PY311, runner=recorder)
+    monkeypatch.delenv("VERSION")
+    with pytest.raises(RuntimeError, match="VERSION must be set"):
+        bundle.run_bundle(config, variant=PY311, runner=recorder)
+    assert recorder.calls == [] and not (tmp_path / "dist").exists()
+
+
+def test_find_links_in_runner_is_mapped_or_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("KI126_ROOT", "/work/proj")
+    monkeypatch.setenv("KI126_CONTAINER", "c")
+    config = _write(tmp_path, VENDOR + EXEC)
+    inside = config.read_text(encoding="utf-8").replace(
+        "[wheel]\nenabled = false\n", '[wheel]\nenabled = false\nfind_links = "wheelhouse"\n')
+    config.write_text(inside, encoding="utf-8")
+    recorder = Recorder()
+    bundle.run_bundle(config, variant=PY311, runner=recorder)
+    argv = recorder.calls[0][0]
+    assert argv[argv.index("--find-links") + 1] == "wheelhouse"
+    outside = tmp_path.parent / (tmp_path.name + "-wh")
+    config.write_text(inside.replace('find_links = "wheelhouse"', f'find_links = "{outside}"'), encoding="utf-8")
+    with pytest.raises(ValueError, match="inside project_root"):
+        bundle.run_bundle(config, variant=PY311, runner=Recorder())
 
 
 def test_handler_without_variants_builds_the_legacy_archive(tmp_path, monkeypatch):

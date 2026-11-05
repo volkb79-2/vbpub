@@ -562,7 +562,8 @@ def copy_sources(config: BundleConfig) -> None:
         )
 
 
-def create_archive(config: BundleConfig, variant_name: Optional[str] = None) -> Path:
+def archive_path(config: BundleConfig, variant_name: Optional[str] = None) -> Path:
+    """The archive this build writes; validated before any vendor/stage command runs."""
     version_value = os.getenv(config.archive_version_env) if config.archive_version_env else None
     if not version_value:
         raise RuntimeError(
@@ -580,7 +581,11 @@ def create_archive(config: BundleConfig, variant_name: Optional[str] = None) -> 
         or Path(tarball_name).is_absolute()
     ):
         raise ValueError("archive name after version substitution must be a single filename")
-    tarball_path = config.dist_dir / tarball_name
+    return config.dist_dir / tarball_name
+
+
+def create_archive(config: BundleConfig, variant_name: Optional[str] = None) -> Path:
+    tarball_path = archive_path(config, variant_name)
 
     log_info(f"Creating archive {tarball_path}")
     if config.archive_format == "xztar":
@@ -672,7 +677,10 @@ def vendor_dependencies(
     for platform in config.vendor.platforms:
         command.extend(["--platform", platform])
     if config.wheel_find_links is not None:
-        command.extend(["--no-index", "--find-links", str(config.wheel_find_links)])
+        # In a runner the wheelhouse must be a path the runner sees: only a location
+        # inside project_root is mapped (project-root-relative); anything else is refused.
+        command.extend(["--no-index", "--find-links",
+                        _runner_path(config, config.wheel_find_links, prefixed)])
     command.extend(["--dest", _runner_path(config, dest, prefixed)])
     for requirement in config.vendor.requirements:
         command.extend(["-r", _runner_path(config, resolve_path(config.project_root, requirement), prefixed)])
@@ -756,6 +764,8 @@ def run_bundle(
     if config.manifest_name is not None and not (manifest_project and manifest_tag):
         raise ValueError("[manifest] needs manifest_project and manifest_tag")
 
+    own_archive = archive_path(config, variant.name if variant is not None else None)
+
     log_info("Preparing dist directories")
     if variant is None:
         if config.dist_dir.exists():
@@ -764,6 +774,7 @@ def run_bundle(
         for stale in (config.bundle_dir, config.client_dir):
             if stale.exists():
                 shutil.rmtree(stale)
+        own_archive.unlink(missing_ok=True)
     config.bundle_dir.mkdir(parents=True, exist_ok=True)
 
     build_wheel(config)

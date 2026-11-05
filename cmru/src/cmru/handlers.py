@@ -1035,9 +1035,6 @@ def cmd_bundle_build(args: argparse.Namespace) -> None:
         if not version:
             raise RuntimeError(f"{parsed.archive_version_env} must be set for archive naming")
         tag = version_to_tag(project.prefix, version)
-        if selected[0] is not None and parsed.dist_dir.exists():
-            # one clean for the whole set: run_bundle keeps sibling archives per variant
-            shutil.rmtree(parsed.dist_dir)
         built = [
             bundle.run_bundle(
                 bundle_config, variant=variant, manifest_project=args.project, manifest_tag=tag,
