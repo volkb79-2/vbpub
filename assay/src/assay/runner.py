@@ -156,6 +156,7 @@ from .mutation_witness import (
 )
 from .output import VerdictOutput
 from .process_tree import (
+    ProcessTreeDescendant,
     ProcessTreeError,
     ProcessTreeEvidence,
     ProcessTreeProcessRunner,
@@ -1849,6 +1850,21 @@ def _resource_progress(result: CommandResult) -> dict[str, Any] | None:
     }
 
 
+def _leaked_descendants(result: CommandResult) -> tuple[ProcessTreeDescendant, ...]:
+    """Identities of processes that outlived the command leader (may be empty)."""
+    evidence = result.process_tree_evidence
+    if not isinstance(evidence, Mapping) or not evidence.get("outliving_descendants"):
+        return ()
+    try:
+        return ProcessTreeEvidence.from_dict(evidence).descendants
+    except (ValueError, KeyError, TypeError):
+        return ()
+
+
+def _leaked_descendant_lines(result: CommandResult) -> tuple[str, ...]:
+    return tuple(item.describe() for item in _leaked_descendants(result))
+
+
 def _command_finished_event(result: CommandResult, *, phase: str) -> dict[str, Any]:
     event: dict[str, Any] = {
         "event": "command_finished",
@@ -1864,6 +1880,10 @@ def _command_finished_event(result: CommandResult, *, phase: str) -> dict[str, A
     resources = _resource_progress(result)
     if resources is not None:
         event["resources"] = resources
+    leaked = _leaked_descendants(result)
+    if leaked:
+        # Additive diagnosability (B233): who outlived the command leader.
+        event["leaked_descendants"] = [item.to_dict() for item in leaked]
     return event
 
 
@@ -1872,7 +1892,10 @@ def _announce_r0_pressure(
     *,
     diagnostics: "TextIO | None",
 ) -> None:
-    """Print one diagnostic-only hint for a failed R0 with pressure evidence."""
+    """Print diagnostic-only hints for a failed R0 (leaks, then pressure)."""
+    if diagnostics is not None:
+        for line in _leaked_descendant_lines(result):
+            print(f"assay: leaked process outlived the command: {line}", file=diagnostics)
     observed = result.observation
     if (
         diagnostics is None
@@ -2045,6 +2068,7 @@ def build_r0_claim(result: CommandResult) -> Claim:
                 () if observation is None else observation.reasons
             ),
             returncode=result.returncode,
+            leaked_descendants=_leaked_descendant_lines(result),
         )
         if detail_text is not None:
             detail = refusal_detail(detail_text)
