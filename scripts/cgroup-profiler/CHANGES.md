@@ -8,6 +8,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Tests
+- tests(cgprofile): kill the four 2.1.0 R2 survivors in machine.py/metrics.py (CP-60)
+
 <!-- cmru: release history -->
 
 ## [2.1.0] - 2026-11-04

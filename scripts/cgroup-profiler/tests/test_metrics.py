@@ -489,6 +489,16 @@ def test_cpu_jiffies_old_kernel_without_steal_field(tmp_path):
     assert jiffies["accounted_jiffies"] == 950
 
 
+def test_cpu_jiffies_seven_fields_end_before_steal(tmp_path):
+    # user..irq present, steal (field 8) absent: boundary of the steal guard
+    (tmp_path / "stat").write_text("cpu  100 0 50 800 20 0 10\n")
+    jiffies = metrics._cpu_jiffies(str(tmp_path))
+    assert jiffies["steal_jiffies"] is None
+    assert jiffies["idle_jiffies"] == 820
+    assert jiffies["total_jiffies"] == 980
+    assert jiffies["accounted_jiffies"] == 980
+
+
 def test_cpu_jiffies_non_numeric_fields(tmp_path):
     (tmp_path / "stat").write_text("cpu  1000 abc 3000 90000 500 0 100 0 0 0\n")
     jiffies = metrics._cpu_jiffies(str(tmp_path))
