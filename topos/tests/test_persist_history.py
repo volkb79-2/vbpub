@@ -156,13 +156,15 @@ def test_load_defaults_history_daemon_section_to_disabled(tmp_path):
     assert config.history.daemon == PersistConfig()
 
 
-def test_load_rejects_unknown_compression_by_falling_back_to_default(tmp_path):
-    from topos.config import load
+def test_load_rejects_unknown_compression_with_a_config_error(tmp_path):
+    import pytest
+
+    from topos.config import ConfigError, load
 
     config_file = tmp_path / "config.toml"
     config_file.write_text('[history.daemon]\ncompression = "lz4"\n')
-    config = load(config_file)
-    assert config.history.daemon.compression == "zstd"
+    with pytest.raises(ConfigError, match="compression"):
+        load(config_file)
 
 
 def test_to_primitive_and_digest_cover_the_daemon_section():

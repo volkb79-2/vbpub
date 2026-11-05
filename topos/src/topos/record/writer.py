@@ -29,6 +29,78 @@ def _is_zstd_file(path: Path) -> bool:
         return False
 
 
+class NotARecordingError(RuntimeError):
+    """The existing file does not start with a topos recording header."""
+
+
+def _starts_with_recording_header(fh: BinaryIO) -> bool:
+    fh.seek(0)
+    first = fh.readline(1 << 20)
+    try:
+        record = json.loads(first)
+    except ValueError:
+        return False
+    return isinstance(record, dict) and record.get("type") == "header" and "schema_version" in record
+
+
+def _truncate_to_last_newline(path: Path, *, chunk: int = 65536) -> None:
+    """Drop a trailing partial line (no terminating newline) from *path*.
+
+    Acts only on a file that starts with a valid recording header and never
+    truncates it to zero; anything else raises :class:`NotARecordingError`.
+    """
+    with path.open("r+b") as fh:
+        size = fh.seek(0, os.SEEK_END)
+        if size == 0:
+            return
+        if not _starts_with_recording_header(fh):
+            raise NotARecordingError(
+                f"refusing to append to {path}: it does not start with a topos recording header"
+            )
+        fh.seek(size - 1)
+        if fh.read(1) == b"\n":
+            return
+        end = size
+        while end > 0:
+            start = max(0, end - chunk)
+            fh.seek(start)
+            block = fh.read(end - start)
+            index = block.rfind(b"\n")
+            if index >= 0:
+                fh.truncate(start + index + 1)
+                return
+            end = start
+        # Unreachable for a valid header line (it ends in a newline before any
+        # partial tail unless the header itself is torn): refuse, never wipe.
+        raise NotARecordingError(f"refusing to truncate {path}: no complete line to keep")
+
+
+def _require_intact_zstd(path: Path) -> None:
+    """Raise ``RuntimeError`` unless the whole zstd recording decodes cleanly."""
+    assert _zstd is not None
+    refusal = f"refusing to append to truncated or corrupt compressed recording: {path}"
+    try:
+        with path.open("rb") as fh:
+            current = None
+            carry = b""
+            while True:
+                data = carry or fh.read(65536)
+                carry = b""
+                if not data:
+                    break
+                if current is None:
+                    current = _zstd.ZstdDecompressor().decompressobj()
+                current.decompress(data)
+                if current.eof:
+                    carry = current.unused_data
+                    current = None
+            if current is not None:
+                # Input ran out inside a frame: the tail was cut mid-write.
+                raise RuntimeError(refusal)
+    except _zstd.ZstdError as exc:
+        raise RuntimeError(f"{refusal} ({exc})") from exc
+
+
 class RecordWriter:
     def __init__(
         self,
@@ -64,6 +136,17 @@ class RecordWriter:
         existing_is_zstd = non_empty and _is_zstd_file(self.path)
         if existing_is_zstd and _zstd is None:
             raise RuntimeError(f"cannot append to compressed recording without zstandard: {self.path}")
+        if existing_is_zstd:
+            # A zstd stream cut mid-frame cannot be repaired by cutting at a
+            # line boundary, and appending a new frame after the cut makes the
+            # whole recording unreadable. Refuse instead of destroying it.
+            _require_intact_zstd(self.path)
+        elif non_empty:
+            # A crash can leave a torn final JSON line; appending to it would
+            # glue the next frame onto the partial text and corrupt the file
+            # mid-stream. Cut back to the last complete line first.
+            _truncate_to_last_newline(self.path)
+            non_empty = self.path.stat().st_size > 0
         self._compressed = self.path.suffix == ".zst" and (_zstd is not None) and (existing_is_zstd or not non_empty)
         binary = self.path.open("ab")
         self._binary = binary

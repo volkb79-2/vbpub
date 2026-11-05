@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import sys
@@ -15,7 +16,7 @@ from topos.bpf_gate import report_to_jsonable, render_report, run_bpf_gate
 from topos.collect.collector import Collector
 from topos.collect.cgroup import _validate_slice_name
 from topos.collect.dockerjoin import ContainerResolveError, resolve_container_key
-from topos.config import BpfSnapshotConfig, load
+from topos.config import MIN_INTERVAL_SECONDS, BpfSnapshotConfig, ConfigError, load
 from topos.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
 from topos.damon.passive import DEFAULT_DAMON_ROOT
 from topos.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
@@ -365,6 +366,31 @@ def _attach_frame_source(socket_path: Path, *, poll_interval_s: float) -> Iterat
         time.sleep(interval_s)
 
 
+class _RestartableSource:
+    """Frame source the UI can restart after a failure.
+
+    The first stream is created eagerly; every later ``iter()`` builds a fresh
+    one. ``stop_event`` is set by the UI on quit so a live collection loop
+    ends instead of running on behind the closed screen.
+    """
+
+    def __init__(self, make_stream, *, retry_delay) -> None:
+        self.stop_event = threading.Event()
+        self._make_stream = make_stream
+        self.retry_delay = retry_delay
+        self._first = make_stream(self.stop_event)
+
+    def __iter__(self):
+        if self._first is not None:
+            first, self._first = self._first, None
+            return iter(first)
+        return iter(self._make_stream(self.stop_event))
+
+
+def _attach_retry_delay(attempt: int) -> float:
+    return min(30.0, float(2 ** min(attempt, 5)))
+
+
 def _replay_frame_source(driver: ReplayDriver, *, speed: float, step: bool) -> Iterator:
     for replay_frame in driver.play(speed=speed, step=step):
         yield replay_frame.frame
@@ -428,14 +454,20 @@ def parse_squeeze_args(argv: list[str]) -> argparse.Namespace:
     subcommands (unlike ``topos action preview/execute``).
     """
     parser = ToposArgumentParser(prog="topos squeeze")
-    parser.add_argument("--target", type=str, required=True, help="cgroup path to squeeze")
+    parser.add_argument("--target", type=str, default=None, help="cgroup path to squeeze (required unless --recover)")
+    parser.add_argument(
+        "--recover",
+        action="store_true",
+        help="restore memory.high from leftover recovery records of interrupted squeezes "
+        "(all, or only --target); needs root",
+    )
     parser.add_argument("--admin", action="store_true", help="enable admin mode (required)")
     parser.add_argument("--confirm", type=str, default="", help="type SQUEEZE to confirm the measurement")
     parser.add_argument("--step", type=str, default="256M", help="step size (default: 256M)")
     parser.add_argument("--delay", type=float, default=15.0, help="seconds between steps (default: 15)")
     parser.add_argument("--floor", type=str, default="1G", help="never set memory.high below this (default: 1G)")
     parser.add_argument("--start", type=str, default=None, help="initial memory.high (default: current rounded up to step)")
-    parser.add_argument("--relax-to", type=str, default="max", help="restore memory.high to this on exit (default: max)")
+    parser.add_argument("--relax-to", type=str, default=None, help="restore memory.high to this on exit (default: the value it had before the squeeze, else max)")
     parser.add_argument("--psi-some-limit", type=float, default=10.0, help="stop when PSI some avg10 > PCT (default: 10)")
     parser.add_argument("--psi-full-limit", type=float, default=5.0, help="stop when PSI full avg10 > PCT (default: 5)")
     parser.add_argument("--rf-limit", type=int, default=200, help="stop when refaults/s > N (default: 200)")
@@ -457,6 +489,12 @@ def _main_squeeze(argv: list[str]) -> int:
 
     args = parse_squeeze_args(argv)
 
+    if args.recover:
+        return _main_squeeze_recover(args.target)
+    if args.target is None:
+        print_cli_error("error: --target is required (unless --recover)")
+        return 2
+
     try:
         step_bytes = parse_size(args.step)
         floor_bytes = parse_size(args.floor)
@@ -477,7 +515,8 @@ def _main_squeeze(argv: list[str]) -> int:
         delay=args.delay,
         floor=floor_bytes,
         start=start_bytes,
-        relax_to=args.relax_to,
+        relax_to=args.relax_to if args.relax_to is not None else "max",
+        relax_explicit=args.relax_to is not None,
         psi_some_limit=max(0.0, args.psi_some_limit),
         psi_full_limit=max(0.0, args.psi_full_limit),
         rf_limit=max(0, args.rf_limit),
@@ -488,8 +527,18 @@ def _main_squeeze(argv: list[str]) -> int:
         confirm=args.confirm,
     )
 
-    result = run_squeeze_gated(config)
+    from topos.actions.squeeze import _Terminated
 
+    try:
+        result = run_squeeze_gated(config)
+    except _Terminated as term:
+        return 128 + term.signum
+
+    if result.stop_reason == "restore_failed":
+        # The loud stderr line with the stuck value was already printed by the
+        # runner; repeat it with the rendering so it is not lost in --json mode.
+        print(render_squeeze_result(result), file=sys.stderr)
+        return 3
     if result.stop_reason == "error":
         print(render_squeeze_result(result), file=sys.stderr)
         return 2
@@ -501,10 +550,46 @@ def _main_squeeze(argv: list[str]) -> int:
 
     if result.stop_reason == "interrupted":
         return 130
+    if result.exit_signal:
+        return 128 + result.exit_signal
     return 0
 
 
+def _main_squeeze_recover(target: str | None) -> int:
+    """``topos squeeze --recover``: restore memory.high from recovery records."""
+    import os
+
+    from topos.actions.squeeze import recover_squeeze
+
+    if os.geteuid() != 0:
+        print_cli_error("error: --recover requires root privileges")
+        return 2
+    outcomes = recover_squeeze(target)
+    if not outcomes:
+        print("nothing to recover")
+        return 0
+    failed = 0
+    for outcome in outcomes:
+        if outcome.ok:
+            print(f"recovered {outcome.target}: memory.high restored to {outcome.value}")
+        else:
+            failed += 1
+            print(
+                f"RECOVERY FAILED for {outcome.target} ({outcome.path}): {outcome.error}",
+                file=sys.stderr,
+            )
+    return 3 if failed else 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except ConfigError as exc:
+        print(f"topos: config {exc.path}: {exc.message}", file=sys.stderr)
+        return 2
+
+
+def _main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if raw_argv[:1] == ["damon"]:
         return _main_damon(raw_argv[1:])
@@ -547,6 +632,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.duration is not None and args.frames is not None:
         print_cli_error("--duration and --frames are mutually exclusive")
         return 2
+    if (args.duration is not None or args.frames is not None) and not (args.headless and args.record is not None):
+        print_cli_error("--duration and --frames are only supported with --headless --record FILE")
+        return 2
+    if args.duration is not None and not args.duration > 0:
+        print_cli_error("--duration must be greater than 0")
+        return 2
+    if args.frames is not None and args.frames < 1:
+        print_cli_error("--frames must be at least 1")
+        return 2
+    if args.interval is not None:
+        if not args.interval >= MIN_INTERVAL_SECONDS:
+            print_cli_error(f"--interval must be at least {MIN_INTERVAL_SECONDS:g} seconds")
+            return 2
+        if not args.headless:
+            # The headless driver applies --interval itself.
+            config = dataclasses.replace(config, interval=args.interval)
+    if args.replay is None and (args.step or args.speed != 1.0) and args.attach is None:
+        print_cli_error("--speed and --step require --replay")
+        return 2
     # Validate --slice early so bad values are rejected before collector work
     if args.slice is not None:
         try:
@@ -587,7 +691,10 @@ def main(argv: list[str] | None = None) -> int:
                 _print_frame_json(frame, args.pretty_json)
                 return 0
             ui_code = _run_ui(
-                _attach_frame_source(args.attach, poll_interval_s=config.interval),
+                _RestartableSource(
+                    lambda _stop: _attach_frame_source(args.attach, poll_interval_s=config.interval),
+                    retry_delay=_attach_retry_delay,
+                ),
                 config=config,
                 cgroup_root=None,
                 smoke=args.ui_smoke,
@@ -648,14 +755,17 @@ def main(argv: list[str] | None = None) -> int:
                         max_frames=args.frames,
                     )
                     return exit_code
-                stream = live_frame_stream(collector, writer=writer)
                 if args.once:
+                    stream = live_frame_stream(collector, writer=writer)
                     frame = next(stream)
                     if args.json:
                         _print_frame_json(frame, args.pretty_json)
                     return 0
                 ui_code = _run_ui(
-                    stream,
+                    _RestartableSource(
+                        lambda stop: live_frame_stream(collector, writer=writer, stop_event=stop),
+                        retry_delay=lambda _attempt: float(config.interval),
+                    ),
                     config=config,
                     cgroup_root=args.cgroup_root,
                     smoke=args.ui_smoke,
@@ -675,7 +785,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             collector = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args))  # type: ignore[arg-type]
             ui_code = _run_ui(
-                live_frame_stream(collector),
+                _RestartableSource(
+                    lambda stop: live_frame_stream(collector, stop_event=stop),
+                    retry_delay=lambda _attempt: float(config.interval),
+                ),
                 config=config,
                 cgroup_root=args.cgroup_root,
                 smoke=args.ui_smoke,
@@ -796,6 +909,13 @@ def parse_action_args(argv: list[str]) -> argparse.Namespace:
     execute.add_argument("--property", type=str, default=None, help="property for systemd-set-property (e.g. memory.high)")
     execute.add_argument("--value", type=str, default=None, help="value for systemd-set-property (e.g. max or byte count)")
     execute.add_argument("--mode", type=str, default=None, help="persistence mode: runtime|persistent (default: auto-detect)")
+    execute.add_argument(
+        "--expect-current",
+        type=str,
+        default=None,
+        dest="expect_current",
+        help="systemd-set-property: refuse (stale) unless the current memory.high equals this value (max or bytes)",
+    )
     # P72 kill-specific execute arguments
     execute.add_argument("--signal", type=str, default=None, help="signal name for kill action (e.g. TERM, KILL)")
     execute.add_argument("--force", action="store_true", help="allow KILL signal (required for --signal KILL)")
@@ -831,7 +951,7 @@ def _main_action(argv: list[str]) -> int:
 
     try:
         resolved_target = _resolve_mutual_exclusive_target(
-            args.target, args.container, "action"
+            args.target, args.container, "action", getattr(args, "kind", None)
         )
     except (ValueError, ContainerResolveError) as exc:
         print(str(exc), file=sys.stderr)
@@ -963,6 +1083,7 @@ def _main_action(argv: list[str]) -> int:
                 admin=args.admin,
                 confirm=args.confirm,
                 timeout=args.timeout,
+                expect_current=args.expect_current,
             )
         elif args.kind in ("docker-kill", "systemd-kill"):
             from topos.actions.execute import execute_kill
@@ -1418,7 +1539,12 @@ def _resolve_container_target(name_or_prefix: str) -> str:
     return key
 
 
-def _resolve_mutual_exclusive_target(target: str | None, container: str | None, command: str) -> str:
+def _resolve_mutual_exclusive_target(
+    target: str | None,
+    container: str | None,
+    command: str,
+    kind: str | None = None,
+) -> str:
     """Resolve --target / --container mutual exclusivity.
 
     Returns the effective target string. Raises ValueError on misuse
@@ -1430,7 +1556,7 @@ def _resolve_mutual_exclusive_target(target: str | None, container: str | None, 
         **P55/P57 composition (P59, merged):** The top-level ``--container``
         collection-path selector is wired differently — it resolves inside the
         collector's ``collect_once()`` against the current sweep's post-enrich
-        entities, not via this helper. See handoff/P59-container-entity-selector-composition.md.
+        entities, not via this helper. See nyxloom-trove/archive/P59-container-entity-selector-composition.md.
 
         **P56 composition:** If/when P56 (``topos squeeze --target``) is
         merged, accept ``--container`` as an alternative to
@@ -1442,7 +1568,19 @@ def _resolve_mutual_exclusive_target(target: str | None, container: str | None, 
             f"choose either --target or --container for {command}"
         )
     if container is not None:
-        return _resolve_container_target(container)
+        key = _resolve_container_target(container)
+        if kind is not None and kind.startswith("docker-"):
+            # C-08: docker verbs / docker-json-log take the container ID, not
+            # the cgroup key (which contains '/' and is always refused).
+            from topos.collect.dockerjoin import docker_id_from_key
+
+            cid = docker_id_from_key(key)
+            if cid is None:
+                raise ContainerResolveError(
+                    f"container {container!r} did not resolve to a docker container ID"
+                )
+            return cid
+        return key
     if target is not None:
         return target
     raise ValueError(
@@ -1468,7 +1606,7 @@ def _main_inspect_files(argv: list[str]) -> int:
     # Resolve --container to --target before validation
     try:
         resolved_target = _resolve_mutual_exclusive_target(
-            args.target, args.container, "inspect-files"
+            args.target, args.container, "inspect-files", getattr(args, "kind", None)
         )
     except (ValueError, ContainerResolveError) as exc:
         print(str(exc), file=sys.stderr)
@@ -1655,18 +1793,33 @@ def _main_daemon(argv: list[str]) -> int:
         frame_stream: Iterator[Frame] = live_frame_stream(collector, stop_event=frame_stop)
         if config.history.daemon.enabled:
             frame_stream = _persisting_frame_stream(frame_stream, history_store)
+        # SIGTERM/SIGINT and producer death both drive the one shutdown path
+        # below (the ``finally``); producer death additionally exits non-zero.
+        from topos.daemon.lifecycle import ShutdownCoordinator
+
+        shutdown = ShutdownCoordinator()
         broker = FrameBroker(
             frame_stream,
             history_size=args.history_size,
             health_registry=health_registry,
             stop_callback=frame_stop.set,
+            terminal_callback=shutdown.on_producer_terminal,
         )
         api = DaemonApi(
             broker,
             limits=ApiLimits(history_capacity=args.history_size),
             health_registry=health_registry,
         )
-        server = serve_versioned_unix_socket(args.socket, broker, api)
+        from topos.daemon.broker import SocketInUseError
+
+        try:
+            server = serve_versioned_unix_socket(args.socket, broker, api)
+        except SocketInUseError as exc:
+            print(f"topos daemon: {exc}", file=sys.stderr, flush=True)
+            if config.history.daemon.enabled:
+                history_store.close()
+            return 2
+        shutdown.bind_server(server)
         print(f"serving read-only topos frames on {args.socket}", flush=True)
 
         # Default-disabled components
@@ -1711,9 +1864,12 @@ def _main_daemon(argv: list[str]) -> int:
 
                 # Integrate BpfProvider at highest rank into the Collector
                 from topos.providers.net_bpf import BpfProvider as BpfProv
+                from topos.providers.net_bpf import staleness_limit_s
 
                 bpf_provider = BpfProv(
-                    bpf_root=bpf_root, state_dir=state_dir
+                    bpf_root=bpf_root,
+                    state_dir=state_dir,
+                    max_age_s=staleness_limit_s(bpf_interval),
                 )
                 # Rebuild network_providers with BPF first, then existing
                 existing_providers = collector.network_providers or ()
@@ -1740,7 +1896,7 @@ def _main_daemon(argv: list[str]) -> int:
                             "bpf_snapshot_bridge",
                             detail="initial BPF refresh failed; preserving last valid snapshot",
                             error=ComponentError(
-                                message="initial BPF refresh failed",
+                                message=f"initial BPF refresh failed: {exc}",
                                 error_code="bpf_initial_refresh_failed",
                             ),
                         )
@@ -1749,7 +1905,7 @@ def _main_daemon(argv: list[str]) -> int:
                             "bpf_snapshot_bridge",
                             detail="initial BPF refresh failed; no valid snapshot",
                             error=ComponentError(
-                                message="initial BPF refresh failed",
+                                message=f"initial BPF refresh failed: {exc}",
                                 error_code="bpf_initial_refresh_failed",
                             ),
                         )
@@ -1775,7 +1931,7 @@ def _main_daemon(argv: list[str]) -> int:
                                     "bpf_snapshot_bridge",
                                     detail="BPF refresh failed; preserving last valid snapshot",
                                     error=ComponentError(
-                                        message="BPF refresh failed",
+                                        message=f"BPF refresh failed: {exc}",
                                         error_code="bpf_refresh_failed",
                                     ),
                                 )
@@ -1789,7 +1945,7 @@ def _main_daemon(argv: list[str]) -> int:
                                     "bpf_snapshot_bridge",
                                     detail="BPF refresh failed; no valid snapshot",
                                     error=ComponentError(
-                                        message="BPF refresh failed",
+                                        message=f"BPF refresh failed: {exc}",
                                         error_code="bpf_refresh_failed",
                                     ),
                                 )
@@ -1802,7 +1958,7 @@ def _main_daemon(argv: list[str]) -> int:
                                 "bpf_snapshot_bridge",
                                 detail="BPF refresh encountered an unexpected error",
                                 error=ComponentError(
-                                    message="BPF refresh encountered an unexpected error",
+                                    message=f"BPF refresh encountered an unexpected error: {exc}",
                                     error_code="bpf_unexpected_error",
                                 ),
                             )
@@ -1820,7 +1976,7 @@ def _main_daemon(argv: list[str]) -> int:
                     "bpf_snapshot_bridge",
                     detail="failed to start BPF snapshot bridge",
                     error=ComponentError(
-                        message="failed to start BPF snapshot bridge",
+                        message=f"failed to start BPF snapshot bridge: {exc}",
                         error_code="bpf_start_failed",
                     ),
                 )
@@ -1856,7 +2012,7 @@ def _main_daemon(argv: list[str]) -> int:
                     "paddr_lifecycle",
                     detail="paddr lifecycle start failed",
                     error=ComponentError(
-                        message="paddr lifecycle start failed",
+                        message=f"paddr lifecycle start failed: {exc}",
                         error_code=(
                             "paddr_start_failed"
                             if isinstance(exc, PaddrLifecycleStartError)
@@ -1870,6 +2026,7 @@ def _main_daemon(argv: list[str]) -> int:
                     flush=True,
                 )
 
+        restore_signals = shutdown.install_signal_handlers()
         try:
             # Start only after all collector providers and daemon-owned
             # components are configured. The socket is not accepting handler
@@ -1877,8 +2034,11 @@ def _main_daemon(argv: list[str]) -> int:
             broker.start()
             server.serve_forever()
         except KeyboardInterrupt:
-            return 0
+            shutdown.operator_interrupt()
         finally:
+            restore_signals()
+            if shutdown.producer_failed:
+                print(f"topos daemon exiting: {shutdown.reason}", file=sys.stderr, flush=True)
             broker.stop()
             collector_stopped = False
             try:
@@ -1889,7 +2049,7 @@ def _main_daemon(argv: list[str]) -> int:
                     "collector",
                     detail="collector producer did not stop cleanly",
                     error=ComponentError(
-                        message="collector producer did not stop cleanly",
+                        message=f"collector producer did not stop cleanly: {exc}",
                         error_code="collector_shutdown_failed",
                     ),
                 )
@@ -1933,7 +2093,7 @@ def _main_daemon(argv: list[str]) -> int:
                         "paddr_lifecycle",
                         detail="paddr lifecycle stop failed",
                         error=ComponentError(
-                            message="paddr lifecycle stop failed",
+                            message=f"paddr lifecycle stop failed: {exc}",
                             error_code="paddr_stop_failed",
                         ),
                     )
@@ -1948,7 +2108,7 @@ def _main_daemon(argv: list[str]) -> int:
                 history_store.close()
                 health_registry.mark_stopped("persistent_history", detail="persistent history flushed")
             server.server_close()
-        return 0
+        return 1 if shutdown.producer_failed else 0
     if args.command == "preflight":
         try:
             report = preflight_daemon_deployment(args.socket, group_name=args.group)

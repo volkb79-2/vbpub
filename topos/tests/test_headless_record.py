@@ -133,6 +133,28 @@ class TestHeadlessRecordDriver:
         assert len(lines) == 4  # header + 3 frames
         assert all(line["type"] == "frame" for line in lines[1:])
 
+    def test_progress_reports_real_frame_count_and_final_summary(self, tmp_path: Path) -> None:
+        path = tmp_path / "headless.jsonl"
+        collector = _make_collector()
+        lines: list[str] = []
+        ticks = iter(range(0, 1000, 10))
+
+        with RecordWriter(path, config=collector.config, started_at=100.0) as writer:
+            driver = HeadlessRecordDriver(
+                collector,
+                writer,
+                max_frames=3,
+                progress_interval_s=5.0,
+                register_signals=_noop_register,
+                monotonic=lambda: float(next(ticks)),
+                stderr=lines.append,
+            )
+            assert driver.run() == 0
+
+        assert lines[0].startswith("frames=2 ") or lines[0].startswith("frames=1 ")
+        assert lines[-1].startswith("done frames=3 ")
+        assert "frames=3" in lines[-1]
+
     def test_stops_at_duration(self, tmp_path: Path) -> None:
         """duration bound causes clean exit after time elapses."""
         path = tmp_path / "headless.jsonl"

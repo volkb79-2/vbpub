@@ -4,7 +4,9 @@ import hashlib
 import json
 import math
 import os
+import sys
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -413,7 +415,7 @@ def _load_persist_config(daemon_data: dict[str, Any]) -> PersistConfig:
     defaults = PersistConfig()
     compression = daemon_data.get("compression", defaults.compression)
     if compression not in ("zstd", "none"):
-        compression = defaults.compression
+        raise ValueError(f"history.daemon.compression must be 'zstd' or 'none', got {compression!r}")
     return PersistConfig(
         enabled=bool(daemon_data.get("enabled", defaults.enabled)),
         dir=Path(daemon_data["dir"]) if isinstance(daemon_data.get("dir"), str) else defaults.dir,
@@ -441,13 +443,125 @@ _DEFAULT_SCORE_WEIGHTS = {
 }
 
 
-def load(path: Path | None = None) -> ToposConfig:
+class ConfigError(ValueError):
+    """The config file is unreadable, malformed or holds an invalid value."""
+
+    def __init__(self, path: Path, message: str) -> None:
+        super().__init__(message)
+        self.path = path
+        self.message = message
+
+
+MIN_INTERVAL_SECONDS = 0.1
+
+# Mirrors topos.ui.table.VIEW_MODES (config must not import the UI stack).
+_VIEW_MODES = ("tree", "container", "ciu-grouped")
+
+_KNOWN_KEYS: dict[str, frozenset[str] | None] = {
+    # None = free-form section, keys not checked.
+    "general": frozenset({"interval", "cgroup_root", "default_view", "default_column_profile"}),
+    "tiers": None,
+    "thresholds": None,
+    "columns": None,
+    "colors": None,
+    "hotkeys": None,
+    "history": frozenset({
+        "full_resolution_seconds", "downsample_interval_seconds",
+        "downsample_retention_hours", "entity_grace_seconds", "daemon",
+    }),
+    "record": frozenset({"flush_every_frames", "fsync"}),
+    "snapshots": frozenset({"dir", "frames", "redact"}),
+    "net": frozenset({"classes"}),
+    "damon": frozenset({
+        "hot_rate", "warm_rate", "cold_age", "idle_age",
+        "vaddr_sample_us", "vaddr_aggr_us", "vaddr_update_us",
+        "paddr_sample_us", "paddr_aggr_us", "paddr_update_us",
+        "max_concurrent_targets", "paddr_enabled",
+    }),
+    "ciu": frozenset({"known_stacks"}),
+    "bpf_snapshot": frozenset({"enabled", "root", "interval", "map_name", "state_dir"}),
+    "processes": frozenset({"top_cpu", "top_io", "pinned_cap", "recently_hot_grace_seconds", "hard_cap"}),
+}
+_KNOWN_DAEMON_KEYS = frozenset({
+    "enabled", "dir", "max_age_days", "max_size_mb", "compression",
+    "segment_frames", "checkpoint_frames", "fsync",
+})
+# Parsed and digested but consumed by nothing yet.
+_NO_EFFECT = ("hotkeys", "colors", "history.downsample_interval_seconds", "history.downsample_retention_hours")
+
+
+def _config_warnings(data: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+    for name, value in data.items():
+        if name not in _KNOWN_KEYS:
+            out.append(f"unknown section [{name}]")
+            continue
+        allowed = _KNOWN_KEYS[name]
+        if allowed is not None and isinstance(value, dict):
+            for key in value:
+                if key not in allowed:
+                    out.append(f"unknown key {name}.{key}")
+    history = data.get("history")
+    if isinstance(history, dict) and isinstance(history.get("daemon"), dict):
+        for key in history["daemon"]:
+            if key not in _KNOWN_DAEMON_KEYS:
+                out.append(f"unknown key history.daemon.{key}")
+    for dotted in _NO_EFFECT:
+        section, _, key = dotted.partition(".")
+        value = data.get(section)
+        if key:
+            present = isinstance(value, dict) and key in value
+        else:
+            present = bool(value)
+        if present:
+            out.append(f"{dotted} is accepted but has no effect yet")
+    return out
+
+
+def _check_number(value: object, name: str, *, minimum: float | None = None) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number, got {value!r}")
+    number = float(value)
+    if math.isnan(number) or math.isinf(number):
+        raise ValueError(f"{name} must be finite, got {value!r}")
+    if minimum is not None and number < minimum:
+        raise ValueError(f"{name} must be >= {minimum:g}, got {value!r}")
+    return number
+
+
+def _check_bool(value: object, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be true or false, got {value!r}")
+    return value
+
+
+def load(path: Path | None = None, *, warn: Callable[[str], None] | None = None) -> ToposConfig:
+    """Load the config file; raise :class:`ConfigError` on any invalid content.
+
+    Unknown or not-yet-effective keys produce one warning line each through
+    *warn* (default: stderr) and do not fail the load.
+    """
+    target = path or _default_path()
     data: dict[str, Any] = {}
     try:
-        with (path or _default_path()).open("rb") as fh:
+        with target.open("rb") as fh:
             data = tomllib.load(fh)
     except FileNotFoundError:
-        pass
+        return _build_config({})
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(target, f"syntax error: {exc}") from exc
+    except OSError as exc:
+        raise ConfigError(target, f"cannot read: {exc}") from exc
+    emit = warn or (lambda line: print(line, file=sys.stderr))
+    for line in _config_warnings(data):
+        emit(f"topos: config {target}: warning: {line}")
+    try:
+        return _build_config(data)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ConfigError(target, str(exc)) from exc
+
+
+def _build_config(data: dict[str, Any]) -> ToposConfig:
     general = data.get("general", {})
     tiers_data = data.get("tiers", {})
     history_data = data.get("history", {})
@@ -468,10 +582,19 @@ def load(path: Path | None = None) -> ToposConfig:
         str(name): _parse_port_list(values)
         for name, values in (net_data.get("classes", {}) or {}).items()
     }
+    default_view = general.get("default_view", "tree")
+    if default_view not in _VIEW_MODES:
+        raise ValueError(f"general.default_view must be one of {', '.join(_VIEW_MODES)}, got {default_view!r}")
+    full_resolution = _check_number(
+        history_data.get("full_resolution_seconds", 300), "history.full_resolution_seconds", minimum=1.0,
+    )
+    entity_grace = _check_number(
+        history_data.get("entity_grace_seconds", 30.0), "history.entity_grace_seconds", minimum=0.0,
+    )
     return ToposConfig(
-        interval=float(general.get("interval", 5.0)),
+        interval=_check_number(general.get("interval", 5.0), "general.interval", minimum=MIN_INTERVAL_SECONDS),
         cgroup_root=Path(general.get("cgroup_root", "/sys/fs/cgroup")),
-        default_view=str(general.get("default_view", "tree")),
+        default_view=default_view,
         default_column_profile=str(general.get("default_column_profile", "auto")),
         tiers=tiers,
         protected_services=tuple(str(v) for v in tiers_data.get("protected_services", ())),
@@ -481,10 +604,10 @@ def load(path: Path | None = None) -> ToposConfig:
         hotkeys=dict(data.get("hotkeys", {}) or {}),
         diagnostics=DiagnosticsConfig(score_weights=_load_score_weights(thresholds)),
         history=HistoryConfig(
-            full_resolution_seconds=int(history_data.get("full_resolution_seconds", 300)),
+            full_resolution_seconds=int(full_resolution),
             downsample_interval_seconds=int(history_data.get("downsample_interval_seconds", 60)),
             downsample_retention_hours=int(history_data.get("downsample_retention_hours", 24)),
-            entity_grace_seconds=float(history_data.get("entity_grace_seconds", 30.0)),
+            entity_grace_seconds=entity_grace,
             daemon=_load_persist_config(history_data.get("daemon", {}) or {}),
         ),
         record=RecordConfig(
@@ -509,11 +632,7 @@ def load(path: Path | None = None) -> ToposConfig:
             paddr_aggr_us=max(1, int(_coerce_float(damon_data.get("paddr_aggr_us"), 8_000_000))),
             paddr_update_us=max(1, int(_coerce_float(damon_data.get("paddr_update_us"), 1_000_000))),
             max_concurrent_targets=max(1, int(_coerce_float(damon_data.get("max_concurrent_targets"), 4))),
-            paddr_enabled=(
-                damon_data["paddr_enabled"]
-                if isinstance(damon_data.get("paddr_enabled"), bool)
-                else False
-            ),
+            paddr_enabled=_check_bool(damon_data.get("paddr_enabled", False), "damon.paddr_enabled"),
         ),
         ciu=CiuConfig(
             known_stacks=tuple(

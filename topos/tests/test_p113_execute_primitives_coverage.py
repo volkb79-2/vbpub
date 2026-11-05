@@ -14,58 +14,24 @@ from pathlib import Path
 import pytest
 
 
-def _stat(mode: int, uid: int = 0) -> types.SimpleNamespace:
-    return types.SimpleNamespace(st_mode=mode, st_uid=uid)
+def _open_fd_count() -> int:
+    return len(os.listdir("/proc/self/fd"))
 
 
-def _fake_audit_os(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    component_results: dict[str, list[int | BaseException]] | None = None,
-    parent_stat: object | None = None,
-    existing: object | None = None,
-    leaf_stat: object | None = None,
-    fdopen: Callable[..., io.StringIO] | None = None,
-) -> dict[str, object]:
-    """Install a narrow directory-FD model and retain its security operations."""
+def _owner_override(monkeypatch: pytest.MonkeyPatch, *, dir_uid: int, file_uid: int) -> None:
+    """Report chosen owners from real stats (the sandbox user is never root)."""
     import topos.actions.execute as execute
 
-    component_results = component_results or {}
-    attempts = {name: iter(results) for name, results in component_results.items()}
-    parent_stat = parent_stat or _stat(stat.S_IFDIR | 0o700)
-    leaf_stat = leaf_stat or _stat(stat.S_IFREG | 0o600)
-    calls: dict[str, object] = {"open": [], "mkdir": [], "close": [], "fchmod": []}
+    real_stat, real_fstat = os.stat, os.fstat
 
-    def fake_open(name, flags, mode=None, *, dir_fd=None):
-        calls["open"].append((name, flags, mode, dir_fd))
-        if name == os.sep:
-            return 10
-        if name == "audit.jsonl":
-            return 12
-        result = next(attempts[name])
-        if isinstance(result, BaseException):
-            raise result
-        return result
+    def with_uid(result: os.stat_result) -> os.stat_result:
+        uid = dir_uid if stat.S_ISDIR(result.st_mode) else file_uid
+        fields = list(result)
+        fields[4] = uid
+        return os.stat_result(fields)
 
-    def fake_stat(name, *, dir_fd=None, follow_symlinks=False):
-        assert (name, dir_fd, follow_symlinks) == ("audit.jsonl", 10, False) or dir_fd != 10
-        if existing is None:
-            raise FileNotFoundError(name)
-        if isinstance(existing, BaseException):
-            raise existing
-        return existing
-
-    def fake_fstat(fd):
-        return leaf_stat if fd == 12 else parent_stat
-
-    monkeypatch.setattr(execute.os, "open", fake_open)
-    monkeypatch.setattr(execute.os, "stat", fake_stat)
-    monkeypatch.setattr(execute.os, "fstat", fake_fstat)
-    monkeypatch.setattr(execute.os, "mkdir", lambda *args, **kwargs: calls["mkdir"].append((args, kwargs)))
-    monkeypatch.setattr(execute.os, "close", lambda fd: calls["close"].append(fd))
-    monkeypatch.setattr(execute.os, "fchmod", lambda fd, mode: calls["fchmod"].append((fd, mode)))
-    monkeypatch.setattr(execute.os, "fdopen", fdopen or (lambda *args, **kwargs: io.StringIO()))
-    return calls
+    monkeypatch.setattr(execute.os, "stat", lambda *a, **k: with_uid(real_stat(*a, **k)))
+    monkeypatch.setattr(execute.os, "fstat", lambda fd: with_uid(real_fstat(fd)))
 
 
 def test_output_identity_timeout_and_audit_record_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,97 +129,163 @@ def test_safe_audit_refuses_unsafe_path_and_unavailable_secure_open(monkeypatch:
         execute._open_safe_audit(Path("/audit.jsonl"), require_root_owner=False)
 
 
-def test_safe_audit_rejects_unsafe_parent_component(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_safe_audit_rejects_unsafe_parent_component(tmp_path: Path) -> None:
     import topos.actions.execute as execute
 
-    calls = _fake_audit_os(monkeypatch, component_results={"safe": [11]})
+    before = _open_fd_count()
     with pytest.raises(execute._AuditError, match="unsafe path syntax"):
-        execute._open_safe_audit(Path("/safe/../audit.jsonl"), require_root_owner=False)
-    assert calls["close"] == [10, 11]
+        execute._open_safe_audit(Path(f"{tmp_path}/safe/../audit.jsonl"), require_root_owner=False)
+    assert _open_fd_count() == before  # no directory fd leaked on the refusal
 
 
-def test_safe_audit_creates_private_component_with_nofollow(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_safe_audit_creates_private_directory_and_file_on_real_filesystem(tmp_path: Path) -> None:
     import topos.actions.execute as execute
 
-    calls = _fake_audit_os(
-        monkeypatch,
-        component_results={"logs": [FileNotFoundError("logs"), 11]},
-    )
-    fh = execute._open_safe_audit(Path("/logs/audit.jsonl"), require_root_owner=False)
-    assert calls["mkdir"] == [(("logs", 0o700), {"dir_fd": 10})]
-    assert [entry[0] for entry in calls["open"]] == ["/", "logs", "logs", "audit.jsonl"]
-    assert calls["fchmod"] == [(12, 0o600)]
+    target = tmp_path / "logs" / "audit.jsonl"
+    fh = execute._open_safe_audit(target, require_root_owner=False)
+    fh.write("x\n")
     fh.close()
 
+    assert stat.S_IMODE((tmp_path / "logs").stat().st_mode) == 0o700
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert target.read_text() == "x\n"
 
-@pytest.mark.parametrize(
-    ("parent_stat", "require_root_owner", "message"),
-    (
-        (_stat(stat.S_IFDIR | 0o722), False, "parent is not a private directory"),
-        (_stat(stat.S_IFDIR | 0o700, uid=1000), True, "parent is not root-owned"),
-    ),
-)
-def test_safe_audit_rejects_unsafe_parent_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-    parent_stat: object,
-    require_root_owner: bool,
-    message: str,
+
+def test_safe_audit_refuses_symlinked_parent_component(tmp_path: Path) -> None:
+    import topos.actions.execute as execute
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    (tmp_path / "logs").symlink_to(elsewhere)
+
+    with pytest.raises(OSError):  # O_NOFOLLOW on a symlinked directory component
+        execute._open_safe_audit(tmp_path / "logs" / "audit.jsonl", require_root_owner=False)
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_safe_audit_refuses_symlinked_leaf(tmp_path: Path) -> None:
+    import topos.actions.execute as execute
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    logs = tmp_path / "logs"
+    logs.mkdir(mode=0o700)
+    (logs / "audit.jsonl").symlink_to(victim)
+
+    with pytest.raises(execute._AuditError, match="not a regular file"):
+        execute._open_safe_audit(logs / "audit.jsonl", require_root_owner=False)
+    assert victim.read_text() == "keep"
+
+
+def test_safe_audit_refuses_group_writable_parent_and_broad_leaf(tmp_path: Path) -> None:
+    import topos.actions.execute as execute
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    logs.chmod(0o770)
+    with pytest.raises(execute._AuditError, match="not a private directory"):
+        execute._open_safe_audit(logs / "audit.jsonl", require_root_owner=False)
+
+    logs.chmod(0o700)
+    leaf = logs / "audit.jsonl"
+    leaf.write_text("")
+    leaf.chmod(0o644)
+    with pytest.raises(execute._AuditError, match="permissions are too broad"):
+        execute._open_safe_audit(leaf, require_root_owner=False)
+
+
+def test_safe_audit_rejects_group_or_world_writable_parent_without_sticky(tmp_path: Path) -> None:
+    import topos.actions.execute as execute
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    logs.chmod(0o722)
+    before = _open_fd_count()
+    with pytest.raises(execute._AuditError, match="parent is not a private directory"):
+        execute._open_safe_audit(logs / "audit.jsonl", require_root_owner=False)
+    assert _open_fd_count() == before
+
+
+def test_safe_audit_rejects_parent_not_owned_by_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import topos.actions.execute as execute
+
+    logs = tmp_path / "logs"
+    logs.mkdir(mode=0o700)
+    _owner_override(monkeypatch, dir_uid=1000, file_uid=0)
+    before = _open_fd_count()
+    with pytest.raises(execute._AuditError, match="parent is not root-owned"):
+        execute._open_safe_audit(logs / "audit.jsonl", require_root_owner=True)
+    assert _open_fd_count() == before
+
+
+def test_safe_audit_rejects_existing_leaf_not_owned_by_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import topos.actions.execute as execute
 
-    calls = _fake_audit_os(monkeypatch, component_results={"logs": [11]}, parent_stat=parent_stat)
-    with pytest.raises(execute._AuditError, match=message):
-        execute._open_safe_audit(Path("/logs/audit.jsonl"), require_root_owner=require_root_owner)
-    assert calls["close"] == [10, 11]
+    logs = tmp_path / "logs"
+    logs.mkdir(mode=0o700)
+    leaf = logs / "audit.jsonl"
+    leaf.write_text("kept\n")
+    leaf.chmod(0o600)
+    _owner_override(monkeypatch, dir_uid=0, file_uid=1000)
+    before = _open_fd_count()
+    with pytest.raises(execute._AuditError, match="target is not root-owned"):
+        execute._open_safe_audit(leaf, require_root_owner=True)
+    assert _open_fd_count() == before
+    assert leaf.read_text() == "kept\n"
 
 
-@pytest.mark.parametrize(
-    ("existing", "leaf_stat", "require_root_owner", "message"),
-    (
-        (_stat(stat.S_IFREG | 0o600, uid=1000), _stat(stat.S_IFREG | 0o600), True, "target is not root-owned"),
-        (None, _stat(stat.S_IFDIR | 0o600), False, "target is not a regular file"),
-        (None, _stat(stat.S_IFREG | 0o644), False, "permissions are too broad"),
-        (None, _stat(stat.S_IFREG | 0o600, uid=1000), True, "target is not root-owned"),
-    ),
-)
-def test_safe_audit_rejects_unsafe_existing_or_leaf_metadata(
-    monkeypatch: pytest.MonkeyPatch,
-    existing: object | None,
-    leaf_stat: object,
-    require_root_owner: bool,
-    message: str,
+def test_safe_audit_rejects_new_leaf_not_owned_by_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import topos.actions.execute as execute
 
-    calls = _fake_audit_os(
-        monkeypatch,
-        existing=existing,
-        leaf_stat=leaf_stat,
-    )
-    with pytest.raises(execute._AuditError, match=message):
-        execute._open_safe_audit(Path("/audit.jsonl"), require_root_owner=require_root_owner)
-    assert calls["close"][-1] == 10
+    logs = tmp_path / "logs"
+    logs.mkdir(mode=0o700)
+    _owner_override(monkeypatch, dir_uid=0, file_uid=1000)
+    before = _open_fd_count()
+    with pytest.raises(execute._AuditError, match="target is not root-owned"):
+        execute._open_safe_audit(logs / "audit.jsonl", require_root_owner=True)
+    assert _open_fd_count() == before
 
 
-def test_safe_audit_keeps_existing_root_owned_leaf_and_rethrows_interrupt(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_safe_audit_rejects_non_regular_existing_target(tmp_path: Path) -> None:
     import topos.actions.execute as execute
 
-    calls = _fake_audit_os(
-        monkeypatch,
-        existing=_stat(stat.S_IFREG | 0o600),
-        leaf_stat=_stat(stat.S_IFREG | 0o600),
-    )
-    fh = execute._open_safe_audit(Path("/audit.jsonl"), require_root_owner=True)
-    assert calls["fchmod"] == [(12, 0o600)]
-    fh.close()
+    logs = tmp_path / "logs"
+    logs.mkdir(mode=0o700)
+    os.mkfifo(logs / "audit.jsonl", 0o600)
+    before = _open_fd_count()
+    with pytest.raises(execute._AuditError, match="target is not a regular file"):
+        execute._open_safe_audit(logs / "audit.jsonl", require_root_owner=False)
+    assert _open_fd_count() == before
 
-    interrupt_calls = _fake_audit_os(
-        monkeypatch,
-        fdopen=lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
-    )
+
+def test_safe_audit_appends_to_existing_private_leaf_and_closes_fd_on_interrupt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import topos.actions.execute as execute
+
+    logs = tmp_path / "logs"
+    logs.mkdir(mode=0o700)
+    leaf = logs / "audit.jsonl"
+    leaf.write_text("one\n")
+    leaf.chmod(0o600)
+    fh = execute._open_safe_audit(leaf, require_root_owner=False)
+    fh.write("two\n")
+    fh.close()
+    assert leaf.read_text() == "one\ntwo\n"
+    assert stat.S_IMODE(leaf.stat().st_mode) == 0o600
+
+    def interrupted(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(execute.os, "fdopen", interrupted)
+    before = _open_fd_count()
     with pytest.raises(KeyboardInterrupt):
-        execute._open_safe_audit(Path("/audit.jsonl"), require_root_owner=False)
-    assert interrupt_calls["close"] == [12, 10]
+        execute._open_safe_audit(leaf, require_root_owner=False)
+    assert _open_fd_count() == before  # leaf fd and directory fd both closed
 
 
 def test_write_json_record_refuses_unbounded_payload() -> None:

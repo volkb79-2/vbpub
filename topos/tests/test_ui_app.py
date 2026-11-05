@@ -6,6 +6,7 @@ import time as _time
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from textual.widgets import Static
 from textual.widgets import Input
 
@@ -76,10 +77,8 @@ def test_providers_status_handles_absent_and_fixture_entities() -> None:
 
 def _wait_for_frame(app: ToposApp):
     async def wait(pilot) -> None:
-        for _ in range(10):
-            await pilot.pause()
-            if app.frames_received:
-                break
+        # Wait on the state change itself, not a fixed number of event-loop ticks.
+        await _wait_or_timeout(pilot, lambda: app.frames_received > 0)
 
     return wait
 
@@ -142,6 +141,24 @@ def test_pilot_toggle_view_and_profile_cycle() -> None:
             await pilot.press("p")
             await pilot.pause()
             assert app.profile_name == "triage"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("size", [(80, 24), (120, 30)])
+def test_pilot_metric_columns_shown_at_standard_terminal_sizes(size) -> None:
+    from topos.ui.data_table import MouseTable
+
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=size) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.pause()
+            table = app.query_one("#body-table", MouseTable)
+            labels = [str(c.label) for c in table.columns.values()]
+            assert labels[0] == "NAME"
+            assert "RAM" in labels
+            assert "CPU%" in labels
 
     asyncio.run(run())
 
@@ -572,7 +589,7 @@ def test_pilot_replay_jump_prompt_with_timestamp() -> None:
         base = fixture_frame()
         later = Frame(
             schema_version=base.schema_version,
-            ts=base.ts + base.interval_s,
+            ts=base.ts + base.interval_s + 0.5,  # fractional: an integer-valued input is a frame number
             interval_s=base.interval_s,
             host=base.host,
             entities=base.entities,
@@ -595,6 +612,46 @@ def test_pilot_replay_jump_prompt_with_timestamp() -> None:
             await pilot.press("enter")
             await pilot.pause()
             assert "frame=2/2" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_pilot_replay_jump_integer_valued_epoch_timestamp_seeks() -> None:
+    async def run() -> None:
+        fixture = fixture_frame()
+        base = Frame(
+            schema_version=fixture.schema_version,
+            ts=1730000000.0,
+            interval_s=fixture.interval_s,
+            host=fixture.host,
+            entities=fixture.entities,
+        )
+        later_ts = 1730000010.0
+        later = Frame(
+            schema_version=base.schema_version,
+            ts=later_ts,
+            interval_s=base.interval_s,
+            host=base.host,
+            entities=base.entities,
+        )
+        app = ToposApp(
+            (),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            replay_driver=ReplayDriver([base, later]),
+            replay_step=True,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.press("j")
+            await pilot.pause()
+            input_widget = app.screen.query_one("#jump-input", Input)
+            input_widget.value = str(int(later_ts))
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "frame=2/2" in _status_text(app)
+            assert "invalid" not in _status_text(app)
 
     asyncio.run(run())
 
@@ -631,14 +688,22 @@ def test_pilot_replay_controls_in_live_mode_show_unavailable_status() -> None:
     asyncio.run(run())
 
 
-def test_pilot_reserved_v2_action_reports_disabled_message() -> None:
+def test_k_key_is_unbound_and_not_advertised() -> None:
+    from topos.ui.keys import BINDINGS, key_help
+
+    assert all(binding.key != "k" for binding in BINDINGS)
+    assert not any(line.startswith("k ") for line in key_help())
+    assert not hasattr(ToposApp, "action_reserved_v2_action")
+
+
+def test_footer_shows_bound_keys() -> None:
+    from textual.widgets import Footer
+
     async def run() -> None:
         app = _make_app()
         async with app.run_test(size=(140, 40)) as pilot:
             await _wait_for_frame(app)(pilot)
-            await pilot.press("k")
-            await pilot.pause()
-            assert "requires future --admin mode" in _status_text(app)
+            assert app.query(Footer)
 
     asyncio.run(run())
 
@@ -912,6 +977,19 @@ def test_pilot_damon_stop_surface_stops_only_topos_owned_sessions(tmp_path: Path
             await pilot.pause()
             assert (state_dir / "damon" / "kdamond-1.json").exists()
             await pilot.press("s")
+            await pilot.pause()
+            # D-08: a single keypress must not stop anything; it opens the typed confirmation
+            from topos.ui.damon_control import DamonConfirmScreen
+
+            assert isinstance(app.screen, DamonConfirmScreen)
+            assert (state_dir / "damon" / "kdamond-1.json").exists()
+            app.screen.query_one("#damon-confirm-input", Input).value = "nope"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)  # wrong text keeps the screen
+            assert (state_dir / "damon" / "kdamond-1.json").exists()
+            app.screen.query_one("#damon-confirm-input", Input).value = APPROVAL_TEXT
+            await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, DrillDownScreen)
 
@@ -1425,3 +1503,371 @@ def test_p50_container_view_keys_work() -> None:
             assert app.view_mode == "container"
 
     asyncio.run(run())
+
+
+def test_pilot_drill_stop_cancel_leaves_sessions_running_and_partial_failure_is_reported(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """D-08: escape cancels the stop; a mid-loop failure names the sessions already stopped."""
+    async def run() -> None:
+        from topos.damon import control
+        from topos.ui.damon_control import DamonConfirmScreen
+
+        damon_root = _damon_root(tmp_path, slots=("on", "off"))
+        state_dir = tmp_path / "state"
+        app = ToposApp(
+            iter([fixture_frame()]),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            damon_root=damon_root,
+            damon_state_dir=state_dir,
+            damon_require_root=False,
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            app.selected_key = GAME_KEY
+            app._refresh_view()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("d")
+            await pilot.pause()
+            app.screen.query_one("#damon-confirm-input", Input).value = APPROVAL_TEXT
+            await pilot.press("enter")
+            await pilot.pause()
+            marker = state_dir / "damon" / "kdamond-1.json"
+            assert marker.exists()
+
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, DrillDownScreen)
+            assert marker.exists()
+
+            # second marker whose teardown fails: the first one's stop must be reported
+            (state_dir / "damon" / "kdamond-0.json").write_text(
+                '{"owner":"topos","kdamond_idx":0,"damon_root":"%s"}' % damon_root
+            )
+            real = control._teardown_kdamond
+
+            def flaky(root, idx):
+                if idx == 1:
+                    raise OSError("EPERM")
+                real(root, idx)
+
+            monkeypatch.setattr(control, "_teardown_kdamond", flaky)
+            await pilot.press("s")
+            await pilot.pause()
+            app.screen.query_one("#damon-confirm-input", Input).value = APPROVAL_TEXT
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)
+            body = _static_text(app.screen.query_one("#damon-confirm-body", Static))
+            assert "stop failed after stopping kdamond(s): 0" in body
+
+    asyncio.run(run())
+
+
+# --- D-02: source failures stay in the UI -----------------------------------
+
+class _FlakySource:
+    """Re-iterable source: first stream yields one frame then raises; the second
+    waits for the test's gate, then yields a frame."""
+
+    def __init__(self, frame: Frame) -> None:
+        self.frame = frame
+        self.gate = __import__("threading").Event()
+        self.stop_event = __import__("threading").Event()
+        self.streams = 0
+
+    def retry_delay(self, attempt: int) -> float:
+        return 0.0
+
+    def __iter__(self):
+        self.streams += 1
+        if self.streams == 1:
+            return self._first()
+        return self._second()
+
+    def _first(self):
+        yield self.frame
+        raise RuntimeError("daemon went away")
+
+    def _second(self):
+        self.gate.wait(10)
+        yield self.frame
+
+
+def test_source_failure_marks_frame_stale_then_recovers() -> None:
+    async def run() -> None:
+        source = _FlakySource(fixture_frame())
+        app = ToposApp(
+            source,
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+            source_label="ATTACH",
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_or_timeout(pilot, lambda: app._source_error is not None)
+            status = _status_text(app)
+            assert "mode=ATTACH source failed: daemon went away" in status
+            assert "STALE" in status
+            assert app.current_frame is not None  # last frame kept
+            assert "STALE" in _static_text(app.query_one("#banner", Static))
+            source.gate.set()
+            await _wait_or_timeout(pilot, lambda: app.frames_received == 2)
+            assert app._source_error is None
+            assert "source failed" not in _status_text(app)
+        assert source.stop_event.is_set()
+
+    asyncio.run(run())
+
+
+def test_one_shot_source_failure_is_reported_without_crashing() -> None:
+    def broken():
+        yield fixture_frame()
+        raise OSError("socket closed")
+
+    async def run() -> None:
+        app = ToposApp(
+            broken(),
+            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+            proc_root=fixture_root() / "procfs" / "network",
+        )
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_or_timeout(pilot, lambda: app._source_error is not None)
+            assert "mode=LIVE source failed: socket closed (not retrying)" in _status_text(app)
+
+    asyncio.run(run())
+
+
+# --- D-09 / D-10 / D-12 ------------------------------------------------------
+
+def test_resize_refreshes_columns_and_narrow_widths_are_not_floored() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(200, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            wide = len(app.query_one("#body-table").columns)
+            await pilot.resize_terminal(70, 40)
+            await _wait_or_timeout(pilot, lambda: len(app.query_one("#body-table").columns) < wide)
+            # Narrow widths drop the optional tiers but keep the first tier.
+            assert len(app.query_one("#body-table").columns) == 5
+
+    asyncio.run(run())
+
+
+def test_replay_stepping_does_not_duplicate_history() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_or_timeout(pilot, lambda: app.frames_received > 0)
+            before = app.ring._tick
+            await pilot.press("full_stop")
+            await pilot.press("comma")
+            await pilot.press("full_stop")
+            await pilot.press("comma")
+            await pilot.pause()
+            assert app.ring._tick == before + 1  # only the one genuinely new frame
+
+    asyncio.run(run())
+
+
+def test_collapsed_keys_are_pruned_when_entities_vanish() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            app._collapsed_tree_keys.add("gone.slice")
+            app._apply_frame(fixture_frame())
+            assert "gone.slice" not in app._collapsed_tree_keys
+
+    asyncio.run(run())
+
+
+def test_empty_placeholder_is_never_the_selected_key() -> None:
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_for_frame(app)(pilot)
+            app.filter_text = "ZZZZ_NONEXISTENT_ZZZZ"
+            app._refresh_view()
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.selected_key is None or not app.selected_key.startswith("__empty__")
+            assert "rows=0" in _status_text(app)
+
+    asyncio.run(run())
+
+
+def test_jump_with_integer_valued_float_is_a_frame_number() -> None:
+    async def run() -> None:
+        app = _replay_app()
+        async with app.run_test(size=(140, 40)) as pilot:
+            await _wait_or_timeout(pilot, lambda: app.frames_received > 0)
+            app._on_jump_applied("2.0")
+            assert app._replay_driver.index == 1
+
+    asyncio.run(run())
+
+
+# --- diff-coverage round (2026-11-05): source-failure edges -----------------
+
+
+def test_default_retry_delay_backs_off_and_is_capped() -> None:
+    from topos.ui.app import DEFAULT_RETRY_MAX_S, _default_retry_delay
+
+    assert [_default_retry_delay(n) for n in range(4)] == [1.0, 2.0, 4.0, 8.0]
+    assert _default_retry_delay(50) == DEFAULT_RETRY_MAX_S
+
+
+class _Recorder:
+    """Replaces ``call_from_thread`` so the consumer loop can run without a UI."""
+
+    def __init__(self, app: ToposApp, *, stop_on_failure: bool = False) -> None:
+        self.app = app
+        self.stop_on_failure = stop_on_failure
+        self.frames: list[Frame] = []
+        self.failures: list[tuple[str, str]] = []
+
+    def __call__(self, fn, *args):
+        if fn == self.app._apply_frame:
+            self.frames.append(args[0])
+        else:
+            self.failures.append(args)
+            if self.stop_on_failure:
+                self.app._stop_event.set()
+
+
+def _bare_app(source) -> ToposApp:
+    return ToposApp(
+        source,
+        config=ToposConfig(default_view="tree", default_column_profile="auto"),
+        cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+        proc_root=fixture_root() / "procfs" / "network",
+    )
+
+
+def test_consumer_stops_without_delivering_a_frame_after_quit() -> None:
+    holder: dict = {}
+
+    def stream():
+        holder["app"]._stop_event.set()  # the user quit while the source was producing
+        yield fixture_frame()
+
+    app = _bare_app(stream())
+    holder["app"] = app
+    rec = _Recorder(app)
+    app.call_from_thread = rec
+    app._consume_frames()
+    assert rec.frames == [] and rec.failures == []
+
+
+def test_consumer_swallows_a_source_error_that_arrives_after_quit() -> None:
+    holder: dict = {}
+
+    def stream():
+        holder["app"]._stop_event.set()
+        raise RuntimeError("late failure")
+        yield  # pragma: no cover
+
+    app = _bare_app(stream())
+    holder["app"] = app
+    rec = _Recorder(app)
+    app.call_from_thread = rec
+    app._consume_frames()
+    assert rec.failures == []  # nobody is left to show it to
+
+
+def test_consumer_does_not_retry_when_quit_arrives_during_the_backoff_wait() -> None:
+    class Source:
+        stop_event = __import__("threading").Event()
+        iterations = 0
+
+        def retry_delay(self, attempt: int) -> float:
+            return 0.0
+
+        def __iter__(self):
+            Source.iterations += 1
+            raise_now = Source.iterations == 1
+            if raise_now:
+                def failing():
+                    raise RuntimeError("down")
+                    yield  # pragma: no cover
+                return failing()
+            return iter(())
+
+    source = Source()
+    app = _bare_app(source)
+    rec = _Recorder(app, stop_on_failure=True)
+    app.call_from_thread = rec
+    app._consume_frames()
+    assert rec.failures == [("down", "retrying")]
+    assert Source.iterations == 1  # the stream was never rebuilt after the quit
+
+
+def test_consumer_reports_a_failed_restart_and_keeps_running_to_the_end() -> None:
+    class Source:
+        calls = 0
+
+        def retry_delay(self, attempt: int) -> float:
+            return 0.0
+
+        def __iter__(self):
+            Source.calls += 1
+            if Source.calls == 1:
+                def failing():
+                    raise RuntimeError("down")
+                    yield  # pragma: no cover
+                return failing()
+            raise OSError("cannot reconnect")
+
+    app = _bare_app(Source())
+    rec = _Recorder(app)
+    app.call_from_thread = rec
+    app._consume_frames()
+    assert rec.failures == [("down", "retrying"), ("cannot reconnect", "retrying")]
+
+
+def test_source_failure_before_any_frame_is_shown_in_the_status_line() -> None:
+    gate = __import__("threading").Event()
+
+    class Silent:
+        stop_event = __import__("threading").Event()
+
+        def __iter__(self):
+            gate.wait(30)
+            return iter(())
+
+    async def run() -> None:
+        app = _bare_app(Silent())
+        async with app.run_test(size=(140, 40)) as pilot:
+            assert app.current_frame is None
+            app._on_source_failed("daemon unreachable", "retrying in 4s")
+            await pilot.pause()
+            status = _status_text(app)
+            assert "source failed: daemon unreachable (retrying in 4s)" in status
+            assert "STALE" not in status  # there never was a frame to call stale
+            gate.set()
+
+    asyncio.run(run())
+
+
+def test_pressure_list_drops_an_ancestor_that_ranks_after_its_descendant() -> None:
+    from topos.model import Entity, EntityFrame
+    from topos.ui.banner import _drop_pressure_ancestors
+
+    def ef(key: str, parent: str | None) -> EntityFrame:
+        return EntityFrame(entity=Entity(key=key, kind="cgroup", parent=parent), metrics={})
+
+    parent, child, other = ef("a", ""), ef("a/b", "a"), ef("c", "")
+    root = ef("", None)
+    frame = Frame(1, 1.0, 5.0, {}, {e.entity.key: e for e in (root, parent, child, other)})
+    ranked = [(9.0, child), (8.0, parent), (7.0, other)]
+    kept = _drop_pressure_ancestors(frame, ranked, limit=5)
+    assert [e.entity.key for _, e in kept] == ["a/b", "c"]

@@ -264,8 +264,6 @@ PageUp/PageDown for scrolling, and all function keys.
   separately gated. The P46 CLI requires `--admin`, typed `--confirm EXECUTE`,
   root, strict target validation, and a fail-closed mandatory audit-first
   execution kernel. See Safety Model below for the full gate chain.
-- Pressing a reserved v2 admin key in the TUI reports that the action is
-  unavailable in the current build instead of failing silently.
 - `topos action preview --kind docker-restart --target NAME --admin --json`
   prints an exact argv preview and never executes it. Omit `--admin` to verify
   that the preview is denied. Use `--audit-log PATH` to append an explicit
@@ -437,7 +435,8 @@ state_dir = "/run/topos/bpf" # regular runtime state; never place JSON in bpffs
 ## What To Check Before A Release Claim
 
 See the canonical release readiness document at `docs/RELEASE-READINESS.md`
-for the full checklist mapping `TUI-SPEC.md` §9 gates to evidence sources,
+for the full checklist mapping the 2026-07 spec's §9 gates
+(`nyxloom-trove/archive/TUI-SPEC-2026-07.md`) to evidence sources,
 rootless automated check commands, live-host evidence templates, and explicit
 non-claims.
 

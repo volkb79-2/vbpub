@@ -37,7 +37,7 @@ flowchart LR
     UnixApi --> Attach[Attached TUI / CLI]
     UnixApi --> Mcp[MCP frontend]
     UnixApi --> Http[Loopback HTTP gateway]
-    Http --> Web[Future React client]
+    Http -.-> Web[Web client, parked D-023]
 ```
 
 ## Module Map
@@ -59,6 +59,10 @@ flowchart LR
 | `report.py` | Read-only steady-state profile computation from a P2-format recording: per-entity/per-slice p50/p95/max for key memory/PSI gauges plus derived rates. |
 | `actions/` | Immutable action previews and one private, audit-first execution chain for catalog, governance, kill, and update verbs. Verb-specific gates are ordered pre-audit gates except documented post-audit revalidation required to preserve an existing audit trail. |
 | `ui/` | Textual app, banner, table/tree, drill-down, host-memory status, keys. |
+| `query/` | Unified bounded frame-query engine used by CLI and MCP (`topos query`, `report`, `compare`). |
+| `procs/` | Bounded CPU/I/O-hot process model. No caller yet. |
+| `mcp/` | Read-only MCP stdio frontend over the daemon socket. |
+| `inspect_files/` | Bounded, admin-gated file and log inspection (`docs/INSPECT-FILES.md`). |
 
 ## Layering Rules
 
@@ -123,7 +127,7 @@ flowchart LR
     Socket --> AttachClient[attached TUI / CLI]
     Socket --> MCP[MCP frontend]
     Socket --> Gateway[loopback HTTP gateway]
-    Gateway --> FutureWeb[future React UI]
+    Gateway -.-> FutureWeb[web UI, parked D-023]
     RootDaemon --> BPF[BPF maps/programs]
     RootDaemon --> DamonState[DAMON ownership]
 ```
@@ -137,38 +141,54 @@ flowchart LR
   operational, sensitive) in `metrics_meta` for non-root consumers; the
   metric compact form is unchanged.
 
-## Product Convergence Boundaries (planned, not implemented)
+## Product Convergence Boundaries (state as of 2026-11-05)
 
-- One shared frame-query engine will accept bounded recording frames or daemon
-  history and own window coverage, gaps, resets, statistics, counter deltas and
-  integrals. MCP, HTTP, TUI and CLI must adapt its result rather than implement
-  parallel aggregation.
-- Process sampling will add an incarnation-safe bounded process model. Its
-  candidate set is the union of CPU-hot, I/O-hot, selected/pinned and
-  recently-hot processes. Cheap broad counter baselines identify bursts;
-  expensive enrichment and stored rows remain bounded. Process rows join to
-  canonical cgroup entities; they do not become a second resource-accounting
-  tree.
-- Optional provider work is governed by configured activation modes. Bounded
-  safe detail collection uses reference-counted/TTL observation leases shared
-  across clients; privileged or unusually costly collection requires explicit
+The design rules below stand; the state notes say how far the code is. The full
+state table is `docs/STATUS.md`.
+
+- **Frame-query engine (shipped, partly connected).** `query/` is one engine over
+  bounded recording frames, with window coverage, gaps, resets, statistics and
+  counter deltas. CLI and MCP use it. The TUI bypasses it. Daemon history as a
+  source exists in `query/source.py` as a library only; `topos query` reads
+  recordings only.
+- **Process model (code exists, not connected).** `procs/` implements the bounded,
+  incarnation-safe union of CPU-hot, I/O-hot, selected/pinned and recently-hot
+  processes. No caller uses it. Process rows join to cgroup entities and never
+  form a second accounting tree. The planned sampler replaces its collection
+  (D-026).
+- **Detail leases (not started).** Safe detail collection will use shared
+  reference-counted/TTL leases; privileged or costly collection needs explicit
   manual activation and never starts from navigation alone.
-- Observed cgroup/unit/orchestrator ownership is immutable model provenance.
-  Configured policy/tags are a separate projection input and cannot alter
-  accounting identity or authorization.
-- Lifecycle facts use a stable logical workload identity plus concrete
-  container/cgroup incarnations. Exited incarnations are discoverable through
-  derived Previous instance/Recent exit links and never contribute to current
-  frame totals.
-- Lifecycle mutation models an owner chain above concrete runtime objects.
-  Actions route through a configured, capability-declaring authoritative owner
-  adapter and refuse ambiguity or unsupported operations; raw container/runtime
-  fallback is forbidden. See `docs/LIFECYCLE-ADAPTERS.md`.
-- Persistent daemon history sits behind the broker semantics and enforces age
-  and byte caps simultaneously. The current broker remains an in-memory ring
-  until D-005 and its storage contract are implemented.
-- Browser delivery remains a separate frontend. It consumes projected,
-  redacted read contracts and never gains direct daemon-socket, Docker, file,
-  or mutation access. The trusted-operator mode is capability-token protected
-  on loopback. SSH connections and forwarding are external operator/system
-  concerns, not part of Topos's authentication or lifecycle model.
+- **Ownership (partly shipped).** Observed cgroup/unit/orchestrator ownership is
+  immutable model provenance; configured policy/tags are a separate projection
+  input and cannot alter accounting identity or authorization.
+- **Lifecycle identity (not started).** A stable logical workload identity plus
+  concrete incarnations, with Previous instance/Recent exit links that never
+  contribute to current totals.
+- **Owner-chain actions (partly shipped).** Actions route through an authoritative
+  owner adapter and refuse ambiguity or unsupported operations; raw runtime
+  fallback is forbidden. Docker and systemd verbs are wired to the CLI; the
+  Compose, CIU and Wings adapters refuse. See `docs/LIFECYCLE-ADAPTERS.md`.
+- **Persistent history (writer only).** `daemon/persist.py` writes an age- and
+  byte-capped store, off by default; nothing reads it, and the broker serves an
+  in-memory ring. The tiers and caps of D-025 supersede D-005.
+- **Web (parked, D-023).** A browser client stays a separate frontend over
+  projected, redacted read contracts with no daemon-socket, Docker, file or
+  mutation access. No web code exists. SSH and forwarding are external concerns.
+
+## Target layering (not implemented)
+
+Target design is `TUI-SPEC.md` section 5; the plan is `docs/PLAN-2026-11-CONSOLE.md`.
+Layers split by activity, and everything in this document above describes the
+current Python-only dataflow.
+
+| Layer | Runs | Language |
+|---|---|---|
+| Sampler (reads, rates, hot/warm/cold tiers, hard events, socket) | 24/7 per host | Rust, pending the PoC (D-026) |
+| Slow enrichment (Docker identity, systemd origin) | Sampler, slower cadence | Rust |
+| Query, findings, report, MCP, actions, squeeze | On demand | Python |
+| TUI | Only while open | Python line-rendered widget; engine open vs ratatui PoC (D-028) |
+
+`topos --once` would call the sampler so there is one collector. The daemon would
+run under the tight envelope of D-024, which is not what the packaged
+`topos.slice` sets today (256 MiB high, 512 MiB max).

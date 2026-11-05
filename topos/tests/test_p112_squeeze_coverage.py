@@ -177,70 +177,74 @@ def test_default_cgroup_boundaries_use_exact_paths_and_values(
         calls.append(("pressure", str(path)))
         return {"some": {"avg10": 1.5}}, "exact"
 
-    write_calls: list[tuple[str, str]] = []
-
-    def write_text(path: Path, value: str) -> int:
-        write_calls.append((str(path), value))
-        return len(value)
-
     monkeypatch.setattr(cgroup, "read_int", read_int)
     monkeypatch.setattr(cgroup, "read_flat_kv", read_flat)
     monkeypatch.setattr(cgroup, "read_pressure", read_pressure)
-    monkeypatch.setattr(Path, "write_text", write_text)
 
     assert _default_cgroup_int_reader("/cg", "memory.current") == 7
     assert _default_cgroup_flat_kv_reader("/cg", "memory.stat") == {"anon": 11}
     assert _default_cgroup_pressure_reader("/cg", "memory.pressure") == {
         "some": {"avg10": 1.5}
     }
-    assert _default_cgroup_writer("/cg", "memory.high", "4096") is None
     assert calls == [
         ("int", "/cg/memory.current"),
         ("flat", "/cg/memory.stat"),
         ("pressure", "/cg/memory.pressure"),
     ]
-    assert write_calls == [("/cg/memory.high", "4096")]
 
 
-def test_sigterm_handler_restores_then_calls_injected_exit(monkeypatch) -> None:
+def test_default_writer_overwrites_existing_file_and_never_creates(
+    tmp_path: Path,
+) -> None:
+    """C-06: a wrong target must not gain a new regular file."""
+    (tmp_path / "memory.high").write_text("max\n")
+    assert _default_cgroup_writer(str(tmp_path), "memory.high", "4096") is None
+    assert (tmp_path / "memory.high").read_text().strip().startswith("4096")
+
+    missing = tmp_path / "other"
+    missing.mkdir()
+    with pytest.raises(FileNotFoundError):
+        _default_cgroup_writer(str(missing), "memory.high", "4096")
+    assert not (missing / "memory.high").exists()
+
+
+@pytest.mark.parametrize(
+    "signame", ["SIGTERM", "SIGHUP", "SIGQUIT", "SIGPIPE"]
+)
+def test_terminating_signals_restore_then_unwind_without_os_exit(
+    monkeypatch, signame: str
+) -> None:
+    """C-03: SIGHUP/SIGQUIT/SIGPIPE behave like SIGTERM; nothing calls os._exit."""
     writes: list[tuple[str, str, str]] = []
-    handler_calls: list[tuple[int, object]] = []
     installed: dict[int, object] = {}
+    originals: dict[int, object] = {}
     exits: list[int] = []
-    original_int = object()
-    original_term = object()
 
     def writer(path: str, filename: str, value: str) -> None:
         writes.append((path, filename, value))
 
     def handle(signum: int, handler: object) -> object:
-        handler_calls.append((signum, handler))
         installed[signum] = handler
-        return original_int if signum == signal.SIGINT else original_term
+        return originals.setdefault(signum, object())
 
     monkeypatch.setattr(squeeze.os, "_exit", exits.append)
-    guard = _RestoreGuard(
-        "/cg",
-        "max",
-        writer=writer,
-        signal_handler=handle,
-    )
+    guard = _RestoreGuard("/cg", "max", writer=writer, signal_handler=handle)
 
     guard.__enter__()
-    int_handler = installed[signal.SIGINT]
-    term_handler = installed[signal.SIGTERM]
-    assert callable(term_handler)
-    assert term_handler(signal.SIGTERM, None) is None
+    for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT", "SIGPIPE"):
+        assert getattr(signal, name) in installed
+    signum = getattr(signal, signame)
+    handler = installed[signum]
+    assert callable(handler)
+    with pytest.raises(squeeze._Terminated) as info:
+        handler(signum, None)
+    assert info.value.signum == signum
     guard.__exit__(None, None, None)
 
     assert writes == [("/cg", "memory.high", "max")]
-    assert exits == [128 + signal.SIGTERM]
-    assert handler_calls == [
-        (signal.SIGINT, int_handler),
-        (signal.SIGTERM, term_handler),
-        (signal.SIGINT, original_int),
-        (signal.SIGTERM, original_term),
-    ]
+    assert exits == []
+    # the original handlers were put back at exit
+    assert installed == originals
 
 
 def test_restore_guard_without_enter_skips_handler_restoration() -> None:
@@ -262,7 +266,7 @@ def test_restore_guard_without_enter_skips_handler_restoration() -> None:
     assert handler_calls == []
 
 
-def test_restore_write_failure_is_best_effort_and_idempotent() -> None:
+def test_restore_failure_is_retried_once_flagged_and_idempotent() -> None:
     calls: list[tuple[str, str, str]] = []
 
     def writer(path: str, filename: str, value: str) -> None:
@@ -273,7 +277,23 @@ def test_restore_write_failure_is_best_effort_and_idempotent() -> None:
 
     assert guard.restore() is None
     assert guard.restore() is None
-    assert calls == [("/cg", "memory.high", "max")]
+    assert calls == [("/cg", "memory.high", "max")] * 2
+    assert guard.restore_failed is True
+    assert "read-only cgroup" in guard.restore_error
+
+
+def test_restore_succeeding_on_retry_is_not_a_failure() -> None:
+    attempts: list[str] = []
+
+    def writer(path: str, filename: str, value: str) -> None:
+        attempts.append(value)
+        if len(attempts) == 1:
+            raise OSError("transient")
+
+    guard = _RestoreGuard("/cg", "max", writer=writer)
+    guard.restore()
+    assert attempts == ["max", "max"]
+    assert guard.restore_failed is False
 
 
 def test_multistep_run_applies_every_measured_high_before_sampling(
@@ -326,9 +346,10 @@ def test_multistep_run_applies_every_measured_high_before_sampling(
     )
 
 
-def test_explicit_start_below_floor_has_complete_no_step_result(
+def test_explicit_start_below_floor_is_rejected_before_any_write(
     tmp_path: Path,
 ) -> None:
+    """C-04: start below floor never reaches the cgroup, not even once."""
     writes: list[tuple[str, str, str]] = []
     audit = _Audit()
     config = _config(tmp_path, start=0, floor=1)
@@ -336,27 +357,59 @@ def test_explicit_start_below_floor_has_complete_no_step_result(
     result = run_squeeze(
         config,
         cgroup_int_reader=_int_reader,
-        cgroup_flat_kv_reader=_flat_reader,
-        cgroup_pressure_reader=_pressure_reader,
         cgroup_writer=lambda path, filename, value: writes.append(
             (path, filename, value)
         ),
-        clock=lambda: 50.0,
         auditor=audit,  # type: ignore[arg-type]
     )
 
-    assert result == SqueezeResult(
-        "floor", 0, 0, config, (), "max", ""
+    assert result.stop_reason == "error"
+    assert "below floor" in result.error
+    assert writes == []
+    assert audit.calls == []
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"step": 0}, "step must be positive"),
+        ({"step": -5}, "step must be positive"),
+        ({"floor": -1, "start": None}, "floor must not be negative"),
+        ({"relax_to": "8GB"}, "invalid --relax-to"),
+        ({"relax_to": "-1G"}, "invalid --relax-to"),
+    ],
+)
+def test_unsafe_parameters_are_rejected_before_any_write(
+    tmp_path: Path, overrides: dict[str, object], message: str
+) -> None:
+    writes: list[tuple[str, str, str]] = []
+    result = run_squeeze(
+        _config(tmp_path, **overrides),
+        cgroup_int_reader=_int_reader,
+        cgroup_writer=lambda *args: writes.append(args),
+        auditor=_Audit(),  # type: ignore[arg-type]
     )
-    assert writes == [
-        ("/cg/worker.scope", "memory.high", "0"),
-        ("/cg/worker.scope", "memory.high", "max"),
-    ]
-    assert audit.calls == _expected_audit_calls(
+    assert result.stop_reason == "error"
+    assert message in result.error
+    assert writes == []
+
+
+def test_auto_start_below_floor_is_clamped_to_floor_on_first_write(
+    tmp_path: Path,
+) -> None:
+    """C-04: auto start (current rounded up) under the floor writes the floor."""
+    writes: list[tuple[str, str, str]] = []
+    config = _config(tmp_path, start=None, step=4, floor=100)
+    run_squeeze(
         config,
-        stop_reason="floor",
-        squeeze_point=0,
+        cgroup_int_reader=_int_reader,
+        cgroup_flat_kv_reader=_flat_reader,
+        cgroup_pressure_reader=_pressure_reader,
+        cgroup_writer=lambda *args: writes.append(args),
+        clock=lambda: 50.0,
+        auditor=_Audit(),  # type: ignore[arg-type]
     )
+    assert writes[0] == ("/cg/worker.scope", "memory.high", "100")
 
 
 def test_log_open_failure_has_complete_error_result(
@@ -374,6 +427,7 @@ def test_log_open_failure_has_complete_error_result(
     assert run_squeeze(
         config,
         cgroup_int_reader=_int_reader,
+        cgroup_writer=lambda *args: None,
         auditor=_Audit(),  # type: ignore[arg-type]
     ) == SqueezeResult(
         "error",
@@ -425,7 +479,7 @@ def test_header_write_failure_closes_log_and_returns_exact_error(
         tmp_path,
         monkeypatch,
         file,
-        start=0,
+        start=1,
         floor=1,
     )
 
@@ -501,20 +555,23 @@ def test_summary_write_failure_is_nonfatal(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    file = _ControlledFile(fail_on_write=3)
+    file = _ControlledFile(fail_on_write=5)
     config, result, writes = _run_with_controlled_file(
         tmp_path,
         monkeypatch,
         file,
-        start=0,
+        start=1,
         floor=1,
     )
 
+    expected_step = SqueezeStep(
+        0, 1, 10, 5, 1, 2, 3, 0.0, 0.0, None, 50.0
+    )
     assert result == SqueezeResult(
-        "floor", 0, 0, config, (), "max", ""
+        "floor", 1, 1, config, (expected_step,), "max", ""
     )
     assert writes == [
-        ("/cg/worker.scope", "memory.high", "0"),
+        ("/cg/worker.scope", "memory.high", "1"),
         ("/cg/worker.scope", "memory.high", "max"),
     ]
     assert file.closed is True
@@ -632,6 +689,7 @@ def test_audit_start_ordinary_failure_is_nonfatal(tmp_path: Path) -> None:
     result = run_squeeze(
         config,
         cgroup_int_reader=lambda target, filename: None,
+        cgroup_writer=lambda *args: None,
         auditor=audit,  # type: ignore[arg-type]
     )
 
@@ -652,6 +710,7 @@ def test_audit_start_does_not_swallow_keyboard_interrupt(tmp_path: Path) -> None
         run_squeeze(
             _config(tmp_path),
             cgroup_int_reader=_int_reader,
+            cgroup_writer=lambda *args: None,
             auditor=audit,  # type: ignore[arg-type]
         )
     assert audit.calls == _expected_audit_calls(
@@ -663,7 +722,7 @@ def test_audit_start_does_not_swallow_keyboard_interrupt(tmp_path: Path) -> None
 
 def test_audit_end_ordinary_failure_is_nonfatal(tmp_path: Path) -> None:
     audit = _Audit(fail_on=2, error=RuntimeError("audit unavailable"))
-    config = _config(tmp_path, start=0, floor=1)
+    config = _config(tmp_path, start=1, floor=1)
 
     result = run_squeeze(
         config,
@@ -675,13 +734,16 @@ def test_audit_end_ordinary_failure_is_nonfatal(tmp_path: Path) -> None:
         auditor=audit,  # type: ignore[arg-type]
     )
 
+    expected_step = SqueezeStep(
+        0, 1, 10, 5, 1, 2, 3, 0.0, 0.0, None, 50.0
+    )
     assert result == SqueezeResult(
-        "floor", 0, 0, config, (), "max", ""
+        "floor", 1, 1, config, (expected_step,), "max", ""
     )
     assert audit.calls == _expected_audit_calls(
         config,
         stop_reason="floor",
-        squeeze_point=0,
+        squeeze_point=1,
     )
 
 
@@ -691,7 +753,7 @@ def test_audit_end_does_not_swallow_keyboard_interrupt(tmp_path: Path) -> None:
 
     with pytest.raises(KeyboardInterrupt):
         run_squeeze(
-            _config(tmp_path, start=0, floor=1),
+            _config(tmp_path, start=1, floor=1),
             cgroup_int_reader=_int_reader,
             cgroup_flat_kv_reader=_flat_reader,
             cgroup_pressure_reader=_pressure_reader,
@@ -701,14 +763,14 @@ def test_audit_end_does_not_swallow_keyboard_interrupt(tmp_path: Path) -> None:
             clock=lambda: 50.0,
             auditor=audit,  # type: ignore[arg-type]
         )
-    config = _config(tmp_path, start=0, floor=1)
+    config = _config(tmp_path, start=1, floor=1)
     assert audit.calls == _expected_audit_calls(
         config,
         stop_reason="floor",
-        squeeze_point=0,
+        squeeze_point=1,
     )
     assert writes == [
-        ("/cg/worker.scope", "memory.high", "0"),
+        ("/cg/worker.scope", "memory.high", "1"),
         ("/cg/worker.scope", "memory.high", "max"),
     ]
 

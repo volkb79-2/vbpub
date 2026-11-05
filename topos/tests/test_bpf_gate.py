@@ -37,8 +37,9 @@ def test_bpf_gate_reports_safe_noop_and_blockers(tmp_path: Path) -> None:
 
     assert report.blockers == ("bpftool is not installed", "uid 1003 is not root")
     assert report.baseline["source_label"] == "net:HOST"
-    assert report.baseline["rx_bytes"] == 15100
-    assert report.baseline["tx_bytes"] == 27100
+    # A-02: host totals count physical interfaces only (lo and veth* excluded).
+    assert report.baseline["rx_bytes"] == 10000
+    assert report.baseline["tx_bytes"] == 20000
     assert report.baseline["provider_status"]["qdisc"]["eth0"]["dropped"] == 0
     text = render_report(report)
     assert "BPF gate: safe no-op" in text
@@ -64,7 +65,7 @@ def test_bpf_gate_cli_json_smoke(tmp_path: Path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["blockers"] == ["bpftool is not installed", "uid 1003 is not root"]
     assert payload["baseline"]["source_label"] == "net:HOST"
-    assert payload["baseline"]["rx_bytes"] == 15100
+    assert payload["baseline"]["rx_bytes"] == 10000  # lo and veth* excluded (A-02)
     assert isinstance(payload["baseline"]["provider_status"], dict)
     with patch("topos.bpf_gate.shutil.which", return_value=None):
         report = run_bpf_gate(proc_root=proc_fixture(), pin_root=pin_root, command_runner=qdisc_stub, uid=1003)

@@ -134,7 +134,7 @@ def test_collect_once_valid_scheme_uses_total_bytes_fallback(tmp_path: Path) -> 
     tried.mkdir()
     (tried / "total_bytes").write_text("12345\n")
     frame = _collector_with_inputs(root, proc, cgroup).collect_once()
-    assert frame.host["host_damon_warm_bytes"].v == 0
+    assert frame.host["host_damon_warm_bytes"].v is None
     assert frame.entities[""].damon["host_sessions"][0]["total_bytes"] == 12345
 
 
@@ -177,7 +177,7 @@ def test_collect_once_degrades_for_paddr_without_a_usable_scheme(tmp_path: Path)
     assert session["mode"] == "paddr"
     assert "scheme_idx" not in session
     assert session["sample_age_s"] is None
-    assert frame.host["host_damon_warm_bytes"] == MetricValue(0, "exact")
+    assert frame.host["host_damon_warm_bytes"] == MetricValue(None, "unavail_kernel")
     assert frame.host["host_damon_sample_age_s"] == MetricValue(None, "unavail_kernel")
 
 
@@ -302,10 +302,10 @@ def test_passive_vaddr_classification_and_attribution(tmp_path: Path) -> None:
 
     frame = _collector(damon_root=damon_root, now=100.0).collect_once()
     game = frame.entities[GAME_KEY]
-    assert game.metrics["damon_hot_bytes"] == MetricValue(69632, "exact")
-    assert game.metrics["damon_warm_bytes"] == MetricValue(8192, "exact")
-    assert game.metrics["damon_cold_bytes"] == MetricValue(16384, "exact")
-    assert game.metrics["damon_idle_bytes"] == MetricValue(32768, "exact")
+    assert game.metrics["damon_hot_bytes"] == MetricValue(69632, "derived")
+    assert game.metrics["damon_warm_bytes"] == MetricValue(8192, "derived")
+    assert game.metrics["damon_cold_bytes"] == MetricValue(16384, "derived")
+    assert game.metrics["damon_idle_bytes"] == MetricValue(32768, "derived")
     assert game.metrics["damon_hot_pct"].v == pytest.approx(54.8387, rel=1e-4)
     assert game.metrics["damon_warm_pct"].v == pytest.approx(6.4516, rel=1e-4)
     assert game.metrics["damon_cold_pct"].v == pytest.approx(12.9032, rel=1e-4)
@@ -339,8 +339,8 @@ def test_passive_paddr_stays_host_metadata_only(tmp_path: Path) -> None:
     root = frame.entities[""]
     assert game.metrics["damon_hot_bytes"].v is None
     assert game.metrics["damon_hot_bytes"].src == "unavail_kernel"
-    assert frame.host["host_damon_warm_bytes"] == MetricValue(4096, "exact")
-    assert frame.host["host_damon_idle_bytes"] == MetricValue(8192, "exact")
+    assert frame.host["host_damon_warm_bytes"] == MetricValue(4096, "derived")
+    assert frame.host["host_damon_idle_bytes"] == MetricValue(8192, "derived")
     assert frame.host["host_damon_warm_pct"].v == pytest.approx(33.3333, rel=1e-4)
     assert frame.host["host_damon_idle_pct"].v == pytest.approx(66.6667, rel=1e-4)
     assert frame.host["host_damon_sample_age_s"] == MetricValue(10.0, "exact")
@@ -378,3 +378,15 @@ def test_passive_source_audit_confirms_read_only_access() -> None:
     assert ".write(" not in source
     assert "commit" not in source
     assert re.search(r"open\([^)]*,\s*['\"][^'\"]*[wa+][^'\"]*['\"]", source) is None
+
+
+def test_vaddr_session_with_no_classified_bytes_is_no_data_not_zero_hot() -> None:
+    from topos.damon.passive import _apply_entity_sessions
+    from topos.model import Entity, EntityFrame
+
+    entity_frame = EntityFrame(entity=Entity(key="a", kind="cgroup", parent=""), metrics={})
+    _apply_entity_sessions(entity_frame, [{"class_bytes": {}, "sample_age_s": 2.0}])
+    for name in ("hot", "warm", "cold"):
+        assert entity_frame.metrics[f"damon_{name}_bytes"] == MetricValue(None, "unavail_kernel")
+        assert entity_frame.metrics[f"damon_{name}_pct"] == MetricValue(None, "unavail_kernel")
+    assert entity_frame.metrics["damon_sample_age_s"] == MetricValue(2.0, "exact")

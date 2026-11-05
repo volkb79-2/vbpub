@@ -326,23 +326,37 @@ def test_concurrent_reads_and_writes() -> None:
             reg.record_success("bpf_snapshot_bridge", detail="ok")
             reg.record_degraded("paddr_lifecycle", detail="partial")
 
-    def _reader() -> None:
-        while not stop_event.is_set():
-            snap = reg.snapshot()
-            assert len(snap.snapshots) == 4
-            for cs in snap.snapshots:
-                assert cs.name in COMPONENT_NAMES
+    errors: list[BaseException] = []
 
-    writer = threading.Thread(target=_writer)
+    def _reader() -> None:
+        # A fixed amount of work instead of a sleep: the reader finishes after
+        # 200 snapshots taken while the writer is running.
+        try:
+            for _ in range(200):
+                snap = reg.snapshot()
+                assert len(snap.snapshots) == 4
+                for cs in snap.snapshots:
+                    assert cs.name in COMPONENT_NAMES
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(exc)
+
+    def _guarded_writer() -> None:
+        try:
+            _writer()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    writer = threading.Thread(target=_guarded_writer)
     reader = threading.Thread(target=_reader)
     writer.start()
     reader.start()
 
-    import time
-    time.sleep(0.2)
+    reader.join(timeout=30)
     stop_event.set()
-    writer.join(timeout=2)
-    reader.join(timeout=2)
+    writer.join(timeout=30)
+    assert not reader.is_alive()
+    assert not writer.is_alive()
+    assert errors == []
 
 
 def test_build_health_response_shape() -> None:
@@ -663,7 +677,8 @@ def test_daemon_serve_health_tracks_collector_lifecycle(
     monkeypatch.setattr(
         cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: FakeServer(_broker)
     )
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    # The collector really failed, so the interrupt must not turn this into a clean exit.
+    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 1
 
     states = [entry["components"][0]["state"] for entry in observed]
     assert states == ["starting", "healthy", "failed"]
@@ -697,6 +712,9 @@ def test_daemon_serve_initial_bpf_failure_reflects_last_valid_snapshot(
             self.cgroup_root = cgroup_root or config.cgroup_root
             self.config = config
             self.network_providers = ()
+
+        def collect_once(self):
+            return fixture_frame()
 
     class FakeBridge:
         def __init__(self, *args, **kwargs) -> None:

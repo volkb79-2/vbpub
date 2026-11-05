@@ -160,7 +160,17 @@ def test_mounted_drill_screen_surfaces_unavailable_damon_controls(tmp_path: Path
             assert "DAMON CONTROL\n  start unavailable:" in str(screen.query_one("#drill-body", Static).render())
             await pilot.press("s")
             await pilot.pause()
-            assert "DAMON CONTROL\n  stop unavailable:" in str(screen.query_one("#drill-body", Static).render())
+            # D-08: stop opens the typed confirmation; the failure is reported inside it
+            from textual.widgets import Input
+
+            from topos.ui.damon_control import DamonConfirmScreen
+
+            assert isinstance(app.screen, DamonConfirmScreen)
+            app.screen.query_one("#damon-confirm-input", Input).value = "START"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DamonConfirmScreen)
+            assert "stop failed" in str(app.screen.query_one("#damon-confirm-body", Static).render())
 
     asyncio.run(run())
 
@@ -192,5 +202,63 @@ def test_mounted_drill_screen_reports_public_confirmation_cancellation(tmp_path:
             await pilot.pause()
             assert app.screen is screen
             assert "DAMON CONTROL\n  start cancelled" in str(screen.query_one("#drill-body", Static).render())
+
+    asyncio.run(run())
+
+
+def test_drill_metric_block_uses_table_formatting_not_raw_integers(tmp_path: Path) -> None:
+    frame = _frame()
+    frame.entities[KEY].metrics["anon"] = MetricValue(148094976, "exact")
+    frame.entities[KEY].metrics["cpu_pct"] = MetricValue(12.5, "derived")
+    text = _render(frame, HistoryRing(capacity=4, tracked_metrics=("ram",)), tmp_path)
+    assert "148094976" not in text
+    assert "141.2MiB" in text
+    assert "12.5%" in text
+
+
+def _drill_for_stop(tmp_path: Path) -> DrillDownScreen:
+    return DrillDownScreen(
+        _frame(), KEY, config=ToposConfig(), ring=HistoryRing(2),
+        cgroup_root=tmp_path / "cgroup", proc_root=tmp_path / "proc",
+        damon_root=tmp_path / "damon", damon_state_dir=tmp_path / "state",
+        damon_require_root=False,
+    )
+
+
+def test_stop_with_no_owned_session_says_so_and_opens_no_confirmation(tmp_path: Path) -> None:
+    async def run() -> None:
+        screen = _drill_for_stop(tmp_path)
+        app = App()
+        async with app.run_test(size=(140, 40)) as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            assert app.screen is screen  # nothing to confirm, nothing mutated
+            body = str(screen.query_one("#drill-body", Static).render())
+            assert "no topos-owned DAMON session to stop" in body
+
+    asyncio.run(run())
+
+
+def test_stop_reports_unreadable_ownership_instead_of_opening_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(_state_dir):
+        raise OSError("state dir unreadable")
+
+    monkeypatch.setattr("topos.ui.drill.owned_markers", broken)
+
+    async def run() -> None:
+        screen = _drill_for_stop(tmp_path)
+        app = App()
+        async with app.run_test(size=(140, 40)) as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            assert app.screen is screen
+            body = str(screen.query_one("#drill-body", Static).render())
+            assert "stop unavailable: state dir unreadable" in body
 
     asyncio.run(run())

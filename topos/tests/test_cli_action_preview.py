@@ -33,7 +33,7 @@ def test_preview_forwards_resolved_target_and_every_safety_option(monkeypatch: p
     )
     monkeypatch.setattr(
         "topos.cli._resolve_mutual_exclusive_target",
-        lambda target, container, command: calls.append(("resolve", target, container, command)) or "resolved-target",
+        lambda target, container, command, kind=None: calls.append(("resolve", target, container, command, kind)) or "resolved-target",
     )
     monkeypatch.setattr(
         "topos.actions.preview.build_admin_preview",
@@ -48,7 +48,7 @@ def test_preview_forwards_resolved_target_and_every_safety_option(monkeypatch: p
         "--below-current", "--audit-log", "/inert/audit.jsonl",
     ]) == 0
     assert calls == [
-        ("resolve", None, "prefix", "action"),
+        ("resolve", None, "prefix", "action", "docker-update"),
         ("preview", "docker-update", "resolved-target", {
             "admin": True, "property_name": "memory.high", "property_value": "123",
             "persistence": "runtime", "signal": "TERM", "force": True,

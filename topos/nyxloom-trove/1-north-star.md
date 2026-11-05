@@ -14,7 +14,8 @@ slogan: it is pinned to a named operator-scenario acceptance model
 
 It shows what every cgroup on a host is doing right now — process, CPU, memory, I/O, network,
 and Docker/container context — and renders the *entire* cgroup tree, so slices with no
-container stay visible. It also detects when a live cgroup limit has drifted from its
+container stay visible. The default is one enriched screen (D-020) that shows system state,
+behaviour and configured limits together, rather than making the operator choose one job first. It also detects when a live cgroup limit has drifted from its
 systemd-declared configuration. Every value carries honest source / coverage / degradation
 signaling; topos never guesses silently.
 
@@ -30,8 +31,10 @@ topos is read-only and safe by default, and it layers deliberately: a collector/
 underlies a Textual TUI; DAMON and incident capture build on that; and a privileged read-broker
 daemon, bounded administrative actions (start/stop/restart/kill/update — gated behind root, an
 explicit typed confirmation, and a durable fail-closed audit), a versioned loopback read gateway,
-and BPF-based exact network accounting come last. Root-owned state and every mutating action stay
-in the daemon; the TUI, MCP frontend, and any future web client are thin clients over the same
+and BPF-based exact network accounting come last. A native sampler is planned to own collection
+and history, pending its proof of concept against lean Python (D-026). Root-owned state and every
+mutating action stay in the daemon; the TUI, MCP frontend, and any future web client (parked until
+the TUI is right, D-023) are thin clients over the same
 bounded, versioned, redaction-enforcing read API — never a second aggregation engine, and never a
 raw-runtime fallback for an owner-managed workload (systemd / Compose / CIU / Wings / Podman /
 Kubernetes-owned or protected containers refuse rather than silently mutate).

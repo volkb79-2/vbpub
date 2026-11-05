@@ -97,24 +97,65 @@ def read_pressure(path: Path) -> tuple[dict[str, dict[str, float]], MetricSource
     return out, "exact"
 
 
-def read_io_stat(path: Path) -> tuple[dict[str, dict[str, int]], MetricSource]:
+def read_io_stat(path: Path) -> tuple[dict[str, dict[str, int | float]], MetricSource]:
+    """Parse io.stat into ``{maj:min: {key: value}}``.
+
+    ``cost.vrate`` is a float (percent); every other key is an integer. Lines with no
+    key=value fields (``11:0 ``, ``(unknown) ``) carry no data and are skipped.
+    """
     result = read_text(path)
     if result.value is None:
         return {}, result.src
-    devices: dict[str, dict[str, int]] = {}
+    devices: dict[str, dict[str, int | float]] = {}
     for line in str(result.value).splitlines():
         parts = line.split()
-        if not parts:
+        if len(parts) < 2:
             continue
-        values: dict[str, int] = {}
+        values: dict[str, int | float] = {}
         for part in parts[1:]:
             key, _, raw = part.partition("=")
             try:
-                values[key] = int(raw)
+                values[key] = float(raw) if key == "cost.vrate" else int(raw)
             except ValueError:
                 pass
-        devices[parts[0]] = values
+        if values:
+            devices[parts[0]] = values
     return devices, "exact"
+
+
+class BlockStackClassifier:
+    """Tell stacked block devices (dm, md, ...) from bottom-level ones.
+
+    The same IO appears in io.stat on the device-mapper device and on the underlying
+    disk, so totals may only count devices whose ``/sys/dev/block/<maj:min>/slaves`` is
+    empty. Classification is cached per ``maj:min``. When /sys cannot be read at all
+    (no ``/sys/dev/block/<dev>`` entry) the device is reported as unknown (``None``).
+    """
+
+    def __init__(self, sys_root: Path = Path("/sys")) -> None:
+        self.sys_root = sys_root
+        self._cache: dict[str, bool | None] = {}
+
+    def is_stacked(self, device: str) -> bool | None:
+        if device in self._cache:
+            return self._cache[device]
+        node = self.sys_root / "dev" / "block" / device
+        result: bool | None
+        try:
+            if not node.exists():
+                result = None
+            else:
+                result = any((node / "slaves").iterdir()) if (node / "slaves").is_dir() else False
+        except OSError:
+            result = None
+        # An unreadable device is retried next tick (it may be a transient hot-plug race).
+        if result is not None:
+            self._cache[device] = result
+        return result
+
+    def forget_except(self, live: set[str]) -> None:
+        for device in [d for d in self._cache if d not in live]:
+            del self._cache[device]
 
 
 def read_io_weight(path: Path) -> tuple[int | None, MetricSource]:
@@ -139,8 +180,12 @@ def read_io_weight(path: Path) -> tuple[int | None, MetricSource]:
     return None, "unavail_kernel"
 
 
-def read_io_max_capped(path: Path) -> tuple[int | None, MetricSource]:
-    result = read_text(path)
+def _as_result(source: Path | ReadResult) -> ReadResult:
+    return source if isinstance(source, ReadResult) else read_text(source)
+
+
+def read_io_max_capped(path: Path | ReadResult) -> tuple[int | None, MetricSource]:
+    result = _as_result(path)
     if result.value is None:
         return None, result.src
     capped = 0
@@ -163,13 +208,13 @@ def read_io_max_capped(path: Path) -> tuple[int | None, MetricSource]:
 _IO_MAX_FIELDS = ("rbps", "wbps", "riops", "wiops")
 
 
-def read_io_max_caps(path: Path) -> tuple[dict[str, int | None], MetricSource]:
+def read_io_max_caps(path: Path | ReadResult) -> tuple[dict[str, int | None], MetricSource]:
     """Parse io.max per-device finite caps for rbps, wbps, riops, wiops.
 
     Returns a dict mapping field names to the sum across all devices.
     Fields without finite caps (``max`` or missing) map to ``None``.
     """
-    result = read_text(path)
+    result = _as_result(path)
     if result.value is None:
         return {}, result.src
     sums: dict[str, int | None] = {f: None for f in _IO_MAX_FIELDS}
@@ -190,14 +235,14 @@ def read_io_max_caps(path: Path) -> tuple[dict[str, int | None], MetricSource]:
     return sums, "exact"
 
 
-def read_io_max_caps_by_device(path: Path) -> tuple[dict[str, dict[str, int]], MetricSource]:
+def read_io_max_caps_by_device(path: Path | ReadResult) -> tuple[dict[str, dict[str, int]], MetricSource]:
     """Parse io.max into ``{device: {field: finite cap}}`` (B-012).
 
     Unlike :func:`read_io_max_caps` nothing is summed: a cap on one device says
     nothing about another, so saturation must be judged per device. ``max`` and
     malformed values are omitted; devices without any finite cap are omitted.
     """
-    result = read_text(path)
+    result = _as_result(path)
     if result.value is None:
         return {}, result.src
     devices: dict[str, dict[str, int]] = {}
@@ -286,11 +331,25 @@ def _psi_metric(pressure: dict[str, dict[str, float]], src: MetricSource, sectio
     return MetricValue(value, "exact") if value is not None else MetricValue(None, "unavail_kernel")
 
 
-def _sum_io(devices: dict[str, dict[str, int]], key: str) -> int:
-    return sum(values.get(key, 0) for values in devices.values())
+def _sum_io(devices: dict[str, dict[str, int | float]], key: str, stack: BlockStackClassifier | None = None) -> tuple[int, bool]:
+    """Sum ``key`` over bottom-level devices; returns ``(total, exact)``.
+
+    ``exact`` is False when stacked-ness could not be determined for some device and
+    that device was therefore counted (possible double counting; src ``derived``).
+    """
+    total = 0
+    exact = stack is not None
+    for device, values in devices.items():
+        stacked = stack.is_stacked(device) if stack is not None else None
+        if stacked is None:
+            exact = False
+        elif stacked:
+            continue
+        total += int(values.get(key, 0))
+    return total, exact
 
 
-def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
+def collect_cgroup(root: Path, key: EntityKey, entity: Entity, stack: BlockStackClassifier | None = None) -> CgroupSample:
     path = root if key == "" else root / key
     sample = CgroupSample(entity=entity, path=path)
     stats, stat_src = read_flat_kv(path / "memory.stat")
@@ -310,9 +369,15 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
     if swap_src == "exact" and stat_src == "exact" and swap_current is not None and "zswapped" in stats and "swapcached" in stats:
         sample.metrics["swap_disk"] = MetricValue(max(0, swap_current - stats["zswapped"] - stats["swapcached"]), "derived")
     else:
-        sample.metrics["swap_disk"] = MetricValue(None, swap_src if swap_src != "exact" else stat_src)
+        sample.metrics["swap_disk"] = MetricValue(None, swap_src if swap_src != "exact" else (stat_src if stat_src != "exact" else "unavail_kernel"))
     z_pool, z_eq = sample.metrics["z_pool"].v, sample.metrics["z_eq"].v
-    sample.metrics["ratio"] = MetricValue(z_eq / z_pool, "derived") if isinstance(z_pool, int) and isinstance(z_eq, int) and z_pool > 0 else MetricValue(None, "derived")
+    if isinstance(z_pool, int) and isinstance(z_eq, int) and z_pool > 0:
+        sample.metrics["ratio"] = MetricValue(z_eq / z_pool, "derived")
+    else:
+        # A missing input is structural (A-15): say so instead of "warming". An empty
+        # pool (z_pool == 0) is a transient state and stays derived/None.
+        missing = next((m for m in (sample.metrics["z_pool"], sample.metrics["z_eq"]) if m.v is None and m.src != "exact"), None)
+        sample.metrics["ratio"] = MetricValue(None, missing.src if missing is not None else "derived")
 
     for metric, filename in (("mem_min", "memory.min"), ("mem_low", "memory.low"), ("mem_high", "memory.high"), ("mem_max", "memory.max")):
         sample.metrics[metric] = _metric_from_limit(path / filename)
@@ -325,20 +390,23 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
         elif limit_src == "unlimited":
             sample.metrics[metric] = MetricValue(None, "unlimited")
         else:
-            sample.metrics[metric] = MetricValue(None, "derived")
+            # Unreadable limit/usage is structural (A-15), not "warming".
+            unreadable = next((m for m in (sample.metrics[limit_metric], sample.metrics["ram"]) if m.v is None and m.src.startswith("unavail_")), None)
+            sample.metrics[metric] = MetricValue(None, unreadable.src if unreadable is not None else "derived")
 
     sample.metrics["cpu_weight"] = _metric_from_int(path / "cpu.weight")
     io_weight, io_weight_src = read_io_weight(path / "io.weight")
     sample.metrics["io_weight"] = MetricValue(io_weight, io_weight_src)
-    io_max_capped, io_max_src = read_io_max_capped(path / "io.max")
+    io_max_text = read_text(path / "io.max")
+    io_max_capped, io_max_src = read_io_max_capped(io_max_text)
     sample.metrics["io_max_capped"] = MetricValue(io_max_capped, io_max_src)
-    io_caps, io_caps_src = read_io_max_caps(path / "io.max")
+    io_caps, io_caps_src = read_io_max_caps(io_max_text)
     if io_caps_src == "exact":
         sample.raw_counters["io.max:_available"] = 1
         for field, cap in io_caps.items():
             if cap is not None:
                 sample.raw_counters[f"io.max:{field}"] = cap
-        device_caps, _device_caps_src = read_io_max_caps_by_device(path / "io.max")
+        device_caps, _device_caps_src = read_io_max_caps_by_device(io_max_text)
         for device, fields in device_caps.items():
             for field, cap in fields.items():
                 sample.raw_counters[f"io.max@{device}:{field}"] = cap
@@ -369,11 +437,19 @@ def collect_cgroup(root: Path, key: EntityKey, entity: Entity) -> CgroupSample:
             if raw_name in cpu_stat:
                 sample.raw_counters[f"cpu.stat:{raw_name}"] = cpu_stat[raw_name]
     if io_stat_src == "exact":
+        all_exact = True
         for raw_name in ("rbytes", "wbytes", "rios", "wios", "dbytes"):
-            sample.raw_counters[f"io.stat:{raw_name}"] = _sum_io(io_stat, raw_name)
+            total, exact = _sum_io(io_stat, raw_name, stack)
+            sample.raw_counters[f"io.stat:{raw_name}"] = total
+            all_exact = all_exact and exact
             for device, values in io_stat.items():
                 if raw_name in values:
-                    sample.raw_counters[f"io.stat@{device}:{raw_name}"] = values[raw_name]
+                    sample.raw_counters[f"io.stat@{device}:{raw_name}"] = int(values[raw_name])
+        if not all_exact:
+            sample.raw_counters["io.stat:_unclassified"] = 1
+        usages = [int(v["cost.usage"]) for v in io_stat.values() if "cost.usage" in v]
+        if usages:
+            sample.raw_counters["io.stat:cost_usage"] = sum(usages)
     for name in ("net_rx_bps", "net_tx_bps", "net_rx_pps", "net_tx_pps", "pressure"):
         sample.metrics[name] = MetricValue(None, "unavail_kernel")
     return sample

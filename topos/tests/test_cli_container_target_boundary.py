@@ -55,3 +55,13 @@ def test_target_container_choice_preserves_direct_target_and_rejects_ambiguity(
         cli._resolve_mutual_exclusive_target("/cg/direct", "api", "action")
     with pytest.raises(ValueError, match="action requires either --target or --container"):
         cli._resolve_mutual_exclusive_target(None, None, "action")
+
+
+def test_docker_verb_refuses_a_container_that_is_not_a_docker_cgroup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from topos.collect.dockerjoin import ContainerResolveError
+
+    monkeypatch.setattr(cli, "_resolve_container_target", lambda value: "/system.slice/ssh.service")
+    with pytest.raises(ContainerResolveError, match="did not resolve to a docker container ID"):
+        cli._resolve_mutual_exclusive_target(None, "ssh", "action", "docker-stop")

@@ -139,12 +139,13 @@ def test_config_paddr_enabled_round_trip() -> None:
 
 
 def test_config_paddr_enabled_string_is_not_truthy(tmp_path: Path) -> None:
-    """A TOML string value for paddr_enabled must not become True."""
-    from topos.config import load
+    """A TOML string value for paddr_enabled is rejected, never truthy (D-05)."""
+    from topos.config import ConfigError, load
 
     path = tmp_path / "config.toml"
     path.write_text('[damon]\npaddr_enabled = "true"\n', encoding="utf-8")
-    assert load(path).damon.paddr_enabled is False
+    with pytest.raises(ConfigError, match="paddr_enabled"):
+        load(path)
 
 
 # ---------------------------------------------------------------------------
@@ -549,8 +550,14 @@ def test_lifecycle_daemon_serve_integration(tmp_path: Path) -> None:
     class FakeCollector:
         def __init__(self, cgroup_root: Path | None, config: ToposConfig) -> None:
             self.cgroup_root = cgroup_root or config.cgroup_root
+            self.config = config
             self.network_providers = ("fallback",)
             self.damon_root = d_root
+
+        def collect_once(self):
+            from conftest import fixture_frame
+
+            return fixture_frame()
 
     class FakeServer:
         closed = False

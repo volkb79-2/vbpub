@@ -211,7 +211,8 @@ def test_daemon_cli_bpf_root_runs_one_periodic_iteration_with_bounded_failure_co
     assert observed["refreshes"] == ["topos_cgroup_skb"]
     assert bpf_stop.wait_calls == [5.0, 5.0]
     assert bpf_stop.set_called is True
-    assert observed["provider_kwargs"] == {"bpf_root": cli_root, "state_dir": cli_state}
+    # The provider's staleness limit is three producer intervals of the floored 5 s.
+    assert observed["provider_kwargs"] == {"bpf_root": cli_root, "state_dir": cli_state, "max_age_s": 15.0}
     assert observed["broker"].events == ["start", "stop", "join"]  # type: ignore[union-attr]
     assert observed["server_closed"] is True
 

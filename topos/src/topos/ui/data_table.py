@@ -46,6 +46,12 @@ class MouseTable(DataTable, inherit_bindings=False):
         self._column_labels: tuple[str, ...] = ()
         self._row_keys: tuple[str, ...] = ()
 
+    def on_resize(self, event: events.Resize) -> None:
+        """Tell the app the real table width changed (columns depend on it)."""
+        handler = getattr(self.app, "on_table_width_changed", None)
+        if handler is not None:
+            handler(event.size.width)
+
     def populate(
         self,
         *,

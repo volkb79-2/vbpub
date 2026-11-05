@@ -728,3 +728,44 @@ class TestStubbornGaps:
                 chunks.append(bytes(buf[:n]))
         assert b"".join(chunks) == data
         path.unlink(missing_ok=True)
+
+
+def test_truncate_to_last_newline_on_empty_file_is_a_noop(tmp_path: Path) -> None:
+    from topos.record.writer import _truncate_to_last_newline
+
+    path = tmp_path / "empty.jsonl"
+    path.write_bytes(b"")
+    _truncate_to_last_newline(path)
+    assert path.read_bytes() == b""
+
+
+def test_torn_header_without_any_newline_is_refused_and_never_wiped(tmp_path: Path) -> None:
+    from topos.record.writer import NotARecordingError, _truncate_to_last_newline
+
+    path = tmp_path / "torn.jsonl"
+    content = b'{"type":"header","schema_version":1}'  # valid JSON, but no newline yet
+    path.write_bytes(content)
+    # a tiny chunk size also walks the scan loop backwards across several blocks
+    with pytest.raises(NotARecordingError, match="no complete line to keep"):
+        _truncate_to_last_newline(path, chunk=7)
+    assert path.read_bytes() == content
+
+
+def test_partial_tail_after_header_is_trimmed_across_chunk_boundaries(tmp_path: Path) -> None:
+    from topos.record.writer import _truncate_to_last_newline
+
+    path = tmp_path / "tail.jsonl"
+    header = b'{"type":"header","schema_version":1}\n'
+    path.write_bytes(header + b'{"type":"frame","half":' + b"x" * 40)
+    _truncate_to_last_newline(path, chunk=8)
+    assert path.read_bytes() == header
+
+
+def test_corrupt_zstd_recording_is_refused_for_append_with_the_cause(tmp_path: Path) -> None:
+    pytest.importorskip("zstandard")
+    from topos.record.writer import _require_intact_zstd
+
+    path = tmp_path / "bad.zst"
+    path.write_bytes(b"\x28\xb5\x2f\xfd" + b"this is not a zstd frame body")
+    with pytest.raises(RuntimeError, match="refusing to append to truncated or corrupt"):
+        _require_intact_zstd(path)
