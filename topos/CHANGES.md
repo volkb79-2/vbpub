@@ -37,6 +37,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(topos/query): integral, state_duration and derived rates no longer bridge holes wider than 1.5 intervals; integral/state_duration report `covered_s` and `span_s` (B-11)
 - fix(topos/report): `--group-by slice` builds the parent map once instead of per entity per frame (B-12)
 - fix(topos/compare): totals (`counter_delta`, `event_count`, `integral`) over windows whose spans differ by more than 10% are refused as `incomplete_coverage` (B-13)
+- fix(topos/gateway): HTTP handlers time out after 5 s idle and live handler threads are capped at 32 (excess answered 503 `gateway_busy`) (B-16)
+- fix(topos/daemon): all `proc_*` metrics are classified `sensitive`; a finding with no `source_metrics` is treated as `sensitive` when redacting (B-17)
 - fix(topos/mcp): `topos_history` reports `gap`, `truncated`, `frames_returned`, `oldest_ts`, `newest_ts` and `requested_since_ts` (B-15)
 - fix(topos/tests): B-047 version assertions compare against `topos.__version__` (fallback test reads pyproject `fallback_version`) instead of the literal "0.1.0"
 - fix(topos/tests): B-003 MCP-dependent smoke/server tests skip cleanly (`requires_mcp`) when the `topos[mcp]` extra is absent; the P84 gate still fails such a run

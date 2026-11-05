@@ -120,7 +120,8 @@ _SENSITIVE_METRICS: frozenset[str] = frozenset(
 
 def metric_sensitivity(name: str) -> Sensitivity:
     """Return the closed-enum sensitivity for a registry metric name."""
-    if name in _SENSITIVE_METRICS:
+    if name in _SENSITIVE_METRICS or name.startswith("proc_"):
+        # Per-process telemetry identifies individual processes.
         return Sensitivity.SENSITIVE
     if name.startswith("host_"):
         return Sensitivity.PUBLIC

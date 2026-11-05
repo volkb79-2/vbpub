@@ -459,3 +459,56 @@ def test_bpf_start_failure_health_message_names_the_cause(
     bpf = observed["broker"].health_registry.snapshot().by_name("bpf_snapshot_bridge")
     assert bpf is not None and bpf.error is not None
     assert "bridge setup denied" in bpf.error.message
+
+
+# --- B-16: HTTP gateway handler timeout and concurrency cap ---------------
+
+
+def _plain_gateway(monkeypatch: pytest.MonkeyPatch, *, timeout_s: float = 5.0):
+    from topos.daemon import http_gateway
+
+    monkeypatch.setattr(http_gateway, "HANDLER_TIMEOUT_S", timeout_s)
+    gateway = http_gateway.VersionedReadHttpGateway(
+        client=object(),  # type: ignore[arg-type]
+        config=http_gateway.GatewayConfig(port=0),
+    )
+    thread = threading.Thread(target=gateway.serve_forever, daemon=True)
+    thread.start()
+    return gateway, thread
+
+
+def test_gateway_closes_an_idle_connection_after_the_handler_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway, thread = _plain_gateway(monkeypatch, timeout_s=0.3)
+    host, port = gateway.server_address
+    try:
+        with socket.create_connection((host, port), timeout=15.0) as idle:
+            # Never send a request: the server must hang up by itself.
+            assert idle.recv(1024) == b""
+    finally:
+        gateway.shutdown()
+        gateway.server_close()
+        thread.join(timeout=2.0)
+
+
+def test_gateway_caps_concurrent_handlers_and_answers_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway, thread = _plain_gateway(monkeypatch)
+    gateway._server._handler_slots = threading.BoundedSemaphore(1)  # type: ignore[attr-defined]
+    host, port = gateway.server_address
+    holder = socket.create_connection((host, port), timeout=15.0)
+    try:
+        _wait_for(lambda: gateway._server._handler_slots._value == 0)  # type: ignore[attr-defined]
+        with socket.create_connection((host, port), timeout=15.0) as second:
+            reply = b""
+            while chunk := second.recv(4096):
+                reply += chunk
+        assert reply.startswith(b"HTTP/1.1 503")
+        assert b'"gateway_busy"' in reply
+    finally:
+        holder.close()
+        gateway.shutdown()
+        gateway.server_close()
+        thread.join(timeout=2.0)
