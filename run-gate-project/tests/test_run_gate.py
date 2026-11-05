@@ -7234,8 +7234,11 @@ class TestDryRun:
         assert live.returncode == 0, live.stderr
         live_line = _docker_argv_line(live.stdout)
         import re as _re
-        def norm(line):  # name embeds pid/epoch; overlay dir is random per run
+        def norm(line):  # name embeds a timestamp; overlay dir is random per run
             line = _re.sub(r"--name \S+", "--name N", line)
+            # RG-242: the start-time label is volatile (1 s resolution) and,
+            # like the name, differs between two invocations by design.
+            line = _re.sub(r"run-gate\.started=\S+", "run-gate.started=T", line)
             return _re.sub(r"run-gate-gitcfg-\w+", "run-gate-gitcfg-X", line)
         live_norm = norm(live_line)
 
@@ -7245,6 +7248,8 @@ class TestDryRun:
         assert docker_runs(log) == [], "dry-run must not start a container"
         dry_line = _docker_argv_line(dry.stdout)
         assert norm(dry_line) == live_norm
+        # both carry the label; only its value may differ
+        assert "run-gate.started=" in dry_line and "run-gate.started=" in live_line
         assert "DRY RUN" in dry.stdout
 
     def test_profiled_container_dry_run_discloses_would_wait_without_start(
