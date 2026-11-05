@@ -992,6 +992,7 @@ def test_daemon_enabled_bridge_uses_configured_root_and_shuts_down(
     class FakeCollector:
         def __init__(self, cgroup_root: Path | None, config: ToposConfig) -> None:
             self.cgroup_root = cgroup_root or config.cgroup_root
+            self.config = config
             self.network_providers = ("fallback",)
 
         def collect_once(self):

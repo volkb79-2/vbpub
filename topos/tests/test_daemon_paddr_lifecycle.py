@@ -550,6 +550,7 @@ def test_lifecycle_daemon_serve_integration(tmp_path: Path) -> None:
     class FakeCollector:
         def __init__(self, cgroup_root: Path | None, config: ToposConfig) -> None:
             self.cgroup_root = cgroup_root or config.cgroup_root
+            self.config = config
             self.network_providers = ("fallback",)
             self.damon_root = d_root
 
