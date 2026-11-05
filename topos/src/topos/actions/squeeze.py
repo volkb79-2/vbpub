@@ -484,18 +484,19 @@ class _RestoreGuard:
                 except OSError as exc:
                     last = exc
                     failures += 1
+            # All bookkeeping happens before the unmask: a signal that arrived
+            # during the write fires at the unmask and unwinds from there.
+            if last is not None:
+                self.restore_failed = True
+                self.restore_error = str(last)
+            elif self._recovery_path is not None:
+                try:
+                    self._recovery_path.unlink()
+                except OSError:
+                    pass
         finally:
             if old_mask is not None:
                 signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
-        if last is not None:
-            self.restore_failed = True
-            self.restore_error = str(last)
-            return
-        if self._recovery_path is not None:
-            try:
-                self._recovery_path.unlink()
-            except OSError:
-                pass
 
 
 # ---------------------------------------------------------------------------

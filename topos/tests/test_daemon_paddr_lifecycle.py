@@ -553,6 +553,11 @@ def test_lifecycle_daemon_serve_integration(tmp_path: Path) -> None:
             self.network_providers = ("fallback",)
             self.damon_root = d_root
 
+        def collect_once(self):
+            from conftest import fixture_frame
+
+            return fixture_frame()
+
     class FakeServer:
         closed = False
 

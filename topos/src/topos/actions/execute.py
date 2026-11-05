@@ -684,9 +684,26 @@ _FORBIDDEN_SYSTEMD_TARGETS = frozenset(
         "hybrid-sleep",
         "suspend-then-hibernate",
         "ctrl-alt-del",
+        "sleep",
+        "runlevel0",
+        "runlevel1",
+        "runlevel6",
+        "umount",
+        "final",
     )
 ) | frozenset(
-    f"systemd-{name}.service" for name in ("reboot", "poweroff", "halt", "kexec")
+    f"systemd-{name}.service"
+    for name in (
+        "reboot",
+        "poweroff",
+        "halt",
+        "kexec",
+        "soft-reboot",
+        "suspend",
+        "hibernate",
+        "hybrid-sleep",
+        "suspend-then-hibernate",
+    )
 )
 # The Docker verb whose owner/protected decision a systemd verb on a container
 # scope must match.

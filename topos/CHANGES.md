@@ -51,7 +51,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(actions): the Docker owner / protected-ID gate is always on; omitting `owner_inspect` uses the production `docker inspect` (B-039)
 - fix(actions): Docker verbs run by the inspected canonical full ID instead of the raw name, closing the rename race (B-040)
 - fix(collect): io_cap_saturation_pct is judged per device against that device's own io.max cap, with the device attributed (B-012)
-- fix(actions): systemd verbs on `docker-<id>.scope`/`libpod-<id>.scope` get the same owner/protected decision as the docker verbs; `protected_services` applies to every systemd verb (name and key forms); poweroff/reboot/halt/kexec/rescue/emergency/shutdown/default `.target` are refused (C-01)
+- fix(actions): systemd verbs on `docker-<id>.scope`/`libpod-<id>.scope` get the same owner/protected decision as the docker verbs; `protected_services` applies to every systemd verb (name and key forms); power, sleep and rescue units are refused from a denylist, which is not a closed set (C-01, G-03, H-03)
 - fix(squeeze): `--relax-to` is validated up front; a failed restore is retried once, reported as `restore_failed` (exit 3, loud stderr with the stuck value), never as restored (C-02)
 - fix(squeeze): SIGHUP/SIGQUIT/SIGPIPE restore like SIGTERM and unwind (end audit record written, no `os._exit`); a recovery file is written before the first write and `topos squeeze --recover [--target PATH]` restores from it (C-03)
 - fix(squeeze): step<=0, floor<0 and start<floor are rejected; the first write is clamped to the floor (C-04)

@@ -994,6 +994,11 @@ def test_daemon_enabled_bridge_uses_configured_root_and_shuts_down(
             self.cgroup_root = cgroup_root or config.cgroup_root
             self.network_providers = ("fallback",)
 
+        def collect_once(self):
+            from conftest import fixture_frame
+
+            return fixture_frame()
+
     class FakeBridge:
         last_valid_snapshot = None
 

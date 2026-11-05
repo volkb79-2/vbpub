@@ -34,6 +34,7 @@ class ShutdownCoordinator:
         self._lock = threading.Lock()
         self._reason: str | None = None
         self._producer_failed = False
+        self._producer_crashed = False
 
     def bind_server(self, server: _Shutdownable) -> None:
         """Attach the server; a request made before binding is replayed now."""
@@ -71,18 +72,23 @@ class ShutdownCoordinator:
     def operator_interrupt(self) -> None:
         """``serve_forever`` was left by KeyboardInterrupt: an operator-driven stop.
 
-        An interrupt delivered straight to the serving loop is a deliberate stop,
-        not a producer-caused shutdown, so it must not be reported as failure even
-        if the producer had already ended (finite source, test-driven stop).
+        An interrupt delivered straight to the serving loop is a deliberate stop, so
+        a producer that merely ended (finite source) is not reported as a failure.
+        A producer that actually failed stays a failure: the interrupt must not turn
+        it into a clean exit.
         """
         with self._lock:
             if self._reason is None:
                 self._reason = "KeyboardInterrupt"
-            self._producer_failed = False
+            if not self._producer_crashed:
+                self._producer_failed = False
 
     def on_producer_terminal(self, kind: str) -> None:
         """``FrameBroker`` terminal callback: failed/exhausted must stop the daemon."""
         if kind in ("failed", "exhausted"):
+            if kind == "failed":
+                with self._lock:
+                    self._producer_crashed = True
             self.request(f"frame producer {kind}", producer_failed=True)
 
     def install_signal_handlers(self) -> Callable[[], None]:
