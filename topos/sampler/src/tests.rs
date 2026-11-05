@@ -828,7 +828,9 @@ fn s01_a_failed_write_is_rolled_back_and_counted() {
     let mut d = Dict::default();
     let (e, m) = (d.ent("cg:/x", 0), d.met("g.metric", false));
     let mut st = Store::open(&cfg, 0, 0).unwrap();
-    let base = wall_ms() / 1000 * 1000 - 20_000;
+    // Aligned to the hot tier's 10 s segment: otherwise one wall-clock second in ten puts the
+    // second push in a new segment, whose healthy file replaces the broken one.
+    let base = wall_ms() / 10_000 * 10_000 - 20_000;
     st.push(&one_val(e, m, 1.0), base, 1000, &d);
     let errs = crate::store::CTR.write_errors.load(Ordering::Relaxed);
     // make the next write fail: /dev/full accepts the open and fails every write with ENOSPC
