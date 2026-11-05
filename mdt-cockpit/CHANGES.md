@@ -178,6 +178,30 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-b1659836e323] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=b1659836e323cd3995105d94455c897968fd5ff9 -->
+
+### Added
+- feat(mdt-cockpit): bind host /run/topos read-only into devcontainers (6589c010b)
+- feat(mdt-cockpit/host-setup): dedicated-dev shared tree cache host plumbing (AD2-2, MDT-074) (202435a20)
+- feat(mdt-cockpit/host-setup): AD2-0 load-tier MemoryMax = dev High, MemorySwapMax = dev swap - protected Lows (267e70c8e)
+- feat(mdt-cockpit/host-setup): dedicated-dev load tiers (gates, background) MemoryHigh/Max below dev.slice by the protected tiers' MemoryLow (286002597)
+- feat(mdt-cockpit): HOST_ROLE=dedicated-dev memory (MDT-TESTHOST-MEM): RAM+swap minus DEV_HOST_MEMORY_KEEP, no tier ceilings, host protected (de9507821)
+
+### Fixed
+- fix(mdt-cockpit): test-render renders tree-cache units via mdt_tree_cache.py; unresolved token guard (MDT-075) (49f8b8889)
+- fix(mdt-cockpit/host-setup): tree areas use whole-page sizes; GC tolerates processes that exit mid-scan (8cc7d89d0)
+- fix(mdt-cockpit/host-setup): host-check treats DEV_{GATES,BACKGROUND}_MEMORY_SWAP_MAX=auto as derived (54b44ca44)
+- fix(mdt-cockpit): dedicated-dev memory review fixes F1-F6 (no ssh OOM drop-in + stale removal, 1G keep with floors, honest bounds docs, 0 pins omit, stale drop-in cleanup, stronger tests) (4e663da8c)
+
+### Changed
+- mdt-cockpit: topos.service drop-in keeps /run/topos reachable by the docker group (8dba9c9a7)
+- merge(mdt-cockpit/host-setup): AD2-0 load-tier ceilings + AD2-2 tree cache, with review fixes (f1daf2f4d)
+
+### Documentation
+- docs(cowtree,mdt-cockpit): neutral shared-tree-cache host contract; host-setup is one optional implementation (6750b9cd2)
+
 ## [source-626f9034d12e] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=626f9034d12e092ce5b8437e9d904c4128bdd5ea -->
