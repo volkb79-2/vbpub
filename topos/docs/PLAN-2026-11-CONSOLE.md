@@ -125,7 +125,7 @@ Measured on 2026-11-05.
 | Lean Python yardstick at 1 Hz, r1002 | 2.03% of a core, 74.7 MB (a compact ring was put near 17 MB; no recorded run) |
 | Full view on live r1002 data, 170x48 | Textual 72-77 ms, ratatui 0.84 ms per frame |
 | Full view on live r1002 data, 260x60 | Textual 88 ms, ratatui 1.69 ms per frame |
-| `current` reply, r1002, about 100 entities | 527-564 KB in full; with `compact` and the view's `fields`, 87 KB (ratatui list) or 90 KB (Python list), of which about 8 KB is the process list |
+| `current` reply, r1002, about 100 entities | 527 KB in full (564 KB in an earlier capture); with `compact` and the view's `fields`, 87 KB (ratatui list) or 90 KB (Python list), of which 8-9 KB is the process list |
 | Decoding that 90 KB reply and summing every value | Rust 0.64 ms (in a container); Python `json` 1.1-1.4 ms, `orjson` 0.6-0.7 ms |
 | Python view converting the decoded reply (separate profile) | 5.5 ms |
 
