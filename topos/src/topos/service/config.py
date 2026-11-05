@@ -116,11 +116,17 @@ def parse_config(contents: str, *, source: str = "<config>") -> ServiceConfig:
 
     if state_dir == Path("/run") or not state_dir.is_relative_to(Path("/run")):
         raise ConfigError("state_dir must lie under /run/")
+    socket_dir = socket_path.parent
+    if state_dir == socket_dir and socket_path.is_relative_to(state_dir):
+        raise ConfigError("sockets.observe.path must not be inside state_dir")
+    if (
+        state_dir == socket_dir
+        or state_dir.is_relative_to(socket_dir)
+        or socket_dir.is_relative_to(state_dir)
+    ):
+        raise ConfigError("state_dir must be neither a parent nor a child of the socket directory")
     if socket_path.is_relative_to(state_dir):
         raise ConfigError("sockets.observe.path must not be inside state_dir")
-    socket_dir = socket_path.parent
-    if state_dir == socket_dir or state_dir.is_relative_to(socket_dir) or socket_dir.is_relative_to(state_dir):
-        raise ConfigError("state_dir must be neither a parent nor a child of the socket directory")
 
     return ServiceConfig(
         state_dir=state_dir,
