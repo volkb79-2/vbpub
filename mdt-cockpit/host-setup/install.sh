@@ -1320,6 +1320,10 @@ provision_cgprofile_observer /
 install -m 0644 "$HERE/units/mdt-topos.conf" /etc/tmpfiles.d/mdt-topos.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf \
   || { echo "ERROR: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-topos.conf" >&2; exit 1; }
+# Socket group and directory survival for the service if it is installed later.
+mkdir -p /etc/systemd/system/topos.service.d
+install -m 0644 "$HERE/units/mdt-topos-service.conf" \
+  /etc/systemd/system/topos.service.d/50-mdt-socket-group.conf
 
 # DAMON_STAT is a host-wide consumer that excludes cgprofile's generic DAMON
 # sysfs sessions. Disabled by default (operator decision 2026-10-20); `no` removes the override.

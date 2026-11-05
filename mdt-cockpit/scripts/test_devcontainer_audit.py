@@ -207,6 +207,11 @@ def test_install_applies_the_topos_tmpfiles_rule_and_check_covers_it() -> None:
     )
     assert 'install -m 0644 "$HERE/units/mdt-topos.conf" /etc/tmpfiles.d/mdt-topos.conf' in install
     assert "systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf" in install
-    assert "topos.service" not in install and "enable --now topos" not in install
+    # Only a drop-in for a service installed elsewhere: host-setup never starts topos.
+    assert 'install -m 0644 "$HERE/units/mdt-topos-service.conf"' in install
+    assert "/etc/systemd/system/topos.service.d/50-mdt-socket-group.conf" in install
+    assert "enable --now topos" not in install and "start topos" not in install
+    dropin = (HS / "units" / "mdt-topos-service.conf").read_text()
+    assert "Group=docker" in dropin and "RuntimeDirectoryPreserve=yes" in dropin
     check = (HS / "scripts" / "check.sh").read_text()
     assert 'TOPOS_DIR=/run/topos' in check and '"$tp_mode" = "750"' in check and 'root:docker' in check
