@@ -184,7 +184,8 @@ def test_refused_is_the_only_exit_code_name_for_four():
     assert exit_codes.REFUSED == 4
     assert not hasattr(exit_codes, "POLICY_REFUSED")
     names = {n: v for n, v in vars(exit_codes).items() if n.isupper()}
-    assert sorted(names.values()) == [0, 1, 2, 3, 4]
+    assert sorted(names.values()) == [0, 1, 2, 3, 4, 5]
+    assert exit_codes.RATE_LIMITED == 5  # `cmru versions` registry rate limit (KI-121)
     for source in (PROJECT_DIR / "src" / "cmru").glob("*.py"):
         assert "POLICY_REFUSED" not in source.read_text(encoding="utf-8"), source.name
 
