@@ -118,14 +118,19 @@ cockpit. The current split of responsibilities breaks that:
 - **P-10. Phase-1 releases are not deployable through the old host-setup installer.**
   `mdt-cgprofile-install.sh` renders only `cgpd.service` and `cgprofile.slice`. A
   2.2.0 service would `Requires=` socket units that do not exist, and P-9 would refuse
-  self-bind. On every host, host-setup keeps `CGPROFILE_WHEEL` below 2.2.0 until that
-  host's cutover (phase 3), which installs the phase-2 host-setup.
+  self-bind.
+  - A host that has not been cut over keeps running its current (pre-phase-2)
+    host-setup, with `CGPROFILE_WHEEL` below 2.2.0, and never receives the phase-2
+    host-setup or `check.sh`. The latter calls `cgpd doctor`, which the old cgpd lacks.
+  - The pin is raised only in cutover step 4, by installing the phase-2 host-setup.
 - **P-11. Install verbs refuse an old installation instead of migrating it.**
   - `cgpd install` and `toposd install` refuse when they find leftovers of the old
     layout:
     - old config keys (`ctl_socket`, `observer_socket` in `/etc/cgprofile/cgpd.toml`);
     - host-setup's tmpfiles rules or drop-ins for their tree;
-    - a `/run/<svc>` tree whose owner or mode differs from 3.1.
+    - a `/run/<svc>` tree whose owner or mode differs from 3.1;
+    - `/opt/cgprofile` entries whose `MANIFEST` names the mdt installer
+      (`installer=mdt host-setup`), or a leftover `PENDING` / `current.new`.
   - The refusal lists the manual removal steps (section 4, "Manual removal"). Nothing
     is rewritten or chmodded in place.
   - A re-run on a host the verb itself installed (owner and modes match 3.1) is a
@@ -381,8 +386,12 @@ Safety therefore comes from the order below, with each host switched in one boun
 | **3. Per-host cutover** | r1002, then v1001, then the controller host (never nano1), one host at a time, following the cutover steps below. | No merge: operations, done by a Sonnet agent or the controller with the operator's go per host. | That host's doctors and `check.sh` are green; a lane and a rebuilt devcontainer work on it. |
 
 **Cutover steps (per host)**:
-1. Drain: wait for or stop running lanes and cgpd live sessions. Never force without
-   the operator.
+1. Drain:
+   - Wait for, or stop, running lanes and cgpd live sessions. Never force without the
+     operator.
+   - Stop the devcontainers on that host. Their bind mounts of `/run/cgprofile` and
+     `/run/topos` die in step 3, and so do their terminals and the agent sessions inside
+     them. Announce this to the operator before starting, naming the containers.
 2. Stop and disable the old `cgpd` and `topos` units.
 3. Manual removal, listed below.
 4. Install the phase-2 mdt host-setup, which installs the services.
@@ -398,10 +407,14 @@ P-11 refusals print it. Remove:
 - `/etc/sysusers.d/mdt-cgprofile.conf`. The `cgprofile-observer` group and its GID stay;
   cgprofile's own sysusers file declares it from now on.
 - `/usr/local/sbin/mdt-cgprofile-install.sh`;
+- `/opt/cgprofile` (the versioned venvs with `installer=mdt host-setup` MANIFESTs,
+  `current`, `current.new`, `PENDING`) and the `/usr/local/bin/cgpctl` symlink;
 - the old units `/etc/systemd/system/{cgpd.service,cgprofile.slice}` and topos's old
   `topos.service` / `topos.slice` copies;
-- the old `/etc/cgprofile/cgpd.toml`. Keep `/var/lib/cgprofile` unless the operator wants
-  it purged.
+- the old `/etc/cgprofile/cgpd.toml`.
+- Keep `/var/lib/cgprofile` unless the operator wants it purged. Its `overrides.toml` is
+  read by the new cgpd, so 5.1 keeps that file's format compatible, or refuses it by
+  name.
 - then `systemctl daemon-reload`, and `rm -rf /run/cgprofile /run/topos`. Containers
   that bind-mounted these lose them; they are recreated in step 6.
 
@@ -562,7 +575,9 @@ rule, user-facing docs ship in the same change as the code.
    (`:1519-1530`) with calls to `cgpd install` (zipimport bootstrap from the pinned wheel)
    using the `host-setup.env` values.
 3. **No automatic migration.**
-   - The new host-setup refuses to run while any of its old files exist:
+   - A run of the new host-setup that enables the cgprofile or topos role refuses while
+     any of the old files below exist. Runs for unrelated roles (slices, buildkit, IO
+     governance) are not blocked. The files:
      - `/etc/tmpfiles.d/mdt-topos.conf`, `mdt-cgprofile.conf`, `mdt-cgprofile-observer.conf`;
      - `/etc/systemd/system/topos.service.d/50-mdt-socket-group.conf`;
      - `/etc/sysusers.d/mdt-cgprofile.conf`;
