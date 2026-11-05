@@ -27,9 +27,11 @@ import tarfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Formatter
-from typing import List, Optional, Sequence
+from typing import Callable, List, Mapping, Optional, Sequence
 
 import tomllib
+
+from cmru.config import VariantConfig
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +98,35 @@ class BundleConfig:
     archive_format: str
     copy_files: list[str]
     copy_dirs: list[str]
+    vendor: Optional["VendorConfig"] = None
+    stage: Optional["StageConfig"] = None
+    exec_prefix: Optional["ExecConfig"] = None
+    manifest_name: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class VendorConfig:
+    """``[vendor]``: the dependency closure for one interpreter ABI (KI-126)."""
+    requirements: list[str]   # project-relative requirement manifests
+    platforms: list[str]      # pip --platform values
+    dest: str                 # bundle-relative directory the wheels land in
+
+
+@dataclass(frozen=True)
+class StageConfig:
+    """``[stage]``: one argv run between copy/vendor and the manifest (KI-126)."""
+    argv: list[str]
+
+
+@dataclass(frozen=True)
+class ExecConfig:
+    """``[exec]``: runner prefix for the vendor and stage argv only (KI-126).
+
+    ``env`` maps each prefix token (``root``, ``container``) to the NAME of the
+    environment variable that holds its value, so no container name is stored in the file.
+    """
+    prefix: list[str]
+    env: Mapping[str, str]
 
 
 @dataclass
@@ -280,7 +311,7 @@ def _string_list_value(table: dict, key: str, where: str) -> list[str]:
 
 
 def _validate_archive_template(template: str) -> None:
-    """Require one plain version field in a filename-only template."""
+    """Require one plain version field (and at most one plain variant field) in a filename-only template."""
     try:
         parsed = list(Formatter().parse(template))
     except ValueError as exc:
@@ -291,20 +322,107 @@ def _validate_archive_template(template: str) -> None:
         if field is not None
     ]
     if (
-        fields != [("version", "", None)]
+        fields not in ([("version", "", None)],
+                       [("version", "", None), ("variant", "", None)],
+                       [("variant", "", None), ("version", "", None)])
         or "/" in template
         or "\\" in template
     ):
         raise ValueError(
-            "archive.name_template must be a filename containing exactly one plain {version} field"
+            "archive.name_template must be a filename containing exactly one plain {version} "
+            "field and at most one plain {variant} field"
         )
+
+
+_STAGE_TOKENS = frozenset({"bundle_dir", "variant", "python_version"})
+_EXEC_TOKENS = frozenset({"root", "container"})
+_ENV_NAME_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
+
+
+def _tokens_of(text: str, allowed: frozenset, where: str) -> set[str]:
+    """The plain ``{name}`` fields of ``text``; any other field, spec or conversion is refused."""
+    try:
+        parsed = list(Formatter().parse(text))
+    except ValueError as exc:
+        raise ValueError(f"{where}: malformed token syntax in {text!r}") from exc
+    found: set[str] = set()
+    for _, field, format_spec, conversion in parsed:
+        if field is None:
+            continue
+        if field not in allowed or format_spec or conversion:
+            raise ValueError(
+                f"{where}: unknown token {{{field}}} in {text!r} (allowed: {', '.join(sorted(allowed))})"
+            )
+        found.add(field)
+    return found
+
+
+def _table(config: dict, key: str) -> Optional[dict]:
+    value = config.get(key)
+    if value is not None and not isinstance(value, dict):
+        raise ValueError(f"[{key}] must be a table")
+    return value
+
+
+def _parse_vendor(config: dict) -> Optional[VendorConfig]:
+    table = _table(config, "vendor")
+    if table is None:
+        return None
+    _reject_unknown_keys(table, {"requirements", "platforms", "dest"}, "vendor")
+    requirements = _string_list_value(table, "requirements", "vendor")
+    platforms = _string_list_value(table, "platforms", "vendor")
+    if not requirements or not platforms:
+        raise ValueError("vendor.requirements and vendor.platforms must each name at least one entry")
+    dest = _string_value(table, "dest", "vendor", default="vendor")
+    if Path(dest).is_absolute() or ".." in Path(dest).parts:
+        raise ValueError("vendor.dest must be a relative path inside the bundle")
+    return VendorConfig(requirements=requirements, platforms=platforms, dest=dest)
+
+
+def _parse_stage(config: dict) -> Optional[StageConfig]:
+    table = _table(config, "stage")
+    if table is None:
+        return None
+    _reject_unknown_keys(table, {"argv"}, "stage")
+    argv = _string_list_value(table, "argv", "stage")
+    if not argv:
+        raise ValueError("stage.argv must name a command")
+    for item in argv:
+        _tokens_of(item, _STAGE_TOKENS, "stage.argv")
+    return StageConfig(argv=argv)
+
+
+def _parse_exec(config: dict) -> Optional[ExecConfig]:
+    table = _table(config, "exec")
+    if table is None:
+        return None
+    _reject_unknown_keys(table, {"prefix", "env"}, "exec")
+    prefix = _string_list_value(table, "prefix", "exec")
+    if not prefix:
+        raise ValueError("exec.prefix must name a command")
+    used: set[str] = set()
+    for item in prefix:
+        used |= _tokens_of(item, _EXEC_TOKENS, "exec.prefix")
+    env = table.get("env", {})
+    if not isinstance(env, dict) or any(
+        not isinstance(k, str) or not isinstance(v, str) or not v
+        or not set(v) <= _ENV_NAME_CHARS
+        for k, v in env.items()
+    ):
+        raise ValueError("exec.env must map token names to environment variable names")
+    _reject_unknown_keys(env, set(_EXEC_TOKENS), "exec.env")
+    missing = sorted(used - set(env))
+    if missing:
+        raise ValueError(f"exec.prefix uses {{{missing[0]}}} but exec.env does not name its environment variable")
+    return ExecConfig(prefix=prefix, env=dict(env))
 
 
 def parse_config(config_path: Path) -> BundleConfig:
     config = load_toml(config_path)
     _reject_unknown_keys(
         config,
-        {"project_root", "dist_dir", "bundle_dir", "client_dir", "wheel", "archive", "copy"},
+        {"project_root", "dist_dir", "bundle_dir", "client_dir", "wheel", "archive", "copy",
+         "vendor", "stage", "exec", "manifest"},
         "bundle config",
     )
     project_root_raw = _string_value(config, "project_root", "bundle config")
@@ -358,6 +476,14 @@ def parse_config(config_path: Path) -> BundleConfig:
     copy_files = _string_list_value(copy, "files", "copy")
     copy_dirs = _string_list_value(copy, "dirs", "copy")
 
+    manifest = _table(config, "manifest")
+    manifest_name: Optional[str] = None
+    if manifest is not None:
+        _reject_unknown_keys(manifest, {"name"}, "manifest")
+        manifest_name = _string_value(manifest, "name", "manifest", default="manifest.json")
+        if "/" in manifest_name or "\\" in manifest_name or manifest_name in {".", ".."}:
+            raise ValueError("manifest.name must be a single filename")
+
     return BundleConfig(
         project_root=project_root,
         wheel_project_root=wheel_project_root,
@@ -372,6 +498,10 @@ def parse_config(config_path: Path) -> BundleConfig:
         archive_format=archive_format,
         copy_files=copy_files,
         copy_dirs=copy_dirs,
+        vendor=_parse_vendor(config),
+        stage=_parse_stage(config),
+        exec_prefix=_parse_exec(config),
+        manifest_name=manifest_name,
     )
 
 
@@ -431,14 +561,16 @@ def copy_sources(config: BundleConfig) -> None:
         )
 
 
-def create_archive(config: BundleConfig) -> Path:
+def create_archive(config: BundleConfig, variant_name: Optional[str] = None) -> Path:
     version_value = os.getenv(config.archive_version_env) if config.archive_version_env else None
     if not version_value:
         raise RuntimeError(
             f"{config.archive_version_env} must be set for archive naming"
         )
 
-    tarball_name = config.archive_template.format(version=version_value)
+    tarball_name = config.archive_template.format(
+        version=version_value, variant=variant_name or "",
+    )
     if (
         not tarball_name
         or tarball_name in {".", ".."}
@@ -467,17 +599,168 @@ def create_archive(config: BundleConfig) -> Path:
     return tarball_path
 
 
-def run_bundle(config_path: Path) -> Path:
+Runner = Callable[[Sequence[str], Path], None]
+
+
+def _default_runner(argv: Sequence[str], cwd: Path) -> None:
+    subprocess.run(list(argv), check=True, cwd=str(cwd))
+
+
+def _resolved_prefix(exec_config: Optional[ExecConfig], environ: Mapping[str, str]) -> list[str]:
+    """The runner prefix with each ``{root}``/``{container}`` taken from its named env var."""
+    if exec_config is None:
+        return []
+    values: dict[str, str] = {}
+    for token, env_name in exec_config.env.items():
+        value = environ.get(env_name)
+        if not value:
+            raise RuntimeError(f"[exec] needs the environment variable {env_name} ({{{token}}}) to be set")
+        values[token] = value
+    return [item.format(**values) for item in exec_config.prefix]
+
+
+def _runner_path(config: BundleConfig, path: Path, prefixed: bool) -> str:
+    """A path as the vendor/stage command sees it: absolute locally, project-root relative in a runner."""
+    if not prefixed:
+        return str(path)
+    try:
+        return path.relative_to(config.project_root).as_posix() or "."
+    except ValueError:
+        raise ValueError(
+            f"with [exec].prefix the path {path} must lie inside project_root {config.project_root}"
+        ) from None
+
+
+def _interpreter_version(variant: Optional[VariantConfig], why: str) -> str:
+    if variant is None:
+        raise ValueError(f"{why} needs a variant (the interpreter version comes from the project's variants)")
+    if not variant.build_arg:
+        raise ValueError(
+            f"{why} needs the interpreter version in variant {variant.name!r} build_arg (e.g. \"3.11\")"
+        )
+    return variant.build_arg
+
+
+def vendor_dependencies(
+    config: BundleConfig, variant: Optional[VariantConfig], runner: Runner,
+    environ: Mapping[str, str],
+) -> None:
+    """``pip download --only-binary=:all:`` the closure for the variant's ABI into ``vendor.dest``."""
+    if config.vendor is None:
+        return
+    version = _interpreter_version(variant, "[vendor]")
+    prefix = _resolved_prefix(config.exec_prefix, environ)
+    prefixed = bool(prefix)
+    dest = config.bundle_dir / config.vendor.dest
+    dest.mkdir(parents=True, exist_ok=True)
+    command = [
+        *prefix, config.wheel_python_bin, "-m", "pip", "download",
+        "--only-binary=:all:", "--python-version", version,
+    ]
+    for platform in config.vendor.platforms:
+        command.extend(["--platform", platform])
+    if config.wheel_find_links is not None:
+        command.extend(["--no-index", "--find-links", str(config.wheel_find_links)])
+    command.extend(["--dest", _runner_path(config, dest, prefixed)])
+    for requirement in config.vendor.requirements:
+        command.extend(["-r", _runner_path(config, resolve_path(config.project_root, requirement), prefixed)])
+    log_info(f"Vendoring dependencies for python {version}")
+    runner(command, config.project_root)
+
+
+def run_stage(
+    config: BundleConfig, variant: Optional[VariantConfig], runner: Runner,
+    environ: Mapping[str, str],
+) -> None:
+    """Run the ``[stage]`` argv once, after copy and vendor, before the manifest."""
+    if config.stage is None:
+        return
+    prefix = _resolved_prefix(config.exec_prefix, environ)
+    prefixed = bool(prefix)
+    values = {"bundle_dir": _runner_path(config, config.bundle_dir, prefixed)}
+    used = set()
+    for item in config.stage.argv:
+        used |= _tokens_of(item, _STAGE_TOKENS, "stage.argv")
+    if "variant" in used:
+        if variant is None:
+            raise ValueError("stage.argv uses {variant} but no variant is being built")
+        values["variant"] = variant.name
+    if "python_version" in used:
+        values["python_version"] = _interpreter_version(variant, "stage.argv {python_version}")
+    command = [*prefix, *(item.format(**values) for item in config.stage.argv)]
+    log_info("Running stage step")
+    runner(command, config.project_root if prefixed else config.bundle_dir)
+
+
+def write_bundle_manifest(config: BundleConfig, *, project: str, tag: str) -> Path:
+    """Write the installer manifest over the FINAL bundle tree (after vendor and stage)."""
+    from cmru.manifest import bundle_tag_problem, build_bundle_manifest, write_manifest
+
+    assert config.manifest_name is not None
+    problem = bundle_tag_problem(tag)
+    if problem:
+        raise ValueError(problem)
+    dropped = sorted(
+        path.relative_to(config.bundle_dir).as_posix()
+        for path in config.bundle_dir.rglob("*")
+        if path.is_file() and _is_excluded(path.relative_to(config.bundle_dir).as_posix())
+    )
+    if dropped:
+        raise ValueError(
+            "the archive hard-excludes files the bundle tree holds, so the manifest would "
+            f"list files the tarball lacks: {', '.join(dropped[:5])}"
+        )
+    manifest = build_bundle_manifest(
+        project=project, tag=tag, bundle_root=config.bundle_dir,
+        exclude=(config.manifest_name, config.manifest_name + ".minisig"),
+    )
+    return write_manifest(manifest, config.bundle_dir / config.manifest_name)
+
+
+def run_bundle(
+    config_path: Path,
+    *,
+    variant: Optional[VariantConfig] = None,
+    manifest_project: Optional[str] = None,
+    manifest_tag: Optional[str] = None,
+    runner: Optional[Runner] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> Path:
+    """Build one archive. Order: clean, wheel, copy, vendor, stage, manifest, archive.
+
+    ``variant`` is the project's declared ``VariantConfig``: its ``build_arg`` is the
+    interpreter version for ``[vendor]``/``[stage]`` and its name fills ``{variant}`` in
+    ``archive.name_template``. With a variant only ``bundle_dir``/``client_dir`` are
+    cleaned, so the archives of sibling variants in ``dist_dir`` survive.
+    """
     config = parse_config(config_path)
+    environment = os.environ if environ is None else environ
+    run = _default_runner if runner is None else runner
+    has_variant_field = "{variant}" in config.archive_template
+    if variant is not None and not has_variant_field:
+        raise ValueError("archive.name_template needs a {variant} field to build a variant")
+    if variant is None and has_variant_field:
+        raise ValueError("archive.name_template has {variant} but no variant is being built")
+    if config.manifest_name is not None and not (manifest_project and manifest_tag):
+        raise ValueError("[manifest] needs manifest_project and manifest_tag")
 
     log_info("Preparing dist directories")
-    if config.dist_dir.exists():
-        shutil.rmtree(config.dist_dir)
+    if variant is None:
+        if config.dist_dir.exists():
+            shutil.rmtree(config.dist_dir)
+    else:
+        for stale in (config.bundle_dir, config.client_dir):
+            if stale.exists():
+                shutil.rmtree(stale)
     config.bundle_dir.mkdir(parents=True, exist_ok=True)
 
     build_wheel(config)
     copy_sources(config)
-    return create_archive(config)
+    vendor_dependencies(config, variant, run, environment)
+    run_stage(config, variant, run, environment)
+    if config.manifest_name is not None:
+        write_bundle_manifest(config, project=manifest_project, tag=manifest_tag)
+    return create_archive(config, variant.name if variant is not None else None)
 
 
 if __name__ == "__main__":

@@ -875,6 +875,7 @@ fits the work:
 | Preview or reproduce one declared step | `cmru run --step NAME …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
 | Render a project's standalone `get.py`, or check the committed one for drift | `cmru installer render` / `cmru installer check` | Installer generator; `cmru get-py` is a deprecated alias of `render` (removal in a later major release) |
 | Prepare project settings or compose step/bundle behavior in Python | `cmru.runner.prepare_project_environment`, `cmru.runner.run_step`, or `cmru.bundle.run_bundle` | Supported library entrypoints; see the [design rationale](docs/DESIGN-GUIDE.md#consumer-side-environment-preparation) and [worked example](docs/CONSUMERS.md#python-entrypoints) |
+| Build the per-interpreter (variant) bundle archives: vendored wheels, stage step, manifest, archive | `cmru handler bundle-build --bundle-config bundle.toml --cmru-config cmru.toml --project NAME [--variant NAME\|all]` | Variants come from `[[project.variants]]` (`build_arg` = interpreter version); optional `[vendor]`, `[stage]`, `[exec]`, `[manifest]` tables in `bundle.toml` (SPEC S9.4a); [consumer guide](docs/CONSUMERS.md#per-interpreter-bundles-bundle-build) |
 | Manage generic Git worktree lifecycles | `worktree` package in the CMRU wheel | Stable shared API, versioned with the CMRU wheel; see the [worktree consumer guide](../libraries/worktree/CONSUMERS.md) |
 
 `cmru.bundle` builds an archive from its dedicated bundle TOML configuration;

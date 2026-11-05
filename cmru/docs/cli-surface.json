@@ -1131,6 +1131,124 @@
       "signature": "sha256:6de998bc6b717ec695ddf3f178486e71fda656dc44bf130a1702d4c4155c4e85"
     },
     {
+      "id": "case:route:entrypoint:cmru/handler/bundle-build/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short",
+        "option:route:entrypoint:cmru/handler/bundle-build/--bundle-config",
+        "option:route:entrypoint:cmru/handler/bundle-build/--cmru-config",
+        "option:route:entrypoint:cmru/handler/bundle-build/--project",
+        "option:route:entrypoint:cmru/handler/bundle-build/--variant"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/bundle-build",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short",
+          "option:route:entrypoint:cmru/handler/bundle-build/--variant"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:cmru/handler/bundle-build/--bundle-config",
+          "option:route:entrypoint:cmru/handler/bundle-build/--cmru-config",
+          "option:route:entrypoint:cmru/handler/bundle-build/--project"
+        ]
+      },
+      "signature": "sha256:3283496cee5a4378cc2db0a2b7bc6f4cfddb3c876f42ee0333be73c0f453c594"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--bundle-config/--bundle-config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/bundle-build/--bundle-config"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/bundle-build",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--bundle-config",
+        "spelling": "--bundle-config"
+      },
+      "signature": "sha256:7938d386b267f264f099819cc7f85b405f13a8bd7ce6b589f9e5d40f1679a9a6"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--cmru-config/--cmru-config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/bundle-build/--cmru-config"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/bundle-build",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--cmru-config",
+        "spelling": "--cmru-config"
+      },
+      "signature": "sha256:47c8ec6757506ddbc481ece1fee39e8b20b4112be105c38f049f028202b8254d"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/bundle-build/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/bundle-build",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:cc508ae50f2349d2f5a6e46123cb615f0fa808b98d7b0fc1fc840b25f2ca52b9"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/bundle-build/--dry-run"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/bundle-build",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:290ee3dbcd930658974cbffdc39c3162d8f0c807f8396dff0dc5328f005043b7"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short/--log-prefix-time-short",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/bundle-build",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short",
+        "spelling": "--log-prefix-time-short"
+      },
+      "signature": "sha256:1714184ce43ff5ed7bcc9ca2b48753b209714859bb62373d12607a782cd7f937"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--project/--project",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/bundle-build/--project"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/bundle-build",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--project",
+        "spelling": "--project"
+      },
+      "signature": "sha256:133b169b66c9c8ccd5ac584cb1aee076fda216cb0c842b30c6b96ef0aaf88621"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--variant/--variant",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/handler/bundle-build/--variant"
+      ],
+      "route_id": "route:entrypoint:cmru/handler/bundle-build",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--variant",
+        "spelling": "--variant"
+      },
+      "signature": "sha256:0bfa4d44f94fca6a690587aa956485a6e93653b9fbdd3faabbaba8b4038400f6"
+    },
+    {
       "id": "case:route:entrypoint:cmru/handler/bundle-manifest/minimum",
       "kind": "minimum",
       "members": [
@@ -7756,12 +7874,315 @@
         "route:entrypoint:cmru/handler/wheel-validate",
         "route:entrypoint:cmru/handler/tarball-publish",
         "route:entrypoint:cmru/handler/bundle-manifest",
+        "route:entrypoint:cmru/handler/bundle-build",
         "route:entrypoint:cmru/handler/tarball-validate",
         "route:entrypoint:cmru/handler/oci-image-build",
         "route:entrypoint:cmru/handler/oci-image-push",
         "route:entrypoint:cmru/handler/oci-image-release"
       ],
       "summary": "Run a concrete project-step handler. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "cmru.cli_support._ShortTimePrefixAction",
+          "before_nested_subcommand": false,
+          "canonical": "--log-prefix-time-short",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "prefix severity lines with local HH:MM:SS timestamps",
+          "dest": "log_prefix_time_short",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--log-prefix-time-short"
+          ],
+          "help_group": "OUTPUT CONTROL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "cmru.cli_support._ShortTimePrefixAction"
+            },
+            "default": false,
+            "nargs": 0
+          },
+          "parser_path": [
+            "handler",
+            "bundle-build"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--bundle-config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "bundle.toml of the project",
+          "dest": "bundle_config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--bundle-config"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/bundle-build/--bundle-config",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "handler",
+            "bundle-build"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--cmru-config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "the cmru.toml that declares the project's variants",
+          "dest": "cmru_config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--cmru-config"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/bundle-build/--cmru-config",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "handler",
+            "bundle-build"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--project",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "project name (as in cmru.toml)",
+          "dest": "project",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--project"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/bundle-build/--project",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "handler",
+            "bundle-build"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--variant",
+          "choices": null,
+          "const": null,
+          "default": "all",
+          "default_present": true,
+          "description": "declared variant NAME to build, or all (default all)",
+          "dest": "variant",
+          "effective_default": "all",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--variant"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/handler/bundle-build/--variant",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "all"
+          },
+          "parser_path": [
+            "handler",
+            "bundle-build"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [
+            "mutating"
+          ],
+          "confirmation": true,
+          "description": "Run a concrete project-step handler.",
+          "group": "MODIFICATION",
+          "id": null,
+          "name": "handler",
+          "summary": "Run a concrete project-step handler. [mutating]",
+          "synopsis": null
+        }
+      ],
+      "description": "Build the per-interpreter bundle archives (vendor, stage, manifest, archive).",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cmru/handler/bundle-build",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short.action"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "handler"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "handler",
+            "bundle-build"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "handler",
+        "bundle-build"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Build the per-interpreter bundle archives (vendor, stage, manifest, archive). [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

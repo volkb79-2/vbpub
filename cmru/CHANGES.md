@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+- KI-126: per-interpreter bundle builder. `bundle.toml` gains optional `[vendor]` (cross-ABI `pip download --only-binary`),
+  `[stage]` (one command between copy and archive), `[exec]` (runner prefix for those two commands only, container/root
+  taken from named environment variables) and `[manifest]` (installer manifest written last); `archive.name_template` may
+  carry one `{variant}` field. `run_bundle(config_path, *, variant=None, ...)` takes the declared `VariantConfig`
+  (`build_arg` = interpreter version). New `cmru handler bundle-build --bundle-config --cmru-config --project [--variant]`
+  loops the project's variants. Inert without the new tables: the legacy archive is byte-identical.
+
 - `docs/BOOTSTRAP-FROM-ZERO.md` names the current Run-Gate release (25.1.1) in its build, retained-wheel and release
   commands; the 25.0.2 pin had gone stale after the Run-Gate 25.1.1 release and failed
   `test_the_release_commands_follow_the_declared_graph_and_one_set_of_versions` in the release gate.
