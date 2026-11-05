@@ -148,3 +148,61 @@ def test_success_result_uses_selected_text_or_json_rendering(
     else:
         assert "=== Squeeze Result ===" in output
         assert "Stop reason: floor" in output
+
+
+def test_signal_termination_during_run_maps_to_128_plus_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import signal
+
+    from topos.actions.squeeze import _Terminated
+
+    def terminated(_config):
+        raise _Terminated(signal.SIGTERM)
+
+    monkeypatch.setattr("topos.actions.squeeze.run_squeeze_gated", terminated)
+    assert _main_squeeze(["--target", "/test.scope"]) == 128 + signal.SIGTERM
+
+
+def test_result_carrying_exit_signal_exits_128_plus_signal(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import dataclasses
+
+    result = dataclasses.replace(_result(tmp_path, stop_reason="floor"), exit_signal=15)
+    monkeypatch.setattr("topos.actions.squeeze.run_squeeze_gated", lambda _c: result)
+    assert _main_squeeze(["--target", "/test.scope"]) == 128 + 15
+
+
+def test_recover_requires_root_and_does_nothing_otherwise(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("os.geteuid", lambda: 1000)
+    monkeypatch.setattr(
+        "topos.actions.squeeze.recover_squeeze",
+        lambda target: pytest.fail("recovery must not run without root"),
+    )
+    assert _main_squeeze(["--recover"]) == 2
+    assert "requires root" in capsys.readouterr().err
+
+
+def test_recover_reports_nothing_success_and_failure_exit_codes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from topos.actions.squeeze import RecoverOutcome
+
+    monkeypatch.setattr("os.geteuid", lambda: 0)
+    outcomes: list = []
+    monkeypatch.setattr("topos.actions.squeeze.recover_squeeze", lambda target: outcomes)
+
+    assert _main_squeeze(["--recover"]) == 0
+    assert "nothing to recover" in capsys.readouterr().out
+
+    outcomes[:] = [RecoverOutcome(tmp_path / "a.json", "/cg/a", "1", True)]
+    assert _main_squeeze(["--recover"]) == 0
+    assert "recovered /cg/a: memory.high restored to 1" in capsys.readouterr().out
+
+    outcomes.append(RecoverOutcome(tmp_path / "b.json", "/cg/b", "2", False, "EINVAL"))
+    assert _main_squeeze(["--recover"]) == 3
+    captured = capsys.readouterr()
+    assert "RECOVERY FAILED for /cg/b" in captured.err and "EINVAL" in captured.err

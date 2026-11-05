@@ -538,3 +538,190 @@ def test_operator_interrupt_clears_producer_failure_but_signals_do_not() -> None
     fresh.operator_interrupt()
     assert fresh.producer_failed is False
     assert fresh.reason == "KeyboardInterrupt"
+
+
+# --- diff-coverage round (2026-11-05): daemon error branches ----------------
+
+
+class _FiredDeadline:
+    """Stands in for an expired TotalDeadline: no timer, reports fired."""
+
+    fired = True
+
+    def __init__(self, *_a, **_k) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+
+class _FakeConn:
+    def settimeout(self, _s) -> None:
+        pass
+
+
+def test_envelope_handler_answers_timeout_when_deadline_fired_mid_line(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+    import types
+
+    from topos.daemon import api as api_module
+
+    broker = FrameBroker([_frame_at(1.0)])
+    api = DaemonApi(broker)
+    handler = object.__new__(api_module._EnvelopeHandler)
+    handler.server = types.SimpleNamespace(api=api)
+    handler.connection = _FakeConn()
+    handler.rfile = io.BytesIO(b'{"v":1,"op":"sta')  # cut off: no newline
+    handler.wfile = io.BytesIO()
+    monkeypatch.setattr(api_module, "TotalDeadline", _FiredDeadline)
+    monkeypatch.setattr(api_module, "read_peer_credentials", lambda _c: None)
+    handler.handle()
+    assert b"request timed out" in handler.wfile.getvalue()
+
+
+def test_broker_handler_survives_a_peer_that_vanished_before_the_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+    import types
+
+    from topos.daemon import broker as broker_module
+
+    class GoneWriter:
+        def write(self, _data) -> int:
+            raise BrokenPipeError("peer went away")
+
+    seen: list[dict] = []
+    handler = object.__new__(broker_module._BrokerHandler)
+    handler.server = types.SimpleNamespace(
+        request_timeout_s=30.0,
+        broker=types.SimpleNamespace(responses=lambda req: seen.append(req) or [{"type": "ok"}]),
+    )
+    handler.connection = _FakeConn()
+    handler.rfile = io.BytesIO(b'{"op":"latest"}\n')
+    handler.wfile = GoneWriter()
+    handler.handle()  # must not raise
+    assert seen == [{"op": "latest"}]
+
+
+def test_total_deadline_firing_on_an_already_closed_socket_is_harmless() -> None:
+    class Closed:
+        def shutdown(self, _how) -> None:
+            raise OSError("not connected")
+
+    deadline = TotalDeadline(Closed(), 3600.0, socket.SHUT_RD)
+    deadline._fire()
+    assert deadline.fired is True
+
+
+def test_stale_socket_probe_that_cannot_connect_for_other_reasons_is_treated_as_in_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from topos.daemon import broker as broker_module
+
+    path = tmp_path / "held.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(path))
+    listener.close()  # leaves a socket inode behind
+
+    class Probe:
+        def settimeout(self, _s) -> None:
+            pass
+
+        def connect(self, _p) -> None:
+            raise PermissionError("EACCES")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(broker_module.socket, "socket", lambda *a, **k: Probe())
+    with pytest.raises(broker_module.SocketInUseError, match="not answering"):
+        broker_module.unlink_stale_socket(path)
+    assert path.exists()  # never take over a socket we could not prove stale
+
+
+def test_gateway_busy_reply_to_a_vanished_client_and_slot_release_on_spawn_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from http.server import ThreadingHTTPServer
+
+    from topos.daemon import http_gateway
+
+    class GoneClient:
+        def sendall(self, _data) -> None:
+            raise BrokenPipeError
+
+    closed: list[object] = []
+    server = object.__new__(http_gateway._GatewayHttpServer)
+    server._handler_slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(server, "shutdown_request", lambda req: closed.append(req), raising=False)
+
+    # a free slot but the thread cannot start: the slot must be given back
+    def cannot_spawn(self, request, client_address):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(ThreadingHTTPServer, "process_request", cannot_spawn)
+    with pytest.raises(RuntimeError):
+        server.process_request(object(), ("127.0.0.1", 1))
+    assert server._handler_slots.acquire(blocking=False)  # slot was released
+    # now every slot is taken: the vanished client is closed without raising
+    client = GoneClient()
+    server.process_request(client, ("127.0.0.1", 1))
+    assert closed == [client]
+
+
+def test_shutdown_requested_before_the_server_exists_is_replayed_on_bind() -> None:
+    stopped = threading.Event()
+
+    class Server:
+        def shutdown(self) -> None:
+            stopped.set()
+
+    coordinator = ShutdownCoordinator()
+    assert coordinator.request("SIGTERM") is True
+    assert not stopped.is_set()
+    coordinator.bind_server(Server())
+    assert stopped.wait(timeout=10.0)
+    assert coordinator.reason == "SIGTERM"
+
+
+def test_signal_handlers_are_skipped_off_the_main_thread_and_restore_tolerates_it() -> None:
+    before = signal.getsignal(signal.SIGTERM)
+    outcome: dict = {}
+
+    def worker() -> None:
+        outcome["restore"] = ShutdownCoordinator().install_signal_handlers()
+        outcome["restore"]()  # no-op, must not raise
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(timeout=10.0)
+    assert "restore" in outcome
+    assert signal.getsignal(signal.SIGTERM) == before
+
+
+def test_restoring_signal_handlers_from_a_non_main_thread_does_not_raise() -> None:
+    before = signal.getsignal(signal.SIGTERM)
+    restore = ShutdownCoordinator().install_signal_handlers()
+    try:
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                restore()
+            except BaseException as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join(timeout=10.0)
+        assert errors == []
+        assert signal.getsignal(signal.SIGTERM) != before  # still ours: restore could not run
+    finally:
+        restore()
+    assert signal.getsignal(signal.SIGTERM) == before

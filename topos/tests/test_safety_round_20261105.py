@@ -877,3 +877,208 @@ def test_container_id_passes_the_docker_target_validators():
 
     validate_target(ActionKind.DOCKER_STOP, FULL_ID)
     _validate_docker_target(FULL_ID)
+
+
+# ------------------------------------------------- diff-coverage: actions/*
+
+
+def test_audit_newline_probe_fails_open_to_no_prefix_when_fd_or_pread_fails(monkeypatch):
+    import io
+
+    from topos.actions import execute
+
+    # no real fd: the probe must not raise and must not demand a prefix
+    assert execute._ends_with_newline(io.StringIO("x")) is True
+
+    class _Real:
+        def __init__(self, fd):
+            self._fd = fd
+
+        def fileno(self):
+            return self._fd
+
+    import os
+    import tempfile
+
+    with tempfile.TemporaryFile() as tf:
+        tf.write(b"partial")
+        tf.flush()
+        assert execute._ends_with_newline(_Real(tf.fileno())) is False
+
+        def boom(fd, n, off):
+            raise OSError("EIO")
+
+        monkeypatch.setattr(os, "pread", boom)
+        assert execute._ends_with_newline(_Real(tf.fileno())) is True
+
+
+def test_unloadable_protected_service_list_refuses_the_systemd_action(tmp_path):
+    # a non-iterable list cannot be turned into a set: fail closed, run nothing
+    result, calls = _exec("systemd-stop", "foo.service", tmp_path, protected=5)
+    assert result.outcome == "refusal"
+    assert "protected-service list could not be loaded" in result.stderr
+    assert calls == []
+
+
+def test_kill_preview_refuses_when_the_protected_check_itself_fails():
+    from topos.actions.kill_ops import build_kill_preview
+
+    def broken(kind, target):
+        raise RuntimeError("config unreadable")
+
+    with pytest.raises(ValueError, match="protected-service check failed"):
+        build_kill_preview("docker-kill", "game", protected_check=broken)
+
+
+def test_default_owner_inspect_fails_closed_on_nonzero_exit_and_bad_json(
+    monkeypatch, real_docker_inspect
+):
+    def fake(stdout, rc):
+        return lambda *a, **k: subprocess.CompletedProcess(a[0], rc, stdout=stdout)
+
+    monkeypatch.setattr(subprocess, "run", fake(b"[]", 1))
+    assert owner_safety.default_owner_inspect("game") is None
+    monkeypatch.setattr(subprocess, "run", fake(b"not json", 0))
+    assert owner_safety.default_owner_inspect("game") is None
+    monkeypatch.setattr(subprocess, "run", fake(b'[{"Id": "x"}]', 0))
+    assert owner_safety.default_owner_inspect("game") == [{"Id": "x"}]
+
+
+def test_default_text_reader_returns_stripped_file_content(tmp_path):
+    (tmp_path / "memory.high").write_text("1234\n")
+    assert squeeze._default_cgroup_text_reader(str(tmp_path), "memory.high") == "1234"
+    assert squeeze._default_cgroup_text_reader(str(tmp_path), "absent") is None
+
+
+def test_confinement_reports_unresolvable_target_instead_of_raising(tmp_path):
+    problem = check_confinement("/cg/a\0b", str(tmp_path))
+    assert problem is not None and problem.startswith("cannot resolve target")
+
+
+def test_recovery_record_race_loser_is_refused_and_leaves_no_temp(tmp_path, monkeypatch):
+    path = tmp_path / "rec" / "w.json"
+    tmp_name = path.with_name(f"{path.name}.{__import__('os').getpid()}.tmp")
+
+    def racing_link(src, dst):
+        # another squeeze won the race and the temp vanished under us as well
+        Path(dst).write_text("{}")
+        Path(src).unlink()
+        raise FileExistsError(dst)
+
+    monkeypatch.setattr(squeeze.os, "link", racing_link)
+    with pytest.raises(OSError, match="already exists"):
+        squeeze._write_recovery(path, target="/cg/x", original="1", relax_to="max")
+    assert json.loads(path.read_text()) == {}  # the winner's record is untouched
+    assert not tmp_name.exists()
+
+
+def _recovery_setup(tmp_path: Path, record: dict):
+    rec_dir = tmp_path / "recovery"
+    rec_dir.mkdir()
+    cg = tmp_path / "cgroup" / "w.scope"
+    cg.mkdir(parents=True)
+    (cg / "memory.high").write_text("max\n")
+    rec = recovery_path_for(str(cg), rec_dir)
+    rec.write_text(json.dumps(record))
+    return rec_dir, cg, rec
+
+
+def test_recover_rejects_non_string_record_fields_and_writes_nothing(tmp_path):
+    rec_dir, cg, rec = _recovery_setup(tmp_path, {"target": 5, "original": "1", "relax_to": "max"})
+    writes: list = []
+    out = recover_squeeze(
+        None, recovery_dir=rec_dir, cgroup_root=str(tmp_path / "cgroup"),
+        writer=lambda p, f, v: writes.append(v),
+    )
+    assert [o.ok for o in out] == [False]
+    assert "malformed recovery record" in out[0].error
+    assert writes == [] and rec.exists()
+
+
+def test_recover_refuses_a_record_pointing_outside_the_cgroup_root(tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "memory.high").write_text("max\n")
+    rec_dir, cg, rec = _recovery_setup(
+        tmp_path, {"target": str(outside), "original": "1", "relax_to": "max"}
+    )
+    writes: list = []
+    out = recover_squeeze(
+        None, recovery_dir=rec_dir, cgroup_root=str(tmp_path / "cgroup"),
+        writer=lambda p, f, v: writes.append(v),
+    )
+    assert [o.ok for o in out] == [False]
+    assert writes == [] and rec.exists()
+
+
+def test_recover_still_reports_success_when_the_record_cannot_be_deleted(tmp_path, monkeypatch):
+    rec_dir, cg, rec = _recovery_setup(
+        tmp_path, {"target": "", "original": "1", "relax_to": "max"}
+    )
+    rec.write_text(json.dumps({"target": str(cg), "original": "1", "relax_to": "max"}))
+    writes: list = []
+
+    def no_unlink(self, *a, **k):
+        raise PermissionError("immutable")
+
+    monkeypatch.setattr(Path, "unlink", no_unlink)
+    out = recover_squeeze(
+        None, recovery_dir=rec_dir, cgroup_root=str(tmp_path / "cgroup"),
+        writer=lambda p, f, v: writes.append(v),
+    )
+    assert [o.ok for o in out] == [True]
+    assert writes == ["1"]
+
+
+def test_restore_guard_restores_even_without_signal_masking_and_tolerates_undeletable_record(
+    tmp_path, monkeypatch
+):
+    def no_mask(*a, **k):
+        raise OSError("no pthread_sigmask")
+
+    monkeypatch.setattr(squeeze.signal, "pthread_sigmask", no_mask)
+    rec = tmp_path / "rec.json"
+    rec.write_text("{}")
+    writes: list = []
+    guard = squeeze._RestoreGuard(
+        "/cg/x", "max", writer=lambda p, f, v: writes.append(v),
+        signal_handler=lambda s, h: None, recovery_path=rec,
+    )
+
+    def no_unlink(self, *a, **k):
+        raise PermissionError("immutable")
+
+    monkeypatch.setattr(Path, "unlink", no_unlink)
+    guard.restore()
+    assert writes == ["max"]
+    assert guard.restore_failed is False
+
+
+def test_run_squeeze_with_production_writer_derives_the_default_recovery_path(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "cgroup"
+    cg = root / "w.scope"
+    cg.mkdir(parents=True)
+    (cg / "memory.high").write_text("max\n")
+    seen: list[str] = []
+
+    def fake_path(target, *a, **k):
+        seen.append(target)
+        return tmp_path / "rec" / "w.json"
+
+    monkeypatch.setattr(squeeze, "recovery_path_for", fake_path)
+    readers = _readers()
+    readers["cgroup_int_reader"] = lambda t, f: None  # stop right after the setup
+    result = run_squeeze(
+        _cfg(tmp_path, target=str(cg), cgroup_root=str(root), recovery_path=None), **readers
+    )
+    assert seen == [str(cg)]
+    assert result.stop_reason == "error"
+    assert (cg / "memory.high").read_text() == "max\n"  # never written
+
+
+def test_error_render_says_memory_high_was_not_modified_when_nothing_was_restored(tmp_path):
+    result = squeeze.SqueezeResult("error", 0, 0, _cfg(tmp_path), (), "", "bad target")
+    text = squeeze.render_squeeze_result(result)
+    assert "bad target" in text and "memory.high was not modified" in text

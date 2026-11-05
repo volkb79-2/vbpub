@@ -214,3 +214,51 @@ def test_drill_metric_block_uses_table_formatting_not_raw_integers(tmp_path: Pat
     assert "148094976" not in text
     assert "141.2MiB" in text
     assert "12.5%" in text
+
+
+def _drill_for_stop(tmp_path: Path) -> DrillDownScreen:
+    return DrillDownScreen(
+        _frame(), KEY, config=ToposConfig(), ring=HistoryRing(2),
+        cgroup_root=tmp_path / "cgroup", proc_root=tmp_path / "proc",
+        damon_root=tmp_path / "damon", damon_state_dir=tmp_path / "state",
+        damon_require_root=False,
+    )
+
+
+def test_stop_with_no_owned_session_says_so_and_opens_no_confirmation(tmp_path: Path) -> None:
+    async def run() -> None:
+        screen = _drill_for_stop(tmp_path)
+        app = App()
+        async with app.run_test(size=(140, 40)) as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            assert app.screen is screen  # nothing to confirm, nothing mutated
+            body = str(screen.query_one("#drill-body", Static).render())
+            assert "no topos-owned DAMON session to stop" in body
+
+    asyncio.run(run())
+
+
+def test_stop_reports_unreadable_ownership_instead_of_opening_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(_state_dir):
+        raise OSError("state dir unreadable")
+
+    monkeypatch.setattr("topos.ui.drill.owned_markers", broken)
+
+    async def run() -> None:
+        screen = _drill_for_stop(tmp_path)
+        app = App()
+        async with app.run_test(size=(140, 40)) as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            assert app.screen is screen
+            body = str(screen.query_one("#drill-body", Static).render())
+            assert "stop unavailable: state dir unreadable" in body
+
+    asyncio.run(run())

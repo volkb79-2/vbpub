@@ -597,3 +597,73 @@ def test_pressure_is_unavailable_when_no_input_is_readable() -> None:
     frame = Frame(schema_version=1, ts=0.0, interval_s=5.0, host={}, entities={"x.slice": EntityFrame(entity=entity, metrics={})})
     annotate(frame, ToposConfig())
     assert frame.entities["x.slice"].metrics["pressure"] == MetricValue(None, "unavail_kernel")
+
+
+# --- diff-coverage round (2026-11-05) ------------------------------------------------------------
+
+
+def test_block_classifier_leaves_unreadable_device_unknown_and_uncached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sys_root = block_sys(tmp_path, stacked=(), bottom=("254:0",))
+    stack = BlockStackClassifier(sys_root)
+    real_is_dir = Path.is_dir
+
+    def denied(self: Path) -> bool:
+        if self.name == "slaves":
+            raise PermissionError("EACCES")
+        return real_is_dir(self)
+
+    monkeypatch.setattr(Path, "is_dir", denied)
+    assert stack.is_stacked("254:0") is None
+    monkeypatch.setattr(Path, "is_dir", real_is_dir)
+    # a transient failure is retried on the next tick, not remembered
+    assert stack.is_stacked("254:0") is False
+
+
+def test_block_classifier_forgets_devices_that_left_the_live_set(tmp_path: Path) -> None:
+    sys_root = block_sys(tmp_path, stacked=("253:0",), bottom=("254:0",))
+    stack = BlockStackClassifier(sys_root)
+    assert stack.is_stacked("253:0") is True and stack.is_stacked("254:0") is False
+    stack.forget_except({"254:0"})
+    assert set(stack._cache) == {"254:0"}
+    # forgotten device is re-read from /sys, so a later change is seen
+    (sys_root / "dev" / "block" / "253:0" / "slaves" / "sda").rmdir()
+    assert stack.is_stacked("253:0") is False
+
+
+def test_io_cost_qos_parser_skips_malformed_lines_and_bad_numbers(tmp_path: Path) -> None:
+    from topos.collect.iocost import parse_io_cost_qos
+
+    assert parse_io_cost_qos("lonely\n254:0 enable=1 min=50\n") == {
+        "254:0": {"enable": "1", "min": "50"}
+    }
+    make_cgroup(tmp_path, io__cost__qos="254:0 enable=1 min=oops max=100.0\n",
+                io__stat="254:0 rbytes=1 cost.vrate=40.00\n")
+    _, details = collect_io_cost(tmp_path)
+    assert details[0]["qos_min_pct"] is None  # unparseable number, not a crash
+    assert details[0]["qos_max_pct"] == 100.0
+
+
+def test_io_cost_enabled_but_io_stat_unreadable_reports_typed_unavailable(tmp_path: Path) -> None:
+    make_cgroup(tmp_path, io__cost__qos="254:0 enable=1 ctrl=user\n")  # no io.stat at all
+    metrics, details = collect_io_cost(tmp_path)
+    assert metrics["host_io_cost_enabled"] == MetricValue(1, "exact")
+    assert metrics["host_io_cost_vrate_pct"].v is None
+    assert metrics["host_io_cost_vrate_pct"].src != "exact"
+    assert details == []
+
+
+def test_collector_publishes_io_cost_details_in_host_meta(tmp_path: Path) -> None:
+    root = tmp_path / "cg"
+    make_cgroup(root, io__cost__qos="254:0 enable=1 min=50.00 max=100.00\n",
+                io__stat="254:0 rbytes=1 cost.vrate=42.00\n")
+    frame = make_collector(root, [0.0]).collect_once()
+    assert frame.host_meta is not None
+    assert frame.host_meta["io_cost"] == [
+        {"device": "254:0", "vrate_pct": 42.0, "qos_min_pct": 50.0, "qos_max_pct": 100.0}
+    ]
+    # io.cost off: no detail block is invented
+    make_cgroup(root, io__cost__qos="254:0 enable=0\n")
+    frame = make_collector(root, [0.0]).collect_once()
+    assert "io_cost" not in (frame.host_meta or {})

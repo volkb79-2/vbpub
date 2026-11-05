@@ -171,3 +171,49 @@ def test_cgroup_renderer_adds_a_separator_after_a_file_without_newline(
     assert isinstance(result, InspectFilesReadResult)
     assert "memory.current\n\n#" in result.content
     assert "pids.max" in result.content
+
+
+def test_tail_window_keeps_an_unterminated_last_line() -> None:
+    stream, skipped_bytes, skipped_lines = reader._tail_window(
+        io.BytesIO(b"first\nsecond\npartial-tail"), budget=1024, max_lines=10
+    )
+    assert stream.read() == b"first\nsecond\npartial-tail"
+    assert skipped_bytes is False and skipped_lines is False
+
+
+def test_journald_runner_kills_a_child_that_ignores_the_first_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import subprocess
+
+    r_out, w_out = os.pipe()
+    r_err, w_err = os.pipe()
+    os.close(w_out)
+    os.close(w_err)  # both streams hit EOF at once
+
+    class Child:
+        returncode = -9
+
+        def __init__(self) -> None:
+            self.stdout = os.fdopen(r_out, "rb")
+            self.stderr = os.fdopen(r_err, "rb")
+            self.kills = 0
+            self.waits: list[object] = []
+
+        def kill(self) -> None:
+            self.kills += 1
+
+        def wait(self, timeout=None):
+            self.waits.append(timeout)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("journalctl", timeout)
+            return self.returncode
+
+    child = Child()
+    monkeypatch.setattr(reader.subprocess, "Popen", lambda *a, **k: child)
+    result = _default_journald_runner(("journalctl",), timeout=30)
+    assert child.kills == 1  # escalated to kill after the bounded wait expired
+    assert child.waits[-1] is None  # and then reaped without a bound
+    assert result.timed_out is False and result.returncode == -9
+    assert child.stdout.closed and child.stderr.closed

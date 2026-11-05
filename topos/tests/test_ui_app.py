@@ -1714,3 +1714,160 @@ def test_jump_with_integer_valued_float_is_a_frame_number() -> None:
             assert app._replay_driver.index == 1
 
     asyncio.run(run())
+
+
+# --- diff-coverage round (2026-11-05): source-failure edges -----------------
+
+
+def test_default_retry_delay_backs_off_and_is_capped() -> None:
+    from topos.ui.app import DEFAULT_RETRY_MAX_S, _default_retry_delay
+
+    assert [_default_retry_delay(n) for n in range(4)] == [1.0, 2.0, 4.0, 8.0]
+    assert _default_retry_delay(50) == DEFAULT_RETRY_MAX_S
+
+
+class _Recorder:
+    """Replaces ``call_from_thread`` so the consumer loop can run without a UI."""
+
+    def __init__(self, app: ToposApp, *, stop_on_failure: bool = False) -> None:
+        self.app = app
+        self.stop_on_failure = stop_on_failure
+        self.frames: list[Frame] = []
+        self.failures: list[tuple[str, str]] = []
+
+    def __call__(self, fn, *args):
+        if fn == self.app._apply_frame:
+            self.frames.append(args[0])
+        else:
+            self.failures.append(args)
+            if self.stop_on_failure:
+                self.app._stop_event.set()
+
+
+def _bare_app(source) -> ToposApp:
+    return ToposApp(
+        source,
+        config=ToposConfig(default_view="tree", default_column_profile="auto"),
+        cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
+        proc_root=fixture_root() / "procfs" / "network",
+    )
+
+
+def test_consumer_stops_without_delivering_a_frame_after_quit() -> None:
+    holder: dict = {}
+
+    def stream():
+        holder["app"]._stop_event.set()  # the user quit while the source was producing
+        yield fixture_frame()
+
+    app = _bare_app(stream())
+    holder["app"] = app
+    rec = _Recorder(app)
+    app.call_from_thread = rec
+    app._consume_frames()
+    assert rec.frames == [] and rec.failures == []
+
+
+def test_consumer_swallows_a_source_error_that_arrives_after_quit() -> None:
+    holder: dict = {}
+
+    def stream():
+        holder["app"]._stop_event.set()
+        raise RuntimeError("late failure")
+        yield  # pragma: no cover
+
+    app = _bare_app(stream())
+    holder["app"] = app
+    rec = _Recorder(app)
+    app.call_from_thread = rec
+    app._consume_frames()
+    assert rec.failures == []  # nobody is left to show it to
+
+
+def test_consumer_does_not_retry_when_quit_arrives_during_the_backoff_wait() -> None:
+    class Source:
+        stop_event = __import__("threading").Event()
+        iterations = 0
+
+        def retry_delay(self, attempt: int) -> float:
+            return 0.0
+
+        def __iter__(self):
+            Source.iterations += 1
+            raise_now = Source.iterations == 1
+            if raise_now:
+                def failing():
+                    raise RuntimeError("down")
+                    yield  # pragma: no cover
+                return failing()
+            return iter(())
+
+    source = Source()
+    app = _bare_app(source)
+    rec = _Recorder(app, stop_on_failure=True)
+    app.call_from_thread = rec
+    app._consume_frames()
+    assert rec.failures == [("down", "retrying")]
+    assert Source.iterations == 1  # the stream was never rebuilt after the quit
+
+
+def test_consumer_reports_a_failed_restart_and_keeps_running_to_the_end() -> None:
+    class Source:
+        calls = 0
+
+        def retry_delay(self, attempt: int) -> float:
+            return 0.0
+
+        def __iter__(self):
+            Source.calls += 1
+            if Source.calls == 1:
+                def failing():
+                    raise RuntimeError("down")
+                    yield  # pragma: no cover
+                return failing()
+            raise OSError("cannot reconnect")
+
+    app = _bare_app(Source())
+    rec = _Recorder(app)
+    app.call_from_thread = rec
+    app._consume_frames()
+    assert rec.failures == [("down", "retrying"), ("cannot reconnect", "retrying")]
+
+
+def test_source_failure_before_any_frame_is_shown_in_the_status_line() -> None:
+    gate = __import__("threading").Event()
+
+    class Silent:
+        stop_event = __import__("threading").Event()
+
+        def __iter__(self):
+            gate.wait(30)
+            return iter(())
+
+    async def run() -> None:
+        app = _bare_app(Silent())
+        async with app.run_test(size=(140, 40)) as pilot:
+            assert app.current_frame is None
+            app._on_source_failed("daemon unreachable", "retrying in 4s")
+            await pilot.pause()
+            status = _status_text(app)
+            assert "source failed: daemon unreachable (retrying in 4s)" in status
+            assert "STALE" not in status  # there never was a frame to call stale
+            gate.set()
+
+    asyncio.run(run())
+
+
+def test_pressure_list_drops_an_ancestor_that_ranks_after_its_descendant() -> None:
+    from topos.model import Entity, EntityFrame
+    from topos.ui.banner import _drop_pressure_ancestors
+
+    def ef(key: str, parent: str | None) -> EntityFrame:
+        return EntityFrame(entity=Entity(key=key, kind="cgroup", parent=parent), metrics={})
+
+    parent, child, other = ef("a", ""), ef("a/b", "a"), ef("c", "")
+    root = ef("", None)
+    frame = Frame(1, 1.0, 5.0, {}, {e.entity.key: e for e in (root, parent, child, other)})
+    ranked = [(9.0, child), (8.0, parent), (7.0, other)]
+    kept = _drop_pressure_ancestors(frame, ranked, limit=5)
+    assert [e.entity.key for _, e in kept] == ["a/b", "c"]

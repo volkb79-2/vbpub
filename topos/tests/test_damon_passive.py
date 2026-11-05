@@ -378,3 +378,15 @@ def test_passive_source_audit_confirms_read_only_access() -> None:
     assert ".write(" not in source
     assert "commit" not in source
     assert re.search(r"open\([^)]*,\s*['\"][^'\"]*[wa+][^'\"]*['\"]", source) is None
+
+
+def test_vaddr_session_with_no_classified_bytes_is_no_data_not_zero_hot() -> None:
+    from topos.damon.passive import _apply_entity_sessions
+    from topos.model import Entity, EntityFrame
+
+    entity_frame = EntityFrame(entity=Entity(key="a", kind="cgroup", parent=""), metrics={})
+    _apply_entity_sessions(entity_frame, [{"class_bytes": {}, "sample_age_s": 2.0}])
+    for name in ("hot", "warm", "cold"):
+        assert entity_frame.metrics[f"damon_{name}_bytes"] == MetricValue(None, "unavail_kernel")
+        assert entity_frame.metrics[f"damon_{name}_pct"] == MetricValue(None, "unavail_kernel")
+    assert entity_frame.metrics["damon_sample_age_s"] == MetricValue(2.0, "exact")

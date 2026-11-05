@@ -211,3 +211,11 @@ def test_config_view_modes_match_ui_view_modes() -> None:
     from topos.ui.table import VIEW_MODES
 
     assert config_mod._VIEW_MODES == VIEW_MODES
+
+
+def test_unreadable_config_path_is_a_config_error_not_a_crash(tmp_path: Path) -> None:
+    # a directory exists but cannot be read as a file: not "missing", not TOML
+    with pytest.raises(ConfigError) as info:
+        load(tmp_path, warn=lambda _line: None)
+    assert info.value.path == tmp_path
+    assert "cannot read" in info.value.message

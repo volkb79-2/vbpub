@@ -53,3 +53,39 @@ def test_live_mode_rejects_invalid_collection_constraints(
 ) -> None:
     assert cli.main(["--once", option, value]) == 2
     assert message in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "message"),
+    [
+        ("--duration", "0", "--duration must be greater than 0"),
+        ("--frames", "0", "--frames must be at least 1"),
+    ],
+)
+def test_headless_record_rejects_non_positive_duration_and_frames(
+    option: str, value: str, message: str, no_live_boundary: None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert cli.main(["--headless", "--record", "out.jsonl", option, value]) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_restartable_source_reuses_first_stream_then_builds_fresh_ones() -> None:
+    made: list[object] = []
+
+    def make(stop_event):
+        stream = [len(made)]
+        made.append(stop_event)
+        return stream
+
+    source = cli._RestartableSource(make, retry_delay=cli._attach_retry_delay)
+    assert list(source) == [0]  # the eagerly created stream
+    assert list(source) == [1]  # a restart builds a new one
+    assert list(source) == [2]
+    assert all(event is source.stop_event for event in made)
+
+
+def test_attach_retry_delay_backs_off_and_is_capped() -> None:
+    delays = [cli._attach_retry_delay(n) for n in range(8)]
+    assert delays[:4] == [1.0, 2.0, 4.0, 8.0]
+    assert delays[5:] == [30.0, 30.0, 30.0]  # 2**5 = 32 is capped at 30

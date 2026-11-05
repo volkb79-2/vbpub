@@ -155,3 +155,43 @@ def test_daemon_serve_paddr_lifecycle_records_outcome_and_shutdown_failure(
     assert component is not None
     assert component.state.value == expected_state
     assert (component.error.error_code if component.error else None) == expected_code
+
+
+def test_daemon_serve_exits_two_and_closes_history_when_socket_is_in_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import topos.cli as cli
+    from topos.config import HistoryConfig, PersistConfig, ToposConfig
+    from topos.daemon.broker import SocketInUseError
+
+    config = ToposConfig(
+        cgroup_root=tmp_path / "cgroup",
+        history=HistoryConfig(
+            daemon=PersistConfig(enabled=True, dir=tmp_path / "hist", compression="none")
+        ),
+    )
+    closed: list[bool] = []
+
+    class SpyStore(cli.PersistentHistoryStore):
+        def close(self) -> None:
+            closed.append(True)
+            super().close()
+
+    class FakeCollector:
+        def __init__(self, cgroup_root, config) -> None:
+            self.cgroup_root = cgroup_root or config.cgroup_root
+            self.network_providers = ()
+
+    def in_use(*_args, **_kwargs):
+        raise SocketInUseError("socket is served by another daemon")
+
+    observed: dict = {}
+    _wire_one_shot_server(monkeypatch, cli, observed)
+    monkeypatch.setattr(cli, "serve_versioned_unix_socket", in_use)
+    monkeypatch.setattr(cli, "PersistentHistoryStore", SpyStore)
+    monkeypatch.setattr(cli, "load", lambda _path: config)
+    monkeypatch.setattr(cli, "Collector", FakeCollector)
+
+    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 2
+    assert "socket is served by another daemon" in capsys.readouterr().err
+    assert closed == [True]

@@ -180,3 +180,10 @@ def test_mcp_history_reports_gap_truncation_and_returned_range() -> None:
     assert data["requested_since_ts"] > 0
     roomy = McpServer(_HistoryClient(result))._handle_history("a", "ram", "last:86400", 50)["data"]
     assert roomy["truncated"] is False
+
+
+def test_empty_source_with_a_requested_window_is_never_complete_coverage() -> None:
+    result = _summary([], MetricRef("ram"), "last:60s")
+    assert result.meta["coverage"]["frames"] == 0
+    assert result.meta["coverage"]["complete"] is False
+    assert result.meta["observed_start_ts"] is None
