@@ -10,6 +10,12 @@ enforcement = "gate"
 # -x: a killed mutant stops at its first failing test. The tester venv has no
 # truenas_api_client; run-gate's r2 command lane installs the pinned client
 # (and tnt editable) once before assay starts, so candidates only run pytest.
+# NOTE: that pinned truenas_api_client sha lives in run-gate.toml ([lanes.r2],
+# r0-r1, ux-focused, live lanes); re-pin ALL of them together with TNT-31 (GA tag).
+# -x with --cov: pytest stops at the first failure, so on a failing (killed)
+# candidate coverage.json is incomplete; that is intended for mutants. The R1
+# baseline coverage run must be the full green suite: assay judges coverage on
+# the unmutated tree, where -x never triggers because no test fails.
 argv = [
   "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q", "-x", "-p", "no:xdist",
   "--cov=tnt", "--cov-branch", "--cov-report=json:coverage.json",
@@ -24,6 +30,9 @@ allow_argv_append = false
 
 [lanes.tnt.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"
+# The snapshot covers the whole repository, not just truenas/tnt. These three
+# topos fixtures are unsafe symlinks (to /etc/passwd etc.) that exist in this
+# tree (checked 2026-11-05), so they must stay omitted for every lane here.
 unsafe_symlink_omissions = [
   "topos/tests/fixtures/inspect_files/_danger/passwd_link",
   "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
@@ -75,8 +84,9 @@ targets = [
   "src/tnt/uploads.py",
   "src/tnt/workflows.py",
 ]
-# Measured release coverage is 97.27% lines / 95.17% branches (tnt-v0.3.0
-# evidence), so the repo-wide 100.0 used by other projects would fail the R1
+# Measured total coverage (line+branch combined, as pytest-cov reports it) is
+# 97.25-97.27% on current runs (tnt-v0.3.0 evidence: 97.27% total, 95.17% branch-only),
+# so the repo-wide 100.0 used by other projects would fail the R1
 # judge before any mutant runs. The floor is the r0-r1 gate floor; raising it to
 # 100 is a coverage-closing task, not part of enabling the lane.
 fail_under = 97.0
