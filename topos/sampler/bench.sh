@@ -16,7 +16,7 @@ rust|rust-nostore)
       -e "s#^tmpfs_dir = .*#tmpfs_dir = \"$R/tmpfs\"#" -e "s#^cold_dir = .*#cold_dir = \"$C\"#" \
       "$D/sampler.example.toml" > "$R/c.toml"
   [ "$W" = rust-nostore ] && sed -i 's#^enabled = true#enabled = false#' "$R/c.toml"
-  "$D/topos-sampler-poc" "$R/c.toml" ;;
+  "$D/topos-sampler" "$R/c.toml" ;;
 python)
   python3 "$D/lean_python_sampler.py" --duration "$T" --stats "$R/stats.json" ${PYARGS:-} ;;
 esac

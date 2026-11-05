@@ -23,7 +23,7 @@ for k, v in (("socket_path", sock), ("stats_path", R + "/stats.json"), ("events_
     cfg = "\n".join('%s = "%s"' % (k, v) if l.startswith(k + " =") else l for l in cfg.split("\n"))
 cfg = cfg.replace("duration_s = 300", "duration_s = 36")
 open(R + "/c.toml", "w").write(cfg)
-sampler = subprocess.Popen([D + "/topos-sampler-poc", R + "/c.toml"])
+sampler = subprocess.Popen([D + "/topos-sampler", R + "/c.toml"])
 for _ in range(50):
     if os.path.exists(sock):
         break

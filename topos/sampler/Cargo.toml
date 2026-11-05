@@ -1,6 +1,6 @@
 [package]
-name = "topos-sampler-poc"
-version = "0.0.1"
+name = "topos-sampler"
+version = "0.1.0"
 edition = "2021"
 publish = false
 
