@@ -1,13 +1,27 @@
 """Stack-scoped one-shot Compose planning and extension validation (CIU-141)."""
 
+# Public input-shape failures intentionally use ValueError so the CLI maps
+# them to its established exit-2 validation contract.
+# ruff: noqa: TRY004
+
 from __future__ import annotations
 
 import copy
+import fcntl
 import json
+import os
 import re
+import signal
+import stat
+import sys
 import tempfile
+import time
+import uuid
+from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import yaml
 
@@ -18,9 +32,16 @@ _LABEL_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-/]*$")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LIMIT_KEYS = ("mem_limit", "memswap_limit", "pids_limit", "cpus")
 _ALLOWED_EXTENSION_KEYS = frozenset({
-    *_LIMIT_KEYS, "group_add", "volumes", "environment", "labels", "init",
+    *_LIMIT_KEYS, "group_add", "cap_add", "security_opt", "volumes",
+    "environment", "labels", "init",
 })
+_APPEND_EXTENSION_KEYS = ("group_add", "cap_add", "security_opt")
 _ALLOWED_EXTENSION_ROOT_KEYS = frozenset({"services", "x-ciu-run"})
+_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_RUN_EVENT_SCHEMA = "ciu-run-event/1"
+_FOREGROUND_INSPECT_INTERVAL = 0.05
+_FOREGROUND_INSPECT_TIMEOUT = 30.0
+_SIGNAL_GRACE_SECONDS = 10.0
 
 
 def validate_container_name(name: str) -> str:
@@ -133,7 +154,7 @@ def validate_extension_document(
         raise ValueError("[CIU-141] --extend must be a YAML mapping")
     unknown_root = set(document) - _ALLOWED_EXTENSION_ROOT_KEYS
     if unknown_root:
-        key = sorted(str(item) for item in unknown_root)[0]
+        key = min(str(item) for item in unknown_root)
         raise ValueError(f"[CIU-141] --extend refuses top-level key {key!r}")
     services = document.get("services")
     if not isinstance(services, Mapping) or set(services) != {service_name}:
@@ -146,10 +167,10 @@ def validate_extension_document(
     service = dict(service)
     unknown = set(service) - _ALLOWED_EXTENSION_KEYS
     if unknown:
-        key = sorted(str(item) for item in unknown)[0]
+        key = min(str(item) for item in unknown)
         raise ValueError(f"[CIU-141] --extend refuses service key {key!r}")
 
-    for key in (*_LIMIT_KEYS, "init"):
+    for key in (*_LIMIT_KEYS, "init", *_APPEND_EXTENSION_KEYS):
         if key in service and key in base_service:
             raise ValueError(
                 f"[CIU-141] --extend {key} collides with the rendered service value; "
@@ -168,6 +189,13 @@ def validate_extension_document(
         ):
             raise ValueError("[CIU-141] --extend group_add must be a list of numeric gids")
         service["group_add"] = [str(gid) for gid in group_add]
+
+    for key in ("cap_add", "security_opt"):
+        if key in service and (
+            not isinstance(service[key], list)
+            or any(not isinstance(item, str) or not item for item in service[key])
+        ):
+            raise ValueError(f"[CIU-141] --extend {key} must be a list of non-empty strings")
 
     if "volumes" in service:
         volumes = service["volumes"]
@@ -194,11 +222,13 @@ def validate_extension_document(
             source = volume.get("source")
             if not isinstance(source, str) or not source:
                 raise ValueError("[CIU-141] --extend volume source must be a non-empty path/name")
-            if kind == "bind":
-                if not PurePosixPath(source).is_absolute() or ".." in PurePosixPath(source).parts:
-                    raise ValueError(
-                        "[CIU-141] --extend bind source must be absolute and may not contain '..'"
-                    )
+            if kind == "bind" and (
+                not PurePosixPath(source).is_absolute()
+                or ".." in PurePosixPath(source).parts
+            ):
+                raise ValueError(
+                    "[CIU-141] --extend bind source must be absolute and may not contain '..'"
+                )
             if kind == "volume" and ("/" in source or source in {".", ".."}):
                 raise ValueError("[CIU-141] --extend named volume source must be a volume name")
             read_only = volume.get("read_only", False)
@@ -212,7 +242,7 @@ def validate_extension_document(
                 if not isinstance(bind, Mapping):
                     raise ValueError("[CIU-141] --extend bind options must be a mapping")
                 if set(bind) - {"create_host_path"}:
-                    key = sorted(str(item) for item in set(bind) - {"create_host_path"})[0]
+                    key = min(str(item) for item in set(bind) - {"create_host_path"})
                     raise ValueError(f"[CIU-141] --extend refuses bind option {key!r}")
                 if bind.get("create_host_path", False) is not False:
                     raise ValueError(
@@ -231,7 +261,7 @@ def validate_extension_document(
             raise ValueError("[CIU-141] --extend environment must be a map of literal values")
         collisions = set(environment) & _base_environment_keys(base_service.get("environment"))
         if collisions:
-            name = sorted(str(item) for item in collisions)[0]
+            name = min(str(item) for item in collisions)
             raise ValueError(
                 f"[CIU-141] --extend environment {name!r} collides with the rendered service"
             )
@@ -374,10 +404,9 @@ def build_run_plan(
         key for key in base_labels if key == "ciu.run" or key.startswith("ciu.run.")
     ]
     if reserved_service_labels:
-        key = sorted(reserved_service_labels)[0]
+        key = min(reserved_service_labels)
         raise ValueError(f"[CIU-141] rendered service label {key!r} is reserved")
 
-    extension_path: Path | None = None
     extension_accepted = False
     if extend is not None:
         _source_path, validated = _read_extension(
@@ -469,14 +498,613 @@ def _prepare_run_stack(
     )
     selection = deploy.build_selection(profile)
     ciu_context = deploy.profiles_pkg.render_ciu_context(profile, selection)
-    prepared = engine.prepare_stack(
-        Path(repo_root) / stack_path,
-        define_root=Path(repo_root),
-        compose_profiles=profile.compose_profiles,
-        ciu_context=ciu_context,
-        skip_hooks=skip_hooks,
-    )
+    stack_dir = Path(repo_root) / stack_path
+    with _stack_prepare_lock(stack_dir):
+        prepared = engine.prepare_stack(
+            stack_dir,
+            define_root=Path(repo_root),
+            compose_profiles=profile.compose_profiles,
+            ciu_context=ciu_context,
+            skip_hooks=skip_hooks,
+        )
     return prepared, stack_path, service
+
+
+@contextmanager
+def _stack_prepare_lock(stack_dir: Path):
+    """Serialize only the shared render/secret preparation for one stack."""
+    machine_dir = Path(stack_dir) / ".machine"
+    if machine_dir.is_symlink():
+        raise ValueError(f"[CIU-141] refusing symlinked preparation directory {machine_dir}")
+    machine_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = machine_dir / ".ciu-run.lock"
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise RuntimeError(f"[CIU-141] cannot open preparation lock {lock_path}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"[CIU-141] preparation lock is not a regular file: {lock_path}")
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _owner_identity(pid: int) -> dict[str, str]:
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1:
+        raise ValueError("[CIU-141] owner PID must be a positive integer")
+    proc = Path("/proc") / str(pid)
+    try:
+        stat_line = (proc / "stat").read_text(encoding="ascii")
+        fields = stat_line.rpartition(")")[2].split()
+        start_ticks = int(fields[19])
+        pid_namespace = str((proc / "ns/pid").stat().st_ino)
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError, IndexError, ValueError) as exc:
+        raise ValueError(
+            f"[CIU-141] cannot read the liveness identity for owner PID {pid}"
+        ) from exc
+    if not boot_id:
+        raise ValueError("[CIU-141] host boot ID is unavailable for run ownership")
+    return {
+        "pid": str(pid), "start": str(start_ticks),
+        "boot": boot_id, "pidns": pid_namespace,
+    }
+
+
+class _EventWriter:
+    """Write JSONL only to the requested inherited fd or 0600 append file."""
+
+    def __init__(self, *, fd: int | None = None, path: str | Path | None = None):
+        if fd is not None and path is not None:
+            raise ValueError("[CIU-141] choose one event sink: --events-fd or --events-file")
+        self._owned_fd = False
+        if fd is not None:
+            if isinstance(fd, bool) or fd < 3:
+                raise ValueError("[CIU-141] --events-fd must be 3 or greater")
+            try:
+                mode = fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE
+                os.fstat(fd)
+            except OSError as exc:
+                raise ValueError(f"[CIU-141] --events-fd {fd} is not open") from exc
+            if mode == os.O_RDONLY:
+                raise ValueError(f"[CIU-141] --events-fd {fd} is not writable")
+            self.fd = fd
+        elif path is not None:
+            event_path = Path(path).expanduser()
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            try:
+                self.fd = os.open(event_path, flags, 0o600)
+                self._owned_fd = True
+                info = os.fstat(self.fd)
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError("event file must be a regular file")
+                os.fchmod(self.fd, 0o600)
+            except (OSError, ValueError) as exc:
+                if self._owned_fd:
+                    os.close(self.fd)
+                raise ValueError(f"[CIU-141] cannot open event file {event_path}") from exc
+        else:
+            self.fd = None
+
+    def write(self, event: Mapping[str, Any]) -> None:
+        if self.fd is None:
+            return
+        payload = (json.dumps(dict(event), sort_keys=True, separators=(",", ":")) + "\n").encode()
+        view = memoryview(payload)
+        while view:
+            written = os.write(self.fd, view)
+            if written <= 0:
+                raise OSError("short write to CIU run event sink")
+            view = view[written:]
+
+    def close(self) -> None:
+        if self._owned_fd:
+            os.close(self.fd)
+            self._owned_fd = False
+
+
+def _compose_file_args(prepared: Any, *, temp_dir: Path, extend: str | Path | None,
+                       service_name: str) -> list[str]:
+    """Copy mutable ownership/extension files to a private per-run directory."""
+    file_args = list(prepared.file_args)
+    ownership_path = getattr(prepared, "ownership_path", None)
+    if ownership_path is not None:
+        ownership = Path(ownership_path)
+        try:
+            content = ownership.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ValueError(
+                f"[CIU-141] cannot read prepared ownership overlay {ownership}"
+            ) from exc
+        private_owner = temp_dir / "ownership.yml"
+        private_owner.write_text(content, encoding="utf-8")
+        replaced = False
+        for index in range(len(file_args) - 1):
+            if file_args[index] != "-f":
+                continue
+            candidate = Path(file_args[index + 1])
+            if not candidate.is_absolute():
+                candidate = Path(prepared.working_dir) / candidate
+            if candidate.resolve() == ownership.resolve():
+                file_args[index + 1] = str(private_owner)
+                replaced = True
+                break
+        if not replaced:
+            file_args.extend(["-f", str(private_owner)])
+
+    if extend is not None:
+        base_document = _compose_config(prepared)
+        base_service = _service_from_config(base_document, service_name)
+        _source, validated = _read_extension(
+            Path(extend), service_name=service_name, base_service=base_service,
+            secret_values=prepared.secret_values,
+        )
+        extension_path = temp_dir / "extend.yml"
+        extension_path.write_text(yaml.safe_dump(validated, sort_keys=True), encoding="utf-8")
+        file_args.extend(["-f", str(extension_path)])
+    return file_args
+
+
+def _compose_prefix(prepared: Any, file_args: Sequence[str]) -> list[str]:
+    return [
+        "docker", "compose", "--progress", "quiet", "-p", prepared.project,
+        "--project-directory", str(Path(prepared.repo_root).resolve()), *file_args,
+    ]
+
+
+def _docker_inspect(name: str) -> dict[str, Any] | None:
+    try:
+        result = procutil.run_cmd(
+            ["docker", "inspect", name], check=False, capture=True,
+        )
+    except OSError as exc:
+        raise RuntimeError("[CIU-141] Docker became unavailable while inspecting the one-shot") from exc
+    if result.returncode != 0:
+        return None
+    try:
+        document = json.loads(result.stdout or "")
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise RuntimeError("[CIU-141] Docker inspect returned invalid JSON") from exc
+    if isinstance(document, list):
+        if len(document) != 1 or not isinstance(document[0], dict):
+            raise RuntimeError("[CIU-141] Docker inspect did not identify one exact container")
+        document = document[0]
+    if not isinstance(document, dict):
+        raise RuntimeError("[CIU-141] Docker inspect returned an invalid container object")
+    actual_name = str(document.get("Name", "")).lstrip("/")
+    if actual_name != name:
+        raise RuntimeError(
+            f"[CIU-141] Docker inspect for exact name {name!r} returned {actual_name!r}"
+        )
+    container_id = document.get("Id")
+    if not isinstance(container_id, str) or not _CONTAINER_ID_RE.fullmatch(container_id):
+        raise RuntimeError("[CIU-141] Docker inspect did not return a full 64-hex container ID")
+    return document
+
+
+def _event_labels(document: Mapping[str, Any]) -> dict[str, str]:
+    config = document.get("Config") or {}
+    labels = config.get("Labels") if isinstance(config, Mapping) else {}
+    if not isinstance(labels, Mapping):
+        raise RuntimeError("[CIU-141] inspected container labels have an invalid shape")
+    return {str(key): str(value) for key, value in labels.items()}
+
+
+def _launched_event(
+    document: Mapping[str, Any], *, run_id: str, name: str, prepared: Any,
+    stack: str, service: str, plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    config = document.get("Config") or {}
+    host_config = document.get("HostConfig") or {}
+    network_settings = document.get("NetworkSettings") or {}
+    networks = network_settings.get("Networks") or {}
+    if not all(isinstance(value, Mapping) for value in (config, host_config, networks)):
+        raise RuntimeError("[CIU-141] inspected container configuration has an invalid shape")
+    return {
+        "schema": _RUN_EVENT_SCHEMA,
+        "event": "launched",
+        "run_id": run_id,
+        "container": {"id": document["Id"], "name": name},
+        "project": prepared.project,
+        "stack": stack,
+        "service": service,
+        "image": config.get("Image") or plan.get("image"),
+        "image_id": document.get("Image"),
+        "user": config.get("User"),
+        "cgroup_parent": host_config.get("CgroupParent"),
+        "cgroupns": host_config.get("CgroupnsMode"),
+        "networks": sorted(str(network) for network in networks),
+        "labels": _event_labels(document),
+        "at": _utc_now(),
+    }
+
+
+def _make_runtime_labels(
+    *, run_id: str, stack: str, service: str, mode: str, owner_pid: int,
+) -> dict[str, str]:
+    owner = _owner_identity(owner_pid)
+    return {
+        "ciu.run": "1",
+        "ciu.run.id": run_id,
+        "ciu.run.stack": stack,
+        "ciu.run.service": service,
+        "ciu.run.owner-pid": owner["pid"],
+        "ciu.run.owner-start": owner["start"],
+        "ciu.run.boot-id": owner["boot"],
+        "ciu.run.pidns": owner["pidns"],
+        "ciu.run.mode": mode,
+        "ciu.run.started": _utc_now(),
+    }
+
+
+def _select_run_name(project: str, service: str, name: str | None) -> str:
+    if name is not None:
+        return validate_container_name(name)
+    generated = f"{project}-{service}-run-{uuid.uuid4().hex[:12]}"
+    if not _CONTAINER_NAME_RE.fullmatch(generated):
+        raise ValueError(
+            "[CIU-141] generated container name is too long; pass a shorter --name"
+        )
+    return generated
+
+
+def _verify_run_networks(prepared: Any, service_name: str) -> None:
+    from . import engine
+
+    try:
+        engine.verify_workspace_runtime_network(Path(prepared.repo_root))
+    except Exception as exc:
+        if isinstance(exc, (ValueError, RuntimeError)):
+            raise
+        raise RuntimeError("[CIU-141] could not verify managed instance network ownership") from exc
+
+    document = _compose_config(prepared)
+    service = _service_from_config(document, service_name)
+    declared = service.get("networks") or {}
+    if not isinstance(declared, (Mapping, list)):
+        raise ValueError("[CIU-141] rendered service network declaration is invalid")
+    network_keys = sorted(str(key) for key in declared)
+    network_config = document.get("networks") or {}
+    for key in network_keys:
+        details = network_config.get(key) if isinstance(network_config, Mapping) else None
+        if not isinstance(details, Mapping) or not isinstance(details.get("name"), str):
+            raise ValueError(
+                f"[CIU-141] cannot prove the resolved Docker network name for {key!r}"
+            )
+        network_name = details["name"]
+        try:
+            inspected = procutil.run_cmd(
+                ["docker", "network", "inspect", network_name],
+                check=False, capture=True,
+            )
+        except OSError as exc:
+            raise RuntimeError("[CIU-141] Docker unavailable while checking the stack network") from exc
+        if inspected.returncode != 0:
+            raise ValueError(
+                f"[CIU-141] required stack network {network_name!r} is not present; "
+                f"run `ciu up --dir {Path(prepared.working_dir).relative_to(prepared.repo_root)}` first"
+            )
+        try:
+            result = json.loads(inspected.stdout or "")
+            if isinstance(result, list):
+                if len(result) != 1 or not isinstance(result[0], dict):
+                    raise ValueError("network inspect returned more than one result")
+                result = result[0]
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"[CIU-141] Docker returned invalid network details for {network_name!r}"
+            ) from exc
+        if not isinstance(result, Mapping) or result.get("Name") != network_name:
+            raise RuntimeError(
+                f"[CIU-141] Docker network inspect did not prove exact network {network_name!r}"
+            )
+        if not details.get("external", False):
+            labels = result.get("Labels") or {}
+            if not isinstance(labels, Mapping) or (
+                labels.get("com.docker.compose.project") != prepared.project
+                or labels.get("com.docker.compose.network") != key
+            ):
+                raise ValueError(
+                    f"[CIU-141] network {network_name!r} is not owned by Compose project "
+                    f"{prepared.project!r}; run `ciu up --dir "
+                    f"{Path(prepared.working_dir).relative_to(prepared.repo_root)}` first"
+                )
+
+
+def _run_compose_argv(
+    prepared: Any,
+    *,
+    file_args: Sequence[str],
+    service: str,
+    argv: Sequence[str],
+    name: str,
+    labels: Mapping[str, str],
+    env_names: Sequence[str],
+    run_id: str,
+    cgroup_parent: str | None,
+    detach: bool,
+    interactive: bool,
+) -> list[str]:
+    command = [*_compose_prefix(prepared, file_args), "run"]
+    if detach:
+        command.append("-d")
+    if detach or not interactive:
+        command.extend(["-T", "--interactive=false"])
+    command.extend(["--no-deps", "--name", name])
+    for key, value in labels.items():
+        command.extend(["-l", f"{key}={value}"])
+    for env_name in env_names:
+        command.extend(["-e", validate_env_name(env_name)])
+    injected = {
+        "CIU_RUN_CONTAINER_NAME": name,
+        "CIU_RUN_ID": run_id,
+    }
+    if cgroup_parent is not None:
+        injected["CIU_RUN_CGROUP_PARENT"] = cgroup_parent
+    for key, value in injected.items():
+        command.extend(["-e", f"{key}={value}"])
+    command.append(service)
+    command.extend(str(item) for item in argv)
+    return command
+
+
+def _run_docker_rm(name: str) -> bool:
+    try:
+        result = procutil.run_cmd(
+            ["docker", "rm", "-f", name], check=False, capture=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def _run_detached(
+    prepared: Any, *, plan: Mapping[str, Any], stack: str, service: str,
+    argv: Sequence[str], name: str, run_id: str, labels: Mapping[str, str],
+    env_names: Sequence[str], extend: str | Path | None,
+) -> dict[str, Any]:
+    _verify_run_networks(prepared, service)
+    runtime_labels = labels
+    with tempfile.TemporaryDirectory(prefix="ciu-run-") as temp_dir:
+        file_args = _compose_file_args(
+            prepared, temp_dir=Path(temp_dir), extend=extend, service_name=service,
+        )
+        command = _run_compose_argv(
+            prepared, file_args=file_args, service=service, argv=argv, name=name,
+            labels=runtime_labels, env_names=env_names, run_id=run_id,
+            cgroup_parent=plan.get("cgroup_parent"), detach=True, interactive=False,
+        )
+        try:
+            result = procutil.run_cmd(
+                command, check=False, capture=True, env=prepared.compose_env,
+                cwd=str(prepared.working_dir),
+            )
+        except OSError as exc:
+            raise RuntimeError("[CIU-141] Docker Compose could not start the one-shot") from exc
+        if result.returncode != 0:
+            maybe_running = _docker_inspect(name)
+            if maybe_running is not None:
+                _run_docker_rm(name)
+            raise RuntimeError(
+                f"[CIU-141] docker compose run failed (exit {result.returncode}); "
+                "no launch event was produced"
+            )
+        compose_id = (result.stdout or "").strip()
+        if not _CONTAINER_ID_RE.fullmatch(compose_id):
+            maybe_running = _docker_inspect(name)
+            if maybe_running is not None:
+                _run_docker_rm(name)
+            raise RuntimeError(
+                "[CIU-141] docker compose run -d did not return one full 64-hex container ID"
+            )
+        document = _docker_inspect(name)
+        if document is None:
+            raise RuntimeError("[CIU-141] launched container is not inspectable by its exact name")
+        if document["Id"] != compose_id:
+            _run_docker_rm(name)
+            raise RuntimeError(
+                "[CIU-141] docker compose run ID disagrees with exact-name inspect"
+            )
+        if _event_labels(document).get("ciu.run.id") != labels.get("ciu.run.id"):
+            _run_docker_rm(name)
+            raise RuntimeError("[CIU-141] inspected container has a different ciu.run.id")
+    event = _launched_event(
+        document, run_id=run_id, name=name, prepared=prepared,
+        stack=stack, service=service, plan=plan,
+    )
+    return event
+
+
+def _run_foreground(
+    prepared: Any, *, plan: Mapping[str, Any], stack: str, service: str,
+    argv: Sequence[str], name: str, run_id: str, labels: Mapping[str, str],
+    env_names: Sequence[str], extend: str | Path | None,
+    event_writer: _EventWriter,
+) -> int:
+    _verify_run_networks(prepared, service)
+    launched: dict[str, Any] | None = None
+    pending_signal: list[int] = []
+    forwarded_signal: int | None = None
+    signal_deadline: float | None = None
+    escalated = False
+    process = None
+    signal_handlers: dict[int, Any] = {}
+
+    def remember_signal(signum, _frame):
+        if not pending_signal:
+            pending_signal.append(signum)
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            signal_handlers[signum] = signal.signal(signum, remember_signal)
+        with tempfile.TemporaryDirectory(prefix="ciu-run-") as temp_dir:
+            file_args = _compose_file_args(
+                prepared, temp_dir=Path(temp_dir), extend=extend, service_name=service,
+            )
+            command = _run_compose_argv(
+                prepared, file_args=file_args, service=service, argv=argv, name=name,
+                labels=labels, env_names=env_names, run_id=run_id,
+                cgroup_parent=plan.get("cgroup_parent"), detach=False,
+                interactive=bool(
+                    getattr(sys.stdin, "isatty", lambda: False)()
+                    and getattr(sys.stdout, "isatty", lambda: False)()
+                ),
+            )
+            try:
+                process = procutil.popen(
+                    command, env=prepared.compose_env, cwd=str(prepared.working_dir),
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                raise RuntimeError("[CIU-141] Docker Compose could not start the one-shot") from exc
+
+            launch_deadline = time.monotonic() + _FOREGROUND_INSPECT_TIMEOUT
+            while True:
+                if launched is None:
+                    document = _docker_inspect(name)
+                    if document is not None:
+                        if _event_labels(document).get("ciu.run.id") != run_id:
+                            raise RuntimeError(
+                                "[CIU-141] exact-name container has a different ciu.run.id"
+                            )
+                        launched = _launched_event(
+                            document, run_id=run_id, name=name, prepared=prepared,
+                            stack=stack, service=service, plan=plan,
+                        )
+                        event_writer.write(launched)
+
+                if pending_signal and forwarded_signal is None and launched is not None:
+                    forwarded_signal = pending_signal[0]
+                    signal_name = signal.Signals(forwarded_signal).name
+                    try:
+                        sent = procutil.run_cmd(
+                            ["docker", "kill", "-s", signal_name, name],
+                            check=False, capture=True,
+                        )
+                    except OSError as exc:
+                        raise RuntimeError(
+                            f"[CIU-141] could not forward {signal_name} to exact container {name!r}"
+                        ) from exc
+                    if sent.returncode != 0:
+                        raise RuntimeError(
+                            f"[CIU-141] docker kill -s {signal_name} failed for {name!r}"
+                        )
+                    signal_deadline = time.monotonic() + _SIGNAL_GRACE_SECONDS
+
+                returncode = process.poll()
+                if returncode is not None:
+                    # A short command can exit before the first inspect query.
+                    # The no- --rm foreground command stays inspectable, so emit
+                    # launched before collecting the terminal state.
+                    if launched is None:
+                        document = _docker_inspect(name)
+                        if document is not None:
+                            launched = _launched_event(
+                                document, run_id=run_id, name=name, prepared=prepared,
+                                stack=stack, service=service, plan=plan,
+                            )
+                            event_writer.write(launched)
+                    break
+                if pending_signal and launched is None and time.monotonic() >= launch_deadline:
+                    raise RuntimeError(
+                        "[CIU-141] interrupted before the one-shot container became inspectable"
+                    )
+                if launched is None and time.monotonic() >= launch_deadline:
+                    process.terminate()
+                    process.wait()
+                    raise RuntimeError(
+                        "[CIU-141] foreground one-shot did not become inspectable within 30 seconds"
+                    )
+                if (
+                    forwarded_signal is not None and signal_deadline is not None
+                    and not escalated and time.monotonic() >= signal_deadline
+                    and process.poll() is None
+                ):
+                    try:
+                        killed = procutil.run_cmd(
+                            ["docker", "kill", name], check=False, capture=True,
+                        )
+                    except OSError as exc:
+                        raise RuntimeError(
+                            f"[CIU-141] could not escalate termination of {name!r}"
+                        ) from exc
+                    if killed.returncode != 0:
+                        raise RuntimeError(f"[CIU-141] docker kill failed for {name!r}")
+                    escalated = True
+                time.sleep(_FOREGROUND_INSPECT_INTERVAL)
+
+            if launched is None:
+                raise RuntimeError(
+                    f"[CIU-141] docker compose run failed (exit {returncode}); "
+                    "no inspectable container or launch event was produced"
+                )
+            final = _docker_inspect(name)
+            if final is None:
+                raise RuntimeError(
+                    f"[CIU-141] container {name!r} disappeared before exit status collection"
+                )
+            state = final.get("State") or {}
+            if not isinstance(state, Mapping) or state.get("Status") != "exited":
+                raise RuntimeError(
+                    f"[CIU-141] container {name!r} did not have an exited state after Compose returned"
+                )
+            inspected_code = state.get("ExitCode")
+            if isinstance(inspected_code, bool) or not isinstance(inspected_code, int):
+                raise RuntimeError(f"[CIU-141] container {name!r} has no inspected exit code")
+            if returncode != inspected_code:
+                raise RuntimeError(
+                    f"[CIU-141] Compose exit {returncode} disagrees with inspected container "
+                    f"exit {inspected_code} for {name!r}"
+                )
+            if final.get("Id") != launched["container"]["id"]:
+                raise RuntimeError(
+                    f"[CIU-141] exact-name container {name!r} changed during foreground run"
+                )
+            exited = {
+                "schema": _RUN_EVENT_SCHEMA,
+                "event": "exited",
+                "run_id": run_id,
+                "exit_code": inspected_code,
+                "oom_killed": bool(state.get("OOMKilled", False)),
+                "finished_at": state.get("FinishedAt") or _utc_now(),
+            }
+            event_writer.write(exited)
+            removed = _run_docker_rm(name)
+            removed_event = {
+                "schema": _RUN_EVENT_SCHEMA,
+                "event": "removed",
+                "run_id": run_id,
+                "removed": removed,
+                "error": None if removed else "docker rm -f failed",
+            }
+            event_writer.write(removed_event)
+            if not removed and inspected_code == 0:
+                return 1
+            return inspected_code
+    except BaseException:
+        # A foreground controller owns cleanup if an exception interrupts its
+        # lifecycle after a container was observed.
+        if launched is not None:
+            _run_docker_rm(name)
+        raise
+    finally:
+        for signum, previous in signal_handlers.items():
+            signal.signal(signum, previous)
 
 
 def run_cli(
@@ -513,22 +1141,58 @@ def run_cli(
     if events_fd is not None and events_fd < 3:
         raise ValueError("[CIU-141] --events-fd must be 3 or greater")
 
-    if dry_run:
-        # CIU's normal preparation pipeline is chatty on stdout. The plan is a
-        # machine-readable stdout contract, so preparation diagnostics stay on
-        # stderr and only the allow-listed projection is serialized.
-        from contextlib import redirect_stdout
-        import sys
+    forwarded_names = [validate_env_name(item) for item in env_names]
+    if len(set(forwarded_names)) != len(forwarded_names):
+        raise ValueError("[CIU-141] --env-name values must be unique")
+    user_labels = dict(parse_run_label(item) for item in labels)
+    if len(user_labels) != len(labels):
+        raise ValueError("[CIU-141] --label keys must be unique")
+    if name is not None:
+        validate_container_name(name)
 
-        with redirect_stdout(sys.stderr):
-            prepared, stack, service = _prepare_run_stack(
-                repo_root, selector, profiles=profiles, skip_hooks=skip_hooks,
-            )
-            plan = build_run_plan(
-                prepared, stack=stack, service=service, name=name, extend=extend,
-                labels=labels, skip_hooks=skip_hooks,
-            )
+    # CIU's normal preparation pipeline is chatty on stdout. Preparation and
+    # Compose config diagnostics stay on stderr; stdout is reserved for the
+    # dry-run JSON or detached launch document.
+    from contextlib import redirect_stdout
+
+    with redirect_stdout(sys.stderr):
+        prepared, stack, service = _prepare_run_stack(
+            repo_root, selector, profiles=profiles, skip_hooks=skip_hooks,
+        )
+        plan = build_run_plan(
+            prepared, stack=stack, service=service, name=name, extend=extend,
+            labels=labels, skip_hooks=skip_hooks,
+        )
+    if dry_run:
         print(json.dumps(plan, sort_keys=True, separators=(",", ":")))
         return 0
 
-    raise RuntimeError("[CIU-141] one-shot launch is not available in this build")
+    owner = (
+        owner_pid if owner_pid is not None
+        else (os.getppid() if detach else os.getpid())
+    )
+    run_id = str(uuid.uuid4())
+    container_name = _select_run_name(prepared.project, service, name)
+    runtime_labels = dict(user_labels)
+    runtime_labels.update(_make_runtime_labels(
+        run_id=run_id, stack=stack, service=service,
+        mode="detached" if detach else "foreground", owner_pid=owner,
+    ))
+    event_writer = _EventWriter(fd=events_fd, path=events_file)
+    try:
+        if detach:
+            event = _run_detached(
+                prepared, plan=plan, stack=stack, service=service, argv=argv,
+                name=container_name, run_id=run_id, labels=runtime_labels,
+                env_names=forwarded_names, extend=extend,
+            )
+            event_writer.write(event)
+            print(json.dumps(event, sort_keys=True, separators=(",", ":")))
+            return 0
+        return _run_foreground(
+            prepared, plan=plan, stack=stack, service=service, argv=argv,
+            name=container_name, run_id=run_id, labels=runtime_labels,
+            env_names=forwarded_names, extend=extend, event_writer=event_writer,
+        )
+    finally:
+        event_writer.close()

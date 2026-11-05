@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -204,6 +203,8 @@ def test_extension_accepts_typed_run_gate_additions_and_init():
             "worker": {
                 "mem_limit": "256m",
                 "group_add": ["1234", 5678],
+                "cap_add": ["SYS_PTRACE"],
+                "security_opt": ["no-new-privileges:true"],
                 "volumes": [{
                     "type": "bind", "source": "/run/observer",
                     "target": "/run/cgprofile", "read_only": True,
@@ -225,6 +226,8 @@ def test_extension_accepts_typed_run_gate_additions_and_init():
 
     assert validated["services"]["worker"]["init"] is True
     assert validated["services"]["worker"]["group_add"] == ["1234", "5678"]
+    assert validated["services"]["worker"]["cap_add"] == ["SYS_PTRACE"]
+    assert validated["services"]["worker"]["security_opt"] == ["no-new-privileges:true"]
     assert validated["services"]["worker"]["volumes"][0]["bind"] == {
         "create_host_path": False,
     }
@@ -235,8 +238,6 @@ def test_extension_accepts_typed_run_gate_additions_and_init():
     [
         ("user", "0:0", "user"),
         ("cgroup_parent", "evil.slice", "cgroup_parent"),
-        ("cap_add", ["SYS_ADMIN"], "cap_add"),
-        ("security_opt", ["apparmor=unconfined"], "security_opt"),
         ("ports", ["8080:8080"], "ports"),
     ],
 )
@@ -253,6 +254,9 @@ def test_extension_refuses_unlisted_fields_by_name(field, value, reason):
     [
         ({"mem_limit": "256m"}, "mem_limit"),
         ({"init": True}, "init"),
+        ({"group_add": ["1234"]}, "group_add"),
+        ({"cap_add": ["SYS_PTRACE"]}, "cap_add"),
+        ({"security_opt": ["no-new-privileges:true"]}, "security_opt"),
         ({"volumes": [{
             "type": "bind", "source": "/tmp/other", "target": "/workspace",
         }]}, "target '/workspace'"),
@@ -262,6 +266,12 @@ def test_extension_refuses_silent_compose_collisions(extension_service, reason):
     base_service = _service()
     if "init" in extension_service:
         base_service["init"] = False
+    if "group_add" in extension_service:
+        base_service["group_add"] = ["2345"]
+    if "cap_add" in extension_service:
+        base_service["cap_add"] = ["SYS_CHROOT"]
+    if "security_opt" in extension_service:
+        base_service["security_opt"] = ["no-new-privileges:true"]
     with pytest.raises(ValueError, match=reason):
         oneshot.validate_extension_document(
             {"services": {"worker": extension_service}}, service_name="worker",
