@@ -158,7 +158,7 @@ def _wire_daemon(
     monkeypatch.setattr(
         cli,
         "serve_versioned_unix_socket",
-        lambda _path, broker, _api: FakeServer(broker),
+        lambda _path, broker, _api, **_kwargs: FakeServer(broker),
     )
     return observed, bpf_stop
 
