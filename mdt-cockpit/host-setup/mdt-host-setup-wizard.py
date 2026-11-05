@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 from mdt_cli import MdtArgumentParser
+import mdt_admission
 import mdt_capacity
 import mdt_tree_cache
 from decimal import Decimal
@@ -921,6 +922,8 @@ def _config_value_validators() -> dict[str, Validator]:
         "CGPROFILE_OBSERVE_SLICES": validate_cgprofile_slices,
         "CGPROFILE_ALLOW_UIDS": validate_cgprofile_uids,
     }
+    # run-gate gates admission cap (MDT-076): the grammar lives with the code that reads the keys.
+    validators.update(mdt_admission.VALIDATORS)
 
     for tier in ("INTERACTIVE", "BACKGROUND", "GATES", "BUILDKITD"):
         for field in ("RBPS", "WBPS", "RIOPS", "WIOPS"):

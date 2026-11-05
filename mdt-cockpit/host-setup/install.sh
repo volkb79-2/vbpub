@@ -12,6 +12,7 @@
 #   sudo ./install.sh --wizard --reset      # re-seed answers from this example
 #   sudo ./install.sh --with-baseline       # remeasure in a quiet disk window
 #   sudo ./install.sh --observer-only       # provision the cgprofile observer directory only
+#   sudo ./install.sh --admission-only      # (re)publish the run-gate gates admission cap only (MDT-076)
 # Run these commands from the Docker host shell, never from a devcontainer;
 # container root cannot apply the host's systemd, cgroup, or /etc policy.
 #
@@ -51,6 +52,7 @@ Usage
   sudo ./install.sh --restart-docker
   sudo ./install.sh --observer-only
   sudo ./install.sh --cgprofile-only [--force-cgprofile-restart]
+  sudo ./install.sh --admission-only          # (re)publish the run-gate gates admission cap, nothing else
   sudo ./install.sh --require-damon-disable   # make a failed DAMON_STAT write fatal
   sudo ./install.sh --confirm-no-disk-swap    # accept that MDT gets no disk swap
   sudo ./install.sh --apply-protection        # write MemoryMin/weights drop-ins for MDT_PROTECTED_UNITS
@@ -116,6 +118,16 @@ Options
                       cgprofile daemon even when live sessions remain at the
                       drain deadline, naming the sessions it aborts. Never
                       implied by an environment variable.
+  --admission-only    Publish (or reconcile) the daemon-wide run-gate gates admission cap
+                      (MDT-076) from the installed /etc/mdt/host-setup.env and nothing else. The
+                      cap is derived from this host's gates tier: max(1, min(CPU cores / 2, gates
+                      MemoryHigh / 2G)); ADMISSION_MAX_CONCURRENT pins it, ADMISSION_CPUS_PER_GATE
+                      and ADMISSION_MEMORY_PER_GATE tune the formula, ADMISSION_PUBLISH=off|missing
+                      stops or limits the management. A Docker daemon that was reinstalled has no
+                      cap, and a project with [admission] enabled then refuses every lane; the full
+                      install runs this step too, but publishes only once run-gate (on the host, or
+                      in the cockpit named by ADMISSION_COCKPIT) and the ticket image exist, and
+                      otherwise prints why and exits 0. Idempotent: an equal cap is left alone.
   cpu-benchmark       Stand-alone subcommand: measure this host's CPU ONCE with Geekbench
                       (the same sha256-pinned tool the debian-install-v2 installer uses;
                       Geekbench version and archive sha256 are pinned per architecture) and
@@ -281,6 +293,7 @@ CONFIRM_NO_DISK_SWAP=0
 APPLY_PROTECTION=0
 CGPROFILE_ONLY=0
 FORCE_CGPROFILE_RESTART=0
+ADMISSION_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     cpu-benchmark) CPU_BENCHMARK=1 ;;
@@ -288,6 +301,7 @@ for arg in "$@"; do
     --wizard) WIZARD=1 ;;
     --observer-only) OBSERVER_ONLY=1 ;;
     --cgprofile-only) CGPROFILE_ONLY=1 ;;
+    --admission-only) ADMISSION_ONLY=1 ;;
     --force-cgprofile-restart) FORCE_CGPROFILE_RESTART=1 ;;
     --with-baseline) WITH_BASELINE=1 ;;
     --reset) RESET=1 ;;
@@ -327,7 +341,8 @@ if [ "$CPU_BENCHMARK" = 1 ]; then
   if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
     || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
     || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
-    || [ "$APPLY_PROTECTION" = 1 ] || [ "$OBSERVER_ONLY" = 1 ] || [ "$CGPROFILE_ONLY" = 1 ]; then
+    || [ "$APPLY_PROTECTION" = 1 ] || [ "$OBSERVER_ONLY" = 1 ] || [ "$CGPROFILE_ONLY" = 1 ] \
+    || [ "$ADMISSION_ONLY" = 1 ]; then
     echo "ERROR: cpu-benchmark cannot be combined with general host-setup options" >&2
     exit 2
   fi
@@ -340,7 +355,7 @@ if [ "$OBSERVER_ONLY" = 1 ]; then
   if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
     || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
     || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
-    || [ "$APPLY_PROTECTION" = 1 ]; then
+    || [ "$APPLY_PROTECTION" = 1 ] || [ "$ADMISSION_ONLY" = 1 ]; then
     echo "ERROR: --observer-only cannot be combined with general host-setup options" >&2
     exit 2
   fi
@@ -356,7 +371,7 @@ if [ "$CGPROFILE_ONLY" = 1 ]; then
   if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
     || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
     || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
-    || [ "$APPLY_PROTECTION" = 1 ]; then
+    || [ "$APPLY_PROTECTION" = 1 ] || [ "$ADMISSION_ONLY" = 1 ]; then
     echo "ERROR: --cgprofile-only cannot be combined with general host-setup options" >&2
     exit 2
   fi
@@ -377,6 +392,25 @@ if [ "$CGPROFILE_ONLY" = 1 ]; then
   _cgprofile_args=(--config /etc/mdt/host-setup.env)
   [ "$FORCE_CGPROFILE_RESTART" = 1 ] && _cgprofile_args+=(--force-restart)
   exec bash "$HERE/scripts/mdt-cgprofile-install.sh" "${_cgprofile_args[@]}"
+fi
+
+# --admission-only (MDT-076): (re)publish the run-gate gates cap from the installed host policy, nothing else.
+# Run it after the runner/cockpit exists: a fresh install cannot publish before run-gate and the ticket image
+# are there (the full install then says so and exits 0), a reinstall loses the cap with the Docker daemon.
+if [ "$ADMISSION_ONLY" = 1 ]; then
+  if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
+    || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
+    || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
+    || [ "$APPLY_PROTECTION" = 1 ] || [ "$FORCE_CGPROFILE_RESTART" = 1 ]; then
+    echo "ERROR: --admission-only cannot be combined with general host-setup options" >&2
+    exit 2
+  fi
+  [ -f /etc/mdt/host-setup.env ] \
+    || { echo "ERROR: --admission-only needs an installed /etc/mdt/host-setup.env (run the full install first)" >&2; exit 2; }
+  python3 "$HERE/mdt-host-setup-wizard.py" --validate-config /etc/mdt/host-setup.env \
+    --example "$HERE/host-setup.env.example" --meminfo-path /proc/meminfo \
+    || { echo "ERROR: /etc/mdt/host-setup.env failed strict validation; nothing was changed" >&2; exit 2; }
+  exec python3 "$HERE/mdt_admission.py" publish /etc/mdt/host-setup.env --meminfo /proc/meminfo --nproc "$(nproc)"
 fi
 
 if [ "$RESET" = 1 ] && [ "$WIZARD" != 1 ]; then
@@ -1418,6 +1452,8 @@ install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-
 # check.sh renders the expected cgpd.toml through the installer's --print-config (MDT-055 drift check).
 install -m 0755 "$HERE/scripts/mdt-cgprofile-install.sh" /usr/local/sbin/mdt-cgprofile-install.sh
 install -m 0644 "$HERE/mdt_capacity.py"                 /usr/local/sbin/mdt_capacity.py
+# The gates admission cap (MDT-076): derived from the same capacity, published by `install.sh` and read by mdt-host-check.sh.
+install -m 0644 "$HERE/mdt_admission.py"                /usr/local/sbin/mdt_admission.py
 install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
 install -D -m 0644 "$HERE/etc/profile.d/mdt-buildkit.sh" /etc/profile.d/mdt-buildkit.sh
 # Every way a build can start: the shim makes mdt-managed the default builder for ANY process
@@ -1606,6 +1642,15 @@ else
 fi
 systemctl enable mdt-container-io-events-watcher.service         # reactive per-container IO caps (docker events)
 
+# run-gate gates admission cap (MDT-076, ADMISSION_* keys): a fresh Docker daemon (every reinstall) has no
+# ciu-admission-<g> object, and a project with [admission] enabled then refuses every lane (no-headroom). Publish
+# the cap host policy yields (idempotent; a missing run-gate / cockpit / ticket image is a printed NOTE and exit
+# 0, because a fresh install precedes them: `install.sh --admission-only` finishes the job later). A publish that
+# was attempted and FAILED is not softened: the rest of the install completes and the run exits non-zero.
+echo "== run-gate gates admission cap =="
+ADMISSION_FAILED=0
+python3 "$HERE/mdt_admission.py" publish "$CONFIG_PATH" --meminfo /proc/meminfo --nproc "$_nproc" || ADMISSION_FAILED=1
+
 BASELINE_HANDLED=0
 if [ "$WIZARD" = 1 ] && [ "$WITH_BASELINE" = 1 ] && [ -f "$BASELINE_STATUS_PATH" ]; then
   _baseline_status="$(<"$BASELINE_STATUS_PATH")"
@@ -1675,6 +1720,10 @@ if [ "${BUILDKITD_RESTART_PENDING:-0}" = 1 ]; then
 fi
 if [ "${CGPROFILE_RESTART_PENDING:-0}" = 1 ]; then
   echo "ERROR: the cgprofile service was not restarted because live sessions remain (see the sessions listed above); the new version is installed and pending, the rest of the install completed. Re-run install.sh (or install.sh --cgprofile-only) when the sessions are done, or add --force-cgprofile-restart to abort them." >&2
+  exit 2
+fi
+if [ "$ADMISSION_FAILED" = 1 ]; then
+  echo "ERROR: the run-gate gates admission cap was NOT published (see the 'admission:' error above); the rest of the install completed. Fix the named cause and re-run install.sh --admission-only, or set ADMISSION_PUBLISH=off to stop host-setup managing it." >&2
   exit 2
 fi
 if [ "$SCHEDULER_FAILED" = 1 ] || [ "$IOCOST_FAILED" = 1 ]; then

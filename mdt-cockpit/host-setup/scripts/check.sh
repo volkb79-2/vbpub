@@ -1201,6 +1201,30 @@ else
   done <<<"$_tree_out"
 fi
 
+echo "== run-gate gates admission cap (MDT-076) =="
+# One implementation (mdt_admission.py check): the Docker daemon publishes the cap run-gate's count admission reads
+# (ciu-admission-<g>, label gates.max_concurrent). A reinstalled host has none and every lane of a project with
+# [admission] enabled ends NOT_RUN no-headroom, so a missing cap is a FAIL; a value that differs from the host policy
+# is a WARN (a manual `run-gate admission set`) or, with ADMISSION_MAX_CONCURRENT pinned, a FAIL. Read-only.
+_ADMISSION_PY="${ADMISSION_PY:-$(dirname "$0")/mdt_admission.py}"
+[ -f "$_ADMISSION_PY" ] || _ADMISSION_PY="$(dirname "$0")/../mdt_admission.py"
+if [ ! -f "$_ADMISSION_PY" ] || [ ! -f "$CONF" ]; then
+  warn "mdt_admission.py or $CONF missing — the gates admission cap was not checked; re-run install.sh"
+else
+  _adm_out=$(python3 "$_ADMISSION_PY" check "$CONF" --meminfo /proc/meminfo --nproc "$(nproc)" 2>&1) \
+    || _adm_out="FAIL the gates admission check failed to run: $_adm_out"
+  while IFS= read -r _line; do
+    case "$_line" in
+      OK\ *)   ok "${_line#OK }" ;;
+      WARN\ *) warn "${_line#WARN }" ;;
+      FAIL\ *) fail "${_line#FAIL }" ;;
+      INFO\ *) info "${_line#INFO }" ;;
+      "") ;;
+      *)       warn "gates admission report: $_line" ;;
+    esac
+  done <<<"$_adm_out"
+fi
+
 echo "== per-host CPU benchmark (HB-3) =="
 # The persisted /var/lib/mdt/host-facts/cpu-benchmark.json (measured once, never by this check): missing,
 # partial (no scores) or STALE (cpu_model / vCPU count changed) is a WARN with the command to run.
