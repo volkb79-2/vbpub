@@ -187,8 +187,30 @@ def check_primary_image_collisions(
         )
 
 
-def scope_compose_images(compose_yaml: str, instance_id: str | None) -> str:
+def compose_uses_images(compose_yaml: str, references: "frozenset[str] | set[str]") -> bool:
+    """Whether any rendered service's ``image:`` is one of *references* (normalized)."""
+    import yaml
+
+    document = yaml.safe_load(compose_yaml) or {}
+    services = document.get("services", {}) if isinstance(document, dict) else {}
+    wanted = {normalize_image_reference(ref) for ref in references}
+    for service in services.values() if isinstance(services, dict) else ():
+        image = service.get("image") if isinstance(service, dict) else None
+        if isinstance(image, str) and image.strip() and normalize_image_reference(image) in wanted:
+            return True
+    return False
+
+
+def scope_compose_images(
+    compose_yaml: str,
+    instance_id: str | None,
+    declared_images: "frozenset[str] | set[str]" = frozenset(),
+) -> str:
     """Scope built image references in rendered Compose YAML.
+
+    *declared_images* (CIU-173) are references the project declares as built
+    although no service carries ``build:``; every service using one is scoped
+    like a build-declared image.
 
     Ownership is reference-level: when one service declares ``build`` for an
     image, every service in that Compose model using the same image receives
@@ -280,6 +302,17 @@ def scope_compose_images(compose_yaml: str, instance_id: str | None) -> str:
                 "declare image: so CIU can isolate its worktree tag"
             )
         built_references.add(image_node.value)
+
+    if declared_images:
+        wanted = {normalize_image_reference(ref) for ref in declared_images}
+        for _service_key, service_node in services_node.value:
+            image_node = mapping_value(service_node, "image")
+            if (
+                isinstance(image_node, ScalarNode)
+                and image_node.value.strip()
+                and normalize_image_reference(image_node.value) in wanted
+            ):
+                built_references.add(image_node.value)
 
     if not built_references:
         return compose_yaml

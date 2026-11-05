@@ -5974,7 +5974,7 @@ primary checkout without losing its data (the old volumes stay behind, unreferen
 
 ## CIU-168 — `ciu ssh` / `ciu up --host` need a fully generated local `ciu.env` (incl. `DOCKER_GID`) and a committed git repo on the control host
 
-**Status: OPEN (filed 2026-11-04, ops-v1001-20261104; measured on ciu 7.19.0 pushing a throwaway `whoami` stack from the mdt-cockpit devcontainer to v1001).**
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** The remote verbs render the global config with inert placeholders for the control host's machine/identity keys and write nothing, so no `ciu.env`, `DOCKER_GID`, docker group or local network is needed; an unborn git HEAD in `ciu env generate` is a tagged `[S2.8]` error. Test: `test_remote_config_load_needs_no_machine_facts_and_writes_nothing`, `test_generate_ciu_env_reports_an_unborn_head_as_a_tagged_error`. Not proven: a live `ciu up --host` from a Docker-less control host (dstdns P8).**
 
 **Observed.** On a control host that only SSHes (no Docker daemon, no docker group): `ciu ssh v1001 -- true` stops with `could not load global configuration for remote
 operation: Missing required environment values ... CONTAINER_GID, CONTAINER_UID, DOCKER_GID, DOCKER_NETWORK_INTERNAL`. `DOCKER_GID=990 ciu env generate` is the only way
@@ -5988,7 +5988,7 @@ Load the global config with placeholders for the four values (or lazily), never 
 
 ## CIU-169 — push-deploy preconditions are not checked or documented: `ciu` must be on the remote non-login PATH, `bundle_dir`'s parent must exist, and `**/.ciu/` must be gitignored although `.git` is not shipped
 
-**Status: OPEN (filed 2026-11-04, ops-v1001-20261104).**
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** One-RTT preflight (`command -v <remote_ciu>`, `mkdir -p bundle_dir`) with remedy text, new host key `remote_ciu`, and the S1.7 guard accepts the shipped `.gitignore` text when `git check-ignore` cannot answer. The `--thin` scp/tar path is NOT covered by the preflight (its own mkdir exists in activate.py). Review follow-up (F3/F4/F5): a leading `~/` in `bundle_dir`/`remote_ciu` is expanded deliberately (`~user`, whitespace and a non-string `remote_ciu` are refused with exit 2 before anything is sent, also before the preflight mkdir), the remote verb chain fails closed when `ciu env print` fails, and the gitignore text guard only trusts files from the bundle root down and honours `!` negations.**
 
 **Observed.** Three consecutive failures of `ciu up --host v1001 --dir whoami` against a fresh Debian host with ciu installed in a user venv: (1) the remote command `ciu env generate ...` finds no `ciu`
 (non-login SSH PATH does not include `~/.local/bin` or a venv); (2) `rsync: mkdir "/home/runner/ciu-remote-test/current" failed: No such file or directory` because rsync creates only the last
@@ -6000,7 +6000,7 @@ path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.
 
 ## CIU-170 — `ciu health --host` rejects `--dir`, and `ciu down --host --dir STACK` runs remotely outside the bundle (no ciu root, no env)
 
-**Status: OPEN (filed 2026-11-04, ops-v1001-20261104; SPEC S14.2 and FEATURES.md both list `--dir`/`--profile` after `--host` for up, down and health).**
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** Root cause was two-fold: the 7.20 registry declared `--dir`/`--host` mutually exclusive on `up` and `down` (and `status` had no `--dir`), and `render`/`down`/`status --gate --host` ran outside the bundle. Now all three run `cd <bundle_dir> && eval "$(ciu env print)" && ciu ...` and accept `--dir`; `status --gate --dir` also works locally. The former residue (`[S18] --stack ... is not in the current deploy selection`) is by design per SPEC S10.2a: `down --dir` resolves the stack through the deploy selection, so an optional stack needs `--profile NAME`; the remote `down --host H --dir S --profile P` forwards the profile verbatim and the refusal text names `--profile` (tests: `test_remote_down_dir_forwards_the_profile_that_declares_an_optional_stack`, `test_stop_stack_refuses_a_stack_outside_the_deploy_selection_and_names_the_profile`). A non-optional stack (dstdns `whoami` case) was not reproducible offline; confirm on v1001 in P8.**
 
 **Observed.** `ciu health --host v1001 --dir whoami` fails with `ciu: error: unrecognized arguments: --dir whoami`. `ciu down --host v1001 --dir whoami` connects but the remote command runs in the login directory:
 `[no-ciu-root] no CIU root above /home/runner; expected ciu.global.defaults.toml.j2`. Only `ciu up` does the `cd <bundle_dir> && ciu env generate && ciu render` chain. Manual teardown needed
@@ -6012,7 +6012,7 @@ path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.
 
 ## CIU-171 — `ciu clean` leaves the compose default network and the workspace network of a remote or standalone bundle
 
-**Status: OPEN (filed 2026-11-04, ops-v1001-20261104).**
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** The main-workspace network keep now requires an attached endpoint; compose networks of the bundle's stack directories outside the selection are removed, matched by exact compose-project label value (review F1: no prefix match, so `prod` never touches `prod-x`; a network with a foreign attached endpoint is kept and named, never disconnected). Tests: `test_tagged_sweep_*` (prod vs prod-x, shared network with a foreign container), `test_main_workspace_network_without_a_devcontainer_is_removed`, `test_clean_removes_tagged_project_networks_of_a_stack_outside_the_selection`.**
 
 **Observed.** After `ciu up --host v1001 --dir whoami` and `ciu clean -y` on the target the container is gone but `v1001-remote-test-rt-whoami_default` (the compose default network of the stack) and `current-qokpsa-network` (created by
 `ciu env generate`, "kept: ... workspace network of the main workspace (devcontainer residence)") remain, in a bundle that is not a devcontainer. S6.4 promises "zero project containers and volumes remain"; networks are outside that invariant but pin an address pool (`docker_default_address_pools`) on small hosts.
@@ -6032,7 +6032,7 @@ path element of `bundle_dir`; (3) after the bundle arrived, `[S1.7] .../whoami/.
 
 ## CIU-173 — CIU-117 image-ref suffixing applies only to services with `build:`, `extends` or `include`; a stack without them runs main's `:local` in a worktree
 
-**Status: OPEN (filed 2026-11-05 from the dstdns cmru-p2 run on ciu 7.21.0; evidence `reports/dstdns-cmru-p2-REPORT.md`, "CIU-117 finding"). Severity: P2 (C03-F06 false-green trap).**
+**Status: PARTIALLY FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; the acceptance text asks for automatic classification from the images table, which is NOT implemented; only the declared-list route works).** Design chosen: declaration, not Bake-plan inference: `[ciu.worktree] project_images = [...]` (effective config, add-only) scopes listed images of a build-free stack; documented in SPEC S17.6. dstdns must add the list to its config.**
 
 **Observed.** `engine.scope_worktree_compose_images` returns early unless a rendered service has `build:`, `extends` or `include` (`image_isolation.compose_may_require_image_scoping`).
 dstdns compose has no `build:` by policy (AGENTS 4.3), and `ciu check` in the worktree printed no `[CIU-117]` notice. A linked worktree therefore bakes `dstdns/<svc>:local-<suffix>`
@@ -6046,7 +6046,7 @@ in the main checkout nothing changes.
 
 ## CIU-174 — after a failed `ciu worktree create` preparation the checkout and its record remain, and a manual `git worktree remove` leaves a stale shared-registry record whose refusal names no remedy
 
-**Status: OPEN (filed 2026-11-05; evidence `reports/fix-ciu-161-REPORT.md`, branch fix-ciu-161-20261105). Severity: P3.**
+**Status: PARTIALLY FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; the remedy text is tested, but the acceptance claim that the named command succeeds after a manual `git worktree remove` is not proven).** Chosen: keep the partial allocation (it is the resumable `ensure` state) and name `ciu worktree ensure NAME` / `ciu worktree rm NAME`; the stale-record "already recorded" refusal names the same. Not done: automatic rollback of checkout+record on preparation failure, and a registry prune for a record whose checkout is gone without a CIU record (verify that `ensure` restores it in P8).**
 
 **Observed.** When worktree preparation fails (CIU-161), the created checkout and its worktree record stay behind. Removing the checkout by hand with `git worktree remove` leaves the record in
 the shared workspace registry, and the next create at that path refuses with "physical workspace path is already recorded" without naming a remedy (`ciu worktree rm <name>` or a registry repair command).
@@ -6085,3 +6085,11 @@ record and the remedy (`ciu worktree rm <name>`, and for a record whose path no 
 **Design.** (a) In `libraries/worktree`, delete the working tree itself (or pre-verify deletability of every entry, refusing before git runs) and only then drop the registration, so a failed deletion keeps the registration and a second `rm` retries; (b) `ciu worktree rm --dry-run` lists each entry that `--force` would leave behind (foreign-owned, mounted, unreadable) and the remedy per entry; (c) let `rm NAME` adopt an unregistered `.worktrees/NAME` directory that carries a CIU record, to finish it.
 
 **Acceptance criteria.** A checkout with a foreign-uid entry: `rm --force` fails leaving the registration; fixing ownership and re-running completes it; `rm --dry-run` lists the entry without changing anything.
+
+## CIU-175 — non-thin `ciu up --host` pushes `.ciu/` (host secrets), `ciu.env` and ignores the host's `bundle_excludes`
+
+**Status: FIXED 2026-11-05 on branch ciu-remote-deploy-20261105 (unreleased; local tests only, gate lane pending).** Found in the dstdns P8 review (finding 1), ciu 7.21.0. Severity: P1 (secret exposure). Every push (rsync, tar+scp, `--thin`) now excludes `.git`, `.ciu` (file/dir/symlink, any depth), `ciu.env` and `vol-*` unconditionally and applies `bundle_excludes` on top (`activate.bundle_excludes_for`, `cli._push_host`); SPEC S14.2/S14.6 and CHANGES updated. Review follow-up (F2/F4/F6): the tar fallback now has rsync's pattern semantics (equivalence test against real tar+rsync), `vol-*` joined the mandatory set, and a rendered `ciu.toml`/`ciu.compose.yml` is documented as pushed unless excluded (not verified whether Vault-resolved values reach them). Tests: `tests/tests/test_ciu_bundle_excludes.py` (incl. a real rsync run against temp dirs) and the `remote_dispatch` pair.
+
+**Observed.** `cli._push_host` called `ssh_sync` with no `excludes`; only `--thin` honoured `bundle_excludes`, so a full-stack push shipped the control host's `.ciu/` (e.g. the GHCR read token) and `ciu.env`, and per-host protections such as the instance file were ignored.
+
+**Acceptance criteria.** The generated rsync command never transfers `.ciu/` and leaves a pre-existing target instance file named in `bundle_excludes` neither overwritten nor deleted.

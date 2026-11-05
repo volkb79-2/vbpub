@@ -561,6 +561,7 @@ class TestCleanClearsTheLease:
     def _hermetic(self, monkeypatch, *, survivors: list[str]):
         monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
         monkeypatch.setattr(deploy, "_matching_containers", lambda *a, **k: [])
+        monkeypatch.setattr(deploy, "_tagged_project_networks", lambda *a, **k: ([], []))
         monkeypatch.setattr(
             deploy, "_remove_project_volumes", lambda cfg=None, **_kw: survivors
         )

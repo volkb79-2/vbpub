@@ -19,6 +19,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   any write when the repository setting is enabled, and before any asset delete when the release reports `immutable`.
   Draft-first publication (attach, then publish) is not implemented; the remaining delete-then-upload window on a
   non-immutable repository is documented, not closed.
+- `cmru versions resolve|check` (KI-121): a single-source OCI target examines tags newest-first and stops at the first
+  age-eligible one instead of fetching every matching tag's manifests; a registry HTTP 429 is retried when `Retry-After` is
+  short, otherwise exits with the new code 5 (rate limited) naming the `ratelimit-*` headers; `resolve` saves finished targets
+  to a user-cache resume file and a rerun continues from them (not rolling-tag targets or soon-expiring overrides; never from
+  `--dry-run`). The 429 retry bound is per request, not per run, and Docker Hub sends no `Retry-After`. The newest-first stop
+  needs the merged candidate of a version group to be age-eligible. Details in `docs/CONSUMERS.md`.
+
+- `tools/local_baseline_facts.py` + `docs/CONSUMERS.md`: how to start the `mutation` lane outside a release (builds `CMRU_ASSAY_BASELINE_FACTS`
+  from local `cmru-v*` tags; the R1 pin must equal the selected tag).
 
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.

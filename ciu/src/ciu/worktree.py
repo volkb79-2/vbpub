@@ -6194,6 +6194,18 @@ def require_current_primary_facts(repo_root: Path) -> None:
         ) from exc
 
 
+def _allocation_remedy(exc: Exception, logical_name: str) -> str:
+    """Remedy text for a refused allocation whose path is still recorded (CIU-174)."""
+    if "already recorded" not in str(exc):
+        return ""
+    return (
+        "\n[S16] a record for that path remains in the shared workspace registry "
+        "(typically after the checkout was removed with `git worktree remove` by hand). "
+        f"Resume it with `ciu worktree ensure {logical_name}`, then discard it with "
+        f"`ciu worktree rm {logical_name}` if it is not wanted; or pick another path/name."
+    )
+
+
 def create(
     repo_root: Path,
     logical_name: str,
@@ -6419,16 +6431,33 @@ def create(
         except Exception as exc:
             if isinstance(exc, WorktreeError):
                 raise
-            raise WorktreeError(f"[S16] shared workspace allocation failed: {exc}") from exc
+            raise WorktreeError(
+                f"[S16] shared workspace allocation failed: {exc}"
+                + _allocation_remedy(exc, logical_name)
+            ) from exc
 
         # CIU-106: `fork_point_sha` remains unset until `_finish_allocation`
         # resets to this exact `base_commit` and reads the resulting HEAD.
         _write_instance_record(record)
-        return _finish_allocation(
-            repo_root, record, checkout_required=True,
-            workspace_context=shared_context,
-            recover_initial_overlay=True,
-        )
+        try:
+            return _finish_allocation(
+                repo_root, record, checkout_required=True,
+                workspace_context=shared_context,
+                recover_initial_overlay=True,
+            )
+        except WorktreeError:
+            # CIU-174: preparation failed AFTER the checkout and both records
+            # exist. They are a resumable partial allocation, not litter: say so
+            # and name both ways out instead of leaving the operator to
+            # `git worktree remove` by hand (which orphans the shared record).
+            # The exception itself propagates unchanged (callers classify on its type).
+            print(
+                f"[S16] the checkout {target} and its record were kept as a partial "
+                f"allocation: resume with `ciu worktree ensure {logical_name}`, or "
+                f"discard it with `ciu worktree rm {logical_name}`.",
+                file=sys.stderr,
+            )
+            raise
 
 
 def ensure(
@@ -8949,9 +8978,21 @@ _BUDGET_LOCK_NAME = "ciu-worktree-budget.lock"
 WORKTREE_TABLE_KEYS = frozenset(
     {
         "max_concurrent_instances", "lease_ttl_hours", "exec_targets", "up",
-        "shared_image_tags",
+        "shared_image_tags", "project_images",
     }
 )
+
+
+def _validate_project_images(declared: Any) -> None:
+    """Shape check for ``[ciu.worktree] project_images`` (CIU-173)."""
+    if (
+        not isinstance(declared, list)
+        or any(not isinstance(ref, str) or not ref.strip() for ref in declared)
+    ):
+        raise WorktreeError(
+            "[CIU-173] [ciu.worktree] project_images must be an array of "
+            "non-empty image references"
+        )
 
 
 def _validate_worktree_table(raw: Any) -> None:
@@ -8987,6 +9028,8 @@ def _validate_worktree_table(raw: Any) -> None:
         raise WorktreeError(
             "[CIU-117] [ciu.worktree] shared_image_tags must be a boolean"
         )
+    if "project_images" in raw:
+        _validate_project_images(raw["project_images"])
 
 
 def resolve_worktree_image_tag_suffix(
@@ -9083,6 +9126,30 @@ def resolve_worktree_image_tag_suffix(
             f"{record.instance_id!r}, generated facts contain {instance_id!r}"
         )
     return instance_id
+
+
+def declared_project_images(config: Mapping[str, Any]) -> frozenset[str]:
+    """Image references the project declares as built here (CIU-173).
+
+    ``[ciu.worktree] project_images`` in the rendering checkout's configuration
+    lists images that are project-built although no rendered Compose service
+    carries ``build:`` (a stack whose images come from ``ciu bake``). They are
+    instance-scoped in a linked worktree exactly like build-declared ones. The
+    key only ADDS scoping, so editing it can never weaken isolation. Empty when
+    the key is absent.
+    """
+    ciu = config.get("ciu", {})
+    raw = ciu.get("worktree") if isinstance(ciu, Mapping) else None
+    if not isinstance(raw, Mapping) or "project_images" not in raw:
+        return frozenset()
+    _validate_project_images(raw["project_images"])
+    return frozenset(ref.strip() for ref in raw["project_images"])
+
+
+def image_scope_kwargs(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Keyword arguments for ``engine.scope_worktree_compose_images`` (CIU-173)."""
+    declared = declared_project_images(config)
+    return {"declared_images": declared} if declared else {}
 
 
 def resolve_worktree_up_profiles(
