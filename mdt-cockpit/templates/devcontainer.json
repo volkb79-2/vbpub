@@ -292,9 +292,10 @@
         // limit ("unable to watch for file changes ... ENOSPC"). Trade-off: the Source Control view
         // does not live-refresh inside a worktree under .worktrees/. Trim to your repo's layout.
         // The same events drive extension rescans: an extension watcher on a plain glob (such as the
-        // Python Environments extension's "**/*.py" marker watcher, which re-runs a whole-workspace
-        // file search on every create/delete) receives them from this watcher, so an excluded tree
-        // no longer triggers it. Patterns match relative to each workspace folder.
+        // Python Environments extension's marker-file watcher on "**/{*.py,*.pyi,pyproject.toml,...}",
+        // which re-runs a file search, up to a whole-workspace walk, on every create/delete) receives
+        // them from this watcher, so an excluded tree no longer triggers it. Patterns match relative
+        // to each workspace folder.
         // These settings reach ~/.vscode-server/data/Machine/settings.json, which lives in the
         // persisted home; a rebuild does not rewrite an existing file. After changing this block,
         // merge it into that file, or move the file away before the rebuild (templates/vscode/README.md).

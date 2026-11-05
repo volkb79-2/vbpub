@@ -7,7 +7,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - Devcontainer templates and vbpub's `.devcontainer/devcontainer.json`: `files.watcherExclude`, `search.exclude` and `git.repositoryScanIgnoredFolders`
   also cover `.assay` (assay's ignored isolation and scratch trees, which hold throwaway repositories), and `search.followSymlinks` is `false`. Python
-  Environments 1.42.0 re-runs a whole-workspace `rg --files --follow --no-ignore` on every `.py` create/delete it sees; under gate churn the walks
+  Environments 1.42.0 re-runs `rg --files --follow --no-ignore` (one result wanted, up to a whole-workspace walk) on every marker-file create/delete it sees; under gate churn the walks
   piled up faster than they finished (192 concurrent rg processes, measured 2026-11-05). The watcher excludes keep generated trees from triggering it;
   `followSymlinks` stops each walk from following links into other trees (pytest's `*current` links, links out of a home folder). The template comments
   and `templates/vscode/README.md` now say that a rebuild does not rewrite an existing machine settings file (MDT-076) and how to keep a home folder in a
