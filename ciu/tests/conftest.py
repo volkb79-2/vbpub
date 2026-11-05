@@ -383,7 +383,7 @@ def _default_docker_gid(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _default_cgroup_parent(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CIU-193: governance's cgroup parent is pinned, never read from the runner.
+    """CIU-194: governance's cgroup parent is pinned, never read from the runner.
 
     ``resolve_cgroup_parent`` falls back to ``$CGROUP_PARENT_DEV_BACKGROUND``,
     which a devcontainer injects but a gate container only has when the launcher

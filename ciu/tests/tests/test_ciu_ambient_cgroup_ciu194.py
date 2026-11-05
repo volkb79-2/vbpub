@@ -1,4 +1,4 @@
-"""CIU-193 — governance tests must not depend on the runner's cgroup env.
+"""CIU-194 — governance tests must not depend on the runner's cgroup env.
 
 A gate container only has ``CGROUP_PARENT_DEV_BACKGROUND`` when the launcher
 forwards it. Four tests reach ``governance.resolve_cgroup_parent`` without
