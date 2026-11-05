@@ -1204,23 +1204,6 @@
       "signature": "sha256:0ccdc5d7f252a3a3e20745bc89f341ac85251fca9274b0c3113f86fbdf335622"
     },
     {
-      "id": "case:route:entrypoint:ciu/down/exclusive-conflict/down-mode/option:route:entrypoint:ciu/down/--dir/option:route:entrypoint:ciu/down/--host",
-      "kind": "exclusive-conflict",
-      "members": [
-        "option:route:entrypoint:ciu/down/--dir",
-        "option:route:entrypoint:ciu/down/--host"
-      ],
-      "route_id": "route:entrypoint:ciu/down",
-      "shape": {
-        "group_id": "down-mode",
-        "options": [
-          "option:route:entrypoint:ciu/down/--dir",
-          "option:route:entrypoint:ciu/down/--host"
-        ]
-      },
-      "signature": "sha256:c96ac5be1a74ff354098d1838a56bb7e3a73f39285688b6208afd554c07ba66d"
-    },
-    {
       "id": "case:route:entrypoint:ciu/down/exclusive-conflict/ksm-override/option:route:entrypoint:ciu/down/--ksm/option:route:entrypoint:ciu/down/--no-ksm",
       "kind": "exclusive-conflict",
       "members": [
@@ -1236,34 +1219,6 @@
         ]
       },
       "signature": "sha256:65a047354a9cef7741c1217761b1a7eaa31694de3b83e7e592ce5f87448478fa"
-    },
-    {
-      "id": "case:route:entrypoint:ciu/down/exclusive-member/down-mode/option:route:entrypoint:ciu/down/--dir",
-      "kind": "exclusive-member",
-      "members": [
-        "option:route:entrypoint:ciu/down/--dir"
-      ],
-      "route_id": "route:entrypoint:ciu/down",
-      "shape": {
-        "group_id": "down-mode",
-        "required": false,
-        "selected_option": "option:route:entrypoint:ciu/down/--dir"
-      },
-      "signature": "sha256:e6c30fd71cd6adbc07d6061fb0df67cbb8152f290dbfaf4730798005d074ff5c"
-    },
-    {
-      "id": "case:route:entrypoint:ciu/down/exclusive-member/down-mode/option:route:entrypoint:ciu/down/--host",
-      "kind": "exclusive-member",
-      "members": [
-        "option:route:entrypoint:ciu/down/--host"
-      ],
-      "route_id": "route:entrypoint:ciu/down",
-      "shape": {
-        "group_id": "down-mode",
-        "required": false,
-        "selected_option": "option:route:entrypoint:ciu/down/--host"
-      },
-      "signature": "sha256:80627bff2a52a11b34fdc155620d977a4546d14defd3de19666c967858a3f1a3"
     },
     {
       "id": "case:route:entrypoint:ciu/down/exclusive-member/ksm-override/option:route:entrypoint:ciu/down/--ksm",
@@ -1341,7 +1296,7 @@
         "option_id": "option:route:entrypoint:ciu/down/--dir",
         "spelling": "--dir"
       },
-      "signature": "sha256:e876e9ee0903b27d0b7469587e2e76432d497952e49b529b8ecbd90e7ed51bb7"
+      "signature": "sha256:49768b623fa373ee8254da344ca37fba5adaba16977104f96048e3e9e658ddbb"
     },
     {
       "id": "case:route:entrypoint:ciu/down/option-spelling/option:route:entrypoint:ciu/down/--host/--host",
@@ -1354,7 +1309,7 @@
         "option_id": "option:route:entrypoint:ciu/down/--host",
         "spelling": "--host"
       },
-      "signature": "sha256:541c9d3ec1236ffca307dd25817071e3b87bd3bcc2db8fc26283afb7088f64c4"
+      "signature": "sha256:63e981ff90768e9908b27d34fac917db347a3da4c601d592178ddbb81192f318"
     },
     {
       "id": "case:route:entrypoint:ciu/down/option-spelling/option:route:entrypoint:ciu/down/--i-understand-this-is-protected/--i-understand-this-is-protected",
@@ -5901,7 +5856,7 @@
       "signature": "sha256:c58a1acf55f5e5cb54b46a5ed6a63645853624de3fca79712b09c663c254d620"
     },
     {
-      "id": "case:route:entrypoint:ciu/status/constraint-conflict/5",
+      "id": "case:route:entrypoint:ciu/status/constraint-conflict/6",
       "kind": "constraint-conflict",
       "members": [
         "option:route:entrypoint:ciu/status/--json",
@@ -5916,10 +5871,10 @@
         ],
         "reason": "the gate's verdict is its exit status"
       },
-      "signature": "sha256:68335d914620387319eb339ef1cf2ac98e968786ed1877b8f010c72d571f3ba8"
+      "signature": "sha256:5f75e488bac561a3ae4a6262be95fa014cbd16712507a508e57b2bbb3e40af18"
     },
     {
-      "id": "case:route:entrypoint:ciu/status/constraint-conflict/6",
+      "id": "case:route:entrypoint:ciu/status/constraint-conflict/7",
       "kind": "constraint-conflict",
       "members": [
         "option:route:entrypoint:ciu/status/--json",
@@ -5934,7 +5889,7 @@
         ],
         "reason": "the preflight report is text"
       },
-      "signature": "sha256:7775d647b5ca95dde62dc17548d50a33ba343bb15467a0869f87108144fbf27c"
+      "signature": "sha256:180b0731a761a91733b59419d538999268158f163264d206be782592659c15f9"
     },
     {
       "id": "case:route:entrypoint:ciu/status/constraint-requires/1",
@@ -5952,7 +5907,7 @@
         "option": "--strict",
         "reason": "--strict qualifies --preflight"
       },
-      "signature": "sha256:dc33636b579173dda32c661d7420b1b8b8fb3dfad4ba606cdf748f32d1f12245"
+      "signature": "sha256:a7a2855c12be983040d8a459d170cc624360d29fe5246fe7a463890926471ffb"
     },
     {
       "id": "case:route:entrypoint:ciu/status/constraint-requires/2",
@@ -5970,7 +5925,7 @@
         "option": "--thin",
         "reason": "--thin applies to the --host path"
       },
-      "signature": "sha256:a6073d44c1b3efb460705b01466cbdf377b96271b878d3e3173cd3a1115a1a45"
+      "signature": "sha256:4453ae42ef12a7cb3d188eb1c056968ecc4fc2ed4c6d9f7ef3d77b8dd9120e61"
     },
     {
       "id": "case:route:entrypoint:ciu/status/constraint-requires/3",
@@ -5988,7 +5943,7 @@
         "option": "--host",
         "reason": "a remote verdict is the --gate form"
       },
-      "signature": "sha256:7e1ffbc7491893b84c5e1ed9be1778213bc9f4a2d9cffe6c7004b45d4446e6b3"
+      "signature": "sha256:7df6b90e966a22fad39d640f6427194609f0bb5c36c6bfadbc7e89a59808a514"
     },
     {
       "id": "case:route:entrypoint:ciu/status/constraint-requires/4",
@@ -6006,7 +5961,25 @@
         "option": "--phases",
         "reason": "phases restrict the health gate"
       },
-      "signature": "sha256:4251d0663458dd5d4ad65ee3fee02a6903f32df9b5010feb5168aaa7d1311f37"
+      "signature": "sha256:cf717b77fec1da19912e3650df9f0791d4b2b8aac2291110dbe82a2fe06e6092"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/status/constraint-requires/5",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:ciu/status/--dir",
+        "option:route:entrypoint:ciu/status/--gate"
+      ],
+      "route_id": "route:entrypoint:ciu/status",
+      "shape": {
+        "any_of": [
+          "--gate"
+        ],
+        "kind": "requires",
+        "option": "--dir",
+        "reason": "--dir selects the stack the health gate checks"
+      },
+      "signature": "sha256:2c00f9a51b5781a0972d2f7f917ed0c2fc197802c6e8fdfdbc6751fa09ae1781"
     },
     {
       "id": "case:route:entrypoint:ciu/status/exclusive-conflict/ksm-override/option:route:entrypoint:ciu/status/--ksm/option:route:entrypoint:ciu/status/--no-ksm",
@@ -6023,7 +5996,7 @@
           "option:route:entrypoint:ciu/status/--no-ksm"
         ]
       },
-      "signature": "sha256:70789fe243dd3c873c3b09cc1bdce9f5d97a9b9a0478bb4b2e61034ec492b8b7"
+      "signature": "sha256:762a0493c6ac1dc8ccd050ca878541795095bce8e3d75909b2a871a42be19d5b"
     },
     {
       "id": "case:route:entrypoint:ciu/status/exclusive-conflict/status-mode/option:route:entrypoint:ciu/status/--gate/option:route:entrypoint:ciu/status/--preflight",
@@ -6040,7 +6013,7 @@
           "option:route:entrypoint:ciu/status/--preflight"
         ]
       },
-      "signature": "sha256:804424099c70e8e31277881dfdb86dc6ca2ee70fc591f4de3d63b82aa492e539"
+      "signature": "sha256:93123924c8ef9e773ccb3d226be147bfa6329941fe1088e4626c7e104ee3cde0"
     },
     {
       "id": "case:route:entrypoint:ciu/status/exclusive-member/ksm-override/option:route:entrypoint:ciu/status/--ksm",
@@ -6054,7 +6027,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/status/--ksm"
       },
-      "signature": "sha256:67d3b42bed8b769c6b2cde2af843ca9d77a033d6b8ba40967ae5617f6bab477d"
+      "signature": "sha256:774775f70524203142bdf4fbeec9e0cdd497297dc3e6d54bdb1ce2284588afa5"
     },
     {
       "id": "case:route:entrypoint:ciu/status/exclusive-member/ksm-override/option:route:entrypoint:ciu/status/--no-ksm",
@@ -6068,7 +6041,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/status/--no-ksm"
       },
-      "signature": "sha256:7481b9cb64cafa35f0e716466b01ab9986e0e8948c82bf21995bd897e6183d66"
+      "signature": "sha256:2b4698224c977238f572a475e9bc83de2328b34c654d9fef47414843272fc15a"
     },
     {
       "id": "case:route:entrypoint:ciu/status/exclusive-member/status-mode/option:route:entrypoint:ciu/status/--gate",
@@ -6082,7 +6055,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/status/--gate"
       },
-      "signature": "sha256:c647bfc47525fcb6847ab706b2b39803b328046abd666debbb99b58b1adabdb4"
+      "signature": "sha256:9b06b7cab71d26288bfc98cb5dde353b1ab7cd921e48b3c019beeacde9433ae1"
     },
     {
       "id": "case:route:entrypoint:ciu/status/exclusive-member/status-mode/option:route:entrypoint:ciu/status/--preflight",
@@ -6096,7 +6069,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/status/--preflight"
       },
-      "signature": "sha256:0f11f38e72405943333499d1a41f4425e80073c398b24babeaaaebcbd4a843be"
+      "signature": "sha256:38a8898528269f97fbb879d550a62635c85333853f901c67981aa9f2d6f39644"
     },
     {
       "id": "case:route:entrypoint:ciu/status/minimum",
@@ -6126,7 +6099,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:3be22be80ba7c85c1486a07c9b8ab1c6911830594ea5ddacf1e1d3daac743168"
+      "signature": "sha256:3f57f9b3908367517c2b3230360401bb801a0b44175c04f5cac8d144c5588cff"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--debug-raw/--debug-raw",
@@ -6139,7 +6112,20 @@
         "option_id": "option:route:entrypoint:ciu/status/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:c963bf12f057294bae3e53e941921871b75d096fb6038563690fc1ae9072c772"
+      "signature": "sha256:80e3afd6264725ec1fd14f88c0e8f466cba1d3ac4cfa85c255d8342be9899a04"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--dir/--dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/status/--dir"
+      ],
+      "route_id": "route:entrypoint:ciu/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/status/--dir",
+        "spelling": "--dir"
+      },
+      "signature": "sha256:9d7abe957ee0a32538b992ef47e4acf887090761352dc6f213285beeee89f06d"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--gate/--gate",
@@ -6152,7 +6138,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--gate",
         "spelling": "--gate"
       },
-      "signature": "sha256:0e9aef3512c4d1248bbcdf5a1256eef81b19f4d5863eb3eef8f98f00a46f5f2d"
+      "signature": "sha256:580d3c83c96025de8803f0ed40a138d086f7738836f2fe4e71fbb29b5866519d"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--host/--host",
@@ -6165,7 +6151,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--host",
         "spelling": "--host"
       },
-      "signature": "sha256:57f6a56c31b8c2175507973e034016716935895fe45e27d4a2a8b2f683f207a7"
+      "signature": "sha256:96a977191dd677523957e176cb18f65dc8a140e7aedab01794efea1bb85b7c3a"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--json/--json",
@@ -6178,7 +6164,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--json",
         "spelling": "--json"
       },
-      "signature": "sha256:76b9c3daf047cf91ca1a64b6f673af4aa76accf9f4a5d17e386c25a324a4b055"
+      "signature": "sha256:ca9171ccb4aa758359b2e32e7c297dd022115dc06458ff909a2a62c47c1eb93d"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--ksm/--ksm",
@@ -6191,7 +6177,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--ksm",
         "spelling": "--ksm"
       },
-      "signature": "sha256:a56639e96a19f109aaf8eec34840c618ad1f305b0692999f45225f4dc4291462"
+      "signature": "sha256:432dea2a828b90835c74c84c5cd16a3afc3b3cd6d7761e198b0c72de89b5f80c"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--log-prefix-time-short/--log-prefix-time-short",
@@ -6204,7 +6190,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--log-prefix-time-short",
         "spelling": "--log-prefix-time-short"
       },
-      "signature": "sha256:45bdeb1c1d8c9cb900ed9016f1beac2a52c675de5d111f5d48769a02575f5ce0"
+      "signature": "sha256:a13e9d0eced59e14af05ccd6bdd39770de4d7378ceddbefb363814b44061d647"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--no-ksm/--no-ksm",
@@ -6217,7 +6203,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--no-ksm",
         "spelling": "--no-ksm"
       },
-      "signature": "sha256:99107dcd00e4275dcb0a063dc443b241c1e22d9ddbfe21ce625de3cb67f3fed6"
+      "signature": "sha256:88b3a8f593f1156072c5c6304177b7653d942bffc0beefd940be335399b8299f"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--phases/--phases",
@@ -6230,7 +6216,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--phases",
         "spelling": "--phases"
       },
-      "signature": "sha256:2ef3c8498a32cdd9202404a6ec26d0b011c7d42724d115d9113631766d43ae73"
+      "signature": "sha256:4fea4705cf6ca6d3c8fda5207fd247d6fdf4ecbe92b38464fd0bac684130c3dd"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--preflight/--preflight",
@@ -6243,7 +6229,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--preflight",
         "spelling": "--preflight"
       },
-      "signature": "sha256:f3b6665ca34352561cf020906516c297ecee06d3d5b9345b8df10bc649e7ed48"
+      "signature": "sha256:241e7e1f42368c3a1c57fbecc649a03d24c1b840b452fc8ef4221fb2e0d829a5"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--profile/--profile",
@@ -6256,7 +6242,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--profile",
         "spelling": "--profile"
       },
-      "signature": "sha256:e8bcf5958d343b7ba70152b5c108cdd3832ec3aec97ef127f65331e3a4ab4444"
+      "signature": "sha256:d13b2e3f13a3dcd6cc1037efbd30bbd376170db2868d9f5af292c3eec913a006"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--root-folder/--root-folder",
@@ -6269,7 +6255,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--root-folder",
         "spelling": "--root-folder"
       },
-      "signature": "sha256:e57833bee07474958dcb1b2598e842a649f26b4438a7de4eb031b9406b57d5ff"
+      "signature": "sha256:00676bac8db540f589278ce663ae9f11a98e0155c5907271ae346d5657c53527"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--strict/--strict",
@@ -6282,7 +6268,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--strict",
         "spelling": "--strict"
       },
-      "signature": "sha256:8853ea5a460b12023727f495a73a30358f03666358a508dc56ac3a3fc3efaee6"
+      "signature": "sha256:0a5808ed29f0903d5cbf6f7826f45a80c6a25c2897817400938c03114dc74ee0"
     },
     {
       "id": "case:route:entrypoint:ciu/status/option-spelling/option:route:entrypoint:ciu/status/--thin/--thin",
@@ -6295,7 +6281,7 @@
         "option_id": "option:route:entrypoint:ciu/status/--thin",
         "spelling": "--thin"
       },
-      "signature": "sha256:7b767f362fa2405085906c41ff26702964e2997687b82a6be6c237c93befa827"
+      "signature": "sha256:a8148c6798366c88a17c86f8c59d751b39918cdd14f62a551d6707cfd155f23a"
     },
     {
       "id": "case:route:entrypoint:ciu/up/constraint-conflict/4",
@@ -6313,7 +6299,43 @@
         ],
         "reason": "a layout owns the host order and the bundles (S7.5c)"
       },
-      "signature": "sha256:d511b9149fae2bc9f0a8875d46d60740816ecbe66be5ac5c4605bf7b4b237c75"
+      "signature": "sha256:dac8947195214d99aea82661b2cc70a68bc5b50a44d70d46871f15e0f1ae4c27"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/up/constraint-conflict/5",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/up/--layout",
+        "option:route:entrypoint:ciu/up/--host"
+      ],
+      "route_id": "route:entrypoint:ciu/up",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--layout",
+          "--host"
+        ],
+        "reason": "a layout owns the host order and the bundles (S7.5c)"
+      },
+      "signature": "sha256:29f84c9e56491761ab8f422173abc55a24ab2ba8f3ad6c419b99fca4f48ebc21"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/up/constraint-conflict/6",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/up/--layout",
+        "option:route:entrypoint:ciu/up/--dir"
+      ],
+      "route_id": "route:entrypoint:ciu/up",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--layout",
+          "--dir"
+        ],
+        "reason": "a layout owns the host order and the bundles (S7.5c)"
+      },
+      "signature": "sha256:357be308e32db477247bae07795817b3748ad6517bd1c94760dc6ecaf91cd680"
     },
     {
       "id": "case:route:entrypoint:ciu/up/constraint-requires/1",
@@ -6331,7 +6353,7 @@
         "option": "--thin",
         "reason": "--thin applies to the --host push path"
       },
-      "signature": "sha256:11704a8983baff46e0cfb9fc53a90043666e057a748e672480890d5132782e19"
+      "signature": "sha256:7ee3fea2aa8b9dd4b54e5ab26ba0580bd8ba8a323e7c8ffcba7385b2aa001441"
     },
     {
       "id": "case:route:entrypoint:ciu/up/constraint-requires/2",
@@ -6349,7 +6371,7 @@
         "option": "--bootstrap",
         "reason": "--bootstrap needs the --thin activation path"
       },
-      "signature": "sha256:6e7d29b8ae1cd3c44c168acbb013937f83e319fc93c412641e8e4f5c6f28adb2"
+      "signature": "sha256:63bb2e07fe3af3484ff29d6d17621a40be85d6bdb22465071464d69ab708c3d0"
     },
     {
       "id": "case:route:entrypoint:ciu/up/constraint-requires/3",
@@ -6367,7 +6389,7 @@
         "option": "--rollback",
         "reason": "--rollback needs the --thin activation path"
       },
-      "signature": "sha256:39c54d944a6c67a647072db2cd6585f115af53199dc67f277f9290833556f9e6"
+      "signature": "sha256:2f9a8e9de97730659e25a3d7b8387dc9a81d18fc5795227ff2e42d5366abd324"
     },
     {
       "id": "case:route:entrypoint:ciu/up/exclusive-conflict/ksm-override/option:route:entrypoint:ciu/up/--ksm/option:route:entrypoint:ciu/up/--no-ksm",
@@ -6384,7 +6406,7 @@
           "option:route:entrypoint:ciu/up/--no-ksm"
         ]
       },
-      "signature": "sha256:4a9361bf6fb5393b2a3fa8870031a122476c6f0be590482cacfca485bdc7980c"
+      "signature": "sha256:eccfc61611a657ad077527e71fc318cf6bceec30903b1a84a1df7f08bd725c47"
     },
     {
       "id": "case:route:entrypoint:ciu/up/exclusive-conflict/thin-mode/option:route:entrypoint:ciu/up/--bootstrap/option:route:entrypoint:ciu/up/--rollback",
@@ -6401,58 +6423,7 @@
           "option:route:entrypoint:ciu/up/--rollback"
         ]
       },
-      "signature": "sha256:827ac79e9cdd1e3392679b269f6f7ccf17650d209053256c65a0abc706462720"
-    },
-    {
-      "id": "case:route:entrypoint:ciu/up/exclusive-conflict/up-mode/option:route:entrypoint:ciu/up/--dir/option:route:entrypoint:ciu/up/--host",
-      "kind": "exclusive-conflict",
-      "members": [
-        "option:route:entrypoint:ciu/up/--dir",
-        "option:route:entrypoint:ciu/up/--host"
-      ],
-      "route_id": "route:entrypoint:ciu/up",
-      "shape": {
-        "group_id": "up-mode",
-        "options": [
-          "option:route:entrypoint:ciu/up/--dir",
-          "option:route:entrypoint:ciu/up/--host"
-        ]
-      },
-      "signature": "sha256:4fa6dad5c9b1946df7bc4031cc9aa4b442da8122c8ef36f0688525dc0c1e7eb6"
-    },
-    {
-      "id": "case:route:entrypoint:ciu/up/exclusive-conflict/up-mode/option:route:entrypoint:ciu/up/--dir/option:route:entrypoint:ciu/up/--layout",
-      "kind": "exclusive-conflict",
-      "members": [
-        "option:route:entrypoint:ciu/up/--dir",
-        "option:route:entrypoint:ciu/up/--layout"
-      ],
-      "route_id": "route:entrypoint:ciu/up",
-      "shape": {
-        "group_id": "up-mode",
-        "options": [
-          "option:route:entrypoint:ciu/up/--dir",
-          "option:route:entrypoint:ciu/up/--layout"
-        ]
-      },
-      "signature": "sha256:3562390b3721c710b8254b17663feb0218f9fe9d947166a08219e89999377f9f"
-    },
-    {
-      "id": "case:route:entrypoint:ciu/up/exclusive-conflict/up-mode/option:route:entrypoint:ciu/up/--host/option:route:entrypoint:ciu/up/--layout",
-      "kind": "exclusive-conflict",
-      "members": [
-        "option:route:entrypoint:ciu/up/--host",
-        "option:route:entrypoint:ciu/up/--layout"
-      ],
-      "route_id": "route:entrypoint:ciu/up",
-      "shape": {
-        "group_id": "up-mode",
-        "options": [
-          "option:route:entrypoint:ciu/up/--host",
-          "option:route:entrypoint:ciu/up/--layout"
-        ]
-      },
-      "signature": "sha256:02a76cb45a364d88a14a77489cec4ffd30318e7a8610f34d70e9adf036627b54"
+      "signature": "sha256:a75d7e31658cacc7ed0120b877fc3be94826ead6b72790416b406dd5947252ef"
     },
     {
       "id": "case:route:entrypoint:ciu/up/exclusive-member/ksm-override/option:route:entrypoint:ciu/up/--ksm",
@@ -6466,7 +6437,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/up/--ksm"
       },
-      "signature": "sha256:182db13dbdfa3f481ec0793fde9272a85024d899b30b20b354bca20b5b4a49f9"
+      "signature": "sha256:aea9daeaf1a7bcb643bd05aac9778c9427961578a34f829ca70bd2509bf669b8"
     },
     {
       "id": "case:route:entrypoint:ciu/up/exclusive-member/ksm-override/option:route:entrypoint:ciu/up/--no-ksm",
@@ -6480,7 +6451,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/up/--no-ksm"
       },
-      "signature": "sha256:a09d1ba17d478a3ab6c81082d5bba1ffc09235100706a0bec51cdaaab4c0acf3"
+      "signature": "sha256:1126eb733ca2a7f8e022ee42e0a572e06ebc688143279681757fc24879a42c6a"
     },
     {
       "id": "case:route:entrypoint:ciu/up/exclusive-member/thin-mode/option:route:entrypoint:ciu/up/--bootstrap",
@@ -6494,7 +6465,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/up/--bootstrap"
       },
-      "signature": "sha256:9bc497a60375336dbbf0d2779911d71a1c25922fdbe6d9bf7054a45d29ff42e2"
+      "signature": "sha256:dce11dc2a8c038296efb938049da5ff88ffae34c75b698fd5874bd67e15524c4"
     },
     {
       "id": "case:route:entrypoint:ciu/up/exclusive-member/thin-mode/option:route:entrypoint:ciu/up/--rollback",
@@ -6508,49 +6479,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/up/--rollback"
       },
-      "signature": "sha256:88f1c28bdd18310053cc1500ed1d2968ee52a9c568f0740deef330c334516aec"
-    },
-    {
-      "id": "case:route:entrypoint:ciu/up/exclusive-member/up-mode/option:route:entrypoint:ciu/up/--dir",
-      "kind": "exclusive-member",
-      "members": [
-        "option:route:entrypoint:ciu/up/--dir"
-      ],
-      "route_id": "route:entrypoint:ciu/up",
-      "shape": {
-        "group_id": "up-mode",
-        "required": false,
-        "selected_option": "option:route:entrypoint:ciu/up/--dir"
-      },
-      "signature": "sha256:a4d2409a3dede0d94c470a86f6f9a5dd2ddd800650d3fabb5cb1a83fb297193b"
-    },
-    {
-      "id": "case:route:entrypoint:ciu/up/exclusive-member/up-mode/option:route:entrypoint:ciu/up/--host",
-      "kind": "exclusive-member",
-      "members": [
-        "option:route:entrypoint:ciu/up/--host"
-      ],
-      "route_id": "route:entrypoint:ciu/up",
-      "shape": {
-        "group_id": "up-mode",
-        "required": false,
-        "selected_option": "option:route:entrypoint:ciu/up/--host"
-      },
-      "signature": "sha256:0218ff5e0778d3708a0153191bb612319150e3f4861fde028cd460fca8bc05f3"
-    },
-    {
-      "id": "case:route:entrypoint:ciu/up/exclusive-member/up-mode/option:route:entrypoint:ciu/up/--layout",
-      "kind": "exclusive-member",
-      "members": [
-        "option:route:entrypoint:ciu/up/--layout"
-      ],
-      "route_id": "route:entrypoint:ciu/up",
-      "shape": {
-        "group_id": "up-mode",
-        "required": false,
-        "selected_option": "option:route:entrypoint:ciu/up/--layout"
-      },
-      "signature": "sha256:d78e6f2b389f11db45c5fc1ee5a270080bd9347729888aee15346e11fe2793ed"
+      "signature": "sha256:4951abca3e79512698922bdbf0a91bca38fe3ba6ff9e785ddc462eef7ca04a8c"
     },
     {
       "id": "case:route:entrypoint:ciu/up/minimum",
@@ -6602,7 +6531,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:c69b2096f97f47610ab70763cd8a4bcb6c45bb10b6fee4cb55663075b1695e82"
+      "signature": "sha256:de5654a3542e9708a7f4734a53f84fa2ab0517840ec33fccd763da08c3d487d0"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--bootstrap/--bootstrap",
@@ -6615,7 +6544,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--bootstrap",
         "spelling": "--bootstrap"
       },
-      "signature": "sha256:597394662f8747c47c0b8f9b645e67361b1539d92a2fbfcb30a2f4b3900f2549"
+      "signature": "sha256:22e91e31df51889b13880f9c06b235d20dfd7d1a11e892209349a2f337f45176"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--debug-raw/--debug-raw",
@@ -6628,7 +6557,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:16c354975a0b21b6e93b810c898b8ddb73b042c651194ced34e25340bbeb981a"
+      "signature": "sha256:1de3fffa1c333e622af6cedffcd1142400d28f629a50c0fec65053c441231754"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--deploy/--deploy",
@@ -6641,7 +6570,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--deploy",
         "spelling": "--deploy"
       },
-      "signature": "sha256:e4c916e3f95c017f9df89cfdb8f54f893c83b43809b0c22c4d39ca948e844c42"
+      "signature": "sha256:5bf8e7a148b7b24acd467f479b73888fe7db036bac9f09ab0e6ffcd4b821328d"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--dir/--dir",
@@ -6654,7 +6583,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--dir",
         "spelling": "--dir"
       },
-      "signature": "sha256:3b18cd58af1969ed698eecb923c7e8b19a087ad37a47cd0694972571f27730f0"
+      "signature": "sha256:0d564da95f1ee08bc028a801ef4fa8efce21136b4bddf30c81fd9656dc599b41"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--dry-run/--dry-run",
@@ -6667,7 +6596,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--dry-run",
         "spelling": "--dry-run"
       },
-      "signature": "sha256:c6cad1966ad5ecf6efe0c52bdfa35ee45ed4fb83da6594643bc7cac6729364a4"
+      "signature": "sha256:053d14e94abfda71447a239a3edf428ed17da1861ad98b9c425aead17247d9d5"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--file/--file",
@@ -6680,7 +6609,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--file",
         "spelling": "--file"
       },
-      "signature": "sha256:e2e5babf3d161c47a43c14b3db58f2c0ea0646311ca1d5f4db929d9c03c8e17f"
+      "signature": "sha256:e4a41539845199574a2bef275c927ca528caedeac54329f019142610aa59f3ef"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--healthcheck/--healthcheck",
@@ -6693,7 +6622,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--healthcheck",
         "spelling": "--healthcheck"
       },
-      "signature": "sha256:75cee40469cd9b9636b35a4b64bc8085356ba5f8611c55faf8c65c96104e9d56"
+      "signature": "sha256:26d0ce6687187f619e272b5272ec33eeb09b60e6829ff63e336d7702052a0b68"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--host/--host",
@@ -6706,7 +6635,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--host",
         "spelling": "--host"
       },
-      "signature": "sha256:7b179c4ccee6e6f1e698baba6e87a04e32e75986e749e57fe95ad4fee5272908"
+      "signature": "sha256:377df5d958d76aecee1b8b9c1c640f0574f5586e308502f25458d7b5600ece30"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--ignore-errors/--ignore-errors",
@@ -6719,7 +6648,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--ignore-errors",
         "spelling": "--ignore-errors"
       },
-      "signature": "sha256:7efea97fb00067d2215ee77fe265f4f633025bea13cf3993162632ea6a9af029"
+      "signature": "sha256:90114eeadeb56935ab95388d5e0125b172205344377b8fa5aecd6b70630c7d00"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--ksm/--ksm",
@@ -6732,7 +6661,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--ksm",
         "spelling": "--ksm"
       },
-      "signature": "sha256:173924ab11ba575ffed383728a293fd8e78783472f262d3a47b2e8de851cd16f"
+      "signature": "sha256:f7bcb1244761dc5e6e71d52e5c92db5da2c5e1cd70a68a037b98330a69321a38"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--layout/--layout",
@@ -6745,7 +6674,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--layout",
         "spelling": "--layout"
       },
-      "signature": "sha256:6298c990d8c4f23d74ef613bed0d3d5ceb71758ca2220986c7fcc7574e299b5e"
+      "signature": "sha256:5355e6fffd04038e5e2699077a0f18996bc5d8d1555b8e0990a03acce4219ae5"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--log-prefix-time-short/--log-prefix-time-short",
@@ -6758,7 +6687,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--log-prefix-time-short",
         "spelling": "--log-prefix-time-short"
       },
-      "signature": "sha256:772959945efa4367e491af9025105c8479968a23c6e03de4dfa980ff2d06cb43"
+      "signature": "sha256:695b2268a73ee5972274bd2fcdf79ff53e385f4996f204733ab13a474f0faee0"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--no-ksm/--no-ksm",
@@ -6771,7 +6700,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--no-ksm",
         "spelling": "--no-ksm"
       },
-      "signature": "sha256:f4da35f860cd01d9d891057c7d6ddde422aa35f3627356c42eba8dbb12086ed2"
+      "signature": "sha256:1b4866c13202cd09140da9c68c774b6ca840b8f65528b7efe252c545006a37d3"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--no-preflight/--no-preflight",
@@ -6784,7 +6713,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--no-preflight",
         "spelling": "--no-preflight"
       },
-      "signature": "sha256:5fc5b24d5afcc880d83eeca444fc03961ae975aef9f7396757fe601a9cda5fd2"
+      "signature": "sha256:65451f474042881d5aac04ffa9ac4923c8d1dc3fa7aed42f771480288c8b3013"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--phases/--phases",
@@ -6797,7 +6726,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--phases",
         "spelling": "--phases"
       },
-      "signature": "sha256:b52395f3bbcd8a3d5613b21f1d9ba87c269c3a4afb60a07934a369803efb91e3"
+      "signature": "sha256:f06f3c8b8b79cb5df5dfab4f5cb17954164edbe9ad1e11a9333f5c3d6f45cc4c"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--print-context/--print-context",
@@ -6810,7 +6739,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--print-context",
         "spelling": "--print-context"
       },
-      "signature": "sha256:4321408b57a7285390d554c15efb2b8775ab8f650828d57823a93b175691914d"
+      "signature": "sha256:8fd420798acac7c7104e45cf8e53ad1ae79264bbc947902e60041598a6256432"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--profile/--profile",
@@ -6823,7 +6752,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--profile",
         "spelling": "--profile"
       },
-      "signature": "sha256:d4b537a30920f1172d40cd9b96b564986a1656b3ccc055627354688a41fb8f43"
+      "signature": "sha256:2546f36df04a3a064385ab242c8ba57a7de6f78f806466f78a9ca6a489945920"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--render-toml/--render-toml",
@@ -6836,7 +6765,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--render-toml",
         "spelling": "--render-toml"
       },
-      "signature": "sha256:0a5c6e9bb53c16a83d7f59be5daf95304d441a515dfcc52fb9465c4a63376491"
+      "signature": "sha256:f9a44055ec68cb5ea0893b65700c48cefe1ffc6f99fc0a689e803682c72499fd"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--reset/--reset",
@@ -6849,7 +6778,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--reset",
         "spelling": "--reset"
       },
-      "signature": "sha256:3360aaed06bf19dbfd2ff939e0f001651c6b360f5a38982f0870f55430c0fbea"
+      "signature": "sha256:a34deff3bcbf7bfa8083d68f44750fe8be074f05a3220f6a8b38eb46d955f45f"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--rollback/--rollback",
@@ -6862,7 +6791,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--rollback",
         "spelling": "--rollback"
       },
-      "signature": "sha256:e51bb8e2ebf497553ebb845a022ea42050c3737b799c87086a3e8acb57027174"
+      "signature": "sha256:f3f58eaae7fa1ac44ecbb24a6baaf7cf0b7790c08094d6060b1d3273cf191d70"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--root-folder/--root-folder",
@@ -6875,7 +6804,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--root-folder",
         "spelling": "--root-folder"
       },
-      "signature": "sha256:4979bf92b9e6a966048309c2455a775051145a654c0c3e444b1072d2cf81a5aa"
+      "signature": "sha256:5ab3591aedf219acac31c117b7cb542ab501b06040c6f6fa5e2ee6b9be22f0f0"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--shipped/--shipped",
@@ -6888,7 +6817,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--shipped",
         "spelling": "--shipped"
       },
-      "signature": "sha256:2689100b69a4294f886c24845d137dd14383476e8b611ac449d75eff61dc31de"
+      "signature": "sha256:fe3d346010c82b1396fb50044476bf6b439fb457c733c01d7afa72a2d4d879d2"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--skip-check/--skip-check",
@@ -6901,7 +6830,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--skip-check",
         "spelling": "--skip-check"
       },
-      "signature": "sha256:2b02a427e8d1bd200b31b05101f86b95527032c01a09346019b292ad71791c96"
+      "signature": "sha256:bd7f6f7b5d897d8456e95a8ea451948f0eac225eb640dad35c969642d5e38c27"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--skip-hooks/--skip-hooks",
@@ -6914,7 +6843,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--skip-hooks",
         "spelling": "--skip-hooks"
       },
-      "signature": "sha256:8bf1615cbb4783c8df9dda6f9779c1aabcafe6e299f76b0a8802ee15d6664ac2"
+      "signature": "sha256:ba35fd0885c6687dbdaa508e6125f8cc6b3286355803d6b0563bbf121b7a9bd4"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--skip-hostdir-check/--skip-hostdir-check",
@@ -6927,7 +6856,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--skip-hostdir-check",
         "spelling": "--skip-hostdir-check"
       },
-      "signature": "sha256:ca264190b12f8df1571c8beb47e364629a20a652a970183cce784deeef613a92"
+      "signature": "sha256:60de39cd120e271c93c8cc38cdfe90f12de854c96d3ab3d8aa3f8cf92a5010f4"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--skip-secrets/--skip-secrets",
@@ -6940,7 +6869,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--skip-secrets",
         "spelling": "--skip-secrets"
       },
-      "signature": "sha256:835024033dc33f15d44181418aa213c6940a652e2a92678724a53cd72c3e7cf4"
+      "signature": "sha256:6fa4c76383a96e4a689b4580ea15653a3008b23c9452e1c6dfe6d934d9e123c5"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--thin/--thin",
@@ -6953,7 +6882,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--thin",
         "spelling": "--thin"
       },
-      "signature": "sha256:61bd7fe27dc3f492ef5c2c57655f58b18b341616a9f3bd46fca4c2e61bb0e7e0"
+      "signature": "sha256:d70ddcbaa27d6279ae66cae102b1102924dc95244985247aed4976ebc010db2c"
     },
     {
       "id": "case:route:entrypoint:ciu/up/option-spelling/option:route:entrypoint:ciu/up/--yes/--yes",
@@ -6966,7 +6895,7 @@
         "option_id": "option:route:entrypoint:ciu/up/--yes",
         "spelling": "--yes"
       },
-      "signature": "sha256:c0cf64d4203d37b41bfb6a31ceca38946d9974511f31cc4b36f764de89392e9e"
+      "signature": "sha256:6559f5e891295f5918998f8237413d049aac503713ed8f2b3160400eea933700"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/adopt/argument-shape/argument:route:entrypoint:ciu/worktree/adopt/logical_name",
@@ -12292,10 +12221,10 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "stop only the selected stack's running Compose project",
+          "description": "stop only the selected stack's running Compose project (with --host, the stack inside the pushed bundle)",
           "dest": "dir",
           "effective_default": null,
-          "exclusive_group": "down-mode",
+          "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
             "--dir"
@@ -12333,7 +12262,7 @@
           "description": "run the stop action on a configured remote host",
           "dest": "host",
           "effective_default": null,
-          "exclusive_group": "down-mode",
+          "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
             "--host"
@@ -20962,6 +20891,44 @@
           "type": null
         },
         {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "(with --gate) gate ONE stack directory (with --host, the stack inside the pushed bundle)",
+          "dest": "dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--dir"
+          ],
+          "help_group": "SELECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/status/--dir",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
           "action": "argparse._StoreTrueAction",
           "before_nested_subcommand": false,
           "canonical": "--gate",
@@ -21241,6 +21208,14 @@
           "kind": "requires",
           "option": "--phases",
           "reason": "phases restrict the health gate"
+        },
+        {
+          "any_of": [
+            "--gate"
+          ],
+          "kind": "requires",
+          "option": "--dir",
+          "reason": "--dir selects the stack the health gate checks"
         },
         {
           "kind": "conflicts",
@@ -21609,10 +21584,10 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "deploy ONE stack directory (engine mode)",
+          "description": "deploy ONE stack directory (engine mode; with --host, the stack inside the pushed bundle)",
           "dest": "dir",
           "effective_default": null,
-          "exclusive_group": "up-mode",
+          "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
             "--dir"
@@ -21650,7 +21625,7 @@
           "description": "push-deploy a named [deploy.layouts.<name>] host-to-bundles plan",
           "dest": "layout",
           "effective_default": null,
-          "exclusive_group": "up-mode",
+          "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
             "--layout"
@@ -21688,7 +21663,7 @@
           "description": "push-deploy to a host from the inventory (.ciu.hosts.toml)",
           "dest": "host",
           "effective_default": null,
-          "exclusive_group": "up-mode",
+          "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
             "--host"
@@ -22352,6 +22327,22 @@
           "options": [
             "--layout",
             "--profile"
+          ],
+          "reason": "a layout owns the host order and the bundles (S7.5c)"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--layout",
+            "--host"
+          ],
+          "reason": "a layout owns the host order and the bundles (S7.5c)"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--layout",
+            "--dir"
           ],
           "reason": "a layout owns the host order and the bundles (S7.5c)"
         }

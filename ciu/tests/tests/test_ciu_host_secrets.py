@@ -375,7 +375,7 @@ def test_up_host_with_secrets_does_not_materialize(cli_env, monkeypatch, capsys,
     seen = {"exec": [], "sync": []}
     monkeypatch.setattr(
         transport, "ssh_exec",
-        lambda cfg, argv, **kw: seen["exec"].append((cfg, argv)) or 0,
+        lambda cfg, argv, **kw: 0 if argv[0].startswith("command -v") else seen["exec"].append((cfg, argv)) or 0,
     )
     monkeypatch.setattr(
         transport, "ssh_sync",
@@ -383,7 +383,7 @@ def test_up_host_with_secrets_does_not_materialize(cli_env, monkeypatch, capsys,
     )
     monkeypatch.setitem(
         sys.modules, "ciu.deploy",
-        SimpleNamespace(load_global_config=lambda _root: {},
+        SimpleNamespace(load_global_config=lambda _root, **_kw: {},
                         resolve_repo_root=REAL_DEPLOY.resolve_repo_root),
     )
     monkeypatch.setattr(sys, "argv", ["ciu", "up", "--host", "devbox"])

@@ -29,20 +29,27 @@ def remote(monkeypatch, tmp_path):
     monkeypatch.setitem(
         sys.modules,
         "ciu.deploy",
-        SimpleNamespace(load_global_config=lambda _root: {},
+        SimpleNamespace(load_global_config=lambda _root, **_kw: {},
                         resolve_repo_root=REAL_DEPLOY.resolve_repo_root),
     )
     host = {"ssh_host": "web", "ssh_key": "/key", "known_host": "pinned"}
-    seen = {"hosts": [], "exec": [], "sync": []}
+    seen = {"hosts": [], "exec": [], "sync": [], "preflight": []}
 
     import ciu.hosts as hosts
     import ciu.transport_ssh as transport
 
     monkeypatch.setattr(hosts, "get_host",
                         lambda root, name, admin=False: seen["hosts"].append((root, name, admin)) or host)
-    monkeypatch.setattr(transport, "ssh_exec",
-                        lambda cfg, argv, *, config, repo_root, **kwargs:
-                        seen["exec"].append((cfg, argv, config, repo_root, kwargs)) or 0)
+    def fake_exec(cfg, argv, *, config, repo_root, **kwargs):
+        # The CIU-169 preflight is one `command -v` probe before the push; keep it
+        # out of the command log so each test reads its own remote command.
+        if argv and argv[0].startswith("command -v"):
+            seen["preflight"].append((cfg, argv))
+            return seen.get("preflight_rc", 0)
+        seen["exec"].append((cfg, argv, config, repo_root, kwargs))
+        return 0
+
+    monkeypatch.setattr(transport, "ssh_exec", fake_exec)
     monkeypatch.setattr(transport, "ssh_sync",
                         lambda cfg, local, target, *, config, repo_root, **kwargs:
                         seen["sync"].append((cfg, local, target, config, repo_root, kwargs)) or 0)
@@ -56,13 +63,17 @@ def _run(monkeypatch, argv):
     return exc.value.code
 
 
+# CIU-170: every post-push remote verb runs inside the bundle with its ciu.env exported.
+BUNDLE = 'cd /opt/ciu/current && { ciu_env=$(ciu env print) || exit $?; eval "$ciu_env"; } && '
+
+
 @pytest.mark.parametrize(
     ("verb", "args", "expected"),
     [
-        (["render"], ["--host", "web", "--profile", "a b"], "ciu render --profile 'a b'"),
-        (["down"], ["--host", "web", "--profile", "a b"], "ciu down --profile 'a b'"),
+        (["render"], ["--host", "web", "--profile", "a b"], f"{BUNDLE}ciu render --profile 'a b'"),
+        (["down"], ["--host", "web", "--profile", "a b"], f"{BUNDLE}ciu down --profile 'a b'"),
         (["status", "--gate"], ["--host", "web", "--profile", "a b"],
-         "ciu status --gate --profile 'a b'"),
+         f"{BUNDLE}ciu status --gate --profile 'a b'"),
     ],
 )
 def test_remote_verbs_preserve_selection_as_one_shell_argument(remote, monkeypatch, verb, args, expected):
@@ -108,7 +119,7 @@ def test_remote_verb_refuses_when_repo_root_not_set_and_no_define_root(monkeypat
     monkeypatch.setitem(
         sys.modules,
         "ciu.deploy",
-        SimpleNamespace(load_global_config=lambda _root: {},
+        SimpleNamespace(load_global_config=lambda _root, **_kw: {},
                         resolve_repo_root=REAL_DEPLOY.resolve_repo_root),
     )
     assert _run(monkeypatch, ["render", "--host", "web"]) == 2
@@ -128,12 +139,12 @@ def test_remote_up_sync_failure_short_circuits_remote_execution(remote, monkeypa
 def test_remote_up_quotes_bundle_and_selection_values(remote, monkeypatch):
     """Inventory paths and CLI values are data, not remote-shell syntax."""
     seen, host = remote
-    host["bundle_dir"] = "/srv/ciu current; touch SHOULD_NOT_RUN"
+    host["bundle_dir"] = "/srv/ciu;touch-SHOULD_NOT_RUN"
     assert _run(monkeypatch, ["up", "--host", "web", "--profile", "apps; id"]) == 0
     assert len(seen["sync"]) == 1
     remote_command = seen["exec"][0][1]
     assert remote_command == [
-        "cd '/srv/ciu current; touch SHOULD_NOT_RUN' && ciu env generate && "
+        "cd '/srv/ciu;touch-SHOULD_NOT_RUN' && ciu env generate && "
         "ciu render && ciu up --profile 'apps; id'"
     ]
 
@@ -240,3 +251,247 @@ def test_thin_validation_rejects_conflicting_or_docker_only_flags_before_activat
     assert _run(monkeypatch, ["up", "--host", "web", "--bootstrap"]) == 2
     assert "--bootstrap requires --thin" in capsys.readouterr().err
     assert seen["exec"] == [] and seen["sync"] == []
+
+
+# ---------------------------------------------------------------------------
+# CIU-168..CIU-171: the push-deploy preconditions and the remote verb chain.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("verb", "expected"),
+    [
+        (["down"], f"{BUNDLE}ciu down --dir whoami"),
+        (["status", "--gate"], f"{BUNDLE}ciu status --gate --dir whoami"),
+    ],
+)
+def test_remote_down_and_health_accept_dir_and_run_in_the_bundle(remote, monkeypatch, verb, expected):
+    """CIU-170: `--dir` is accepted after `--host` and forwarded inside the bundle prefix."""
+    seen, _ = remote
+    assert _run(monkeypatch, [*verb, "--host", "web", "--dir", "whoami"]) == 0
+    assert seen["exec"][0][1] == [expected]
+
+
+def test_remote_down_dir_forwards_the_profile_that_declares_an_optional_stack(remote, monkeypatch):
+    """CIU-170 residue: S10.2a needs `--profile` for an optional stack on the target.
+
+    The remote `down --dir STACK` must carry `--profile` through to the bundle verb,
+    otherwise the target's deploy selection omits the stack and refuses with [S18].
+    """
+    seen, _ = remote
+    assert _run(monkeypatch, ["down", "--host", "web", "--dir", "tools/dbg", "--profile", "admin"]) == 0
+    assert seen["exec"][0][1] == [f"{BUNDLE}ciu down --profile admin --dir tools/dbg"]
+
+
+def test_remote_push_sync_passes_the_mandatory_and_host_excludes(remote, monkeypatch):
+    """CIU-175: the non-thin sync always excludes .git/.ciu/ciu.env/vol-* plus bundle_excludes."""
+    seen, host = remote
+    host["bundle_excludes"] = ["ciu.instance.generated.toml"]
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 0
+    assert seen["sync"][0][5]["excludes"] == [
+        ".git", ".ciu", "ciu.env", "vol-*", "ciu.instance.generated.toml"]
+
+
+def test_remote_push_refuses_a_malformed_bundle_excludes_before_syncing(remote, monkeypatch, capsys):
+    """CIU-175: a non-list `bundle_excludes` is a config error (exit 2); NOTHING is sent,
+    not even the preflight mkdir on the target (F4)."""
+    seen, host = remote
+    host["bundle_excludes"] = "ciu.env"
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 2
+    assert seen["sync"] == []
+    assert seen["preflight"] == [] and seen["exec"] == []
+    assert "list of strings" in capsys.readouterr().err
+
+
+def test_remote_up_accepts_dir_with_host(remote, monkeypatch):
+    """CIU-170: `up --host H --dir STACK` (SPEC S14.2) is not a mode conflict."""
+    seen, _ = remote
+    assert _run(monkeypatch, ["up", "--host", "web", "--dir", "whoami"]) == 0
+    assert seen["exec"][0][1][0].endswith("ciu up --dir whoami")
+
+
+def test_remote_ciu_host_key_replaces_the_bare_ciu_everywhere(remote, monkeypatch):
+    """CIU-169: `remote_ciu` is used by the probe, the env chain and every verb."""
+    seen, host = remote
+    host["remote_ciu"] = "/opt/venv/bin/ciu"
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 0
+    assert seen["preflight"][0][1][0].startswith("command -v /opt/venv/bin/ciu ")
+    up = seen["exec"][0][1][0]
+    assert "/opt/venv/bin/ciu env generate && /opt/venv/bin/ciu render && /opt/venv/bin/ciu up" in up
+    assert _run(monkeypatch, ["down", "--host", "web"]) == 0
+    assert seen["exec"][1][1] == [
+        'cd /opt/ciu/current && { ciu_env=$(/opt/venv/bin/ciu env print) || exit $?; eval "$ciu_env"; } && /opt/venv/bin/ciu down'
+    ]
+
+
+def test_remote_preflight_creates_a_nested_bundle_dir(remote, monkeypatch):
+    """CIU-169: rsync makes only the last path element, so the probe mkdir -p's it first."""
+    seen, host = remote
+    host["bundle_dir"] = "/home/runner/ciu-remote-test/current"
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 0
+    probe = seen["preflight"][0][1][0]
+    assert probe.endswith("mkdir -p /home/runner/ciu-remote-test/current || exit 126")
+    assert len(seen["sync"]) == 1
+
+
+def test_remote_preflight_names_the_fix_when_ciu_is_not_on_the_path(remote, monkeypatch, capsys):
+    """CIU-169: exit 127 from the probe stops before any sync and names both remedies."""
+    seen, _ = remote
+    import ciu.transport_ssh as transport
+    monkeypatch.setattr(transport, "ssh_exec", lambda cfg, argv, **kw: 127)
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 127
+    err = capsys.readouterr().err
+    assert "'ciu' is not on the remote non-login PATH" in err
+    assert "/usr/local/bin" in err and 'remote_ciu = "/absolute/path/to/ciu"' in err
+    assert seen["sync"] == []
+
+
+def test_remote_preflight_names_the_unwritable_bundle_dir(remote, monkeypatch, capsys):
+    """CIU-169: exit 126 means the bundle directory cannot be created."""
+    seen, _ = remote
+    import ciu.transport_ssh as transport
+    monkeypatch.setattr(transport, "ssh_exec", lambda cfg, argv, **kw: 126)
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 126
+    assert "cannot create bundle_dir '/opt/ciu/current'" in capsys.readouterr().err
+    assert seen["sync"] == []
+
+
+def test_remote_preflight_passes_other_ssh_failures_through_silently(remote, monkeypatch, capsys):
+    """An ssh failure (255) is the transport's own to report: no invented remedy."""
+    import ciu.transport_ssh as transport
+    monkeypatch.setattr(transport, "ssh_exec", lambda cfg, argv, **kw: 255)
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 255
+    assert "[ERROR]" not in capsys.readouterr().err
+
+
+def test_remote_config_load_needs_no_machine_facts_and_writes_nothing(tmp_path, monkeypatch):
+    """CIU-168: a control host without ciu.env / DOCKER_GID still loads the config for a push."""
+    for key in ("DOCKER_GID", "CONTAINER_GID", "CONTAINER_UID", "DOCKER_NETWORK_INTERNAL",
+                "REPO_ROOT", "INSTANCE_ID"):
+        monkeypatch.delenv(key, raising=False)
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text(
+        '[deploy]\ngid = "$DOCKER_GID"\nnet = "$DOCKER_NETWORK_INTERNAL"\nroot = "$REPO_ROOT"\n',
+        encoding="utf-8",
+    )
+    config = cli._load_remote_config(tmp_path)
+    assert config["deploy"]["gid"] == "0"
+    assert config["deploy"]["net"] == "ciu-remote-placeholder"
+    assert config["deploy"]["root"] == str(tmp_path)
+    assert not (tmp_path / "ciu.global.toml").exists()
+
+
+def test_remote_config_load_keeps_real_environment_values(tmp_path, monkeypatch):
+    """A fact the control host does have is never replaced by a placeholder."""
+    monkeypatch.setenv("DOCKER_GID", "990")
+    kwargs = cli._remote_render_kwargs(tmp_path)
+    assert kwargs["environ"]["DOCKER_GID"] == "990"
+    assert kwargs["write_rendered"] is False
+
+
+def test_local_status_gate_dir_gates_the_one_stack(remote, monkeypatch):
+    """CIU-170: `status --gate --dir STACK` applies the single-stack S7.7 gate locally."""
+    import ciu.engine as engine
+    calls = []
+    monkeypatch.setattr(engine, "_run_single_stack_healthcheck",
+                        lambda stack, define_root, config: calls.append((stack, define_root, config)) or 0)
+    sys.modules["ciu.deploy"].load_global_config = lambda _root, **_kw: {"cfg": 1}
+    assert _run(monkeypatch, ["status", "--gate", "--dir", "whoami"]) == 0
+    assert calls == [(Path("whoami"), None, {"cfg": 1})]
+
+
+def test_local_status_gate_dir_reports_a_bad_config_as_exit_2(remote, monkeypatch, capsys):
+    def boom(_root, **_kw):
+        raise ValueError("broken config")
+    sys.modules["ciu.deploy"].load_global_config = boom
+    assert _run(monkeypatch, ["status", "--gate", "--dir", "whoami"]) == 2
+    assert "[ERROR] broken config" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# F3: the bundle command fails closed when `ciu env print` fails
+# ---------------------------------------------------------------------------
+
+def _run_bundle_command(tmp_path, ciu_body):
+    """Run the generated remote command under a real sh with a fake `ciu` in the bundle."""
+    import subprocess
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    fake = tmp_path / "fakeciu"
+    fake.write_text("#!/bin/sh\n" + ciu_body)
+    fake.chmod(0o755)
+    host = {"bundle_dir": str(bundle), "remote_ciu": str(fake)}
+    cmd = cli._remote_bundle_command(host, ["down"])
+    return subprocess.run(["sh", "-c", cmd], capture_output=True, text=True)
+
+
+def test_bundle_command_runs_the_verb_with_the_printed_environment(tmp_path):
+    body = 'if [ "$1" = env ]; then echo "export BUNDLE_X=ok"; else echo "verb:$BUNDLE_X:$1"; fi\n'
+    done = _run_bundle_command(tmp_path, body)
+    assert (done.returncode, done.stdout) == (0, "verb:ok:down\n")
+
+
+def test_bundle_command_does_not_run_the_verb_when_env_print_fails(tmp_path):
+    body = 'if [ "$1" = env ]; then echo "no ciu.env" >&2; exit 7; fi\necho VERB-RAN\n'
+    done = _run_bundle_command(tmp_path, body)
+    assert done.returncode == 7
+    assert "VERB-RAN" not in done.stdout
+
+
+# ---------------------------------------------------------------------------
+# F4: `~` handling, remote_ciu type, validation before anything is sent
+# ---------------------------------------------------------------------------
+
+def test_tilde_bundle_dir_and_remote_ciu_expand_to_home_deliberately(remote, monkeypatch):
+    seen, host = remote
+    host["bundle_dir"] = "~/ciu deploy".replace(" ", "-")
+    host["remote_ciu"] = "~/.local/bin/ciu"
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 0
+    probe = seen["preflight"][0][1][0]
+    assert probe == (
+        'command -v "$HOME"/.local/bin/ciu >/dev/null 2>&1 || exit 127; '
+        'mkdir -p "$HOME"/ciu-deploy || exit 126'
+    )
+    assert seen["exec"][0][1][0].startswith(
+        'cd "$HOME"/ciu-deploy && "$HOME"/.local/bin/ciu env generate && ')
+    assert seen["sync"][0][2] == "~/ciu-deploy"  # rsync resolves ~ on the target itself
+
+
+def test_bare_tilde_bundle_dir_is_home(remote, monkeypatch):
+    seen, host = remote
+    host["bundle_dir"] = "~"
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 0
+    assert 'mkdir -p "$HOME" ||' in seen["preflight"][0][1][0]
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("bundle_dir", "~other/ciu", "'~user' forms are not supported"),
+        ("remote_ciu", "~other/ciu", "'~user' forms are not supported"),
+        ("remote_ciu", ["a"], "'remote_ciu' must be a string"),
+        ("bundle_dir", 5, "'bundle_dir' must be a non-empty string"),
+        ("bundle_dir", "   ", "'bundle_dir' must be a non-empty string"),
+        ("bundle_dir", "/srv/ciu current", "must not contain whitespace"),
+    ],
+)
+def test_invalid_host_row_is_refused_before_any_ssh(remote, monkeypatch, capsys, key, value, message):
+    seen, host = remote
+    host[key] = value
+    assert _run(monkeypatch, ["up", "--host", "web"]) == 2
+    assert message in capsys.readouterr().err
+    assert seen["preflight"] == [] and seen["exec"] == [] and seen["sync"] == []
+
+
+def test_invalid_host_row_is_exit_2_for_the_post_push_verbs(remote, monkeypatch, capsys):
+    seen, host = remote
+    host["remote_ciu"] = ["a"]
+    assert _run(monkeypatch, ["down", "--host", "web"]) == 2
+    assert "'remote_ciu' must be a string" in capsys.readouterr().err
+    assert seen["exec"] == []
+
+
+def test_empty_remote_ciu_means_the_default(remote, monkeypatch):
+    seen, host = remote
+    host["remote_ciu"] = ""
+    assert _run(monkeypatch, ["down", "--host", "web"]) == 0
+    assert seen["exec"][0][1] == [f"{BUNDLE}ciu down"]
