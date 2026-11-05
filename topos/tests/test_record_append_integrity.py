@@ -29,17 +29,27 @@ def test_append_after_a_torn_final_line_keeps_the_recording_readable(tmp_path: P
     assert [f.ts for f in RecordReader(path)] == [1.0, 2.0, 4.0]
 
 
-def test_append_to_a_file_that_is_only_a_partial_line_starts_a_fresh_recording(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "content",
+    [
+        b'{"type":"header","schema_ver',  # torn header: no valid header to trust
+        b"just some notes without a newline",
+        b"a log line\nanother line without newline",
+        b'{"type":"frame","ts":1.0}\n',  # JSON but not a recording header
+    ],
+)
+def test_append_to_a_file_without_a_valid_header_is_refused_untouched(
+    tmp_path: Path, content: bytes
 ) -> None:
+    from topos.record.writer import NotARecordingError
+
     path = tmp_path / "rec.jsonl"
-    path.write_bytes(b'{"type":"header","schema_ver')
+    path.write_bytes(content)
 
-    with RecordWriter(path, started_at=0.0) as writer:
-        writer.write_frame(_frame(1.0))
+    with pytest.raises(NotARecordingError):
+        RecordWriter(path, started_at=0.0)
 
-    assert [f.ts for f in RecordReader(path)] == [1.0]
-    assert path.read_text().count('"type":"header"') == 1
+    assert path.read_bytes() == content
 
 
 def test_append_to_a_clean_plain_recording_does_not_cut_anything(tmp_path: Path) -> None:

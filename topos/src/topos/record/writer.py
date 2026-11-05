@@ -29,12 +29,34 @@ def _is_zstd_file(path: Path) -> bool:
         return False
 
 
+class NotARecordingError(RuntimeError):
+    """The existing file does not start with a topos recording header."""
+
+
+def _starts_with_recording_header(fh: BinaryIO) -> bool:
+    fh.seek(0)
+    first = fh.readline(1 << 20)
+    try:
+        record = json.loads(first)
+    except ValueError:
+        return False
+    return isinstance(record, dict) and record.get("type") == "header" and "schema_version" in record
+
+
 def _truncate_to_last_newline(path: Path, *, chunk: int = 65536) -> None:
-    """Drop a trailing partial line (no terminating newline) from *path*."""
+    """Drop a trailing partial line (no terminating newline) from *path*.
+
+    Acts only on a file that starts with a valid recording header and never
+    truncates it to zero; anything else raises :class:`NotARecordingError`.
+    """
     with path.open("r+b") as fh:
         size = fh.seek(0, os.SEEK_END)
         if size == 0:
             return
+        if not _starts_with_recording_header(fh):
+            raise NotARecordingError(
+                f"refusing to append to {path}: it does not start with a topos recording header"
+            )
         fh.seek(size - 1)
         if fh.read(1) == b"\n":
             return
@@ -48,7 +70,9 @@ def _truncate_to_last_newline(path: Path, *, chunk: int = 65536) -> None:
                 fh.truncate(start + index + 1)
                 return
             end = start
-        fh.truncate(0)
+        # Unreachable for a valid header line (it ends in a newline before any
+        # partial tail unless the header itself is torn): refuse, never wipe.
+        raise NotARecordingError(f"refusing to truncate {path}: no complete line to keep")
 
 
 def _require_intact_zstd(path: Path) -> None:
