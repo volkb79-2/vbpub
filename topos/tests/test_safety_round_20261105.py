@@ -1067,13 +1067,17 @@ def test_signal_during_restore_write_keeps_the_outcome_truthful(tmp_path, write_
             raise OSError(22, "EINVAL")
 
     guard = squeeze._RestoreGuard("/cg/x", "max", writer=writer, recovery_path=rec)
-    previous = signal.getsignal(signal.SIGTERM)
+    previous = {s: signal.getsignal(s) for s in squeeze._GUARDED_SIGNALS}
     guard.__enter__()
     try:
         with pytest.raises(squeeze._Terminated):
             guard.restore()
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        # every guarded signal, not only SIGTERM: a squeeze handler left on SIGPIPE or SIGINT turns a
+        # later test's broken pipe or Ctrl-C in this worker into _Terminated
+        for s, handler in previous.items():
+            signal.signal(s, handler)
+    assert {s: signal.getsignal(s) for s in squeeze._GUARDED_SIGNALS} == previous
 
     assert guard.restore_failed is write_fails
     assert rec.exists() is write_fails
