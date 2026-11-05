@@ -13,6 +13,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `~/.nanorc` still overrides per setting. Runtime test `test_system_defaults.py` updated.
 
 ### Added
+- Devcontainers see the host topos daemon socket: templates and `.devcontainer` bind `/run/topos` read-only via `runArgs -v` (not `mounts`, so a host whose host-setup predates this still starts: Docker auto-creates the missing source as root:root 0755). host-setup ships `units/mdt-topos.conf` (`d /run/topos 0750 root docker -`, directory rule only, no topos service), installed by install.sh and checked by check.sh. On mdt hosts the topos daemon's `Group=` must be `docker`.
 - host-setup `HOST_ROLE=dedicated-dev` load-tier ceilings made reachable (AD2-0; shared-prod byte-identical): `dev-gates.slice` / `dev-background.slice` MemoryMax = dev.slice
   MemoryHigh (dev's own RAM+swap Max is never reachable), MemorySwapMax = dev.slice swap max minus the protected tiers' MemoryLow sum (floor 256M); that sum now also counts the
   new optional `DEV_CACHE_MEMORY_LOW` (the `dev-cache.slice` Low, default empty = 0). Pins still win (`DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}`). A lane with no swap left is

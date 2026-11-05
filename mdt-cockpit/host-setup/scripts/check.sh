@@ -564,6 +564,28 @@ check_cgprofile_observer() {
   ok "$observer_dir is root:$observer_gid 0751, distinct from docker; observer sysusers/tmpfiles rules are present"
 }
 
+echo "== topos socket directory (/run/topos) =="
+# The devcontainer templates bind this directory read-only via runArgs -v, which
+# auto-creates a missing source as root:root 0755. That keeps old hosts starting
+# but gives group docker no access, so a wrong owner/mode is a hard fail here.
+TOPOS_DIR=/run/topos
+if [ -d "$TOPOS_DIR" ] && [ ! -L "$TOPOS_DIR" ]; then
+  tp_mode=$(stat -c '%a' "$TOPOS_DIR" 2>/dev/null)
+  tp_owner=$(stat -c '%U:%G' "$TOPOS_DIR" 2>/dev/null)
+  if [ "$tp_mode" = "750" ] && [ "$tp_owner" = "root:docker" ]; then
+    ok "$TOPOS_DIR exists, mode 0750, owner root:docker"
+  else
+    fail "$TOPOS_DIR exists but mode=${tp_mode:-?} owner=${tp_owner:-?} (expected 750 root:docker; root:root 755 is Docker's auto-created source) -- /etc/tmpfiles.d/mdt-topos.conf missing/stale or not applied; re-run 'systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf' or install.sh"
+  fi
+  if [ -S "$TOPOS_DIR/topos.sock" ]; then
+    info "topos daemon socket available ($TOPOS_DIR/topos.sock)"
+  else
+    info "topos daemon socket absent -- the topos service may not be installed or running (host-setup installs no topos service)"
+  fi
+else
+  fail "$TOPOS_DIR is missing or is not a real directory -- /etc/tmpfiles.d/mdt-topos.conf missing or not applied; re-run install.sh (or 'sudo systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf' directly)"
+fi
+
 echo "== cgprofile resource observer (/run/cgprofile/observer, contract 2) =="
 check_cgprofile_observer
 

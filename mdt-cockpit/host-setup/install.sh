@@ -1313,6 +1313,14 @@ systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf \
   || { echo "ERROR: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-cgprofile.conf" >&2; exit 1; }
 provision_cgprofile_observer /
 
+# /run/topos tmpfiles.d entry: the directory the devcontainer templates bind
+# read-only (runArgs -v, so a missing source is auto-created rather than
+# refused) to reach the host topos daemon's socket. Directory rule only: no
+# topos service is installed or started here. See units/mdt-topos.conf.
+install -m 0644 "$HERE/units/mdt-topos.conf" /etc/tmpfiles.d/mdt-topos.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf \
+  || { echo "ERROR: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-topos.conf" >&2; exit 1; }
+
 # DAMON_STAT is a host-wide consumer that excludes cgprofile's generic DAMON
 # sysfs sessions. Disabled by default (operator decision 2026-10-20); `no` removes the override.
 export DAMON_STAT_TMPFILES=/etc/tmpfiles.d/mdt-damon-stat.conf

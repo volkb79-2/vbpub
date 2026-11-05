@@ -221,6 +221,26 @@
     // (docs/CONSUMERS.md "Host cgroup preflight" and host-setup/README.md explain why).
     "--group-add", "${localEnv:DOCKER_GID}",
 
+    // topos daemon socket (host service; zero-argument `topos` attaches to it).
+    // PURPOSE: a devcontainer's own cgroup namespace shows only itself, so
+    // `topos` here needs the HOST daemon's `/run/topos/topos.sock`. The whole
+    // directory is bound read-only (not the socket file) so a daemon restart,
+    // which re-creates the socket, never leaves a stale inode behind.
+    // WHY runArgs AND NOT `mounts`: `mounts` entries are Docker `--mount`,
+    // which REFUSES to start the container when the source is missing, and a
+    // host whose host-setup predates mdt-topos.conf has no /run/topos. `-v`
+    // instead auto-creates a missing source as a directory (Docker bind-mount
+    // docs), so such a host still starts its devcontainer. Until
+    // host-setup/units/mdt-topos.conf is applied (install.sh) that
+    // auto-created directory is root:root 0755 and empty: the container
+    // simply sees no socket and `topos` reports the daemon as unreachable;
+    // tmpfiles later corrects it to root:docker 0750 in place. Nothing is
+    // lost, and nothing here needs a rebuild once the host is current.
+    // GROUP ACCESS: as for /run/cgprofile, the socket must be group docker
+    // (the `--group-add` above puts this container in that group). On mdt
+    // hosts the daemon's Group= has to be docker.
+    "-v", "/run/topos:/run/topos:ro",
+
     // sshfs / mount(2) inside container
     "--cap-add", "SYS_ADMIN",
     "--device", "/dev/fuse",
