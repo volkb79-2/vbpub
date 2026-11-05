@@ -446,7 +446,15 @@ def _root_helper_cgroup_parent() -> str:
             f"CGROUP_PARENT_DEV_INTERACTIVE is not a slice unit name: {parent!r}"
         )
     loaded, note = governance.check_slice_unit(parent)
-    if loaded is not True:
+    if loaded is None:
+        # CIU-181 (CIU-164): an INCONCLUSIVE probe (no systemctl, systemd not PID 1
+        # as in a devcontainer) degrades as its own note says: warn, skip the slice
+        # check, still run the helper. Only a definite "not loaded" refuses.
+        print(
+            f"[WARN] S6.5 root helper cgroup parent {parent!r} not verified: {note}",
+            file=sys.stderr, flush=True,
+        )
+    elif loaded is not True:
         raise RuntimeError(
             f"S6.5 root helper cgroup parent {parent!r} is not verified loaded: {note}"
         )
@@ -598,6 +606,41 @@ def privileged_rmtree(
         raise
 
 
+def _tree_owned_by_caller(root: Path) -> bool:
+    """True when *root* and every entry below it is owned by the calling uid."""
+    uid = os.getuid()
+    try:
+        if root.lstat().st_uid != uid:
+            return False
+        for current, dirs, files in os.walk(root, followlinks=False):
+            for name in (*dirs, *files):
+                if os.lstat(os.path.join(current, name)).st_uid != uid:
+                    return False
+    except OSError:
+        return False
+    return True
+
+
+def _make_tree_writable(root: Path) -> None:
+    """Add owner rwx to directories and owner w to files below *root* (CIU-181).
+
+    Read-only (0444/0555) entries otherwise block ``rmtree``; only entries the
+    caller owns are touched and symlinks are never followed.
+    """
+    for current, dirs, files in os.walk(root, followlinks=False):
+        for name in (*dirs, *files):
+            path = os.path.join(current, name)
+            info = os.lstat(path)
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+                continue
+            extra = 0o700 if stat.S_ISDIR(info.st_mode) else 0o200
+            if info.st_mode & extra != extra:
+                os.chmod(path, info.st_mode | extra)
+    info = root.lstat()
+    if info.st_mode & 0o700 != 0o700:
+        os.chmod(root, info.st_mode | 0o700)
+
+
 def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
     """Remove *vol_dir*, routing through the S6.5 root helper whenever DooD applies (CIU-9).
 
@@ -649,6 +692,8 @@ def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:
         return
 
     # Native host (S1.9): logical == physical, so a local rmtree is trustworthy.
+    if _tree_owned_by_caller(vol_dir):
+        _make_tree_writable(vol_dir)
     try:
         shutil.rmtree(vol_dir)
         return

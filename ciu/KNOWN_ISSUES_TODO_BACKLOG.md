@@ -6055,3 +6055,33 @@ the shared workspace registry, and the next create at that path refuses with "ph
 record and the remedy (`ciu worktree rm <name>`, and for a record whose path no longer exists, a prune such as `ciu worktree prune`/`rm --stale`).
 
 **Acceptance criteria.** Test: a forced preparation failure leaves no checkout or record (or a record that `ciu worktree rm` removes); after a manual `git worktree remove` the next create refuses with a text containing the remedy command, and that command succeeds.
+
+## CIU-180 — `ciu up` in a managed worktree refuses on the PRIMARY checkout's outdated generated facts, naming a file outside the worktree and a command that cannot fix it
+
+**Status: FIXED 2026-11-05 (branch ciu-triage-20261105). Severity: P2.** Reported from another project on ciu 7.21.0 in a devcontainer.
+
+**Observed.** `ciu up --dir STACK` in a linked worktree stopped at STEP 13/17 with `[S3.1c] <PRIMARY>/ciu.instance.generated.toml has outdated identity '7125ab'; ... Run ciu env generate`. The file is the primary root's (a schema-v1, header-less record written by an older ciu); `deploy.resolve_primary_image_references` (CIU-117 image-map comparison) reads it strictly through `_render_environment_for_checkout(primary_root)`, and `ciu env generate` in the worktree cannot repair another checkout. Dry-run passed (no primary read). Candidate sites checked: reference-root reads and `read_generated_facts(..., allow_repair=False)` in deploy/worktree; only the image-map path reads the primary's facts during `ciu up`.
+
+**Fix.** `worktree.require_current_primary_facts(repo_root)`: if the primary CIU root has a generated-facts file that is not current, raise `[CIU-180]` naming the primary root and `cd <primary> && ciu env generate`. Called up front by `worktree.create` and `worktree.ensure` (before any side effect) and by `resolve_primary_image_references` (raised as the ValueError that path already surfaces), so a stale primary is detected at create time, not at STEP 13.
+
+**Related.** CIU-172 (v1 record migration by `ensure`, still OPEN), CIU-166, CIU-160/161 (fixed on fix-ciu-161-20261105), CIU-174. Not yet fixed elsewhere: neither ciu-remote-deploy-20261105 nor ciu-findings-20261105 touches this path.
+
+## CIU-181 — `ciu worktree rm` cannot clean up in a devcontainer: the S6.5 root-helper preflight aborts `ciu clean`, and read-only ignored files strand the checkout
+
+**Status: PARTIALLY FIXED 2026-11-05 (branch ciu-triage-20261105); remainder filed as CIU-182. Severity: P2.** Reported from another project on ciu 7.21.0.
+
+**Observed.** `ciu clean` (run by `rm`) stopped at `S6.5 root helper cgroup parent 'dev-interactive.slice' is not verified loaded: systemctl is present but systemd is not PID 1 ...` even though the `vol-*` dirs belong to the caller's uid. This is the CIU-164 preflight hit by clean instead of up. With `--force`, git deregistered the worktree but 13 MB of 0444 gitignored files stayed.
+
+**Fix (done).** (1) `engine._root_helper_cgroup_parent`: an INCONCLUSIVE slice probe (`check_slice_unit` -> `None`: no systemctl / systemd not PID 1) now warns and proceeds, as its own message says; a definite `False` still refuses. This is the CIU-164 design for every helper caller (up, clean, reset). CIU-164's remaining acceptance (helper creates a uid-1000 hostdir) is covered by the same change but not separately tested; status stays OPEN there pending that test. (2) `engine._rmtree_with_fallback` (native host): a caller-owned `vol-*` tree has read-only entries made writable before the local rmtree; a PermissionError still falls back to the helper. In DooD the helper stays mandatory (CIU-9 doctrine, test-pinned), but with (1) it now runs in a devcontainer instead of aborting. (3) `worktree.remove` makes caller-owned read-only entries of the checkout writable before `git worktree remove`, so 0444 files / 0555 dirs no longer fail the deletion (test proven red without it). (4) A repeat `rm` of a deregistered-but-present checkout names the leftover directory and the manual remedy instead of the bare "no worktree named".
+
+**Related.** CIU-164, CIU-174, CIU-182.
+
+## CIU-182 — `ciu worktree rm --force` can deregister a checkout it then fails to delete; `rm` has no `--dry-run` listing what `--force` would leak
+
+**Status: OPEN (filed 2026-11-05). Severity: P3.**
+
+**Observed.** `git worktree remove --force` drops the administrative registration even when deleting the working tree fails (root cause lives in git plus `libraries/worktree` `remove_workspace`, which runs git first). After CIU-181 the common trigger (read-only caller-owned files) is gone, but a checkout holding foreign-uid entries still leaves a registered-nowhere directory on a failed delete (the leftover is now named, but there is no retry path).
+
+**Design.** (a) In `libraries/worktree`, delete the working tree itself (or pre-verify deletability of every entry, refusing before git runs) and only then drop the registration, so a failed deletion keeps the registration and a second `rm` retries; (b) `ciu worktree rm --dry-run` lists each entry that `--force` would leave behind (foreign-owned, mounted, unreadable) and the remedy per entry; (c) let `rm NAME` adopt an unregistered `.worktrees/NAME` directory that carries a CIU record, to finish it.
+
+**Acceptance criteria.** A checkout with a foreign-uid entry: `rm --force` fails leaving the registration; fixing ownership and re-running completes it; `rm --dry-run` lists the entry without changing anything.

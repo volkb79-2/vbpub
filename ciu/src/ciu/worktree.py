@@ -6164,6 +6164,36 @@ def _local_base_branch(repo_root: Path, base: str, base_commit: str) -> str | No
     return name
 
 
+def require_current_primary_facts(repo_root: Path) -> None:
+    """CIU-180: refuse early, naming the PRIMARY root, when its facts are outdated.
+
+    Worktree operations read the primary CIU root's generated identity (image
+    map comparison, family admission). A schema-v1 / header-less file written
+    by an older CIU there cannot be repaired from inside a linked checkout, so
+    the refusal must name the primary root and the command to run THERE.
+    """
+    from .workspace_env import (
+        WorkspaceEnvError,
+        generated_facts_path,
+        read_generated_facts,
+    )
+
+    try:
+        primary = primary_ciu_root(Path(repo_root).resolve())
+    except WorktreeError:
+        return  # not a resolvable family: the caller's own checks report it
+    if not generated_facts_path(primary).is_file():
+        return
+    try:
+        read_generated_facts(primary, allow_repair=False)
+    except WorkspaceEnvError as exc:
+        raise WorktreeError(
+            f"[CIU-180] the primary checkout's generated facts are not current "
+            f"({exc}). Run `ciu env generate` in the primary CIU root "
+            f"(cd {shlex.quote(str(primary))} && ciu env generate), then retry."
+        ) from exc
+
+
 def create(
     repo_root: Path,
     logical_name: str,
@@ -6232,6 +6262,7 @@ def create(
         _validate_name(display_name, label="display name")
     if branch is not None and not branch:
         raise WorktreeError("[S16] --branch cannot be empty")
+    require_current_primary_facts(repo_root)
 
     shared_infra_intent: SharedInfraIntent | None = None
     if (
@@ -6407,6 +6438,7 @@ def ensure(
 ) -> WorktreeInstanceRecord:
     """Return an exact ready match or resume one CIU-owned partial allocation."""
     _validate_name(logical_name, label="logical name")
+    require_current_primary_facts(repo_root)
     with _allocation_lock(repo_root):
         record = find_instance_record(repo_root, logical_name)
         if record is None:
@@ -7935,9 +7967,21 @@ def remove(
                 logical_shared.metadata.get(_CIU_WORKTREE_REMOVAL_METADATA), dict
             ):
                 return resume_permission_retry(logical_shared, managed)
+            leftovers = [
+                str(candidate) for candidate in (
+                    repo_root / DEFAULT_WORKTREE_DIR / name,
+                ) if candidate.is_dir()
+            ]
+            hint = (
+                f"; an unregistered leftover checkout directory exists at "
+                f"{', '.join(leftovers)} (a previous `rm --force` deregistered "
+                "it but could not delete it): review it, then remove it with "
+                "`rm -rf` (make read-only entries writable first with `chmod -R u+w`)"
+                if leftovers else ""
+            )
             raise fail(
                 f"no worktree named {name!r} under {repo_root}; "
-                "`ciu worktree list` shows what exists"
+                f"`ciu worktree list` shows what exists{hint}"
             )
         if wt.is_primary or wt.path.resolve() == repo_root.resolve():
             raise fail(
@@ -8540,6 +8584,10 @@ def remove(
                     f"could not save exact removal recovery evidence: {exc}",
                     phase="lifecycle_preflight",
                 ) from exc
+        # CIU-181: read-only entries this uid owns (0444 files, 0555 dirs) must not
+        # leave `git worktree remove --force` half-done after it deregisters.
+        from . import engine as _engine_module
+        _engine_module._make_tree_writable(wt.path)
         if shared_record is not None:
             shared.remove_workspace(
                 shared_record,

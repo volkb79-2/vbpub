@@ -9099,3 +9099,160 @@ def test_permission_retry_checkpoint_time_refresh_rolls_back_when_recheck_fails(
         )
 
     assert checkpoint["checkpoint_time_ns"] == 1
+
+
+# ---------------------------------------------------------------------------
+# CIU-180 / CIU-181 (triage 2026-11-05)
+# ---------------------------------------------------------------------------
+
+
+def _make_primary_facts_outdated(root: Path, write_instance_facts) -> Path:
+    path = write_instance_facts(
+        root, instance_id="7125ab", network="repo-7125ab-network",
+        repo_name=root.name, repo_root=str(root), physical_repo_root=str(root),
+    )
+    path.write_text(
+        "".join(
+            line for line in path.read_text(encoding="utf-8").splitlines(True)
+            if not line.startswith("schema_version")
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+class TestPrimaryFactsOutdated:
+    def test_noop_without_or_with_current_primary_facts(
+        self, tmp_repo, write_instance_facts,
+    ):
+        worktree.require_current_primary_facts(tmp_repo)  # no facts file
+        write_instance_facts(tmp_repo, instance_id="7125ab", network="n")
+        worktree.require_current_primary_facts(tmp_repo)  # current schema
+
+    def test_linked_checkout_refusal_names_primary_root_and_command(
+        self, tmp_repo, write_instance_facts,
+    ):
+        _make_primary_facts_outdated(tmp_repo, write_instance_facts)
+        linked = tmp_repo / ".worktrees" / "wt"
+        assert _git(["worktree", "add", "-b", "wt", str(linked), "main"], tmp_repo).returncode == 0
+        with pytest.raises(worktree.WorktreeError) as excinfo:
+            worktree.require_current_primary_facts(linked)
+        message = str(excinfo.value)
+        assert str(tmp_repo.resolve()) in message
+        assert "ciu env generate" in message and "7125ab" in message
+        with pytest.raises(ValueError, match="ciu env generate"):
+            deploy.resolve_primary_image_references(linked)
+
+    def test_create_and_ensure_refuse_up_front(self, tmp_repo, write_instance_facts):
+        _make_primary_facts_outdated(tmp_repo, write_instance_facts)
+        with pytest.raises(worktree.WorktreeError, match="primary CIU root"):
+            worktree.create(tmp_repo, "new")
+        with pytest.raises(worktree.WorktreeError, match="primary CIU root"):
+            worktree.ensure(tmp_repo, "new")
+        assert not (tmp_repo / ".worktrees" / "new").exists()
+
+
+class TestRemovalDegradesInDevcontainer:
+    def test_clean_helper_preflight_warns_when_systemd_is_not_pid1(
+        self, monkeypatch, capsys,
+    ):
+        from ciu import engine
+
+        monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "dev-interactive.slice")
+        monkeypatch.setattr(
+            engine.governance, "check_slice_unit",
+            lambda _n: (None, "systemd is not PID 1; skipping the slice-existence preflight"),
+        )
+        assert engine._root_helper_cgroup_parent() == "dev-interactive.slice"
+        assert "not verified" in capsys.readouterr().err
+
+    def test_native_readonly_tree_owned_by_caller_removed_without_root_helper(
+        self, tmp_path, monkeypatch,
+    ):
+        from ciu import engine
+
+        vol = tmp_path / "vol-data"
+        (vol / "d").mkdir(parents=True)
+        (vol / "d" / "f").write_text("x", encoding="utf-8")
+        (vol / "d" / "f").chmod(0o444)
+        (vol / "d" / "link").symlink_to(vol / "d" / "f")
+        (vol / "d").chmod(0o555)
+        monkeypatch.setattr(
+            engine, "privileged_rmtree",
+            lambda *_a, **_k: pytest.fail("root helper must not run"),
+        )
+        monkeypatch.setattr(engine, "to_physical_path", lambda p, repo_root=None: p)
+        engine._rmtree_with_fallback(vol, repo_root=tmp_path)
+        assert not vol.exists()
+
+    def test_native_permission_error_still_falls_back_to_helper(self, tmp_path, monkeypatch):
+        from ciu import engine
+
+        vol = tmp_path / "vol-x"
+        vol.mkdir()
+        calls = []
+        monkeypatch.setattr(engine, "to_physical_path", lambda p, repo_root=None: p)
+
+        def deny(_path):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(engine.shutil, "rmtree", deny)
+        monkeypatch.setattr(engine, "privileged_rmtree", lambda *a, **k: calls.append(a))
+        engine._rmtree_with_fallback(vol, repo_root=tmp_path)
+        assert len(calls) == 1
+
+    def test_ownership_scan_refuses_foreign_missing_and_nested_foreign(
+        self, tmp_path, monkeypatch,
+    ):
+        from ciu import engine
+
+        assert engine._tree_owned_by_caller(tmp_path / "missing") is False
+        tree = tmp_path / "t"
+        (tree / "d").mkdir(parents=True)
+        (tree / "d" / "f").write_text("x", encoding="utf-8")
+        assert engine._tree_owned_by_caller(tree) is True
+        real = os.getuid()
+        monkeypatch.setattr(engine.os, "getuid", lambda: real + 1)
+        assert engine._tree_owned_by_caller(tree) is False  # root itself foreign
+        real_lstat = engine.os.lstat
+        monkeypatch.setattr(engine.os, "getuid", lambda: real)
+        owner_of = {str(tree / "d" / "f"): real + 1}
+
+        def lstat(path, *a, **k):
+            info = real_lstat(path, *a, **k)
+            if str(path) in owner_of:
+                return SimpleNamespace(st_uid=owner_of[str(path)], st_mode=info.st_mode)
+            return info
+
+        monkeypatch.setattr(engine.os, "lstat", lstat)
+        assert engine._tree_owned_by_caller(tree) is False  # nested foreign entry
+        # make_writable skips foreign entries and leaves them untouched
+        (tree / "d" / "f").chmod(0o444)
+        engine._make_tree_writable(tree)
+        assert (tree / "d" / "f").stat().st_mode & 0o200 == 0
+        monkeypatch.undo()
+        tree.chmod(0o500)
+        engine._make_tree_writable(tree)
+        assert tree.stat().st_mode & 0o700 == 0o700
+
+    def test_rm_removes_readonly_ignored_file_and_second_rm_names_leftover(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        exclude = worktree._git_common_dir(tmp_repo) / "info" / "exclude"
+        exclude.write_text(exclude.read_text(encoding="utf-8") + "vol-data/\n", encoding="utf-8")
+        (target / "vol-data").mkdir()
+        locked = target / "vol-data" / "ro.dat"
+        locked.write_text("x", encoding="utf-8")
+        locked.chmod(0o444)
+        (target / "vol-data").chmod(0o555)
+        monkeypatch.setattr(worktree, "_clean_in", lambda wt, *, yes: 0)
+        worktree.remove(
+            tmp_repo, "wt1", yes=True, discard_protected_state="wt1",
+        )
+        assert not target.exists()
+        # a deregistered checkout directory that is still on disk is named
+        leftover = tmp_repo / ".worktrees" / "ghost"
+        leftover.mkdir()
+        with pytest.raises(worktree.WorktreeRemovalError, match="leftover checkout directory"):
+            worktree.remove(tmp_repo, "ghost")
