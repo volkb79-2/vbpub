@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from topos.record.ring import HistoryRing
 from topos.ui.sparkline import render_sparkline, sparkline_from_history
-from topos.ui.table import _format_cpu_trend, format_metric_value
 from topos.model import Entity, EntityFrame, MetricValue
 from topos.config import ToposConfig
 from rich.text import Text
@@ -118,63 +117,3 @@ def _make_ring_with_cpu(history: list[float | None]) -> HistoryRing:
         )
         ring.append_frame(frame)
     return ring
-
-
-def test_cpu_trend_with_ring_data() -> None:
-    ring = _make_ring_with_cpu([1.0, 2.0, 3.0, 4.0, 5.0])
-    result = _format_cpu_trend("test.slice", ring)
-    assert isinstance(result, Text)
-    assert result.plain != "-"
-
-
-def test_cpu_trend_no_ring() -> None:
-    result = _format_cpu_trend("test.slice", None)
-    assert result.plain == "-"
-
-
-def test_cpu_trend_no_history_for_entity() -> None:
-    ring = _make_ring_with_cpu([1.0, 2.0])
-    result = _format_cpu_trend("other.slice", ring)
-    assert result.plain == "-"
-
-
-# ---------------------------------------------------------------------------
-# format_metric_value - cpu_trend column through public API
-# ---------------------------------------------------------------------------
-
-def test_format_cpu_trend_via_format_metric_value_no_ring() -> None:
-    ef = EntityFrame(
-        entity=Entity("test.slice", "slice", ""),
-        metrics={"cpu_pct": MetricValue(50.0, "exact")},
-    )
-    result = format_metric_value("cpu_trend", ef, ring=None)
-    assert result.plain == "-"
-
-
-def test_format_cpu_trend_via_format_metric_value_with_ring() -> None:
-    ring = _make_ring_with_cpu([1.0, 2.0, 3.0])
-    ef = EntityFrame(
-        entity=Entity("test.slice", "slice", ""),
-        metrics={"cpu_pct": MetricValue(3.0, "exact")},
-    )
-    result = format_metric_value("cpu_trend", ef, ring=ring)
-    assert isinstance(result, Text)
-    # Should contain brackets when history exists
-    assert "[" in result.plain or result.plain != "-"
-
-
-def test_format_cpu_trend_sort_value() -> None:
-    """cpu_trend sort uses current cpu_pct value."""
-    from topos.ui.table import metric_sort_value
-
-    ef_high = EntityFrame(
-        entity=Entity("high.slice", "slice", ""),
-        metrics={"cpu_pct": MetricValue(95.0, "exact")},
-    )
-    ef_low = EntityFrame(
-        entity=Entity("low.slice", "slice", ""),
-        metrics={"cpu_pct": MetricValue(5.0, "exact")},
-    )
-    val_high = metric_sort_value("cpu_trend", ef_high)
-    val_low = metric_sort_value("cpu_trend", ef_low)
-    assert val_high[1] > val_low[1]

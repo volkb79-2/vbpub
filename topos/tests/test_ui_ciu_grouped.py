@@ -36,7 +36,6 @@ from topos.model import CiuMeta, DockerMeta, Entity, EntityFrame, Frame, MetricV
 from topos.ui.app import ToposApp
 from topos.ui.data_table import MouseTable
 from topos.ui.drill import DrillDownScreen
-from topos.ui.table import render_data_table_container_grouped
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +83,7 @@ def _make_ciu_app(entity_frames: list[EntityFrame]) -> ToposApp:
     independent of terminal width."""
     return ToposApp(
         iter([_frame(entity_frames)]),
-        config=ToposConfig(default_view="tree", default_column_profile="triage"),
+        config=ToposConfig(default_view="tree"),
     )
 
 
@@ -110,50 +109,6 @@ def _mounted_row_keys(mt) -> tuple[str, ...]:
     """Row keys in the MOUNTED DataTable's actual display order (``ordered_rows``),
     independent of ``app._visible_row_keys`` (the renderer's return value)."""
     return mt.row_keys
-
-
-def test_direct_grouped_renderer_empty_filter_includes_group_and_ungrouped_context() -> None:
-    grouped = _ciu_entity_frame("c-web", "web-01", stack="app/web", phase_raw="phase_1", phase=1)
-    ungrouped = _ciu_entity_frame("c-plain", "plain-01", has_ciu=False)
-
-    _, _, row_keys, _ = render_data_table_container_grouped(
-        _frame([grouped, ungrouped]),
-        ToposConfig(),
-        width=120,
-        profile="triage",
-        sort_by="name",
-        filter_text="",
-    )
-
-    assert row_keys == (
-        "__group__app/web__phase_1",
-        "c-web",
-        "__ungrouped__",
-        "c-plain",
-    )
-
-
-def test_direct_grouped_renderer_no_match_filter_shows_only_empty_row() -> None:
-    grouped = _ciu_entity_frame("c-web", "web-01", stack="app/web", phase_raw="phase_1", phase=1)
-    ungrouped = _ciu_entity_frame("c-plain", "plain-01", has_ciu=False)
-
-    _, _, row_keys, rows = render_data_table_container_grouped(
-        _frame([grouped, ungrouped]),
-        ToposConfig(),
-        width=120,
-        profile="triage",
-        sort_by="name",
-        filter_text="does-not-match",
-    )
-
-    assert row_keys == ("__empty__",)
-    assert rows[0][0].plain == "no container rows"
-    assert not any(key.startswith("__group__") for key in row_keys)
-
-
-# ---------------------------------------------------------------------------
-# Oracle 1 — the cycle reaches the view, and something is actually rendered.
-# ---------------------------------------------------------------------------
 
 
 def test_pilot_oracle1_f5_cycle_reaches_ciu_grouped_with_rendered_header() -> None:
@@ -274,7 +229,7 @@ def test_pilot_oracle4_enter_on_group_header_is_inert() -> None:
             await pilot.pause()
             # Prove the cursor is ON the synthetic row before pressing Enter.
             assert mt.cursor_coordinate.row == mt.get_row_index(group_key)
-            assert app.selected_key == group_key
+            assert app.selected_key is None  # a header row owns no entity
 
             await pilot.press("enter")
             await pilot.pause()
@@ -300,7 +255,7 @@ def test_pilot_oracle4_enter_on_ungrouped_header_is_inert() -> None:
             mt.update_cursor_from_key("__ungrouped__")
             await pilot.pause()
             assert mt.cursor_coordinate.row == mt.get_row_index("__ungrouped__")
-            assert app.selected_key == "__ungrouped__"
+            assert app.selected_key is None
 
             await pilot.press("enter")
             await pilot.pause()
@@ -328,18 +283,19 @@ def test_pilot_oracle5_sort_key_reorders_entity_rows_within_a_group() -> None:
             await pilot.press("f5")
             await pilot.pause()
             assert app.view_mode == "ciu-grouped"
-            assert app.sort_by == "pressure"
+            app.sort_by, app.sort_reverse = "ram_ceil", True
+            app._refresh_view()
+            await pilot.pause()
             mt = app.query_one("#body-table")
 
-            pressure_order = [k for k in _mounted_row_keys(mt) if not k.startswith("__")]
-            assert pressure_order == ["c-c", "c-b", "c-a"], pressure_order  # pressure desc: 25, 15, 5
-
-            await pilot.press("f6")  # cycle_sort: pressure -> ram
-            await pilot.pause()
-            assert app.sort_by == "ram"
             ram_order = [k for k in _mounted_row_keys(mt) if not k.startswith("__")]
             assert ram_order == ["c-b", "c-c", "c-a"], ram_order  # ram desc: 30, 20, 10
-            assert ram_order != pressure_order, "sort key change must reorder rows in the mounted table"
+
+            await pilot.press("S")  # reverse the sort direction
+            await pilot.pause()
+            asc_order = [k for k in _mounted_row_keys(mt) if not k.startswith("__")]
+            assert asc_order == ["c-a", "c-c", "c-b"], asc_order
+            assert asc_order != ram_order, "sort change must reorder rows in the mounted table"
 
     asyncio.run(run())
 
@@ -358,7 +314,7 @@ def test_pilot_oracle6_zero_ciu_frame_every_entity_once_no_group_header() -> Non
         ), "fixture frame must have no ciu metadata for this oracle to be meaningful"
         app = ToposApp(
             iter([frame]),
-            config=ToposConfig(default_view="tree", default_column_profile="triage"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
         )
@@ -416,13 +372,16 @@ def test_mousetable_tree_delegation() -> None:
         frame = fixture_frame()
         app = ToposApp(
             iter([frame]),
-            config=ToposConfig(default_view="tree", default_column_profile="triage"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
         )
         async with app.run_test(size=(140, 40)) as pilot:
             await _wait_for_frame(app)(pilot)
             mt = app.query_one("#body-table")
+            app.noise = "all"
+            app._refresh_view()
+            await pilot.pause()
 
             mt.update_cursor_from_key("besteffort.slice")
             await pilot.pause()
@@ -431,12 +390,12 @@ def test_mousetable_tree_delegation() -> None:
 
             mt.action_cursor_left()
             await pilot.pause()
-            assert "besteffort.slice" in app._collapsed_tree_keys
+            assert "besteffort.slice" not in app._expanded
             assert child_key not in app._visible_row_keys
 
             mt.action_cursor_right()
             await pilot.pause()
-            assert "besteffort.slice" not in app._collapsed_tree_keys
+            assert "besteffort.slice" in app._expanded
             assert child_key in app._visible_row_keys
 
     asyncio.run(run())

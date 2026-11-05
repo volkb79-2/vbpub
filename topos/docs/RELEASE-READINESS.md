@@ -136,7 +136,7 @@ PYTHONPATH=topos/src python3 -m topos.acceptance tui-smoke \
   --json
 ```
 
-Require exit zero, `ok: true`, `frames: 1`, `view: tree`, and `profile: auto`.
+Require exit zero, `ok: true`, `frames: 1`, and `view: tree`.
 
 ### Direct replay UI smoke
 

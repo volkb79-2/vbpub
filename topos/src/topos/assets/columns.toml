@@ -1,0 +1,204 @@
+# Column order and priority of the single main view (TUI-SPEC section 3.3).
+#
+# File order is display order, left to right. `pri` 1 is kept longest: when the
+# terminal narrows, the highest `pri` numbers disappear first, the survivors keep
+# this order, and nothing is clipped at the right edge. `width` and `head` are
+# optional overrides of the built-in defaults. `name` must come first (its width
+# is a minimum; it takes whatever space is left over).
+#
+# Same format as the ratatui PoC's columns.example.toml. Override the whole file
+# with `[ui] columns_file = "/path/to/columns.toml"` in the topos config.
+#
+# Known ids: name cpu thr cpu_wt quota ram_ceil mem_min mem_low eff_min mem_high mem_max
+#   swap swap_max zsw ratio anon file shmem rf_d rf_z rf_f psi_c psi_m psi_i psi_cf psi_mf
+#   psi_if io_r io_w iops_r iops_w stall io_max iocost blk maj pids pids_max net_rx net_tx
+#   pgscan pgsteal prot origin drift drift_list warn io_wt ev_high ev_max ev_oom
+# swap_max, iocost and maj have no per-cgroup source yet and print n/a; blk needs a
+# process source and prints n/a without one.
+
+[[column]]
+id = "name"
+pri = 1
+width = 30
+
+[[column]]
+id = "cpu"
+pri = 1
+width = 5
+
+[[column]]
+id = "thr"
+pri = 3
+width = 4
+
+[[column]]
+id = "cpu_wt"
+pri = 5
+width = 5
+
+[[column]]
+id = "quota"
+pri = 6
+width = 6
+
+[[column]]
+id = "ram_ceil"
+pri = 1
+width = 12
+
+[[column]]
+id = "mem_min"
+pri = 5
+width = 6
+
+[[column]]
+id = "mem_low"
+pri = 3
+width = 6
+
+[[column]]
+id = "eff_min"
+pri = 4
+width = 7
+head = "MIN.EFF"
+
+[[column]]
+id = "mem_high"
+pri = 6
+width = 6
+
+[[column]]
+id = "mem_max"
+pri = 6
+width = 6
+
+[[column]]
+id = "swap"
+pri = 4
+width = 6
+
+[[column]]
+id = "swap_max"
+pri = 7
+width = 6
+head = "SW.MAX"
+
+[[column]]
+id = "zsw"
+pri = 3
+width = 6
+
+[[column]]
+id = "ratio"
+pri = 6
+width = 5
+
+[[column]]
+id = "anon"
+pri = 6
+width = 6
+
+[[column]]
+id = "file"
+pri = 6
+width = 6
+
+[[column]]
+id = "rf_d"
+pri = 2
+width = 6
+
+[[column]]
+id = "rf_z"
+pri = 5
+width = 6
+
+[[column]]
+id = "rf_f"
+pri = 4
+width = 6
+
+[[column]]
+id = "psi_c"
+pri = 3
+width = 5
+
+[[column]]
+id = "psi_m"
+pri = 2
+width = 5
+
+[[column]]
+id = "psi_i"
+pri = 2
+width = 5
+
+[[column]]
+id = "io_r"
+pri = 2
+width = 7
+
+[[column]]
+id = "io_w"
+pri = 2
+width = 7
+
+[[column]]
+id = "iops_r"
+pri = 4
+width = 6
+
+[[column]]
+id = "iops_w"
+pri = 4
+width = 6
+
+[[column]]
+id = "stall"
+pri = 3
+width = 5
+
+[[column]]
+id = "io_max"
+pri = 6
+width = 9
+
+[[column]]
+id = "iocost"
+pri = 7
+width = 6
+
+[[column]]
+id = "blk"
+pri = 1
+width = 4
+
+[[column]]
+id = "maj"
+pri = 4
+width = 5
+
+[[column]]
+id = "pids"
+pri = 5
+width = 5
+
+[[column]]
+id = "net_rx"
+pri = 5
+width = 7
+
+[[column]]
+id = "net_tx"
+pri = 5
+width = 7
+
+[[column]]
+id = "origin"
+pri = 7
+width = 7
+
+[[column]]
+id = "drift"
+pri = 2
+width = 5

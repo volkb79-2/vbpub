@@ -42,13 +42,13 @@ def _result(ok: bool = True) -> SimpleNamespace:
         ),
         (
             [
-                "tui-smoke", "--replay", "/frame", "--config", "/cfg", "--profile", "minimal",
+                "tui-smoke", "--replay", "/frame", "--config", "/cfg",
                 "--timeout-s", "4.5",
             ],
             "run_tui_smoke",
             {
                 "replay_path": Path("/frame"), "config_path": Path("/cfg"),
-                "profile": "minimal", "timeout_s": 4.5,
+                "timeout_s": 4.5,
             },
             False,
             "format_tui_smoke_json",

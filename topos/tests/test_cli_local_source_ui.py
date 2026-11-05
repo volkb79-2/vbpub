@@ -58,7 +58,6 @@ def test_run_ui_passes_boundary_contract_and_prints_string_result(
         config=config,
         cgroup_root=cgroup_root,
         smoke=True,
-        profile="compact",
         source_label="REPLAY",
         replay_driver="driver",
         replay_step=True,
@@ -71,7 +70,6 @@ def test_run_ui_passes_boundary_contract_and_prints_string_result(
                 "config": config,
                 "cgroup_root": cgroup_root,
                 "smoke": True,
-                "profile": "compact",
                 "source_label": "REPLAY",
                 "replay_driver": "driver",
                 "replay_step": True,
@@ -101,7 +99,7 @@ def test_run_ui_handles_missing_textual_by_mode(
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", missing_textual)
-    assert cli._run_ui(None, config=None, cgroup_root=None, smoke=smoke, profile=None) == expected_code
+    assert cli._run_ui(None, config=None, cgroup_root=None, smoke=smoke) == expected_code
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == output
@@ -117,4 +115,4 @@ def test_run_ui_reraises_unrelated_missing_module(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr(builtins, "__import__", missing_other)
     with pytest.raises(ModuleNotFoundError, match="other_dependency"):
-        cli._run_ui(None, config=None, cgroup_root=None, smoke=False, profile=None)
+        cli._run_ui(None, config=None, cgroup_root=None, smoke=False)

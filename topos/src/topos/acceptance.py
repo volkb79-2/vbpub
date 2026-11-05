@@ -4,7 +4,7 @@ Usage:
     python -m topos.acceptance smoke [--cgroup-root PATH] [--replay PATH] [--json] [--pretty-json]
     python -m topos.acceptance steady [--cgroup-root PATH] [--samples N] [--interval-s SECONDS]
                          [--max-cpu-pct FLOAT] [--max-rss-kb INT] [--json] [--pretty-json]
-    python -m topos.acceptance tui-smoke [--replay PATH] [--config PATH] [--profile NAME]
+    python -m topos.acceptance tui-smoke [--replay PATH] [--config PATH]
                                [--timeout-s FLOAT] [--json] [--pretty-json]
     python -m topos.acceptance mcp-smoke [--socket PATH] [--timeout-s FLOAT]
                                 [--json] [--pretty-json]
@@ -128,7 +128,6 @@ class TuiSmokeResult:
     stderr_snippet: str
     frames: int | None
     view: str | None
-    profile: str | None
     measurements: dict[str, float]
 
 
@@ -257,13 +256,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help="Pass --config PATH through to the UI smoke child process.",
-    )
-    tui.add_argument(
-        "--profile",
-        type=str,
-        default=None,
-        metavar="NAME",
-        help="Pass --profile NAME through to the UI smoke child process.",
     )
     tui.add_argument(
         "--timeout-s",
@@ -648,7 +640,7 @@ def run_steady(
 def _parse_ui_smoke_line(line: str) -> dict[str, Any]:
     """Parse a "ui smoke ok ..." line into structured fields.
 
-    Returns a dict with keys: frames, view, profile (or empty dict if unparseable).
+    Returns a dict with keys: frames, view (or empty dict if unparseable).
     """
     result: dict[str, Any] = {}
     text = line.strip()
@@ -662,7 +654,7 @@ def _parse_ui_smoke_line(line: str) -> dict[str, Any]:
                     result["frames"] = int(val)
                 except ValueError:
                     pass
-            elif key in ("view", "profile"):
+            elif key == "view":
                 result[key] = val
     return result
 
@@ -671,7 +663,6 @@ def run_tui_smoke(
     replay_path: Path,
     *,
     config_path: Path | None = None,
-    profile: str | None = None,
     timeout_s: float = 30.0,
 ) -> TuiSmokeResult:
     """Run the UI smoke child process and return a TuiSmokeResult.
@@ -689,8 +680,6 @@ def run_tui_smoke(
     ]
     if config_path is not None:
         cmd.extend(["--config", str(config_path)])
-    if profile is not None:
-        cmd.extend(["--profile", profile])
 
     # Capture child resource usage via RUSAGE_CHILDREN diff
     ru0 = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -724,7 +713,6 @@ def run_tui_smoke(
             stderr_snippet="(timeout)",
             frames=None,
             view=None,
-            profile=None,
             measurements={
                 "wall_s": round(wall_s, 4),
                 "user_s": round(child_user_s, 4),
@@ -762,7 +750,6 @@ def run_tui_smoke(
 
     frames: int | None = parsed.get("frames")
     view: str | None = parsed.get("view")
-    prof: str | None = parsed.get("profile")
 
     # Truncate snippets for JSON output
     stdout_snippet = cp.stdout[:500] if len(cp.stdout) > 500 else cp.stdout
@@ -782,7 +769,6 @@ def run_tui_smoke(
         stderr_snippet=stderr_snippet,
         frames=frames,
         view=view,
-        profile=prof,
         measurements=measurements,
     )
 
@@ -804,7 +790,6 @@ def format_tui_smoke_json(result: TuiSmokeResult, *, pretty: bool = False) -> st
         "smoke_line": result.smoke_line,
         "frames": result.frames,
         "view": result.view,
-        "profile": result.profile,
         "measurements": result.measurements,
         "stdout_snippet": result.stdout_snippet,
         "stderr_snippet": result.stderr_snippet,
@@ -1613,7 +1598,6 @@ def acceptance_main(argv: list[str] | None = None) -> int:
         result = run_tui_smoke(
             replay_path=args.replay,
             config_path=args.config,
-            profile=args.profile,
             timeout_s=args.timeout_s,
         )
         if args.json or args.pretty_json:

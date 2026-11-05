@@ -28,7 +28,7 @@ GAME_KEY = "system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 def _make_app() -> ToposApp:
     return ToposApp(
         iter([fixture_frame()]),
-        config=ToposConfig(default_view="tree", default_column_profile="auto"),
+        config=ToposConfig(default_view="tree"),
         cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
         proc_root=fixture_root() / "procfs" / "network",
     )
@@ -45,7 +45,7 @@ def _replay_app(*, step: bool = True) -> ToposApp:
     )
     return ToposApp(
         (),
-        config=ToposConfig(default_view="tree", default_column_profile="auto"),
+        config=ToposConfig(default_view="tree"),
         cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
         proc_root=fixture_root() / "procfs" / "network",
         replay_driver=ReplayDriver([base, later]),
@@ -56,13 +56,13 @@ def _replay_app(*, step: bool = True) -> ToposApp:
 def test_run_ui_smoke_reports_fixture_success() -> None:
     result = run_ui(
         iter([fixture_frame()]),
-        config=ToposConfig(default_view="tree", default_column_profile="auto"),
+        config=ToposConfig(default_view="tree"),
         cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
         proc_root=fixture_root() / "procfs" / "network",
         smoke=True,
     )
 
-    assert result == "ui smoke ok frames=1 view=tree profile=auto"
+    assert result == "ui smoke ok frames=1 view=tree"
 
 
 def test_providers_status_handles_absent_and_fixture_entities() -> None:
@@ -128,19 +128,21 @@ def _damon_root(tmp_path: Path, *, slots: tuple[str, ...] = ("off", "off")) -> P
     return root
 
 
-def test_pilot_toggle_view_and_profile_cycle() -> None:
+def test_pilot_toggle_view_flips_to_the_flat_container_list() -> None:
     async def run() -> None:
         app = _make_app()
         async with app.run_test(size=(140, 40)) as pilot:
             await _wait_for_frame(app)(pilot)
             assert app.view_mode == "tree"
-            assert app.profile_name == "auto"
-            await pilot.press("f5")
+            await pilot.press("v")
             await pilot.pause()
             assert app.view_mode == "container"
-            await pilot.press("p")
+            await pilot.press("v")
             await pilot.pause()
-            assert app.profile_name == "triage"
+            assert app.view_mode == "ciu-grouped"
+            await pilot.press("v")
+            await pilot.pause()
+            assert app.view_mode == "tree"
 
     asyncio.run(run())
 
@@ -157,8 +159,8 @@ def test_pilot_metric_columns_shown_at_standard_terminal_sizes(size) -> None:
             table = app.query_one("#body-table", MouseTable)
             labels = list(table.column_labels)
             assert labels[0] == "NAME"
-            assert "RAM" in labels
-            assert "CPU%" in labels
+            assert "RAM/CEIL" in labels
+            assert "CPU" in labels[1]
 
     asyncio.run(run())
 
@@ -198,21 +200,14 @@ def test_pilot_tree_branch_collapse_and_expand_preserves_selection() -> None:
     asyncio.run(run())
 
 
-def test_p145_mounted_keys_toggle_banner_and_cycle_selection() -> None:
+def test_p145_mounted_keys_cycle_selection() -> None:
     async def run() -> None:
         app = _make_app()
         async with app.run_test(size=(140, 40)) as pilot:
             await _wait_for_frame(app)(pilot)
             table = app.query_one("#body-table")
-            banner = app.query_one("#banner", Static)
-            expanded_banner = _static_text(banner)
             initial = table.row_key_at_cursor()
             assert initial == app.selected_key
-
-            await pilot.press("b")
-            await pilot.pause()
-            collapsed_banner = _static_text(banner)
-            assert collapsed_banner != expanded_banner
 
             await pilot.press("down")
             await pilot.pause()
@@ -336,7 +331,7 @@ def test_pilot_replay_auto_advances_same_timestamp_frames_to_terminal_pause() ->
         )
         app = ToposApp(
             (),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             replay_driver=ReplayDriver([base, later]),
@@ -596,7 +591,7 @@ def test_pilot_replay_jump_prompt_with_timestamp() -> None:
         )
         app = ToposApp(
             (),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             replay_driver=ReplayDriver([base, later]),
@@ -636,7 +631,7 @@ def test_pilot_replay_jump_integer_valued_epoch_timestamp_seeks() -> None:
         )
         app = ToposApp(
             (),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             replay_driver=ReplayDriver([base, later]),
@@ -680,10 +675,21 @@ def test_pilot_replay_controls_in_live_mode_show_unavailable_status() -> None:
         app = _make_app()
         async with app.run_test(size=(140, 40)) as pilot:
             await _wait_for_frame(app)(pilot)
-            for key in ("space", "comma", "full_stop", "plus", "minus"):
+            for key in ("plus", "minus"):
                 await pilot.press(key)
                 await pilot.pause()
                 assert "only available in --replay mode" in _status_text(app)
+            # Freeze and step work in live mode too.
+            await pilot.press("space")
+            await pilot.pause()
+            assert app._frozen is True
+            assert "FROZEN" in _status_text(app)
+            await pilot.press("space")
+            await pilot.pause()
+            assert app._frozen is False
+            await pilot.press("comma")
+            await pilot.pause()
+            assert app._frozen is True
 
     asyncio.run(run())
 
@@ -880,7 +886,7 @@ def test_pilot_damon_vaddr_modal_requires_confirmation_and_starts_fixture_sessio
         state_dir = tmp_path / "state"
         app = ToposApp(
             iter([fixture_frame()]),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             damon_root=damon_root,
@@ -921,7 +927,7 @@ def test_pilot_damon_paddr_modal_starts_and_duplicate_is_reported(tmp_path: Path
         state_dir = tmp_path / "state"
         app = ToposApp(
             iter([fixture_frame()]),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             damon_root=damon_root,
@@ -957,7 +963,7 @@ def test_pilot_damon_stop_surface_stops_only_topos_owned_sessions(tmp_path: Path
         state_dir = tmp_path / "state"
         app = ToposApp(
             iter([fixture_frame()]),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             damon_root=damon_root,
@@ -1007,7 +1013,7 @@ def test_pilot_hostmem_stop_action_shows_stopped_count_notice(tmp_path: Path) ->
         state_dir = tmp_path / "state"
         app = ToposApp(
             iter([fixture_frame()]),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             damon_root=damon_root,
@@ -1036,7 +1042,7 @@ def test_pilot_hostmem_stop_with_exception_shows_unavailable_message(tmp_path: P
         state_dir = tmp_path / "state"
         app = ToposApp(
             iter([fixture_frame()]),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             damon_root=damon_root,
@@ -1070,7 +1076,7 @@ def test_pilot_hostmem_control_result_none_shows_cancelled(tmp_path: Path) -> No
         state_dir = tmp_path / "state"
         app = ToposApp(
             iter([fixture_frame()]),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             damon_root=damon_root,
@@ -1098,7 +1104,7 @@ def test_pilot_hostmem_control_result_with_text_shows_result(tmp_path: Path) -> 
         state_dir = tmp_path / "state"
         app = ToposApp(
             iter([fixture_frame()]),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             damon_root=damon_root,
@@ -1147,17 +1153,17 @@ def test_p50_header_click_sorts_by_column() -> None:
             await _wait_for_frame(app)(pilot)
             mt = app.query_one("#body-table")
 
-            # Default sort is pressure descending (vpressure)
-            assert "vpressure" in _status_text(app)
+            # Default sort is CPU descending (vcpu)
+            assert "vcpu" in _status_text(app)
 
-            await pilot.click("#body-table", offset=_column_click_offset(mt, "ram"))
+            await pilot.click("#body-table", offset=_column_click_offset(mt, "ram_ceil"))
             await pilot.pause()
-            assert "vram" in _status_text(app)  # ram descending by default
+            assert "vram_ceil" in _status_text(app)  # ram descending by default
 
             # Click RAM again to toggle direction
-            await pilot.click("#body-table", offset=_column_click_offset(mt, "ram"))
+            await pilot.click("#body-table", offset=_column_click_offset(mt, "ram_ceil"))
             await pilot.pause()
-            assert "^ram" in _status_text(app)  # now ascending
+            assert "^ram_ceil" in _status_text(app)  # now ascending
 
     asyncio.run(run())
 
@@ -1207,7 +1213,7 @@ def test_p50_row_highlight_updates_selected_key() -> None:
     asyncio.run(run())
 
 
-def test_p50_row_click_drilldown() -> None:
+def test_p50_row_click_selects_and_enter_drills() -> None:
     """Row click or Enter opens drill-down for real entities."""
     async def run() -> None:
         app = _make_app()
@@ -1219,8 +1225,12 @@ def test_p50_row_click_drilldown() -> None:
             assert not rk.startswith("__empty__")
             await pilot.click("#body-table", offset=_row_click_offset(mt, 1))
             await pilot.pause()
-            assert isinstance(app.screen, DrillDownScreen)
+            # A click only selects; Enter opens the drill-down.
+            assert not isinstance(app.screen, DrillDownScreen)
             assert app.selected_key == rk
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, DrillDownScreen)
             assert len(app.screen_stack) == 2
             await pilot.press("escape")
             await pilot.pause()
@@ -1293,39 +1303,6 @@ def test_p50_replay_refresh_preserves_nonzero_cursor() -> None:
     asyncio.run(run())
 
 
-def test_p50_alias_backed_header_click_uses_canonical_sort_key() -> None:
-    async def run() -> None:
-        base = fixture_frame()
-        entities = dict(base.entities)
-        for key, value in (("besteffort.slice", 1.0), ("system.slice", 9.0)):
-            entity_frame = entities[key]
-            metrics = dict(entity_frame.metrics)
-            metrics["rf_d_per_s"] = MetricValue(value, "exact")
-            entities[key] = replace(entity_frame, metrics=metrics)
-        frame = replace(base, entities=entities)
-        config = ToposConfig(
-            default_view="tree",
-            default_column_profile="aliases",
-            columns={"profiles": {"aliases": {"list": ["name", "rf_dev"]}}},
-        )
-        app = ToposApp(iter([frame]), config=config)
-        async with app.run_test(size=(140, 40)) as pilot:
-            await _wait_for_frame(app)(pilot)
-            mt = app.query_one("#body-table")
-            assert mt._col_keys == ("name", "rf_d_per_s")
-            await pilot.click(
-                "#body-table", offset=_column_click_offset(mt, "rf_d_per_s")
-            )
-            await pilot.pause()
-            assert app.sort_by == "rf_d_per_s"
-            assert app.sort_reverse is True
-            assert app._visible_row_keys.index("system.slice") < app._visible_row_keys.index(
-                "besteffort.slice"
-            )
-
-    asyncio.run(run())
-
-
 def test_p50_keyboard_parity_up_down_native() -> None:
     """Up/Down keys navigate rows via DataTable native cursor."""
     async def run() -> None:
@@ -1352,7 +1329,7 @@ def test_p149_empty_source_up_down_is_safe() -> None:
     async def run() -> None:
         app = ToposApp(
             (),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
         )
@@ -1376,7 +1353,7 @@ def test_p155_empty_source_selection_actions_are_safe() -> None:
     async def run() -> None:
         app = ToposApp(
             (),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
         )
@@ -1422,7 +1399,7 @@ def test_p150_empty_source_commands_are_safe() -> None:
     async def run() -> None:
         app = ToposApp(
             (),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
         )
@@ -1514,7 +1491,7 @@ def test_pilot_drill_stop_cancel_leaves_sessions_running_and_partial_failure_is_
         state_dir = tmp_path / "state"
         app = ToposApp(
             iter([fixture_frame()]),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             damon_root=damon_root,
@@ -1602,7 +1579,7 @@ def test_source_failure_marks_frame_stale_then_recovers() -> None:
         source = _FlakySource(fixture_frame())
         app = ToposApp(
             source,
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
             source_label="ATTACH",
@@ -1613,7 +1590,7 @@ def test_source_failure_marks_frame_stale_then_recovers() -> None:
             assert "mode=ATTACH source failed: daemon went away" in status
             assert "STALE" in status
             assert app.current_frame is not None  # last frame kept
-            assert "STALE" in _static_text(app.query_one("#banner", Static))
+            assert "STALE" in _static_text(app.query_one("#info", Static))
             source.gate.set()
             await _wait_or_timeout(pilot, lambda: app.frames_received == 2)
             assert app._source_error is None
@@ -1631,7 +1608,7 @@ def test_one_shot_source_failure_is_reported_without_crashing() -> None:
     async def run() -> None:
         app = ToposApp(
             broken(),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
         )
@@ -1652,8 +1629,10 @@ def test_resize_refreshes_columns_and_narrow_widths_are_not_floored() -> None:
             wide = len(app.query_one("#body-table").column_keys)
             await pilot.resize_terminal(70, 40)
             await _wait_or_timeout(pilot, lambda: len(app.query_one("#body-table").column_keys) < wide)
-            # Narrow widths drop the optional tiers but keep the first tier.
-            assert len(app.query_one("#body-table").column_keys) == 5
+            # Narrow widths drop the lowest-priority columns, keep the order, never clip.
+            keys = app.query_one("#body-table").column_keys
+            assert keys[0] == "name" and "cpu" in keys and "ram_ceil" in keys and "blk" in keys
+            assert 3 <= len(keys) < wide
 
     asyncio.run(run())
 
@@ -1674,14 +1653,14 @@ def test_replay_stepping_does_not_duplicate_history() -> None:
     asyncio.run(run())
 
 
-def test_collapsed_keys_are_pruned_when_entities_vanish() -> None:
+def test_expanded_keys_are_pruned_when_entities_vanish() -> None:
     async def run() -> None:
         app = _make_app()
         async with app.run_test(size=(140, 40)) as pilot:
             await _wait_for_frame(app)(pilot)
-            app._collapsed_tree_keys.add("gone.slice")
+            app._expanded.add("gone.slice")
             app._apply_frame(fixture_frame())
-            assert "gone.slice" not in app._collapsed_tree_keys
+            assert "gone.slice" not in app._expanded
 
     asyncio.run(run())
 
@@ -1744,7 +1723,7 @@ class _Recorder:
 def _bare_app(source) -> ToposApp:
     return ToposApp(
         source,
-        config=ToposConfig(default_view="tree", default_column_profile="auto"),
+        config=ToposConfig(default_view="tree"),
         cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
         proc_root=fixture_root() / "procfs" / "network",
     )
@@ -1853,18 +1832,3 @@ def test_source_failure_before_any_frame_is_shown_in_the_status_line() -> None:
             gate.set()
 
     asyncio.run(run())
-
-
-def test_pressure_list_drops_an_ancestor_that_ranks_after_its_descendant() -> None:
-    from topos.model import Entity, EntityFrame
-    from topos.ui.banner import _drop_pressure_ancestors
-
-    def ef(key: str, parent: str | None) -> EntityFrame:
-        return EntityFrame(entity=Entity(key=key, kind="cgroup", parent=parent), metrics={})
-
-    parent, child, other = ef("a", ""), ef("a/b", "a"), ef("c", "")
-    root = ef("", None)
-    frame = Frame(1, 1.0, 5.0, {}, {e.entity.key: e for e in (root, parent, child, other)})
-    ranked = [(9.0, child), (8.0, parent), (7.0, other)]
-    kept = _drop_pressure_ancestors(frame, ranked, limit=5)
-    assert [e.entity.key for _, e in kept] == ["a/b", "c"]

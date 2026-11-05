@@ -12,6 +12,7 @@ from textual.geometry import Size
 from textual.message import Message
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
+from collections.abc import Sequence
 
 _GAP = 1
 """Blank cells between two columns."""
@@ -20,6 +21,12 @@ _LEFT_ALIGNED = frozenset(
     {"name", "tier", "net_source", "governance_origin", "governance_drift", "damon_mode", "cpu_trend"}
 )
 """Columns whose cells are left-aligned; every other column is right-aligned."""
+
+
+def _plain(cell) -> str:
+    if isinstance(cell, Text):
+        return cell.plain
+    return cell[0] if isinstance(cell, tuple) else str(cell)
 
 
 def _label_text(label: str) -> Text:
@@ -50,8 +57,8 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
     - Left/Right: delegated to the app for tree collapse/expand.
     - Home/End: NOT handled here so the app can use them for replay.
 
-    Mouse: clicking a header posts ``HeaderSelected``; the first click on a data
-    row moves the cursor there and posts ``RowSelected``.
+    Mouse: clicking a header posts ``HeaderSelected``; clicking a data row moves
+    the cursor there and posts ``RowClicked`` (Enter posts ``RowSelected``).
     """
 
     BINDINGS = (
@@ -65,6 +72,10 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
     COMPONENT_CLASSES = {"mousetable--header", "mousetable--cursor"}
 
     DEFAULT_CSS = """
+    MouseTable {
+        overflow-y: scroll;
+        scrollbar-size-vertical: 1;
+    }
     MouseTable > .mousetable--header {
         background: $primary;
         color: $text;
@@ -118,6 +129,20 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
         def control(self) -> "MouseTable":
             return self.table
 
+    class RowClicked(Message):
+        """A data row was clicked at *x* (content coordinates); the cursor already moved there."""
+
+        def __init__(self, table: "MouseTable", row_key: str, row_index: int, x: int) -> None:
+            super().__init__()
+            self.table = table
+            self.row_key = row_key
+            self.row_index = row_index
+            self.x = x
+
+        @property
+        def control(self) -> "MouseTable":
+            return self.table
+
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._col_keys: tuple[str, ...] = ()
@@ -131,6 +156,8 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
         self._strip_cache: dict[int, Strip] = {}
         self._header_cache: Strip | None = None
         self._style_cache: dict[str, Style] = {}
+        self._left_keys: frozenset[str] = _LEFT_ALIGNED
+        self._fixed_widths = False
 
     # ── public state ──────────────────────────────────────────────────
 
@@ -177,7 +204,7 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
         self._invalidate_rows()
         handler = getattr(self.app, "on_table_width_changed", None)
         if handler is not None:
-            handler(event.size.width)
+            handler(self.scrollable_content_region.width or event.size.width)
 
     # ── content ───────────────────────────────────────────────────────
 
@@ -187,7 +214,9 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
         column_keys: tuple[str, ...],
         column_labels: tuple[str, ...],
         row_keys: tuple[str, ...],
-        rows: list[list],
+        rows: "Sequence[list]",
+        widths: "Sequence[int] | None" = None,
+        left_keys: "frozenset[str] | None" = None,
     ) -> None:
         """Replace all table content.
 
@@ -203,6 +232,13 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
             Cell content for each row, parallel to *row_keys*. Each inner list
             must have the same length as *column_keys*.
 
+        widths:
+            Fixed display width per column. Without it widths follow the
+            content. *rows* may then be a lazy sequence: only the lines on
+            screen are ever indexed.
+        left_keys:
+            Column keys whose cells are left-aligned.
+
         The cursor follows its row key across the refresh (clamped when the
         row vanished) and the scroll offset is retained.
         """
@@ -214,6 +250,9 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
         self._column_labels = tuple(text.plain for text in self._header_cells)
         self._row_keys = row_keys
         self._rows = rows
+        self._left_keys = _LEFT_ALIGNED if left_keys is None else left_keys
+        self._fixed_widths = widths is not None
+        self._fixed = list(widths) if widths is not None else []
         if previous_key is not None and previous_key in row_keys:
             self._cursor_row = row_keys.index(previous_key)
         else:
@@ -224,10 +263,15 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
         self.virtual_size = Size(total, len(row_keys) + 1)
 
     def _compute_widths(self) -> None:
+        if self._fixed_widths:
+            widths = list(self._fixed)
+            self._col_widths = widths
+            self._col_starts = [sum(widths[:i]) + _GAP * i for i in range(len(widths))]
+            return
         widths = [cell_len(label) for label in self._column_labels]
         for row in self._rows:
             for j, cell in enumerate(row):
-                text = cell.plain if isinstance(cell, Text) else str(cell)
+                text = _plain(cell)
                 n = len(text) if text.isascii() else cell_len(text)
                 if n > widths[j]:
                     widths[j] = n
@@ -256,8 +300,11 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
         return style
 
     def _cell_segments(self, cell, key: str, width: int) -> list[Segment]:
-        right = key not in _LEFT_ALIGNED
-        text = cell if isinstance(cell, Text) else Text(str(cell))
+        right = key not in self._left_keys
+        if isinstance(cell, tuple):
+            text = Text(cell[0], style=cell[1], no_wrap=True)
+        else:
+            text = cell if isinstance(cell, Text) else Text(str(cell))
         if text.cell_len > width:
             text = text.copy()
             text.truncate(width, overflow="ellipsis")
@@ -393,7 +440,7 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
         return None
 
     async def _on_click(self, event: events.Click) -> None:
-        """Header click sorts; the first click on a data row selects it."""
+        """Header click sorts; a click on a data row moves the cursor there."""
         event.stop()
         event.prevent_default()
         scroll_x, scroll_y = self.scroll_offset
@@ -407,4 +454,4 @@ class MouseTable(ScrollView, can_focus=True, inherit_bindings=False):
             return
         self.focus()
         self.move_cursor(row=row)
-        self.post_message(self.RowSelected(self, self._row_keys[row], row))
+        self.post_message(self.RowClicked(self, self._row_keys[row], row, event.x + scroll_x))

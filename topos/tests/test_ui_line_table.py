@@ -34,6 +34,9 @@ class Host(App[None]):
     def on_mouse_table_row_selected(self, event) -> None:
         self.events.append(("select", event.row_key))
 
+    def on_mouse_table_row_clicked(self, event) -> None:
+        self.events.append(("click", event.row_key))
+
 
 def _fill(table: MouseTable, names, *, labels=LABELS, style=None) -> None:
     table.populate(
@@ -138,7 +141,7 @@ def test_header_click_posts_header_selected_for_the_clicked_column() -> None:
     asyncio.run(run())
 
 
-def test_first_click_on_a_row_moves_cursor_and_selects_it() -> None:
+def test_first_click_on_a_row_moves_cursor_and_reports_the_click() -> None:
     async def run() -> None:
         app = Host()
         async with app.run_test(size=(40, 6)) as pilot:
@@ -148,7 +151,7 @@ def test_first_click_on_a_row_moves_cursor_and_selects_it() -> None:
             await pilot.click(MouseTable, offset=(2, 3))  # line 3 = third row
             await pilot.pause()
             assert table.row_key_at_cursor() == "c"
-            assert ("select", "c") in app.events
+            assert any(e[0] == "click" and e[1] == "c" for e in app.events)
 
     asyncio.run(run())
 

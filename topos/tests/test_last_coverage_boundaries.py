@@ -159,7 +159,6 @@ def test_ui_smoke_waits_for_a_later_frame_without_wall_clock_sleep(
     class App:
         frames_received = 0
         view_mode = "tree"
-        profile_name = "auto"
 
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             return None
@@ -186,8 +185,8 @@ def test_ui_smoke_waits_for_a_later_frame_without_wall_clock_sleep(
     result = asyncio.run(
         app_module._run_ui_smoke(
             (), config=ToposConfig(), cgroup_root=Path("/cgroup"), proc_root=Path("/proc"),
-            profile=None, source_label="LIVE", replay_driver=None, replay_step=False,
+            source_label="LIVE", replay_driver=None, replay_step=False,
             replay_speed=1.0,
         )
     )
-    assert result == "ui smoke ok frames=1 view=tree profile=auto"
+    assert result == "ui smoke ok frames=1 view=tree"

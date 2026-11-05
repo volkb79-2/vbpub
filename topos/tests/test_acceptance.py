@@ -532,8 +532,8 @@ def test_parse_ui_smoke_line_parses_correctly() -> None:
     """``_parse_ui_smoke_line`` extracts frames, view, profile from a valid line."""
     from topos.acceptance import _parse_ui_smoke_line
 
-    result = _parse_ui_smoke_line("ui smoke ok frames=1 view=tree profile=auto")
-    assert result == {"frames": 1, "view": "tree", "profile": "auto"}
+    result = _parse_ui_smoke_line("ui smoke ok frames=1 view=tree")
+    assert result == {"frames": 1, "view": "tree"}
 
 
 def test_parse_ui_smoke_line_handles_garbage() -> None:
@@ -549,9 +549,9 @@ def test_parse_ui_smoke_line_keeps_valid_fields_when_frames_is_malformed() -> No
     """A bad frame count does not prevent parsing the remaining smoke fields."""
     from topos.acceptance import _parse_ui_smoke_line
 
-    result = _parse_ui_smoke_line("ui smoke ok frames=not-a-number view=tree profile=minimal")
+    result = _parse_ui_smoke_line("ui smoke ok frames=not-a-number view=tree")
 
-    assert result == {"view": "tree", "profile": "minimal"}
+    assert result == {"view": "tree"}
     assert "frames" not in result
 
 
@@ -569,7 +569,6 @@ def test_run_tui_smoke_fixture_replay() -> None:
     assert "ui smoke ok" in result.smoke_line
     assert result.frames == 1
     assert result.view == "tree"
-    assert result.profile == "auto"
 
     for key in ("wall_s", "user_s", "sys_s", "rss_kb"):
         assert key in result.measurements, f"Missing measurement: {key}"
@@ -603,20 +602,7 @@ def test_run_tui_smoke_timeout() -> None:
     assert result.measurements["wall_s"] >= 0
 
 
-def test_run_tui_smoke_with_profile() -> None:
-    """``run_tui_smoke`` with ``--profile minimal`` passes through and appears in output."""
-    from topos.acceptance import run_tui_smoke
-
-    result = run_tui_smoke(
-        replay_path=FIXTURE_FRAME,
-        profile="minimal",
-        timeout_s=10,
-    )
-    assert result.ok is True
-    assert result.profile == "minimal"
-
-
-def test_run_tui_smoke_forwards_config_and_profile_to_child(
+def test_run_tui_smoke_forwards_config_to_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A configured child receives all TUI arguments and its smoke line is parsed."""
@@ -634,7 +620,7 @@ def test_run_tui_smoke_forwards_config_and_profile_to_child(
         return subprocess.CompletedProcess(
             cmd,
             0,
-            stdout="ui smoke ok frames=7 view=tree profile=ci\n",
+            stdout="ui smoke ok frames=7 view=tree\n",
             stderr="",
         )
 
@@ -642,7 +628,7 @@ def test_run_tui_smoke_forwards_config_and_profile_to_child(
     monkeypatch.setattr(acceptance.platform, "platform", lambda: "test-platform")
 
     result = acceptance.run_tui_smoke(
-        FIXTURE_FRAME, config_path=config_path, profile="ci"
+        FIXTURE_FRAME, config_path=config_path
     )
 
     assert captured["cmd"] == [
@@ -655,12 +641,10 @@ def test_run_tui_smoke_forwards_config_and_profile_to_child(
         "--ui-smoke",
         "--config",
         str(config_path),
-        "--profile",
-        "ci",
     ]
     assert result.ok is True
-    assert result.smoke_line == "ui smoke ok frames=7 view=tree profile=ci"
-    assert (result.frames, result.view, result.profile) == (7, "tree", "ci")
+    assert result.smoke_line == "ui smoke ok frames=7 view=tree"
+    assert (result.frames, result.view) == (7, "tree")
 
 
 def test_run_tui_smoke_rejects_incomplete_and_clips_child_output(
@@ -685,7 +669,6 @@ def test_run_tui_smoke_rejects_incomplete_and_clips_child_output(
     assert result.smoke_line is None
     assert result.frames is None
     assert result.view is None
-    assert result.profile is None
     assert result.stdout_snippet == stdout[:500]
     assert result.stderr_snippet == stderr[:500]
     assert len(result.stdout_snippet) == len(result.stderr_snippet) == 500
@@ -701,12 +684,11 @@ def test_format_tui_smoke_text_contains_expected_markers() -> None:
         version="0.1.0",
         python="3.13.5",
         platform="Linux-x86_64",
-        smoke_line="ui smoke ok frames=1 view=tree profile=auto",
-        stdout_snippet="ui smoke ok frames=1 view=tree profile=auto\n",
+        smoke_line="ui smoke ok frames=1 view=tree",
+        stdout_snippet="ui smoke ok frames=1 view=tree\n",
         stderr_snippet="",
         frames=1,
         view="tree",
-        profile="auto",
         measurements={"wall_s": 0.3, "user_s": 0.1, "sys_s": 0.02, "rss_kb": 40000.0},
     )
     text = format_tui_smoke_text(result)
@@ -735,7 +717,6 @@ def test_format_tui_smoke_text_reports_absent_line_and_bounded_stderr() -> None:
         stderr_snippet="one\ntwo\nthree\nfour\nfive\nsix",
         frames=None,
         view=None,
-        profile=None,
         measurements={"wall_s": 0.3, "user_s": 0.1, "sys_s": 0.02, "rss_kb": 40000.0},
     )
 
@@ -758,12 +739,11 @@ def test_format_tui_smoke_json_parseable() -> None:
         version="0.1.0",
         python="3.13.5",
         platform="Linux-x86_64",
-        smoke_line="ui smoke ok frames=1 view=tree profile=auto",
-        stdout_snippet="ui smoke ok frames=1 view=tree profile=auto\n",
+        smoke_line="ui smoke ok frames=1 view=tree",
+        stdout_snippet="ui smoke ok frames=1 view=tree\n",
         stderr_snippet="",
         frames=1,
         view="tree",
-        profile="auto",
         measurements={"wall_s": 0.3, "user_s": 0.1, "sys_s": 0.02, "rss_kb": 40000.0},
     )
     json_str = format_tui_smoke_json(result, pretty=True)
@@ -773,7 +753,6 @@ def test_format_tui_smoke_json_parseable() -> None:
     assert obj["smoke_line"] is not None
     assert obj["frames"] == 1
     assert obj["view"] == "tree"
-    assert obj["profile"] == "auto"
     assert "measurements" in obj
     assert "wall_s" in obj["measurements"]
 
@@ -829,19 +808,6 @@ def test_subprocess_tui_smoke_pretty_json_parseable() -> None:
     obj = json.loads(cp.stdout)
     assert obj["ok"] is True
     assert "\n" in cp.stdout
-
-
-def test_subprocess_tui_smoke_profile_minimal() -> None:
-    """``--profile minimal`` is reflected in the smoke output."""
-    cp = _run_tui_smoke(
-        "--replay", str(FIXTURE_FRAME),
-        "--timeout-s", "10",
-        "--profile", "minimal",
-        "--json",
-    )
-    assert cp.returncode == 0, f"stderr={cp.stderr}"
-    obj = json.loads(cp.stdout)
-    assert obj["profile"] == "minimal"
 
 
 def test_subprocess_tui_smoke_invalid_timeout() -> None:

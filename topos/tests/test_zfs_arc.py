@@ -13,7 +13,6 @@ from topos.collect.host import (
 from topos.collect.collector import Collector
 from topos.config import ToposConfig
 from topos.model import Entity, EntityFrame, Frame, MetricValue
-from topos.ui.banner import render_banner
 
 
 def _arcstats_proc_root(root: Path) -> Path:
@@ -262,67 +261,6 @@ def test_zfs_arc_hit_ratio_state_is_per_collector(tmp_path: Path) -> None:
 
 
 # --- Oracle 5: Banner annotation -----------------------------------------
-
-
-def test_zfs_arc_banner_present(tmp_path: Path) -> None:
-    """Banner contains ARC segment when ZFS is present."""
-    proc = _arcstats_proc_root(tmp_path)
-    sys = _base_sys(tmp_path)
-    _base_proc(tmp_path, "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n")
-    host = collect_host(proc_root=proc, sys_root=sys)
-    # Prove collection code ran: ARC metrics exist in the host dict
-    assert "host_zfs_arc_size" in host
-    assert host["host_zfs_arc_size"].v == 12884901888
-    meta = collect_host_meta(proc_root=proc, sys_root=sys)
-    frame = _minimal_frame(host=host, host_meta=meta)
-    snapshot = render_banner(frame, ToposConfig())
-
-    # Assert the rendered cells, not just that the substring "ARC" occurs:
-    # `assert "ARC" in lines` passes even when both figures render wrong. A
-    # single read carries no hit ratio (a ratio needs two samples), so the
-    # segment is size/max only -- see the two-sweep test below for `(hit N%)`.
-    assert "ARC 12.0GiB/32.0GiB" in snapshot.lines
-
-
-def test_zfs_arc_banner_hit_ratio_reaches_the_banner(tmp_path: Path) -> None:
-    """The derived ratio must render in the banner, not just sit in the frame.
-
-    Guards the wiring end to end: Collector._apply_zfs_arc_rate -> Frame.host ->
-    banner. The first sweep has no baseline, so the segment carries no ratio;
-    the second sweep must render `(hit 91%)` from a 1000/100 hit/miss delta.
-    """
-    collector, proc = _zfs_collector(tmp_path, hits=1_000_000, misses=50_000)
-
-    first = render_banner(collector.collect_once(), ToposConfig())
-    assert "ARC 12.0GiB/32.0GiB" in first.lines, "no ratio before a baseline exists"
-
-    _write_arcstats(proc, hits=1_001_000, misses=50_100)
-    second = render_banner(collector.collect_once(), ToposConfig())
-    assert "ARC 12.0GiB/32.0GiB (hit 91%)" in second.lines
-
-
-def test_zfs_arc_banner_absent(tmp_path: Path) -> None:
-    """Banner does NOT contain ARC segment when ZFS is absent.
-
-    Also verifies the ARC collection code ran: the metrics exist in the host
-    dict as unavail_kernel. If the collection were deleted/stubbed, the metrics
-    would not be present at all and this test would fail with KeyError.
-    """
-    proc = _base_proc(tmp_path, "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n")
-    sys = _base_sys(tmp_path)
-    host = collect_host(proc_root=proc, sys_root=sys)
-    # Prove collection code ran: ARC metrics exist as unavail_kernel
-    assert "host_zfs_arc_size" in host
-    assert host["host_zfs_arc_size"].v is None
-    assert host["host_zfs_arc_size"].src == "unavail_kernel"
-    meta = collect_host_meta(proc_root=proc, sys_root=sys)
-    frame = _minimal_frame(host=host, host_meta=meta)
-    snapshot = render_banner(frame, ToposConfig())
-    lines = "\n".join(snapshot.lines)
-    assert "ARC" not in lines
-
-
-# --- Oracle 6: Golden frames unaffected ----------------------------------
 
 
 def test_zfs_arc_non_zfs_fixtures_unaffected(tmp_path: Path) -> None:

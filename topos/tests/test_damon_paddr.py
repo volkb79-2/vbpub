@@ -14,7 +14,6 @@ from topos.config import DamonConfig, ToposConfig
 from topos.damon.control import APPROVAL_TEXT, NoFreeKdamond, RootRequired, stop_owned_sessions
 from topos.damon.paddr import plan_start_paddr_session, start_paddr_session
 from topos.model import MetricValue
-from topos.ui.banner import render_banner
 from topos.ui.hostmem import render_host_memory_text
 
 
@@ -166,7 +165,7 @@ def test_paddr_cli_start_uses_fixture_root(tmp_path: Path) -> None:
     assert (damon_root / "0" / "contexts" / "0" / "operations").read_text().strip() == "paddr"
 
 
-def test_paddr_banner_and_host_memory_status_render_foreign_session(tmp_path: Path) -> None:
+def test_paddr_host_memory_status_renders_foreign_session(tmp_path: Path) -> None:
     damon_root = tmp_path / "kdamonds"
     src = fixture_root() / "damonfs" / "passive-paddr" / "kdamonds"
     import shutil
@@ -176,13 +175,6 @@ def test_paddr_banner_and_host_memory_status_render_foreign_session(tmp_path: Pa
         if path.is_file():
             os.utime(path, (90.0, 90.0))
     frame = _collector(damon_root=damon_root).collect_once()
-
-    banner = render_banner(frame, ToposConfig())
-    heat_lines = [line for line in banner.lines if line.startswith("DRAM HEAT")]
-    assert len(heat_lines) == 1
-    assert "warm 4.0KiB/33.3%" in heat_lines[0]
-    assert "idle 8.0KiB/66.7%" in heat_lines[0]
-    assert "owner foreign" in heat_lines[0]
 
     text = render_host_memory_text(frame, config=ToposConfig(), damon_root=damon_root)
     assert "HOST MEMORY" in text

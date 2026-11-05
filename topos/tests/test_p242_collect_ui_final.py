@@ -44,7 +44,7 @@ def test_tree_actions_leave_root_and_uncollapsed_selection_stable() -> None:
     async def run() -> None:
         app = ToposApp(
             iter([fixture_frame()]),
-            config=ToposConfig(default_view="tree", default_column_profile="auto"),
+            config=ToposConfig(default_view="tree"),
             cgroup_root=fixture_root() / "cgroupfs" / "gstammtisch",
             proc_root=fixture_root() / "procfs" / "network",
         )
@@ -55,12 +55,15 @@ def test_tree_actions_leave_root_and_uncollapsed_selection_stable() -> None:
                     break
             assert app.selected_key == ""
 
-            app.action_expand_tree()
-            assert "" not in app._collapsed_tree_keys
-
-            app._collapsed_tree_keys.add("")
+            # The root starts open: collapsing it keeps the selection on the root.
+            assert "" in app._expanded
             app.action_collapse_tree()
+            await pilot.pause()
             assert app.selected_key == ""
-            assert "" in app._collapsed_tree_keys
+            assert "" not in app._expanded
+            app.action_expand_tree()
+            await pilot.pause()
+            assert app.selected_key == ""
+            assert "" in app._expanded
 
     asyncio.run(run())

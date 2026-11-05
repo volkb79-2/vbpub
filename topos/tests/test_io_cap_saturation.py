@@ -6,7 +6,6 @@ from pathlib import Path
 from topos.collect.cgroup import read_io_max_caps
 from topos.config import ToposConfig
 from topos.model import Entity, EntityFrame, MetricValue
-from topos.ui.table import format_metric_value, header_label, resolve_columns
 
 
 # ── io.max caps parser ────────────────────────────────────────────────────────
@@ -188,32 +187,18 @@ def test_io_cap_saturation_no_caps_is_none() -> None:
 # ── Table display ────────────────────────────────────────────────────────────
 
 
-def test_io_cap_saturation_header_label() -> None:
-    """Table header for io_cap_saturation_pct is IO_CAP%."""
-    label = header_label("io_cap_saturation_pct")
-    assert "IO_CAP%" in label
+def test_io_max_column_shows_the_cap_and_its_saturation() -> None:
+    """The IO.MAX column of the single view shows capped devices with their saturation."""
+    from topos.ui.columns import REGISTRY, CellCtx
 
-
-def test_io_cap_saturation_format_value() -> None:
-    """io_cap_saturation_pct formats as a percentage."""
-    entity_frame = EntityFrame(
+    capped = EntityFrame(
         entity=Entity(key="demo.scope", kind="scope", parent=""),
-        metrics={"io_cap_saturation_pct": MetricValue(85.0, "derived")},
+        metrics={"io_max_capped": MetricValue(1, "exact"), "io_cap_saturation_pct": MetricValue(85.0, "derived")},
     )
-    result = format_metric_value("io_cap_saturation_pct", entity_frame)
-    assert "85.0%" in result.plain
-
-
-def test_io_cap_saturation_in_auto_profile_at_120_width() -> None:
-    """io_cap_saturation_pct appears in auto profile at width >= 120."""
-    columns = resolve_columns(ToposConfig(), width=120, profile="auto")
-    assert "io_cap_saturation_pct" in columns
-
-
-def test_io_cap_saturation_in_wide_profile() -> None:
-    """io_cap_saturation_pct appears in wide profile."""
-    columns = resolve_columns(ToposConfig(), width=200, profile="wide")
-    assert "io_cap_saturation_pct" in columns
+    assert REGISTRY["io_max"].cell(CellCtx(capped))[0] == "cap 85%"
+    uncapped = EntityFrame(entity=capped.entity, metrics={"io_max_capped": MetricValue(0, "exact")})
+    assert REGISTRY["io_max"].cell(CellCtx(uncapped))[0] == "\u00b7"
+    assert REGISTRY["io_max"].cell(CellCtx(EntityFrame(entity=capped.entity, metrics={})))[0] == "n/a"
 
 
 # ── Diagnostics integration ──────────────────────────────────────────────────

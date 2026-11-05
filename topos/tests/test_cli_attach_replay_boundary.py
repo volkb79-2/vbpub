@@ -71,11 +71,11 @@ def test_attach_ui_forwards_options_and_maps_success(
     monkeypatch.setattr(cli, "_attach_frame_source", lambda socket, *, poll_interval_s: calls.append(("source", socket, poll_interval_s)) or iter(()))
     monkeypatch.setattr(cli, "_run_ui", lambda source, **kwargs: calls.append(("ui", source, kwargs)) or 0)
 
-    assert cli.main(["--attach", "/daemon.sock", "--ui-smoke", "--profile", "compact"]) == 0
+    assert cli.main(["--attach", "/daemon.sock", "--ui-smoke"]) == 0
     assert calls[0] == ("source", Path("/daemon.sock"), 7.5)
     assert calls[1][2] == {
         "config": calls[1][2]["config"], "cgroup_root": None, "smoke": True,
-        "profile": "compact", "source_label": "ATTACH",
+        "source_label": "ATTACH",
     }
     assert capsys.readouterr().out == ""
 
@@ -114,11 +114,11 @@ def test_replay_forwards_driver_and_ui_options_and_maps_success(monkeypatch: pyt
     monkeypatch.setattr(cli.ReplayDriver, "from_path", lambda path, *, config: calls.append(("from", path, config)) or driver)
     monkeypatch.setattr(cli, "_run_ui", lambda source, **kwargs: calls.append(("ui", source, kwargs)) or 0)
 
-    assert cli.main(["--replay", "record.jsonl", "--step", "--speed", "2.5", "--cgroup-root", "/cg", "--ui-smoke", "--profile", "minimal"]) == 0
+    assert cli.main(["--replay", "record.jsonl", "--step", "--speed", "2.5", "--cgroup-root", "/cg", "--ui-smoke"]) == 0
     assert calls[0][1] == Path("record.jsonl")
     assert calls[1] == ("ui", (), {
         "config": calls[0][2], "cgroup_root": Path("/cg"), "smoke": True,
-        "profile": "minimal", "source_label": "REPLAY", "replay_driver": driver,
+        "source_label": "REPLAY", "replay_driver": driver,
         "replay_step": True, "replay_speed": 2.5,
     })
 

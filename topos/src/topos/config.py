@@ -232,16 +232,31 @@ class CiuConfig:
 
 
 @dataclass(frozen=True)
+class UiConfig:
+    """Single-view settings (``[ui]``).
+
+    Attributes:
+        columns_file: TOML file with the ``[[column]]`` order and priorities;
+            ``None`` uses the file shipped in the package.
+        pane_width: Width of the side pane in columns, at any terminal width.
+        pane_auto_min_width: The pane shows by itself from this terminal width.
+    """
+
+    columns_file: Path | None = None
+    pane_width: int = 46
+    pane_auto_min_width: int = 140
+
+
+@dataclass(frozen=True)
 class ToposConfig:
     interval: float = 5.0
     cgroup_root: Path = Path("/sys/fs/cgroup")
     default_view: str = "tree"
-    default_column_profile: str = "auto"
     tiers: dict[str, list[str]] = field(default_factory=dict)
     protected_services: tuple[str, ...] = ()
     thresholds: dict[str, Any] = field(default_factory=dict)
     colors: dict[str, Any] = field(default_factory=dict)
-    columns: dict[str, Any] = field(default_factory=dict)
+    ui: UiConfig = field(default_factory=UiConfig)
     hotkeys: dict[str, Any] = field(default_factory=dict)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     history: HistoryConfig = field(default_factory=HistoryConfig)
@@ -259,12 +274,15 @@ class ToposConfig:
                 "interval": self.interval,
                 "cgroup_root": str(self.cgroup_root),
                 "default_view": self.default_view,
-                "default_column_profile": self.default_column_profile,
             },
             "tiers": {**dict(self.tiers), "protected_services": list(self.protected_services)},
             "thresholds": self.thresholds,
             "colors": self.colors,
-            "columns": self.columns,
+            "ui": {
+                "columns_file": None if self.ui.columns_file is None else str(self.ui.columns_file),
+                "pane_width": self.ui.pane_width,
+                "pane_auto_min_width": self.ui.pane_auto_min_width,
+            },
             "hotkeys": self.hotkeys,
             "diagnostics": {
                 "score_weights": dict(self.diagnostics.score_weights),
@@ -459,10 +477,10 @@ _VIEW_MODES = ("tree", "container", "ciu-grouped")
 
 _KNOWN_KEYS: dict[str, frozenset[str] | None] = {
     # None = free-form section, keys not checked.
-    "general": frozenset({"interval", "cgroup_root", "default_view", "default_column_profile"}),
+    "general": frozenset({"interval", "cgroup_root", "default_view"}),
     "tiers": None,
     "thresholds": None,
-    "columns": None,
+    "ui": frozenset({"columns_file", "pane_width", "pane_auto_min_width"}),
     "colors": None,
     "hotkeys": None,
     "history": frozenset({
@@ -490,16 +508,31 @@ _KNOWN_DAEMON_KEYS = frozenset({
 _NO_EFFECT = ("hotkeys", "colors", "history.downsample_interval_seconds", "history.downsample_retention_hours")
 
 
+_REMOVED_COLUMNS_NOTE = (
+    "column order and priority now come from the file named by [ui] columns_file "
+    "(shipped default: topos/assets/columns.toml)"
+)
+
+
 def _config_warnings(data: dict[str, Any]) -> list[str]:
     out: list[str] = []
+    general = data.get("general")
+    if isinstance(general, dict) and "default_column_profile" in general:
+        out.append(f"general.default_column_profile was removed (column profiles are gone); {_REMOVED_COLUMNS_NOTE}")
+    if "columns" in data:
+        value = data["columns"]
+        keys = ", ".join(f"columns.{k}" for k in value) if isinstance(value, dict) and value else "[columns]"
+        out.append(f"{keys} was removed (profiles, width tiers and per-profile column lists); {_REMOVED_COLUMNS_NOTE}")
     for name, value in data.items():
+        if name == "columns":
+            continue
         if name not in _KNOWN_KEYS:
             out.append(f"unknown section [{name}]")
             continue
         allowed = _KNOWN_KEYS[name]
         if allowed is not None and isinstance(value, dict):
             for key in value:
-                if key not in allowed:
+                if key not in allowed and f"{name}.{key}" != "general.default_column_profile":
                     out.append(f"unknown key {name}.{key}")
     history = data.get("history")
     if isinstance(history, dict) and isinstance(history.get("daemon"), dict):
@@ -561,6 +594,17 @@ def load(path: Path | None = None, *, warn: Callable[[str], None] | None = None)
         raise ConfigError(target, str(exc)) from exc
 
 
+def _load_ui(data: dict[str, Any]) -> UiConfig:
+    columns_file = data.get("columns_file")
+    if columns_file is not None and not isinstance(columns_file, str):
+        raise ValueError(f"ui.columns_file must be a path string, got {columns_file!r}")
+    return UiConfig(
+        columns_file=Path(columns_file).expanduser() if columns_file else None,
+        pane_width=int(_check_number(data.get("pane_width", 46), "ui.pane_width", minimum=20)),
+        pane_auto_min_width=int(_check_number(data.get("pane_auto_min_width", 140), "ui.pane_auto_min_width", minimum=1)),
+    )
+
+
 def _build_config(data: dict[str, Any]) -> ToposConfig:
     general = data.get("general", {})
     tiers_data = data.get("tiers", {})
@@ -595,12 +639,11 @@ def _build_config(data: dict[str, Any]) -> ToposConfig:
         interval=_check_number(general.get("interval", 5.0), "general.interval", minimum=MIN_INTERVAL_SECONDS),
         cgroup_root=Path(general.get("cgroup_root", "/sys/fs/cgroup")),
         default_view=default_view,
-        default_column_profile=str(general.get("default_column_profile", "auto")),
         tiers=tiers,
         protected_services=tuple(str(v) for v in tiers_data.get("protected_services", ())),
         thresholds=thresholds,
         colors=dict(data.get("colors", {}) or {}),
-        columns=dict(data.get("columns", {}) or {}),
+        ui=_load_ui(data.get("ui", {}) or {}),
         hotkeys=dict(data.get("hotkeys", {}) or {}),
         diagnostics=DiagnosticsConfig(score_weights=_load_score_weights(thresholds)),
         history=HistoryConfig(

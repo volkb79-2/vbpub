@@ -43,4 +43,4 @@ git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--mat
 fallback_version = "0.1.0"
 
 [tool.setuptools.package-data]
-topos = ["assets/systemd/topos.service", "assets/systemd/topos.tmpfiles", "assets/systemd/topos.slice"]
+topos = ["assets/columns.toml", "assets/systemd/topos.service", "assets/systemd/topos.tmpfiles", "assets/systemd/topos.slice"]

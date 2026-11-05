@@ -108,7 +108,7 @@ def test_record_ui_maps_success_and_fallback(monkeypatch: pytest.MonkeyPatch, ca
     monkeypatch.setattr(cli, "live_frame_stream", lambda *_args, **_kwargs: iter(()))
     monkeypatch.setattr(cli, "_run_ui", lambda source, **kwargs: calls.append((source, kwargs)) or ui_code)
 
-    assert cli.main(["--record", "out.jsonl", "--profile", "compact"]) == (0 if ui_code == 0 else 2)
+    assert cli.main(["--record", "out.jsonl"]) == (0 if ui_code == 0 else 2)
     assert calls[0][1]["source_label"] == "LIVE"
     if ui_code:
         assert "textual is not installed" in capsys.readouterr().err

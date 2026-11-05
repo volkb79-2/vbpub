@@ -208,7 +208,7 @@ def test_missing_file_loads_defaults(tmp_path: Path) -> None:
 
 def test_config_view_modes_match_ui_view_modes() -> None:
     from topos import config as config_mod
-    from topos.ui.table import VIEW_MODES
+    from topos.ui.rows import VIEW_MODES
 
     assert config_mod._VIEW_MODES == VIEW_MODES
 

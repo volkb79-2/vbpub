@@ -233,7 +233,7 @@ def test_replay_cli_smoke_uses_golden_fixture() -> None:
         text=True,
         stdout=subprocess.PIPE,
     )
-    assert proc.stdout.strip() == "ui smoke ok frames=1 view=tree profile=auto"
+    assert proc.stdout.strip() == "ui smoke ok frames=1 view=tree"
 
 
 def test_replay_cli_uses_config_path_defaults(tmp_path: Path) -> None:
@@ -267,45 +267,7 @@ def test_replay_cli_uses_config_path_defaults(tmp_path: Path) -> None:
         text=True,
         stdout=subprocess.PIPE,
     )
-    assert proc.stdout.strip() == "ui smoke ok frames=1 view=container profile=minimal"
-
-
-def test_replay_cli_profile_override_supports_custom_profile(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
-        "\n".join(
-            (
-                "[general]",
-                'default_column_profile = "minimal"',
-                "",
-                "[columns.profiles.forensics]",
-                'list = ["name", "ram", "cpu_pct"]',
-            )
-        )
-    )
-    env = os.environ.copy()
-    env["PYTHONPATH"] = f"/tmp/topos-pytest:{fixture_root().parents[1] / 'src'}"
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "topos.cli",
-            "--config",
-            str(config_path),
-            "--profile",
-            "forensics",
-            "--replay",
-            str(fixture_root() / "frames" / "gstammtisch-once.jsonl"),
-            "--step",
-            "--ui-smoke",
-        ],
-        check=True,
-        cwd=fixture_root().parents[1],
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
-    assert proc.stdout.strip() == "ui smoke ok frames=1 view=tree profile=forensics"
+    assert proc.stdout.strip() == "ui smoke ok frames=1 view=container"
 
 
 def test_record_cli_once_writes_header_and_frame(tmp_path: Path) -> None:
@@ -358,7 +320,7 @@ def test_record_cli_runs_ui_and_writes_frames(tmp_path: Path) -> None:
         text=True,
         stdout=subprocess.PIPE,
     )
-    assert proc.stdout.strip() == "ui smoke ok frames=1 view=tree profile=auto"
+    assert proc.stdout.strip() == "ui smoke ok frames=1 view=tree"
     lines = record_path.read_text().splitlines()
     assert json.loads(lines[0])["type"] == "header"
     assert json.loads(lines[1])["type"] == "frame"

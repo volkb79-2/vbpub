@@ -10,7 +10,6 @@ from topos.collect.host import (
 )
 from topos.config import ToposConfig
 from topos.model import Entity, EntityFrame, Frame, MetricValue
-from topos.ui.banner import render_banner
 
 
 def _amdgpu_sys(root: Path) -> Path:
@@ -264,93 +263,6 @@ def test_gpu_malformed_truncated(tmp_path: Path) -> None:
 
 
 # --- Oracle 7: Banner ----------------------------------------------------
-
-
-def test_gpu_banner_present(tmp_path: Path) -> None:
-    """Banner contains GPU segment when amdgpu is present.
-
-    Assert the rendered cells, not just the substring.
-    """
-    proc = _base_proc(tmp_path)
-    sys = _amdgpu_sys(tmp_path)
-    # Add zswap baseline so collect_host doesn't fail on zswap reads
-    _base_sys(tmp_path)
-    host = collect_host(proc_root=proc, sys_root=sys)
-    # Prove collection code ran
-    assert "host_gpu_vram_total" in host
-    assert host["host_gpu_vram_total"].v == 8589934592
-
-    meta = collect_host_meta(proc_root=proc, sys_root=sys)
-    frame = _minimal_frame(host=host, host_meta=meta)
-    snapshot = render_banner(frame, ToposConfig())
-
-    assert "GPU 4.2GiB/8.0GiB (busy 37%)" in snapshot.lines
-
-
-def test_gpu_banner_absent(tmp_path: Path) -> None:
-    """Banner does NOT contain GPU segment when no GPU is present."""
-    proc = _base_proc(tmp_path)
-    sys = _base_sys(tmp_path)  # no DRM directory
-    host = collect_host(proc_root=proc, sys_root=sys)
-    # Prove collection code ran
-    assert "host_gpu_vram_total" in host
-    assert host["host_gpu_vram_total"].v is None
-    assert host["host_gpu_vram_total"].src == "unavail_kernel"
-
-    meta = collect_host_meta(proc_root=proc, sys_root=sys)
-    frame = _minimal_frame(host=host, host_meta=meta)
-    snapshot = render_banner(frame, ToposConfig())
-    lines = "\n".join(snapshot.lines)
-    assert "GPU" not in lines
-
-
-def test_gpu_banner_i915_no_segment(tmp_path: Path) -> None:
-    """Banner does NOT contain GPU segment when driver exposes no DRM facts.
-
-    A card exists (i915) but with no readable VRAM files -> no banner segment.
-    This is the key case: 'a GPU I cannot read' must not look like an idle GPU.
-    """
-    proc = _base_proc(tmp_path)
-    sys = _base_sys(tmp_path)
-    drm = sys / "class" / "drm"
-    drm.mkdir(parents=True)
-    (drm / "card0" / "device").mkdir(parents=True)  # i915: no VRAM files
-
-    host = collect_host(proc_root=proc, sys_root=sys)
-    meta = collect_host_meta(proc_root=proc, sys_root=sys)
-    frame = _minimal_frame(host=host, host_meta=meta)
-    snapshot = render_banner(frame, ToposConfig())
-    lines = "\n".join(snapshot.lines)
-
-    assert "GPU" not in lines
-    assert host["host_gpu_count"].v == 1  # card IS detected
-
-
-def test_gpu_banner_multi_gpu(tmp_path: Path) -> None:
-    """Multi-GPU banner includes count suffix x2."""
-    sys = _base_sys(tmp_path)
-    proc = _base_proc(tmp_path)
-    drm = sys / "class" / "drm"
-    multi_src = fixture_root() / "sysfs" / "drm" / "multi"
-
-    for card in ("card0", "card1"):
-        dev = drm / card / "device"
-        dev.mkdir(parents=True)
-        card_src = multi_src / card / "device"
-        (dev / "mem_info_vram_total").write_text((card_src / "mem_info_vram_total").read_text())
-        (dev / "mem_info_vram_used").write_text((card_src / "mem_info_vram_used").read_text())
-        (dev / "gpu_busy_percent").write_text((card_src / "gpu_busy_percent").read_text())
-
-    host = collect_host(proc_root=proc, sys_root=sys)
-    meta = collect_host_meta(proc_root=proc, sys_root=sys)
-    frame = _minimal_frame(host=host, host_meta=meta)
-    snapshot = render_banner(frame, ToposConfig())
-
-    # Aggregate: total=8.0GiB, used=3.0GiB, max busy=90%, count=2
-    assert "GPU 3.0GiB/8.0GiB (busy 90%) x2" in snapshot.lines
-
-
-# --- Oracle 8: Golden frames unaffected ----------------------------------
 
 
 def test_gpu_non_gpu_fixtures_unaffected(tmp_path: Path) -> None:

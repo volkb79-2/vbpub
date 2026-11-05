@@ -92,8 +92,7 @@ need the daemon socket and fail with a typed daemon-unavailable error rather
 than silently switching data sources. Privileged DAMON/actions remain gated by
 root/admin confirmation in either mode.
 
-Use `--config PATH` to point at an alternate TOML config, `--profile NAME` to
-override the active UI column profile for one run, and `--record FILE` to record
+Use `--config PATH` to point at an alternate TOML config and `--record FILE` to record
 the live TUI stream to JSONL while you inspect it. For unattended (headless)
 recording without the TUI, use `--record FILE --headless [--interval N]
 [--duration S | --frames K]`. Headless mode drives the existing collector loop
@@ -164,13 +163,20 @@ STATs are breaches. Assertion outcomes appear under a top-level
 
 Useful feature hotkeys in the TUI:
 
-- `F5` / `t` cycles tree -> container -> ciu-grouped view. The ciu-grouped view
+- One single view: meters, the cgroup tree with each cgroup's use and main config in
+  the row, and a side pane following the cursor (config chain, effective values,
+  origin, drift, findings). Column order and priority come from a TOML file
+  (shipped `topos/assets/columns.toml`; override with `[ui] columns_file`); narrowing
+  the terminal drops the highest priority numbers first and never clips the right side.
+- `a` steps the row noise: all / middle (default) / hot only, with a hidden count.
+- `Tab` toggles the side pane (automatic from 140 columns; `[ui] pane_width`, default 46).
+- `space` freezes (live and replay); `,` `.` step one frame.
+- `v` / `F5` flips tree -> flat container list -> ciu-grouped view. The ciu-grouped view
   groups containers by ciu stack and phase (numeric: `phase_2` before
   `phase_10`); entities whose stack membership was *inferred* rather than
   label-confirmed are marked `(inferred)`, and a group holding both tiers
   renders as `(mixed)`.
-- `p` cycles column profiles.
-- `F6` / `s` cycles sort.
+- `F6` / `s` cycles sort (`S` reverses; click a header to sort).
 - `/` filters rows.
 - `Enter` opens entity drill-down.
 - `x` writes an incident snapshot for the selected row.

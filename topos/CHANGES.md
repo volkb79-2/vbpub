@@ -27,6 +27,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(topos): real_docker_inspect opt-out so the production resolver stays testable (B-039) (cadfc34d1)
 
 <!-- cmru: pending release notes begin -->
+- feat(topos/ui): the single view replaces the banner and column profiles: meters (n/a for absent data), tree with config columns, side pane, noise levels, column order and priority from `assets/columns.toml` (`[ui] columns_file`, `pane_width`); removed `default_column_profile`, `[columns]`, `--profile` (ignored), the profile cycling key and `ui.banner`/`ui.tree`/`ui.aliases`; `tools/poc/singleview_demo.py` and `ui_frame_bench.py` for the Textual-vs-ratatui comparison
 - fix(topos/daemon): `daemon serve` handles SIGTERM/SIGINT through the normal shutdown path (history flush, paddr stop, socket unlink) (B-01, D-01)
 - fix(topos/daemon): the daemon exits non-zero when the frame producer dies instead of serving a frozen frame; `daemon status` reports a frame older than 3 intervals as stale (B-02)
 - fix(topos/daemon): a cursor ahead of the daemon's latest sequence is `gap=true`; responses carry a per-start `epoch` and `stream_frames` raises on a restart (B-04)

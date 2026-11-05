@@ -88,8 +88,8 @@ memory cost, or zram compression ratio to an individual cgroup. Therefore:
 
 ## Alias Reference
 
-The following user-facing aliases are accepted in configured column profiles
-and resolve silently to the canonical metric key:
+The column-profile alias layer was removed with the profiles (the single view takes its
+columns from `columns.toml` ids). These names were the aliases:
 
 | Alias | Canonical key | Display label |
 |---|---|---|

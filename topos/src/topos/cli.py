@@ -74,7 +74,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="emit JSON for --once")
     parser.add_argument("--pretty-json", action="store_true", help="pretty-print JSON output")
     parser.add_argument("--config", type=Path, default=None, help="load config from PATH instead of the default XDG location")
-    parser.add_argument("--profile", type=str, default=None, help="override the active UI column profile for this run")
+    parser.add_argument("--profile", type=str, default=None, help="removed and ignored: column order and priority come from [ui] columns_file")
     parser.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
     parser.add_argument("--headless", action="store_true", help="run without UI (requires --record FILE)")
     parser.add_argument("--interval", type=float, default=None, help="collector interval override in seconds")
@@ -402,7 +402,6 @@ def _run_ui(
     config,
     cgroup_root: Path | None,
     smoke: bool,
-    profile: str | None,
     source_label: str = "LIVE",
     replay_driver: ReplayDriver | None = None,
     replay_step: bool = False,
@@ -422,7 +421,6 @@ def _run_ui(
         config=config,
         cgroup_root=cgroup_root,
         smoke=smoke,
-        profile=profile,
         source_label=source_label,
         replay_driver=replay_driver,
         replay_step=replay_step,
@@ -698,7 +696,6 @@ def _main(argv: list[str] | None = None) -> int:
                 config=config,
                 cgroup_root=None,
                 smoke=args.ui_smoke,
-                profile=args.profile,
                 source_label="ATTACH",
             )
             if ui_code == 0:
@@ -720,7 +717,6 @@ def _main(argv: list[str] | None = None) -> int:
             config=config,
             cgroup_root=args.cgroup_root,
             smoke=args.ui_smoke,
-            profile=args.profile,
             source_label="REPLAY",
             replay_driver=driver,
             replay_step=args.step,
@@ -769,7 +765,6 @@ def _main(argv: list[str] | None = None) -> int:
                     config=config,
                     cgroup_root=args.cgroup_root,
                     smoke=args.ui_smoke,
-                    profile=args.profile,
                     source_label="LIVE",
                 )
                 if ui_code == 0:
@@ -792,7 +787,6 @@ def _main(argv: list[str] | None = None) -> int:
                 config=config,
                 cgroup_root=args.cgroup_root,
                 smoke=args.ui_smoke,
-                profile=args.profile,
                 source_label="LIVE",
             )
         except ContainerResolveError as exc:

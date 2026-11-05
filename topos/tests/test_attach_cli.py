@@ -72,7 +72,7 @@ def test_attach_ui_smoke_works_against_fixture_broker(tmp_path: Path) -> None:
             text=True,
             stdout=subprocess.PIPE,
         )
-        assert proc.stdout.strip() == "ui smoke ok frames=1 view=tree profile=auto"
+        assert proc.stdout.strip() == "ui smoke ok frames=1 view=tree"
     finally:
         server.shutdown()
         server.server_close()

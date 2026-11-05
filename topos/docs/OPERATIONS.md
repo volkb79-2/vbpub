@@ -82,12 +82,12 @@ PYTHONPATH=topos/src python3 -m topos.acceptance tui-smoke \
   --pretty-json
 ```
 
-Run with a custom profile:
+Run with a custom config (including a custom `[ui] columns_file`):
 
 ```bash
 PYTHONPATH=topos/src python3 -m topos.acceptance tui-smoke \
   --replay topos/tests/fixtures/frames/gstammtisch-once.jsonl \
-  --profile minimal --json
+  --config /path/to/config.toml --json
 ```
 
 Inspect an incident snapshot:
@@ -227,8 +227,12 @@ PageUp/PageDown for scrolling, and all function keys.
 
 | Key | Action |
 |---|---|
-| `F5`, `t` | Toggle tree/container view. |
-| `Tab`, `p` | Cycle column profile. |
+| `v`, `F5` | Cycle tree / flat container list / ciu-grouped view. |
+| `a` | Row noise: all / middle (default) / hot only. |
+| `Tab` | Side pane on/off (automatic from the configured width, default 140). |
+| `S` | Reverse the sort direction. |
+| `e`, `c` | Expand all / collapse to the top level. |
+| `p`, `g` | Processes on/off; flat process ranking (needs a process source). |
 | `F6`, `s` | Cycle sort. |
 | `/` | Filter rows. |
 | `Left`, `h` | Collapse selected tree branch or move to parent. |
@@ -238,8 +242,8 @@ PageUp/PageDown for scrolling, and all function keys.
 | `d` | From entity drill-down: open DAMON vaddr typed-confirmation start modal. |
 | `p` | From host-memory screen: open DAMON paddr typed-confirmation start modal. |
 | `s` | From DAMON drill/host-memory screens: stop topos-owned DAMON sessions only. |
-| `Space` | Play/pause replay while in `--replay`. |
-| `,`, `.` | Step replay backward/forward one frame. |
+| `Space` | Freeze (live and replay); in `--replay` it also pauses playback. |
+| `,`, `.` | Step backward/forward one frame (live steps through recent frames). |
 | `+`, `-` | Change replay speed while in `--replay`. |
 | `x` | Save incident snapshot for selected entity. |
 | `m` | Host-memory / paddr DAMON status. |
@@ -394,7 +398,11 @@ Everything is optional. Useful current sections:
 [general]
 interval = 5.0
 default_view = "tree"
-default_column_profile = "auto"
+
+[ui]
+# columns_file = "/path/to/columns.toml"   # [[column]] id/pri/width/head; file order is display order
+pane_width = 46
+pane_auto_min_width = 140
 
 [history]
 full_resolution_seconds = 14400

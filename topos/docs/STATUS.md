@@ -16,7 +16,7 @@ shown in a column.
 | Feature | State | Evidence |
 |---|---|---|
 | Collector, registry, `--once --json` | Works | `collect/`, `registry.py` |
-| Tree, container and CIU-grouped TUI views; 8 profiles; drill-down; replay | Works | `ui/` |
+| Single-view TUI (meters, tree with config columns, side pane, configurable column order/priority), flat container and CIU-grouped lists; drill-down; replay | Works | `ui/` |
 | Record, replay, report, query, compare (recordings only) | Works in CLI | `cli.py` |
 | Drift and origin detection | Works; effective protection is a simplification | `drift/origin.py` |
 | Diagnostics rules and pressure score | Works | `diag/` |

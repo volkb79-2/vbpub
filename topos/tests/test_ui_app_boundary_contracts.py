@@ -14,7 +14,7 @@ from topos.ui.app import ToposApp
 
 
 def _config() -> ToposConfig:
-    return ToposConfig(default_view="tree", default_column_profile="auto")
+    return ToposConfig(default_view="tree")
 
 
 def _app(*, replay: bool = False) -> ToposApp:
@@ -39,7 +39,6 @@ def test_empty_state_helpers_preserve_live_and_replay_contracts() -> None:
 
     replay = _app(replay=True)
     assert replay._status_text() == "mode=REPLAY waiting for frames"
-    assert live._child_keys("anything") == ()
 
 
 def test_jump_blank_input_is_a_noop() -> None:
@@ -56,12 +55,11 @@ def test_selection_and_overlay_commands_handle_stale_or_absent_state(monkeypatch
     selection = _app()
     selection._visible_row_keys = ("first", "second")
     selection.selected_key = "removed"
-    moved: list[int] = []
-    table = SimpleNamespace(move_cursor=lambda *, row: moved.append(row))
+    moved: list[str] = []
+    table = SimpleNamespace(row_key_at_cursor=lambda: "removed", update_cursor_from_key=moved.append)
     monkeypatch.setattr(selection, "query_one", lambda *_args, **_kwargs: table)
     selection._move_selection(1)
-    assert selection.selected_key == "first"
-    assert moved == [0]
+    assert moved == ["first"]
 
     app = object.__new__(ToposApp)
     popped: list[bool] = []
@@ -123,7 +121,6 @@ def test_smoke_fails_closed_when_no_frame_arrives_before_deadline(monkeypatch: p
     class FakeApp:
         frames_received = 0
         view_mode = "tree"
-        profile_name = "auto"
 
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
@@ -149,7 +146,6 @@ def test_smoke_fails_closed_when_no_frame_arrives_before_deadline(monkeypatch: p
                 config=_config(),
                 cgroup_root=Path("/cgroups"),
                 proc_root=Path("/proc"),
-                profile=None,
                 source_label="LIVE",
                 replay_driver=None,
                 replay_step=False,
