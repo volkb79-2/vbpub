@@ -223,6 +223,38 @@ def test_unverifiable_live_identity_is_stale():
     assert machine.resolve_speed(("ok", _record()), MODEL, None, [])[1] == "HOST_MEASUREMENT_STALE_AND_MODEL_NOT_IN_TABLE"
 
 
+def test_a_score_is_valid_up_to_and_including_the_ceiling():
+    assert machine.is_score(machine.SCORE_MAX) is True
+    assert machine.is_score(machine.SCORE_MAX + 1) is False
+    assert machine.is_score(1) is True and machine.is_score(0) is False
+
+
+def test_a_record_at_the_score_ceiling_is_still_measured():
+    speed, reason = machine.resolve_speed(("ok", _record(single_core=machine.SCORE_MAX)), MODEL, 4, [])
+    assert reason is None and speed["single_core"] == machine.SCORE_MAX
+
+
+def test_unverifiable_model_is_stale_even_when_the_record_has_no_model_either():
+    # None == None must not read as "same model": each live identity is checked on its own.
+    rec = _record(cpu_model=None)
+    assert machine.resolve_speed(("ok", rec), None, 4, [])[1] == "HOST_MEASUREMENT_STALE_AND_MODEL_NOT_IN_TABLE"
+
+
+def test_unverifiable_cpu_count_is_stale_even_when_the_record_has_none_either():
+    rec = _record(cpus_online=None)
+    assert machine.resolve_speed(("ok", rec), MODEL, None, [])[1] == "HOST_MEASUREMENT_STALE_AND_MODEL_NOT_IN_TABLE"
+
+
+def test_status_and_payload_must_agree_before_a_record_is_trusted():
+    # ok without a payload, or a payload under any other status, never reaches the record
+    assert machine.resolve_speed(("ok", None), MODEL, 4, []) == (
+        None, "NO_HOST_MEASUREMENT_AND_MODEL_NOT_IN_TABLE")
+    assert machine.resolve_speed(("absent", _record()), MODEL, 4, []) == (
+        None, "NO_HOST_MEASUREMENT_AND_MODEL_NOT_IN_TABLE")
+    assert machine.resolve_speed(("invalid", _record()), MODEL, 4, []) == (
+        None, "HOST_MEASUREMENT_INVALID_AND_MODEL_NOT_IN_TABLE")
+
+
 @pytest.mark.parametrize("single", [None, 0, -5, "2100", True, 2_000_000])
 def test_incomplete_record_is_not_used(single):
     speed, reason = machine.resolve_speed(("ok", _record(single_core=single)), MODEL, 4, [])
