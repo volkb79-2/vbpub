@@ -47,6 +47,8 @@ def _projection_fixture(tmp_path: Path) -> dict[str, Path]:
     release_vars = tmp_path / "cmru.vars"
     client_requirements = tmp_path / "client-requirements.txt"
     client_project = tmp_path / "client-pyproject.toml"
+    client_version = tmp_path / "client-VERSION"
+    client_version.write_text("1.63.0.post3\n", encoding="utf-8")
     ocr_dockerfile = tmp_path / "ocr-Dockerfile"
     ocr_dockerfile.write_text(_ocr_dockerfile(), encoding="utf-8")
     defaults.write_text(
@@ -105,6 +107,7 @@ def _projection_fixture(tmp_path: Path) -> dict[str, Path]:
         "dockerfile": dockerfile, "ocr_dockerfile": ocr_dockerfile, "package": package, "lock": lock,
         "contract": contract, "release_vars": release_vars,
         "client_requirements": client_requirements, "client_project": client_project,
+        "client_version": client_version,
     }
 
 
@@ -124,6 +127,7 @@ def _bind_projection_fixture(
             "release_vars": "RELEASE_VARS_FILE",
             "client_requirements": "CLIENT_REQUIREMENTS_FILE",
             "client_project": "CLIENT_PROJECT_FILE",
+            "client_version": "CLIENT_VERSION_FILE",
         }[name]
         monkeypatch.setattr(resolver, constant, path)
 
@@ -675,6 +679,8 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     contract = tmp_path / "contract"
     client_requirements = tmp_path / "client-requirements.txt"
     client_project = tmp_path / "client-pyproject.toml"
+    client_version = tmp_path / "client-VERSION"
+    client_version.write_text("0.0.1\n", encoding="utf-8")
     ocr_dockerfile = tmp_path / "ocr-Dockerfile"
     ocr_dockerfile.write_text(_ocr_dockerfile("trixie", "sha256:" + "0" * 64), encoding="utf-8")
     defaults.write_text(
@@ -717,6 +723,7 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(resolver, "CONTRACT_FILE", contract)
     monkeypatch.setattr(resolver, "CLIENT_REQUIREMENTS_FILE", client_requirements)
     monkeypatch.setattr(resolver, "CLIENT_PROJECT_FILE", client_project)
+    monkeypatch.setattr(resolver, "CLIENT_VERSION_FILE", client_version)
     monkeypatch.setattr(resolver, "fetch_npm_versions", lambda: {"1.2.3"})
     monkeypatch.setattr(resolver, "fetch_pypi_versions", lambda: {"1.2.3"})
     monkeypatch.setattr(resolver, "fetch_mcr_versions", lambda distro: {"1.2.3"})
@@ -741,6 +748,8 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     assert json.loads(contract.read_text())["release"] == "1.2.3-r4"
     assert "playwright==1.2.3" in client_requirements.read_text()
     assert '"playwright==1.2.3"' in client_project.read_text()
+    # the client wheel version is regenerated from the release: 1.2.3-r4 -> 1.2.3.post4
+    assert client_version.read_text() == "1.2.3.post4\n"
 
     override.unlink()
     resolver.main(["--refresh"])
