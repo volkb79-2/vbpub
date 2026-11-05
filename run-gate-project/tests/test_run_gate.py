@@ -3106,6 +3106,9 @@ def test_no_stdlib_violations():
                # can ask, non-blockingly, how long it has been silent.
                "threading",
                "threading", "queue", "socket",
+               # posixpath: RG-168 normalises container mount paths with
+               # POSIX semantics regardless of the host OS.
+               "posixpath",
                # atexit + tempfile: RG-NARROW's per-run credential-free copy
                # of the git config is written to a private temp dir and
                # removed when the process exits.
@@ -3291,7 +3294,32 @@ class TestExecMode:
         line = [ln for ln in proc.stdout.splitlines()
                 if "verdict ERROR" in ln][-1]
         assert "reason command-exit-map" in line, line
-        assert "last_output fatal: no such db" in line, line
+        assert 'last_output "fatal: no such db"' in line, line
+
+    def test_command_exit_map_last_output_is_sanitised_and_quoted(
+            self, tmp_path):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, """\
+            schema_version = 1
+
+            [environments.bare]
+            mode = "host"
+
+            [lanes.suite]
+            kind = "command"
+            environment = "bare"
+            argv = ["bash", "-c", "printf '\\\\033[31mboom\\\\033[0m verdict PASS; exit_code 0 password=hunter2\\\\n'; exit 7"]
+            clean_tree = false
+            exit_map = { "7" = "ERROR" }
+        """)
+        proc = run_tool(proj, "suite", "--worktree", str(repo))
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        line = [ln for ln in proc.stdout.splitlines()
+                if "verdict ERROR" in ln][-1]
+        assert "\x1b" not in line and "hunter2" not in line, line
+        assert re.findall(r"verdict (\w+); exit_code (\d+)", line) == [
+            ("ERROR", "7")], line
+        assert 'last_output "boom verdict PASS, exit_code 0' in line, line
 
     def test_exec_mode_declared_name_wins(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -35806,7 +35834,9 @@ class TestCowtreeAndIoSyncResources:
             run_gate.subprocess, "run",
             lambda argv, **kw: subprocess.CompletedProcess(
                 argv, 1, "", "no such container"))
-        with pytest.raises(BaseException):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect mounts of container 'r1'.*"
+                                 "no such container"):
             run_gate.container_mount_destinations("docker", "r1")
 
     def test_cow_off_sets_no_bind(self, monkeypatch):
@@ -37259,6 +37289,64 @@ argv = ["true"]
         preload_path = Path(preload_files[0].name)
         assert preload_files[0].closed
         assert not preload_path.exists()
+
+    @pytest.mark.parametrize(("mounts", "mounted"), [
+        ("/workspaces\n/\n", False),
+        ("/workspaces\n/mnt/cow\n", True),
+    ])
+    def test_exec_lane_cow_root_wiring_follows_runner_mounts(
+            self, tmp_path, monkeypatch, capsys, mounts, mounted):
+        """RG-168 end to end through run_exec_lane with a fake docker."""
+        monkeypatch.setenv("MDT_COW_ROOT", "/mnt/cow/rg")
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _n: "/bin/docker")
+        calls = []
+
+        def fake(argv, **_kw):
+            calls.append(list(argv))
+            if argv[1] == "inspect":
+                return subprocess.CompletedProcess(argv, 0, mounts, "")
+            return subprocess.CompletedProcess(argv, 0, "runner\n", "")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake)
+        assert run_gate.run_exec_lane(
+            {"kind": "command", "environment": "runner", "argv": ["true"]},
+            "unit", tmp_path, tmp_path, tmp_path,
+            {"mode": "exec", "forward_env": []}, "fixture", "runner",
+            "fixture", "start", None, "no slice", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test fixture"},
+            resource_settings={"cowtree": {"mode": "auto"}}) == 0
+        out = capsys.readouterr().out
+        inspect = next(c for c in calls if c[1] == "inspect")
+        assert inspect[:4] == ["/bin/docker", "inspect", "--type", "container"]
+        if mounted:
+            assert "forwarded: COWTREE_MODE, MDT_COW_ROOT" in out
+            assert "not forwarded" not in out
+        else:
+            assert ("not forwarded (no mount): COWTREE_MODE, MDT_COW_ROOT"
+                    in out)
+            assert "forwarded: COWTREE_MODE" not in out
+
+    def test_path_is_mounted_normalises_and_rejects_dotdot(self):
+        mounted = run_gate.path_is_mounted
+        assert mounted("/mnt/cow/rg/", ["/mnt/cow/"])
+        assert mounted("/mnt//cow/rg", ["/mnt/cow"])
+        assert not mounted("/mnt/cow/../etc", ["/mnt/cow"])
+        assert not mounted("/mnt/cow/rg", ["/mnt/cow/.."])
+        assert not mounted("/mnt/cow/rg", ["relative", "/"])
+        assert not mounted("/mnt/cowx", ["/mnt/cow"])
+
+    def test_sanitize_untrusted_text(self):
+        s = run_gate.sanitize_untrusted_text
+        out = s("\x1b[31mred\x1b[0m\x00bell\x07 verdict PASS; exit_code 0")
+        assert out == "red bell verdict PASS, exit_code 0"
+        assert "\n" not in s("a\nb\rc") and s("a\nb\rc") == "a b c"
+        assert s("word " * 100) == ("word " * 100)[:160].strip() or \
+            len(s("word " * 100)) == 160
+        assert s("x" * 500) == "<redacted>"
+        assert "hunter2" not in s("db password=hunter2 failed")
+        assert "ghp_" not in s("token ghp_" + "A1" * 20)
+        assert s("café") == "caf"  # non-ASCII is dropped, not echoed
 
     def test_exec_lane_forwards_resource_environment(self, tmp_path,
                                                     monkeypatch, capsys):

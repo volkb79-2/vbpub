@@ -2164,7 +2164,18 @@ complete lines the environment prints first (an `LD_PRELOAD` shim such as
 ciu's `ksm-optin`, a profile script) are ignored, up to 64 KiB; only the exact
 marker line with the nonce of that placement is accepted, a marker-shaped line
 with another nonce is refused, and a missing marker is still an error that
-quotes the last ignored lines. Stdout therefore need not be clean.
+quotes the last ignored lines (sanitised: printable ASCII, `;` replaced, token-
+like strings redacted, capped). Stdout therefore need not be clean. Caveat: the
+nonce is in the wrapper's argv, so code running inside the wrapper before it
+prints (a preload shim, a profile script) can read it from `/proc/self/cmdline`;
+the nonce separates this placement from stale or stray output, it is not a
+defence against hostile code in the runner's own trust domain.
+
+The `last_output` field on a `command-exit-map` ERROR verdict line is a
+JSON-quoted, sanitised copy of the lane log's last line (printable ASCII,
+ANSI/control bytes removed, `;` replaced by `,`, secret-looking assignments and
+long token-like strings redacted, at most 160 characters). Redaction is best
+effort: the full log can still hold secrets and stays owner-only.
 
 **Copy-on-write root in an exec runner (RG-168).** The cockpit exports
 `MDT_COW_ROOT` (a host path). For an exec lane run-gate forwards
@@ -2179,6 +2190,20 @@ copy-on-write must mount the root at the identical path; a lane that wants it
 off explicitly sets `resources = { cowtree = { mode = "off" } }` (an
 environment accepts only `resources.cpus`). `COWTREE_MODE=off` is always
 forwarded.
+
+Which runners mount the root: the cockpit devcontainer template
+(`mdt-cockpit/templates/devcontainer.json`, `.devcontainer/devcontainer.json`)
+bind-mounts `/srv/mdt-cockpit-cow/<user>` at the identical path and sets
+`MDT_COW_ROOT` to it, so lanes run from there get copy-on-write. No ciu
+test-runner / tester-base service template in this estate mounts it, so exec
+lanes against those runners run without copy-on-write and print the
+`not forwarded (no mount)` notice (they used to be refused). To give such a
+runner copy-on-write, add a bind mount of the same host path at the same
+container path to the runner service (and set `MDT_COW_ROOT` to that path in
+the invoking environment). Plan time: `--dry-run` of the state-root probe
+cannot know the answer without inspecting; it prints a note that the decision
+is made at run time after `docker inspect --type container`. The lane plan line
+itself is accurate because the runner must be running.
 
 **Worktree config and runner follow the JUDGED TREE (RG-47/RG-65/RG-79).**
 When invoking from a main checkout with `--worktree PATH`, run-gate derives

@@ -151,6 +151,7 @@ import io
 import json
 import math
 import os
+import posixpath
 import queue
 import re
 import secrets
@@ -443,7 +444,7 @@ def finish(result: LaneResult) -> int:
             if result.reason == "command-exit-map":
                 last = last_log_line(log_path)
                 if last:
-                    details.append(f"last_output {last}")
+                    details.append(f"last_output {json.dumps(last)}")
         if log_path:
             details.append(f"log {log_path}")
         print(f"run-gate: lane {result._lane_name!r} " + "; ".join(details),
@@ -1952,7 +1953,7 @@ def cowtree_mount_flags(settings: dict, mode: str) -> list[str]:
 def container_mount_destinations(docker: str, container: str) -> list[str]:
     """In-container mount destinations of a running container (RG-168)."""
     result = subprocess.run(
-        [docker, "inspect", "--format",
+        [docker, "inspect", "--type", "container", "--format",
          "{{range .Mounts}}{{println .Destination}}{{end}}", container],
         capture_output=True, text=True)
     if result.returncode != 0:
@@ -1968,9 +1969,18 @@ def path_is_mounted(path: str, destinations: list[str]) -> bool:
 
     A root-filesystem destination ("/") is not evidence of a dedicated mount.
     """
-    return any(dest not in ("", "/")
-               and (path == dest or path.startswith(dest.rstrip("/") + "/"))
-               for dest in destinations)
+    if not path.startswith("/") or ".." in path.split("/"):
+        return False
+    path = posixpath.normpath(path)
+    for dest in destinations:
+        if not dest.startswith("/") or ".." in dest.split("/"):
+            continue
+        dest = posixpath.normpath(dest)
+        if dest == "/":
+            continue
+        if path == dest or path.startswith(dest + "/"):
+            return True
+    return False
 
 
 def resource_forwarded_env(settings: dict, mode: str,
@@ -7708,11 +7718,37 @@ def lane_evidence_directory(lane_name: str) -> Path:
     return evidence_dir() / "lanes" / safe_lane
 
 
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b([\w.-]*(?:pass(?:word|wd)?|token|secret|api[_-]?key|credential|"
+    r"auth)[\w.-]*)(\s*[=:]\s*)\S+")
+_LONG_TOKEN_RE = re.compile(r"[A-Za-z0-9_+/=.-]{24,}")
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[@-Z\\-_])")
+
+
+def sanitize_untrusted_text(text: str, limit: int = 160) -> str:
+    """Make lane/runner-printed text safe to quote on a verdict or error line.
+
+    Printable ASCII only (ANSI sequences removed, every other control or
+    non-ASCII byte becomes a space), `;` becomes `,` so the text can never
+    form a `verdict X; exit_code N` field sequence, assignments to
+    secret-looking names and long token-like strings are replaced, and the
+    result is capped at `limit`.  Best effort: the full log may still hold
+    secrets and stays the only complete record."""
+    text = _ANSI_RE.sub("", text)
+    text = "".join(ch if " " <= ch <= "~" else " " for ch in text)
+    text = text.replace(";", ",")
+    text = _SECRET_ASSIGNMENT_RE.sub(r"\1\2<redacted>", text)
+    text = _LONG_TOKEN_RE.sub("<redacted>", text)
+    return " ".join(text.split())[:limit]
+
+
 def last_log_line(path: object, limit: int = 4096) -> str | None:
     """Last non-empty line of a lane's combined-output log (RG-165b), or None.
 
     Reads only the final `limit` bytes. Used to say WHY a command lane mapped
-    to ERROR on the verdict line itself."""
+    to ERROR on the verdict line itself.  The line is sanitised
+    (`sanitize_untrusted_text`) and the caller must print it as a quoted
+    field."""
     if not path:
         return None
     try:
@@ -7723,9 +7759,9 @@ def last_log_line(path: object, limit: int = 4096) -> str | None:
     except OSError:
         return None
     for line in reversed(tail.splitlines()):
-        line = line.strip()
+        line = sanitize_untrusted_text(line)
         if line:
-            return line[:300]
+            return line
     return None
 
 
@@ -7914,7 +7950,8 @@ def wait_for_placement_barrier(proc: subprocess.Popen, nonce: str,
         chunk = os.read(fd, 1)
         if not chunk:
             tail = ignored_tail + [line.decode("utf-8", errors="replace")]
-            detail = " | ".join(t.strip() for t in tail if t.strip())
+            detail = " | ".join(
+                s for s in (sanitize_untrusted_text(t, 60) for t in tail) if s)
             raise GateInfraError(
                 "placement wrapper exited before readiness" +
                 (f": {detail[:200]}" if detail else ""))
@@ -7923,10 +7960,11 @@ def wait_for_placement_barrier(proc: subprocess.Popen, nonce: str,
             if bytes(line) == expected:
                 return
             if line.startswith(token):
-                detail = line.decode("utf-8", errors="replace").strip()
+                detail = sanitize_untrusted_text(
+                    line.decode("utf-8", errors="replace"), 200)
                 raise GateInfraError(
                     "placement wrapper emitted an invalid readiness marker" +
-                    (f": {detail[:200]}" if detail else ""))
+                    (f": {detail}" if detail else ""))
             ignored += len(line)
             if ignored > PLACEMENT_BARRIER_MAX_PREAMBLE_BYTES:
                 raise GateInfraError(
@@ -13134,6 +13172,13 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
             print(f"run-gate: assay state root preflight: "
                   f"{shlex.join(redact_forwarded_values(
                       probe_argv, probe_resource_env))}", flush=True)
+            if env.get("mode") == "exec" and \
+                    (resource_settings or {}).get("cowtree", {}).get(
+                        "mode") == "auto":
+                print("run-gate: note: COWTREE_MODE/MDT_COW_ROOT in this "
+                      "probe are decided at run time after `docker inspect` "
+                      "of the runner (dropped when it does not mount the "
+                      "root, RG-168)", flush=True)
             return
     ready, why = probe_assay_state_root(
         docker, env, env_name, repo, worktree, env_source, slice_name,
