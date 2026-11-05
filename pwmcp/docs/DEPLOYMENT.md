@@ -245,7 +245,7 @@ The SHA256 digest is also embedded in the release notes for a quick manual check
 "Latest" is resolved by scanning `pwmcp-v*` releases for the highest semver. The thin `pwmcp-latest` release contains only `latest.json` — a JSON pointer to the current versioned release — with no bundle duplication.
 
 
-### Client assets and the client-only install (PWMCP-35)
+### Client assets and the client-only install (PWMCP-38)
 
 Each release also publishes `pwmcp-client-install.py` and the `pwmcp_client-<version>-py3-none-any.whl`
 (each with a `.sha256` sidecar), staged by `scripts/publish-bundle.py` from the exact wheel the bundle

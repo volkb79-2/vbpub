@@ -149,7 +149,7 @@ r-number only versions pwmcp's own helpers and contract fields. `pwmcp doctor` h
 
 **Platform limit.** The release wheels are built for one interpreter and platform: **CPython 3.14 on Linux
 x86_64** (`greenlet` is a cp314 wheel and `playwright` a manylinux x86_64 wheel). The installer and the
-`pip` path below fail on any other Python or architecture; per-interpreter client wheels are tracked as PWMCP-36.
+`pip` path below fail on any other Python or architecture; per-interpreter client wheels are tracked as PWMCP-39.
 
 For a consumer that only talks to a pwmcp server (no docker, no ciu, no compose, no stack tree),
 use the release asset `pwmcp-client-install.py`. It downloads the release bundle, verifies its SHA-256,

@@ -59,7 +59,7 @@ def platform_problem(version_info: tuple = tuple(sys.version_info), machine: str
     machine = machine or platform.machine()
     if tuple(version_info[:2]) != (3, 14) or machine not in ("x86_64", "AMD64"):
         return (f"the pwmcp release wheels are built for CPython 3.14 on Linux x86_64 only; this is Python "
-                f"{version_info[0]}.{version_info[1]} on {machine} (per-interpreter client wheels: PWMCP-36)")
+                f"{version_info[0]}.{version_info[1]} on {machine} (per-interpreter client wheels: PWMCP-39)")
     return None
 
 

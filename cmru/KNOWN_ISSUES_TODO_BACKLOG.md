@@ -2892,7 +2892,7 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 
 ## KI-127 — `cmru get-py` has no `--client-only` mode for projects whose bundle carries a consumer client wheel
 
-**Status:** OPEN 2026-11-05; severity: enhancement (found shipping the pwmcp client, `vbpub` pwmcp PWMCP-35). CHANGES checked: nothing in `[Unreleased]` covers it.
+**Status:** OPEN 2026-11-05; severity: enhancement (found shipping the pwmcp client, `vbpub` pwmcp PWMCP-38). CHANGES checked: nothing in `[Unreleased]` covers it.
 
 **Observed.** The generated `get.py` only installs the whole release (stable tree, adapter, wheels, launchers). pwmcp's consumers often need only the client wheel plus its pinned dependencies to talk to a server running elsewhere, with no adapter/ciu links; pwmcp therefore ships a hand-written `pwmcp-client-install.py` (SHA-256 of the bundle, manifest check of every wheel, `pip install --no-index --require-hashes` into a private venv, atomic `current`/launcher links).
 

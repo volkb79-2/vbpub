@@ -123,20 +123,37 @@ function requestHandler(req, res) {
   return json(res, 404, { error: "not_found" });
 }
 
+// Refuse an upgrade with a one-line text/plain body that says what to fix, and log the same reason.
+function rejectUpgrade(client, status, reason, text) {
+  const body = `${text}\n`;
+  client.end(
+    `HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\n` +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+  );
+  process.stdout.write(`[gateway] rejected status=${status} ${JSON.stringify(text)}\n`);
+}
+
 const gateway = http.createServer(requestHandler);
 gateway.on("upgrade", (req, client, head) => {
   const requestHost = String(req.headers.host || "").trim().toLowerCase();
   if (!allowedHosts.has(requestHost)) {
-    client.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    rejectUpgrade(
+      client, 403, "Forbidden",
+      `pwmcp: Host ${JSON.stringify(requestHost)} is not allowed; add it to PWMCP_RUN_SERVER_ALLOWED_HOSTS ` +
+        `(allowed: ${[...allowedHosts].join(", ")}) or connect using one of those names`
+    );
     return;
   }
   if (sessions.size >= maxClients) {
-    client.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+    rejectUpgrade(client, 503, "Service Unavailable", `pwmcp: all ${maxClients} browser slots are in use; retry later`);
     return;
   }
   const requestedRaw = req.headers["x-pwmcp-lease-seconds"];
   if (requestedRaw !== undefined && !/^[1-9][0-9]*$/.test(String(requestedRaw))) {
-    client.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+    rejectUpgrade(
+      client, 400, "Bad Request",
+      `pwmcp: X-PWMCP-Lease-Seconds must be a positive integer (max ${maxLease}), got ${JSON.stringify(String(requestedRaw))}`
+    );
     return;
   }
   const requested = requestedRaw === undefined ? defaultLease : Number(requestedRaw);
