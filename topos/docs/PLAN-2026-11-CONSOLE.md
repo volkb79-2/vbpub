@@ -9,35 +9,38 @@ the PoCs.
 
 ## Streams
 
-### Stream 0: correctness (in review, branch `topos-20261105_035951-deep-review-20261105`)
+### Stream 0: correctness (done)
 
-About 60 fixes from the deep review. Gate and adversarial review before merge.
+About 60 fixes from the deep review are in topos 0.6.0.
 
 ### Stream A: data layer
 
-1. **Rust sampler PoC** (`poc/rust-sampler/`). Measure against lean Python at 1 Hz
-   on r1002 and v1001, including the process scan. Rust owns collection if it
-   wins by enough to justify the toolchain.
-2. Sampler proper: reads, rates, hot/warm/cold tiers, hard events, socket, slow
-   enrichment on its own cadence, `topos --once` through it.
+1. **Rust sampler** (done, on branch `topos-sampler-poc-20261105`, not on main):
+   collection, rates, hot/warm/cold tiers, hard events, socket; three review rounds.
+   Operator approved Rust (D-026) on the PoC's 1.4x less CPU and 2.5-10x less memory.
+   The finished sampler uses about 1.2x less CPU than the lean Python yardstick and
+   about 7x less memory (Evidence).
+2. Still open for the sampler: slow enrichment (docker identity, systemd origin and
+   drift), `topos --once` through it, and the D-024 envelope measured on a host.
 3. Read path: `topos query`, TUI backfill and MCP read the tiers. Today persistent
    history is write-only and `topos query` reads recordings only.
 4. Unit with the self-protection envelope; install flow, and the wizard question
    for `kernel.task_delayacct`.
-5. `mdt-cockpit` mounts `/run/topos`; zero-argument source selection; visible
-   fallback; a clear message when a container sees only its own namespace. No daemon
-   installs on r1002 or v1001 without coordinating with the agent that controls them
-   (D-034). The unit's `RuntimeDirectory=` removes the directory on stop, which would
-   strand directory mounts, so the unit must keep it.
+5. `mdt-cockpit` mounts `/run/topos` (done, on main; takes effect with the next image
+   and a host-setup re-run, which also installs the drop-in that keeps the directory
+   when the unit stops). Still open: zero-argument source selection; visible fallback;
+   a clear message when a container sees only its own namespace. No daemon installs on
+   r1002 or v1001 without coordinating with the agent that controls them (D-034).
 6. Build and release: Rust image pinned in the build, a `cmru` step for a static
    musl binary, a run-gate lane. Containers only; no toolchain in the cockpit.
 
 ### Stream B: the screen
 
 1. **Line-rendered table replaces `DataTable`**, with priority-based column
-   dropping (in progress).
-2. **ratatui PoC of the main screen** (`poc/ratatui-tui/`) in parallel, to compare
-   by hand and decide the engine.
+   dropping (done, on branch `topos-singleview-20261105`).
+2. **Both views run the single view on live sampler data**, for the operator to
+   compare by hand: Textual on `topos-singleview-20261105`, ratatui on
+   `topos-ratatui-poc-20261105`. Neither merges until the engine is chosen.
 3. **Drawing PoC** (`tools/poc/terminal_graphics_poc.py`) in VS Code, tmux, PuTTY,
    Ubuntu and CachyOS default terminals, Termix.
 4. Meters: per-CPU, stacked memory, zswap, PSI trend, per-device await, io.cost
@@ -69,7 +72,6 @@ parked web UI.
 | Item | Waits on |
 |---|---|
 | TUI engine: Textual line widget or ratatui | ratatui PoC vs the swapped Python table |
-| Sampler language final go | Sampler PoC numbers |
 | Final column list | Using the PoCs |
 | Drawing: which techniques | Drawing PoC in real terminals |
 | Milestone definition | The above |
@@ -110,6 +112,11 @@ Measured on 2026-11-05.
 | Same, custom Textual line widget, styled cells | 9.5 ms, 39 MiB |
 | Same, ratatui 0.29, unstyled cells | 0.39 ms, about 12 MB |
 | One recorded frame, 77 cgroups | 417 KB JSON |
+| Sampler at 1 Hz, r1002, 84 cgroups | 1.71% of a core, 10.5 MB peak RSS |
+| Lean Python yardstick at 1 Hz, r1002 | 2.03% of a core, 74.7 MB (a compact ring was put near 17 MB; no recorded run) |
+| Full view on live r1002 data, 170x48 | Textual 72-77 ms, ratatui 0.84 ms per frame |
+| Full view on live r1002 data, 260x60 | Textual 88 ms, ratatui 1.69 ms per frame |
+| `current` reply, r1002 | 564 KB; 37 KB with `fields` and `compact` |
 
 The frame benchmarks measure the table only with no terminal writes, so treat them
 as ratios. The controller was under load during the Textual runs.
