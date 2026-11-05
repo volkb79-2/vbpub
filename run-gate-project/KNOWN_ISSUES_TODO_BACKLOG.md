@@ -7651,3 +7651,11 @@ warning (RG-160 diagnostic) before changing code. Until then a differing single-
 race or plan-file gap in `_FakeCgprofileDaemon`, not load. Run 2 (r1002) did not hit it but failed a doctor test (`'[OK] profiler daemon'` missing from the doctor output), another intermittent failure of the same family.
 Both runs also failed `TestHistoryStoreReadableByTheReleasedReader` deterministically: the remote-gate checkout is built from a thin git bundle and carries only a few `run-gate-v25.*` tags, so RG-159's
 "tags present but no `run-gate-v24.>=3` tag" assertion fires. Remote `selftest` can therefore never be clean until remote-gate syncs all `run-gate-v*` tags (or the test skips on a tag-incomplete checkout).
+
+## RG-164 — `run_gate_profile` pytest plugin raised INTERNALERROR (unknown hook `pytest_xdist_node_collection_finished`) in any pytest without xdist (tnt 0.3.0 release gate)
+
+**Status:** FIXED 2026-11-05 (fix-tnt-gate-20261105).
+
+**Cause.** RG-146 (7273126b6) added the `pytest11` entry-point plugin `run_gate_profile`, loaded into every pytest in the tester venv. Its `pytest_xdist_node_collection_finished` hook has its hookspec only from pytest-xdist; tnt's lanes run `-p no:xdist`, so pluggy's `check_pending` raised `PluginValidationError` during collection (deterministic, not load-related).
+
+**Fix.** `@pytest.hookimpl(optionalhook=True)` on the hook; regression test registers the module in a real pytest config with `-p no:xdist` and runs `check_pending`. Any lane using `-p no:xdist` or a venv without xdist was affected (every consumer on the venv with the RG-146 wheel).

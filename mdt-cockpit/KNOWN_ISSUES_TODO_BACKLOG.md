@@ -1403,3 +1403,21 @@ with no score, not a parse of the challenge HTML.
 
 **Status:** OPEN. `scripts/debian-install-v2/tools/cpu_benchmark.pins.json` holds only x86_64 (Geekbench 7.1.0, sha256 read from the real download in HB-1). An architecture without a pin is `warned` by the installer and refused by `install.sh cpu-benchmark`, never run unverified.
 **Acceptance.** Download the `LinuxARMPreview` 7.1.0 archive on an aarch64-capable path, record its sha256 in the pins file, add a test, and bump the pins together with the tool's `.sha256` where needed.
+
+## MDT-073 - VM-only leak test for the load-tier ceilings (AD2-0 gate) (2026-11-05)
+
+**Status:** OPEN. AD2-0 (gates/background MemoryMax = dev.slice MemoryHigh, MemorySwapMax = dev swap minus the protected Lows) is covered by hermetic host-setup tests and verified live by `mdt-host-check.sh`; the behavioural gate of the addendum needs a real VM.
+
+**Next steps.** In `testing/vm` (next to `vm-governance-acceptance.sh`): install host-setup on `HOST_ROLE=dedicated-dev` with swap, start a leaking process in a `dev-gates.slice` leaf, hold an interactive scope with a working set above its Low.
+**Acceptance.** The leaf ends with `oom_kill` in `dev-gates.slice` `memory.events` once its swap is spent, while the interactive scope's memory PSI stays below 5 % and its allocations are not throttled. Never run on a live host.
+## MDT-074 - dedicated-dev shared tree cache host plumbing (AD2-2) (2026-11-05)
+
+**Status:** DONE on branch `mdt-cache-slice-20261105` (host half). `dev-cache.slice`, `/srv/tree-cache` and `/srv/tree-upper` tmpfs mount units, `tree_cache` block of `/etc/mdt/host-capacity.json`, `mdt-tree-cache-gc.timer`, env keys, host-check, tests (host-setup/README.md "Shared tree cache of the dedicated-dev role"). Applied live on v1001 then r1002.
+**Open (other packages / follow-ups).**
+1. AD2-3: cowtree `cache` (ensure, lease, last-used, gc) must publish exactly the directory/lease format of `mdt_tree_cache.py`; once it does, the timer may call `cowtree cache gc` instead of the built-in GC (the hosts have no cowtree wheel in `/opt/mdt`).
+2. AD2-5: run-gate checks `CGROUP_PARENT_DEV_CACHE` (LoadState) and `MDT_TREE_CACHE_ROOT`/`MDT_TREE_UPPER_ROOT`; the host does not export these env keys itself (they travel the `containerEnv` path like `CGROUP_PARENT_DEV_GATES`): the devcontainer template and the runner env still need them, the values are in `host-capacity.json`.
+3. The GC cannot see a lane that holds a key only through a bind in a mount namespace it cannot read; it relies on the lease (flock) plus every /proc/*/mountinfo, and keeps everything when one mountinfo is unreadable. Verify with a real lane in AD2-5.
+4. `shared-prod` opt-in is not offered (design: opt-in on shared-prod); add a key only when a consumer needs it.
+5. `DEV_CACHE_MEMORY_LOW` default is empty: size it from the first measured populate (M-6 / AD2-6).
+6. The upper area (`/srv/tree-upper`, 10 % of RAM) is one shared tmpfs with no per-lane limit: one lane filling it gives ENOSPC to the others. run-gate (AD2-5) must classify ENOSPC in an upper as infrastructure/inconclusive, never a product failure.
+7. On a host without swap the two tmpfs areas (up to 35 % of RAM by default, at most 50 %) are unevictable.

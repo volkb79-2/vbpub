@@ -273,8 +273,11 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   if both exceed 25 it refuses (exit 75) and prints both readings. The Netcup identity check runs before any ssh/scp write and the
   on-host guard (hostname, server id) prefixes every remote command.
 - **Source.** The worktree must have a clean tracked tree (untracked files are ignored); commit first with
-  `git commit --only -- <paths>` (agents do anyway). HEAD is shipped as a thin git bundle against the closest commit the host already
-  has under `~/checkouts` (no bundle if the host already has HEAD), checksum-verified, then checked out detached as a throwaway
+  `git commit --only -- <paths>` (agents do anyway). HEAD and, with `--base REF`, the base commit (named by a temporary local ref
+  `refs/remote-gate/base` while the bundle is built, so a base that is not an ancestor of HEAD, e.g. `--base main` after main moved on,
+  still reaches the host instead of ending the job with exit 72) are shipped as a thin git bundle against the closest commit the host
+  already has under `~/checkouts` (closest by commits still missing for HEAD plus the base; no bundle if the host already has both),
+  checksum-verified, then checked out detached as a throwaway
   checkout `~/checkouts/<repo>/.worktrees/rg-<id>-<sha12>` (visible as `/workspaces/<repo>/.worktrees/rg-<id>-<sha12>` in the cockpit,
   because the cockpit bind-mounts `~runner/checkouts` as `/workspaces`; lane scripts that require the worktree under
   `/workspaces/<repo>/.worktrees/` accept it; existing host checkouts are never touched, only the empty `<repo>/.worktrees` parents remain

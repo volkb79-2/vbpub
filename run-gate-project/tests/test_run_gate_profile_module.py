@@ -65,6 +65,17 @@ def test_entry_point_matches_pyproject_and_hooks_exist(fresh):
         assert callable(getattr(fresh, hook)), hook
 
 
+def test_xdist_hook_is_optional_so_pytest_without_xdist_collects(fresh):
+    """Regression (tnt 0.3.0 gate INTERNALERROR): the xdist hook has no
+    hookspec when xdist is absent or `-p no:xdist`; it must be optional."""
+    from _pytest.config import _prepareconfig
+
+    assert fresh.pytest_xdist_node_collection_finished.pytest_impl["optionalhook"]
+    config = _prepareconfig(["-p", "no:xdist"])
+    config.pluginmanager.register(fresh, "fresh_profile")
+    config.pluginmanager.check_pending()  # must not raise PluginValidationError
+
+
 def test_constants(fresh):
     assert fresh.PROFILE_DIR_ENV == "RUN_GATE_PROFILE_DIR"
     assert fresh.OBSERVER_SOCKET_ENV == "ASSAY_RESOURCE_OBSERVER_SOCKET"

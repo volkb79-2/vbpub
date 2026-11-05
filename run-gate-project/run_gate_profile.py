@@ -27,6 +27,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 PROFILE_DIR_ENV = "RUN_GATE_PROFILE_DIR"
 OBSERVER_SOCKET_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
 WINDOW_INTERVAL_MS = 250
@@ -148,9 +150,16 @@ def pytest_collection_finish(session) -> None:
         _PROFILE.tests_collected = len(session.items)
 
 
+@pytest.hookimpl(optionalhook=True)
 def pytest_xdist_node_collection_finished(node, ids) -> None:
     """The xdist controller does not collect itself; a worker's collected id
-    list is the suite size."""
+    list is the suite size.
+
+    `optionalhook=True`: the hookspec comes from pytest-xdist. Without it, a
+    pytest run where xdist is absent or disabled (`-p no:xdist`, as tnt's and
+    other lanes do) dies in `check_pending` with an INTERNALERROR
+    (PluginValidationError: unknown hook), because this plugin is registered
+    through the `pytest11` entry point in every pytest in the venv."""
     if _PROFILE is not None and _PROFILE.kind == "controller":
         _PROFILE.tests_collected = len(ids)
 
