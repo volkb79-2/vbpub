@@ -48,7 +48,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -108,6 +108,7 @@ class PreparedStack:
     rendered_compose: str
     ownership_path: Path | None
     config: dict[str, Any]
+    secret_values: frozenset[str] = field(repr=False, compare=False)
 
 
 # ===========================================================================
@@ -2381,6 +2382,11 @@ def main_execution(
                 rendered_compose=rendered_compose,
                 ownership_path=ownership_path,
                 config=composefile.redact_config(merged, specs),
+                secret_values=frozenset(
+                    str(value)
+                    for secret in materialized.values()
+                    if (value := getattr(secret, "value", None)) not in (None, "")
+                ),
             )
             result["prepared_stack"] = prepared
             result["config"] = prepared.config

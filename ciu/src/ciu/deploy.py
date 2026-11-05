@@ -809,6 +809,43 @@ def _resolve_identity_live_state(project: str, service: str) -> dict:
     }
 
 
+def split_service_selector(selector: str) -> tuple[str, str | None]:
+    """Parse the shared ``<stack>[:<service>]`` selector grammar."""
+    if not isinstance(selector, str) or not selector:
+        raise ValueError("[S18] service selector must be `<stack>[:<service>]`")
+    if ":" not in selector:
+        return selector, None
+    stack, service = selector.rsplit(":", 1)
+    if not stack or not service:
+        raise ValueError("[S18] service selector must be `<stack>[:<service>]`")
+    return stack, service
+
+
+def select_service(
+    identities: dict[str, dict[str, dict[str, Any]]], service: str | None,
+) -> tuple[str, str, dict[str, Any]]:
+    """Resolve one exact service from an already-filtered identity document."""
+    stack_path = next(iter(identities), None)
+    if stack_path is None:
+        raise ValueError("[S18] selected stack has no rendered services")
+    if len(identities) != 1:
+        raise ValueError(
+            "[S18] selector resolved more than one stack; select one stack explicitly"
+        )
+    stack_services = identities[stack_path]
+    if service is None:
+        if len(stack_services) != 1:
+            raise ValueError(
+                f"[S18] stack {stack_path!r} has {len(stack_services)} services; "
+                "name one as `<stack>[:<service>]`"
+            )
+        service = next(iter(stack_services))
+    identity = stack_services.get(service)
+    if identity is None:
+        raise ValueError(f"[S18] service {service!r} was not found in stack {stack_path!r}")
+    return stack_path, service, identity
+
+
 def exec_service(
     repo_root: Path,
     selector: str,
@@ -821,29 +858,11 @@ def exec_service(
 
     if not argv:
         raise ValueError("[S18] `ciu exec <stack>[:<service>] -- ARGV...` requires a command")
-    if ":" in selector:
-        stack, service = selector.rsplit(":", 1)
-        if not stack or not service:
-            raise ValueError("[S18] service selector must be `<stack>[:<service>]`")
-    else:
-        stack, service = selector, None
+    stack, service = split_service_selector(selector)
     repo_root = Path(repo_root).resolve()
     document = resolve_identities(repo_root, stack=stack, profiles=profiles)
     identities = document["resolved"]["identities"]
-    stack_path = next(iter(identities), None)
-    if stack_path is None:
-        raise ValueError(f"[S18] stack {stack!r} has no rendered services")
-    stack_services = identities[stack_path]
-    if service is None:
-        if len(stack_services) != 1:
-            raise ValueError(
-                f"[S18] stack {stack_path!r} has {len(stack_services)} services; "
-                "name one as `<stack>:<service>`"
-            )
-        service = next(iter(stack_services))
-    identity = stack_services.get(service)
-    if identity is None:
-        raise ValueError(f"[S18] service {service!r} was not found in stack {stack_path!r}")
+    stack_path, service, identity = select_service(identities, service)
 
     global_config = load_global_config(repo_root, write_rendered=False)
     targets = worktree_pkg.resolve_exec_targets_config(global_config)
