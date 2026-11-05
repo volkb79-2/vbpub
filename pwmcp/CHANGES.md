@@ -4,10 +4,23 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [1.64.1-r4] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=dd4ccdcaad8f06023a080c245fd52182ff08914c -->
+
+### Fixed
+- fix(pwmcp): remove stray diff3 marker left by an automatic backlog merge (5d42c6032)
+- fix(pwmcp): guard reaps the orphans of its killed git status wrapper; leaked-process-tree at R2 baseline round 2 (PWMCP-40) (0fdcb63c1)
+
+### Changed
+- Merge branch 'main' into pwmcp-leak2-20261105 (41e6da748)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - fix(pwmcp): the cleanliness guard also reaps the processes its killed `git status` wrapper orphaned (they were adopted as zombies by the gate's subreaper and reported as `leaked-process-tree` at the R2 baseline even after PWMCP-33); regression test plays the subreaper (PWMCP-40)
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [1.64.1-r3] - 2026-11-05
 <!-- cmru: generated -->
