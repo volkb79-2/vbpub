@@ -3,3 +3,9 @@
 !sampler/Cargo.lock
 !sampler/src
 !tests/fixtures
+# the conformance stage: the Python collector and the one test that drives the binary
+!pyproject.toml
+!src/topos
+!tests/conftest.py
+!tests/test_sampler_conformance.py
+**/__pycache__
