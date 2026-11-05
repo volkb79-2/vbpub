@@ -899,6 +899,38 @@ decisions" — flipping a disk-write-by-default daemon behavior is treated as a
 separate, explicit product decision, not something this measurement alone
 authorizes).
 
+## 2026-11-05 topos-sampler 0.1.0 on r1002 and v1001 (S1 promotion of the Rust PoC)
+
+Method: short read-only foreground runs from a fresh `/tmp` directory (tmpfs) with cold files in a fresh
+`/var/tmp` directory (disk), `sampler/bench.sh`, tick 1 s, 291 ticks (290 s), real tiers and process scan, no
+cgroup created or altered, no service, all files removed afterwards. Binary: static musl, 1.27 MB,
+`cargo test` 21 passed in the container build. CPU is `/proc/self/stat` at exit (10 ms granularity). Both
+hosts were shared and loaded during the runs (r1002 load 3.6-4.1, CPU PSI some ~12-13%; v1001 load 1.1-1.5).
+The **D-024 envelope was not applied**: the runs were unconstrained because cgroups on these hosts may not
+be created or changed (backlog TOP-SAMPLER-ENVELOPE); `status.throttle` is therefore untested under quota.
+
+| run | host | CPU % of a core | CPU ms/tick | work ms avg / p95 / max | procs ms/tick | pids with io read | RSS max (VmHWM) |
+|---|---|---|---|---|---|---|---|
+| PoC build (before), same day | r1002 | 1.39 | 13.85 | 16.5 / 22.6 / 31.1 | 4.36 | all (231) | 7.7 MB |
+| 0.1.0 (after) | r1002 | 1.38 | 13.75 | 16.4 / 26.4 / 42.1 | 3.27 | 17 of 231 | 9.0 MB |
+| 0.1.0 (after) | v1001 | 1.68 | 16.77 | 17.5 / 25.1 / 35.2 | 4.14 | 13 of 250 | 8.4 MB |
+| lean Python yardstick, 120 s | r1002 | 2.03 | 20.08 | 25.9 / 35.7 / 47.4 | 7.17 | all | 74.7 MB |
+
+Reading: the staged process scan cut the process-scan stage by about 25% on r1002 (4.36 to 3.27 ms) while
+reading `io`/`schedstat` for 17 of 231 PIDs on an ordinary tick (a full sweep every 10 s reads all). Total
+CPU per tick is unchanged (13.85 to 13.75 ms) because 0.1.0 collects substantially more (per-CPU split, memstack,
+zswap, KSM, io.cost, D-state attribution, self-monitoring, state-bearing zero deltas); the store stage is 2.8 ms
+vs 2.5 ms. Against the PoC table (r1002 1.39-1.48%, v1001 1.93-1.96%, other days and loads) the host numbers are
+in the same band; v1001 reads lower than its PoC row (1.68% vs 1.93%) but those runs were on a different day and
+load, so I do not claim an improvement there. Python yardstick on r1002 now (2.03%) is 47% above Rust 0.1.0.
+No run overran its tick (`overruns` 0, `skipped_ticks` 0).
+
+Storage (290 s): tmpfs tiers 6.3 MB (r1002) and 5.5 MB (v1001), up from 4.1 MB for the PoC build on r1002 the same
+day because zero counter deltas are now stored (a zero is a measurement) and more metrics exist; cold zstd
+payload 108 KB (r1002; PoC build 96 KB) and 91 KB (v1001), extrapolating to about 31 and 26 MB/day; block-level
+`write_bytes` 201 KB and 135 KB per 290 s (about 2.4 and 1.6 MB/h). Not measured: the query path on hosts (only in
+container tests), 500 cgroups / 5,000 PIDs, the envelope, other kernels.
+
 ## Release Signoff Template
 
 - Release/tag:

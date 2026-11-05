@@ -159,7 +159,11 @@ def test_systemd_templates_are_packaged() -> None:
     assert "topos daemon serve --socket /run/topos/topos.sock" in service
     assert "d /run/topos 0750 root topos -" in tmpfiles
     slice_unit = (root / "assets/systemd/topos.slice").read_text()
-    assert "MemoryMax=512M" in slice_unit
+    for line in ("MemoryMin=48M", "MemoryHigh=96M", "MemoryMax=128M", "MemorySwapMax=0", "CPUQuota=25%", "IOWeight=20", "TasksMax=32"):
+        assert line in slice_unit, line  # D-024 envelope
+    assert "RuntimeDirectoryPreserve=yes" in service
+    sampler = (root / "assets/systemd/topos-sampler.service").read_text()
+    assert "RuntimeDirectoryPreserve=yes" in sampler and "Slice=topos.slice" in sampler and "topos-sampler" in sampler
 
 
 # ── Install plan (P25) tests ─────────────────────────────────────────────────

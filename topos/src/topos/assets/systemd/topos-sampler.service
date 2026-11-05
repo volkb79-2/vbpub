@@ -1,0 +1,30 @@
+[Unit]
+Description=topos hot sampler (Rust, D-026): collection, tiered history, hard events
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=topos
+UMask=0007
+Slice=topos.slice
+# Protocol: docs/SAMPLER-PROTOCOL.md. Config: every key required, no defaults in code
+# (sampler/sampler.example.toml). tmpfs tiers live under /run/topos/tiers; the preserved
+# runtime directory keeps hot and warm history across a service restart (not a reboot).
+RuntimeDirectory=topos
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+StateDirectory=topos
+StateDirectoryMode=0750
+ExecStart=/usr/local/bin/topos-sampler /etc/topos/sampler.toml
+Restart=on-failure
+RestartSec=5s
+
+# Reads /proc, /sys/fs/cgroup and debugfs; writes only its runtime and state directories.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
