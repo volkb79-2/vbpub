@@ -1655,11 +1655,17 @@ def _main_daemon(argv: list[str]) -> int:
         frame_stream: Iterator[Frame] = live_frame_stream(collector, stop_event=frame_stop)
         if config.history.daemon.enabled:
             frame_stream = _persisting_frame_stream(frame_stream, history_store)
+        # SIGTERM/SIGINT and producer death both drive the one shutdown path
+        # below (the ``finally``); producer death additionally exits non-zero.
+        from topos.daemon.lifecycle import ShutdownCoordinator
+
+        shutdown = ShutdownCoordinator()
         broker = FrameBroker(
             frame_stream,
             history_size=args.history_size,
             health_registry=health_registry,
             stop_callback=frame_stop.set,
+            terminal_callback=shutdown.on_producer_terminal,
         )
         api = DaemonApi(
             broker,
@@ -1667,6 +1673,7 @@ def _main_daemon(argv: list[str]) -> int:
             health_registry=health_registry,
         )
         server = serve_versioned_unix_socket(args.socket, broker, api)
+        shutdown.bind_server(server)
         print(f"serving read-only topos frames on {args.socket}", flush=True)
 
         # Default-disabled components
@@ -1740,7 +1747,7 @@ def _main_daemon(argv: list[str]) -> int:
                             "bpf_snapshot_bridge",
                             detail="initial BPF refresh failed; preserving last valid snapshot",
                             error=ComponentError(
-                                message="initial BPF refresh failed",
+                                message=f"initial BPF refresh failed: {exc}",
                                 error_code="bpf_initial_refresh_failed",
                             ),
                         )
@@ -1749,7 +1756,7 @@ def _main_daemon(argv: list[str]) -> int:
                             "bpf_snapshot_bridge",
                             detail="initial BPF refresh failed; no valid snapshot",
                             error=ComponentError(
-                                message="initial BPF refresh failed",
+                                message=f"initial BPF refresh failed: {exc}",
                                 error_code="bpf_initial_refresh_failed",
                             ),
                         )
@@ -1775,7 +1782,7 @@ def _main_daemon(argv: list[str]) -> int:
                                     "bpf_snapshot_bridge",
                                     detail="BPF refresh failed; preserving last valid snapshot",
                                     error=ComponentError(
-                                        message="BPF refresh failed",
+                                        message=f"BPF refresh failed: {exc}",
                                         error_code="bpf_refresh_failed",
                                     ),
                                 )
@@ -1789,7 +1796,7 @@ def _main_daemon(argv: list[str]) -> int:
                                     "bpf_snapshot_bridge",
                                     detail="BPF refresh failed; no valid snapshot",
                                     error=ComponentError(
-                                        message="BPF refresh failed",
+                                        message=f"BPF refresh failed: {exc}",
                                         error_code="bpf_refresh_failed",
                                     ),
                                 )
@@ -1802,7 +1809,7 @@ def _main_daemon(argv: list[str]) -> int:
                                 "bpf_snapshot_bridge",
                                 detail="BPF refresh encountered an unexpected error",
                                 error=ComponentError(
-                                    message="BPF refresh encountered an unexpected error",
+                                    message=f"BPF refresh encountered an unexpected error: {exc}",
                                     error_code="bpf_unexpected_error",
                                 ),
                             )
@@ -1820,7 +1827,7 @@ def _main_daemon(argv: list[str]) -> int:
                     "bpf_snapshot_bridge",
                     detail="failed to start BPF snapshot bridge",
                     error=ComponentError(
-                        message="failed to start BPF snapshot bridge",
+                        message=f"failed to start BPF snapshot bridge: {exc}",
                         error_code="bpf_start_failed",
                     ),
                 )
@@ -1856,7 +1863,7 @@ def _main_daemon(argv: list[str]) -> int:
                     "paddr_lifecycle",
                     detail="paddr lifecycle start failed",
                     error=ComponentError(
-                        message="paddr lifecycle start failed",
+                        message=f"paddr lifecycle start failed: {exc}",
                         error_code=(
                             "paddr_start_failed"
                             if isinstance(exc, PaddrLifecycleStartError)
@@ -1870,6 +1877,7 @@ def _main_daemon(argv: list[str]) -> int:
                     flush=True,
                 )
 
+        restore_signals = shutdown.install_signal_handlers()
         try:
             # Start only after all collector providers and daemon-owned
             # components are configured. The socket is not accepting handler
@@ -1877,8 +1885,11 @@ def _main_daemon(argv: list[str]) -> int:
             broker.start()
             server.serve_forever()
         except KeyboardInterrupt:
-            return 0
+            pass
         finally:
+            restore_signals()
+            if shutdown.producer_failed:
+                print(f"topos daemon exiting: {shutdown.reason}", file=sys.stderr, flush=True)
             broker.stop()
             collector_stopped = False
             try:
@@ -1889,7 +1900,7 @@ def _main_daemon(argv: list[str]) -> int:
                     "collector",
                     detail="collector producer did not stop cleanly",
                     error=ComponentError(
-                        message="collector producer did not stop cleanly",
+                        message=f"collector producer did not stop cleanly: {exc}",
                         error_code="collector_shutdown_failed",
                     ),
                 )
@@ -1933,7 +1944,7 @@ def _main_daemon(argv: list[str]) -> int:
                         "paddr_lifecycle",
                         detail="paddr lifecycle stop failed",
                         error=ComponentError(
-                            message="paddr lifecycle stop failed",
+                            message=f"paddr lifecycle stop failed: {exc}",
                             error_code="paddr_stop_failed",
                         ),
                     )
@@ -1948,7 +1959,7 @@ def _main_daemon(argv: list[str]) -> int:
                 history_store.close()
                 health_registry.mark_stopped("persistent_history", detail="persistent history flushed")
             server.server_close()
-        return 0
+        return 1 if shutdown.producer_failed else 0
     if args.command == "preflight":
         try:
             report = preflight_daemon_deployment(args.socket, group_name=args.group)

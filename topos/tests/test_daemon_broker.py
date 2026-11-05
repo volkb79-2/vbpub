@@ -47,7 +47,9 @@ def test_daemon_socket_serves_current_and_stream_frames(tmp_path: Path) -> None:
         stream = _request(socket_path, {"op": "stream", "limit": 10})
         timestamps = [item["frame"]["ts"] for item in stream if item["type"] == "frame"]
         assert timestamps == [100.0, 105.0, 110.0]
-        assert stream[-1] == {
+        end = dict(stream[-1])
+        assert isinstance(end.pop("epoch"), str)  # per-start daemon identity (B-04)
+        assert end == {
             "type": "end",
             "count": 3,
             "gap": False,

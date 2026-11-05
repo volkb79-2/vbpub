@@ -11,11 +11,13 @@ Covers:
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import os
 import socketserver
 import threading
+import time
 from pathlib import Path
 
 from conftest import fixture_frame
@@ -28,7 +30,11 @@ def _current_group_name() -> str:
 
 
 def _start_socket(socket_path: Path):
-    server = serve_unix_socket(socket_path, FrameBroker([fixture_frame()]))
+    # A live daemon serves a recent frame; the fixture's ts=100.0 would now be
+    # (correctly) flagged stale by the status check.
+    server = serve_unix_socket(
+        socket_path, FrameBroker([dataclasses.replace(fixture_frame(), ts=time.time())])
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server

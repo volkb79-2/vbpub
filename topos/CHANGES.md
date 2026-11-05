@@ -27,6 +27,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(topos): real_docker_inspect opt-out so the production resolver stays testable (B-039) (cadfc34d1)
 
 <!-- cmru: pending release notes begin -->
+- fix(topos/daemon): `daemon serve` handles SIGTERM/SIGINT through the normal shutdown path (history flush, paddr stop, socket unlink) (B-01, D-01)
+- fix(topos/daemon): the daemon exits non-zero when the frame producer dies instead of serving a frozen frame; `daemon status` reports a frame older than 3 intervals as stale (B-02)
+- fix(topos/daemon): a cursor ahead of the daemon's latest sequence is `gap=true`; responses carry a per-start `epoch` and `stream_frames` raises on a restart (B-04)
+- fix(topos/daemon): request and response phases have a total deadline (trickling clients no longer hold slots); the busy reply is an envelope error for envelope clients (B-05)
+- fix(topos/daemon): legacy (no `v`) requests go through the authorization hook, audit log and response byte cap; deeply nested JSON gets an error reply (B-06, B-19)
+- fix(topos/daemon): component health errors carry the exception text (D-18)
 - fix(topos/tests): B-047 version assertions compare against `topos.__version__` (fallback test reads pyproject `fallback_version`) instead of the literal "0.1.0"
 - fix(topos/tests): B-003 MCP-dependent smoke/server tests skip cleanly (`requires_mcp`) when the `topos[mcp]` extra is absent; the P84 gate still fails such a run
 - fix(topos/cli): B-023 an unresolvable selector in the live TUI exits 2 with the typed message, as `--once` does

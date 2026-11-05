@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import secrets
 import socket
 import socketserver
 import threading
@@ -74,6 +75,7 @@ class FrameBroker:
         startup_timeout_s: float = 5.0,
         health_registry: ComponentHealthRegistry | None = None,
         stop_callback: Callable[[], None] | None = None,
+        terminal_callback: Callable[[str], None] | None = None,
     ) -> None:
         if isinstance(history_size, bool) or not isinstance(history_size, int):
             raise TypeError("history_size must be an integer")
@@ -91,6 +93,13 @@ class FrameBroker:
         self._startup_timeout_s = float(startup_timeout_s)
         self._health_registry = health_registry
         self._stop_callback = stop_callback
+        # Called once, from the producer thread, when the producer ends on its
+        # own (kind "failed" or "exhausted"); lets the daemon exit non-zero
+        # instead of serving a frozen last frame forever.
+        self._terminal_callback = terminal_callback
+        # Per-start identity: sequence numbers restart at 0 on every daemon
+        # start, so clients compare epochs to detect a restart.
+        self.epoch = secrets.token_hex(8)
         self._stop_requested = threading.Event()
         self._started = False
         self._sequence = 0
@@ -191,14 +200,17 @@ class FrameBroker:
         self._ensure_started()
         with self._condition:
             if not self._history:
-                return FrameBatch((), None, None, cursor, False)
+                # A cursor ahead of everything this daemon has published can
+                # only come from a previous run (sequences restart at 0).
+                stale = cursor is not None and cursor > self._sequence - 1
+                return FrameBatch((), None, None, cursor, stale)
             oldest = self._history[0][0]
             latest = self._history[-1][0]
             if cursor is None:
                 entries = tuple(list(self._history)[-limit:])
                 gap = False
             else:
-                gap = cursor < oldest - 1
+                gap = cursor < oldest - 1 or cursor > latest
                 entries = tuple((seq, frame) for seq, frame in self._history if seq > cursor)[:limit]
             next_cursor = entries[-1][0] if entries else cursor
             return FrameBatch(entries, oldest, latest, next_cursor, gap)
@@ -248,10 +260,18 @@ class FrameBroker:
         return self._history.maxlen or 0
 
     def _set_terminal(self, kind: _TerminalKind) -> None:
+        newly_set = False
         with self._condition:
             if self._terminal is None:
                 self._terminal = kind
+                newly_set = True
             self._condition.notify_all()
+        callback = self._terminal_callback
+        if newly_set and callback is not None and kind != "stopped":
+            try:
+                callback(kind)
+            except Exception:
+                pass
 
     def _producer_loop(self) -> None:
         try:
@@ -333,6 +353,7 @@ class FrameBroker:
                 "oldest_seq": batch.oldest_seq,
                 "latest_seq": batch.latest_seq,
                 "next_cursor": batch.next_cursor,
+                "epoch": self.epoch,
             }
             return [*[_frame_response(frame, seq=seq) for seq, frame in batch.entries], end]
         if op == "health":
@@ -392,11 +413,15 @@ class BrokerUnixServer(socketserver.ThreadingUnixStreamServer):
         self._client_slots = threading.BoundedSemaphore(max_clients)
         super().__init__(str(socket_path), _BrokerHandler)
 
+    def busy_payload(self, request: socket.socket) -> dict[str, Any]:
+        """Reply body for a rejected connection (legacy shape; envelope server overrides)."""
+        return _error_response("server busy")
+
     def process_request(self, request: socket.socket, client_address: Any) -> None:
         if not self._client_slots.acquire(blocking=False):
             try:
-                request.sendall(json.dumps(_error_response("server busy"), separators=(",", ":")).encode() + b"\n")
-            except OSError:
+                request.sendall(json.dumps(self.busy_payload(request), separators=(",", ":")).encode() + b"\n")
+            except (OSError, ValueError, TypeError):
                 pass
             self.shutdown_request(request)
             return
@@ -417,11 +442,48 @@ class BrokerUnixServer(socketserver.ThreadingUnixStreamServer):
         self.socket_path.unlink(missing_ok=True)
 
 
+class TotalDeadline:
+    """A whole-phase time bound for a socket, not a per-``recv`` one.
+
+    ``socket.settimeout`` restarts on every ``recv``/``send``, so a peer that
+    trickles one byte (or drains one byte) per timeout period holds a client
+    slot indefinitely. This context manager shuts the socket down when the
+    total budget is spent, which unblocks a blocked read or write at once.
+    ``how`` is ``socket.SHUT_RD`` for the request phase (the error reply can
+    still be written) and ``socket.SHUT_RDWR`` for the response phase.
+    """
+
+    def __init__(self, sock: Any, seconds: float, how: int) -> None:
+        self.fired = False
+        self._sock = sock
+        self._how = how
+        self._timer = threading.Timer(float(seconds), self._fire)
+        self._timer.daemon = True
+
+    def _fire(self) -> None:
+        self.fired = True
+        try:
+            self._sock.shutdown(self._how)
+        except Exception:
+            pass
+
+    def __enter__(self) -> "TotalDeadline":
+        self._timer.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._timer.cancel()
+
+
 class _BrokerHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
-        self.connection.settimeout(self.server.request_timeout_s)  # type: ignore[attr-defined]
+        timeout_s = self.server.request_timeout_s  # type: ignore[attr-defined]
+        self.connection.settimeout(timeout_s)
         try:
-            line = self.rfile.readline(MAX_REQUEST_BYTES + 1)
+            with TotalDeadline(self.connection, timeout_s, socket.SHUT_RD) as read_deadline:
+                line = self.rfile.readline(MAX_REQUEST_BYTES + 1)
+            if read_deadline.fired and not line.endswith(b"\n"):
+                raise socket.timeout("request deadline exceeded")
             if not line:
                 return
             if len(line) > MAX_REQUEST_BYTES or not line.endswith(b"\n"):
@@ -437,10 +499,15 @@ class _BrokerHandler(socketserver.StreamRequestHandler):
             responses = [_error_response(str(exc))]
         except Exception:
             responses = [_error_response("request failed")]
-        for response in responses:
-            self.wfile.write(
-                json.dumps(response, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
-            )
+        try:
+            with TotalDeadline(self.connection, timeout_s, socket.SHUT_RDWR):
+                for response in responses:
+                    self.wfile.write(
+                        json.dumps(response, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+                    )
+        except OSError:
+            # Peer went away or the total write deadline closed the socket.
+            pass
 
 
 def serve_unix_socket(

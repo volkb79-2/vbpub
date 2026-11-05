@@ -7,6 +7,8 @@ speaking the expected topos frame protocol?"
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,11 +106,17 @@ class DaemonStatusReport:
         return "\n".join(lines)
 
 
-def _check_protocol(socket_path: Path) -> ProtocolStatus:
+STALE_FRAME_INTERVALS = 3
+
+
+def _check_protocol(socket_path: Path, *, now: Callable[[], float] = time.time) -> ProtocolStatus:
     """Run a read-only current-frame protocol check against the daemon socket.
 
     Returns a ProtocolStatus — never raises. On failure the message includes
-    P31-style actionable guidance.
+    P31-style actionable guidance. A frame older than
+    ``STALE_FRAME_INTERVALS`` sampling intervals means the collector is no
+    longer producing (the daemon serves the last frame forever), so the check
+    fails instead of reporting a healthy daemon.
     """
     try:
         client = DaemonClient(socket_path)
@@ -134,6 +142,19 @@ def _check_protocol(socket_path: Path) -> ProtocolStatus:
             message=f"Daemon error: {exc}",
         )
 
+    age_s = now() - frame.ts
+    if frame.interval_s > 0 and age_s > STALE_FRAME_INTERVALS * frame.interval_s:
+        return ProtocolStatus(
+            ok=False,
+            message=(
+                f"Stale frame: newest frame is {age_s:.0f}s old "
+                f"(more than {STALE_FRAME_INTERVALS} sampling intervals of {frame.interval_s:g}s); "
+                "the collector may have stopped. Check the daemon logs."
+            ),
+            schema_version=frame.schema_version,
+            frame_ts=frame.ts,
+            entity_count=len(frame.entities),
+        )
     return ProtocolStatus(
         ok=True,
         message="Current frame retrieved successfully.",
