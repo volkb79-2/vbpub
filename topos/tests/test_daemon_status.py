@@ -211,18 +211,20 @@ class TestStatusHelper:
 class TestStatusCli:
     """Integration tests for the CLI status command."""
 
-    def test_status_cli_json_success(self, tmp_path: Path) -> None:
+    def test_status_cli_json_success(self, tmp_path: Path, monkeypatch) -> None:
         """topos daemon status --json against a fixture socket."""
         socket_path = tmp_path / "topos.sock"
         server = _start_socket(socket_path)
         try:
             from topos.cli import _main_daemon
 
+            group_name = _current_group_name()
+            _mock_systemd_metadata(monkeypatch, socket_path, group_name)
             old_stdout = io.StringIO()
             import sys
             sys.stdout = old_stdout
             try:
-                code = _main_daemon(["status", "--socket", str(socket_path), "--group", _current_group_name(), "--json"])
+                code = _main_daemon(["status", "--socket", str(socket_path), "--group", group_name, "--json"])
             finally:
                 output = old_stdout.getvalue()
                 sys.stdout = sys.__stdout__
@@ -235,18 +237,20 @@ class TestStatusCli:
             server.shutdown()
             server.server_close()
 
-    def test_status_cli_text_success(self, tmp_path: Path) -> None:
+    def test_status_cli_text_success(self, tmp_path: Path, monkeypatch) -> None:
         """topos daemon status (text) against a fixture socket."""
         socket_path = tmp_path / "topos.sock"
         server = _start_socket(socket_path)
         try:
             from topos.cli import _main_daemon
 
+            group_name = _current_group_name()
+            _mock_systemd_metadata(monkeypatch, socket_path, group_name)
             old_stdout = io.StringIO()
             import sys
             sys.stdout = old_stdout
             try:
-                code = _main_daemon(["status", "--socket", str(socket_path), "--group", _current_group_name()])
+                code = _main_daemon(["status", "--socket", str(socket_path), "--group", group_name])
             finally:
                 output = old_stdout.getvalue()
                 sys.stdout = sys.__stdout__
@@ -274,18 +278,20 @@ class TestStatusCli:
         assert "Cannot connect" in stdout_val
         assert "--socket" in stdout_val
 
-    def test_status_cli_pretty_json(self, tmp_path: Path) -> None:
+    def test_status_cli_pretty_json(self, tmp_path: Path, monkeypatch) -> None:
         """topos daemon status --pretty-json produces indented JSON."""
         socket_path = tmp_path / "topos.sock"
         server = _start_socket(socket_path)
         try:
             from topos.cli import _main_daemon
 
+            group_name = _current_group_name()
+            _mock_systemd_metadata(monkeypatch, socket_path, group_name)
             old_stdout = io.StringIO()
             import sys
             sys.stdout = old_stdout
             try:
-                code = _main_daemon(["status", "--socket", str(socket_path), "--group", _current_group_name(), "--pretty-json"])
+                code = _main_daemon(["status", "--socket", str(socket_path), "--group", group_name, "--pretty-json"])
             finally:
                 output = old_stdout.getvalue()
                 sys.stdout = sys.__stdout__
