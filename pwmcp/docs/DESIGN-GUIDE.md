@@ -52,8 +52,8 @@ by `scripts/resolve-playwright-version.py` from the release (`1.64.1-r2` -> `1.6
 spelling of the same string) through the one helper in `pwmcp_client/release.py`, which the resolver loads
 by path and the CLI imports. `--check` fails when the file differs from the mapped contract release, and the
 file is listed in `[project.release] commit_generated` beside the other generated client projections.
-`pwmcp doctor` compares client and server through the same helper (same Playwright = compatible, different
-r-number = WARN, different Playwright = FAIL).
+`pwmcp doctor` compares client and server through the same helper (same Playwright major.minor = compatible, a different
+patch or r-number = WARN, a different major.minor = FAIL).
 
 ## Client dependency projections
 

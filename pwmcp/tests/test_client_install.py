@@ -97,7 +97,12 @@ def test_install_from_a_local_bundle_builds_a_hash_locked_offline_venv(tmp_path:
     assert (root / "current").resolve() == release.resolve()
     assert (bin_dir / "pwmcp").is_symlink()
     assert (bin_dir / "pwmcp").readlink() == root / "current" / "venv" / "bin" / "pwmcp"
-    # upgrade: another release lands side by side and `current` switches; a reinstall replaces in place
+    # reinstalling the release that is `current` is refused: the live venv is never deleted
+    with pytest.raises(SystemExit):
+        installer.install(_args(bundle=str(bundle), dir=str(root), bin_dir=str(bin_dir)), run=Runner())
+    assert (release / "venv").exists() or (release / "requirements.lock").exists()
+    # a present but not-current release dir is rebuilt
+    (root / "current").unlink()
     installer.install(_args(bundle=str(bundle), dir=str(root), bin_dir=str(bin_dir)), run=Runner())
     assert (root / "current").resolve() == release.resolve()
 
@@ -232,9 +237,26 @@ def test_replace_symlink_never_clobbers_a_real_file(tmp_path: Path, capsys: pyte
     assert "refusing to replace" in capsys.readouterr().err
 
 
+def test_platform_problem_names_the_supported_platform(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert installer.platform_problem((3, 14, 0), "x86_64") is None
+    assert installer.platform_problem((3, 14, 0), "AMD64") is None
+    assert "CPython 3.14 on Linux x86_64 only; this is Python 3.12 on x86_64" in installer.platform_problem((3, 12, 1), "x86_64")
+    assert "aarch64" in installer.platform_problem((3, 14, 0), "aarch64")
+    monkeypatch.setattr(installer, "platform_problem", lambda: "nope")
+    with pytest.raises(SystemExit):
+        installer.main(["--version", "1.64.1-r2"])
+    assert "[ERROR] nope" in capsys.readouterr().err
+    monkeypatch.undo()
+    monkeypatch.setattr(installer.platform, "machine", lambda: "x86_64")
+    assert installer.platform_problem((3, 14, 0)) is None
+
+
 def test_main_reads_the_token_file_then_the_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     seen = []
     monkeypatch.setattr(installer, "install", lambda args: seen.append(args.token))
+    monkeypatch.setattr(installer, "platform_problem", lambda: None)
     token_file = tmp_path / "tok"
     token_file.write_text("  filetoken\n", encoding="utf-8")
     monkeypatch.setenv("GITHUB_TOKEN", "envtoken")

@@ -78,7 +78,7 @@ def _versions(args: argparse.Namespace, runtime: CliRuntime) -> None:
     """
 
     client = runtime.identity.version
-    contract, _problem = try_load_contract(args.contract)
+    contract, problem = try_load_contract(args.contract)
     server = contract.release if contract is not None else None
     skew = assess_skew(client, server) if server is not None else None
     if runtime.json_mode:
@@ -87,11 +87,13 @@ def _versions(args: argparse.Namespace, runtime: CliRuntime) -> None:
             "client_release": version_to_release(client) if _is_client_version(client) else None,
             "server": server,
             "skew": skew.status if skew else "unknown",
-            "skew_message": skew.message if skew else "server unreachable",
+            "skew_message": skew.message if skew else f"server unreachable: {problem}",
         })
         return
     runtime.output.primary(f"pwmcp {client} (server {server if server is not None else 'unreachable'})")
-    if skew is not None and skew.status != "ok":
+    if skew is None:
+        runtime.output.warn(f"cannot read the server contract from {args.contract} ({problem})")
+    elif skew.status != "ok":
         runtime.output.warn(f"{skew.status}: {skew.message}")
 
 

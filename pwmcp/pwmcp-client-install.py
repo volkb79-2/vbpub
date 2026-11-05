@@ -13,7 +13,7 @@ including the Playwright version of that release) and links the `pwmcp` launcher
 
 Upgrade = run it again with the new release (releases live side by side; `current` and the
 launcher switch atomically). Private repository: --github-token-file FILE or $GITHUB_TOKEN.
-Python 3.11+, standard library only.
+Standard library only. The bundled wheels are CPython 3.14 / Linux x86_64 only (see README).
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -51,6 +52,15 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1 << 20), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def platform_problem(version_info: tuple = tuple(sys.version_info), machine: str = "") -> str | None:
+    """The release wheels are CPython 3.14 / Linux x86_64 only (greenlet cp314, playwright manylinux x86_64)."""
+    machine = machine or platform.machine()
+    if tuple(version_info[:2]) != (3, 14) or machine not in ("x86_64", "AMD64"):
+        return (f"the pwmcp release wheels are built for CPython 3.14 on Linux x86_64 only; this is Python "
+                f"{version_info[0]}.{version_info[1]} on {machine} (per-interpreter client wheels: PWMCP-36)")
+    return None
 
 
 def release_tag(version: str) -> str:
@@ -185,6 +195,10 @@ def install(args: argparse.Namespace, fetcher=fetch, run=subprocess.run) -> Path
         bundle, tag = obtain_bundle(args, work, fetcher)
         release_dir = root / "releases" / tag
         if release_dir.exists():
+            current = root / "current"
+            if current.is_symlink() and current.resolve() == release_dir.resolve():
+                die(f"{tag} is already installed and is the current release ({release_dir}); nothing to do "
+                    f"(remove that directory first if you really want to rebuild it)")
             info(f"{tag} is already installed at {release_dir}; reinstalling it")
             shutil.rmtree(release_dir)
         wheelhouse = release_dir / "wheelhouse"
@@ -219,6 +233,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    problem = platform_problem()
+    if problem:
+        die(problem)
     args.token = None
     if args.github_token_file:
         args.token = Path(args.github_token_file).read_text(encoding="utf-8").strip() or None

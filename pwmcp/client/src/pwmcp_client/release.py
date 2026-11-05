@@ -48,6 +48,10 @@ def split_release(release: str) -> tuple[str, int]:
     return match.group(1), int(match.group(2))
 
 
+def _protocol(playwright_version: str) -> str:
+    return ".".join(playwright_version.split(".")[:2])
+
+
 @dataclass(frozen=True)
 class Skew:
     """Outcome of comparing the client release with the server release."""
@@ -60,10 +64,10 @@ def assess_skew(client_version: str, server_release: str) -> Skew:
     """Compare a client wheel version with the server's contract release.
 
     * identical release: ok.
-    * same Playwright version, different r-number: warn (client and server may differ in
-      helper/contract details, but the Playwright wire protocol is the same).
-    * different Playwright version: fail (hard incompatibility: the client's pinned
-      ``playwright`` package cannot drive the server's browser).
+    * same Playwright major.minor (the contract's ``playwright.protocol``) but a different patch
+      or r-number: warn (works; the wire protocol line is the same).
+    * different Playwright major.minor: fail (hard incompatibility: the protocol line differs, which
+      is also what the runtime ``playwright`` check compares).
     A value that is not a pwmcp release/version at all (a development build) is a warning.
     """
 
@@ -75,14 +79,15 @@ def assess_skew(client_version: str, server_release: str) -> Skew:
         return Skew("warn", f"cannot compare client {client_version} with server {server_release}: {exc}")
     if client_release == server_release.strip():
         return Skew("ok", f"client and server are the same release ({server_release})")
-    if client_pw != server_pw:
+    if _protocol(client_pw) != _protocol(server_pw):
         return Skew(
             "fail",
             f"client {client_release} pins Playwright {client_pw} but the server runs "
             f"{server_release} (Playwright {server_pw})",
         )
+    detail = f"Playwright {client_pw} vs {server_pw}, " if client_pw != server_pw else f"same Playwright {server_pw}, "
     return Skew(
         "warn",
         f"client release {client_release} differs from server release {server_release} "
-        f"(same Playwright {server_pw}, r{client_n} vs r{server_n})",
+        f"({detail}r{client_n} vs r{server_n}; same protocol {_protocol(server_pw)})",
     )

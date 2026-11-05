@@ -62,6 +62,8 @@ def test_skew_policy() -> None:
     assert assess_skew("1.64.1.post2", "1.64.1-r2") == Skew("ok", "client and server are the same release (1.64.1-r2)")
     warn = assess_skew("1.64.1.post2", "1.64.1-r3")
     assert warn.status == "warn" and "same Playwright 1.64.1, r2 vs r3" in warn.message
+    patch = assess_skew("1.64.1.post2", "1.64.3-r1")
+    assert patch.status == "warn" and "Playwright 1.64.1 vs 1.64.3" in patch.message and "same protocol 1.64" in patch.message
     fail = assess_skew("1.64.1.post2", "1.63.0-r1")
     assert fail.status == "fail" and "Playwright 1.63.0" in fail.message and "pins Playwright 1.64.1" in fail.message
     dev = assess_skew("0.1.0", "1.64.1-r2")
@@ -108,10 +110,13 @@ def test_versions_verb_reports_client_server_and_skew(
 def test_versions_verb_when_the_server_is_unreachable(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     missing = str(tmp_path / "absent.json")
     assert cli_module.main(["versions", "--contract", missing]) == 0
-    assert capsys.readouterr().out == f"pwmcp {pwmcp_client.__version__} (server unreachable)\n"
+    captured = capsys.readouterr()
+    assert captured.out == f"pwmcp {pwmcp_client.__version__} (server unreachable)\n"
+    assert "cannot read the server contract from" in captured.err and "absent.json" in captured.err
     assert cli_module.main(["versions", "--json", "--contract", missing]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["server"] is None and payload["skew"] == "unknown"
+    assert payload["skew_message"].startswith("server unreachable: ")
 
 
 def test_versions_json_for_a_development_client_version(

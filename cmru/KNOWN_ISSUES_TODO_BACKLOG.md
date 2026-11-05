@@ -2889,3 +2889,11 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 4. Write the manifest (`bundle-manifest`), then the deterministic archive named `<prefix>-v<version>-<variant>.tar.xz`.
 
 **Wanted.** A `[[variants]]`-aware bundle build: `cmru handler bundle-build` (or `bundle.toml` keys) with `vendor_requirements = ["requirements-runtime.txt"]`, `platforms = [...]`, `stage = [argv]`, and a per-variant `exec_prefix` argv (for example `["docker","exec","-w","{root}","{container}"]`) so the step runs in the project's runner while cmru keeps the archive, manifest, naming and publish. Per-variant interpreter versions come from the existing `[[project.X.variants]] build_arg`. Acceptance: naf and tls-edge delete their builders, and a new project with one `bundle.toml` plus a requirements manifest releases a vendored per-interpreter tarball. Do not add secrets or host-specific limits to the config.
+
+## KI-127 — `cmru get-py` has no `--client-only` mode for projects whose bundle carries a consumer client wheel
+
+**Status:** OPEN 2026-11-05; severity: enhancement (found shipping the pwmcp client, `vbpub` pwmcp PWMCP-35). CHANGES checked: nothing in `[Unreleased]` covers it.
+
+**Observed.** The generated `get.py` only installs the whole release (stable tree, adapter, wheels, launchers). pwmcp's consumers often need only the client wheel plus its pinned dependencies to talk to a server running elsewhere, with no adapter/ciu links; pwmcp therefore ships a hand-written `pwmcp-client-install.py` (SHA-256 of the bundle, manifest check of every wheel, `pip install --no-index --require-hashes` into a private venv, atomic `current`/launcher links).
+
+**Wanted.** A generated `get.py install --client-only` (declared by e.g. `[project.installer] client_only_wheels = [...]`) that verifies the bundle and manifest exactly as today, installs only the declared wheels into the release venv and skips the adapter and tree activation, so projects need no bespoke installer. Reuse the same verified wheelhouse/lock code path.

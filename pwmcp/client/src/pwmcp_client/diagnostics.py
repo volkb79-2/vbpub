@@ -101,7 +101,7 @@ DOCTOR_CHECKS = (
     ),
     DoctorCheck(
         "skew",
-        "the client release matches the server release (a different Playwright version fails)",
+        "the client release matches the server release (a different Playwright major.minor fails)",
         skew_check,
     ),
 )
