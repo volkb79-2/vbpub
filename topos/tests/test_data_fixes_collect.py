@@ -388,3 +388,113 @@ def test_io_max_read_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
     assert reads.count("io.max") == 1
     assert sample.raw_counters["io.max@8:0:rbps"] == 100
     assert sample.raw_counters["io.max:rbps"] == 100
+
+
+# --- A-12 / B-14: BPF snapshot staleness and single-pass aggregation ------------------------------
+
+
+def _bpf_snapshot(tmp_path: Path, generated_at: float | None, entries: int = 1) -> Path:
+    import json
+
+    snap = {
+        "maps": {"topos_cgroup_skb": [{"cgroup_id": 7, "direction": "ingress", "family": "ipv4", "proto": "tcp", "bytes": 10 * (i + 1), "packets": 1} for i in range(entries)]},
+        "cgroup_map": {"7": "a.slice"},
+    }
+    if generated_at is not None:
+        snap["generated_at"] = generated_at
+    (tmp_path / "snapshot.json").write_text(json.dumps(snap))
+    return tmp_path
+
+
+def test_bpf_snapshot_older_than_limit_is_not_served_as_live(tmp_path: Path) -> None:
+    from topos.providers.net_bpf import BpfProvider
+
+    entities = {"a.slice": Entity(key="a.slice", kind="slice", parent="")}
+    root = _bpf_snapshot(tmp_path, generated_at=1000.0)
+    fresh = BpfProvider(root, max_age_s=15.0, clock=lambda: 1010.0).collect(entities)
+    assert fresh["a.slice"].source_label == "net:BPF"
+    stale = BpfProvider(root, max_age_s=15.0, clock=lambda: 1016.0)
+    assert stale.collect(entities) == {}
+    assert stale.status()["stale"] is True
+
+
+def test_bpf_aggregation_sums_all_entries_for_a_cgroup(tmp_path: Path) -> None:
+    from topos.providers.net_bpf import BpfProvider
+
+    entities = {"a.slice": Entity(key="a.slice", kind="slice", parent="")}
+    root = _bpf_snapshot(tmp_path, generated_at=None, entries=3)
+    sample = BpfProvider(root).collect(entities)["a.slice"]
+    assert sample.rx_bytes == 60
+    assert sample.rx_pkts == 3
+
+
+# --- A-14 ----------------------------------------------------------------------------------------
+
+
+def test_idle_processes_are_not_hot() -> None:
+    from topos.config import ProcessConfig
+    from topos.procs.candidates import select_candidates
+    from topos.procs.identity import ProcessKey
+
+    keys = [ProcessKey(pid=pid, start_ticks=1, boot_id="b") for pid in range(1, 50)]
+    result = select_candidates(
+        keys=keys, cpu_rate={k: 0.0 for k in keys}, io_rate={k: 0.0 for k in keys},
+        pinned_pids=frozenset(), hot_since={}, now=1.0, config=ProcessConfig(), eligible_count=len(keys),
+    )
+    assert result.retained == []
+    busy = {keys[3]: 5.0}
+    result = select_candidates(
+        keys=keys, cpu_rate={**{k: 0.0 for k in keys}, **busy}, io_rate={},
+        pinned_pids=frozenset(), hot_since={}, now=1.0, config=ProcessConfig(), eligible_count=len(keys),
+    )
+    assert result.retained == [keys[3]]
+
+
+def test_pin_follows_incarnation_not_reused_pid(tmp_path: Path) -> None:
+    from topos.config import ProcessConfig
+    from topos.procs.identity import ProcessKey
+    from topos.procs.sampler import ProcessSampler
+
+    sampler = ProcessSampler(proc_root=tmp_path, pinned_pids=frozenset({7}), config=ProcessConfig(pinned_cap=2, hard_cap=5))
+    old = ProcessKey(pid=7, start_ticks=10, boot_id="b")
+    reused = ProcessKey(pid=7, start_ticks=999, boot_id="b")
+    assert sampler._bind_pins([old]) == {old}
+    assert sampler._bind_pins([reused]) == {old}  # the new process does not inherit the pin
+
+
+# --- A-16 ----------------------------------------------------------------------------------------
+
+
+def _protected_frame(**metrics: float | None) -> EntityFrame:
+    entity = Entity(key="svc.service", kind="service", parent="", is_protected=True)
+    return EntityFrame(entity=entity, metrics={k: MetricValue(v, "derived") for k, v in metrics.items()})
+
+
+def test_protected_disk_refault_honours_warn_band() -> None:
+    from topos.diag.rules import evaluate_rules
+
+    quiet = evaluate_rules(_protected_frame(rf_d_per_s=0.2), ToposConfig())
+    assert not [f for f in quiet if f.rule_id == "protected_disk_refault"]
+    loud = evaluate_rules(_protected_frame(rf_d_per_s=3.0), ToposConfig())
+    assert [f for f in loud if f.rule_id == "protected_disk_refault"]
+
+
+def test_memory_high_user_visible_is_red_only_at_crit() -> None:
+    from topos.diag.rules import evaluate_rules
+
+    def severity(psi: float) -> str:
+        frame = _protected_frame(ram=200, mem_high=100, psi_mem_full_avg10=psi)
+        return next(f.severity for f in evaluate_rules(frame, ToposConfig()) if f.rule_id == "memory_high_user_visible")
+
+    assert severity(1.5) == "warn"
+    assert severity(2.5) == "red"
+
+
+def test_pressure_is_unavailable_when_no_input_is_readable() -> None:
+    from topos.diag import annotate
+    from topos.model import Frame
+
+    entity = Entity(key="x.slice", kind="slice", parent="")
+    frame = Frame(schema_version=1, ts=0.0, interval_s=5.0, host={}, entities={"x.slice": EntityFrame(entity=entity, metrics={})})
+    annotate(frame, ToposConfig())
+    assert frame.entities["x.slice"].metrics["pressure"] == MetricValue(None, "unavail_kernel")

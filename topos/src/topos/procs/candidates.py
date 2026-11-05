@@ -48,7 +48,9 @@ class SelectionResult:
 
 
 def _rank(items: dict[ProcessKey, float], top_n: int) -> list[ProcessKey]:
-    ordered = sorted(items.items(), key=lambda kv: (-kv[1], kv[0].pid, kv[0].start_ticks))
+    # Idle processes (rate 0) are not "hot": without this floor an idle host's hot lists
+    # fill with arbitrary lowest-PID tie-break winners (A-14).
+    ordered = sorted(((k, r) for k, r in items.items() if r > 0), key=lambda kv: (-kv[1], kv[0].pid, kv[0].start_ticks))
     return [key for key, _ in ordered[: max(0, top_n)]]
 
 
@@ -68,7 +70,7 @@ def select_candidates(
     keys: list[ProcessKey],
     cpu_rate: dict[ProcessKey, float],
     io_rate: dict[ProcessKey, float],
-    pinned_pids: frozenset[int],
+    pinned_pids: frozenset[int | ProcessKey],
     hot_since: dict[ProcessKey, float],
     now: float,
     config: ProcessConfig,
@@ -88,10 +90,11 @@ def select_candidates(
         if current is None or key.start_ticks > current.start_ticks:
             key_by_pid[key.pid] = key
 
-    pinned_all = sorted(
-        (key_by_pid[pid] for pid in pinned_pids if pid in key_by_pid),
-        key=lambda k: k.pid,
-    )
+    # A pin is a ProcessKey (pid + start_ticks + boot id) so a reused pid never inherits
+    # it; bare ints are still honoured for direct callers.
+    pinned_by_key = {k for k in keys if k in pinned_pids}
+    pinned_by_pid = {key_by_pid[pid] for pid in pinned_pids if isinstance(pid, int) and pid in key_by_pid}
+    pinned_all = sorted(pinned_by_key | pinned_by_pid, key=lambda k: k.pid)
     pinned_retained = pinned_all[: config.pinned_cap]
     pinned_overflow = pinned_all[config.pinned_cap :]
     pinned_retained_set = set(pinned_retained)

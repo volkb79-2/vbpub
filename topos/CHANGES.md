@@ -43,6 +43,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(collect): `swap_disk` without `swapcached`, `ratio`, `headroom_*` and `rf_*` report a typed unavailable state instead of exact/None or "warming"; absent `zswpin` makes every anon refault a device refault (A-05, A-06, A-15)
 - fix(registry): `cpu_pct`, `psi_*` and `pids_current` are subtree-scoped; dead `aggregatable` field removed; scope table test (A-09)
 - fix(collect): `io.max` parsed once per cgroup; cgroupfs-driver `docker/<id>` cgroups are recognised (A-18, A-19)
+- fix(damon): no region data is typed unavailable instead of "0 bytes hot exact"; the hot/warm/cold/idle split is `derived` (A-10)
+- fix(net): the BPF provider refuses a snapshot older than 3 intervals (`generated_at`) so a dead producer does not read as idle, and aggregates in a single pass (A-12, B-14)
+- fix(procs): idle processes are not "hot" (rate > 0 floor); a pin is bound to a ProcessKey so a reused pid does not inherit it (A-14)
+- fix(diag): `protected_disk_refault` honours the warn band, `memory_high_user_visible` is red at crit, `pressure` is unavailable when no input is readable (A-16)
 <!-- cmru: pending release notes end -->
 
 ## [0.4.2] - 2026-10-21
