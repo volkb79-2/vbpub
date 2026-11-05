@@ -9,6 +9,26 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.1.2] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=f4039e883df073d66ea87014112bb13d3c44d209 -->
+
+### Fixed
+- fix(run-gate): sanitise quoted untrusted text, normalise CoW mount check, e2e wiring test (review of RG-167/168) (5de1ced80)
+- fix(run-gate): placement handshake ignores runner preamble (RG-167); exec CoW root forwarded only when mounted (RG-168) (955c3dcee)
+- fix(run-gate): exec-mode docs and refusals (RG-165, RG-166); cmru KI-126 triage plan (d2a7ff436)
+
+### Changed
+- Merge main into rg-167-168-20261105 (3399c6dcc)
+- backlog: ciu CIU-191 worktree rm hit main stacks; run-gate RG-167/168; pwmcp PWMCP-34 (found in netcup-api-filter@3786024) (452149954)
+- backlog: cmru KI-126 per-interpreter bundle builder; run-gate RG-165/RG-166 exec-mode docs (c70641b6f)
+
+### Testing
+- test(run-gate): in-process cover for last_output, dry-run CoW note, container_mode_hint (diff-coverage floor) (f4039e883)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - fix(run-gate): the placement handshake ignores unrelated lines the runner prints before its readiness marker (e.g. the `[ksm-optin]` LD_PRELOAD line), bounded to 64 KiB; only the exact marker with the placement nonce is accepted, a wrong-nonce marker or a missing marker is still an error (RG-167)
 - fix(run-gate): an exec lane forwards `COWTREE_MODE=auto`/`MDT_COW_ROOT` only when the runner container mounts that path; otherwise they are dropped and the plan line reads `not forwarded (no mount): ...`, so assay no longer refuses with `MDT_COW_ROOT does not exist` (RG-168)
@@ -18,8 +38,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Documentation
 - docs(run-gate): CONSUMERS.md states the exec-mode container-name derivation rule (`<project_name>-<environment_tag>-<environment name>`, environment name = ciu service name, several runners) and the plain-`git worktree add` limitation; DESIGN-GUIDE cross-reference (RG-165, RG-166)
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.1.1] - 2026-11-04
 <!-- cmru: generated -->
