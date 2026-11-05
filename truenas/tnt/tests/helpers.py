@@ -8,6 +8,58 @@ from tnt.transport import GuardedRpc
 
 SIZE = 10 ** 9
 
+# Condition waits never depend on host load: a test names the condition it needs
+# and waits for it against a generous wall-clock deadline (not a fixed number of
+# short pauses, which shrinks to nothing when the host is contended).
+UI_WAIT_DEADLINE = 90.0
+UI_POLL_INTERVAL = 0.03
+
+
+async def wait_until(pilot, predicate, *, deadline=UI_WAIT_DEADLINE, interval=UI_POLL_INTERVAL, what="condition"):
+    """Poll ``predicate`` between Textual pilot pauses until it holds or ``deadline`` seconds pass.
+
+    A view that is not mounted yet raises ``NoMatches`` from a query inside the
+    predicate; that means "not ready", so it is retried within the deadline.
+    """
+    import time
+
+    from textual.css.query import NoMatches
+    from textual.pilot import WaitForScreenTimeout
+
+    def ready():
+        try:
+            return bool(predicate())
+        except NoMatches:
+            return False
+
+    end = time.monotonic() + deadline
+    while True:
+        await pilot.pause(interval)
+        if ready():
+            # A pushed screen or mounted view is not composed until its pending messages have been
+            # processed; flush them so the caller can query the new widgets (a bare timed pause does not).
+            try:
+                await pilot.pause()
+            except WaitForScreenTimeout:
+                # Textual gives the flush its own 30 s cap; on a starved host just keep polling to our deadline.
+                pass
+            if ready():
+                return
+        if time.monotonic() >= end:
+            break
+    assert ready(), f"{what} did not become true within {deadline:g}s"
+
+
+def wait_until_sync(predicate, *, deadline=UI_WAIT_DEADLINE, interval=0.01, what="condition"):
+    """Thread-side twin of :func:`wait_until` for tests that have no Textual pilot."""
+    import time
+
+    end = time.monotonic() + deadline
+    while not predicate():
+        if time.monotonic() >= end:
+            raise AssertionError(f"{what} did not become true within {deadline:g}s")
+        threading.Event().wait(interval)
+
 
 class ImmediateJob:
     def __init__(self, job_id, value, callback, method):

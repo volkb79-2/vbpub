@@ -6,6 +6,7 @@ import json
 import pytest
 from textual.widgets import DataTable, Input, Select, Static, TextArea, Tree
 
+from helpers import wait_until
 from tnt.actions import Kind, apply_plan, make_plan
 from tnt.cli import build_cli
 from tnt.errors import Refused
@@ -197,26 +198,25 @@ def test_scrub_task_cli_and_tui_are_wired_to_shared_workflows(config, opener, tm
                 find(tree.root)
                 assert target is not None
                 tree.select_node(target)
-                for _ in range(100):
-                    await pilot.pause(0.03)
-                    view = app.query_one("#view-scrub-tasks", WorkflowView)
-                    if "loaded." in str(view.query_one("#workflow-note", Static).render()):
-                        view.query_one("#workflow-name", Input).value = "1"
-                        view.query_one("#workflow-data", TextArea).text = '{"pool":1}'
-                        assert view._build_action_from_input("create", view._capture_action_input(),
-                                                             session.workflows, {}).calls[0].method == "pool.scrub.create"
-                        view.query_one("#workflow-data", TextArea).text = '{"enabled":false}'
-                        for operation, expected in (("update", "pool.scrub.update"), ("run", "zpool.scrub.run"),
-                                                    ("delete", "pool.scrub.delete")):
-                            action = view._build_action_from_input(operation, view._capture_action_input(),
-                                                                   session.workflows, {})
-                            assert action.calls[0].method == expected
-                        view.query_one("#workflow-name", Input).value = "not-a-schedule-id"
-                        with pytest.raises(ValueError, match="schedule ID"):
-                            view._build_action_from_input("run", view._capture_action_input(),
-                                                          session.workflows, {})
-                        return
-                raise AssertionError("scrub schedule view did not load")
+                await wait_until(pilot, lambda: "loaded." in str(
+                    app.query_one("#view-scrub-tasks", WorkflowView).query_one("#workflow-note", Static).render()),
+                    what="scrub schedule view loading")
+                view = app.query_one("#view-scrub-tasks", WorkflowView)
+                view.query_one("#workflow-name", Input).value = "1"
+                view.query_one("#workflow-data", TextArea).text = '{"pool":1}'
+                assert view._build_action_from_input("create", view._capture_action_input(),
+                                                     session.workflows, {}).calls[0].method == "pool.scrub.create"
+                view.query_one("#workflow-data", TextArea).text = '{"enabled":false}'
+                for operation, expected in (("update", "pool.scrub.update"), ("run", "zpool.scrub.run"),
+                                            ("delete", "pool.scrub.delete")):
+                    action = view._build_action_from_input(operation, view._capture_action_input(),
+                                                           session.workflows, {})
+                    assert action.calls[0].method == expected
+                view.query_one("#workflow-name", Input).value = "not-a-schedule-id"
+                with pytest.raises(ValueError, match="schedule ID"):
+                    view._build_action_from_input("run", view._capture_action_input(),
+                                                  session.workflows, {})
+                return
 
         try:
             asyncio.run(go())
@@ -280,13 +280,11 @@ def test_pool_inventory_cli_and_menu_screen(config, opener):
                 find(tree.root)
                 assert target is not None
                 tree.select_node(target)
-                for _ in range(100):
-                    await pilot.pause(0.03)
-                    table = app.query_one("#view-pools #core-table", DataTable)
-                    if table.row_count:
-                        assert "tank" in " ".join(str(table.get_cell_at((0, col))) for col in range(len(table.columns)))
-                        return
-                raise AssertionError("pool inventory view did not load")
+                await wait_until(pilot, lambda: app.query_one("#view-pools #core-table", DataTable).row_count,
+                                 what="pool inventory view loading")
+                table = app.query_one("#view-pools #core-table", DataTable)
+                assert "tank" in " ".join(str(table.get_cell_at((0, col))) for col in range(len(table.columns)))
+                return
 
         try:
             asyncio.run(go())

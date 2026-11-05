@@ -14322,3 +14322,15 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Why it matters.** A zombie prints `pid=N ppid=M comm=C` with no argv, the same as a live process whose `/proc/<pid>/cmdline` could not be read. The fix action differs (a zombie needs its parent to reap it; a live process needs a kill).
 
 **Wanted.** Add an optional `state` field (the `/proc/<pid>/stat` state letter, already parsed in `_process_identity`) to the descendant wire record, render ` state=Z` in `ProcessTreeDescendant.describe()`, accept it in `verify.py` as an optional key (a verdict carrying it fails the key-set check of an older verifier, as with B233 `cmdline`), and test the zombie and live cases.
+
+## B235 — a whole-target `judge.targets` entry with zero executable lines (docstring-only `__init__.py`) fails the whole lane at R1 with `TARGET_NOT_MEASURED`, after the baseline has already run
+
+**Status:** OPEN (proposal; found by the tnt and cmru R2 pilots, 2026-11-05).
+
+**Observed.** tnt (`src/tnt/__init__.py`, `src/tnt/tui/__init__.py`) and cmru (`src/cmru/__init__.py`) each declared a docstring-only package `__init__.py` in `judge.targets`. coverage.py reports such a file with zero statements, `evaluate.py` (whole-target branch, "target_executable" empty) raises `NO_MEASUREMENT/TARGET_NOT_MEASURED`, and the whole lane verdict is refused, only after a full baseline (about 7 minutes for tnt) has run. iobench and test-policy hit and worked around the same thing by omitting the file with a comment. Three projects in one release program is a pattern, not a one-off.
+
+**Why the refusal itself is right.** "Named but never measured" must not pass silently (the anti-vacuity guard); a target that has no entry at all in the coverage artifact is a genuine failure and must stay one.
+
+**Proposal.** Distinguish the two causes. (a) Keep refusing a target with NO coverage entry. (b) For a target that HAS an entry with zero statements (executed and missing both empty, nothing excluded), either tolerate it as "no executable lines, contributes nothing to the floor" and record it in the verdict (`unmeasurable_targets`, so it is visible and counted neither as covered nor as missed), or, if strictness is wanted, fail at lane-load/plan time (`assay lanes`/`assay plan`, which already parse the target list and can `ast`-check a python target) with a message that names the file and the remedy ("remove it from judge.targets: it has no executable lines") instead of after the baseline. Preferred: tolerate plus record for python whole-target mode, because the estate convention is "list every shipped module" and the inventory tests in tnt/iobench/test-policy would otherwise each have to encode the exclusion rule. Needs the verdict-schema decision and a `verify.py` key-set change if the new field is recorded.
+
+**Interim in the projects.** tnt omits both files (TNT-63, with `tests/test_assay_lane_inventory.py`); the cmru lane (`src/cmru/__init__.py`, `assay.toml` lines 114 and 195) needs the same omission or this fix.
