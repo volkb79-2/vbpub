@@ -5922,7 +5922,7 @@ loud error only when `CIU_MAX_CONCURRENT_WORKTREES` is set (a cap that cannot be
 
 ## CIU-164 — in a devcontainer the S6.5 root helper preflight always fails, so `ciu up` cannot create a hostdir owned by any uid but the operator's
 
-**Status: OPEN (filed 2026-11-04, ops-vss-20261104; `voice-screen-share/jitsi-server`, ciu 7.19.0).**
+**Status: FIXED on branch ciu-triage-20261105 (unreleased; filed 2026-11-04, ops-vss-20261104; `voice-screen-share/jitsi-server`, ciu 7.19.0).** The inconclusive-probe degrade is CIU-181's `_root_helper_cgroup_parent` change; the acceptance case (uid 1000 hostdir through the helper, one warning, no systemd PID 1) is `test_hostdir_uid_1000_created_through_helper_without_systemd_pid1` in `test_ciu_engine_deeper6.py` (docker mocked; the fake-`systemctl` shim form is covered by the governance probe tests).
 
 **Observed.** `ciu up` stops at step 8 with `[ERROR] S6.5 root helper cgroup parent 'dev-interactive.slice' is not verified loaded: systemctl is
 present but systemd is not PID 1 in this mount namespace (...) — governed cgroup slices cannot be checked from inside this container; skipping
