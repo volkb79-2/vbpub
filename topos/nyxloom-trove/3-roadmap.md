@@ -33,27 +33,27 @@ milestones:
     features: [F028, F029]
     status: done
   - id: M7
-    title: "Operator-console frontier wave 3 — source, process, and history core"
+    title: "Console data layer — source selection, process model, tiered history"
     target_product_version: 1
     features: [F030, F031, F032]
     status: active
   - id: M8
-    title: "Operator-console frontier wave 4 — lifecycle protocol and detail leases"
+    title: "Lifecycle protocol and detail leases"
     target_product_version: 1
     features: [F033, F034]
     status: planned
   - id: M9
-    title: "Operator-console frontier wave 5 — web transport and lifecycle incidents"
+    title: "PARKED (D-023) — web transport and lifecycle incidents"
     target_product_version: 1
     features: [F035, F036]
     status: planned
   - id: M10
-    title: "Operator-console frontier wave 6 — React Overview and Explore"
+    title: "PARKED (D-023) — React Overview and Explore"
     target_product_version: 1
     features: [F037]
     status: planned
   - id: M11
-    title: "Operator-console frontier wave 7 — React Entity, Incidents, and Compare"
+    title: "PARKED (D-023) — React Entity, Incidents, and Compare"
     target_product_version: 1
     features: [F038]
     status: planned
@@ -71,33 +71,17 @@ milestones:
 
 # Roadmap
 
-Milestones preserve `docs/ROADMAP.md`'s own structure: the historical v0-v1-
-v1.5-v2 capability-era track (M1-M4, all done — these are capability eras per
-`README.md`, not package SemVer promises), then the **operator-console**
-milestone's dependency-ordered "Executable frontier" waves (M5-M11, matching
-the ROADMAP.md table: wave 1 = P81/P87/P66/P86 merged 2026-07-15, wave 2 = P88
-merged 2026-07-15, wave 3 = P89/P90/P91 the current frontier, wave 4 =
-P93/P94, wave 5 = P92/P95, wave 6 = P73, wave 7 = P77), and finally the
-optional-plugins bucket (M12 done, M13 the scenario-gated remainder).
+The active plan is `docs/PLAN-2026-11-CONSOLE.md`; target design is `TUI-SPEC.md`;
+decisions are D-020 onward in `decisions.md`. Milestone lines are deliberately not
+redrawn for the redesign yet (D-032): the operator sets them after using the PoCs.
 
-M7 is `active` because it is explicitly named "the current frontier" in
-ROADMAP.md: P88 (wave 2) is merged and P89/P90/P91 are ready and dispatchable
-in parallel. M8-M11 are `planned` rather than `active`: their declared
-dependencies are satisfied but they are not yet dispatched (ROADMAP.md marks
-P93 "Ready (P87 merged)" and P94/P95/P92/P73/P77 as blocked on siblings still
-in M7/M8).
+- **M7** is the active data work: the Rust sampler PoC, then tiers, read path and
+  source selection. Its process code exists with no caller, and its persistent
+  history has a writer with no reader; the tiers replace that store (D-025).
+- **M8:** F033 shipped for Docker and systemd through the CLI. F034 is not started.
+- **M9 to M11** are parked (D-023). F036 (lifecycle identity) stays wanted for the
+  TUI and moves out of M9 when the milestones are redrawn.
+- The new main screen (D-020 to D-022) has no feature ID yet; it gets one with the
+  milestone definition.
 
-Lifecycle mutation (M8's F033) is intentionally a separate safety track: P87's
-stopgap (M5/F024) already closes the urgent full-ID protected-service bypass
-and refuses raw Docker mutation for recognized owner-managed workloads; P93
-(F033) is the full owner-chain protocol and migration, not a redo of the
-stopgap.
-
-D-001 through D-019 in `docs/DECISIONS-INBOX.md` are all decided and underlie
-this roadmap; the completed interview is retained as provenance in
-`handoff/TOPOS-OBSERVABILITY-DISCUSSION.md`. P68, P80, and P82 were deleted
-during the 2026-07-15 reconciliation (see `docs/BRANCH-DISPOSITION.md`) and are
-not represented as milestones or features. P64 (informational baseline
-comparison) and P65 (human-readable rendering) were revised as P88 consumers;
-P65 shipped as F029 (M6); P64 remains the scenario-gated, non-release-blocking
-F043 (M13) per D-007.
+History of the M1 to M6 waves is in `archive/ROADMAP-2026-07.md`.

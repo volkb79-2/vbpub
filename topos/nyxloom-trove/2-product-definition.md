@@ -192,14 +192,14 @@ features:
   - id: F032
     title: Persistent capped history
     acceptance:
-      - When the daemon runs continuously, history is retained under simultaneous age and byte caps across a five-minute RAM tier and a 24-hour/256-MiB disk tier, with measured write amplification and corruption recovery.
+      - When the daemon runs continuously, history is retained in configurable hot, warm and cold tiers (shipped values 1 s for 60 s, 5 s for 5 min, 1 min for 24 h), hot and warm in tmpfs, only cold on disk under a 1 GiB oldest-first cap, with measured write volume and corruption recovery, and every reader (TUI, `topos query`, MCP) can read it.
     status: planned
     milestone: M7
   - id: F033
     title: Lifecycle owner-chain protocol (full migration)
     acceptance:
       - When any action verb executes against Docker or systemd, it goes through one centralized, side-effect-free owner-discovery and authorization plan with no raw-runtime fallback, replacing the P87 stopgap's CLI-only wiring.
-    status: planned
+    status: shipped
     milestone: M8
   - id: F034
     title: Shared detail-observation leases

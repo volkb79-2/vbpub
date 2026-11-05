@@ -270,6 +270,57 @@ items:
     type: bugfix
     component: test-infra
     context_estimate: small
+  - id: B-048
+    title: "effective_memory_min is a clamp along the path; implement the kernel's effective_protection (sibling scaling, memory_recursiveprot from the mount options) or label it an upper bound and cap the finding at warn (A-08)"
+    type: bugfix
+    component: governance
+    context_estimate: medium
+  - id: B-049
+    title: "Drift can claim raw_write for user-manager units and [not set] weights; request LoadState and StartupCPUWeight, treat not-found and user@ paths as unknown; needs real systemctl fixtures (A-13)"
+    type: bugfix
+    component: governance
+    context_estimate: medium
+  - id: B-050
+    title: "child_sum double counts network: the netns provider already aggregates parents, and subtree_aggregate adds children again; parent counters over a changing child set mislead (A-03)"
+    type: bugfix
+    component: network
+    context_estimate: medium
+  - id: B-051
+    title: "DAMON paddr start writes nr_targets=0, probably monitoring nothing, never allocates a kdamond, and can overwrite a foreign stopped kdamond (A-11); paddr.py writes sysfs before its marker; no pid cap or fixed state dir (C-11)"
+    type: bugfix
+    component: damon
+    context_estimate: medium
+  - id: B-052
+    title: "Squeeze has no owner or protected-service gate and its audit is not durable or fail-closed, with an operator-supplied --audit-path (C-05, C-06); block before gated TUI actions"
+    type: bugfix
+    component: actions
+    context_estimate: medium
+  - id: B-053
+    title: "Hidden --allow-non-root-fixture on damon stop and paddr start turns off the root gate in the production CLI (C-16); needs a test seam that is not a CLI flag"
+    type: bugfix
+    component: actions
+    context_estimate: small
+  - id: B-054
+    title: "Gate lane and cmru release step run different checks, and topos carries its own tools/coverage_gate.py instead of assay (D-13); acceptance.py runs in no lane (D-20)"
+    type: feature
+    component: test-infra
+    context_estimate: medium
+  - id: B-055
+    title: "Build TP-VMLANE: real-kernel lane for systemctl parsing, effective protection, journald and DAMON sysfs (D-16)"
+    type: feature
+    component: test-infra
+    context_estimate: large
+  - id: B-056
+    title: "Persistent store defects superseded by the hot/warm/cold tiers: crash loses the active segment and reports clean (B-03 in the review), health set once (review B-08), unreadable segments skipped and sticky evicted (review B-09), persistence in the sampling thread (review B-07); the replacement must cover each"
+    type: bugfix
+    component: daemon-history
+    folds_into: F032
+    context_estimate: large
+  - id: B-057
+    title: "Split cli.py (2,000+ lines, D-19); drill-down reads /proc on the event loop and goes stale (D-07); two sparkline implementations (D-11)"
+    type: bugfix
+    component: code-shape
+    context_estimate: medium
 ---
 
 # Backlog
@@ -299,10 +350,12 @@ single owning feature (B-033 itself), `folds_into` is left unset and the
 relationship is described in the title/here instead, to avoid a false S2
 resolution.
 
-B-043, B-044, and B-045 are fresh user feature requests (KSM/ZRAM/ZSWAP/BFQ
-flag visibility and per-process memory-saving reporting; a tiered
-slice/cgroup column display; a `zswapmon` competitive review) not yet folded
-into any scoped roadmap feature.
+B-043 (KSM and swap-backend flags) and B-044 (tiered slice display with set and
+effective values) are folded into the Now row, meters and Config lens in
+`TUI-SPEC.md`. B-045 is done: `zswapmon` is a root-only CLI with system-wide
+numbers and no per-cgroup data, not a TUI; adopt its reject and pool-limit stats
+only. The Kitty and graphics reminders below are handled by the drawing PoC
+(D-031). `below` is covered in the `TUI-SPEC.md` prior-art section.
 
 # non-formatted manual backlog reminders
 

@@ -739,3 +739,96 @@ configuration validation. Encoded in `TUI-SPEC.md` §0.2/§3.7 and
 
 **Resume prompt (closed):** "Implement the configurable bounded process union,
 validation, coverage telemetry and measured high-PID acceptance."
+
+---
+
+# Interview of 2026-11-05 (operator, deep review of topos)
+
+Evidence and open items: `docs/PLAN-2026-11-CONSOLE.md`. Target: `TUI-SPEC.md`.
+
+## D-020 · 2026-11-05 · operator interview · DECIDED
+
+The default screen is one enriched top: per-CPU, memory pressure, zswap, cgroups
+with their main configured values, their consumers including IOPS, bandwidth and
+response times, and blocked processes. System state, behaviour and config together,
+rather than choosing one job first.
+
+## D-021 · 2026-11-05 · operator interview · DECIDED
+
+Layout: meters, full tree, and a side pane following the cursor (hidden when narrow
+or by key). Balanced column set on the row. Hot and blocked processes appear under
+their cgroup automatically, capped; a key gives a flat global ranking.
+
+## D-022 · 2026-11-05 · operator interview · DECIDED
+
+Row noise is a stepped toggle from all rows to only hot rows, with a middle default.
+Width: plan for 200-300 columns. Narrower terminals drop less important columns by
+priority so the order stays coherent; the right side is never just cut off.
+Supersedes the width tiers. Lens set remains open: combine more than the seven
+proposed.
+
+## D-023 · 2026-11-05 · operator interview · DECIDED
+
+The web UI is parked until the TUI is right. Supersedes the release placement in
+D-003 and D-018; their design content stands for when it resumes.
+
+## D-024 · 2026-11-05 · operator interview · DECIDED
+
+Run modes first: always-on daemon per host, and full host view from the cockpit by
+mounting the daemon socket. Remote comes later. The daemon runs under a tight
+envelope: MemoryMin=48M, MemoryHigh=96M, MemoryMax=128M, SwapMax=0, CPUQuota=25%,
+low CPUWeight, IOWeight=20, TasksMax=32, reporting its own throttling. Collected
+data is limited. Amends D-019's sampling context.
+
+## D-025 · 2026-11-05 · operator interview · DECIDED
+
+History tiers, all settings with no hard-coded defaults: hot 1 s for 60 s, warm 5 s
+for 5 min, cold 1 min for 24 h. Rollups store avg, max, min and p95, with deltas for
+counters. Hot and warm use tmpfs to reduce disk writes; only what persists reaches
+disk. Disk default maximum is 1 GiB, oldest data points deleted first. Supersedes
+D-005's 5 s / 5 min / 24 h / 256 MiB.
+
+## D-026 · 2026-11-05 · operator interview · DECIDED
+
+Rust owns collection: sampling, rates, tiers and socket, and `topos --once` uses it,
+so there is one collector. Subject to the PoC beating lean Python at 1 Hz with a
+process scan. Python keeps query, report, MCP, actions and squeeze. Built and tested
+in containers; no Rust toolchain in the cockpit.
+
+## D-027 · 2026-11-05 · operator interview · DECIDED
+
+Findings split: the sampler records hard events with exact timestamps (OOM kill,
+cgroup vanished, limit changed, PSI threshold crossed); Python computes interpretive
+findings at read time.
+
+## D-028 · 2026-11-05 · operator interview · DECIDED IN PART
+
+Replace Textual's `DataTable` with a line-rendered widget now, and build a parallel
+ratatui PoC. **OPEN:** the final TUI engine, decided from the two.
+
+## D-029 · 2026-11-05 · operator interview · DECIDED
+
+Latency: work with the host config given, showing layered and honestly labelled
+sources (device await, cgroup IO stall, process run-queue delay, io.cost where
+enabled, process IO delay where `task_delayacct` is on). `task_delayacct` is offered
+by an install wizard. eBPF cgroup IO latency runs as a parallel track.
+
+## D-030 · 2026-11-05 · operator interview · DECIDED
+
+Gated actions come to the TUI later, after the safety holes are fixed. The CLI
+remains.
+
+## D-031 · 2026-11-05 · operator interview · OPEN
+
+Drawing technique: decide after the side-by-side PoC. Required terminals: VS Code,
+tmux and plain SSH, PuTTY, Termix, common Ubuntu and CachyOS terminals.
+
+## D-032 · 2026-11-05 · operator interview · OPEN
+
+Milestone definition: deliberately not set. Wait for decisions on the PoCs.
+
+## D-033 · 2026-11-05 · review · OPEN
+
+Unit protection policy: whether `docker.service`, `containerd.service`,
+`sshd.service` and `multi-user.target` are refused by default on systemd verbs.
+Power and rescue units are already refused. Decide before gated TUI actions.
