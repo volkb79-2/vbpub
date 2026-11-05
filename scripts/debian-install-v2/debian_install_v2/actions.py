@@ -95,7 +95,7 @@ _SAFE_COMMANDS = {
     "partx": {"-a", "-d", "-u", "--nr"},
     "pip3": {"install"},
     "resize2fs": set(),
-    "sfdisk": {"--dump", "--force", "--no-reread"},
+    "sfdisk": {"--dump", "--force", "--no-reread", "--no-tell-kernel", "-N"},
     "sh": {"-c"},
     "sshd": {"-T"},
     "swapon": {"-p", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings"},
