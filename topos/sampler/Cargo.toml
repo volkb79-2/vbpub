@@ -1,0 +1,22 @@
+[package]
+name = "topos-sampler"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Version floors: each dependency is the newest release that is at least 14 days old
+# on 2026-11-05 (crates.io created_at checked). Transitive pins live in Cargo.lock.
+[dependencies]
+# config + request parsing
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+toml = "=0.9.8"
+# pure-Rust zstd encoder/decoder: no C toolchain needed for the static musl build
+ruzstd = "=0.9.1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

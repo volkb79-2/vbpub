@@ -35,6 +35,16 @@ commands = [
   { label = "topos: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
 ]
 
+# The Rust sampler (D-026) is built and tested only in containers (no toolchain in the cockpit).
+# Not part of the wheel release: run by name (`cmru step build-sampler`-style invocation) to produce
+# build/sampler/topos-sampler. The `test` target runs `cargo test` inside the build.
+[steps.build-sampler]
+quiet = true
+commands = [
+  { label = "topos-sampler: cargo test in container", argv = ["docker", "build", "-f", "sampler/Dockerfile", "--target", "test", "--progress=plain", "."], cwd = "." },
+  { label = "topos-sampler: static musl binary", argv = ["docker", "build", "-f", "sampler/Dockerfile", "--target", "artifact", "-o", "type=local,dest=build/sampler", "."], cwd = "." },
+]
+
 [steps.push]
 quiet = true
 commands = [

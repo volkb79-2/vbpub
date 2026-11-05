@@ -10,13 +10,17 @@ UMask=0007
 Slice=topos.slice
 RuntimeDirectory=topos
 RuntimeDirectoryMode=0750
+# Shared with topos-sampler.service: a restart of either keeps the other's files.
+RuntimeDirectoryPreserve=yes
+# The start command stays selectable until the Python daemon is retired (D-026): replace
+# this line (drop-in) to run `topos-sampler` instead, or run topos-sampler.service beside it.
 ExecStart=/usr/bin/env topos daemon serve --socket /run/topos/topos.sock
 Restart=on-failure
 RestartSec=5s
 
 # The daemon needs host cgroup, Docker, BPF and optional DAMON access, so it is
-# intentionally a host service rather than a privileged container.  Its own
-# slice bounds a leak without imposing a CPU quota on incident collection.
+# intentionally a host service rather than a privileged container.  Its slice
+# carries the D-024 envelope (128M memory, 25% CPU quota, low weights).
 NoNewPrivileges=true
 PrivateTmp=true
 

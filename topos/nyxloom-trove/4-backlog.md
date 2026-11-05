@@ -383,3 +383,25 @@ enough: these are tiny reads and writes, not CPU-heavy), tests marked `os_integr
 `VBPUB_REQUIRE_OS_INTEGRATION=1` so a skip is a failure, deselected in the tester-unified lanes. The
 operator's hypothesis (daemon work belongs in a VM, TUI in the container) holds for (2)-(4); the TUI and
 collector logic stay in containers.
+
+## TOP-SAMPLER-GATE - the topos-sampler lane is unverified in the registered gate (OPEN 2026-11-05)
+
+`topos/run-gate.toml` declares lane `topos-sampler` (docker build of `sampler/Dockerfile` target `test`,
+then the artifact target, then `tests/test_sampler_conformance.py`) and `topos/cmru.toml` declares step
+`build-sampler`. Neither has been run: this session had no permission to launch a gate. Open questions the
+first real run must answer: (1) does the run-gate `tester-unified` ephemeral container expose
+`/var/run/docker.sock` (the cockpit launcher `tester-unified/run` mounts it; the run-gate container launch
+path was not read to the end); (2) is the `mirror.gcr.io` base pullable and the crates.io fetch allowed
+from the gate host; (3) `cmru` has no documented way to run a non-release step by name, so
+`build-sampler` is declared but unwired (see cmru CONSUMERS.md `[steps.*]`). If (1) is false this is a
+product gap in run-gate (a lane that needs a Docker daemon) and must be filed in
+`run-gate-project` and `cmru` backlogs after checking their CHANGES; no shim lane was built. Until then the
+sampler's tests run only by hand: `docker build -f sampler/Dockerfile --target test .` from `topos/`, and the
+conformance script SKIPS (with a reason) when the binary is absent.
+
+## TOP-SAMPLER-ENVELOPE - sampler cost under the D-024 envelope is unmeasured (OPEN 2026-11-05)
+
+The 2026-11-05 host runs (MEASUREMENTS.md) ran without cgroup limits: creating or changing cgroups on
+r1002/v1001 was not allowed. CPUQuota=25%, MemoryHigh=96M and the throttling counters in `status.throttle`
+are therefore untested under load. Next: run `topos-sampler.service` under `topos.slice` on a host the
+operator hands over, with 500 cgroups / 5,000 PIDs if available, and record `status` after 1 h.

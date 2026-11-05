@@ -1,12 +1,14 @@
 [Unit]
-Description=Resource envelope for the topos host-inspection daemon
+Description=Resource envelope for the topos host-inspection daemon and sampler
 
 [Slice]
-# Protect the host from an accidental unbounded frame/history leak while still
-# allowing a short diagnostic burst.  CPU remains weight-based: observability
-# should yield to production workloads but must remain responsive under pressure.
-CPUWeight=50
-MemoryHigh=256M
-MemoryMax=512M
-MemorySwapMax=1G
-TasksMax=512
+# D-024 envelope: observability must yield to production workloads and must report
+# its own throttling (topos-sampler `status.throttle`), not hide it.
+MemoryMin=48M
+MemoryHigh=96M
+MemoryMax=128M
+MemorySwapMax=0
+CPUQuota=25%
+CPUWeight=20
+IOWeight=20
+TasksMax=32
