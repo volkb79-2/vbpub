@@ -86,9 +86,9 @@ def parse_config(contents: str, *, source: str = "<config>") -> ServiceConfig:
     raw_sockets = values.get("sockets", {})
     if not isinstance(raw_sockets, dict):
         raise ConfigError("sockets must be a table")
+    _reject_unknown(raw_sockets, {"observe"}, "sockets")
     if "sockets" in values and "observe" not in raw_sockets:
         raise ConfigError("sockets must contain exactly one level: observe")
-    _reject_unknown(raw_sockets, {"observe"}, "sockets")
     raw_observe = raw_sockets.get("observe", {})
     if not isinstance(raw_observe, dict):
         raise ConfigError("sockets.observe must be a table")
