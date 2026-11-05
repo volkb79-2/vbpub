@@ -67,6 +67,7 @@ cgroup_root = "{r}/cg"
 proc_root = "{r}/proc"
 sys_root = "{r}/sys"
 socket_path = "{r}/s.sock"
+socket_mode = "0600"
 duration_s = 0
 stats_path = ""
 [process]
@@ -1102,6 +1103,7 @@ fn s10_threads_count_for_d_state_and_a_hidden_d_thread_is_reported_then_found() 
 
 #[test]
 fn s11_orphans_are_removed_and_the_cap_counts_the_whole_directory() {
+    crate::store::clear_startup_notes();
     let root = tmp("s11");
     let cfg = cfg_for(&root);
     fs::create_dir_all(root.join("cold")).unwrap();
@@ -1717,12 +1719,24 @@ fn socket_mode_0660_is_applied_but_bind_stays_private() {
 }
 
 #[test]
+fn a_socket_that_fails_verification_is_unlinked() {
+    let root = tmp("x08-unlink");
+    let sock = root.join("v.sock").to_str().unwrap().to_string();
+    let inst = Instance::acquire(&sock).unwrap();
+    // 0o1660 can never verify: the verify compares `mode & 0o777` with the whole value
+    assert!(fsafe::bind_private(&inst, 0o1660).is_err());
+    assert!(fs::symlink_metadata(&sock).is_err(), "the failed socket was removed");
+}
+
+#[test]
 fn socket_mode_config_default_and_validation() {
     let root = tmp("cfg-mode");
     let ok = cfg_text(&root, 4_000_000, TIERS3, 1 << 30, 3);
-    let with = |v: &str| ok.replace("duration_s = 0", &format!("socket_mode = \"{v}\"\nduration_s = 0"));
+    let with = |v: &str| ok.replace("socket_mode = \"0600\"", &format!("socket_mode = \"{v}\""));
     let c = Config::parse(&ok).unwrap();
-    assert_eq!(c.sampler.socket_mode_bits(), 0o600, "absent means private");
+    assert_eq!(c.sampler.socket_mode_bits(), 0o600);
+    let e = Config::parse(&ok.replace("socket_mode = \"0600\"\n", "")).unwrap_err();
+    assert!(e.contains("socket_mode"), "a missing key is a config error, no default in code: {e}");
     assert_eq!(Config::parse(&with("0600")).unwrap().sampler.socket_mode_bits(), 0o600);
     assert_eq!(Config::parse(&with("0660")).unwrap().sampler.socket_mode_bits(), 0o660);
     for bad in ["0666", "0770", "660", ""] {

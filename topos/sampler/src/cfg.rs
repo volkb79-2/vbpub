@@ -21,17 +21,12 @@ pub struct Sampler {
     pub proc_root: String,
     pub sys_root: String,
     pub socket_path: String,
-    /// Socket mode, "0600" (default when absent) or "0660" (the unit's `Group=` may connect).
-    #[serde(default = "default_socket_mode")]
+    /// Socket mode, required: "0600" or "0660" (the unit's `Group=` may connect).
     pub socket_mode: String,
     /// 0 = run until killed.
     pub duration_s: u64,
     /// Benchmark summary written at exit; empty string = none.
     pub stats_path: String,
-}
-
-fn default_socket_mode() -> String {
-    "0600".into()
 }
 
 impl Sampler {

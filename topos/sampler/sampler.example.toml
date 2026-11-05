@@ -6,7 +6,7 @@ cgroup_root = "/sys/fs/cgroup"
 proc_root = "/proc"
 sys_root = "/sys"
 socket_path = "/run/topos/sampler.sock"
-socket_mode = "0600"        # optional, "0600" (default) or "0660": 0660 lets the unit's Group= connect (e.g. docker on mdt hosts)
+socket_mode = "0600"        # "0600" or "0660": 0660 lets the unit's Group= connect (e.g. docker on mdt hosts)
 duration_s = 0              # 0 = run until killed
 stats_path = ""             # benchmark summary written at exit; empty = none
 

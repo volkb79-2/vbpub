@@ -86,9 +86,9 @@ events; bounded queue, oldest frame dropped and counted), command-line helper po
 D-state task's `cmdline` read may hang), serving threads. Frames on disk are
 `TSF1 | len | crc32 | ts_ms | payload`; a torn tail is cut at start-up. SIGTERM/SIGINT drain the
 writer. Segments of tiers that are not configured are deleted at start-up. Files are mode 0600;
-the socket is root-only (0600) unless `sampler.socket_mode = "0660"` is set (then the unit's
-`Group=` may connect; the socket is still created 0600 and only then widened; any other value is a
-config error, exit 2), one instance per socket (flock on `<socket>.lock`).
+the socket mode is the required key `sampler.socket_mode`: `"0600"` (root only) or `"0660"` (the
+unit's `Group=` may connect; the socket is still created 0600 and only then widened; any other
+value or a missing key is a config error, exit 2), one instance per socket (flock on `<socket>.lock`).
 Panics unwind (`panic = "unwind"`): a request that panics gets an `internal` error.
 
 ## Known limits
@@ -101,7 +101,8 @@ Panics unwind (`panic = "unwind"`): a request that panics gets an `internal` err
   classification is explicit now.
 - Command lines are redacted (`--password x`, `--token=x`, `KEY_SECRET=x`, `scheme://u:pw@host`),
   by name heuristics: a secret passed in a form without a telling name (`-p hunter2`, a bare
-  positional) is not recognised. The socket therefore stays root-only.
+  positional) is not recognised. Mode 0660 therefore also exposes command lines, including any
+  unrecognised secret, to the unit's group; 0600 keeps them root-only.
 - The sampling thread still reads some cgroup and `/proc/<pid>/io` files inline; a hang there
   shows as `status.sampling.stalled`, it is not prevented. A second SIGTERM/SIGINT exits at once
   (code 1) and the first arms a 20 s hard stop.

@@ -377,10 +377,18 @@ pub fn bind_private(inst: &Instance, mode: u32) -> io::Result<std::os::unix::net
             BIND_PROBE.lock().unwrap_or_else(|e| e.into_inner()).push((inst.sock_path.clone(), m.mode() & 0o777));
         }
     }
-    std::fs::set_permissions(&inst.sock_path, std::fs::Permissions::from_mode(mode))?;
-    let md = std::fs::symlink_metadata(&inst.sock_path)?;
-    if !md.file_type().is_socket() || md.uid() != euid() || md.mode() & 0o777 != mode {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} is not a socket owned by the sampler with mode {mode:04o}", inst.sock_path)));
+    // A socket that could not be set to, or verified at, the wanted mode is not left behind.
+    let fin = || -> io::Result<()> {
+        std::fs::set_permissions(&inst.sock_path, std::fs::Permissions::from_mode(mode))?;
+        let md = std::fs::symlink_metadata(&inst.sock_path)?;
+        if !md.file_type().is_socket() || md.uid() != euid() || md.mode() & 0o777 != mode {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} is not a socket owned by the sampler with mode {mode:04o}", inst.sock_path)));
+        }
+        Ok(())
+    };
+    if let Err(e) = fin() {
+        let _ = inst.dir.unlink(&inst.sock_name);
+        return Err(e);
     }
     Ok(l)
 }

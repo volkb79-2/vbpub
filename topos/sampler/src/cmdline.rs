@@ -59,6 +59,14 @@ fn looks_secret(name: &str) -> bool {
     if NOT_THE_SECRET_SUFFIX.iter().any(|s| n.ends_with(s)) || NOT_THE_SECRET_PREFIX.iter().any(|p| n.starts_with(p)) {
         return false;
     }
+    // names that mention a secret word but hold no secret
+    if n.contains("tokenizer") || n.ends_with("-tokens") || n.ends_with("_tokens") || n.contains("password-stdin") {
+        return false;
+    }
+    // whole parts, not substrings: `-pw`, `--auth` are secret, `--author`, `--authority` are not
+    if n.split(['-', '_']).any(|p| matches!(p, "pw" | "auth" | "creds" | "credential" | "credentials")) {
+        return true;
+    }
     // KEY=VALUE style keys: also anything ending in "key" or containing "pass" (`rconpass`, `adminpass`)
     let pass = n.contains("pass") && !PASS_NOT_SECRET.iter().any(|w| n.contains(w));
     SECRET_WORDS.iter().any(|w| n.contains(w)) || pass || n.ends_with("_key") || n.ends_with("-key") || n == "key"
@@ -68,21 +76,52 @@ fn looks_secret(name: &str) -> bool {
 fn redact_header(a: &str) -> Option<String> {
     let (name, _) = a.split_once(':')?;
     let n = name.trim().to_ascii_lowercase();
-    if n.contains(' ') || !(n.contains("authorization") || n.contains("cookie") || n.ends_with("-token") || n.ends_with("-key")) {
+    let secret = matches!(n.as_str(), "authorization" | "authentication" | "cookie" | "set-cookie")
+        || n.ends_with("-token")
+        || n.ends_with("-key")
+        || looks_secret(&n);
+    if n.contains(' ') || n.is_empty() || !secret {
         return None;
     }
     Some(format!("{}: {REDACTED}", name.trim()))
 }
 
-/// `scheme://user:password@host` -> `scheme://user:<redacted>@host`
+/// `scheme://user:password@host` -> `scheme://user:<redacted>@host`, and a userinfo without a
+/// colon (a bare token) is hidden whole: `https://<redacted>@host`. Every `://` in the word counts.
 fn redact_url(a: &str) -> Option<String> {
-    let i = a.find("://")?;
-    let rest = &a[i + 3..];
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let auth = &rest[..end];
-    let at = auth.rfind('@')?;
-    let (user, _) = auth[..at].split_once(':')?;
-    Some(format!("{}://{user}:{REDACTED}@{}", &a[..i], &rest[at + 1..]))
+    let mut out = String::new();
+    let mut pos = 0;
+    let mut changed = false;
+    while let Some(off) = a[pos..].find("://") {
+        let start = pos + off + 3;
+        let rest = &a[start..];
+        let end = rest.find(['/', '?', '#', ',']).unwrap_or(rest.len());
+        let auth = &rest[..end];
+        out.push_str(&a[pos..start]);
+        pos = start;
+        if let Some(at) = auth.rfind('@') {
+            let info = &auth[..at];
+            match info.split_once(':') {
+                Some((user, _)) => out.push_str(&format!("{user}:{REDACTED}")),
+                None => out.push_str(REDACTED),
+            }
+            pos = start + at;
+            changed = true;
+        }
+    }
+    out.push_str(&a[pos..]);
+    changed.then_some(out)
+}
+
+/// `user:password` as `-u` / `--user` / `--proxy-user` take it. `None` when it is visible anyway:
+/// both sides digits or both sides identical (`1000:1000`, `www-data:www-data`, uid:gid pairs).
+fn redact_user_pair(v: &str) -> Option<String> {
+    let (user, pw) = v.split_once(':')?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if (digits(user) && digits(pw)) || user == pw {
+        return None;
+    }
+    Some(format!("{user}:{REDACTED}"))
 }
 
 /// One word. Returns (replacement, true when the NEXT word is this option's value).
@@ -116,7 +155,7 @@ pub fn redact(words: &[&str]) -> Vec<String> {
     let mut out = Vec::with_capacity(words.len());
     let mut hide_next = false;
     let mut user_next = false;
-    for w in words {
+    'words: for w in words {
         if hide_next {
             hide_next = false;
             // `--password --verbose`: the next word is another option, not a value
@@ -127,15 +166,22 @@ pub fn redact(words: &[&str]) -> Vec<String> {
         }
         // `-u user:password`, as curl takes it
         if std::mem::take(&mut user_next) {
-            if let Some((user, _)) = w.split_once(':') {
-                out.push(format!("{user}:{REDACTED}"));
+            if let Some(p) = redact_user_pair(w) {
+                out.push(p);
                 continue;
             }
         }
-        user_next = *w == "-u" || *w == "--user";
-        if let Some(v) = w.strip_prefix("--user=") {
-            if let Some((user, _)) = v.split_once(':') {
-                out.push(format!("--user={user}:{REDACTED}"));
+        user_next = matches!(*w, "-u" | "--user" | "--proxy-user");
+        for pre in ["--user=", "--proxy-user="] {
+            if let Some(p) = w.strip_prefix(pre).and_then(redact_user_pair) {
+                out.push(format!("{pre}{p}"));
+                continue 'words;
+            }
+        }
+        // attached form `-ubob:pw`
+        if w.starts_with("-u") && !w.starts_with("--") {
+            if let Some(p) = redact_user_pair(&w[2..]) {
+                out.push(format!("-u{p}"));
                 continue;
             }
         }
@@ -175,6 +221,63 @@ mod redaction_tests {
     }
 
     #[test]
+    fn a_cut_line_never_shows_half_a_secret() {
+        let full = b"psql\0postgres://admin:hunter2@db/x\0-v\0";
+        // cut inside the password: the partial word is replaced
+        let cut = render(&cut_to_word(full.to_vec(), 26));
+        assert_eq!(cut, "psql <truncated>");
+        // a single word longer than the cap is just the marker
+        assert_eq!(render(&cut_to_word(b"postgres://admin:hunter2@db".to_vec(), 10)), "<truncated>");
+        // a line that fits exactly is untouched (cap + 1 bytes are read to tell)
+        assert_eq!(render(&cut_to_word(b"a\0b\0".to_vec(), 4)), "a b");
+        // and a cut after a complete word keeps it, redacted as usual
+        assert_eq!(render(&cut_to_word(b"x\0--password\0hunter2\0y".to_vec(), 14)), "x --password <redacted>");
+    }
+
+    #[test]
+    fn every_url_in_a_word_and_bare_tokens_are_hidden() {
+        let line = r(&["--urls=http://a:p1@x,http://b:p2@y"]);
+        assert_eq!(line, "--urls=http://a:<redacted>@x,http://b:<redacted>@y");
+        assert_eq!(r(&["https://ghp_TOKEN@github.com/o/r"]), "https://<redacted>@github.com/o/r");
+        // no userinfo, and an `@` only in the path, stay as they are
+        assert_eq!(r(&["https://github.com/o/r", "https://h/p@q"]), "https://github.com/o/r https://h/p@q");
+    }
+
+    #[test]
+    fn secret_headers_by_name() {
+        for h in ["Token: x", "X-Secret: x", "Authentication: Basic y", "Apikey: x", "Cookie: a=b", "Set-Cookie: a=b", "X-Auth-Token: x", "X-Api-Key: x", "Authorization: Bearer x"] {
+            let line = r(&["curl", "-H", h]);
+            assert!(line.ends_with(": <redacted>"), "{h} -> {line}");
+        }
+        assert_eq!(r(&["-H", "Accept: text/plain", "-H", "Content-Type: json"]), "-H Accept: text/plain -H Content-Type: json");
+    }
+
+    #[test]
+    fn option_names_are_judged_by_whole_parts() {
+        assert_eq!(r(&["-pw", "hunter2"]), "-pw <redacted>");
+        assert_eq!(r(&["--auth", "user:pw"]), "--auth <redacted>");
+        assert_eq!(r(&["--db_creds", "x", "--credentials=y"]), "--db_creds <redacted> --credentials=<redacted>");
+        assert_eq!(r(&["--author", "me", "--authority", "x"]), "--author me --authority x");
+        assert_eq!(r(&["-pass", "2"]), "-pass <redacted>");
+    }
+
+    #[test]
+    fn user_forms_hide_the_password_unless_it_is_an_id_pair() {
+        assert_eq!(r(&["--proxy-user", "bob:pw"]), "--proxy-user bob:<redacted>");
+        assert_eq!(r(&["--proxy-user=bob:pw"]), "--proxy-user=bob:<redacted>");
+        assert_eq!(r(&["-ubob:pw"]), "-ubob:<redacted>");
+        assert_eq!(r(&["-u", "bob:pw"]), "-u bob:<redacted>");
+        assert_eq!(r(&["-u", "1000:1000", "-u1000:1001", "--user=www-data:www-data", "--user", "www-data:www-data"]), "-u 1000:1000 -u1000:1001 --user=www-data:www-data --user www-data:www-data");
+        assert_eq!(r(&["-u", "1000:pw"]), "-u 1000:<redacted>");
+    }
+
+    #[test]
+    fn names_that_only_mention_a_secret_stay_visible() {
+        assert_eq!(r(&["--tokenizer", "bert", "--max-tokens", "5", "--num_tokens=3", "--password-stdin"]), "--tokenizer bert --max-tokens 5 --num_tokens=3 --password-stdin");
+        assert_eq!(r(&["--password", "x"]), "--password <redacted>");
+    }
+
+    #[test]
     fn ordinary_words_stay_readable() {
         let line = r(&["app", "--passive", "--bypass-cache", "-H", "Accept: text/plain", "-u", "root", "--compass=north", "a:b"]);
         assert_eq!(line, "app --passive --bypass-cache -H Accept: text/plain -u root --compass=north a:b");
@@ -185,8 +288,26 @@ fn read_cmdline(path: &str, max: usize) -> Result<String, u8> {
     use crate::util::{err_state, stc};
     let f = std::fs::File::open(path).map_err(|e| err_state(&e, stc::UN_READ))?;
     let mut b = Vec::new();
-    f.take(max as u64).read_to_end(&mut b).map_err(|e| err_state(&e, stc::UN_READ))?;
-    Ok(render(&b))
+    // one byte more than the cap tells a cut from a line that fits exactly
+    f.take(max as u64 + 1).read_to_end(&mut b).map_err(|e| err_state(&e, stc::UN_READ))?;
+    Ok(render(&cut_to_word(b, max)))
+}
+
+pub const TRUNCATED: &str = "<truncated>";
+
+/// A line longer than `max` is cut back to its last complete word (the last NUL within the cap)
+/// and the partial word is replaced by `<truncated>`, so redaction never sees half a secret
+/// (`postgres://admin:hunter2` cut before the `@`). One word longer than the cap becomes just
+/// `<truncated>`.
+fn cut_to_word(mut b: Vec<u8>, max: usize) -> Vec<u8> {
+    if b.len() <= max {
+        return b;
+    }
+    b.truncate(max);
+    let keep = b.iter().rposition(|&c| c == 0).map_or(0, |p| p + 1);
+    b.truncate(keep);
+    b.extend_from_slice(TRUNCATED.as_bytes());
+    b
 }
 
 /// Raw cmdline bytes (NUL-separated) to the redacted, space-joined text.

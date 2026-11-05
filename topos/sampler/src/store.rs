@@ -85,12 +85,21 @@ pub fn tmpfs_state() -> Option<bool> {
     }
 }
 
+/// Test hook: forget the notes of this thread, so a test starts from an empty list.
+#[cfg(test)]
+pub fn clear_startup_notes() {
+    with_notes(|g| g.clear());
+}
+
 fn add_note(msg: String) {
     with_notes(|g| {
+        if g.contains(&msg) {
+            return;
+        }
         if g.len() + 1 < MAX_NOTES {
             g.push(msg);
         } else if g.len() + 1 == MAX_NOTES {
-            g.push("further start-up notes omitted".to_string());
+            g.push("further notes omitted".to_string());
         }
     });
 }
