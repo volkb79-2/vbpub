@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib.util
 import json
 import re
@@ -357,8 +358,30 @@ def test_publish_bundle_body(
     assert extras == [
         "get.py", "get.py.sha256",
         "pwmcp-client-install.py", "pwmcp-client-install.py.sha256",
+        "pwmcp-client-requirements.txt",
         "pwmcp_client-1.2.3.post4-py3-none-any.whl", "pwmcp_client-1.2.3.post4-py3-none-any.whl.sha256",
     ]
+    lines = (tmp_path / "pwmcp-client-requirements.txt").read_text().splitlines()[1:]
+    assert lines == [
+        "pwmcp-client @ https://github.com/owner/repo/releases/download/pwmcp-v1.2.3-r4/"
+        "pwmcp_client-1.2.3.post4-py3-none-any.whl --hash=sha256:" + hashlib.sha256(b"w").hexdigest()
+    ]
+
+
+def test_stage_client_assets_pins_every_bundled_wheel(tmp_path: Path) -> None:
+    module = _load(SCRIPTS / "publish-bundle.py", "pwmcp_script_cli_publish_bundle_pins")
+    wheels = tmp_path / "bundle" / "wheels"
+    wheels.mkdir(parents=True)
+    for name in ("pwmcp_client-1.2.3.post4-py3-none-any.whl", "cli_extended-0.5.1-py3-none-any.whl"):
+        (wheels / name).write_bytes(name.encode())
+    installer = tmp_path / "inst.py"
+    installer.write_text("x")
+    staged = module.stage_client_assets(tmp_path, installer, "https://h/d")
+    names = sorted(p.name for p in staged)
+    assert "cli_extended-0.5.1-py3-none-any.whl" in names and "inst.py.sha256" in names
+    text = (tmp_path / "pwmcp-client-requirements.txt").read_text()
+    assert "cli-extended @ https://h/d/cli_extended-0.5.1-py3-none-any.whl --hash=sha256:" in text
+    assert "--require-hashes -r pwmcp-client-requirements.txt" in text
 
 
 def test_stage_client_assets_requires_the_installer(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

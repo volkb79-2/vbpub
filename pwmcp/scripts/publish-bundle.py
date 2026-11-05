@@ -26,7 +26,7 @@ from pathlib import Path
 
 from cli_extended import RegisteredCli
 # Keystone import: the INSTALLED cmru package (CX-D3 / PWMCP-02), not cmru/src.
-from cmru.release import GitHubReleases, publish_versioned, write_sha256_sidecar
+from cmru.release import GitHubReleases, publish_versioned, sha256_file, write_sha256_sidecar
 
 # Strict prepared-coordinate loader and shared script registration. Insert the script
 # dir explicitly so a bare ``import _vars`` also works when this file is loaded by path.
@@ -37,6 +37,7 @@ PWMCP_DIR = Path(__file__).resolve().parent.parent
 DIST_DIR = PWMCP_DIR / "dist"
 GET_PY = PWMCP_DIR / "get.py"
 CLIENT_INSTALLER = "pwmcp-client-install.py"
+REQUIREMENTS_ASSET = "pwmcp-client-requirements.txt"
 
 
 def log(msg: str) -> None:
@@ -59,24 +60,41 @@ def find_bundle(dist_dir: Path, pwmcp_version: str) -> Path:
     return expected
 
 
-def stage_client_assets(dist_dir: Path, installer: Path) -> list[Path]:
-    """Client-only release assets (+ SHA256 sidecars): the pwmcp-client wheel and the client-only installer.
+def stage_client_assets(dist_dir: Path, installer: Path, base_url: str = "") -> list[Path]:
+    """Client-only release assets: the pwmcp-client wheel, its pinned dependency wheels, a hash-pinned
+    requirements file and the client-only installer (the wheel and installer with SHA256 sidecars).
 
-    The wheel is the exact one the bundle ships (``dist/bundle/wheels``), so the standalone asset and the
-    bundle's copy are byte-identical. A consumer that only talks to a server elsewhere uses
-    ``pwmcp-client-install.py`` (documented in README); the wheel is published for ``pip install`` users.
+    Every wheel is the exact file the bundle ships (``dist/bundle/wheels``), so the standalone assets and the
+    bundle's copies are byte-identical. A consumer that only talks to a server elsewhere runs
+    ``pip install --require-hashes -r pwmcp-client-requirements.txt`` (each line is ``name @ <asset URL>
+    --hash=sha256:...``; ``cli-extended`` is GitHub-only, so its wheel is an asset too) or
+    ``pwmcp-client-install.py`` (README "Client install and upgrade").
     """
-    wheels = sorted((dist_dir / "bundle" / "wheels").glob("pwmcp_client-*.whl"))
-    if len(wheels) != 1:
-        fail(f"expected exactly one pwmcp_client wheel in {dist_dir / 'bundle' / 'wheels'}, found {len(wheels)}; run the build phase")
+    wheel_dir = dist_dir / "bundle" / "wheels"
+    wheels = sorted(wheel_dir.glob("*.whl"))
+    clients = [w for w in wheels if w.name.startswith("pwmcp_client-")]
+    if len(clients) != 1:
+        fail(f"expected exactly one pwmcp_client wheel in {wheel_dir}, found {len(clients)}; run the build phase")
     if not installer.is_file():
         fail(f"{installer} is missing")
-    staged = []
-    for source in (wheels[0], installer):
-        target = dist_dir / source.name
-        if target.resolve() != source.resolve():
-            shutil.copy2(source, target)
-        staged.extend([target, write_sha256_sidecar(target)])
+    staged: list[Path] = []
+    requirements = [f"# pwmcp client: hash-pinned. Use: pip install --require-hashes -r {REQUIREMENTS_ASSET}"]
+    for wheel in wheels:
+        target = dist_dir / wheel.name
+        if target.resolve() != wheel.resolve():
+            shutil.copy2(wheel, target)
+        staged.append(target)
+        distribution = wheel.name.split("-")[0].replace("_", "-")
+        requirements.append(f"{distribution} @ {base_url}/{wheel.name} --hash=sha256:{sha256_file(wheel)}")
+    requirements_file = dist_dir / REQUIREMENTS_ASSET
+    requirements_file.write_text("\n".join(requirements) + "\n", encoding="utf-8")
+    staged.append(requirements_file)
+    target = dist_dir / installer.name
+    if target.resolve() != installer.resolve():
+        shutil.copy2(installer, target)
+    staged.append(target)
+    for source in (clients[0], installer):
+        staged.append(write_sha256_sidecar(dist_dir / source.name))
     return staged
 
 
@@ -102,7 +120,10 @@ def _publish(_args: argparse.Namespace) -> None:
     shutil.copy2(GET_PY, get_py_asset)
     get_py_sidecar = write_sha256_sidecar(get_py_asset)
 
-    client_assets = stage_client_assets(DIST_DIR, PWMCP_DIR / CLIENT_INSTALLER)
+    client_assets = stage_client_assets(
+        DIST_DIR, PWMCP_DIR / CLIENT_INSTALLER,
+        f"https://github.com/{owner}/{repo}/releases/download/pwmcp-v{pwmcp_version}",
+    )
 
     gh = GitHubReleases(owner, repo, token)
     result = publish_versioned(
