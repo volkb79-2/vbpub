@@ -5481,8 +5481,16 @@ def verify_own_runtime_network(
                     expected_network=expected_network,
                 )
             return None
+        # CIU-197: an ADOPT writes its durable no-reset marker as
+        # `recovery-required` from the very first record (see
+        # `_finish_allocation`), so the allocation-time caller must also
+        # accept that state for an adopted record, or every adopt (and every
+        # `ensure` resume of one) refuses its own env-generation child.
+        allocating_state = record.state == "allocating" or (
+            record.state == "recovery-required" and record.adopted is True
+        )
         if record.state != "ready" and not (
-            allow_allocating_instance and record.state == "allocating"
+            allow_allocating_instance and allocating_state
         ):
             raise RuntimeNetworkVerificationError(
                 f"[S16] managed worktree {record.logical_name!r} is "
