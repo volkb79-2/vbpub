@@ -6056,17 +6056,17 @@ record and the remedy (`ciu worktree rm <name>`, and for a record whose path no 
 
 **Acceptance criteria.** Test: a forced preparation failure leaves no checkout or record (or a record that `ciu worktree rm` removes); after a manual `git worktree remove` the next create refuses with a text containing the remedy command, and that command succeeds.
 
-## CIU-176 — `ciu worktree adopt` fails on `DOCKER_GID not found` and leaves a `recovery-required` record that `ensure` cannot resume (circular)
+## CIU-184 — `ciu worktree adopt` fails on `DOCKER_GID not found` and leaves a `recovery-required` record that `ensure` cannot resume (circular)
 
 **Status: OPEN (filed 2026-11-05 from dstdns CP0, installed ciu 7.21.0 and the unreleased source; evidence `reports/dstdns-cp0-CONTINUATION.md` F1). Severity: P2. Related: CIU-160, CIU-161, CIU-172.**
 
-**Observed.** `ciu worktree adopt` of a plain `git worktree add` checkout fails in its env generation with `DOCKER_GID not found` when the caller shell lacks `DOCKER_GID`. The record is left `recovery-required`. `ciu worktree ensure <name>` then repeats the same env generation and refuses with the same recovery-required state, so the loop never closes. The unreleased source (CIU-161 fix) repairs `create` but `adopt` still fails after one failed attempt because the record already exists. Only `ciu worktree rm` (which itself needs two tries, CIU-179) clears it.
+**Observed.** `ciu worktree adopt` of a plain `git worktree add` checkout fails in its env generation with `DOCKER_GID not found` when the caller shell lacks `DOCKER_GID`. The record is left `recovery-required`. `ciu worktree ensure <name>` then repeats the same env generation and refuses with the same recovery-required state, so the loop never closes. The unreleased source (CIU-161 fix) repairs `create` but `adopt` still fails after one failed attempt because the record already exists. Only `ciu worktree rm` (which itself needs two tries, CIU-187) clears it.
 
 **Design.** `adopt` and `ensure` derive `DOCKER_GID` themselves (docker group or socket stat, CIU-160 design) and treat a record that is `recovery-required` solely because of a missing env value as resumable; `adopt` rolls the record back (or leaves it resumable) on failure (cf. CIU-174).
 
 **Acceptance criteria.** Test: `adopt` in an environment without `DOCKER_GID` either succeeds or leaves a record that a second `adopt`/`ensure` completes; never a state only `rm` clears.
 
-## CIU-177 — `ciu worktree up` on a stack whose images were never baked under the plain `:local` ref stops with a registry `pull access denied`, and would otherwise run main's stale image
+## CIU-185 — `ciu worktree up` on a stack whose images were never baked under the plain `:local` ref stops with a registry `pull access denied`, and would otherwise run main's stale image
 
 **Status: OPEN (filed 2026-11-05 from dstdns CP0; evidence `reports/dstdns-cp0-REPORT.md` "Stack bring-up". Companion of CIU-173, which is the root cause and gets this live confirmation). Severity: P2 (stale-image false-green trap).**
 
@@ -6076,7 +6076,7 @@ record and the remedy (`ciu worktree rm <name>`, and for a record whose path no 
 
 **Acceptance criteria.** Test: worktree with a missing suffixed image refuses before any pull and names `ciu bake`; with the suffixed image present the container's image id equals the baked id, never main's `:local`.
 
-## CIU-178 — `ciu bake` in a worktree reports `Missing required environment values in <MAIN>/ciu.global.defaults.toml.j2` until `eval "$(ciu env print)"` is exported; the message names the wrong file
+## CIU-186 — `ciu bake` in a worktree reports `Missing required environment values in <MAIN>/ciu.global.defaults.toml.j2` until `eval "$(ciu env print)"` is exported; the message names the wrong file
 
 **Status: OPEN (filed 2026-11-05 from dstdns CP0; evidence `reports/dstdns-cp0-CONTINUATION.md` F2). Severity: P3.**
 
@@ -6086,7 +6086,7 @@ record and the remedy (`ciu worktree rm <name>`, and for a record whose path no 
 
 **Acceptance criteria.** Test: `ciu bake` in a fresh worktree with an empty environment runs; a forced missing key yields a message naming the key and the worktree path, not the main checkout.
 
-## CIU-179 — `ciu worktree rm` after `ciu up` needs two or three tries, a committed tree and `--discard-protected-state <branch>`; the first refusals do not say so
+## CIU-187 — `ciu worktree rm` after `ciu up` needs two or three tries, a committed tree and `--discard-protected-state <branch>`; the first refusals do not say so
 
 **Status: OPEN (filed 2026-11-05 from dstdns CP0; evidence `reports/dstdns-cp0-CONTINUATION.md` F4). Severity: P3. Related: CIU-164 (`ciu clean` exit 1 after complete cleanup), CIU-174.**
 
