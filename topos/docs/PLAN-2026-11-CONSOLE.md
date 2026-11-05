@@ -17,8 +17,9 @@ About 60 fixes from the deep review are in topos 0.6.0.
 
 1. **Rust sampler** (done, on branch `topos-sampler-poc-20261105`, not on main):
    collection, rates, hot/warm/cold tiers, hard events, socket; three review rounds.
-   Operator approved Rust (D-026). The finished sampler uses about 1.2x less CPU than
-   the lean Python yardstick and 1.6-7x less memory (Evidence).
+   Operator approved Rust (D-026) on the PoC's 1.4x less CPU and 2.5-10x less memory.
+   The finished sampler uses about 1.2x less CPU than the lean Python yardstick and
+   about 7x less memory (Evidence).
 2. Still open for the sampler: slow enrichment (docker identity, systemd origin and
    drift), `topos --once` through it, and the D-024 envelope measured on a host.
 3. Read path: `topos query`, TUI backfill and MCP read the tiers. Today persistent
@@ -111,8 +112,8 @@ Measured on 2026-11-05.
 | Same, custom Textual line widget, styled cells | 9.5 ms, 39 MiB |
 | Same, ratatui 0.29, unstyled cells | 0.39 ms, about 12 MB |
 | One recorded frame, 77 cgroups | 417 KB JSON |
-| Sampler at 1 Hz, r1002, 83 cgroups | 1.6-1.7% of a core, 10.5 MB peak RSS |
-| Lean Python yardstick at 1 Hz, r1002 | 2.0% of a core, 76 MB (17 MB with a compact ring) |
+| Sampler at 1 Hz, r1002, 84 cgroups | 1.71% of a core, 10.5 MB peak RSS |
+| Lean Python yardstick at 1 Hz, r1002 | 2.03% of a core, 74.7 MB (a compact ring was put near 17 MB; no recorded run) |
 | Full view on live r1002 data, 170x48 | Textual 72-77 ms, ratatui 0.84 ms per frame |
 | Full view on live r1002 data, 260x60 | Textual 88 ms, ratatui 1.69 ms per frame |
 | `current` reply, r1002 | 564 KB; 37 KB with `fields` and `compact` |
