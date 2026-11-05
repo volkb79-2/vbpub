@@ -1,30 +1,40 @@
-# Every key is required: the sampler has no built-in defaults.
+# Every key is required: the sampler has no built-in defaults. Tier values are D-025.
 [sampler]
 tick_ms = 1000              # sampling period
 slow_every_s = 60           # cadence of the limit files (spread across cgroups by serial)
 cgroup_root = "/sys/fs/cgroup"
 proc_root = "/proc"
 sys_root = "/sys"
-socket_path = "/tmp/topos-poc/sampler.sock"
-duration_s = 300            # 0 = run until killed
-stats_path = "/tmp/topos-poc/stats.json"
+socket_path = "/run/topos/sampler.sock"
+duration_s = 0              # 0 = run until killed
+stats_path = ""             # benchmark summary written at exit; empty = none
 
 [process]
 scan = true
 top_cpu = 20
 top_io = 20
 cap = 64                    # hard cap of the enriched union (D state + top CPU + top IO)
+full_sweep_every_s = 10     # io/schedstat for ALL pids this often; between sweeps only for candidates
+cmdline_max = 256
 
 [events]
 psi_cpu_some_avg10 = 25.0   # percent; crossing up or down is a hard event
 psi_memory_some_avg10 = 10.0
 psi_io_some_avg10 = 25.0
-events_path = "/tmp/topos-poc/cold/events.jsonl"
+events_path = "/var/lib/topos/events.jsonl"
+max_bytes = 4194304         # rotated to <path>.1 above this size
+
+[protocol]
+max_request_bytes = 4096
+max_response_bytes = 4194304
+max_clients = 8
+client_idle_ms = 300000     # idle connections are closed
+client_write_ms = 5000      # a client that does not read is dropped after this
 
 [store]
 enabled = true
-tmpfs_dir = "/tmp/topos-poc/tmpfs"   # must be tmpfs in production; hot and warm live here
-cold_dir = "/tmp/topos-poc/cold"     # disk; zstd segments, canonical dictionary
+tmpfs_dir = "/run/topos/tiers"       # must be tmpfs in production; hot and warm live here
+cold_dir = "/var/lib/topos"          # disk; zstd segments, canonical dictionary
 cold_cap_bytes = 1073741824
 
 [[tier]]

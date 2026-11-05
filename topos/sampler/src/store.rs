@@ -1,7 +1,9 @@
 //! Tiered store: raw/rollup frames appended to segment files. tmpfs tiers are plain, the
 //! disk tier is a sequence of independent zstd frames, each prefixed by its length.
 //! Frame body: u64 ts_ms | u32 dt_ms | varint n_ents | per entity: varint id, varint n,
-//! n x (varint (metric<<1 | is_float), zigzag-varint int | 8 byte f64).
+//! n x value. A value is varint (metric<<2 | kind): kind 0 zigzag-varint int, kind 1
+//! 8-byte f64, kind 2 one state-code byte (see `util::stc`). Counter deltas of zero are
+//! stored (a zero is a measurement); a metric absent from a frame was not measured.
 use crate::cfg::{Config, Tier};
 use crate::collect::{Event, Val};
 use crate::dict::{self, Dict};
@@ -9,6 +11,12 @@ use crate::util::*;
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sv {
+    V(f64),
+    S(u8),
+}
 
 fn put_varint(o: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
@@ -39,24 +47,38 @@ fn zz(i: i64) -> u64 {
 fn unzz(u: u64) -> i64 {
     ((u >> 1) as i64) ^ -((u & 1) as i64)
 }
-fn put_val(o: &mut Vec<u8>, m: u32, v: f64) {
-    if v.fract() == 0.0 && v.abs() < 9.0e15 {
-        put_varint(o, (m as u64) << 1);
-        put_varint(o, zz(v as i64));
-    } else {
-        put_varint(o, ((m as u64) << 1) | 1);
-        o.extend_from_slice(&v.to_bits().to_le_bytes());
+fn put_val(o: &mut Vec<u8>, m: u32, v: Sv) {
+    match v {
+        Sv::S(c) => {
+            put_varint(o, ((m as u64) << 2) | 2);
+            o.push(c);
+        }
+        Sv::V(v) if v.fract() == 0.0 && v.abs() < 9.0e15 => {
+            put_varint(o, (m as u64) << 2);
+            put_varint(o, zz(v as i64));
+        }
+        Sv::V(v) => {
+            put_varint(o, ((m as u64) << 2) | 1);
+            o.extend_from_slice(&v.to_bits().to_le_bytes());
+        }
     }
 }
-fn get_val(b: &[u8], p: &mut usize) -> Option<(u32, f64)> {
+fn get_val(b: &[u8], p: &mut usize) -> Option<(u32, Sv)> {
     let h = get_varint(b, p)?;
-    let m = (h >> 1) as u32;
-    if h & 1 == 0 {
-        Some((m, unzz(get_varint(b, p)?) as f64))
-    } else {
-        let s = b.get(*p..*p + 8)?;
-        *p += 8;
-        Some((m, f64::from_bits(u64::from_le_bytes(s.try_into().ok()?))))
+    let m = (h >> 2) as u32;
+    match h & 3 {
+        0 => Some((m, Sv::V(unzz(get_varint(b, p)?) as f64))),
+        1 => {
+            let s = b.get(*p..*p + 8)?;
+            *p += 8;
+            Some((m, Sv::V(f64::from_bits(u64::from_le_bytes(s.try_into().ok()?)))))
+        }
+        2 => {
+            let c = *b.get(*p)?;
+            *p += 1;
+            Some((m, Sv::S(c)))
+        }
+        _ => None,
     }
 }
 fn head(o: &mut Vec<u8>, ts: u64, dt: u32, nents: usize) {
@@ -67,6 +89,8 @@ fn head(o: &mut Vec<u8>, ts: u64, dt: u32, nents: usize) {
 
 struct Acc {
     n: u32,
+    ns: u32,
+    last_st: u8,
     sum: f64,
     min: f64,
     max: f64,
@@ -86,6 +110,19 @@ struct TierState {
     cur: Option<(u64, File)>,
     segs: VecDeque<(u64, u64)>, // (start_s, bytes)
     total: u64,
+    last_write_s: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct TierInfo {
+    pub name: String,
+    pub medium: String,
+    pub segments: usize,
+    pub bytes: u64,
+    pub oldest_s: u64,
+    pub newest_s: u64,
+    pub keep_s: u64,
+    pub fill: f64,
 }
 
 pub struct Store {
@@ -96,6 +133,9 @@ pub struct Store {
     w_mets: usize,
     w_ents: usize,
     ev_file: File,
+    ev_path: String,
+    ev_size: u64,
+    ev_max: u64,
     pub w_tmpfs: u64,
     pub w_cold: u64,
     pub w_other: u64,
@@ -109,6 +149,7 @@ impl Store {
             fs::create_dir_all(p)?;
         }
         let ev_file = OpenOptions::new().create(true).append(true).open(&cfg.events.events_path)?;
+        let ev_size = ev_file.metadata().map(|m| m.len()).unwrap_or(0);
         let mut tiers = Vec::new();
         if s.enabled {
             fs::create_dir_all(&s.tmpfs_dir)?;
@@ -143,6 +184,7 @@ impl Store {
                     cur: None,
                     segs: segs.into(),
                     total,
+                    last_write_s: 0,
                 });
             }
         }
@@ -154,6 +196,9 @@ impl Store {
             w_mets: loaded_mets,
             w_ents: loaded_ents,
             ev_file,
+            ev_path: cfg.events.events_path.clone(),
+            ev_size,
+            ev_max: cfg.events.max_bytes,
             w_tmpfs: 0,
             w_cold: 0,
             w_other: 0,
@@ -174,8 +219,34 @@ impl Store {
         (tm, cold)
     }
 
-    /// Persist dictionary names added since the last call (rare: only new names).
-    pub fn sync_dict(&mut self, dict: &Dict) {
+    pub fn tier_info(&self) -> Vec<TierInfo> {
+        self.tiers
+            .iter()
+            .map(|t| {
+                let oldest = t.segs.front().map(|s| s.0).unwrap_or(0);
+                let newest = t.last_write_s;
+                let fill = if t.segs.is_empty() || t.t.keep_s == 0 {
+                    0.0
+                } else {
+                    (newest.saturating_sub(oldest) as f64 / t.t.keep_s as f64).min(1.0)
+                };
+                TierInfo {
+                    name: t.t.name.clone(),
+                    medium: t.t.medium.clone(),
+                    segments: t.segs.len(),
+                    bytes: t.total,
+                    oldest_s: oldest,
+                    newest_s: newest,
+                    keep_s: t.t.keep_s,
+                    fill,
+                }
+            })
+            .collect()
+    }
+
+    /// Persist dictionary changes: new names are appended; a freed or reused entity slot
+    /// rewrites the entity file atomically (rare: only on container churn).
+    pub fn sync_dict(&mut self, dict: &mut Dict) {
         if !self.enabled {
             return;
         }
@@ -192,13 +263,28 @@ impl Store {
             }
             self.w_mets = dict.mets.len();
         }
+        let path = format!("{}/ents.dict", self.cold_dir);
+        if dict.ents_dirty {
+            let mut all = String::new();
+            for n in &dict.ents {
+                all.push_str(&n.replace('\n', " "));
+                all.push('\n');
+            }
+            let tmp = format!("{path}.tmp");
+            if fs::write(&tmp, all.as_bytes()).is_ok() && fs::rename(&tmp, &path).is_ok() {
+                self.w_other += all.len() as u64;
+                self.w_ents = dict.ents.len();
+                dict.ents_dirty = false;
+            }
+            return;
+        }
         let mut add = String::new();
         for n in &dict.ents[self.w_ents..] {
             add.push_str(&n.replace('\n', " "));
             add.push('\n');
         }
         if !add.is_empty() {
-            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(format!("{}/ents.dict", self.cold_dir)) {
+            if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
                 let _ = f.write_all(add.as_bytes());
                 self.w_other += add.len() as u64;
             }
@@ -208,8 +294,16 @@ impl Store {
 
     pub fn append_events(&mut self, evs: &[Event]) {
         for e in evs {
+            if self.ev_size > self.ev_max {
+                let _ = fs::rename(&self.ev_path, format!("{}.1", self.ev_path));
+                if let Ok(f) = OpenOptions::new().create(true).append(true).open(&self.ev_path) {
+                    self.ev_file = f;
+                    self.ev_size = 0;
+                }
+            }
             let _ = self.ev_file.write_all(e.json.as_bytes());
             let _ = self.ev_file.write_all(b"\n");
+            self.ev_size += e.json.len() as u64 + 1;
             self.w_other += e.json.len() as u64 + 1;
         }
     }
@@ -220,24 +314,18 @@ impl Store {
         }
         let cap = self.cap;
         let mut body = Vec::with_capacity(64 * 1024);
+        let sv = |x: &Val| if x.st != stc::VALUE { Sv::S(x.st) } else { Sv::V(x.v) };
         for ti in 0..self.tiers.len() {
             let Store { tiers, rid, w_tmpfs, w_cold, .. } = self;
             let t = &mut tiers[ti];
             if t.raw {
                 body.clear();
-                let nents = frame.iter().filter(|(_, v)| v.iter().any(|x| x.raw == NONE || x.v != 0.0)).count();
-                head(&mut body, ts_ms, dt_ms as u32, nents);
+                head(&mut body, ts_ms, dt_ms as u32, frame.len());
                 for (id, vals) in frame {
-                    let n = vals.iter().filter(|x| x.raw == NONE || x.v != 0.0).count();
-                    if n == 0 {
-                        continue;
-                    }
                     put_varint(&mut body, *id as u64);
-                    put_varint(&mut body, n as u64);
+                    put_varint(&mut body, vals.len() as u64);
                     for x in vals {
-                        if x.raw == NONE || x.v != 0.0 {
-                            put_val(&mut body, x.m, x.v);
-                        }
+                        put_val(&mut body, x.m, sv(x));
                     }
                 }
                 t.write(ts_ms, &body, cap, w_tmpfs, w_cold);
@@ -246,8 +334,20 @@ impl Store {
             for (id, vals) in frame {
                 for x in vals {
                     let a = t.acc.entry((*id, x.m)).or_insert_with(|| Acc {
-                        n: 0, sum: 0.0, min: f64::MAX, max: f64::MIN, counter: x.raw != NONE, samples: Vec::new(),
+                        n: 0,
+                        ns: 0,
+                        last_st: 0,
+                        sum: 0.0,
+                        min: f64::MAX,
+                        max: f64::MIN,
+                        counter: dict.mets.get(x.m as usize).map(|m| m.1).unwrap_or(false),
+                        samples: Vec::new(),
                     });
+                    if x.st != stc::VALUE {
+                        a.ns += 1;
+                        a.last_st = x.st;
+                        continue;
+                    }
                     a.n += 1;
                     a.sum += x.v;
                     if !a.counter {
@@ -263,18 +363,19 @@ impl Store {
                 continue;
             }
             // flush the bucket
-            let mut keys: Vec<((u32, u32), &mut Acc)> = t.acc.iter_mut().filter(|(_, a)| a.n > 0).map(|(k, a)| (*k, a)).collect();
+            let mut keys: Vec<((u32, u32), &mut Acc)> =
+                t.acc.iter_mut().filter(|(_, a)| a.n > 0 || a.ns > 0).map(|(k, a)| (*k, a)).collect();
             keys.sort_unstable_by_key(|(k, _)| *k);
-            let mut ents: Vec<(u32, Vec<(u32, f64)>)> = Vec::new();
+            let mut ents: Vec<(u32, Vec<(u32, Sv)>)> = Vec::new();
             for ((e, m), a) in keys {
-                if ents.last().map(|l| l.0) != Some(*&e) {
+                if ents.last().map(|l| l.0) != Some(e) {
                     ents.push((e, Vec::new()));
                 }
                 let out = &mut ents.last_mut().unwrap().1;
-                if a.counter {
-                    if a.sum != 0.0 {
-                        out.push((m, a.sum));
-                    }
+                if a.n == 0 {
+                    out.push((m, Sv::S(a.last_st)));
+                } else if a.counter {
+                    out.push((m, Sv::V(a.sum)));
                 } else {
                     let ids = *rid.entry(m).or_insert_with(|| {
                         let base = dict.mets[m as usize].0.clone();
@@ -283,10 +384,10 @@ impl Store {
                     a.samples.sort_unstable_by(|x, y| x.total_cmp(y));
                     let rank = ((a.samples.len() as f64) * 0.95).ceil() as usize;
                     let p95 = a.samples[rank.saturating_sub(1).min(a.samples.len() - 1)] as f64;
-                    out.push((m, a.sum / a.n as f64));
-                    out.push((ids[0], a.max));
-                    out.push((ids[1], a.min));
-                    out.push((ids[2], p95));
+                    out.push((m, Sv::V(a.sum / a.n as f64)));
+                    out.push((ids[0], Sv::V(a.max)));
+                    out.push((ids[1], Sv::V(a.min)));
+                    out.push((ids[2], Sv::V(p95)));
                 }
             }
             body.clear();
@@ -299,8 +400,9 @@ impl Store {
                 }
             }
             t.acc.retain(|_, a| {
-                let keep = a.n > 0;
+                let keep = a.n > 0 || a.ns > 0;
                 a.n = 0;
+                a.ns = 0;
                 a.sum = 0.0;
                 a.min = f64::MAX;
                 a.max = f64::MIN;
@@ -327,6 +429,7 @@ impl TierState {
         frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         frame.extend_from_slice(payload);
         let now_s = ts_ms / 1000;
+        self.last_write_s = now_s;
         let seg = now_s / self.t.segment_s * self.t.segment_s;
         let mut rolled = false;
         if self.cur.as_ref().map(|c| c.0) != Some(seg) {
@@ -360,16 +463,23 @@ impl TierState {
         }
     }
 
+    /// Remove expired segments and, on the disk tier, the oldest data until the byte cap
+    /// holds. The cap is strict: when only the open segment is left and it alone exceeds
+    /// the cap, it is dropped too (and a new one starts at the next write).
     fn prune(&mut self, now_s: u64, cap: Option<u64>) {
-        let cur = self.cur.as_ref().map(|c| c.0);
-        while let Some(&(s, sz)) = self.segs.front() {
-            if Some(s) == cur {
-                break;
-            }
+        loop {
+            let (s, sz) = match self.segs.front() {
+                Some(&x) => x,
+                None => break,
+            };
+            let is_cur = self.cur.as_ref().map(|c| c.0) == Some(s);
             let expired = s + self.t.segment_s + self.t.keep_s < now_s;
             let over = cap.map_or(false, |c| self.total > c);
-            if !(expired || over) {
+            if !(expired || over) || (is_cur && !over) {
                 break;
+            }
+            if is_cur {
+                self.cur = None;
             }
             let _ = fs::remove_file(format!("{}/{}-{}.seg", self.dir, self.t.name, s));
             self.total = self.total.saturating_sub(sz);
@@ -412,7 +522,7 @@ fn read_frames(path: &str, disk: bool) -> Vec<Vec<u8>> {
     out
 }
 
-fn decode(b: &[u8], want_ent: u32, want: &[u32]) -> Option<(u64, u32, Vec<(u32, f64)>)> {
+fn decode(b: &[u8], want_ent: u32, want: &[u32]) -> Option<(u64, u32, Vec<(u32, Sv)>)> {
     let ts = u64::from_le_bytes(b.get(0..8)?.try_into().ok()?);
     let dt = u32::from_le_bytes(b.get(8..12)?.try_into().ok()?);
     let mut p = 12;
@@ -431,51 +541,48 @@ fn decode(b: &[u8], want_ent: u32, want: &[u32]) -> Option<(u64, u32, Vec<(u32, 
     Some((ts, dt, res))
 }
 
-pub fn series(cfg: &Config, entity: &str, metric: &str, tier: &str, window_s: u64) -> Result<String, String> {
-    if !cfg.store.enabled {
-        return Err("store disabled".into());
-    }
-    let t = cfg.tier.iter().find(|t| t.name == tier).ok_or("unknown tier")?;
-    let now_ms = wall_ms();
-    let since_ms = now_ms.saturating_sub(window_s * 1000);
-    let mut o = String::new();
-    o.push_str("{\"req\":\"series\",\"entity\":");
-    jstr(&mut o, entity);
-    o.push_str(",\"metric\":");
-    jstr(&mut o, metric);
-    o.push_str(",\"tier\":");
-    jstr(&mut o, tier);
-    if metric == "@events" {
-        o.push_str(",\"events\":[");
-        let text = fs::read_to_string(&cfg.events.events_path).unwrap_or_default();
-        let mut first = true;
-        for l in text.lines() {
-            let v: serde_json::Value = match serde_json::from_str(l) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if v["ts_ms"].as_u64().unwrap_or(0) < since_ms || (!entity.is_empty() && v["entity"].as_str() != Some(entity)) {
-                continue;
-            }
-            if !first {
-                o.push(',');
-            }
-            first = false;
-            o.push_str(l);
+fn push_sv(o: &mut String, v: Sv) {
+    match v {
+        Sv::V(x) => jnum(o, x),
+        Sv::S(c) => {
+            o.push('{');
+            jstate(o, c);
+            o.push('}');
         }
-        o.push_str("]}");
-        return Ok(o);
     }
+}
+
+pub struct Series {
+    /// Fields of the response object, without the surrounding braces.
+    pub body: String,
+    pub truncated: bool,
+    pub window_s: u64,
+}
+
+/// Query one metric of one entity from one tier. A point is `[ts_ms, ...fields]`; a
+/// state point is `[ts_ms, {"s":..,"why":..}]` (counters: with `dt_ms` last). The answer
+/// stops at `max_bytes` with `truncated` set (newest points are kept out, oldest first).
+pub fn series(cfg: &Config, entity: &str, metric: &str, tier: &str, window_s: u64, max_bytes: usize) -> Result<Series, PErr> {
+    if !cfg.store.enabled {
+        return Err(perr("store_disabled", "store disabled"));
+    }
+    let t = cfg.tier.iter().find(|t| t.name == tier).ok_or_else(|| perr("unknown_tier", format!("unknown tier {tier}")))?;
+    let window_s = window_s.min(t.keep_s + t.segment_s);
+    let since_ms = wall_ms().saturating_sub(window_s * 1000);
     let (mets, ents) = dict::read_lists(&cfg.store.cold_dir);
-    let eid = ents.iter().position(|e| e == entity).ok_or("unknown entity")? as u32;
-    let mi = mets.iter().position(|(n, _)| n == metric).ok_or("unknown metric")?;
+    let eid = ents.iter().position(|e| e == entity).ok_or_else(|| perr("unknown_entity", format!("unknown entity {entity}")))? as u32;
+    let mi = mets.iter().position(|(n, _)| n == metric).ok_or_else(|| perr("unknown_metric", format!("unknown metric {metric}")))?;
     let counter = mets[mi].1;
     let rollup = t.step_s * 1000 != cfg.sampler.tick_ms;
     let mut want = vec![mi as u32];
+    let mut have_rollup = true;
     if rollup && !counter {
         for suf in [":max", ":min", ":p95"] {
             let n = format!("{metric}{suf}");
-            want.push(mets.iter().position(|(m, _)| *m == n).ok_or("rollup metric missing")? as u32);
+            match mets.iter().position(|(m, _)| *m == n) {
+                Some(p) => want.push(p as u32),
+                None => have_rollup = false,
+            }
         }
     }
     let disk = t.medium == "disk";
@@ -500,9 +607,15 @@ pub fn series(cfg: &Config, entity: &str, metric: &str, tier: &str, window_s: u6
         (true, false) => &["ts_ms", "avg", "max", "min", "p95"],
         (true, true) => &["ts_ms", "sum", "dt_ms"],
     };
-    o.push_str(&format!(",\"kind\":\"{}\",\"fields\":{:?},\"points\":[", if counter { "counter" } else { "gauge" }, fields));
+    let mut o = String::new();
+    o.push_str("\"entity\":");
+    jstr(&mut o, entity);
+    o.push_str(",\"metric\":");
+    jstr(&mut o, metric);
+    o.push_str(&format!(",\"tier\":\"{}\",\"step_s\":{},\"kind\":\"{}\",\"fields\":{:?},\"points\":[", tier, t.step_s, if counter { "counter" } else { "gauge" }, fields));
     let mut first = true;
-    for s in segs {
+    let mut truncated = false;
+    'outer: for s in segs {
         for body in read_frames(&format!("{dir}/{tier}-{s}.seg"), disk) {
             let (ts, dt, vals) = match decode(&body, eid, &want) {
                 Some(x) => x,
@@ -512,38 +625,93 @@ pub fn series(cfg: &Config, entity: &str, metric: &str, tier: &str, window_s: u6
                 continue;
             }
             let get = |m: u32| vals.iter().find(|(k, _)| *k == m).map(|x| x.1);
-            let row: Vec<f64> = if counter {
-                vec![ts as f64, get(want[0]).unwrap_or(0.0), dt as f64]
-            } else {
-                let mut r = vec![ts as f64];
-                for &m in &want {
-                    match get(m) {
-                        Some(v) => r.push(v),
-                        None => {
-                            r.clear();
-                            break;
+            let main = match get(want[0]) {
+                Some(v) => v,
+                None => continue, // not measured in this frame: a gap, not a zero
+            };
+            let mut row = String::new();
+            row.push('[');
+            row.push_str(&ts.to_string());
+            match main {
+                Sv::S(_) => {
+                    row.push(',');
+                    push_sv(&mut row, main);
+                }
+                Sv::V(_) if counter => {
+                    row.push(',');
+                    push_sv(&mut row, main);
+                    row.push_str(&format!(",{dt}"));
+                }
+                Sv::V(_) if rollup && !counter => {
+                    for &m in &want {
+                        row.push(',');
+                        match get(m) {
+                            Some(v) => push_sv(&mut row, v),
+                            None => row.push_str("null"),
                         }
                     }
+                    if !have_rollup {
+                        // rollup names not yet in the dictionary: only avg is real
+                    }
                 }
-                r
-            };
-            if row.is_empty() {
-                continue;
+                Sv::V(_) => {
+                    row.push(',');
+                    push_sv(&mut row, main);
+                }
+            }
+            if let (true, Sv::S(_)) = (counter, main) {
+                row.push_str(&format!(",{dt}"));
+            }
+            row.push(']');
+            if o.len() + row.len() + 64 > max_bytes {
+                truncated = true;
+                break 'outer;
             }
             if !first {
                 o.push(',');
             }
             first = false;
-            o.push('[');
-            for (i, v) in row.iter().enumerate() {
-                if i > 0 {
-                    o.push(',');
-                }
-                jnum(&mut o, *v);
-            }
-            o.push(']');
+            o.push_str(&row);
         }
     }
-    o.push_str("]}");
-    Ok(o)
+    o.push(']');
+    Ok(Series { body: o, truncated, window_s })
+}
+
+/// Events in the window (newest `limit` of them, oldest first), from the events file and
+/// its rotated predecessor. Bounded by `max_bytes`.
+pub fn events(cfg: &Config, entity: &str, window_s: u64, limit: usize, max_bytes: usize) -> (String, bool) {
+    let since_ms = wall_ms().saturating_sub(window_s * 1000);
+    let mut all: Vec<String> = Vec::new();
+    for p in [format!("{}.1", cfg.events.events_path), cfg.events.events_path.clone()] {
+        let text = fs::read_to_string(&p).unwrap_or_default();
+        for l in text.lines() {
+            let v: serde_json::Value = match serde_json::from_str(l) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if v["ts_ms"].as_u64().unwrap_or(0) < since_ms || (!entity.is_empty() && v["entity"].as_str() != Some(entity)) {
+                continue;
+            }
+            all.push(l.to_string());
+        }
+    }
+    let mut truncated = false;
+    if all.len() > limit {
+        all.drain(..all.len() - limit);
+        truncated = true;
+    }
+    let mut o = String::from("[");
+    for (i, l) in all.iter().enumerate() {
+        if o.len() + l.len() + 16 > max_bytes {
+            truncated = true;
+            break;
+        }
+        if i > 0 {
+            o.push(',');
+        }
+        o.push_str(l);
+    }
+    o.push(']');
+    (o, truncated)
 }

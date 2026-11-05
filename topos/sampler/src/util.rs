@@ -161,3 +161,91 @@ pub fn wall_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+// ---------------------------------------------------------------- states and system constants
+
+/// Value state codes. 0 is a value; 1..=5 are "not applicable" (the metric does not exist
+/// here, and that is expected); 6.. are "unavailable" (it should exist but could not be
+/// obtained). The table is append-only: stored segments keep the code.
+pub mod stc {
+    pub const VALUE: u8 = 0;
+    pub const NA_IDLE: u8 = 1;
+    pub const NA_CONTROLLER: u8 = 2;
+    pub const NA_FEATURE: u8 = 3;
+    pub const NA_DELAYACCT: u8 = 4;
+    pub const NA_NO_FULL: u8 = 5;
+    pub const UN_PERM: u8 = 6;
+    pub const UN_READ: u8 = 7;
+    pub const UN_DEBUGFS: u8 = 8;
+    pub const UN_PARSE: u8 = 9;
+    pub const UN_FIRST: u8 = 10;
+    pub const UN_NOT_ENRICHED: u8 = 11;
+    pub const MAX: u8 = 11;
+}
+
+/// (state, reason) for a code.
+pub fn state_name(c: u8) -> (&'static str, &'static str) {
+    match c {
+        stc::VALUE => ("value", ""),
+        stc::NA_IDLE => ("not_applicable", "no_activity_in_interval"),
+        stc::NA_CONTROLLER => ("not_applicable", "controller_or_file_absent"),
+        stc::NA_FEATURE => ("not_applicable", "feature_absent"),
+        stc::NA_DELAYACCT => ("not_applicable", "task_delayacct_off"),
+        stc::NA_NO_FULL => ("not_applicable", "no_full_line"),
+        stc::UN_PERM => ("unavailable", "permission_denied"),
+        stc::UN_READ => ("unavailable", "read_error"),
+        stc::UN_DEBUGFS => ("unavailable", "debugfs_unreadable"),
+        stc::UN_PARSE => ("unavailable", "parse_error"),
+        stc::UN_FIRST => ("unavailable", "first_sample"),
+        stc::UN_NOT_ENRICHED => ("unavailable", "not_read_this_tick"),
+        _ => ("unavailable", "unknown_state_code"),
+    }
+}
+
+/// State code for a failed read: ENOENT maps to `enoent`, EACCES/EPERM to permission.
+pub fn err_state(e: &std::io::Error, enoent: u8) -> u8 {
+    match e.raw_os_error() {
+        Some(2) | Some(20) | Some(19) => enoent,
+        Some(13) | Some(1) => stc::UN_PERM,
+        _ => stc::UN_READ,
+    }
+}
+
+/// Append `"s":"..."` and, when not a value, `"why":"..."`.
+pub fn jstate(o: &mut String, code: u8) {
+    let (s, why) = state_name(code);
+    o.push_str("\"s\":\"");
+    o.push_str(s);
+    o.push('"');
+    if code != stc::VALUE {
+        o.push_str(",\"why\":\"");
+        o.push_str(why);
+        o.push('"');
+    }
+}
+
+/// Protocol error: a stable machine code plus a human message.
+#[derive(Debug)]
+pub struct PErr {
+    pub code: &'static str,
+    pub msg: String,
+}
+pub fn perr(code: &'static str, msg: impl Into<String>) -> PErr {
+    PErr { code, msg: msg.into() }
+}
+
+extern "C" {
+    fn sysconf(name: i32) -> i64;
+}
+
+/// (CLK_TCK, from_sysconf). The fallback 100 is reported by `hello`, never silent.
+pub fn clk_tck() -> (u64, bool) {
+    let v = unsafe { sysconf(2) };
+    if v > 0 { (v as u64, true) } else { (100, false) }
+}
+
+/// (page size, from_sysconf).
+pub fn page_size() -> (u64, bool) {
+    let v = unsafe { sysconf(30) };
+    if v > 0 { (v as u64, true) } else { (4096, false) }
+}
