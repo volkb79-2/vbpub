@@ -24,6 +24,7 @@ async def wait_until(pilot, predicate, *, deadline=UI_WAIT_DEADLINE, interval=UI
     import time
 
     from textual.css.query import NoMatches
+    from textual.pilot import WaitForScreenTimeout
 
     def ready():
         try:
@@ -37,7 +38,11 @@ async def wait_until(pilot, predicate, *, deadline=UI_WAIT_DEADLINE, interval=UI
         if ready():
             # A pushed screen or mounted view is not composed until its pending messages have been
             # processed; flush them so the caller can query the new widgets (a bare timed pause does not).
-            await pilot.pause()
+            try:
+                await pilot.pause()
+            except WaitForScreenTimeout:
+                # Textual gives the flush its own 30 s cap; on a starved host just keep polling to our deadline.
+                pass
             if ready():
                 return
         if time.monotonic() >= end:
