@@ -959,3 +959,66 @@ def test_default_cache_scans_all_processes_but_a_custom_table_is_used_for_both(t
     assert Cache(str(root), require_tmpfs=False)._all_mountinfo is cache_module._read_all_mountinfo
     table = lambda: ""  # noqa: E731
     assert Cache(str(root), require_tmpfs=False, mountinfo=table)._all_mountinfo is table
+
+
+# ---------------------------------------------------------------- a held lease protects a key whatever its COMPLETE says
+
+def _corrupt_complete(cache, how):
+    marker = _key_file(cache, KEY, "COMPLETE")
+    if how == "empty-object":
+        with open(marker, "w") as handle:
+            handle.write("{}")
+    elif how == "missing":
+        os.unlink(marker)
+    else:  # corrupt tree under a valid COMPLETE is not an "unpublished" key; use garbage instead
+        with open(marker, "w") as handle:
+            handle.write("not json")
+
+
+@pytest.mark.parametrize("how", ["empty-object", "missing", "garbage"])
+def test_gc_and_ensure_never_remove_a_leased_key_with_invalid_complete(tmp_path, how):
+    cache = _root(tmp_path)
+    cache.ensure(KEY, _build)
+    lease = cache.lease(KEY, "lane")
+    _corrupt_complete(cache, how)
+    assert [(i.name, i.status) for i in cache.gc(0)] == [(KEY, "leased")]
+    with pytest.raises(CacheBusy, match="live lessee"):
+        cache.ensure(KEY, _build)
+    assert os.path.isdir(cache.tree_path(KEY))
+    lease.release()
+    assert [(i.name, i.status) for i in cache.gc(0)] == [(KEY, "removed")]
+
+
+def test_ensure_rebuilds_an_unleased_key_with_invalid_complete_and_keeps_a_corrupt_leased_tree(tmp_path):
+    cache = _root(tmp_path)
+    cache.ensure(KEY, _build)
+    _corrupt_complete(cache, "empty-object")
+    assert cache.ensure(KEY, _build).built
+    with cache.lease(KEY, "lane"):
+        with open(os.path.join(cache.tree_path(KEY), "pkg", "mod.py"), "a") as handle:
+            handle.write("corrupt\n")  # corrupt tree/ under a valid COMPLETE: a leased key is neither rebuilt nor removed
+        assert cache.gc(0)[0].status == "leased"
+        assert not cache.ensure(KEY, lambda tree: pytest.fail("must not rebuild")).built
+    with pytest.raises(TreeInvalid):
+        cache.verify(KEY)
+
+
+def test_ensure_refuses_to_replace_a_key_with_an_unusable_lease(tmp_path):
+    cache = _root(tmp_path)
+    cache.ensure(KEY, _build)
+    _corrupt_complete(cache, "missing")
+    os.unlink(_key_file(cache, KEY, LEASE))
+    os.symlink("/dev/null", _key_file(cache, KEY, LEASE))
+    with pytest.raises(CacheBusy, match="unusable"):
+        cache.ensure(KEY, _build)
+    assert os.path.isdir(cache.tree_path(KEY))
+
+
+def test_shipped_host_gc_and_cowtree_agree_on_a_leased_key_with_invalid_complete(tmp_path, host_gc):
+    cache = _root(tmp_path)
+    cache.ensure(KEY, _build)
+    with cache.lease(KEY, "lane"):
+        _corrupt_complete(cache, "empty-object")
+        log = host_gc.gc_cache(Path(cache.root), 0, "", time.time() + 10)
+        assert os.path.isdir(cache.key_path(KEY)), log
+        assert [i.status for i in cache.gc(0)] == ["leased"]

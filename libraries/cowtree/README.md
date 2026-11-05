@@ -140,7 +140,15 @@ cowtree cache survey|gc|verify --root D [--allow-non-tmpfs]
   the content. For a guard, pass `identity="<hash inputs or source revision>"`:
   it is recorded in `COMPLETE`, and a later `ensure` with a different identity
   (or against a key published without one) raises `key-collision` instead of
-  silently reusing another tree.
+  silently reusing another tree. A consumer that starts passing `identity=`
+  on a host whose keys were published without one should expect a one-time
+  `key-collision` per existing key (they carry no identity to compare):
+  clear those keys once (`cowtree cache gc --idle 0`, or wait for aging) and
+  they are republished with an identity.
+- **Leased keys are never replaced.** `gc` and `ensure` probe `<key>/.lease`
+  (`LOCK_EX|LOCK_NB`) before removing anything, whatever state `COMPLETE` is
+  in: a key with a live lessee and an invalid or missing `COMPLETE` is kept
+  by `gc` (`leased`) and makes `ensure` raise `busy` rather than rebuild.
 - **On-disk layout.** The layout is exactly that of
   `HOST-CONTRACT.md` item 3 (beside this file), so a host GC written to the
   contract (for example mdt-cockpit's `mdt_tree_cache.py`) honours cowtree's
@@ -174,7 +182,10 @@ cowtree cache survey|gc|verify --root D [--allow-non-tmpfs]
   renamed to scratch and removed by exact path. Foreign entries are never
   touched. The lease is the primary guard (a mount taken after the mountinfo
   scan is protected only by a lease taken **before** it), the mountinfo scan
-  the second line.
+  the second line. A GC run by a user who cannot read every
+  `/proc/<pid>/mountinfo` (other users' processes under `hidepid`, or no
+  `CAP_SYS_PTRACE`/root) keeps **all** keys: safe, but it frees nothing. Run
+  the GC as root or with that capability, or use the host's timer.
 - **tmpfs rule.** The shared cache is a tmpfs area. `Cache(root, require_tmpfs=...)`
   has no default: `True` refuses a root that is not on `tmpfs`/`ramfs` (at
   construction and again at every `gc`), so GC can never delete from a real

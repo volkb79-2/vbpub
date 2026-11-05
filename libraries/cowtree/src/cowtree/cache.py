@@ -453,8 +453,7 @@ class Cache:
             document = self._complete(key)
             built = document is None
             if document is None:
-                if os.path.lexists(self.key_path(key)):
-                    self._remove_entry(key)
+                self._clear_unpublished(key)
                 document = self._build(key, build, seal, identity)
             else:
                 recorded = document.get("identity")
@@ -471,6 +470,26 @@ class Cache:
             )
         finally:
             os.close(descriptor)
+
+    def _clear_unpublished(self, key: str) -> None:
+        """Remove what sits at *key* without a valid COMPLETE, but never under a live lessee: ``.lease`` is probed
+        first (as the contract GC does), whatever state COMPLETE is in."""
+        path = self.key_path(key)
+        if not os.path.lexists(path):
+            return
+        if not os.path.islink(path) and os.path.isdir(path):
+            state, lease_fd = self._probe_lease(key)
+            if state == "held":
+                raise CacheBusy(f"key {key!r} has a live lessee but no valid COMPLETE; not replacing it")
+            if state == "invalid":
+                raise CacheBusy(f"key {key!r} has an unusable .lease; not replacing it")
+            try:
+                self._remove_entry(key)
+            finally:
+                if lease_fd is not None:
+                    os.close(lease_fd)
+            return
+        self._remove_entry(key)  # a file or symlink: refused as non-directory
 
     def _restore_markers(self, key: str) -> None:
         """Recreate a missing ``.lease`` / ``.last-used`` of a published key (a foreign publisher may omit them)."""
@@ -624,10 +643,10 @@ class Cache:
         Policy, in order, per entry (each under that key's EX lock, taken without waiting; a busy key is skipped,
         never waited on):
 
-        1. ``<key>.tmp-*`` scratch and key directories without a valid COMPLETE are removed (the build lock is
-           held for a whole build, so an unlocked one is dead).
-        2. ``LOCK_EX|LOCK_NB`` on ``<key>/.lease`` must succeed; a live lessee keeps the key (the lock is held
-           until the key is gone, so a late lessee cannot slip in). A lease that is not a regular file keeps it.
+        1. ``<key>.tmp-*`` scratch is removed (the build lock is held for a whole build, so an unlocked one is dead).
+        2. ``LOCK_EX|LOCK_NB`` on ``<key>/.lease`` must succeed, whatever state COMPLETE is in; a live lessee keeps
+           the key (the lock is held until the key is gone, so a late lessee cannot slip in). A lease that is not a
+           regular file keeps it. Only then is a key directory without a valid COMPLETE removed.
         3. A key idle (``.last-used``, else ``COMPLETE`` mtime) for less than *idle_seconds* is kept.
         4. A key named by any mountinfo row of any process (bind of it or below, or an overlay
            lowerdir/upperdir/workdir) is kept; if some process's mountinfo cannot be read the key is kept.
@@ -655,15 +674,15 @@ class Cache:
             if match:
                 self._remove_entry(name)
                 return CacheGcItem(name, "removed", "stale scratch")
-            if self._complete(key) is None:
-                self._remove_entry(name)
-                return CacheGcItem(name, "removed", "no valid COMPLETE")
-            state, lease_fd = self._probe_lease(key)
+            state, lease_fd = self._probe_lease(key)  # before anything is removed, whatever COMPLETE says
             if state == "held":
                 return CacheGcItem(name, "leased", "live lease")
             if state == "invalid":
                 return CacheGcItem(name, "kept", ".lease is not a regular file or cannot be opened")
             try:
+                if self._complete(key) is None:
+                    self._remove_entry(name)
+                    return CacheGcItem(name, "removed", "no valid COMPLETE")
                 idle = self._idle_seconds(key)
                 if idle < idle_seconds:
                     return CacheGcItem(name, "kept", f"idle {idle:.0f}s")
