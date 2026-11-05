@@ -33,6 +33,7 @@ from typing import Any
 from topos import __version__ as TOPOS_VERSION
 from topos.daemon.broker import (
     TotalDeadline,
+    unlink_stale_socket,
     DEFAULT_MAX_CLIENTS,
     DEFAULT_REQUEST_TIMEOUT_S,
     MAX_REQUEST_BYTES,
@@ -778,7 +779,7 @@ def serve_versioned_unix_socket(
 ) -> EnvelopeUnixServer:
     """Create and bind a versioned Unix-socket server (P52)."""
     socket_path.parent.mkdir(parents=True, exist_ok=True)
-    socket_path.unlink(missing_ok=True)
+    unlink_stale_socket(socket_path)
     server = EnvelopeUnixServer(socket_path, broker, api, mode=mode)
     os.chmod(socket_path, mode)
     return server

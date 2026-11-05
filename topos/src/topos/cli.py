@@ -1672,7 +1672,15 @@ def _main_daemon(argv: list[str]) -> int:
             limits=ApiLimits(history_capacity=args.history_size),
             health_registry=health_registry,
         )
-        server = serve_versioned_unix_socket(args.socket, broker, api)
+        from topos.daemon.broker import SocketInUseError
+
+        try:
+            server = serve_versioned_unix_socket(args.socket, broker, api)
+        except SocketInUseError as exc:
+            print(f"topos daemon: {exc}", file=sys.stderr, flush=True)
+            if config.history.daemon.enabled:
+                history_store.close()
+            return 2
         shutdown.bind_server(server)
         print(f"serving read-only topos frames on {args.socket}", flush=True)
 

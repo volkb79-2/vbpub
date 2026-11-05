@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import errno
 import json
 import math
 import os
 import secrets
 import socket
 import socketserver
+import stat
 import threading
 import time
 from collections import deque
@@ -26,6 +28,43 @@ MAX_STREAM_LIMIT = 1000
 MAX_REQUEST_BYTES = 1024 * 1024
 DEFAULT_REQUEST_TIMEOUT_S = 5.0
 DEFAULT_MAX_CLIENTS = 32
+
+
+class SocketInUseError(OSError):
+    """Another live process is already serving the requested socket path."""
+
+
+def unlink_stale_socket(socket_path: Path, *, probe_timeout_s: float = 1.0) -> None:
+    """Remove a leftover socket file, but never one a live daemon is serving.
+
+    A stale socket (nothing accepts on it) is unlinked so the bind can proceed.
+    If a connection succeeds, or the listener is alive but not answering the
+    probe in time, taking over would silently orphan the running daemon, so
+    :class:`SocketInUseError` is raised instead. Non-socket paths are removed
+    as before.
+    """
+    try:
+        mode = socket_path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if stat.S_ISSOCK(mode):
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(probe_timeout_s)
+            probe.connect(str(socket_path))
+        except (ConnectionRefusedError, FileNotFoundError):
+            pass  # nothing listening: stale
+        except OSError as exc:
+            raise SocketInUseError(
+                errno.EADDRINUSE, f"socket {socket_path} is held by a process that is not answering ({exc})"
+            ) from exc
+        else:
+            raise SocketInUseError(
+                errno.EADDRINUSE, f"another daemon is already serving {socket_path}"
+            )
+        finally:
+            probe.close()
+    socket_path.unlink(missing_ok=True)
 
 
 class FrameBrokerError(RuntimeError):
@@ -519,7 +558,7 @@ def serve_unix_socket(
     max_clients: int = DEFAULT_MAX_CLIENTS,
 ) -> BrokerUnixServer:
     socket_path.parent.mkdir(parents=True, exist_ok=True)
-    socket_path.unlink(missing_ok=True)
+    unlink_stale_socket(socket_path)
     server = BrokerUnixServer(
         socket_path,
         broker,
