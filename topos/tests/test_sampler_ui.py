@@ -52,6 +52,23 @@ def _run(coro) -> None:
     asyncio.run(asyncio.wait_for(coro, 60))
 
 
+def test_a_frame_or_failure_during_teardown_is_not_a_source_failure(fake) -> None:
+    """The feed thread can deliver after the screen lost its widgets (the app is exiting)."""
+
+    async def run() -> None:
+        app = _app(fake)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _until(pilot, lambda: app.frames_received >= 1, "a frame")
+            frame = app.current_frame
+            await app.query_one("#meters").remove()
+            await app.query_one("#status").remove()
+            app._apply_frame(frame)  # neither raises NoMatches
+            app._on_source_failed("gone", "retrying")
+            assert app._source_error == "gone (retrying)"
+
+    _run(run())
+
+
 @pytest.mark.parametrize("size", [(80, 24), (170, 48)])
 def test_real_keys_show_real_sampler_data(fake, size) -> None:
     async def run() -> None:

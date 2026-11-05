@@ -10,6 +10,7 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import Footer, Input, Static
@@ -482,6 +483,15 @@ class ToposApp(App[None]):
         return table_w if table_w and table_w <= expected else expected
 
     def _refresh_view(self) -> None:
+        try:
+            self._redraw()
+        except NoMatches:
+            # The feed thread delivered a frame or a failure while the screen is still being built or
+            # is being torn down (the app is exiting): there is nothing to draw into. Raising here
+            # would surface as a source failure, which it is not.
+            return
+
+    def _redraw(self) -> None:
         frame = self.current_frame
         if frame is None:
             return
@@ -654,7 +664,10 @@ class ToposApp(App[None]):
         )
 
     def _refresh_status(self, text: str) -> None:
-        self.query_one("#status", Static).update(text)
+        try:
+            self.query_one("#status", Static).update(text)
+        except NoMatches:
+            return  # the screen is being built or torn down (see _refresh_view)
 
     # ── table events ──────────────────────────────────────────────────
 

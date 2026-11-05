@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import topos.cli as cli
+from topos.config import SamplerConfig, ToposConfig
 from topos.cli_diagnostics import cli_headline
 from conftest import fixture_frame
 from topos.collect.dockerjoin import ContainerResolveError
 
 
 @pytest.fixture(autouse=True)
-def fake_config(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+def fake_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ToposConfig:
+    """A real config whose sampler socket does not exist: the zero-argument live view falls back to
+    local collection on every host, whatever runs at the default socket path."""
     FakeWriter.instances.clear()
-    config = SimpleNamespace(interval=7.5)
+    config = replace(ToposConfig(), interval=7.5, sampler=SamplerConfig(socket_path=tmp_path / "no-sampler.sock"))
     monkeypatch.setattr(cli, "load", lambda _path: config)
     return config
 
@@ -145,7 +149,9 @@ def test_live_ui_once_json_and_incomplete_invocation(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(cli, "_run_ui", lambda source, **kwargs: calls.append((source, kwargs)) or 0)
     assert cli.main([]) == 0
-    assert calls[-1][1]["source_label"] == "LIVE"
+    # zero-argument rule (F030): no sampler answers, so local collection with the reason on screen
+    assert calls[-1][1]["source_label"] == "LOCAL"
+    assert "sampler unavailable" in calls[-1][1]["source_note"]
 
     assert cli.main(["--json"]) == 2
     assert "--once --json" in capsys.readouterr().err

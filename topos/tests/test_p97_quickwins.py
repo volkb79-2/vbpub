@@ -259,7 +259,9 @@ class TestUiKeys:
         from topos.ui.keys import key_help
         h = key_help()
         assert isinstance(h, tuple) and len(h) >= 4
-        assert any("toggle" in s.lower() for s in h)
+        # the toggles are named by their keys (the single view's help says "on/off", not "toggle")
+        assert any(s.startswith("Tab ") and "on/off" in s for s in h)
+        assert any(s.startswith("p ") and "on/off" in s for s in h)
 
 class TestUiSparkline:
     def test_render_sparkline_normal(self):
