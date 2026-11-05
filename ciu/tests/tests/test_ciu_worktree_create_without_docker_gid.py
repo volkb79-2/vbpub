@@ -199,3 +199,33 @@ class TestIdentityMismatchRemedy:
 
     def test_remedy_text_names_both_commands(self):
         self._expect(worktree._IDENTITY_MISMATCH_REMEDY.format(name="p220"), "p220")
+
+
+def test_adopt_prepares_without_a_docker_gid(
+    tmp_repo, monkeypatch, no_docker_group, write_instance_facts,
+):
+    """CIU-184 / F7: `adopt` runs its env generation with the DOCKER_GID-optional
+    switch, so a caller without a Docker group id no longer ends `recovery-required`."""
+    target = tmp_repo / ".worktrees" / "existing"
+    assert _git(["worktree", "add", "-b", "existing", str(target), "main"], tmp_repo).returncode == 0
+    children: list[dict] = []
+    real_run = subprocess.run
+
+    def run(argv, *args, **kwargs):
+        if argv and argv[0] == sys.executable:
+            children.append(dict(kwargs["env"]))
+            write_instance_facts(
+                Path(kwargs["cwd"]), instance_id="abc123", network="repo-abc123-network",
+                repo_root=str(kwargs["cwd"]), physical_repo_root=str(kwargs["cwd"]),
+                repo_name="repo",
+            )
+            return subprocess.CompletedProcess(argv, 0)
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(worktree.subprocess, "run", run)
+    monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
+    record = worktree.adopt(tmp_repo, "adopted", str(target))
+    assert record.state == "ready"
+    assert children, "adopt must run an env-generation child"
+    assert all(env.get(workspace_env.DOCKER_GID_OPTIONAL_ENV) == "1" for env in children)
+    assert all("DOCKER_GID" not in env for env in children)
