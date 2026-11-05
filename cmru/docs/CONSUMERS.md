@@ -574,7 +574,7 @@ name = "manifest.json"
 
 ```sh
 MYPROJ_VERSION=1.2.3 cmru handler bundle-build --bundle-config bundle.toml \
-    --cmru-config cmru.toml --project myproj          # --variant all (default) or one declared name
+    --cmru-config cmru.toml --name myproj          # --variant all (default) or one declared name
 ```
 
 Rules worth knowing: the archive for variant `py311` is `myproj-v1.2.3-py311.tar.xz`, the name

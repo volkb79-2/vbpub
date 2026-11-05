@@ -388,7 +388,7 @@ def _args(bundle_toml, cmru_toml, variant="all", project="demo"):
     import argparse
 
     return argparse.Namespace(
-        bundle_config=str(bundle_toml), cmru_config=str(cmru_toml), project=project, variant=variant,
+        bundle_config=str(bundle_toml), cmru_config=str(cmru_toml), name=project, variant=variant,
     )
 
 

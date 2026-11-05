@@ -8,7 +8,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `[stage]` (one command between copy and archive), `[exec]` (runner prefix for those two commands only, container/root
   taken from named environment variables) and `[manifest]` (installer manifest written last); `archive.name_template` may
   carry one `{variant}` field. `run_bundle(config_path, *, variant=None, ...)` takes the declared `VariantConfig`
-  (`build_arg` = interpreter version). New `cmru handler bundle-build --bundle-config --cmru-config --project [--variant]`
+  (`build_arg` = interpreter version). New `cmru handler bundle-build --bundle-config --cmru-config --name [--variant]`
   loops the project's variants. Inert without the new tables: the legacy archive is byte-identical.
 
 - `docs/BOOTSTRAP-FROM-ZERO.md` names the current Run-Gate release (25.1.1) in its build, retained-wheel and release

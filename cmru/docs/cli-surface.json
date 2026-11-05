@@ -1137,7 +1137,7 @@
         "option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short",
         "option:route:entrypoint:cmru/handler/bundle-build/--bundle-config",
         "option:route:entrypoint:cmru/handler/bundle-build/--cmru-config",
-        "option:route:entrypoint:cmru/handler/bundle-build/--project",
+        "option:route:entrypoint:cmru/handler/bundle-build/--name",
         "option:route:entrypoint:cmru/handler/bundle-build/--variant"
       ],
       "route_id": "route:entrypoint:cmru/handler/bundle-build",
@@ -1152,10 +1152,10 @@
         "required_options": [
           "option:route:entrypoint:cmru/handler/bundle-build/--bundle-config",
           "option:route:entrypoint:cmru/handler/bundle-build/--cmru-config",
-          "option:route:entrypoint:cmru/handler/bundle-build/--project"
+          "option:route:entrypoint:cmru/handler/bundle-build/--name"
         ]
       },
-      "signature": "sha256:3283496cee5a4378cc2db0a2b7bc6f4cfddb3c876f42ee0333be73c0f453c594"
+      "signature": "sha256:071f85a7e6057cd1863b92e2768abc51e92d88ba1a2c008b9f5be4520207dcfb"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--bundle-config/--bundle-config",
@@ -1168,7 +1168,7 @@
         "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--bundle-config",
         "spelling": "--bundle-config"
       },
-      "signature": "sha256:7938d386b267f264f099819cc7f85b405f13a8bd7ce6b589f9e5d40f1679a9a6"
+      "signature": "sha256:7432b18b3d21c38e0a47c1bb3b2d8f720414aff41200ba93db91e6d75e07c7d7"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--cmru-config/--cmru-config",
@@ -1181,7 +1181,7 @@
         "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--cmru-config",
         "spelling": "--cmru-config"
       },
-      "signature": "sha256:47c8ec6757506ddbc481ece1fee39e8b20b4112be105c38f049f028202b8254d"
+      "signature": "sha256:fe8af02acf83eebf4431e0e0c11a33becc0d802c76982ccb266432fac089a4a2"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--debug-raw/--debug-raw",
@@ -1194,7 +1194,7 @@
         "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:cc508ae50f2349d2f5a6e46123cb615f0fa808b98d7b0fc1fc840b25f2ca52b9"
+      "signature": "sha256:e33ffe0e99fdb352d5c2a6436e3b7cfdc056254c71900394bbb297a8a5d1cb97"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--dry-run/--dry-run",
@@ -1207,7 +1207,7 @@
         "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--dry-run",
         "spelling": "--dry-run"
       },
-      "signature": "sha256:290ee3dbcd930658974cbffdc39c3162d8f0c807f8396dff0dc5328f005043b7"
+      "signature": "sha256:ff9e4b16be6efeb9ad80207098a729425cf9cdbd2af92b041760d863c28cde56"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short/--log-prefix-time-short",
@@ -1220,20 +1220,20 @@
         "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--log-prefix-time-short",
         "spelling": "--log-prefix-time-short"
       },
-      "signature": "sha256:1714184ce43ff5ed7bcc9ca2b48753b209714859bb62373d12607a782cd7f937"
+      "signature": "sha256:a825dc975249408ce09d0d0efd4b3518f445e90fbe72ab7456625bab4137706b"
     },
     {
-      "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--project/--project",
+      "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--name/--name",
       "kind": "option-spelling",
       "members": [
-        "option:route:entrypoint:cmru/handler/bundle-build/--project"
+        "option:route:entrypoint:cmru/handler/bundle-build/--name"
       ],
       "route_id": "route:entrypoint:cmru/handler/bundle-build",
       "shape": {
-        "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--project",
-        "spelling": "--project"
+        "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--name",
+        "spelling": "--name"
       },
-      "signature": "sha256:133b169b66c9c8ccd5ac584cb1aee076fda216cb0c842b30c6b96ef0aaf88621"
+      "signature": "sha256:e716bb734912ed8cc913ab368cb61348079390582376db8d6079be5499d154ba"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/bundle-build/option-spelling/option:route:entrypoint:cmru/handler/bundle-build/--variant/--variant",
@@ -1246,7 +1246,7 @@
         "option_id": "option:route:entrypoint:cmru/handler/bundle-build/--variant",
         "spelling": "--variant"
       },
-      "signature": "sha256:0bfa4d44f94fca6a690587aa956485a6e93653b9fbdd3faabbaba8b4038400f6"
+      "signature": "sha256:c73384a6f9111a91e407a9218144a6313cb3485acdf224072330d04f1656decb"
     },
     {
       "id": "case:route:entrypoint:cmru/handler/bundle-manifest/minimum",
@@ -8013,22 +8013,22 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
-          "canonical": "--project",
+          "canonical": "--name",
           "choices": null,
           "const": null,
           "default": null,
           "default_present": true,
           "description": "project name (as in cmru.toml)",
-          "dest": "project",
+          "dest": "name",
           "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
-            "--project"
+            "--name"
           ],
           "help_group": "OPTIONS",
           "hidden": false,
-          "id": "option:route:entrypoint:cmru/handler/bundle-build/--project",
+          "id": "option:route:entrypoint:cmru/handler/bundle-build/--name",
           "kind": "option",
           "metavar": "NAME",
           "minimum_values": 1,

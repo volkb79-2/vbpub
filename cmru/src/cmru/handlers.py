@@ -1009,9 +1009,9 @@ def cmd_bundle_build(args: argparse.Namespace) -> None:
     from cmru.release import version_to_tag
 
     forge = load_forge_config(Path(args.cmru_config))
-    project = forge.projects.get(args.project)
+    project = forge.projects.get(args.name)
     if project is None:
-        print(f"[ERROR] bundle-build: no project {args.project!r} in {args.cmru_config}", file=sys.stderr)
+        print(f"[ERROR] bundle-build: no project {args.name!r} in {args.cmru_config}", file=sys.stderr)
         raise SystemExit(exit_codes.CONFIG_ERROR)
     bundle_config = Path(args.bundle_config).resolve()
     declared = list(project.variants)
@@ -1019,11 +1019,11 @@ def cmd_bundle_build(args: argparse.Namespace) -> None:
         names = {v.name for v in declared}
         if args.variant != "all" and args.variant not in names:
             print(f"[ERROR] bundle-build: --variant {args.variant!r} is not declared by "
-                  f"{args.project} (declared: {', '.join(sorted(names))}, or all)", file=sys.stderr)
+                  f"{args.name} (declared: {', '.join(sorted(names))}, or all)", file=sys.stderr)
             raise SystemExit(exit_codes.CONFIG_ERROR)
         selected = [v for v in declared if args.variant in ("all", v.name)]
     elif args.variant != "all":
-        print(f"[ERROR] bundle-build: {args.project} declares no variants; use --variant all",
+        print(f"[ERROR] bundle-build: {args.name} declares no variants; use --variant all",
               file=sys.stderr)
         raise SystemExit(exit_codes.CONFIG_ERROR)
     else:
@@ -1037,7 +1037,7 @@ def cmd_bundle_build(args: argparse.Namespace) -> None:
         tag = version_to_tag(project.prefix, version)
         built = [
             bundle.run_bundle(
-                bundle_config, variant=variant, manifest_project=args.project, manifest_tag=tag,
+                bundle_config, variant=variant, manifest_project=args.name, manifest_tag=tag,
             )
             for variant in selected
         ]
@@ -1265,7 +1265,7 @@ def handlers_cli():
         ("bundle-build", "Build the per-interpreter bundle archives (vendor, stage, manifest, archive).", cmd_bundle_build, (
             required_path("--bundle-config", "bundle.toml of the project"),
             required_path("--cmru-config", "the cmru.toml that declares the project's variants"),
-            required_name("--project", "project name (as in cmru.toml)", "NAME"),
+            required_name("--name", "project name (as in cmru.toml)", "NAME"),
             OptionSpec(("--variant",), "declared variant NAME to build, or all (default all)", metavar="NAME", parser_kwargs={"default": "all"}),
         )),
         ("tarball-validate", "Validate the resolved latest tarball release.", cmd_tarball_validate, (
