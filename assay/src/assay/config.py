@@ -259,8 +259,11 @@ VERIFY_CLONE_MODES: frozenset[str] = frozenset({"tiered", "full"})
 # per-candidate copy-on-write clone; ``tmpfs-worker`` gives each mutation
 # worker one memory-backed tree that is populated once and restored in place
 # after every candidate, falling back to ``cow`` whenever the tmpfs is
-# unavailable or too small.  Verdict inputs are identical in both.
-MATERIALIZE_MODES: frozenset[str] = frozenset({"cow", "tmpfs-worker"})
+# unavailable or too small.  B230 adds ``template``: the full provisioning
+# ladder (overlay slots over a shared template from ``ASSAY_TEMPLATE_DIR`` /
+# ``ASSAY_WORKER_SLOTS``, then tmpfs copies, reflink clones, plain copies),
+# each step down explicit.  Verdict inputs are identical in all of them.
+MATERIALIZE_MODES: frozenset[str] = frozenset({"cow", "tmpfs-worker", "template"})
 DEFAULT_TMPFS_ROOT = "/dev/shm"
 DEFAULT_TMPFS_MAX_MIB = 1024
 

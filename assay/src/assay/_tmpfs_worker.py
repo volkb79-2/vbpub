@@ -136,23 +136,55 @@ def _scan(root: Path):
                     continue
                 if relative.startswith(".git/objects/") and relative.count("/") >= 3:
                     continue
-                status = entry.stat(follow_symlinks=False)
-                if stat.S_ISDIR(status.st_mode):
-                    yield relative, ("d", stat.S_IMODE(status.st_mode)), True
+                signature = _signature(entry.stat(follow_symlinks=False), entry.path)
+                yield relative, signature, signature[0] == "d"
+                if signature[0] == "d":
                     pending.append(relative)
-                elif stat.S_ISLNK(status.st_mode):
-                    yield relative, ("l", os.readlink(entry.path)), False
-                else:
-                    yield (
-                        relative,
-                        (
-                            "f",
-                            stat.S_IMODE(status.st_mode),
-                            status.st_size,
-                            status.st_mtime_ns,
-                        ),
-                        False,
-                    )
+
+
+def _signature(status: os.stat_result, path: str | os.PathLike[str]):
+    """What a restored entry must still equal (see :func:`_scan`)."""
+    if stat.S_ISDIR(status.st_mode):
+        return ("d", stat.S_IMODE(status.st_mode))
+    if stat.S_ISLNK(status.st_mode):
+        return ("l", os.readlink(path))
+    return ("f", stat.S_IMODE(status.st_mode), status.st_size, status.st_mtime_ns)
+
+
+def _repair(root: Path, template: Path, relative: str, signature) -> bool:
+    """Restore one entry to *signature* from the shared *template*.
+
+    A file is unlinked and rewritten (never opened in place, so an overlay
+    slot records a whole new upper file rather than copying the lower one up
+    first), then given the template's mode and mtime.  ``True`` only when the
+    entry reads back equal to *signature*.
+    """
+    target = root / relative
+    try:
+        current = os.lstat(target)
+    except FileNotFoundError:
+        current = None
+    kind = signature[0]
+    if current is not None and not (kind == "d" and stat.S_ISDIR(current.st_mode)):
+        if stat.S_ISDIR(current.st_mode):
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        current = None
+    if kind == "d":
+        if current is None:
+            target.mkdir()
+        os.chmod(target, signature[1])
+    elif kind == "l":
+        os.symlink(signature[1], target)
+    else:
+        source = template / relative
+        if not stat.S_ISREG(os.lstat(source).st_mode):
+            return False
+        shutil.copyfile(source, target)
+        os.chmod(target, signature[1])
+        os.utime(target, ns=(signature[3], signature[3]))
+    return _signature(os.lstat(target), target) == signature
 
 
 def _loose_objects(git_dir: Path) -> frozenset[str]:
@@ -168,9 +200,23 @@ def _loose_objects(git_dir: Path) -> frozenset[str]:
 class WorkerTree:
     """One worker's long-lived tree and the pristine facts it is restored to."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        template: Path | None = None,
+        owned: bool = True,
+        rung: str = "B",
+    ) -> None:
         self.root = root
         self.git_dir = root / ".git"
+        #: The shared template an unclean entry is repaired from (``None``
+        #: keeps the pre-B230 rule: the tree is discarded).
+        self.template = template
+        #: ``False`` for a caller-provided overlay slot: its directory is the
+        #: caller's mount, so it is never removed, only abandoned.
+        self.owned = owned
+        self.rung = rung
         self.busy = False
         #: The first candidate on a fresh tree runs the complete clone proof.
         self.fresh = True
@@ -212,14 +258,11 @@ class WorkerTree:
             os.unlink(objects / name)
         seen = set()
         extra = []
-        clean = True
         for relative, signature, is_dir in _scan(self.root):
             known = self._map.get(relative)
             if known is None:
                 extra.append((relative, is_dir))
-            elif known != signature:
-                clean = False
-            else:
+            elif known == signature:
                 seen.add(relative)
         for relative, is_dir in extra:
             target = self.root / relative
@@ -227,9 +270,17 @@ class WorkerTree:
                 shutil.rmtree(target, ignore_errors=True)
             else:
                 target.unlink(missing_ok=True)
+        clean = True
+        # Changed or missing entries: repaired from the shared template when
+        # there is one (parents before children), else the tree is unclean.
+        for relative in sorted(self._map.keys() - seen, key=lambda r: r.count("/")):
+            if self.template is None or not _repair(
+                self.root, self.template, relative, self._map[relative]
+            ):
+                clean = False
+                break
         return (
             clean
-            and seen == self._map.keys()
             and (self.git_dir / "index").read_bytes() == self._index
             and (self.git_dir / "HEAD").read_bytes() == self._head
         )

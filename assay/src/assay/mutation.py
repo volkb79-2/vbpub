@@ -3710,20 +3710,38 @@ def auto_budget_per_candidate_seconds(baseline_wall: float) -> float:
     return max(3.0 * baseline_wall, baseline_wall + 60.0)
 
 
+def parallel_source_refusal(prepared: object, jobs: int, fallback: str) -> str | None:
+    """(B230) Why *jobs* workers cannot each get a cheap tree, or ``None``.
+
+    A prepared repository answers through its provisioning ladder
+    (``parallel_refusal``: overlay slots, tmpfs copies or reflink clones all
+    qualify, a plain copy only for a small tree).  An object without a
+    ladder keeps the original ``cheap_clone`` rule and *fallback* message.
+    """
+    if jobs <= 1:
+        return None
+    check = getattr(prepared, "parallel_refusal", None)
+    if check is not None:
+        return check(jobs)
+    return None if getattr(prepared, "cheap_clone", False) else fallback
+
+
 def _native_r2_parallel_checked(function):
-    """Require copy-on-write snapshots before enabling parallel candidates."""
+    """Require a cheap per-worker tree source before enabling parallel candidates."""
 
     @wraps(function)
     def checked(*args, **kwargs):
         jobs = kwargs.get("jobs")
         prepared = kwargs.get("prepared")
-        if is_strict_int(jobs) and jobs > 1 and not getattr(
-            prepared, "cheap_clone", False
-        ):
-            raise LaneConfigError(
+        if is_strict_int(jobs):
+            refusal = parallel_source_refusal(
+                prepared,
+                jobs,
                 "native R2 --jobs greater than 1 requires a cheap_clone "
-                "snapshot workspace; run with --jobs 1 or configure btrfs CoW"
+                "snapshot workspace; run with --jobs 1 or configure btrfs CoW",
             )
+            if refusal is not None:
+                raise LaneConfigError(refusal)
         return function(*args, **kwargs)
 
     return checked
@@ -4911,12 +4929,15 @@ def _execute_mutation_jobs(
     limit_broker: _limit_ledger.LimitBoundaryBroker | None = None
     limit_ledger: _limit_ledger.LimitLedger | None = None
     if jobs > 1:
-        if prepared is None or not prepared.cheap_clone:
-            raise LaneConfigError(
-                "native R2 --jobs greater than 1 requires a cheap_clone "
-                "snapshot workspace; set up the supported btrfs CoW workspace "
-                "or run with --jobs 1"
-            )
+        refusal = parallel_source_refusal(
+            prepared,
+            jobs,
+            "native R2 --jobs greater than 1 requires a cheap_clone "
+            "snapshot workspace; set up the supported btrfs CoW workspace "
+            "or run with --jobs 1",
+        )
+        if refusal is not None:
+            raise LaneConfigError(refusal)
         if window_host_run is None:
             raise LaneConfigError(
                 "native R2 --jobs greater than 1 requires the isolated PR1a "

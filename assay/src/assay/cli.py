@@ -563,9 +563,55 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_init.add_argument("--wheel-sha256", default=None, metavar="HEX")
     campaign_init.add_argument("--out", type=Path, default=None, metavar="PATH")
 
+    template = subparsers.add_parser(
+        "template",
+        help="manage the shared per-tree template that worker trees are served from",
+    )
+    template_actions = template.add_subparsers(dest="template_action", required=True)
+    template_ensure = template_actions.add_parser(
+        "ensure",
+        help="build (once per key) the lane's shared template and print `key path`",
+        description=(
+            "Build the shared, read-only-by-mount template tree of the named "
+            "lane's HEAD under --root, keyed by tree identity; a second call "
+            "with the same identity reuses it. Prints `<key> <path>` on one "
+            "line. Offer the path to a lane as ASSAY_TEMPLATE_DIR (and "
+            "per-worker overlay slots as ASSAY_WORKER_SLOTS) with "
+            "isolation.materialize = \"template\". No chmod seal is applied."
+        ),
+    )
+    template_ensure.add_argument("--lane", required=True, metavar="LANE")
+    template_ensure.add_argument("--root", type=Path, required=True, metavar="DIR")
+    template_ensure.add_argument(
+        "--require-tmpfs",
+        action="store_true",
+        help="refuse unless --root is on a tmpfs/ramfs mount (default: any filesystem)",
+    )
+    template_ensure.add_argument(
+        "--timeout", type=float, default=600.0, metavar="SECONDS"
+    )
+    template_ensure.add_argument("--file", type=Path, default=None, metavar="PATH")
+    _add_request_base_argument(template_ensure)
+
     build_verify_parser(subparsers)
 
     return parser
+
+
+def _cmd_template_ensure(args: argparse.Namespace, out: TextIO) -> int:
+    lane_file = _resolve_lane_file(args.file)
+    lane = lane_file.lane(args.lane)
+    ensured = runner.ensure_template(
+        lane,
+        project_root=lane_file.project_root,
+        snapshot_limits=lane_file.snapshot_limits,
+        request_base=args.request_base,
+        root=args.root,
+        require_tmpfs=args.require_tmpfs,
+        timeout=args.timeout,
+    )
+    out.write(f"{ensured.key} {ensured.tree}\n")
+    return Outcome.PASS.exit_code
 
 
 def _run_analyze(argv: list[str], stdout: TextIO, stderr: TextIO) -> int:
@@ -681,6 +727,8 @@ def main(
                 restore_handlers()
         elif args.command == "plan":
             return _cmd_plan(args, out, err)
+        elif args.command == "template":
+            return _cmd_template_ensure(args, out)
         elif args.command == "campaign" and args.campaign_action == "init":
             return _cmd_campaign_init(args, out, err)
         elif args.command == "verify":

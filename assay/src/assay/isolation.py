@@ -43,7 +43,7 @@ import sys
 import tempfile
 import threading
 from contextlib import ExitStack, contextmanager
-from . import _tmpfs_worker
+from . import _ladder, _tmpfs_worker
 from .records import record
 from pathlib import Path, PurePosixPath
 from typing import Callable, ContextManager, Iterable, Iterator, Mapping, Sequence
@@ -612,6 +612,7 @@ class SnapshotRepository:
         manifest: _Manifest,
         workspace: ActiveWorkspace | None = None,
         base_closure: _BaseClosure | None = None,
+        environment: Mapping[str, str] | None = None,
     ) -> None:
         self._spec = spec
         self._source = source
@@ -635,6 +636,127 @@ class SnapshotRepository:
         self._tmpfs_dir: Path | None = None
         self._template_bytes: int | None = None
         self._tmpfs_off = False
+        #: (B230) the provisioning ladder: the caller's offer (environment),
+        #: the shared template once verified, the unused overlay slots, the
+        #: threads that stepped down from rung A, a template built locally
+        #: when no workspace can clone one, and the run's ladder log.
+        self._offer = _ladder.read_environment(
+            os.environ if environment is None else environment
+        )
+        self._external: tuple[Path | None] | None = None
+        self._slots_free = list(self._offer.slots)
+        self._demoted: set[int] = set()
+        self._local_template: Path | None = None
+        self._tree_estimate = sum(entry.size for entry in manifest.entries)
+        self._ladder = _ladder.LadderLog(
+            _ladder.plan_ladder(
+                spec.snapshot_policy.materialize,
+                self._offer,
+                cheap_clone=self.cheap_clone,
+            )
+        )
+        if self._ladder.plan.rung == "B":
+            try:
+                self._tmpfs_check(1)
+            except _tmpfs_worker.TmpfsUnavailable as exc:
+                self._step_down_from_b(str(exc))
+        if (
+            spec.snapshot_policy.materialize != "cow"
+            or self._offer.problems
+            or self._offer.template_dir is not None
+            or self._offer.slots
+        ):
+            for line in self._ladder.plan.skipped:
+                sys.stderr.write(f"Assay advisory: provisioning ladder: {line}\n")
+
+    def _tmpfs_check(self, trees: int) -> None:
+        policy = self._spec.snapshot_policy
+        _tmpfs_worker.check_capacity(
+            Path(policy.tmpfs_root),
+            self._tree_estimate * trees,
+            max_bytes=policy.tmpfs_max_mib * 1024 * 1024 * trees,
+        )
+
+    def _step_down_from_b(self, reason: str) -> None:
+        self._tmpfs_off = True
+        self._ladder.plan = self._ladder.plan.below(
+            reason, cheap_clone=self.cheap_clone
+        )
+
+    @property
+    def ladder(self) -> "_ladder.LadderLog":
+        """(B230) The provisioning plan and what actually happened."""
+        return self._ladder
+
+    def parallel_refusal(self, jobs: int) -> str | None:
+        """(B230) Why ``jobs`` workers cannot be provisioned, else ``None``.
+
+        Replaces the old "needs a btrfs workspace" rule: any ladder rung that
+        gives each worker a cheap tree (overlay slot, tmpfs copy, reflink)
+        admits parallel workers; a plain per-candidate copy only a small tree.
+        """
+        plan = self._ladder.plan
+        if (
+            jobs > 1
+            and plan.rung == "A"
+            and (self._shared_template() is None or len(self._offer.slots) < jobs)
+        ):
+            plan = _ladder.LadderPlan(
+                "B",
+                "one tmpfs copy of the template per worker",
+                (
+                    *plan.skipped,
+                    f"rung A (overlay) cannot serve {jobs} workers: "
+                    f"{len(self._offer.slots)} slot(s) offered or the "
+                    f"template is unusable",
+                ),
+            )
+        fits = False
+        if jobs > 1 and plan.rung == "B":
+            try:
+                self._tmpfs_check(jobs)
+                fits = True
+            except _tmpfs_worker.TmpfsUnavailable:
+                fits = False
+        return _ladder.parallel_refusal(
+            plan,
+            jobs=jobs,
+            tree_bytes=self._tree_estimate,
+            tmpfs_fits_all=fits,
+            cheap_clone=self.cheap_clone,
+        )
+
+    def template_key(self) -> str:
+        """(B230) The identity of the shared template this run needs."""
+        spec = self._spec
+        return _ladder.template_key(
+            commit=spec.commit,
+            tree_sha256=self.tree_sha256,
+            project_prefix=str(spec.project_prefix),
+            link_paths=spec.snapshot_policy.link_paths,
+            snapshot_history=spec.snapshot_policy.snapshot_history,
+            resolved_base=spec.resolved_base,
+        )
+
+    def ensure_template(
+        self, root: Path, *, timeout: float, require_tmpfs: bool
+    ) -> "_ladder.EnsuredTemplate":
+        """(B230) Build (once per key) the shared template under *root*.
+
+        The tree is the same one ``_ensure_template`` seals for cloning,
+        including the primed index, but is never ``chmod``-sealed.
+        """
+        _check_timeout(timeout)
+        deadline = _git._P22Deadline(timeout)
+        self._check_open()
+
+        def build(tree: str) -> None:
+            self._build(Path(tree), None, deadline, plant_links=False, external=True)
+            self._prime_index(Path(tree), deadline)
+
+        return _ladder.ensure_template(
+            root, self.template_key(), build, require_tmpfs=require_tmpfs
+        )
 
     @property
     def spec(self) -> SnapshotSpec:
@@ -817,11 +939,15 @@ class SnapshotRepository:
                         yield snapshot
                     return
             if self._workspace is not None and self._workspace.cheap_clone:
+                if replacement is not None:
+                    self._ladder.count("C")
                 template = self._ensure_template(deadline)
                 root = self._workspace.clone_tree(template)
                 self._track(root)
                 commit = self._materialize_clone(root, replacement, deadline)
             else:
+                if replacement is not None:
+                    self._ladder.count("D")
                 if self._workspace is None:
                     root = Path(
                         tempfile.mkdtemp(
@@ -958,12 +1084,7 @@ class SnapshotRepository:
         then use the clone path exactly as before, so a verdict never depends
         on which path a candidate took.
         """
-        policy = self._spec.snapshot_policy
-        if (
-            policy.materialize != "tmpfs-worker"
-            or self._workspace is None
-            or not self._workspace.cheap_clone
-        ):
+        if self._spec.snapshot_policy.materialize == "cow":
             return None
         ident = threading.get_ident()
         with self._lock:
@@ -973,25 +1094,128 @@ class SnapshotRepository:
                     return None
                 worker.busy = True
                 return worker
-            if self._tmpfs_off:
-                return None
-        template = self._ensure_template(deadline)
-        try:
-            worker = self._build_worker(template, deadline)
-        except _tmpfs_worker.TmpfsUnavailable as exc:
-            with self._lock:
-                first = not self._tmpfs_off
-                self._tmpfs_off = True
-            if first:
-                sys.stderr.write(
-                    "Assay advisory: isolation.materialize = 'tmpfs-worker' is "
-                    f"unavailable ({exc}); candidates use copy-on-write clones\n"
-                )
+            try_slot = self._ladder.plan.rung == "A" and ident not in self._demoted
+            try_copy = not self._tmpfs_off
+        worker = self._slot_worker(ident, deadline) if try_slot else None
+        if worker is None and try_copy:
+            worker = self._copy_worker(deadline)
+        if worker is None:
             return None
         worker.busy = True
         with self._lock:
             self._workers[ident] = worker
         return worker
+
+    def _note(self, message: str) -> None:
+        """One explicit step down the ladder: recorded and written once."""
+        with self._lock:
+            self._ladder.degradations.append(message)
+        sys.stderr.write(f"Assay advisory: provisioning ladder: {message}\n")
+
+    def _shared_template(self) -> Path | None:
+        """The caller's ``ASSAY_TEMPLATE_DIR`` once proven to be this run's."""
+        with self._template_lock:
+            if self._external is None:
+                self._external = (self._verify_offered_template(),)
+            return self._external[0]
+
+    def _verify_offered_template(self) -> Path | None:
+        offered = self._offer.template_dir
+        if offered is None:
+            return None
+        parent = offered.parent.name
+        try:
+            head = (offered / ".git" / "HEAD").read_bytes()
+        except OSError as exc:
+            self._note(f"{offered} is not readable as a template ({exc})")
+            return None
+        if head != f"{self._spec.commit}\n".encode("ascii"):
+            self._note(f"{offered} is not a template of the judged commit")
+            return None
+        if (
+            offered.name == "tree"
+            and parent != self.template_key()
+            and _ladder._KEY.fullmatch(parent) is not None
+        ):
+            self._note(f"{offered} is keyed {parent}, this run needs {self.template_key()}")
+            return None
+        return offered
+
+    def _slot_worker(
+        self, ident: int, deadline: "_git._P22Deadline"
+    ) -> "_tmpfs_worker.WorkerTree | None":
+        """(B230) Rung A: the next free overlay slot, or ``None`` (explicitly)."""
+        template = self._shared_template()
+        if template is None:
+            self._demote(ident, "the offered template is unusable")
+            return None
+        with self._lock:
+            slot = self._slots_free.pop(0) if self._slots_free else None
+        if slot is None:
+            self._demote(
+                ident, f"no free overlay slot ({len(self._offer.slots)} offered)"
+            )
+            return None
+        try:
+            head = (slot / ".git" / "HEAD").read_bytes()
+            if head != f"{self._spec.commit}\n".encode("ascii"):
+                raise OSError("it does not show the judged commit")
+            # No _prime_index: the overlay keeps the template's inode numbers
+            # and timestamps, so the index the template primed stays valid.
+            return _tmpfs_worker.WorkerTree(
+                slot, template=template, owned=False, rung="A"
+            )
+        except OSError as exc:
+            self._demote(ident, f"overlay slot {slot} is not usable ({exc})")
+            return None
+
+    def _demote(self, ident: int, reason: str) -> None:
+        with self._lock:
+            self._demoted.add(ident)
+        self._note(f"rung A (overlay) unavailable for a worker: {reason}")
+
+    def _copy_worker(
+        self, deadline: "_git._P22Deadline"
+    ) -> "_tmpfs_worker.WorkerTree | None":
+        """Rung B: a tmpfs copy of the template, or ``None`` after stepping down."""
+        try:
+            template = self._copy_source(deadline)
+            return self._build_worker(template, deadline)
+        except _tmpfs_worker.TmpfsUnavailable as exc:
+            with self._lock:
+                first = not self._tmpfs_off
+            if first:
+                self._step_down_from_b(str(exc))
+                self._note(f"rung B (tmpfs-copy) unavailable: {exc}")
+            return None
+
+    def _copy_source(self, deadline: "_git._P22Deadline") -> Path:
+        """The template rung B copies from, built here when nobody offered one."""
+        shared = self._shared_template()
+        if shared is not None:
+            return shared
+        if self._workspace is not None and self._workspace.cheap_clone:
+            return self._ensure_template(deadline)
+        with self._template_lock:
+            self._check_open()
+            if self._local_template is None:
+                root = (
+                    Path(
+                        tempfile.mkdtemp(
+                            dir=self._spec.scratch_root, prefix="assay-template-"
+                        )
+                    )
+                    if self._workspace is None
+                    else self._workspace.make_tree()
+                )
+                try:
+                    self._build(root, None, deadline, plant_links=False)
+                    self._prime_index(root, deadline)
+                except BaseException:
+                    self._discard_materialization(root)
+                    raise
+                self._local_template = root
+            return self._local_template
 
     def _build_worker(
         self, template: Path, deadline: "_git._P22Deadline"
@@ -1019,7 +1243,7 @@ class SnapshotRepository:
             # Inode numbers changed with the copy, so the template's recorded
             # stat data no longer matches: refresh it here, in the final place.
             self._prime_index(tree, deadline)
-            return _tmpfs_worker.WorkerTree(tree)
+            return _tmpfs_worker.WorkerTree(tree, template=template)
         except OSError as exc:
             if holder is not None:
                 shutil.rmtree(holder, ignore_errors=True)
@@ -1049,6 +1273,7 @@ class SnapshotRepository:
         """
         root = worker.root
         self._track(root)
+        self._ladder.count(worker.rung)
         kept = False
         try:
             commit = self._materialize_clone(
@@ -1094,7 +1319,17 @@ class SnapshotRepository:
             for ident, held in list(self._workers.items()):
                 if held is worker:
                     del self._workers[ident]
-        shutil.rmtree(worker.root.parent, ignore_errors=True)
+                    if not worker.owned:
+                        self._demoted.add(ident)
+        if worker.owned:
+            shutil.rmtree(worker.root.parent, ignore_errors=True)
+        else:
+            # The caller's slot cannot be rebuilt from here: it is abandoned
+            # (the caller removes the volume) and the worker steps down.
+            self._note(
+                f"overlay slot {worker.root} could not be repaired from the "
+                f"template; this worker continues on a lower rung"
+            )
 
     def _release_workers(self) -> None:
         """Remove every worker tree and the private tmpfs directory."""
@@ -1102,6 +1337,10 @@ class SnapshotRepository:
             self._workers.clear()
             directory = self._tmpfs_dir
             self._tmpfs_dir = None
+            local = self._local_template
+            self._local_template = None
+        if local is not None:
+            self._discard_materialization(local)
         if directory is not None:
             shutil.rmtree(directory, ignore_errors=True)
             if directory.exists():
@@ -1213,6 +1452,7 @@ class SnapshotRepository:
         deadline: "_git._P22Deadline",
         *,
         plant_links: bool = True,
+        external: bool = False,
     ) -> str:
         executable = self._source.git_executable
         spec = self._spec
@@ -1224,7 +1464,13 @@ class SnapshotRepository:
             deadline=deadline,
         )
         git_dir = root / ".git"
-        _copy_objects(self._seed_git_dir, git_dir, workspace=self._workspace)
+        # An *external* tree (the shared template) lives outside the run's
+        # workspace, which refuses to clone into it: plain copies there.
+        _copy_objects(
+            self._seed_git_dir,
+            git_dir,
+            workspace=None if external else self._workspace,
+        )
         # ``_copy_objects`` deliberately copies only packed objects.  The
         # shallow boundary is repository metadata and must be recreated in
         # every materialization before read-tree, commit-tree, or any closure
@@ -2632,8 +2878,13 @@ def prepare_snapshot(
     *,
     timeout: float,
     workspace: WorkspaceFactory | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> Iterator[SnapshotRepository]:
-    """Transfer and validate *spec.commit* once, then yield its private seed."""
+    """Transfer and validate *spec.commit* once, then yield its private seed.
+
+    *environment* is where ``ASSAY_TEMPLATE_DIR`` / ``ASSAY_WORKER_SLOTS``
+    are read (the process environment when ``None``); see :mod:`assay._ladder`.
+    """
     _check_timeout(timeout)
     deadline = _git._P22Deadline(timeout)
 
@@ -2803,6 +3054,7 @@ def prepare_snapshot(
             manifest=manifest,
             workspace=active_workspace,
             base_closure=base_closure,
+            environment=environment,
         )
         yield repository
     except BaseException as exc:

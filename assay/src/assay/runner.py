@@ -4327,6 +4327,56 @@ def _resolve_declared_base(
 resolve_declared_base = _resolve_declared_base
 
 
+def ensure_template(
+    lane: Lane,
+    *,
+    project_root: Path,
+    snapshot_limits: "isolation.SnapshotLimits",
+    request_base: str | None,
+    root: Path,
+    require_tmpfs: bool,
+    timeout: float,
+    environment: Mapping[str, str] | None = None,
+) -> "isolation._ladder.EnsuredTemplate":
+    """(B230) Build the shared template of *lane*'s HEAD under *root*, once.
+
+    This is ``assay template ensure``: it derives the same snapshot spec a run
+    of *lane* would (commit, project prefix, resolved base, isolation policy),
+    prepares the private seed and publishes the template under its key.  The
+    caller binds the result read-only and offers it to the lane through
+    ``ASSAY_TEMPLATE_DIR``.
+    """
+    policy = _snapshot_policy_for_lane(lane)
+    if policy is None:
+        raise LaneConfigError(
+            f"lane {lane.name!r} is R0-only and has no snapshot to template"
+        )
+    deadline = LaneDeadline.start(budget_seconds=timeout, monotonic=time.monotonic)
+    repo_top = git.repo_top(project_root, remaining=deadline.remaining)
+    commit = git.head_rev(project_root, remaining=deadline.remaining)
+    resolved_base = _resolve_declared_base(
+        project_root,
+        resolve_base_declaration(lane, request_base),
+        remaining=deadline.remaining,
+    )
+    with default_scratch_root() as scratch_root:
+        spec = isolation.SnapshotSpec(
+            repo_top=repo_top,
+            commit=commit,
+            project_prefix=_resolved_project_prefix(repo_top, project_root),
+            scratch_root=scratch_root,
+            snapshot_policy=policy,
+            resolved_base=resolved_base,
+            limits=snapshot_limits,
+        )
+        with isolation.prepare_snapshot(
+            spec, timeout=deadline.remaining(), environment=environment
+        ) as prepared:
+            return prepared.ensure_template(
+                root, timeout=deadline.remaining(), require_tmpfs=require_tmpfs
+            )
+
+
 def _run_prepared_lane(
     lane: Lane,
     *,
@@ -4579,6 +4629,15 @@ def _run_prepared_lane(
                     "event": "snapshot_materialized",
                     "phase": "baseline",
                     "commit": baseline_snapshot.commit,
+                    # (B230) Which provisioning-ladder rung serves the
+                    # worker trees and why higher ones were skipped; absent
+                    # for the default `cow` mode, whose behaviour is unchanged.
+                    **(
+                        {"ladder": prepared.ladder.plan.as_record()}
+                        if lane.isolation is not None
+                        and lane.isolation.materialize != "cow"
+                        else {}
+                    ),
                 }
             )
         coverage_receipt_capture = None
@@ -6635,14 +6694,16 @@ def _run_higher_rigor_lane(
                     "R2" in lane.rigor
                     and mutation_config is not None
                     and not mutation_config.is_ingested
-                    and mutation_config.jobs > 1
-                    and not prepared.cheap_clone
                 ):
-                    raise LaneConfigError(
+                    parallel_refusal = mutation.parallel_source_refusal(
+                        prepared,
+                        mutation_config.jobs,
                         f"lane {lane.name!r}: native R2 --jobs greater than 1 "
                         "requires a cheap_clone snapshot workspace; configure "
-                        "the supported btrfs CoW workspace or pass --jobs 1"
+                        "the supported btrfs CoW workspace or pass --jobs 1",
                     )
+                    if parallel_refusal is not None:
+                        raise LaneConfigError(parallel_refusal)
                 # (B006a/A-269 WI-3, §3.4) After `prepare_snapshot` has
                 # already commit-validated `snapshot_policy`'s declared
                 # omissions, but strictly BEFORE the first

@@ -8,6 +8,7 @@ The proof itself is tested against a fake mount table.
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 from pathlib import Path, PurePosixPath
 
@@ -273,11 +274,22 @@ def test_added_entries_are_removed_and_the_tree_is_kept(
 
 @pytest.mark.parametrize(
     "damage",
-    ["edit", "delete", "chmod", "retarget", "head"],
+    [
+        "edit",
+        "delete",
+        "chmod",
+        "retarget",
+        "link-to-file",
+        "file-to-dir",
+        "dir-to-file",
+        "dir-removed",
+        "dir-chmod",
+    ],
 )
-def test_a_changed_or_missing_entry_drops_the_tree(
+def test_a_changed_or_missing_entry_is_repaired_from_the_template(
     tmp_path: Path, shm: Path, damage: str
 ) -> None:
+    """(B230) The tree is restored from the template, not dropped and rebuilt."""
     repo, commit = _repo(tmp_path)
     with _open(tmp_path, repo, commit, _policy(shm)) as prepared:
         with _candidate(prepared, "other.txt", b"x\n") as first:
@@ -291,13 +303,66 @@ def test_a_changed_or_missing_entry_drops_the_tree(
             elif damage == "retarget":
                 (root / "alias").unlink()
                 os.symlink("other.txt", root / "alias")
+            elif damage == "link-to-file":
+                (root / "alias").unlink()
+                (root / "alias").write_bytes(b"not a link")
+            elif damage == "file-to-dir":
+                (root / "dup1.txt").unlink()
+                (root / "dup1.txt").mkdir()
+                (root / "dup1.txt" / "inner").write_bytes(b"i")
+            elif damage == "dir-to-file":
+                shutil.rmtree(root / "sub")
+                (root / "sub").write_bytes(b"flat")
+            elif damage == "dir-removed":
+                shutil.rmtree(root / "sub")
             else:
-                (root / ".git" / "HEAD").write_bytes(b"x")
-                (root / ".git" / "HEAD").chmod(0o000)
+                (root / "sub").chmod(0o700)
         with _candidate(prepared, "other.txt", b"y\n") as second:
-            assert second.root != root or damage == "head"
-            assert (second.root / "sub" / "deep.txt").read_bytes() == FILES["sub/deep.txt"]
+            assert second.root == root
+            assert (root / "sub" / "deep.txt").read_bytes() == FILES["sub/deep.txt"]
+            assert (root / "dup1.txt").read_bytes() == FILES["dup1.txt"]
+            assert os.readlink(root / "alias") == "dup1.txt"
+            assert (root / "dup1.txt").stat().st_mode & 0o777 == 0o644
+            assert (root / "sub").stat().st_mode & 0o777 == 0o755
+        assert prepared.ladder.candidates == {"B": 2}
+        assert prepared.ladder.degradations == []
+
+
+def test_an_unrepairable_entry_or_state_file_drops_the_tree(
+    tmp_path: Path, shm: Path
+) -> None:
+    repo, commit = _repo(tmp_path)
+    with _open(tmp_path, repo, commit, _policy(shm)) as prepared:
+        with _candidate(prepared, "other.txt", b"x\n") as first:
+            root = first.root
+            (root / ".git" / "HEAD").write_bytes(b"x")
+            (root / ".git" / "HEAD").chmod(0o000)
+        with _candidate(prepared, "other.txt", b"y\n") as second:
             assert (second.root / "dup1.txt").read_bytes() == FILES["dup1.txt"]
+
+
+def test_a_tree_without_a_template_is_dropped_not_repaired(
+    tmp_path: Path, shm: Path
+) -> None:
+    repo, commit = _repo(tmp_path)
+    with _open(tmp_path, repo, commit, _policy(shm)) as prepared:
+        with _candidate(prepared, "other.txt", b"x\n") as first:
+            root = first.root
+            prepared._workers[threading.get_ident()].template = None
+            (root / "sub" / "deep.txt").write_bytes(b"DEEP!\n")
+        with _candidate(prepared, "other.txt", b"y\n") as second:
+            assert (second.root / "sub" / "deep.txt").read_bytes() == FILES["sub/deep.txt"]
+
+
+def test_a_repair_source_that_is_not_a_regular_file_is_unrepairable(
+    tmp_path: Path, shm: Path
+) -> None:
+    tree = tmp_path / "tree"
+    template = tmp_path / "template"
+    for base in (tree, template):
+        base.mkdir()
+    (template / "f").mkdir()
+    assert not _tmpfs_worker._repair(tree, template, "f", ("f", 0o644, 0, 0))
 
 
 def test_an_exception_in_the_body_drops_the_tree(tmp_path: Path, shm: Path) -> None:
@@ -358,7 +423,9 @@ def test_unavailable_tmpfs_falls_back_to_clones_with_one_advisory(
                 assert not snapshot.root.is_relative_to(plain)
     assert len(set(roots)) == 2
     err = capsys.readouterr().err
-    assert err.count("tmpfs-worker' is unavailable") == 1
+    assert err.count("rung B (tmpfs-copy) unavailable") == 1
+    assert prepared.ladder.plan.rung == "C"
+    assert prepared.ladder.candidates == {"C": 2}
 
 
 def test_missing_root_and_oversize_and_write_failure_fall_back(
@@ -427,7 +494,12 @@ def test_baseline_nested_and_non_cow_materializations_use_the_old_paths(
             workspace=provider,
         ) as prepared:
             with _candidate(prepared, "other.txt", b"x\n") as snapshot:
-                assert not snapshot.root.is_relative_to(shm)
+                # (B230) No cheap-clone workspace is needed any more: the
+                # tmpfs copy is built from a locally built template.
+                assert snapshot.root.is_relative_to(shm)
+                assert prepared.ladder.plan.rung == "B"
+            assert prepared._local_template is not None
+        assert prepared._local_template is None
 
 
 def test_each_worker_thread_owns_its_tree(tmp_path: Path, shm: Path) -> None:
