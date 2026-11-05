@@ -87,6 +87,16 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(topos/ui): TOP PRESSURE drops ancestors of a listed culprit and the root; drill metrics use the table's byte/rate/percent formatting; NAME column capped at 40 characters (middle ellipsis); Footer shows bound keys; the dead `k` binding is removed
 - test(topos): elapsed-time assertions replaced by state assertions, thread errors collected, vacuous no-audit-log test made real, audit-directory checks run on a real filesystem (D-14, D-15)
 - chore(topos): reason comments for each dependency floor in pyproject.toml (D-17)
+- fix(topos/ui): the first column tier (name, ram, refaults, PSI, cpu) is always shown; the narrow table widget no longer drops the metric columns on an 80-column terminal (G-01)
+- fix(topos/net): the BPF snapshot staleness limit is three producer intervals (default 90 s) instead of a fixed 15 s that flapped against the 30 s default interval (G-02)
+- fix(topos/actions): systemd start/stop/restart also refuse `systemd-{reboot,poweroff,halt,kexec}.service`, `soft-reboot`, `suspend`, `hibernate`, `hybrid-sleep`, `suspend-then-hibernate` and `ctrl-alt-del` targets; protecting `docker.service`/`multi-user.target` by default stays a recorded policy decision (G-03)
+- fix(topos/squeeze): the restore write blocks the guarded signals and retries when interrupted; the recovery record is created atomically and refuses a second squeeze; `--recover` validates the recorded value; without `--relax-to` a clean exit restores the pre-squeeze `memory.high` (G-04, G-05)
+- fix(topos/record): `--record` refuses (typed `NotARecordingError`) an existing file that does not start with a recording header instead of truncating it (G-06)
+- fix(topos/docker): failed `docker inspect` is cached negatively (15 s) with a 15 s per-sweep budget; cached inspect data expires after 60 s so renames show up; last known data is used meanwhile (G-07)
+- fix(topos/ui): replay jump treats integer-valued epoch timestamps (>= 1e8) as timestamps, not frame numbers (G-08)
+- fix(topos/daemon): the busy reply runs on a short bounded helper thread, not the accept thread (G-09)
+- fix(topos/damon): listing owned markers tolerates an undeletable stale marker (G-10)
+- fix(topos/daemon): an operator KeyboardInterrupt of the serving loop is a clean stop (exit 0) even if the producer had already ended (gate follow-up to B-02)
 <!-- cmru: pending release notes end -->
 
 ## [0.4.2] - 2026-10-21
