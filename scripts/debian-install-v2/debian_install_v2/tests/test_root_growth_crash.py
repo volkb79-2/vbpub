@@ -118,6 +118,18 @@ def test_clean_run_orders_sfdisk_partx_resize_and_converges(tmp_path, monkeypatc
     assert sfdisk[sfdisk.index("-N") + 1] == "3"
 
 
+def test_root_growth_sfdisk_argv_passes_the_production_allowlist():
+    # Live finding 2026-11-05 (v1001 reinstall): the FakeHost above replaces actions.run, so the
+    # production allowlist never saw the gap-branch argv and stage two died with
+    # "sfdisk option(s) are not allowlisted: ['--no-tell-kernel', '-N']".
+    from debian_install_v2.actions import HostActions
+
+    HostActions._validate(
+        ["/usr/sbin/sfdisk", "--no-reread", "--no-tell-kernel", "-N", "3", "/dev/vda"]
+    )
+    HostActions._validate(["/usr/bin/partx", "-u", "--nr", "3", "/dev/vda"])
+
+
 def _clean_call_count(tmp_path, monkeypatch) -> int:
     host = FakeHost()
     installer = build(tmp_path, monkeypatch, host)
