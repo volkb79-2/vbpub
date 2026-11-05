@@ -48,12 +48,17 @@ _MAX_RECORDED_DESCENDANTS = 10_000
 # so a hostile or enormous argv cannot bloat the verdict.
 _MAX_CMDLINE_ARGS = 16
 _MAX_CMDLINE_ARG_CHARS = 200
-_SECRET_NAME = re.compile(
-    r"(?i)(token|secret|passw(or)?d|passwd|api[-_]?key|credential|authorization|bearer)"
-)
-_SECRET_ASSIGN = re.compile(
-    r"(?i)^(-{0,2}[\w.-]*(token|secret|passw(or)?d|passwd|api[-_]?key|credential|authorization)[\w.-]*=).*$"
-)
+_SECRET_WORDS = r"(?:token|secret|passw(?:or)?d|passwd|api[-_]?key|credential|authorization)"
+_SECRET_NAME = re.compile(r"(?i)" + _SECRET_WORDS)
+# NAME=value / NAME: value / --flag=value for a secret-like NAME anywhere in an item.
+_SECRET_ASSIGN = re.compile(r"(?i)([\w.-]*" + _SECRET_WORDS + r"[\w.-]*\s*[=:]\s*)\S.*")
+_BEARER = re.compile(r"(?i)\b(bearer|basic)\s+\S+")
+_URL_USERINFO = re.compile(r"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s@]+@")
+# Flags whose NEXT argument is a credential or a free-form carrier of one.
+_VALUE_FLAGS = frozenset({"-H", "--header", "-u", "--user", "-p", "--proxy-user", "--env"})
+_SHELL_STRING_FLAGS = frozenset({"-c", "-e", "-E"})
+_SHELL_PREFIX_CHARS = 24
+_REDACTED = "<redacted>"
 _WINDOW_LOCK = threading.RLock()
 _UNPROVEN_CLEANUP = False
 _WINDOW_HOST_CANDIDATE_FD = "ASSAY_WINDOW_HOST_CANDIDATE_FD"
@@ -303,30 +308,48 @@ def _process_identity(pid: int) -> ProcessTreeDescendant:
         return ProcessTreeDescendant(pid=pid, ppid=None, comm=None)
 
 
+def _redact_item(text: str) -> str:
+    text = _URL_USERINFO.sub(lambda m: m.group(1) + _REDACTED + "@", text)
+    text = _BEARER.sub(lambda m: m.group(1) + " " + _REDACTED, text)
+    text = _SECRET_ASSIGN.sub(lambda m: m.group(1) + _REDACTED, text)
+    if re.match(r"-p.", text) and not text.startswith("--"):
+        text = "-p" + _REDACTED  # `mysql -pSECRET`
+    return text
+
+
 def sanitize_cmdline(raw: bytes) -> tuple[str, ...] | None:
     """Bound and redact a raw ``/proc/<pid>/cmdline`` for the verdict.
 
-    Arguments that look like ``NAME=value`` for a secret-like name, and the
-    argument following a bare secret-like flag, are replaced by ``<redacted>``;
-    each argument and the argument count are truncated. ``None`` when empty
-    (kernel threads, zombies).
+    Best effort, not a guarantee. Redacted: the value of ``NAME=value`` /
+    ``NAME: value`` for a secret-like name anywhere in an argument, ``Bearer``
+    and ``Basic`` tokens, URL userinfo, ``-pSECRET``, and the argument after
+    ``-H/--header/-u/--user/-p/-e/--env`` or after any flag whose own name looks
+    secret. A free-form string after ``-c``/``-e``/``-E`` (``sh -c "..."``)
+    keeps only a short redacted prefix. Each argument and the argument count
+    are truncated. ``None`` when empty (kernel threads, zombies).
     """
     if not raw:
         return None
     parts = raw.rstrip(b"\0").split(b"\0")
     out: list[str] = []
     redact_next = False
+    shell_next = False
     for part in parts[:_MAX_CMDLINE_ARGS]:
         text = part.decode("utf-8", "backslashreplace")
         if redact_next:
-            text = "<redacted>"
+            text = _REDACTED
             redact_next = False
+            shell_next = False
+        elif shell_next:
+            prefix = _redact_item(text[:_SHELL_PREFIX_CHARS])
+            text = prefix + ("...<redacted shell string>" if len(text) > _SHELL_PREFIX_CHARS else "")
+            shell_next = False
         else:
-            match = _SECRET_ASSIGN.match(text)
-            if match:
-                text = match.group(1) + "<redacted>"
-            elif text.startswith("-") and _SECRET_NAME.search(text):
+            text = _redact_item(text)
+            if text in _VALUE_FLAGS or (text.startswith("-") and _SECRET_NAME.search(text) and "=" not in text):
                 redact_next = True
+            elif text in _SHELL_STRING_FLAGS:
+                shell_next = True
         if len(text) > _MAX_CMDLINE_ARG_CHARS:
             text = text[:_MAX_CMDLINE_ARG_CHARS] + "..."
         out.append(text)

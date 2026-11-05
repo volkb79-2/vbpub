@@ -1850,6 +1850,9 @@ def _resource_progress(result: CommandResult) -> dict[str, Any] | None:
     }
 
 
+_MAX_PROGRESS_LEAKED = 20
+
+
 def _leaked_descendants(result: CommandResult) -> tuple[ProcessTreeDescendant, ...]:
     """Identities of processes that outlived the command leader (may be empty)."""
     evidence = result.process_tree_evidence
@@ -1883,7 +1886,10 @@ def _command_finished_event(result: CommandResult, *, phase: str) -> dict[str, A
     leaked = _leaked_descendants(result)
     if leaked:
         # Additive diagnosability (B233): who outlived the command leader.
-        event["leaked_descendants"] = [item.to_dict() for item in leaked]
+        event["leaked_descendants"] = [
+            item.to_dict() for item in leaked[:_MAX_PROGRESS_LEAKED]
+        ]
+        event["leaked_descendants_total"] = len(leaked)
     return event
 
 

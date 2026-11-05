@@ -3845,6 +3845,20 @@ cleanup time, and the clean-tree proof. A native `killed`, `survived`, or
 descendants. A cleaned leak is recorded as `crashed`; an unproved cleanup
 refuses the lane and produces no candidate result.
 
+Each entry of `process_tree_evidence.descendants` is `{pid, ppid, comm}` and,
+since B233, may also carry `cmdline`: a list of at most 16 argument strings (200
+characters each, `...` marks a cut), read best-effort from `/proc/<pid>/cmdline`
+and redacted for common secret carriers (secret-named `NAME=value`/`NAME: value`
+arguments, `Bearer`/`Basic` tokens, URL userinfo, `-pSECRET`, the argument after
+`-H`/`--header`/`-u`/`--user`/`-p`/`--env` or a secret-named flag, and all but a
+24-character prefix of a string after `-c`/`-e`/`-E`). The redaction is a
+heuristic: treat `cmdline` as possibly containing secrets, as the lane's own
+`argv` already is. A zombie has no `cmdline`. The key is optional, so the field
+set without it is unchanged, but a verdict that contains it fails the key-set
+check of a verifier older than B233: ship the verifier with the assay that
+writes the verdict. For a baseline (R0) leak the same list is rendered into the
+R0 claim detail as `leaked-process-tree: pid=N ppid=M comm=C argv=...`.
+
 #### Native R2's process-tree boundary
 
 Linux child-subreaper mode changes process-wide state. Assay refuses to enter a
@@ -4089,7 +4103,7 @@ never says `coverage_parsed`.
 | `snapshot_materialized` | the committed-object snapshot exists (higher-rigor path only) | `commit` |
 | `command_started` | just before the lane's own command | `argv`, `phase` |
 | `command_running` | the heartbeat tick, while it runs | `command_elapsed_s`, `phase` |
-| `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended` |
+| `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended`; when processes outlived the command leader (`leaked-process-tree`), also `leaked_descendants` (at most the first 20 of `{pid, ppid, comm}` plus an optional `cmdline` list of strings; `ppid` and `comm` are `null` when the process vanished before it was read; a zombie has no `cmdline`) and `leaked_descendants_total` (the full count). Additive (B233) |
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
 | `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`) |
 | `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s`, `setup_s`, `teardown_s` (the test's own setup and teardown durations; `None` when the test reported none) |

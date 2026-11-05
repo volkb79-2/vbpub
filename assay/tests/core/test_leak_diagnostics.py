@@ -149,3 +149,71 @@ def test_malformed_evidence_yields_no_descendants() -> None:
 
 def test_read_cmdline_of_vanished_process_is_none() -> None:
     assert process_tree._read_cmdline(2**22 + 12345) is None
+
+
+def test_zombie_descendant_describes_without_argv() -> None:
+    """The case this diagnostic exists for: ppid and comm known, argv empty (a zombie)."""
+    assert ProcessTreeDescendant(pid=5, ppid=1, comm="sleep").describe() == (
+        "pid=5 ppid=1 comm=sleep"
+    )
+    assert ProcessTreeDescendant(pid=5, ppid=1, comm="sleep", cmdline=()).describe() == (
+        "pid=5 ppid=1 comm=sleep"
+    )
+
+
+def _argv(*items: str) -> bytes:
+    return b"\0".join(item.encode() for item in items) + b"\0"
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected", "absent"),
+    [
+        (("curl", "-H", "Authorization: Bearer abc123", "x"), ("curl", "-H", "<redacted>", "x"), "abc123"),
+        (("curl", "Authorization: Bearer abc123"), ("curl", "Authorization: <redacted>"), "abc123"),
+        (("curl", "-u", "user:pw", "x"), ("curl", "-u", "<redacted>", "x"), "user:pw"),
+        (("curl", "--header=X-Api-Key: abcdef"), ("curl", "--header=X-Api-Key: <redacted>"), "abcdef"),
+        (("mysql", "-pSECRET"), ("mysql", "-p<redacted>"), "SECRET"),
+        (("mysql", "-p", "SECRET"), ("mysql", "-p", "<redacted>"), "SECRET"),
+        (("tool", "--password=hunter2"), ("tool", "--password=<redacted>"), "hunter2"),
+        (("tool", "--token", "T0K"), ("tool", "--token", "<redacted>"), "T0K"),
+        (("git", "clone", "https://user:tok@host/x.git"), ("git", "clone", "https://<redacted>@host/x.git"), "tok"),
+        (("git", "clone", "https://ghp_xxx@github.com/a/b"), ("git", "clone", "https://<redacted>@github.com/a/b"), "ghp_xxx"),
+        (("x", "Bearer zzz"), ("x", "Bearer <redacted>"), "zzz"),
+        (("sh", "-c", "export GH_TOKEN=abc; curl http://h"), ("sh", "-c", "export GH_TOKEN=<redacted>...<redacted shell string>"), "abc"),
+        (("sh", "-c", "curl -H 'X-Api-Key: abcdef' http://h"), ("sh", "-c", "curl -H 'X-Api-Key: <redacted>...<redacted shell string>"), "abcdef"),
+        (("sh", "-c", "sleep 5"), ("sh", "-c", "sleep 5"), None),
+        (("tool", "--env", "A=1"), ("tool", "--env", "<redacted>"), "A=1"),
+        (("sleep", "5"), ("sleep", "5"), None),
+    ],
+)
+def test_sanitize_cmdline_redacts_common_secret_carriers(argv, expected, absent) -> None:
+    out = sanitize_cmdline(_argv(*argv))
+    assert out == expected
+    if absent is not None:
+        assert absent not in " ".join(out)
+
+
+def test_progress_event_caps_the_leaked_descendant_list(tmp_path: Path) -> None:
+    many = tuple(
+        ProcessTreeDescendant(pid=10 + index, ppid=1, comm="sleep") for index in range(25)
+    )
+    evidence = ProcessTreeEvidence(
+        leader_status="exited",
+        group_signalled_before_reap=False,
+        outliving_descendants=25,
+        descendants_signalled=25,
+        descendants=many,
+        clean=True,
+    ).to_dict()
+    result = runner.CommandResult(
+        plan=None,  # type: ignore[arg-type]
+        outcome=Outcome.ERROR,
+        reason_code=None,
+        returncode=None,
+        started="2026-01-01T00:00:00+00:00",
+        ended="2026-01-01T00:00:00+00:00",
+        process_tree_evidence=evidence,
+    )
+    event = runner._command_finished_event(result, phase="baseline")
+    assert len(event["leaked_descendants"]) == 20
+    assert event["leaked_descendants_total"] == 25
