@@ -490,7 +490,11 @@ CMRU launches the declared lanes through the installed Run-Gate CLI in
 directory; definitions live in `run-gate.toml`. See
 [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 For a direct lane run, use `run-gate <lane>` from the installed wheel
-environment; there is no checkout-relative script dependency. Run-Gate's
+environment; there is no checkout-relative script dependency. Lane `ciu-gate`
+is the release gate (R0/R1/R3); lane `ciu` is the asynchronous R2 mutation
+campaign (latest release only) and declares `resource_observer = "cgprofile"`
+and `resources.pids` in `run-gate.toml` because native R2 liveness needs the
+cgroup observer. Run-Gate's
 host mode runs in the environment invoking the CLI, including a cockpit when
 that is the consumer's choice. A stable, declared test environment gives
 repeatable dependencies and resource boundaries; MDT's cockpit policy

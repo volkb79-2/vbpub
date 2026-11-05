@@ -333,3 +333,15 @@ def test_assay_lane_declares_the_complete_rigor_ladder():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "--maxfail=1" in spec and "liveness monitoring" in spec
     assert "active liveness" in readme
+
+
+def test_run_gate_ciu_lane_declares_cgroup_observer_for_r2():
+    """CIU-190: the async R2 lane `ciu` needs the cgroup observer (assay liveness);
+    the release gate `ciu-gate` runs no mutation and must not declare one."""
+    lanes = tomllib.loads((REPO_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
+    assert lanes["ciu"]["resource_observer"] == "cgprofile"
+    assert lanes["ciu"]["resources"]["pids"] == 8192
+    assert "resource_observer" not in lanes["ciu-gate"]
+    assay = tomllib.loads((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+    assert assay["ciu"]["judge"]["mutation"]["liveness"] is True
+    assert "R2" not in assay["ciu-gate"]["rigor"]
