@@ -10,6 +10,7 @@ use crate::util::*;
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -147,7 +148,8 @@ fn world(name: &str) -> (PathBuf, Collector) {
     copy_dir(&fixture_cg(), &root.join("cg"));
     mk_proc(&root);
     let cfg = cfg_for(&root);
-    let col = Collector::new(cfg, Dict::default(), Instant::now());
+    let mut col = Collector::new(cfg, Dict::default(), Instant::now());
+    col.procs.sync_cmdline = true; // the helper pool has its own test
     (root, col)
 }
 
@@ -191,8 +193,54 @@ fn first_sample_zero_delta_and_reset_are_distinguishable() {
     put(&root, "cg/cpu.stat", "usage_usec 40\nuser_usec 1\nsystem_usec 1\nnr_periods 1\nnr_throttled 0\nthrottled_usec 0\n");
     let before = col.resets;
     tick(&mut col, 4);
-    assert_eq!(get(&col, "cg:/", "cpu.usage_usec").unwrap().v, 40.0, "after a restart the reading is the delta");
+    let v = get(&col, "cg:/", "cpu.usage_usec").unwrap();
+    assert_eq!((v.st, v.raw), (stc::UN_RESET, 40), "S-04: a counter that went backwards is a reset state, never a spike");
     assert_eq!(col.resets, before + 1);
+    put(&root, "cg/cpu.stat", "usage_usec 100\nuser_usec 1\nsystem_usec 1\nnr_periods 1\nnr_throttled 0\nthrottled_usec 0\n");
+    tick(&mut col, 5);
+    assert_eq!(get(&col, "cg:/", "cpu.usage_usec").unwrap().v, 60.0, "the reading after the reset is the new baseline");
+}
+
+#[test]
+fn unparsable_values_are_unavailable_never_zero_and_iowait_clamps() {
+    let (root, mut col) = world("s04");
+    put(&root, "cg/io.stat", "8:0 rbytes=100 wbytes=0 rios=1 wios=0 dbytes=0 dios=0\n");
+    fs::create_dir_all(root.join("sys/dev/block/8:0/slaves")).unwrap();
+    tick(&mut col, 1);
+    put(&root, "cg/io.stat", "8:0 rbytes=12x wbytes=0 rios=1 wios=0 dbytes=0 dios=0\n");
+    put(&root, "proc/diskstats", "   8       0 vda 100 0 2000 50 200 0 4000 80 0 60 130 0 0 0 0\n");
+    tick(&mut col, 2);
+    assert_eq!(get(&col, "cg:/", "io.rbytes").unwrap().st, stc::UN_PARSE, "a parse failure is a state, not a 0");
+    put(&root, "cg/io.stat", "8:0 rbytes=160 wbytes=0 rios=1 wios=0 dbytes=0 dios=0\n");
+    tick(&mut col, 3);
+    assert_eq!(get(&col, "cg:/", "io.rbytes").unwrap().v, 60.0, "no spike after the bad read");
+    put(&root, "proc/diskstats", "   8       0 vda 100 0 2000 50 200 0 4000 80 0 6x 130 0 0 0 0\n");
+    tick(&mut col, 4);
+    assert_eq!(get(&col, "dev:vda", "disk.io_ticks_ms").unwrap().st, stc::UN_PARSE);
+    // iowait goes backwards (NO_HZ): clamped to 0 for that field, not a reset and not a spike
+    put(&root, "proc/stat", "cpu  200 0 100 900 20 9 9 0 0 0\ncpu0 150 0 75 500 15 4 6 0 0 0\nctxt 3000\nprocesses 510\nprocs_running 3\nprocs_blocked 0\n");
+    tick(&mut col, 5);
+    let resets = col.resets;
+    put(&root, "proc/stat", "cpu  300 0 150 1000 12 12 12 0 0 0\ncpu0 250 0 100 600 9 6 8 0 0 0\nctxt 3000\nprocesses 510\nprocs_running 3\nprocs_blocked 0\n");
+    tick(&mut col, 6);
+    let io = get(&col, "cpu:all", "cpu.iowait").unwrap();
+    assert_eq!((io.st, io.v), (stc::VALUE, 0.0));
+    assert_eq!(col.resets, resets, "not counted as a reset");
+    assert!(get(&col, "cpu:all", "cpupct.io").unwrap().v.abs() < 1e-9);
+    assert!(get(&col, "cpu:all", "cpu.busy_pct").unwrap().v <= 100.0);
+}
+
+#[test]
+fn counter_resets_and_is_bottom_do_not_flip_on_a_failed_read() {
+    let mut cache = std::collections::HashMap::new();
+    let mut last = std::collections::HashMap::new();
+    let root = tmp("bottom");
+    fs::create_dir_all(root.join("dev/block/9:0/slaves/sda")).unwrap();
+    let sys = root.display().to_string();
+    assert!(!crate::collect::is_bottom_for_test(&mut cache, &mut last, &sys, b"9:0"), "stacked");
+    fs::remove_dir_all(root.join("dev/block/9:0")).unwrap();
+    cache.clear(); // next interval; the directory is gone (a failed read)
+    assert!(!crate::collect::is_bottom_for_test(&mut cache, &mut last, &sys, b"9:0"), "the last good answer is kept");
 }
 
 #[test]
@@ -452,7 +500,9 @@ fn push_frames(st: &mut Store, d: &mut Dict, base: u64, n: u64) -> (u32, u32, u3
 }
 
 fn query(cfg: &Config, ent: &str, met: &str, tier: &str) -> Value {
-    let r = crate::store::series(cfg, ent, met, tier, 60, 1 << 20).unwrap();
+    let (mets, ents) = crate::dict::read_lists(&cfg.store.cold_dir);
+    let d = crate::store::Dicts { mets: &mets, ents: &ents };
+    let r = crate::store::series(cfg, &d, ent, met, tier, 60, 1 << 20).unwrap();
     serde_json::from_str(&format!("{{{}}}", r.body)).unwrap()
 }
 
@@ -572,7 +622,8 @@ fn malformed_and_unknown_requests_get_typed_errors() {
         (r#"{"req":"series"}"#, "bad_request"),
         (r#"{"req":"series","entity":"cg:/","metric":"x","tier":"hot"}"#, "bad_request"),
         (r#"{"req":"series","entity":"cg:/","metric":"x","tier":"nope","window_s":5}"#, "unknown_tier"),
-        (r#"{"req":"series","entity":"cg:/","metric":"x","tier":"hot","window_s":5}"#, "unknown_entity"),
+        (r#"{"req":"series","entity":"cg:/no-such","metric":"x","tier":"hot","window_s":5}"#, "unknown_entity"),
+        (r#"{"req":"series","entity":"cg:/","metric":"x","tier":"hot","window_s":5}"#, "unknown_metric"),
         (r#"{"req":"events"}"#, "bad_request"),
     ] {
         let r = j(&handle(&ctx, req));
@@ -601,7 +652,7 @@ fn events_request_returns_window_entity_filter_and_limit() {
     tick(&mut col, 1);
     let ctx = ctx_with(&root, &mut col, 4_000_000);
     let mut st = Store::open(&ctx.cfg, 0, 0).unwrap();
-    let evs: Vec<_> = (0..5).map(|i| mk_event(Instant::now(), "oom_kill", if i < 3 { "cg:/a" } else { "cg:/b" }, "{}")).collect();
+    let evs: Vec<String> = (0..5).map(|i| mk_event(Instant::now(), "oom_kill", if i < 3 { "cg:/a" } else { "cg:/b" }, "{}").json).collect();
     st.append_events(&evs);
     let r = j(&handle(&ctx, r#"{"req":"events","window_s":60}"#));
     assert_eq!(r["events"].as_array().unwrap().len(), 5);
@@ -692,4 +743,560 @@ fn config_validation_rejects_bad_shapes() {
     assert!(Config::parse(&ok.replace("max_clients = 4", "max_clients = 0")).is_err());
     assert!(Config::parse(&ok.replace("cmdline_max = 256", "")).is_err(), "no defaults in code");
     assert!(Config::parse(&ok.replace("step_s = 2", "step_s = 1")).is_err(), "tiers must increase");
+    assert!(Config::parse(&ok.replace("client_idle_ms = 5000", "client_idle_ms = 0")).is_err(), "S-15: a zero timeout would switch the protection off");
+    assert!(Config::parse(&ok.replace("client_write_ms = 200", "client_write_ms = 0")).is_err());
+}
+
+// ================================================================ review fixes (S-01 .. S-22)
+
+fn seg_files(dir: &Path, prefix: &str) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with(prefix) && p.extension().map_or(false, |x| x == "seg"))
+        .collect();
+    v.sort();
+    v
+}
+
+fn one_val(e: u32, m: u32, v: f64) -> Vec<(u32, Vec<Val>)> {
+    vec![(e, vec![Val { m, v, raw: NONE, st: 0 }])]
+}
+
+#[test]
+fn s01_torn_tail_is_cut_at_restart_and_bad_frames_stop_the_reader_and_are_reported() {
+    let root = tmp("s01");
+    let cfg = cfg_for(&root);
+    let mut d = Dict::default();
+    let (e, m) = (d.ent("cg:/x", 0), d.met("g.metric", false));
+    let base = wall_ms() / 1000 * 1000 - 20_000;
+    let mut st = Store::open(&cfg, 0, 0).unwrap();
+    for i in 0..5 {
+        st.push(&one_val(e, m, i as f64), base + i * 1000, 1000, &d);
+    }
+    st.sync_dict(&mut d);
+    drop(st);
+    let hot = seg_files(&root.join("tm"), "hot-");
+    assert!(!hot.is_empty());
+    let last = hot.last().unwrap().clone();
+    let good_len = fs::metadata(&last).unwrap().len();
+    // a crash in the middle of a frame: magic, a length, then nothing
+    let mut f = fs::OpenOptions::new().append(true).open(&last).unwrap();
+    f.write_all(b"TSF1\xff\x00\x00\x00junk").unwrap();
+    drop(f);
+    let torn_before = crate::store::CTR.torn_open.load(Ordering::Relaxed);
+    let mut st = Store::open(&cfg, d.mets.len(), d.ents.len()).unwrap();
+    assert_eq!(fs::metadata(&last).unwrap().len(), good_len, "the torn tail was truncated to the last good frame");
+    assert!(crate::store::CTR.torn_open.load(Ordering::Relaxed) > torn_before, "and counted");
+    st.push(&one_val(e, m, 99.0), base + 5000, 1000, &d);
+    let pts = query(&cfg, "cg:/x", "g.metric", "hot");
+    let vals: Vec<f64> = pts["points"].as_array().unwrap().iter().map(|p| p[1].as_f64().unwrap()).collect();
+    assert_eq!(vals, vec![0.0, 1.0, 2.0, 3.0, 4.0, 99.0], "frames written after the restart are readable");
+    assert_eq!(pts["corrupt_frames"], 0);
+    // a flipped bit in the payload of the last frame: the reader stops there and says so
+    drop(st);
+    let newest = seg_files(&root.join("tm"), "hot-").pop().unwrap();
+    let mut bytes = fs::read(&newest).unwrap();
+    let n = bytes.len();
+    bytes[n - 3] ^= 0x40;
+    fs::write(&newest, &bytes).unwrap();
+    let pts = query(&cfg, "cg:/x", "g.metric", "hot");
+    assert_eq!(pts["points"].as_array().unwrap().len(), 5, "everything before the bad frame is served");
+    assert_eq!(pts["corrupt_frames"], 1, "the gap is reported");
+}
+
+#[test]
+fn s01_a_failed_write_is_rolled_back_and_counted() {
+    let root = tmp("s01w");
+    let cfg = cfg_for(&root);
+    let mut d = Dict::default();
+    let (e, m) = (d.ent("cg:/x", 0), d.met("g.metric", false));
+    let mut st = Store::open(&cfg, 0, 0).unwrap();
+    let base = wall_ms() / 1000 * 1000 - 20_000;
+    st.push(&one_val(e, m, 1.0), base, 1000, &d);
+    let errs = crate::store::CTR.write_errors.load(Ordering::Relaxed);
+    // make the next write fail: /dev/full accepts the open and fails every write with ENOSPC
+    st.break_current_segment_for_test("/dev/full");
+    st.push(&one_val(e, m, 2.0), base + 1000, 1000, &d);
+    assert!(crate::store::CTR.write_errors.load(Ordering::Relaxed) > errs, "write errors are counted");
+}
+
+#[test]
+fn s02_heavy_requests_are_bounded_and_get_busy() {
+    let (root, mut col) = world("s02");
+    tick(&mut col, 1);
+    let ctx = ctx_with(&root, &mut col, 4_000_000);
+    let a = ctx.heavy_slot().unwrap();
+    let b = ctx.heavy_slot().unwrap();
+    for req in [r#"{"req":"series","entity":"cg:/","metric":"mem.current","tier":"hot","window_s":5}"#, r#"{"req":"events","window_s":5}"#] {
+        let r = j(&handle(&ctx, req));
+        assert_eq!((r["ok"].clone(), r["error"]["code"].clone()), (Value::Bool(false), Value::String("busy".into())));
+    }
+    assert_eq!(j(&handle(&ctx, r#"{"req":"current"}"#))["ok"], true, "the hot path is never gated");
+    drop(a);
+    drop(b);
+    assert_ne!(j(&handle(&ctx, r#"{"req":"events","window_s":5}"#))["error"]["code"], "busy");
+}
+
+#[test]
+fn s02_a_panic_while_serving_is_an_error_reply_not_a_dead_daemon() {
+    let (root, mut col) = world("s02p");
+    tick(&mut col, 1);
+    let ctx = ctx_with(&root, &mut col, 4_000_000);
+    let r = j(&handle(&ctx, r#"{"req":"__panic"}"#));
+    assert_eq!(r["error"]["code"], "internal");
+    assert_eq!(j(&handle(&ctx, r#"{"req":"status"}"#))["ok"], true, "the context is still usable (no poisoned lock)");
+}
+
+#[test]
+fn s02_a_corrupt_compressed_frame_is_counted_not_fatal() {
+    let root = tmp("s02c");
+    let cfg = cfg_for(&root);
+    let mut d = Dict::default();
+    let (e, m) = (d.ent("cg:/x", 0), d.met("g.metric", false));
+    let mut st = Store::open(&cfg, 0, 0).unwrap();
+    let base = wall_ms() / 1000 * 1000 - 20_000;
+    for i in 0..4 {
+        st.push(&one_val(e, m, 1.0), base + i * 1000, 1000, &d);
+    }
+    st.sync_dict(&mut d);
+    // a frame with a valid checksum whose zstd payload is garbage
+    let cold = seg_files(&root.join("cold"), "cold-");
+    let mut f = fs::OpenOptions::new().append(true).open(&cold[0]).unwrap();
+    f.write_all(&crate::store::encode_frame(base + 1, b"definitely not zstd")).unwrap();
+    drop(f);
+    let pts = query(&cfg, "cg:/x", "g.metric", "cold");
+    assert_eq!(pts["corrupt_frames"], 1);
+}
+
+#[test]
+fn s03_the_writer_queue_never_blocks_drops_oldest_and_keeps_dictionary_and_events() {
+    let sh = crate::writer::Shared::new(3);
+    for i in 0..6u64 {
+        let mut dd = Dict::default();
+        dd.met(&format!("m{i}"), false);
+        let job = crate::writer::Job {
+            ts_ms: 1000 + i,
+            dt_ms: 1000,
+            frame: Arc::new(Vec::new()),
+            events: vec![format!("ev{i}")],
+            delta: crate::dict::Delta { mets: vec![(format!("m{i}"), false)], ents: vec![] },
+        };
+        sh.submit(job); // nothing consumes: a stalled disk
+    }
+    assert_eq!(sh.queue_len(), 3);
+    assert_eq!(sh.dropped_frames.load(Ordering::SeqCst), 3, "the dropped frames are counted");
+    assert_eq!(sh.lag_ms(), 1005, "and the lag is reported (nothing written yet)");
+    sh.close();
+    let mut seen_mets = Vec::new();
+    let mut seen_events = Vec::new();
+    // drain through a real store: ids and events of dropped jobs arrive with the next job
+    let root = tmp("s03q");
+    let cfg = cfg_for(&root);
+    let mut st = Store::open(&cfg, 0, 0).unwrap();
+    let mut mirror = Dict::default();
+    while let Some(job) = sh.next() {
+        seen_mets.extend(job.delta.mets.iter().map(|x| x.0.clone()));
+        seen_events.extend(job.events.clone());
+        crate::writer::process(&mut st, &mut mirror, &job);
+    }
+    assert_eq!(seen_mets, vec!["m0", "m1", "m2", "m3", "m4", "m5"], "no dictionary id is lost with a dropped frame");
+    assert_eq!(seen_events, vec!["ev0", "ev1", "ev2", "ev3", "ev4", "ev5"], "no event is lost either");
+    assert_eq!(mirror.mets.len(), 6);
+}
+
+#[test]
+fn s03_a_cmdline_read_that_blocks_does_not_stall_the_tick() {
+    extern "C" {
+        fn mkfifo(path: *const std::os::raw::c_char, mode: u32) -> i32;
+    }
+    let (root, mut col) = world("s03c");
+    col.procs.sync_cmdline = false;
+    proc_files(&root, 400, "stuck", "D", 0, 0, 0, "/system.slice/db.service");
+    let fifo = root.join("proc/400/cmdline");
+    fs::remove_file(&fifo).unwrap();
+    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { mkfifo(c.as_ptr(), 0o600) }, 0);
+    // a hang here is the bug: the tick would block in open(2) on the fifo
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tick(&mut col, 1);
+        tick(&mut col, 2);
+        tick(&mut col, 4);
+        tx.send(col).unwrap();
+    });
+    let mut col = rx.recv_timeout(Duration::from_secs(60)).expect("sampling must not wait for cmdline");
+    let p = col.procs.out.iter().find(|p| p.pid == 400).unwrap();
+    assert_eq!(p.cmdline, "");
+    assert_eq!(p.cmd_state.st, stc::UN_TIMEOUT, "unanswered for more than the deadline: shown as a timeout");
+    assert_eq!(col.procs.cmd_timeouts, 1);
+    // the stall ends: the answer arrives and replaces the unavailable state
+    let mut w = fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    w.write_all(b"stuck\0--late\0").unwrap();
+    drop(w);
+    let mut n = 5;
+    loop {
+        tick(&mut col, n);
+        if col.procs.out.iter().any(|p| p.pid == 400 && p.cmdline == "stuck --late") {
+            break;
+        }
+        assert!(n < 400, "the late answer never arrived");
+        n += 1;
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let p = col.procs.out.iter().find(|p| p.pid == 400).unwrap();
+    assert_eq!(p.cmd_state.st, stc::VALUE);
+}
+
+#[test]
+fn s05_one_oom_kill_is_one_event_on_the_owning_cgroup() {
+    for with_local in [false, true] {
+        let root = tmp("s05");
+        mk_proc(&root);
+        for (rel, v) in [("cg", 0), ("cg/a", 0), ("cg/a/b", 0)] {
+            put(&root, &format!("{rel}/memory.events"), &format!("oom_kill {v}\n"));
+            if with_local {
+                put(&root, &format!("{rel}/memory.events.local"), "oom_kill 0\n");
+            }
+        }
+        let mut col = Collector::new(cfg_for(&root), Dict::default(), Instant::now());
+        tick(&mut col, 1);
+        // a kill inside a/b: the hierarchical counter rises in b, a and the root
+        for rel in ["cg", "cg/a", "cg/a/b"] {
+            put(&root, &format!("{rel}/memory.events"), "oom_kill 1\n");
+        }
+        if with_local {
+            put(&root, "cg/a/b/memory.events.local", "oom_kill 1\n");
+        }
+        tick(&mut col, 2);
+        let ooms: Vec<Value> = col.events.iter().map(|e| j(&e.json)).filter(|v| v["type"] == "oom_kill").collect();
+        assert_eq!(ooms.len(), 1, "with_local={with_local}: {ooms:?}");
+        assert_eq!(ooms[0]["entity"], "cg:/a/b");
+        assert_eq!(ooms[0]["detail"]["delta"], 1);
+    }
+}
+
+#[test]
+fn s06_throttle_is_read_from_the_slice_that_carries_the_limits() {
+    let root = tmp("s06");
+    mk_proc(&root);
+    put(&root, "proc/self/cgroup", "0::/system.slice/topos.service\n");
+    put(&root, "cg/system.slice/cpu.max", "25000 100000\n");
+    put(&root, "cg/system.slice/cpu.stat", "usage_usec 1\nnr_throttled 7\nthrottled_usec 900\n");
+    put(&root, "cg/system.slice/memory.high", "100000000\n");
+    put(&root, "cg/system.slice/memory.events", "low 0\nhigh 3\nmax 1\n");
+    put(&root, "cg/system.slice/topos.service/cpu.max", "max 100000\n");
+    put(&root, "cg/system.slice/topos.service/cpu.stat", "usage_usec 1\nnr_throttled 0\nthrottled_usec 0\n");
+    put(&root, "cg/system.slice/topos.service/memory.events", "low 0\nhigh 0\nmax 0\n");
+    let mut mon = crate::selfmon::SelfMon::new();
+    let s = mon.sample(&cfg_for(&root), 1000, 100, 4096);
+    assert_eq!(s.throttle[0].v, 7.0, "the slice's nr_throttled, not the child's 0");
+    assert_eq!(s.throttle[1].v, 900.0);
+    assert_eq!(s.throttle[2].v, 3.0);
+    assert_eq!(s.throttle[3].v, 1.0);
+    assert_eq!(s.throttle_src, [Some("/system.slice".to_string()), Some("/system.slice".to_string())], "and it says which cgroup it read");
+}
+
+#[test]
+fn s08_run_times_are_only_collected_when_a_summary_is_wanted() {
+    let mut v = Vec::new();
+    for i in 0..1000 {
+        crate::record_work(&mut v, false, i);
+    }
+    assert!(v.is_empty(), "a 24/7 daemon without stats_path must not grow a vector");
+    crate::record_work(&mut v, true, 5);
+    assert_eq!(v, vec![5]);
+}
+
+#[test]
+fn s09_dictionary_is_durable_before_frames_and_names_stay_one_line() {
+    let root = tmp("s09");
+    let cfg = cfg_for(&root);
+    let mut owner = Dict::default();
+    let (e, m) = (owner.ent("cg:/x", 0), owner.met("g.metric", false));
+    let e2 = owner.ent("cg:/bad\nname", 0);
+    assert_eq!(owner.ents[e2 as usize], "cg:/bad?name", "a newline can not be stored: replaced at insert time");
+    assert_eq!(owner.ent("cg:/bad?name", 1), e2, "so two names can not collapse into one line after a reload");
+    let mut st = Store::open(&cfg, 0, 0).unwrap();
+    let mut mirror = Dict::default();
+    let base = wall_ms() / 1000 * 1000 - 5000;
+    let job = |d: &mut Dict, ts| crate::writer::Job { ts_ms: ts, dt_ms: 1000, frame: Arc::new(one_val(e, m, 3.0)), events: vec![], delta: d.take_delta() };
+    // dictionary cannot be written: the frames that reference its ids must not be either
+    fs::create_dir_all(root.join("cold/mets.dict")).unwrap();
+    let skipped = crate::store::CTR.frames_skipped.load(Ordering::Relaxed);
+    crate::writer::process(&mut st, &mut mirror, &job(&mut owner, base));
+    assert!(crate::store::CTR.frames_skipped.load(Ordering::Relaxed) > skipped);
+    assert!(seg_files(&root.join("tm"), "hot-").is_empty(), "no frame was written behind an undurable dictionary");
+    // repaired: the next job carries a fresh delta and now both files and frames exist
+    fs::remove_dir_all(root.join("cold/mets.dict")).unwrap();
+    owner.met("second", true);
+    let mut mirror2 = Dict::default();
+    let mut st2 = Store::open(&cfg, 0, 0).unwrap();
+    let mut full = crate::dict::Delta::default();
+    full.mets = owner.mets.clone();
+    full.ents = owner.ents.iter().enumerate().map(|(i, n)| (i as u32, n.clone())).collect();
+    crate::writer::process(&mut st2, &mut mirror2, &crate::writer::Job { ts_ms: base + 1000, dt_ms: 1000, frame: Arc::new(one_val(e, m, 4.0)), events: vec![], delta: full });
+    let (mets, ents) = crate::dict::read_lists(&format!("{}/cold", root.display()));
+    assert_eq!(mets.len(), owner.mets.len());
+    assert!(ents.contains(&"cg:/x".to_string()));
+    assert!(!seg_files(&root.join("tm"), "hot-").is_empty());
+    // a torn last dictionary line is ignored by readers and cut back by the next open
+    fs::write(root.join("cold/mets.dict"), "G a\nC b\nG tor").unwrap();
+    assert_eq!(crate::dict::read_lists(&format!("{}/cold", root.display())).0.len(), 2);
+    let _st3 = Store::open(&cfg, 2, 0).unwrap();
+    assert_eq!(fs::read_to_string(root.join("cold/mets.dict")).unwrap(), "G a\nC b\n");
+}
+
+#[test]
+fn s10_threads_count_for_d_state_and_a_hidden_d_thread_is_reported_then_found() {
+    let (root, mut col) = world("s10");
+    proc_files(&root, 500, "game", "S", 0, 0, 0, "/system.slice/a.service");
+    put(&root, "proc/500/stat", &pstat(500, "game", "S", 0, 0, 0, 3, 77, 10, 0));
+    let task = |tid: u32, state: &str| {
+        put(&root, &format!("proc/500/task/{tid}/stat"), &pstat(tid, "w", state, 0, 0, 0, 3, 77, 10, 0));
+        put(&root, &format!("proc/500/task/{tid}/schedstat"), "0 1000000 1\n");
+    };
+    for t in [500, 501, 502] {
+        task(t, "S");
+    }
+    let host_stat = |blocked: u32| format!("cpu  100 0 50 800 10 5 5 0 0 0\ncpu0 50 0 25 400 5 2 3 0 0 0\nctxt 1000\nprocesses 500\nprocs_running 2\nprocs_blocked {blocked}\n");
+    put(&root, "proc/stat", &host_stat(0));
+    tick(&mut col, 1);
+    assert_eq!(col.procs.dstate, 0);
+    // tick 2 is not a sweep and the process burns no CPU: a worker enters D unseen
+    task(501, "D");
+    put(&root, "proc/stat", &host_stat(1));
+    tick(&mut col, 2);
+    assert_eq!(col.procs.dstate, 0, "the cheap pass sees only the leader");
+    assert_eq!(col.procs.d_gap, 1, "host.procs_blocked counts it: the gap is published");
+    tick(&mut col, 3);
+    assert_eq!(col.procs.dstate, 1, "while tasks are unaccounted for, multi-threaded processes are scanned in a budgeted slice");
+    let p = col.procs.out.iter().find(|p| p.pid == 500).expect("the process with a D thread is in the union");
+    assert_eq!((p.why, p.d_tasks, p.state), ("D", 1, 'S'));
+    assert_eq!(col.procs.dmap.get("/system.slice/a.service"), Some(&1));
+}
+
+#[test]
+fn s11_orphans_are_removed_and_the_cap_counts_the_whole_directory() {
+    let root = tmp("s11");
+    let cfg = cfg_for(&root);
+    fs::create_dir_all(root.join("cold")).unwrap();
+    fs::create_dir_all(root.join("tm")).unwrap();
+    put(&root, "cold/oldtier-123.seg", "orphan");
+    put(&root, "tm/hot-999.seg", "wrong medium dir? no: a configured tier file stays");
+    let _ = Store::open(&cfg, 0, 0).unwrap();
+    assert!(!root.join("cold/oldtier-123.seg").exists());
+    // a configured tier's file in the wrong directory is an orphan too
+    put(&root, "cold/hot-5.seg", "x");
+    let _ = Store::open(&cfg, 0, 0).unwrap();
+    assert!(!root.join("cold/hot-5.seg").exists());
+    // cap 1500 with 1400 bytes of dictionary: segments must leave room for it
+    let tiers = "[[tier]]\nname = \"cold\"\nstep_s = 1\nkeep_s = 86400\nsegment_s = 3600\nmedium = \"disk\"\n";
+    let root = tmp("s11b");
+    let cfg = Config::parse(&cfg_text(&root, 4_000_000, tiers, 1500, 3)).unwrap();
+    fs::create_dir_all(root.join("cold")).unwrap();
+    put(&root, "cold/mets.dict", &"G x\n".repeat(350));
+    let mut st = Store::open(&cfg, 350, 0).unwrap();
+    let mut d = Dict::default();
+    let (e, m) = (d.ent("cg:/x", 0), d.met("g", false));
+    let base = wall_ms() - 100_000;
+    for i in 0..40u64 {
+        st.push(&one_val(e, m, i as f64 * 1.37), base + i * 1000, 1000, &d);
+        assert!(st.sizes().1 + st.other_bytes() <= 1500, "frame {i}: {} + {}", st.sizes().1, st.other_bytes());
+    }
+}
+
+#[test]
+fn s12_a_cgroup_recreated_at_the_same_path_is_a_new_incarnation() {
+    let (root, mut col) = world("s12");
+    tick(&mut col, 1);
+    // a new directory that exists at the same time as the old one has another inode number
+    let fresh = root.join("cg/zz-fresh");
+    fs::create_dir_all(&fresh).unwrap();
+    let old = root.join("cg/besteffort.slice");
+    fs::remove_dir_all(&old).unwrap();
+    fs::rename(&fresh, &old).unwrap();
+    tick(&mut col, 2);
+    let n = col.events.iter().filter(|e| e.json.contains("cgroup_vanished") && e.json.contains("recreated") && e.json.contains("cg:/besteffort.slice")).count();
+    assert_eq!(n, 1, "{:?}", col.events.iter().map(|e| e.json.clone()).collect::<Vec<_>>());
+}
+
+#[test]
+fn s14_events_survive_torn_lines_bad_utf8_and_psi_has_hysteresis() {
+    let (root, mut col) = world("s14");
+    let ts = wall_ms();
+    let good = format!("{{\"ts_ms\":{ts},\"mono_ms\":1,\"type\":\"oom_kill\",\"entity\":\"cg:/a\",\"detail\":{{}}}}\n");
+    let mut bytes = good.clone().into_bytes();
+    bytes.extend_from_slice(b"\xff\xfe\xfd not json\n");
+    bytes.extend_from_slice(good.as_bytes());
+    bytes.extend_from_slice(b"{\"ts_ms\":1,\"type\":\"torn");
+    fs::write(root.join("ev.jsonl"), &bytes).unwrap();
+    tick(&mut col, 1);
+    let ctx = ctx_with(&root, &mut col, 4_000_000);
+    let r = j(&handle(&ctx, r#"{"req":"events","window_s":60}"#));
+    assert_eq!(r["events"].as_array().unwrap().len(), 2, "invalid UTF-8 and a torn tail do not hide the other events");
+    let mut st = Store::open(&ctx.cfg, 0, 0).unwrap();
+    st.append_events(&["{\"ts_ms\":1}".to_string()]);
+    let text = fs::read(root.join("ev.jsonl")).unwrap();
+    assert!(text.ends_with(b"torn\n{\"ts_ms\":1}\n"), "the torn line was ended, the new event did not merge with it");
+    // PSI oscillating around the threshold: one `up`, no flapping
+    let root2 = tmp("s14p");
+    mk_proc(&root2);
+    put(&root2, "cg/cpu.pressure", "some avg10=1.00 avg60=0.00 avg300=0.00 total=1\n");
+    let mut col2 = Collector::new(cfg_for(&root2), Dict::default(), Instant::now());
+    tick(&mut col2, 1);
+    let mut crossings = 0;
+    for (n, v) in [(2, 26.0), (3, 24.0), (4, 26.0), (5, 24.5), (6, 10.0)] {
+        put(&root2, "cg/cpu.pressure", &format!("some avg10={v:.2} avg60=0.00 avg300=0.00 total=1\n"));
+        tick(&mut col2, n);
+        crossings += col2.events.iter().filter(|e| e.json.contains("psi_cross")).count();
+    }
+    assert_eq!(crossings, 2, "up at 26, down only below 80% of 25 (at 10)");
+}
+
+#[test]
+fn s15_a_second_instance_is_refused_the_socket() {
+    let (root, mut col) = world("s15");
+    tick(&mut col, 1);
+    let a = ctx_with(&root, &mut col, 4_000_000);
+    crate::serve::spawn(a.clone()).unwrap();
+    let b = ctx_with(&root, &mut col, 4_000_000);
+    let e = crate::serve::spawn(b).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::AddrInUse);
+    let (mut s, mut r) = connect(&a.cfg.sampler.socket_path);
+    assert_eq!(rpc(&mut s, &mut r, r#"{"req":"hello"}"#)["ok"], true, "the first instance keeps its socket");
+    assert_eq!(fs::metadata(&a.cfg.sampler.socket_path).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
+#[test]
+fn s16_files_are_created_private() {
+    let root = tmp("s16");
+    let cfg = cfg_for(&root);
+    let mut d = Dict::default();
+    let (e, m) = (d.ent("cg:/x", 0), d.met("g", false));
+    let mut st = Store::open(&cfg, 0, 0).unwrap();
+    let base = wall_ms() / 1000 * 1000 - 3000;
+    st.push(&one_val(e, m, 1.0), base, 1000, &d);
+    st.sync_dict(&mut d);
+    for p in seg_files(&root.join("tm"), "hot-").into_iter().chain(seg_files(&root.join("cold"), "cold-")).chain([root.join("cold/mets.dict"), root.join("cold/ents.dict"), root.join("ev.jsonl")]) {
+        assert_eq!(fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600, "{}", p.display());
+    }
+}
+
+#[test]
+fn s17_p95_of_large_gauges_is_exact_and_never_above_max() {
+    let root = tmp("s17");
+    let cfg = cfg_for(&root);
+    let mut d = Dict::default();
+    let (e, m) = (d.ent("cg:/x", 0), d.met("mem.big", false));
+    let mut st = Store::open(&cfg, 0, 0).unwrap();
+    let base = wall_ms() / 1000 * 1000 - 15_000;
+    let big = (1u64 << 24) as f64;
+    for i in 0..4u64 {
+        st.push(&one_val(e, m, big + 1.0 + 2.0 * i as f64), base + i * 1000, 1000, &d);
+    }
+    st.sync_dict(&mut d);
+    let warm = query(&cfg, "cg:/x", "mem.big", "warm");
+    let w = &warm["points"].as_array().unwrap()[0];
+    assert!(w[4].as_f64().unwrap() <= w[2].as_f64().unwrap(), "p95 {} <= max {}", w[4], w[2]);
+    assert_eq!(w[2].as_f64().unwrap(), big + 3.0);
+}
+
+#[test]
+fn s19_a_huge_window_does_not_wrap() {
+    let (root, mut col) = world("s19");
+    tick(&mut col, 1);
+    let ctx = ctx_with(&root, &mut col, 4_000_000);
+    let mut st = Store::open(&ctx.cfg, 0, 0).unwrap();
+    st.append_events(&[mk_event(Instant::now(), "oom_kill", "cg:/a", "{}").json]);
+    let r = j(&handle(&ctx, r#"{"req":"events","window_s":18446744073709551615}"#));
+    assert_eq!(r["events"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn slurp_reads_until_eof_because_seq_files_answer_in_chunks() {
+    extern "C" {
+        fn mkfifo(path: *const std::os::raw::c_char, mode: u32) -> i32;
+    }
+    let root = tmp("slurp");
+    let fifo = root.join("vmstat");
+    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { mkfifo(c.as_ptr(), 0o600) }, 0);
+    let p = fifo.clone();
+    let w = std::thread::spawn(move || {
+        let mut f = fs::OpenOptions::new().write(true).open(&p).unwrap();
+        f.write_all(b"pswpin 1\n").unwrap();
+        f.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(300)); // a second chunk, like seq_file's next buffer
+        f.write_all(b"zswpin 2\n").unwrap();
+    });
+    let mut s = Slurp::new();
+    let got = s.read(fifo.to_str().unwrap()).unwrap().to_vec();
+    w.join().unwrap();
+    assert_eq!(String::from_utf8(got).unwrap(), "pswpin 1\nzswpin 2\n", "a short first read is not the end of the file");
+}
+
+#[test]
+fn vmstat_keys_the_kernel_lacks_are_typed_states_not_missing() {
+    let (root, mut col) = world("vmkeys");
+    put(&root, "proc/vmstat", "pswpin 5\nzswpin 7\npgmajfault 10\n");
+    tick(&mut col, 1);
+    assert_eq!(get(&col, "host", "vm.zswpin").unwrap().raw, 7);
+    for k in ["vm.zswpout", "vm.zswpwb", "vm.pgscan_direct", "vm.oom_kill", "vm.workingset_activate_file"] {
+        assert_eq!(get(&col, "host", k).unwrap().st, stc::NA_FEATURE, "{k}");
+    }
+    fs::remove_file(root.join("proc/vmstat")).unwrap();
+    tick(&mut col, 2);
+    assert_eq!(get(&col, "host", "vm.zswpin").unwrap().st, stc::UN_READ, "an unreadable file is unavailable");
+}
+
+#[test]
+fn view_additions_pids_max_swap_current_and_root_memory_from_meminfo() {
+    let root = tmp("views");
+    mk_proc(&root);
+    put(&root, "proc/meminfo", "MemTotal: 1000 kB\nMemAvailable: 400 kB\nSwapTotal: 500 kB\nSwapFree: 300 kB\nMemFree: 100 kB\n");
+    put(&root, "cg/a/memory.current", "4096\n");
+    put(&root, "cg/a/memory.swap.current", "8192\n");
+    put(&root, "cg/a/pids.max", "max\n");
+    put(&root, "cg/b/pids.max", "128\n");
+    let mut col = Collector::new(cfg_for(&root), Dict::default(), Instant::now());
+    tick(&mut col, 1);
+    assert_eq!(get(&col, "cg:/a", "mem.swap_current").unwrap().v, 8192.0);
+    assert_eq!(sticky(&col, "cg:/a", "limit.pids.max").unwrap().v, -1.0);
+    assert_eq!(sticky(&col, "cg:/b", "limit.pids.max").unwrap().v, 128.0);
+    assert_eq!(get(&col, "cg:/", "mem.current").unwrap().v, 600.0 * 1024.0, "root RAM = MemTotal - MemAvailable");
+    assert_eq!(get(&col, "cg:/", "mem.swap_current").unwrap().v, 200.0 * 1024.0);
+}
+
+#[test]
+fn current_fields_projection_and_compact_form() {
+    let (root, mut col) = world("proj");
+    tick(&mut col, 1);
+    put(&root, "cg/cpu.stat", "usage_usec 10000500\nuser_usec 1\nsystem_usec 1\nnr_periods 1\nnr_throttled 0\nthrottled_usec 0\n");
+    tick(&mut col, 2);
+    let ctx = ctx_with(&root, &mut col, 4_000_000);
+    let full = handle(&ctx, r#"{"req":"current","procs":false}"#);
+    let fp = handle(&ctx, r#"{"req":"current","procs":false,"fields":["mem.current","cpu.usage_usec","limit.*"]}"#);
+    let compact = handle(&ctx, r#"{"req":"current","procs":false,"compact":true,"fields":["mem.current","cpu.usage_usec"]}"#);
+    assert!(fp.len() < full.len() / 3 && compact.len() < fp.len(), "{} {} {}", full.len(), fp.len(), compact.len());
+    let f = j(&fp);
+    let r = f["entities"]["cg:/"].as_object().unwrap();
+    assert!(r.keys().all(|k| k == "mem.current" || k == "cpu.usage_usec" || k.starts_with("limit.")), "{:?}", r.keys().collect::<Vec<_>>());
+    assert!(r["cpu.usage_usec"]["raw"].is_number(), "projection alone keeps the full value objects");
+    let c = j(&compact);
+    let root_ent = &c["entities"]["cg:/"];
+    assert_eq!(root_ent["mem.current"], 4_096_000_000.0);
+    assert_eq!(root_ent["cpu.usage_usec"][0], 500.0, "counters are [delta, rate]");
+    assert!(!compact.contains("\"raw\""));
+    assert!(j(&full)["entities"]["cg:/"]["cpu.usage_usec"]["raw"].is_number(), "default behaviour is unchanged");
+}
+
+#[test]
+fn s20_memory_stat_counters_are_classified_explicitly() {
+    for k in ["swpin_zero", "swpout_zero", "numa_pages_migrated", "numa_pte_updates", "numa_hint_faults", "pgfault", "thp_fault_alloc"] {
+        assert!(crate::collect::is_mem_counter_for_test(k), "{k}");
+    }
+    assert!(!crate::collect::is_mem_counter_for_test("anon"));
+    assert!(!crate::collect::is_mem_counter_for_test("file_dirty"));
 }

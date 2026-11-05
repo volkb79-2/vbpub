@@ -162,6 +162,11 @@ def test_systemd_templates_are_packaged() -> None:
     for line in ("MemoryMin=48M", "MemoryHigh=96M", "MemoryMax=128M", "MemorySwapMax=0", "CPUQuota=25%", "IOWeight=20", "TasksMax=32"):
         assert line in slice_unit, line  # D-024 envelope
     assert "RuntimeDirectoryPreserve=yes" in service
+    # S-07: the Python daemon does not share the sampler's 128M slice
+    assert "Slice=topos-legacy.slice" in service and "Slice=topos.slice" not in service
+    legacy = (root / "assets/systemd/topos-legacy.slice").read_text()
+    for line in ("MemoryHigh=256M", "MemoryMax=512M", "MemorySwapMax=1G", "TasksMax=512", "CPUWeight=50"):
+        assert line in legacy, line
     sampler = (root / "assets/systemd/topos-sampler.service").read_text()
     assert "RuntimeDirectoryPreserve=yes" in sampler and "Slice=topos.slice" in sampler and "topos-sampler" in sampler
 
@@ -246,7 +251,7 @@ def test_install_plan_contains_correct_template_content() -> None:
     assert "d /run/topos 0750 root topos -" in plan.tmpfiles_content
     assert "topos.service" in plan.service_asset
     assert "topos.slice" in plan.slice_asset
-    assert "MemoryMax=512M" in plan.slice_content
+    assert "MemoryMax=128M" in plan.slice_content  # D-024 envelope of topos.slice (the sampler's)
     assert "topos.tmpfiles" in plan.tmpfiles_asset
 
 

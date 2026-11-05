@@ -7,7 +7,8 @@ Type=simple
 User=root
 Group=topos
 UMask=0007
-Slice=topos.slice
+# S-07: its own slice with its previous limits; topos.slice (128M) is the sampler's envelope.
+Slice=topos-legacy.slice
 RuntimeDirectory=topos
 RuntimeDirectoryMode=0750
 # Shared with topos-sampler.service: a restart of either keeps the other's files.
@@ -25,7 +26,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 
 # Create the topos group and add approved users before enabling this unit.
-# The daemon remains read-only; clients attach over the group-readable socket.
+# The daemon remains read-only; clients attach over its socket. (The Rust sampler's socket is
+# root-only 0600: its `current` carries full command lines. Group access needs redaction first.)
 
 [Install]
 WantedBy=multi-user.target

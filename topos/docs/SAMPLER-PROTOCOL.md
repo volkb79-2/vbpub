@@ -172,3 +172,60 @@ starts and exits between sweeps without using CPU or entering D state can be mis
 `protocol` changes on incompatible wire changes; `schema` changes when metric names, field order or
 state codes change meaning. Adding metrics, entities, response fields and state codes is compatible;
 clients ignore unknown fields and treat an unknown state code as `unavailable`.
+
+## Hardening and additions (S2, 2026-11-05; wire-compatible, `protocol` 1, `schema` 1)
+
+Everything below is additive: new fields, one new error code, two new state codes (append-only
+table). A client that ignores unknown fields and treats unknown states as `unavailable` is unaffected.
+
+- **Counter that goes backwards (S-04).** The tick carries state `counter_reset` (code 12, `unavailable`;
+  `raw` = the new reading, no `v`, no rate) and the reading becomes the baseline. This replaces the
+  earlier "the reading becomes the delta" rule, which turned kernel glitches into spikes. `/proc/stat`
+  `iowait` going backwards is clamped to a delta of 0 (a value, not a reset). A value that does not
+  parse is `unavailable parse_error`, never 0. Code 13 `read_timeout`: a bounded helper did not answer.
+- **Errors.** `busy` (at most `limits.max_heavy_requests` = 2 `series`/`events` run at once; retry),
+  `internal` (a handler panicked; the daemon is unaffected).
+- **Stored history (S-01).** Frames carry magic, length, crc32 and timestamp. `series` adds
+  `corrupt_frames` (number of corrupt frames hit; reading a segment stops at the first one, so that
+  is a gap). `series` reads one frame at a time (at most 24 MiB decoded) and the entity/metric tables of
+  the live snapshot. `status.store`: `enabled`, `queue_len`, `dropped_frames` (frames the writer could not
+  take: the disk stalled), `writer_lag_ms`, `last_job_us`, `write_errors`, `last_error`,
+  `frames_skipped` (not written because the dictionary was not durable), `torn_frames_seen` (cut at
+  start-up), `corrupt_frame_reads`. `status.disk.cold_other_bytes` counts dictionaries and events
+  against `cold_cap_bytes`. Sampling never does disk IO; `last_stage_us.store` is the writer's last job.
+- **Throttling (S-06).** `status.throttle` reads `cpu.stat`/`memory.events` of the first ancestor of the
+  sampler's cgroup that carries a limit (`cpu.max` set; `memory.max`/`memory.high` set) and names it in
+  `throttle.cpu_cgroup` / `throttle.memory_cgroup` (`null` + `not_applicable` when none). `status.cmdline`:
+  `pending`, `timeouts`.
+- **OOM events (S-05).** One `oom_kill` event per kill, on the owning cgroup, from `memory.events.local`;
+  without that file, on the deepest cgroup whose hierarchical counter rose. `memevl.*` (counters) are the
+  non-hierarchical `memory.events.local` values.
+- **Processes.** `cmdline` is read by a helper pool that may time out: rows carry `cmdline_state`
+  (`value` when `cmdline` is there; otherwise `unavailable not_read_this_tick` or `read_timeout`) and
+  `d_tasks`. **Threads (S-10):** `state` of the leader is shown; `d_tasks`, `blkio_delay_ms_per_s` and
+  `run_delay_ms_per_s` cover all threads (at most 1024 per process, 4096 task-file reads per tick) for
+  candidates (union, CPU rose, D, new). A process whose leader sleeps while a worker is in D and that is
+  no candidate is not seen by the cheap pass: `pids.d_unseen` = `host.procs_blocked` minus the D tasks
+  counted; while it is positive, multi-threaded processes are scanned in a budgeted rotating slice, so a
+  hidden D thread is found within a few ticks. `pids.task_scans` is the number of processes scanned
+  per thread this tick. `procs.d_state` and `pids.d_state` count tasks.
+- **Cgroup identity (S-12).** The same path with another kernel directory id is a new cgroup:
+  `cgroup_vanished` (`detail.reason` = `recreated`) and fresh counters. `psi_cross` has hysteresis:
+  `down` only below 80% of the threshold.
+- **Views (additions).** `limit.pids.max` (`-1` = max), `mem.swap_current` per cgroup (`memory.swap.current`),
+  and for the root cgroup, which has neither `memory.current` nor `memory.swap.current`: `mem.current` =
+  MemTotal - MemAvailable and `mem.swap_current` = SwapTotal - SwapFree from meminfo. `vm.*`: every key
+  listed for `host` is always present; a key the kernel does not list is `not_applicable feature_absent`
+  (an unreadable `/proc/vmstat`: `unavailable read_error`). (Bug fixed: seq_file files such as
+  `/proc/vmstat` return one chunk per `read(2)`; the reader stopped after the first, dropping every key
+  past about 4 KiB, among them `zswpin`, `zswpout`, `zswpwb`.)
+- **`current` shaping.** `{"req":"current","fields":["mem.current","cpu.*"],"compact":true}`. `fields`: exact
+  metric names, an entry ending in `*` is a prefix; entities without a requested metric are omitted;
+  absent = all. `compact`: no `raw`; a gauge is a bare number, a counter `[delta, rate_per_s]`, an
+  `unavailable` state stays `{"s","why"}`, `not_applicable` states are left out. Default unchanged.
+- **Transport.** Socket mode stays 0600 (root only): `current` carries full command lines. One sampler per
+  socket (`<socket>.lock`); a second one fails to start. A reply has an overall write deadline of
+  4 x `client_write_ms`.
+- **Limits that remain.** Rollup bucket boundaries are tick counts since start, not wall-aligned; a
+  counter bucket's `dt_ms` includes state ticks. `memory.stat` keys unknown to the classifier default to
+  gauge; the classification is stored in `mets.dict` at first sight.

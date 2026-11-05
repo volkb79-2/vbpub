@@ -1,0 +1,12 @@
+[Unit]
+Description=Resource envelope for the legacy Python topos daemon (until the Rust sampler replaces it)
+
+[Slice]
+# S-07: topos.slice carries the D-024 envelope (128M) sized for topos-sampler alone. The Python
+# daemon measured 75-99 MB RSS and used to run in the earlier, larger slice; these are those
+# earlier limits, kept for it. Delete this unit together with topos.service (D-026).
+CPUWeight=50
+MemoryHigh=256M
+MemoryMax=512M
+MemorySwapMax=1G
+TasksMax=512
