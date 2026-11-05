@@ -25,7 +25,8 @@ budget = "30m"
 [lanes.topos-sampler]
 kind = "command"
 environment = "bare-host"
-argv = ["bash", "-c", "cd {worktree}/topos && docker buildx build -f sampler/Dockerfile --target gate --progress=plain ."]
+# --no-cache-filter: a verdict comes from tests run now, never from a cached layer of an earlier build
+argv = ["bash", "-c", "cd {worktree}/topos && docker buildx build -f sampler/Dockerfile --target gate --no-cache-filter test,conformance --progress=plain ."]
 clean_tree = true
 budget = "20m"
 
