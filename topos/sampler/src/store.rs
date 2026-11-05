@@ -52,12 +52,28 @@ pub static CTR: Counters = Counters {
 };
 static LAST_ERR: Mutex<String> = Mutex::new(String::new());
 /// What start-up found that the operator should know (tmpfs check, foreign files); shown in `status`.
+#[cfg(not(test))]
 static NOTES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+const MAX_NOTES: usize = 16;
+
+/// One process, one store, so one list. Tests run many stores in parallel, one per thread:
+/// a shared list would fill up with other tests' notes and hide the one being asserted.
+fn with_notes<R>(f: impl FnOnce(&mut Vec<String>) -> R) -> R {
+    #[cfg(test)]
+    {
+        thread_local!(static NOTES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) });
+        NOTES.with(|n| f(&mut n.borrow_mut()))
+    }
+    #[cfg(not(test))]
+    {
+        f(&mut NOTES.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
 /// Result of the tmpfs check: 0 not checked, 1 tmpfs, 2 not tmpfs.
 static TMPFS_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub fn startup_notes() -> Vec<String> {
-    NOTES.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    with_notes(|g| g.clone())
 }
 
 /// `None` when the store is disabled or the check did not run.
@@ -70,10 +86,13 @@ pub fn tmpfs_state() -> Option<bool> {
 }
 
 fn add_note(msg: String) {
-    let mut g = NOTES.lock().unwrap_or_else(|e| e.into_inner());
-    if g.len() < 16 {
-        g.push(msg);
-    }
+    with_notes(|g| {
+        if g.len() + 1 < MAX_NOTES {
+            g.push(msg);
+        } else if g.len() + 1 == MAX_NOTES {
+            g.push("further start-up notes omitted".to_string());
+        }
+    });
 }
 
 pub fn note_error(msg: String) {
