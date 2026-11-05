@@ -21,6 +21,57 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.22.0] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=a985f22b9f878cd4166ded5956863dcb0590522e -->
+
+### Added
+- feat(ciu): lane ciu-gate = release gate R0+R1+R3 (R2 mutation stays on lane ciu, async) (e349de999)
+
+### Fixed
+- fix(ciu): cover tar-fallback glob branches without rsync (golden rsync file set) and drop --maxfail from release lane ciu-gate (b1547152c)
+- fix(ciu): review F1-F6 for remote deploy - exact-label network sweep without foreign disconnects, tar fallback with rsync semantics + vol-* excluded, fail-closed env print, ~ handling and validation order, bounded gitignore text guard (bf437ba17)
+- fix(ciu): non-thin push always excludes .ciu/, ciu.env, .git and applies bundle_excludes (CIU-175) (8b764b4a1)
+- fix(ciu): remote push-deploy preconditions and verb chain (CIU-168..171), declared project images (CIU-173), allocation remedies (CIU-174) (340cff020)
+- fix(ciu): worktree create works with a relayed or absent Docker socket; identity-mismatch refusals name the remedy (CIU-161, CIU-172) (059541163)
+
+### Changed
+- Merge branch 'fix-ciu-161-20261105' (464afcfc8)
+- Merge branch 'fix-r2-lanes-20261105' (cbd358255)
+- cli-extended, ciu: r2 lane cowtree path; ciu request base (601904faa)
+
+### Documentation
+- docs(ciu): file CIU-173 (CIU-117 suffixing misses build-less stacks) and CIU-174 (stale worktree record refusal names no remedy) (57dcf6b4a)
+
+### Testing
+- test(ciu): cover the kept-network-vanished branch of clean (100% branch floor) (4922922d4)
+- test(ciu): clean-path tests stub the tagged-network sweep so they need no Docker daemon (f70505d81)
+- test(ciu): fix two fixtures stale after CIU-168/171 (load_global_config kwargs, tagged network sweep) (ecc4f7f4f)
+- test(ciu): remote down --dir --profile regression and S18 refusal; backlog statuses (CIU-170/173/174) (e3c65bda2)
+- test(ciu): CIU-161 tests do not depend on the machine's Docker socket or an installed ciu distribution (1499e43ef)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- `ciu worktree create`/`ensure` work from the cockpit and from hosts without a Docker socket (CIU-161). The Docker group is now read from the socket the client actually uses (`DOCKER_HOST=unix://...`, e.g. the devcontainer relay) before the classic `/var/run` paths; worktree preparation never requires Docker: with no derivable group the generated `ciu.env` carries an empty `DOCKER_GID` plus one INFO line, and an absent Docker socket skips the runtime-network uniqueness probe (INFO) instead of failing. Docker-using verbs keep a hard refusal whose text now names the remedy (`DOCKER_HOST=unix:///path/to/docker.sock` or `DOCKER_GID=<gid>`). A requested `--branch` name is honoured exactly (oracle test; the rename was not reproducible once preparation no longer aborts).
+- The identity-mismatch refusals of `ciu worktree up` / `ciu up` (a legacy record whose id differs from the path-derived one) now name the recovery: `ciu worktree ensure <name>`, then `--adopt-existing-network` when ownership of the existing network cannot be proven (CIU-172, refusal-text half).
+
+- Remote push-deploy no longer needs machine facts of the control host (CIU-168): `ciu ssh` and `ciu up|down|render|status --gate --host` render the global config with inert placeholders for the identity/machine keys the environment lacks (`DOCKER_GID`, `CONTAINER_UID`, `DOCKER_NETWORK_INTERNAL`, ...) and write nothing, so a control host without Docker, a docker group or a generated `ciu.env` works. `ciu env generate` on an unborn git HEAD is a tagged `[S2.8]` error naming the first-commit remedy instead of a traceback.
+- `ciu up --host` checks its preconditions on the target before any transfer (CIU-169): `ciu` must resolve on the non-login PATH (new optional host key `remote_ciu = "/absolute/path/to/ciu"`; the error names it and the `/usr/local/bin` symlink), and `bundle_dir` is created with its parents (`mkdir -p`; rsync makes only the last element). The S1.7 `.ciu` gitignore guard accepts a `.gitignore` text that lists the pattern when `git check-ignore` cannot answer on a bundle; only files from the bundle root (`REPO_ROOT`) down to the stack count, a later `!.ciu` negation un-ignores, and a rooted `/.ciu` only counts in the stack's own file.
+- SECURITY (CIU-175): the non-thin `ciu up --host` push sent no excludes, so `.ciu/` (materialised host secrets such as the registry read token), `ciu.env`, `.git` and anything in the host's `bundle_excludes` were pushed. Every bundle push (rsync, tar+scp, `--thin`) now always excludes `.git`, `.ciu` (also as a file or symlink), `ciu.env` and `vol-*` (the control host's stack data directories) at any depth and applies the host's `bundle_excludes` on top (`activate.bundle_excludes_for`); a non-list value is a config error (exit 2) before anything is sent, not even the preflight mkdir. What is NOT excluded: a rendered `ciu.toml`/`ciu.compose.yml` at a stack root is pushed (the target re-renders it) -- list it in `bundle_excludes` if it carries values that must not leave the control host. The tar+scp fallback now applies rsync's pattern semantics (nested `.git`, slash-less globs at any depth, `dir/` patterns, anchored paths); a test runs real `tar` and real `rsync` on one fixture tree and compares the shipped file sets. A test runs the generated rsync command against temp dirs and proves a pre-existing target instance file is neither overwritten nor deleted and `.ciu/` never transfers.
+- Remote verbs after the push run inside the bundle with its environment (CIU-170): `render`/`down`/`status --gate --host` send `cd <bundle_dir> && { env=$(ciu env print) || exit $?; eval "$env"; } && ciu ...` (a failing `env print` aborts the command instead of running the verb without the environment). A leading `~/` in `bundle_dir`/`remote_ciu` expands to the ssh user's home; `~user`, whitespace in `bundle_dir` and a non-string `remote_ciu` are refused with exit 2 before anything is sent. `--dir STACK` is accepted after `--host` by `up`, `down` and `status --gate` (the 7.20 registry had declared `--dir` and `--host` mutually exclusive, contradicting SPEC S14.2); `ciu status --gate --dir STACK` gates one stack locally. `--layout` conflicts with `--host`, `--dir` and `--profile` as before.
+- `ciu clean` removes what a standalone or pushed bundle leaves behind (CIU-171): the workspace network is kept only while a devcontainer is actually attached to it (otherwise removed with a one-line message), and, when the deploy tags are set, the compose networks of stack directories outside the profile selection (a stack deployed with `up --dir` or pushed) are removed with the containers. They are matched by the exact compose project label value `{project}-{env}-{stack dir}` of a stack directory that exists in the bundle, never by name prefix (`prod` does not touch `prod-x`), and a network that still has an attached foreign endpoint is kept and named, never disconnected.
+- Declared project images are instance-scoped in a linked worktree without a `build:` stanza (CIU-173): `[ciu.worktree] project_images = ["dstdns/api:local", ...]` lists images the project builds with `ciu bake`; every service using one gets the `-<instance_id>` tag like a build-declared image, a stack using none still needs no worktree identity, and the key can only add scoping.
+- A failed `ciu worktree create` preparation names its way out (CIU-174): the kept checkout and record are reported as a partial allocation with `ciu worktree ensure NAME` / `ciu worktree rm NAME`, and the "path is already recorded" refusal (a stale shared record after a manual `git worktree remove`) names the same two commands. The exception type is unchanged.
+
+- New run-gate lane `ciu-gate` (assay.toml `[lanes.ciu-gate]`): the release gate R0+R1+R3 (full suite at the 100% line and branch floor, diff coverage, import-break canary) without the R2 mutation sweep, which stays on lane `ciu` and runs async on the latest release (operator decision 2026-11-05). Run it as `run-gate --base <previous release tag> ciu-gate`.
+
+### Adoption / Migration Notes
+- Safe to ignore: additive. A checkout prepared without a Docker socket has an empty `DOCKER_GID`; set `DOCKER_HOST` (or `DOCKER_GID`) and run `ciu env generate` there before `ciu up`.
+- Needs action if you push-deploy to a host whose ciu is not on the non-login PATH: set `remote_ciu = "/path/to/ciu"` in `[deploy.hosts.<name>]` (or symlink into `/usr/local/bin`); the push now stops with that instruction instead of failing mid-chain. Remote `down`/`render`/`status --gate` now require the bundle (and its `ciu.env`) to exist on the target.
+- Needs action if you parse `ciu down --host`/`status --gate --host` remote command text: it now starts with the `cd <bundle_dir> && { env=$(ciu env print) || exit $?; eval "$env"; } &&` prefix. Needs action if a host row has a whitespace `bundle_dir` or a non-string `remote_ciu`: both are now refused (exit 2). `vol-*` directories are no longer pushed.
+- Dstdns-shaped projects (compose without `build:`, images from `ciu bake`): add `project_images` to `[ciu.worktree]` in the primary CIU root's global config so a worktree runs its own `:local-<id>` images.
+<!-- cmru: pending release notes end -->
+
 ## [7.21.0] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=c7df3cfe5a34ab3cf16eeed68e2b55f063831372 -->
@@ -79,26 +130,6 @@ the technical detail below it.
 <!-- cmru: pending release notes end -->
 
 ## [Unreleased]
-
-### Fixed
-- `ciu worktree create`/`ensure` work from the cockpit and from hosts without a Docker socket (CIU-161). The Docker group is now read from the socket the client actually uses (`DOCKER_HOST=unix://...`, e.g. the devcontainer relay) before the classic `/var/run` paths; worktree preparation never requires Docker: with no derivable group the generated `ciu.env` carries an empty `DOCKER_GID` plus one INFO line, and an absent Docker socket skips the runtime-network uniqueness probe (INFO) instead of failing. Docker-using verbs keep a hard refusal whose text now names the remedy (`DOCKER_HOST=unix:///path/to/docker.sock` or `DOCKER_GID=<gid>`). A requested `--branch` name is honoured exactly (oracle test; the rename was not reproducible once preparation no longer aborts).
-- The identity-mismatch refusals of `ciu worktree up` / `ciu up` (a legacy record whose id differs from the path-derived one) now name the recovery: `ciu worktree ensure <name>`, then `--adopt-existing-network` when ownership of the existing network cannot be proven (CIU-172, refusal-text half).
-
-- Remote push-deploy no longer needs machine facts of the control host (CIU-168): `ciu ssh` and `ciu up|down|render|status --gate --host` render the global config with inert placeholders for the identity/machine keys the environment lacks (`DOCKER_GID`, `CONTAINER_UID`, `DOCKER_NETWORK_INTERNAL`, ...) and write nothing, so a control host without Docker, a docker group or a generated `ciu.env` works. `ciu env generate` on an unborn git HEAD is a tagged `[S2.8]` error naming the first-commit remedy instead of a traceback.
-- `ciu up --host` checks its preconditions on the target before any transfer (CIU-169): `ciu` must resolve on the non-login PATH (new optional host key `remote_ciu = "/absolute/path/to/ciu"`; the error names it and the `/usr/local/bin` symlink), and `bundle_dir` is created with its parents (`mkdir -p`; rsync makes only the last element). The S1.7 `.ciu` gitignore guard accepts a `.gitignore` text that lists the pattern when `git check-ignore` cannot answer on a bundle; only files from the bundle root (`REPO_ROOT`) down to the stack count, a later `!.ciu` negation un-ignores, and a rooted `/.ciu` only counts in the stack's own file.
-- SECURITY (CIU-175): the non-thin `ciu up --host` push sent no excludes, so `.ciu/` (materialised host secrets such as the registry read token), `ciu.env`, `.git` and anything in the host's `bundle_excludes` were pushed. Every bundle push (rsync, tar+scp, `--thin`) now always excludes `.git`, `.ciu` (also as a file or symlink), `ciu.env` and `vol-*` (the control host's stack data directories) at any depth and applies the host's `bundle_excludes` on top (`activate.bundle_excludes_for`); a non-list value is a config error (exit 2) before anything is sent, not even the preflight mkdir. What is NOT excluded: a rendered `ciu.toml`/`ciu.compose.yml` at a stack root is pushed (the target re-renders it) -- list it in `bundle_excludes` if it carries values that must not leave the control host. The tar+scp fallback now applies rsync's pattern semantics (nested `.git`, slash-less globs at any depth, `dir/` patterns, anchored paths); a test runs real `tar` and real `rsync` on one fixture tree and compares the shipped file sets. A test runs the generated rsync command against temp dirs and proves a pre-existing target instance file is neither overwritten nor deleted and `.ciu/` never transfers.
-- Remote verbs after the push run inside the bundle with its environment (CIU-170): `render`/`down`/`status --gate --host` send `cd <bundle_dir> && { env=$(ciu env print) || exit $?; eval "$env"; } && ciu ...` (a failing `env print` aborts the command instead of running the verb without the environment). A leading `~/` in `bundle_dir`/`remote_ciu` expands to the ssh user's home; `~user`, whitespace in `bundle_dir` and a non-string `remote_ciu` are refused with exit 2 before anything is sent. `--dir STACK` is accepted after `--host` by `up`, `down` and `status --gate` (the 7.20 registry had declared `--dir` and `--host` mutually exclusive, contradicting SPEC S14.2); `ciu status --gate --dir STACK` gates one stack locally. `--layout` conflicts with `--host`, `--dir` and `--profile` as before.
-- `ciu clean` removes what a standalone or pushed bundle leaves behind (CIU-171): the workspace network is kept only while a devcontainer is actually attached to it (otherwise removed with a one-line message), and, when the deploy tags are set, the compose networks of stack directories outside the profile selection (a stack deployed with `up --dir` or pushed) are removed with the containers. They are matched by the exact compose project label value `{project}-{env}-{stack dir}` of a stack directory that exists in the bundle, never by name prefix (`prod` does not touch `prod-x`), and a network that still has an attached foreign endpoint is kept and named, never disconnected.
-- Declared project images are instance-scoped in a linked worktree without a `build:` stanza (CIU-173): `[ciu.worktree] project_images = ["dstdns/api:local", ...]` lists images the project builds with `ciu bake`; every service using one gets the `-<instance_id>` tag like a build-declared image, a stack using none still needs no worktree identity, and the key can only add scoping.
-- A failed `ciu worktree create` preparation names its way out (CIU-174): the kept checkout and record are reported as a partial allocation with `ciu worktree ensure NAME` / `ciu worktree rm NAME`, and the "path is already recorded" refusal (a stale shared record after a manual `git worktree remove`) names the same two commands. The exception type is unchanged.
-
-- New run-gate lane `ciu-gate` (assay.toml `[lanes.ciu-gate]`): the release gate R0+R1+R3 (full suite at the 100% line and branch floor, diff coverage, import-break canary) without the R2 mutation sweep, which stays on lane `ciu` and runs async on the latest release (operator decision 2026-11-05). Run it as `run-gate --base <previous release tag> ciu-gate`.
-
-### Adoption / Migration Notes
-- Safe to ignore: additive. A checkout prepared without a Docker socket has an empty `DOCKER_GID`; set `DOCKER_HOST` (or `DOCKER_GID`) and run `ciu env generate` there before `ciu up`.
-- Needs action if you push-deploy to a host whose ciu is not on the non-login PATH: set `remote_ciu = "/path/to/ciu"` in `[deploy.hosts.<name>]` (or symlink into `/usr/local/bin`); the push now stops with that instruction instead of failing mid-chain. Remote `down`/`render`/`status --gate` now require the bundle (and its `ciu.env`) to exist on the target.
-- Needs action if you parse `ciu down --host`/`status --gate --host` remote command text: it now starts with the `cd <bundle_dir> && { env=$(ciu env print) || exit $?; eval "$env"; } &&` prefix. Needs action if a host row has a whitespace `bundle_dir` or a non-string `remote_ciu`: both are now refused (exit 2). `vol-*` directories are no longer pushed.
-- Dstdns-shaped projects (compose without `build:`, images from `ciu bake`): add `project_images` to `[ciu.worktree]` in the primary CIU root's global config so a worktree runs its own `:local-<id>` images.
 
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->
