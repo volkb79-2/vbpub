@@ -425,8 +425,9 @@ def test_explicit_sampler_source_fails_closed_on_the_command_line(tmp_path, caps
     assert "--cgroup-root" in capsys.readouterr().err
     assert main(["--config", str(cfg), "--source", "sampler", "--once", "--json", "--cgroup-root", str(tmp_path)]) == 2
     assert "--cgroup-root" in capsys.readouterr().err
-    assert main(["--config", str(cfg), "--source", "local", "--replay", str(tmp_path / "r.jsonl")]) == 2
-    assert "live collection only" in capsys.readouterr().err
+    for mode in ("local", "auto"):  # an explicit auto is refused too: it means nothing for a replay
+        assert main(["--config", str(cfg), "--source", mode, "--replay", str(tmp_path / "r.jsonl")]) == 2
+        assert "live collection only" in capsys.readouterr().err
 
 
 class _LocalCollector:
@@ -491,3 +492,14 @@ def test_once_json_a_failing_sampler_is_an_error_not_a_local_frame(fake, tmp_pat
     assert cli.main(["--config", str(cfg), "--source", "sampler", "--once", "--json"]) == 2
     assert printed == [] and _LocalCollector.calls == 0
     assert str(fake.path) in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("over", [{"ts_ms": None}, {"ts_ms": "soon"}])  # TypeError, ValueError in the client
+def test_once_json_an_unusable_sampler_frame_is_an_error_not_a_traceback(fake, tmp_path, monkeypatch, capsys, over) -> None:
+    cli, printed = _route_once(monkeypatch)
+    fake.current_over.update(over)
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(f'[sampler]\nsocket_path = "{fake.path}"\ntimeout_s = 1.0\n')
+    assert cli.main(["--config", str(cfg), "--source", "sampler", "--once", "--json"]) == 2
+    assert printed == [] and _LocalCollector.calls == 0
+    assert "unusable frame" in capsys.readouterr().err
