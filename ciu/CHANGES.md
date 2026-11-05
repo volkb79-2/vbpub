@@ -21,6 +21,25 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.23.2] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=3f5283109f50e0467a2aea61009a0b41c8098520 -->
+
+### Fixed
+- fix(ciu): clean/reset derive label prefix from project_name; clean refuses before removing anything (CIU-200, explains CIU-198) (25359ba1f)
+
+### Testing
+- test(ciu): kill R2 survivors of ciu 7.23.0 (CIU-201); _is_linked_git_worktree via procutil (equivalent mutants removed) (77820f737)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- fix(ciu): `ciu clean` / `ciu worktree rm` no longer fail on roots without `[deploy.labels]` (tls-edge, pwmcp, topos, nyxloom): `reset_service` derives the orphan-sweep label prefix from `deploy.project_name` when `deploy.labels.prefix` is unset (CIU-200). Clean now evaluates reset's preconditions for every selected stack BEFORE removing any container and refuses with `[CIU-200] ... nothing was removed`; `--dry-run` reports the same refusal. Explains CIU-198's half-cleaned state.
+- Test-strength closeout of the ciu 7.23.0 R2 mutation survivors (CIU-201): new behavioural tests pin the clean ownership helpers (listing, endpoint and network inspection run through a fake `docker` executable), the clean plan, `--dry-run` forwarding of `clean` and `worktree rm`, the symlink-free walks, the own-container inspect, the leftover-adoption tail and the linked-worktree hint shape. `_is_linked_git_worktree` now calls `procutil.run_cmd` (two provably equivalent mutation sites removed). No behaviour change.
+
+### Adoption / Migration Notes
+- Safe to ignore: no config change needed; an explicit `deploy.labels.prefix` still wins.
+<!-- cmru: pending release notes end -->
+
 ## [7.23.1] - 2026-11-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=a6d377dde5f2aeac40f85a0847d69629fc31f240 -->
@@ -218,13 +237,6 @@ the technical detail below it.
 <!-- cmru: pending release notes end -->
 
 ## [Unreleased]
-
-### Fixed
-- fix(ciu): `ciu clean` / `ciu worktree rm` no longer fail on roots without `[deploy.labels]` (tls-edge, pwmcp, topos, nyxloom): `reset_service` derives the orphan-sweep label prefix from `deploy.project_name` when `deploy.labels.prefix` is unset (CIU-200). Clean now evaluates reset's preconditions for every selected stack BEFORE removing any container and refuses with `[CIU-200] ... nothing was removed`; `--dry-run` reports the same refusal. Explains CIU-198's half-cleaned state.
-- Test-strength closeout of the ciu 7.23.0 R2 mutation survivors (CIU-201): new behavioural tests pin the clean ownership helpers (listing, endpoint and network inspection run through a fake `docker` executable), the clean plan, `--dry-run` forwarding of `clean` and `worktree rm`, the symlink-free walks, the own-container inspect, the leftover-adoption tail and the linked-worktree hint shape. `_is_linked_git_worktree` now calls `procutil.run_cmd` (two provably equivalent mutation sites removed). No behaviour change.
-
-### Adoption / Migration Notes
-- Safe to ignore: no config change needed; an explicit `deploy.labels.prefix` still wins.
 
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->
