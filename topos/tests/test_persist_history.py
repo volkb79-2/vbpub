@@ -994,8 +994,8 @@ def test_read_frames_skips_a_segment_corrupted_after_recovery(tmp_path):
 
 
 def test_persisting_frame_stream_feeds_both_ram_and_disk_tiers(tmp_path):
-    from topos.cli import _persisting_frame_stream
     from topos.daemon import FrameBroker
+    from topos.daemon.run import _persisting_frame_stream
 
     cfg = _cfg(tmp_path, segment_frames=2)
     store = PersistentHistoryStore(cfg)
