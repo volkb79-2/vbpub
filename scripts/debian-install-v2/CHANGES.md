@@ -4,6 +4,33 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Added (NC-13 data area)
+- `data_area = none | partition | lvm` (+ `data_partition`, `data_lvm`): the installer
+  creates the middle data partition itself, directly in front of the end-of-disk
+  swap, in the same sfdisk transaction: one partition with btrfs/ext4/xfs, or one
+  LVM PV with a VG and LVs (`{name, size_gb, fs, mount, label}`, free VG space
+  kept, `fs: none` leaves an LV unformatted for ZFS or other use). The 512 GiB
+  numbers (root 160, cow 168, swap 16, reserve) are the default
+  `data_area=partition`. Needs swap_policy=on, root_resize_policy=resize and a
+  capped root; mount collisions, oversized LVs and unfitting areas are refused.
+  `lvm2`/`btrfs-progs`/`xfsprogs` are installed when needed. New allowlist entries:
+  `mkfs.btrfs`, `mkfs.xfs`, `pvcreate`, `vgcreate`, `vgchange`, `lvcreate`, `lvs`,
+  `vgs`, `pvs`. Netcup: `cow-carve.sh`/`provision-runner.sh` detect an
+  installer-created cow (partition or LV labelled `MDT_COW`) and skip carving.
+
+### Fixed (data area review F1-F4)
+- A rerun can no longer delete, renumber or resize a data-area partition that holds a
+  signature (e.g. after changing the swap partition count): the installer refuses with
+  a clear error before any table write.
+- `blkid` failures other than exit 2 are no longer treated as "blank device" (fail
+  closed for mkfs/pvcreate decisions).
+- Partition mode writes `UUID=` into fstab and refuses when another device carries the
+  cow label (ambiguous label with `nofail` would silently leave the cow on root).
+- `data_partition.label` must be `MDT_COW`; `/srv/tree-cache` and `/srv/tree-upper` are
+  refused as data-area mounts; `-f` removed from the `mkfs.btrfs`/`mkfs.xfs` allowlist.
+  There is deliberately no wipe override: a stale foreign signature stops the install
+  (manual remedy in the reinstall runbook).
+
 ### Breaking changes (NC-12 disk layout policy)
 - **Old capped configs are refused.** A `root_max_size_gb` below `min_root_gib`
   (20% of the disk, clamp 8..100 GiB: 100 GiB on 512 GiB, 40 GiB on 200 GiB)
