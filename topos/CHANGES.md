@@ -35,6 +35,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(actions): the Docker owner / protected-ID gate is always on; omitting `owner_inspect` uses the production `docker inspect` (B-039)
 - fix(actions): Docker verbs run by the inspected canonical full ID instead of the raw name, closing the rename race (B-040)
 - fix(collect): io_cap_saturation_pct is judged per device against that device's own io.max cap, with the device attributed (B-012)
+- fix(collect): cgroup io totals (`io_r_bps`/`io_w_bps`/`io_r_iops`/`io_w_iops`/`io_discard_bps`) count only bottom-level block devices (stacked dm/md devices from `/sys/dev/block/<dev>/slaves` are excluded, no double counting); src `exact`, or `derived` when /sys cannot classify; empty io.stat lines skipped
+- feat(collect): io.cost visibility: `host_io_cost_vrate_pct`, `host_io_cost_enabled` (root cgroup `io.cost.qos` + `io.stat` `cost.vrate`, typed unavailable when off) and per-cgroup `io_cost_usage_per_s`
+- fix(collect): docker inspect cached by 64-hex id and evicted when the id leaves the tree; `docker inspect`, `systemctl show` and `tc` have timeouts that degrade to unavailable; `UnitView` 30 s per-unit TTL cache (A-01, A-04)
+- fix(net): one shared interface filter (exact `lo`, `veth*`, `br-*`, `docker*`) for host_meta, the host row and the netns candidate (A-02, A-17)
+- fix(collect): counter baselines pruned when an entity leaves, per-device io.stat deltas taken every tick, intervals from a monotonic clock (A-07)
+- fix(collect): `swap_disk` without `swapcached`, `ratio`, `headroom_*` and `rf_*` report a typed unavailable state instead of exact/None or "warming"; absent `zswpin` makes every anon refault a device refault (A-05, A-06, A-15)
+- fix(registry): `cpu_pct`, `psi_*` and `pids_current` are subtree-scoped; dead `aggregatable` field removed; scope table test (A-09)
+- fix(collect): `io.max` parsed once per cgroup; cgroupfs-driver `docker/<id>` cgroups are recognised (A-18, A-19)
 <!-- cmru: pending release notes end -->
 
 ## [0.4.2] - 2026-10-21

@@ -8,7 +8,9 @@ from typing import Any
 
 from topos.model import CiuMeta, DockerMeta, Entity, EntityKey
 
-DOCKER_SCOPE_RE = re.compile(r"(?:^|/)docker-([0-9a-f]{64})\.scope$")
+# systemd cgroup driver: ``docker-<id>.scope``; cgroupfs driver: ``docker/<id>`` (A-19).
+DOCKER_SCOPE_RE = re.compile(r"(?:^|/)(?:docker-([0-9a-f]{64})\.scope|docker/([0-9a-f]{64}))$")
+DOCKER_INSPECT_TIMEOUT_S = 10.0
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE)
 # The <env>-<name> tail of ciu's ^<project>-<env>-<name>$ container naming
 # (CIU-DEPLOY.md S7.8).  The <project> half is matched as a literal prefix by
@@ -31,11 +33,15 @@ class ContainerResolveError(ValueError):
 
 def docker_id_from_key(key: EntityKey) -> str | None:
     match = DOCKER_SCOPE_RE.search(key)
-    return match.group(1) if match else None
+    return (match.group(1) or match.group(2)) if match else None
 
 
 def default_docker_inspect(container_id: str) -> Any:
-    proc = subprocess.run(["docker", "inspect", container_id], check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    proc = subprocess.run(
+        ["docker", "inspect", container_id],
+        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        timeout=DOCKER_INSPECT_TIMEOUT_S,
+    )
     if proc.returncode != 0:
         return None
     return json.loads(proc.stdout)
@@ -140,21 +146,53 @@ def meta_from_inspect(full_id: str, data: dict[str, Any]) -> DockerMeta:
     )
 
 
+class DockerInspectCache:
+    """Inspect results by 64-hex container id (A-01).
+
+    A container's inspect data is immutable for a given id, so a successful result is
+    kept until the id leaves the cgroup tree. Failures are never cached (a transient
+    dockerd error must be retried), and a timeout degrades to "no docker metadata".
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[str, dict[str, Any]] = {}
+
+    def get(self, cid: str) -> dict[str, Any] | None:
+        return self._data.get(cid)
+
+    def put(self, cid: str, data: dict[str, Any]) -> None:
+        self._data[cid] = data
+
+    def retain(self, live_ids: set[str]) -> None:
+        for cid in [c for c in self._data if c not in live_ids]:
+            del self._data[cid]
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
 def enrich_entities(
     entities: dict[EntityKey, Entity],
     docker_inspect: DockerInspect | None = None,
     known_stack_roots: set[str] | None = None,
+    cache: DockerInspectCache | None = None,
 ) -> dict[EntityKey, Entity]:
     inspect = docker_inspect or default_docker_inspect
     stack_roots = known_stack_roots or set()
     out: dict[EntityKey, Entity] = {}
+    live_ids: set[str] = set()
     for key, entity in entities.items():
         cid = docker_id_from_key(key)
         if cid is None:
             out[key] = entity
             continue
+        live_ids.add(cid)
         try:
-            data = _first_inspect(inspect(cid))
+            data = cache.get(cid) if cache is not None else None
+            if data is None:
+                data = _first_inspect(inspect(cid))
+                if data is not None and cache is not None:
+                    cache.put(cid, data)
             if data is not None:
                 entity.docker = meta_from_inspect(cid, data)
                 # CIU detection: labels first, inference fallback
@@ -170,9 +208,12 @@ def enrich_entities(
                 entity.ciu = ciu
             else:
                 entity.docker = None
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
             entity.docker = None
+            entity.ciu = None
         out[key] = entity
+    if cache is not None:
+        cache.retain(live_ids)
     return out
 
 
