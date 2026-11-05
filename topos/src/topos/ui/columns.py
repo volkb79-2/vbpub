@@ -321,7 +321,28 @@ def _c_eff_min(c: CellCtx) -> Cell:
     return _cfg_bytes(cn(c.ef, "effective_memory_min"), "red" if clamped else "cyan")
 
 
+def _c_swap_max(c: CellCtx) -> Cell:
+    """memory.swap.max: ``max`` is not set, 0 is a real limit (swap off for the cgroup)."""
+    v = cn(c.ef, "swap_max")
+    if v == NA:
+        return _na()
+    if isinstance(v, float):
+        return ("0" if v == 0 else fmt_bytes(v), "yellow")
+    return _unset()
+
+
+def _c_iocost(c: CellCtx) -> Cell:
+    """io.cost.usage as a percentage of one device-second of the modelled device."""
+    v = cn(c.ef, "io_cost_usage_per_s")
+    if isinstance(v, float):
+        pct = v / 10_000.0
+        return ("0" if pct == 0 else fmt_pct(pct), band_style(band(pct, (20.0, 50.0, 80.0))))
+    return _na() if v == NA else _unset()
+
+
 def _c_origin(c: CellCtx) -> Cell:
+    if c.ef.governance is None:
+        return _na()  # no governance source on this frame: unknown, not "unset"
     origin = origin_name(c.ef)
     short = _ORIGIN_SHORT.get(origin, UNSET_TEXT if origin in ("unset", "") else origin)
     style = "yellow" if origin == "raw_write" else DIM if short == UNSET_TEXT else "grey70"
@@ -329,12 +350,16 @@ def _c_origin(c: CellCtx) -> Cell:
 
 
 def _c_drift(c: CellCtx) -> Cell:
+    if c.ef.governance is None:
+        return _na()
     if has_drift(c.ef):
         return (f"▲{max(1, len(drifted_limits(c.ef)))}", "bold yellow")
     return _unset()
 
 
 def _c_drift_list(c: CellCtx) -> Cell:
+    if c.ef.governance is None:
+        return _na()
     return (",".join(drifted_limits(c.ef)), "yellow") if has_drift(c.ef) else _unset()
 
 
@@ -426,9 +451,9 @@ REGISTRY: dict[str, ColumnSpec] = {
     "iops_w": _spec("IOPS_W", 6, _count("io_w_iops", (100.0, 1000.0, 5000.0)), _sk("io_w_iops")),
     "stall": _spec("STALL", 5, _c_stall, lambda ef, blk: max_psi(ef, "full")),
     "io_max": _spec("IO.MAX", 9, _c_io_max, _sk("io_cap_saturation_pct")),
-    "iocost": _spec("IOCOST", 6, _always_na),
+    "iocost": _spec("IOCOST", 6, _c_iocost, _sk("io_cost_usage_per_s")),
     "blk": _spec("BLK", 4, _c_blk, lambda ef, blk: None if blk is None else float(blk)),
-    "maj": _spec("MAJ", 5, _always_na),
+    "maj": _spec("MAJ", 5, _count("majflt_per_s", (1.0, 50.0, 500.0)), _sk("majflt_per_s")),
     "net_rx": _spec("NET_RX", 7, _bytes("net_rx_bps", (1e5, 1e7, 1e8)), _sk("net_rx_bps")),
     "net_tx": _spec("NET_TX", 7, _bytes("net_tx_bps", (1e5, 1e7, 1e8)), _sk("net_tx_bps")),
     "pids": _spec("PIDS", 5, _c_pids, _sk("pids_current")),
@@ -436,7 +461,7 @@ REGISTRY: dict[str, ColumnSpec] = {
     "file": _spec("FILE", 6, _bytes("file", (1e9, 4e9, 16e9)), _sk("file")),
     "shmem": _spec("SHMEM", 5, _bytes("shmem", (1e8, 1e9, 4e9)), _sk("shmem")),
     "swap": _spec("SWAP", 6, _bytes("swap_disk", (1e6, 1e8, 1e9)), _sk("swap_disk")),
-    "swap_max": _spec("SWAP.MAX", 8, _always_na),
+    "swap_max": _spec("SWAP.MAX", 8, _c_swap_max, _sk("swap_max")),
     "pgscan": _spec("PGSCAN", 6, _count("pgscan_per_s", (100.0, 5000.0, 50000.0)), _sk("pgscan_per_s")),
     "pgsteal": _spec("PGSTEAL", 7, _count("pgsteal_per_s", (100.0, 5000.0, 50000.0)), _sk("pgsteal_per_s")),
     "origin": _spec("ORIGIN", 8, _c_origin, None, left=True),

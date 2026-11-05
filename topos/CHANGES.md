@@ -27,6 +27,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(topos): real_docker_inspect opt-out so the production resolver stays testable (B-039) (cadfc34d1)
 
 <!-- cmru: pending release notes begin -->
+- feat(topos/ui): the single view shows real sampler data: typed protocol client (`sampler_client`), adapter to frames with unset/n/a/0 kept apart (`sampler_adapter`), per-CPU split, memory stack, zswap rates, per-device await, io.cost/KSM state, D-state counts (BLK), hot/blocked process rows, hard events on the WHY line and the sampler's own CPU/RSS/overruns/throttling; SWAP.MAX, IOCOST and MAJ columns get values
+- feat(topos/cli): zero-argument `topos` uses the sampler socket (`[sampler] socket_path`, default `/run/topos/sampler.sock`) with sparkline backfill from `series`, else falls back to local collection with the reason on screen; `--source sampler|local|auto` (`sampler` fails closed); a cgroup-namespaced view is stated plainly and points at the daemon socket (F030)
+- fix(topos/cli): `--profile` is rejected with a message instead of being ignored
 - feat(topos/ui): the single view replaces the banner and column profiles: meters (n/a for absent data), tree with config columns, side pane, noise levels, column order and priority from `assets/columns.toml` (`[ui] columns_file`, `pane_width`); removed `default_column_profile`, `[columns]`, `--profile` (ignored), the profile cycling key and `ui.banner`/`ui.tree`/`ui.aliases`; `tools/poc/singleview_demo.py` and `ui_frame_bench.py` for the Textual-vs-ratatui comparison
 - fix(topos/daemon): `daemon serve` handles SIGTERM/SIGINT through the normal shutdown path (history flush, paddr stop, socket unlink) (B-01, D-01)
 - fix(topos/daemon): the daemon exits non-zero when the frame producer dies instead of serving a frozen frame; `daemon status` reports a frame older than 3 intervals as stale (B-02)

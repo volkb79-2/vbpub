@@ -74,7 +74,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="emit JSON for --once")
     parser.add_argument("--pretty-json", action="store_true", help="pretty-print JSON output")
     parser.add_argument("--config", type=Path, default=None, help="load config from PATH instead of the default XDG location")
-    parser.add_argument("--profile", type=str, default=None, help="removed and ignored: column order and priority come from [ui] columns_file")
+    parser.add_argument("--profile", type=str, default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--source",
+        choices=("auto", "sampler", "local"),
+        default="auto",
+        help="live data source for the interactive view: auto (the sampler socket if it answers, else local "
+             "collection with the reason shown), sampler (fail if unavailable), local",
+    )
     parser.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
     parser.add_argument("--headless", action="store_true", help="run without UI (requires --record FILE)")
     parser.add_argument("--interval", type=float, default=None, help="collector interval override in seconds")
@@ -406,6 +413,8 @@ def _run_ui(
     replay_driver: ReplayDriver | None = None,
     replay_step: bool = False,
     replay_speed: float = 1.0,
+    overlay=None,
+    source_note: str = "",
 ) -> int:
     try:
         from topos.ui.app import run_ui
@@ -416,6 +425,11 @@ def _run_ui(
                 return 2
             return -1
         raise
+    extra: dict = {}
+    if overlay is not None:
+        extra["overlay"] = overlay
+    if source_note:
+        extra["source_note"] = source_note
     result = run_ui(
         frame_source,
         config=config,
@@ -425,10 +439,34 @@ def _run_ui(
         replay_driver=replay_driver,
         replay_step=replay_step,
         replay_speed=replay_speed,
+        **extra,
     )
     if isinstance(result, str):
         print(result)
     return 0
+
+
+def _local_only_reason(args: argparse.Namespace) -> str | None:
+    """Why the sampler cannot be the source of this invocation (its tree is always the whole view)."""
+    for flag, given in (
+        ("--cgroup-root", args.cgroup_root is not None),
+        ("--entities", args.entities is not None),
+        ("--slice", args.slice is not None),
+        ("--container", args.container_selectors is not None),
+        ("--metrics", args.metrics != "full"),
+    ):
+        if given:
+            return flag
+    return None
+
+
+def _docker_enricher(config):
+    """Docker/CIU names for the sampler's cgroup keys, cached; failures only cost the names."""
+    from topos.collect.dockerjoin import DockerInspectCache, enrich_entities
+
+    cache = DockerInspectCache()
+    stacks = set(config.ciu.known_stacks) if config.ciu.known_stacks else None
+    return lambda entities: enrich_entities(entities, None, known_stack_roots=stacks, cache=cache)
 
 
 def _default_squeeze_log_path(target: str) -> Path:
@@ -614,7 +652,16 @@ def _main(argv: list[str] | None = None) -> int:
     if raw_argv[:1] == ["squeeze"]:
         return _main_squeeze(raw_argv[1:])
     args = parse_args(raw_argv)
+    if args.profile is not None:
+        print_cli_error(
+            "--profile was removed: column order and priority now come from the file named by "
+            "[ui] columns_file (default: topos/assets/columns.toml)"
+        )
+        return 2
     config = load(args.config)
+    if args.source != "auto" and (args.replay is not None or args.attach is not None or args.once or args.record is not None or args.headless):
+        print_cli_error("--source applies to the interactive live view only (not with --replay, --attach, --once, --record or --headless)")
+        return 2
     if args.headless and args.replay is not None:
         print_cli_error("--headless is not supported with --replay")
         return 2
@@ -777,6 +824,30 @@ def _main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             return 0
     if not args.once and not args.json:
+        from topos.sampler_source import SourceUnavailable, choose_source
+
+        forced = _local_only_reason(args)
+        try:
+            choice = choose_source(args.source, config, local_forced=forced, enrich=_docker_enricher(config))
+        except SourceUnavailable as exc:
+            print_cli_error(str(exc))
+            return 2
+        if choice.kind == "sampler":
+            try:
+                ui_code = _run_ui(
+                    choice.source,
+                    config=config,
+                    cgroup_root=None,
+                    smoke=args.ui_smoke,
+                    source_label=choice.label,
+                    overlay=choice.overlay,
+                )
+            except KeyboardInterrupt:
+                return 0
+            if ui_code == 0:
+                return 0
+            print("textual is not installed; use --once --json or install UI dependencies", file=sys.stderr)
+            return 2
         try:
             collector = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args))  # type: ignore[arg-type]
             ui_code = _run_ui(
@@ -787,7 +858,8 @@ def _main(argv: list[str] | None = None) -> int:
                 config=config,
                 cgroup_root=args.cgroup_root,
                 smoke=args.ui_smoke,
-                source_label="LIVE",
+                source_label=choice.label,
+                source_note=choice.note,
             )
         except ContainerResolveError as exc:
             print(str(exc), file=sys.stderr)

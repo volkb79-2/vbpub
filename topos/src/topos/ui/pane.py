@@ -54,7 +54,14 @@ def _kv(k: str, v: str) -> Text:
     return _line((f"{k:<9}", DIM), (v, PLAIN))
 
 
-def pane_lines(ef: EntityFrame, *, procs: list[ProcRow] | None = None, blk: int | None = None, overlay_label: str = "") -> list[Text]:
+def pane_lines(
+    ef: EntityFrame,
+    *,
+    procs: list[ProcRow] | None = None,
+    blk: int | None = None,
+    overlay_label: str = "",
+    demo: bool = True,
+) -> list[Text]:
     e = ef.entity
     out: list[Text] = [_line((e.key or "/ (host root)", "bold"))]
     out.append(_kv("kind", f"{e.kind}  tier {e.tier or UNSET_TEXT}  protected {'yes' if e.is_protected else 'no'}"))
@@ -114,11 +121,20 @@ def pane_lines(ef: EntityFrame, *, procs: list[ProcRow] | None = None, blk: int 
     out.append(_kv("pids", f"{_g(ef, 'pids_current', lambda v: f'{v:.0f}')} of {_g(ef, 'pids_max', lambda v: f'{v:.0f}')}"))
     out.append(_kv("reclaim", f"scan {_g(ef, 'pgscan_per_s', fmt_count)}/s  steal {_g(ef, 'pgsteal_per_s', fmt_count)}/s  rf d/f {_g(ef, 'rf_d_per_s', fmt_count)}/{_g(ef, 'rf_f_per_s', fmt_count)}"))
     out.append(_kv("events", f"high {_g(ef, 'mem_events_high_per_s', fmt_count)}/s max {_g(ef, 'mem_events_max_per_s', fmt_count)}/s oom {_g(ef, 'mem_events_oom_kill_per_s', fmt_count)}/s"))
+    out.append(_kv("more", "swap.max {}  majflt {}/s  iocost {}".format(
+        REGISTRY["swap_max"].cell(CellCtx(ef))[0],
+        _g(ef, "majflt_per_s", fmt_count),
+        REGISTRY["iocost"].cell(CellCtx(ef))[0],
+    )))
     if procs:
+        style = DEMO_STYLE if demo else PLAIN
+        tag = f" ({overlay_label})" if overlay_label else ""
         out.append(Text(""))
-        out.append(_line((f"PROCESSES ({overlay_label}), D-state {blk or 0}", DEMO_STYLE)))
+        out.append(_line((f"PROCESSES{tag}, D-state {'n/a' if blk is None else blk}", DEMO_STYLE if demo else HEAD)))
         for p in procs[:6]:
-            out.append(_line((f"  {p.state} {p.comm:<14} {p.pid:>6} {fmt_pct(p.cpu)}", DEMO_STYLE)))
+            cpu = "n/a" if p.cpu is None else fmt_pct(p.cpu)
+            io = "" if p.io_bps is None else f"  io {fmt_bytes(p.io_bps)}/s"
+            out.append(_line((f"  {p.state} {p.comm:<14} {p.pid:>6} {cpu}{io}", style)))
     return out
 
 

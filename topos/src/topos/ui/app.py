@@ -120,11 +120,14 @@ class RowCells(Sequence):
     state are unchanged since the previous frame.
     """
 
-    def __init__(self, rows: list[Row], plan: Plan, blk: dict[str, int] | None, overlay_label: str, reuse: dict) -> None:
+    def __init__(
+        self, rows: list[Row], plan: Plan, blk: dict[str, int] | None, overlay_label: str, reuse: dict, demo: bool = True
+    ) -> None:
         self._rows = rows
         self._plan = plan
         self._blk = blk
         self._label = overlay_label
+        self._demo = demo
         self._made: dict[int, list] = {}
         self._reuse = reuse
         self._sig = tuple((c.id, w) for c, w in zip(plan.columns, plan.widths))
@@ -165,16 +168,22 @@ class RowCells(Sequence):
 
     def _proc_cell(self, row: Row, col: Column, width: int):
         p = row.proc
-        style = "bold magenta" if p.state == "D" else "magenta"
+        if self._demo:
+            style = "bold magenta" if p.state == "D" else "magenta"
+        else:
+            style = "bold yellow" if p.state == "D" else "grey70"
         if col.id == "name":
             owner = ""
             if row.kind == "flat" and row.ef is not None:
                 owner = f"  ‹{row.ef.entity.key.rsplit('/', 1)[-1] or '/'}›"
-            return Text(" " * (row.depth * 2) + f"{p.state} {p.comm} {p.pid} {self._label}{owner}", style=style, no_wrap=True)
+            tag = f" {self._label}" if self._label else ""
+            return Text(" " * (row.depth * 2) + f"{p.state} {p.comm} {p.pid}{tag}{owner}", style=style, no_wrap=True)
         if col.id == "cpu":
-            return (cols.fmt_pct(p.cpu), style)
+            return (cols.fmt_pct(p.cpu), style) if p.cpu is not None else (cols.NA_TEXT, cols.NA_STYLE)
         if col.id == "blk":
-            return ("D" if p.state == "D" else "", "bold magenta")
+            return ("D" if p.state == "D" else "", style)
+        if col.id == "maj" and p.majflt is not None:
+            return (cols.fmt_count(p.majflt), style)
         return ""
 
 
@@ -220,6 +229,10 @@ class ToposApp(App[None]):
         height: 1;
         display: none;
     }
+    #notice {
+        height: auto;
+        display: none;
+    }
     #info {
         height: 1;
     }
@@ -262,8 +275,10 @@ class ToposApp(App[None]):
         snapshot_systemctl_show: SystemctlSnapshotRunner | None = None,
         snapshot_docker_inspect: DockerSnapshotInspect | None = None,
         overlay: Overlay | None = None,
+        source_note: str = "",
     ) -> None:
         super().__init__()
+        self.source_note = source_note
         self.config = config or load()
         self.cgroup_root = cgroup_root or self.config.cgroup_root
         self.proc_root = proc_root
@@ -328,6 +343,7 @@ class ToposApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static(id="meters")
         yield Static(id="why")
+        yield Static(id="notice")
         yield Static(id="info")
         with Horizontal(id="body"):
             yield MouseTable(id="body-table")
@@ -336,6 +352,7 @@ class ToposApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        self._refresh_notice(None)
         if self._replay_driver is not None:
             self._apply_frame(self._replay_driver.current)
             if not self._replay_paused:
@@ -416,8 +433,17 @@ class ToposApp(App[None]):
         if self.selected_key not in frame.entities:
             self.selected_key = None
         self._procs = self.overlay.processes(frame) if self.overlay is not None else {}
-        self._blk = blocked_by_cgroup(frame, self._procs) if self.overlay is not None else None
+        self._blk = self._blocked(frame)
         self._refresh_view()
+
+    def _blocked(self, frame: Frame) -> dict[str, int] | None:
+        if self.overlay is None:
+            return None
+        counted = getattr(self.overlay, "blocked", None)
+        if counted is None:
+            return blocked_by_cgroup(frame, self._procs)
+        own = counted(frame)
+        return None if own is None else blocked_by_cgroup(frame, self._procs, own)
 
     # ── layout ────────────────────────────────────────────────────────
 
@@ -463,9 +489,11 @@ class ToposApp(App[None]):
         self._table_width = width
         height = meter_height(self.size.height or 24)
         self.query_one("#meters", Static).update(
-            render_meters(frame, width=self.size.width or 80, height=height, trend=self._trend, overlay=self.overlay)
+            render_meters(frame, width=self.size.width or 80, height=height, trend=self._trend, overlay=self.overlay,
+                           demo=self._overlay_is_demo())
         )
         self._refresh_why(frame)
+        self._refresh_notice(frame)
         self._populate_table(frame, width=width)
         table = self.query_one("#body-table", MouseTable)
         cursor_owner = self._row_owner.get(table.row_key_at_cursor() or "")
@@ -486,9 +514,41 @@ class ToposApp(App[None]):
         for ts in sorted(by_ts)[-TREND_FRAMES:]:
             m = by_ts[ts].host.get(key)
             values.append(float(m.v) if m is not None and m.v is not None and m.src not in ("unavail_perm", "unavail_kernel") else 0.0)
+        # A source that can read history (the sampler) fills the front of a young trend.
+        history = getattr(self._frame_source_raw, "backfill", None)
+        if history and len(values) < TREND_FRAMES and by_ts:
+            first_ts = min(by_ts)
+            older = [v for ts, v in history.get(key, ()) if ts < first_ts]
+            values = older[-(TREND_FRAMES - len(values)):] + values
         return values
 
+    def _refresh_notice(self, frame: Frame | None) -> None:
+        """Plain statements about the data source: why a fallback, a namespaced view, truncation."""
+        notes = [self.source_note] if self.source_note else []
+        if frame is not None:
+            notes.extend(self._overlay_call("notes", frame) or ())
+        widget = self.query_one("#notice", Static)
+        widget.display = bool(notes)
+        if notes:
+            widget.update(Text("; ".join(notes), style="yellow"))
+
+    def _overlay_is_demo(self) -> bool:
+        return bool(getattr(self.overlay, "demo", True))
+
+    def _overlay_call(self, name: str, frame: Frame):
+        fn = getattr(self.overlay, name, None) if self.overlay is not None else None
+        return None if fn is None else fn(frame)
+
     def _refresh_why(self, frame: Frame) -> None:
+        hard = self._overlay_call("why", frame)
+        if hard:  # a recent hard event outranks every interpretive finding
+            why = self.query_one("#why", Static)
+            why.display = True
+            line = Text(no_wrap=True, overflow="ellipsis")
+            line.append("WHY ", "bold cyan")
+            line.append(str(hard), "bold red")
+            why.update(line)
+            return
         best: tuple[int, int, str, str] | None = None
         for ef in frame.entities.values():
             for f in ef.findings:
@@ -548,7 +608,7 @@ class ToposApp(App[None]):
         blk = None if self._blk is None else self._blk.get(ef.entity.key, 0)
         procs = self._procs.get(ef.entity.key) if self.procs_on else None
         label = self.overlay.label if self.overlay is not None else ""
-        body.update(pane_text(pane_lines(ef, procs=procs, blk=blk, overlay_label=label)))
+        body.update(pane_text(pane_lines(ef, procs=procs, blk=blk, overlay_label=label, demo=self._overlay_is_demo())))
 
     def _real_row_keys(self) -> tuple[str, ...]:
         return tuple(key for key in self._visible_row_keys if not _is_sentinel(key) and not key.startswith("__group__") and key != "__ungrouped__")
@@ -577,7 +637,9 @@ class ToposApp(App[None]):
         if rows:
             row_keys = tuple(r.key for r in rows)
             self._row_owner = {r.key: r.owner for r in rows}
-            cells: Sequence = RowCells(rows, plan, self._blk, self.overlay.label if self.overlay else "", self._reuse)
+            cells: Sequence = RowCells(
+                rows, plan, self._blk, self.overlay.label if self.overlay else "", self._reuse, self._overlay_is_demo()
+            )
             if len(self._reuse) > 4 * len(rows) + 64:
                 live = set(row_keys)
                 self._reuse = {k: v for k, v in self._reuse.items() if k in live}
@@ -1025,6 +1087,7 @@ def run_ui(
     replay_speed: float = 1.0,
     source_label: str = "LIVE",
     overlay: Overlay | None = None,
+    source_note: str = "",
 ) -> str | int:
     if smoke:
         return asyncio.run(
@@ -1038,6 +1101,7 @@ def run_ui(
                 replay_step=replay_step,
                 replay_speed=replay_speed,
                 overlay=overlay,
+                source_note=source_note,
             )
         )
     app = ToposApp(
@@ -1050,6 +1114,7 @@ def run_ui(
         replay_step=replay_step,
         replay_speed=replay_speed,
         overlay=overlay,
+        source_note=source_note,
     )
     app.run()
     return 0
@@ -1066,6 +1131,7 @@ async def _run_ui_smoke(
     replay_step: bool,
     replay_speed: float,
     overlay: Overlay | None = None,
+    source_note: str = "",
 ) -> str:
     app = ToposApp(
         frame_source,
@@ -1077,6 +1143,7 @@ async def _run_ui_smoke(
         replay_step=replay_step,
         replay_speed=replay_speed,
         overlay=overlay,
+        source_note=source_note,
     )
     async with app.run_test(size=(140, 40)) as pilot:
         deadline = asyncio.get_event_loop().time() + 10.0

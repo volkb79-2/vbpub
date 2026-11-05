@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from topos.sampler_client import DEFAULT_SOCKET_PATH as DEFAULT_SAMPLER_SOCKET
+
 
 @dataclass(frozen=True)
 class ThresholdBand:
@@ -248,6 +250,20 @@ class UiConfig:
 
 
 @dataclass(frozen=True)
+class SamplerConfig:
+    """Where to find the topos-sampler (``[sampler]``).
+
+    Attributes:
+        socket_path: The sampler's Unix socket (docs/SAMPLER-PROTOCOL.md, Transport).
+        timeout_s: Per-request bound; a sampler that does not answer in time is
+            treated as unavailable, never waited for.
+    """
+
+    socket_path: Path = DEFAULT_SAMPLER_SOCKET
+    timeout_s: float = 2.0
+
+
+@dataclass(frozen=True)
 class ToposConfig:
     interval: float = 5.0
     cgroup_root: Path = Path("/sys/fs/cgroup")
@@ -267,6 +283,7 @@ class ToposConfig:
     ciu: CiuConfig = field(default_factory=CiuConfig)
     bpf_snapshot: BpfSnapshotConfig = field(default_factory=BpfSnapshotConfig)
     processes: ProcessConfig = field(default_factory=ProcessConfig)
+    sampler: SamplerConfig = field(default_factory=SamplerConfig)
 
     def to_primitive(self) -> dict[str, Any]:
         return {
@@ -499,6 +516,7 @@ _KNOWN_KEYS: dict[str, frozenset[str] | None] = {
     "ciu": frozenset({"known_stacks"}),
     "bpf_snapshot": frozenset({"enabled", "root", "interval", "map_name", "state_dir"}),
     "processes": frozenset({"top_cpu", "top_io", "pinned_cap", "recently_hot_grace_seconds", "hard_cap"}),
+    "sampler": frozenset({"socket_path", "timeout_s"}),
 }
 _KNOWN_DAEMON_KEYS = frozenset({
     "enabled", "dir", "max_age_days", "max_size_mb", "compression",
@@ -594,6 +612,16 @@ def load(path: Path | None = None, *, warn: Callable[[str], None] | None = None)
         raise ConfigError(target, str(exc)) from exc
 
 
+def _load_sampler(data: dict[str, Any]) -> SamplerConfig:
+    socket_path = data.get("socket_path", str(DEFAULT_SAMPLER_SOCKET))
+    if not isinstance(socket_path, str) or not socket_path:
+        raise ValueError(f"sampler.socket_path must be a path string, got {socket_path!r}")
+    return SamplerConfig(
+        socket_path=Path(socket_path).expanduser(),
+        timeout_s=_check_number(data.get("timeout_s", 2.0), "sampler.timeout_s", minimum=0.1),
+    )
+
+
 def _load_ui(data: dict[str, Any]) -> UiConfig:
     columns_file = data.get("columns_file")
     if columns_file is not None and not isinstance(columns_file, str):
@@ -644,6 +672,7 @@ def _build_config(data: dict[str, Any]) -> ToposConfig:
         thresholds=thresholds,
         colors=dict(data.get("colors", {}) or {}),
         ui=_load_ui(data.get("ui", {}) or {}),
+        sampler=_load_sampler(data.get("sampler", {}) or {}),
         hotkeys=dict(data.get("hotkeys", {}) or {}),
         diagnostics=DiagnosticsConfig(score_weights=_load_score_weights(thresholds)),
         history=HistoryConfig(

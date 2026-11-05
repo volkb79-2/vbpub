@@ -12,6 +12,7 @@ from .overlay import ProcRow
 NOISE_LEVELS = ("all", "middle", "hot")
 VIEW_MODES = ("tree", "container", "ciu-grouped")
 PROC_CAP_COLLAPSED = 2
+PROC_CAP_OPEN = 5
 
 
 @dataclass(slots=True)
@@ -116,13 +117,20 @@ def default_expanded(frame: Frame) -> set[str]:
     return open_keys
 
 
-def blocked_by_cgroup(frame: Frame, procs: dict[str, list[ProcRow]]) -> dict[str, int]:
-    """D-state process counts per cgroup, including descendants."""
+def blocked_by_cgroup(
+    frame: Frame, procs: dict[str, list[ProcRow]], own: dict[str, int] | None = None
+) -> dict[str, int]:
+    """D-state task counts per cgroup, including descendants.
+
+    *own* (D-state tasks owned by each cgroup, from a source that counts them all)
+    wins over counting the rows in *procs*, which a source may have capped.
+    """
     kids = children_map(frame)
     out: dict[str, int] = {}
 
     def walk(ef: EntityFrame) -> int:
-        n = sum(1 for p in procs.get(ef.entity.key, ()) if p.state == "D")
+        key = ef.entity.key
+        n = own.get(key, 0) if own is not None else sum(1 for p in procs.get(key, ()) if p.state == "D")
         for child in kids.get(ef.entity.key, []):
             n += walk(child)
         out[ef.entity.key] = n
@@ -195,7 +203,7 @@ def build_rows(
             if visible.get(key)
             for p in plist
         ]
-        ranked.sort(key=lambda kp: -kp[1].cpu)
+        ranked.sort(key=lambda kp: -kp[1].cpu_rank)
         for key, p in ranked[:300]:
             rows.append(Row("flat", f"{key}#{p.pid}", owner=key, ef=entities.get(key), proc=p))
         return RowSet(rows, hidden)
@@ -229,18 +237,16 @@ def build_rows(
     def emit(ef: EntityFrame, depth: int) -> None:
         key = ef.entity.key
         children = [c for c in kids.get(key, []) if visible.get(c.entity.key)]
-        plist = procs.get(key, []) if procs_on else []
+        # Only hot or blocked processes float under their cgroup, blocked first, capped.
+        plist = [p for p in procs.get(key, ()) if p.hot] if procs_on else []
+        plist.sort(key=lambda p: (p.state != "D", -p.cpu_rank))
         is_open = bool(needle) or key in expanded
         rows.append(Row("cg", key, owner=key, depth=depth, has_kids=bool(children) or bool(plist), open=is_open, ef=ef))
         if is_open:
             for child in order(children):
                 emit(child, depth + 1)
-        cap = None if is_open else PROC_CAP_COLLAPSED
-        shown = 0
-        for p in plist:
-            if (is_open or p.hot) and (cap is None or shown < cap):
-                rows.append(Row("proc", f"{key}#{p.pid}", owner=key, depth=depth + 1, ef=ef, proc=p))
-                shown += 1
+        for p in plist[: PROC_CAP_OPEN if is_open else PROC_CAP_COLLAPSED]:
+            rows.append(Row("proc", f"{key}#{p.pid}", owner=key, depth=depth + 1, ef=ef, proc=p))
 
     for top in order([t for t in kids.get(None, []) if visible.get(t.entity.key)]):
         emit(top, 0)

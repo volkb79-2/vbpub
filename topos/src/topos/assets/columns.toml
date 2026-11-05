@@ -13,8 +13,9 @@
 #   swap swap_max zsw ratio anon file shmem rf_d rf_z rf_f psi_c psi_m psi_i psi_cf psi_mf
 #   psi_if io_r io_w iops_r iops_w stall io_max iocost blk maj pids pids_max net_rx net_tx
 #   pgscan pgsteal prot origin drift drift_list warn io_wt ev_high ev_max ev_oom
-# swap_max, iocost and maj have no per-cgroup source yet and print n/a; blk needs a
-# process source and prints n/a without one.
+# swap_max, iocost, maj and blk have values only from a sampler source (blk also needs its
+# process scan on); on the local collector they print n/a. mem_low's effective twin
+# (LOW.EFF) is absent until the effective-protection work.
 
 [[column]]
 id = "name"
