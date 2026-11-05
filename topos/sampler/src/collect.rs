@@ -7,6 +7,7 @@ use crate::procs::{ent_of_rel, PScan, ScanIn};
 use crate::util::*;
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::DirEntryExt;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -45,7 +46,8 @@ const K_MEMSTAT: usize = 1;
 const K_MEMEV: usize = 2;
 const K_MEMINFO: usize = 3;
 const K_VMSTAT: usize = 4;
-const PREFIX: [&str; 5] = ["cpu.", "mem.", "memev.", "meminfo.", "vm."];
+const K_MEMEVL: usize = 5;
+const PREFIX: [&str; 6] = ["cpu.", "mem.", "memev.", "meminfo.", "vm.", "memevl."];
 const MEMINFO_KEYS: [&str; 24] = [
     "MemTotal", "MemFree", "MemAvailable", "Buffers", "Cached", "SwapCached", "Active", "Inactive",
     "Unevictable", "SwapTotal", "SwapFree", "Dirty", "Writeback", "AnonPages", "Mapped", "Shmem",
@@ -60,12 +62,23 @@ const VM_KEYS: [&str; 20] = [
 ];
 
 fn is_mem_counter(k: &str) -> bool {
-    k.starts_with("pg") || k.starts_with("thp_") || k.starts_with("zswp") || k.starts_with("workingset_")
+    k.starts_with("pg")
+        || k.starts_with("thp_")
+        || k.starts_with("zswp")
+        || k.starts_with("workingset_")
+        || k.starts_with("numa_")
+        || k == "swpin_zero"
+        || k == "swpout_zero"
+}
+
+#[cfg(test)]
+pub fn is_mem_counter_for_test(k: &str) -> bool {
+    is_mem_counter(k)
 }
 
 pub struct Names {
     pub dict: Dict,
-    kc: [HashMap<Vec<u8>, (u32, bool)>; 5],
+    kc: [HashMap<Vec<u8>, (u32, bool)>; 6],
 }
 
 impl Names {
@@ -75,7 +88,7 @@ impl Names {
         }
         let ks = String::from_utf8_lossy(key).into_owned();
         let counter = match kind {
-            K_CPUSTAT | K_MEMEV => Some(true),
+            K_CPUSTAT | K_MEMEV | K_MEMEVL => Some(true),
             K_MEMSTAT => Some(is_mem_counter(&ks)),
             K_MEMINFO => (MEMINFO_KEYS.contains(&ks.as_str()) || MEMINFO_EXTRA.contains(&ks.as_str())).then_some(false),
             K_VMSTAT => VM_KEYS.contains(&ks.as_str()).then_some(true),
@@ -95,26 +108,30 @@ impl Names {
     }
 }
 
-const CG_FILES: [&str; 9] = [
+const NCG: usize = 11;
+const CG_FILES: [&str; NCG] = [
     "cpu.stat", "memory.current", "memory.stat", "memory.events", "io.stat", "cpu.pressure",
-    "memory.pressure", "io.pressure", "pids.current",
+    "memory.pressure", "io.pressure", "pids.current", "memory.events.local", "memory.swap.current",
 ];
 /// One representative metric per cgroup file, used to publish a sticky state when the file is absent.
-const CG_REP: [(&str, bool); 9] = [
+const CG_REP: [(&str, bool); NCG] = [
     ("cpu.usage_usec", true), ("mem.current", false), ("mem.anon", false), ("memev.oom_kill", true),
     ("io.rbytes", true), ("psi.cpu.some.avg10", false), ("psi.memory.some.avg10", false),
-    ("psi.io.some.avg10", false), ("pids.current", false),
+    ("psi.io.some.avg10", false), ("pids.current", false), ("memevl.oom_kill", true),
+    ("mem.swap_current", false),
 ];
-const SLOW_FILES: [&str; 10] = [
+const NSLOW: usize = 11;
+const SLOW_FILES: [&str; NSLOW] = [
     "memory.min", "memory.low", "memory.high", "memory.max", "memory.swap.max", "memory.zswap.max", "cpu.max",
-    "cpu.weight", "io.max", "io.weight",
+    "cpu.weight", "io.max", "io.weight", "pids.max",
 ];
 /// Metric slots (index into LIM_NAMES) fed by each SLOW_FILES entry.
-const LIM_SLOT: [&[usize]; 10] = [&[0], &[1], &[2], &[3], &[4], &[5], &[6, 10], &[7], &[8], &[9]];
-const LIM_NAMES: [&str; 11] = [
+const LIM_SLOT: [&[usize]; NSLOW] = [&[0], &[1], &[2], &[3], &[4], &[5], &[6, 10], &[7], &[8], &[9], &[11]];
+const NLIM: usize = 12;
+const LIM_NAMES: [&str; NLIM] = [
     "limit.memory.min", "limit.memory.low", "limit.memory.high", "limit.memory.max", "limit.memory.swap.max",
     "limit.memory.zswap.max", "limit.cpu.max.quota", "limit.cpu.weight", "limit.io.max.capped", "limit.io.weight",
-    "limit.cpu.max.period",
+    "limit.cpu.max.period", "limit.pids.max",
 ];
 const ZSWAP_GAUGES: [&str; 2] = ["stored_pages", "pool_total_size"];
 const ZSWAP_COUNTERS: [&str; 8] = [
@@ -135,7 +152,8 @@ pub struct Ids {
     io_cost: [u32; 3],
     io_vrate: u32,
     psi: [u32; 12], // res*4 + kind*2 + (0 avg10 | 1 total)
-    lim: [u32; 11],
+    lim: [u32; NLIM],
+    swap_current: u32,
     cpu: [u32; 8],
     cpu_pct: [u32; 7],
     cpu_busy: u32,
@@ -181,8 +199,8 @@ impl Ids {
                 psi[r * 4 + k * 2 + 1] = d.met(&format!("psi.{rn}.{kn}.total"), true);
             }
         }
-        let mut lim = [0; 11];
-        for i in 0..11 {
+        let mut lim = [0; NLIM];
+        for i in 0..NLIM {
             lim[i] = d.met(LIM_NAMES[i], false);
         }
         let mut cpu = [0; 8];
@@ -236,6 +254,7 @@ impl Ids {
             io_vrate: d.met("io.cost.vrate", false),
             psi,
             lim,
+            swap_current: d.met("mem.swap_current", false),
             cpu,
             cpu_pct,
             cpu_busy: d.met("cpu.busy_pct", false),
@@ -282,10 +301,22 @@ impl Em<'_> {
     fn state(&mut self, m: u32, st: u8) {
         self.out.push(Val { m, v: 0.0, raw: NONE, st });
     }
-    /// Counter with reset handling: a decrease means the counter restarted, so the new
-    /// reading is the delta since the restart. The first observation of an entity that
-    /// existed at start has no delta (state `first_sample`, with the raw reading); an
-    /// entity born after sampling started began at zero, so its first reading is its delta.
+    /// Counter that may wobble: a decrease is clamped to a zero delta for that tick and the
+    /// higher reading stays the baseline (`/proc/stat` iowait goes backwards on NO_HZ kernels).
+    fn counter_mono(&mut self, m: u32, cur: u64) {
+        let i = m as usize;
+        let before = self.prev.get(i).copied().unwrap_or(NONE);
+        if before != NONE && cur < before {
+            self.out.push(Val { m, v: 0.0, raw: cur, st: stc::VALUE });
+            return;
+        }
+        self.counter(m, cur);
+    }
+    /// Counter with reset handling (S-04): a decrease is an explicit `counter_reset` state for
+    /// that tick, with no delta (the reading is the new baseline); it is never turned into a
+    /// spike. The first observation of an entity that existed at start has no delta (state
+    /// `first_sample`, with the raw reading); an entity born after sampling started began at
+    /// zero, so its first reading is its delta.
     fn counter(&mut self, m: u32, cur: u64) {
         let i = m as usize;
         if self.prev.len() <= i {
@@ -301,13 +332,12 @@ impl Em<'_> {
                 return;
             }
         }
-        let d = if cur >= p {
-            cur - p
-        } else {
+        if cur < p {
             *self.resets += 1;
-            cur
-        };
-        self.out.push(Val { m, v: d as f64, raw: cur, st: stc::VALUE });
+            self.out.push(Val { m, v: 0.0, raw: cur, st: stc::UN_RESET });
+            return;
+        }
+        self.out.push(Val { m, v: (cur - p) as f64, raw: cur, st: stc::VALUE });
     }
 }
 
@@ -327,11 +357,13 @@ impl Ent {
 
 struct CgState {
     e: Ent,
+    /// Kernel id of the cgroup directory (d_ino): a different id at the same path is a new cgroup.
+    ino: u64,
     missing: u16,
-    fail: [u8; 9],
+    fail: [u8; NCG],
     serial: u32,
     fresh: bool,
-    limits: [Option<Vec<u8>>; 10],
+    limits: [Option<Vec<u8>>; NSLOW],
     psi_above: [Option<bool>; 3],
 }
 
@@ -346,20 +378,29 @@ fn split_eq(l: &[u8]) -> Option<(&[u8], &[u8])> {
 
 /// Bottom-level device rule: a device with a non-empty `slaves` directory is a stacked
 /// device (dm, md, ...) whose IO is already counted on the devices below it.
-fn is_bottom(cache: &mut HashMap<Vec<u8>, bool>, sys_root: &str, dev: &[u8]) -> bool {
+/// `cache` holds this interval's answers (also the negative ones); `last` the last answer that
+/// was read successfully. A read error reuses `last`, so one failed read can not flip a device
+/// in or out of the sum (S-04); a device never classified yet counts as bottom.
+fn is_bottom(cache: &mut HashMap<Vec<u8>, bool>, last: &mut HashMap<Vec<u8>, bool>, sys_root: &str, dev: &[u8]) -> bool {
     if let Some(&b) = cache.get(dev) {
         return b;
     }
     let d = String::from_utf8_lossy(dev);
-    match fs::read_dir(format!("{sys_root}/dev/block/{d}/slaves")) {
+    let b = match fs::read_dir(format!("{sys_root}/dev/block/{d}/slaves")) {
         Ok(mut rd) => {
             let b = rd.next().is_none();
-            cache.insert(dev.to_vec(), b);
+            last.insert(dev.to_vec(), b);
             b
         }
-        // No slaves directory at all (or unknown device): count it, retry next tick.
-        Err(_) => true,
-    }
+        Err(_) => last.get(dev).copied().unwrap_or(true),
+    };
+    cache.insert(dev.to_vec(), b);
+    b
+}
+
+#[cfg(test)]
+pub fn is_bottom_for_test(cache: &mut HashMap<Vec<u8>, bool>, last: &mut HashMap<Vec<u8>, bool>, sys_root: &str, dev: &[u8]) -> bool {
+    is_bottom(cache, last, sys_root, dev)
 }
 
 /// Parse a limit file into (slot, value) pairs. `max` is -1 (documented sentinel).
@@ -375,6 +416,10 @@ pub fn limit_vals(j: usize, t: &[u8]) -> ([(usize, f64); 2], usize) {
     match j {
         0..=5 | 7 => match num(t) {
             Some(v) => ([(j, v), (0, 0.0)], 1),
+            None => (r, 0),
+        },
+        10 => match num(t) {
+            Some(v) => ([(11, v), (0, 0.0)], 1),
             None => (r, 0),
         },
         6 => {
@@ -431,9 +476,15 @@ pub struct Collector {
     slurp: Slurp,
     cgs: HashMap<String, CgState>,
     hosts: HashMap<String, Ent>,
-    stack: Vec<(String, String)>,
+    stack: Vec<(String, String, u64)>,
     pbuf: String,
     stacked: HashMap<Vec<u8>, bool>,
+    stacked_last: HashMap<Vec<u8>, bool>,
+    /// OOM-kill counter rises read from the hierarchical `memory.events` of cgroups that have
+    /// no `memory.events.local` (rel path, counter, delta, total), attributed after the walk.
+    oom_cand: Vec<(String, String, u64, u64)>,
+    /// Cgroups (rel path) whose own `memory.events.local` oom counters rose this tick.
+    oom_local: Vec<String>,
     next_serial: u32,
     start: Instant,
     pub clk_tck: u64,
@@ -469,6 +520,9 @@ impl Collector {
             stack: Vec::new(),
             pbuf: String::new(),
             stacked: HashMap::new(),
+            stacked_last: HashMap::new(),
+            oom_cand: Vec::new(),
+            oom_local: Vec::new(),
             next_serial: 0,
             start,
             clk_tck: clk_tck().0,
@@ -548,21 +602,24 @@ impl Collector {
 
     fn cgroups(&mut self, tick: u64, wall_s: u64, slow_ticks: u64) {
         self.stack.clear();
-        self.stack.push((self.cfg.sampler.cgroup_root.clone(), String::new()));
+        self.oom_cand.clear();
+        self.oom_local.clear();
+        self.stack.push((self.cfg.sampler.cgroup_root.clone(), String::new(), 0));
         let mut n = 0;
-        while let Some((abs, rel)) = self.stack.pop() {
+        while let Some((abs, rel, ino)) = self.stack.pop() {
             if let Ok(rd) = fs::read_dir(&abs) {
                 for e in rd.flatten() {
                     if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                         let nm = e.file_name();
                         let nm = nm.to_string_lossy();
-                        self.stack.push((format!("{abs}/{nm}"), format!("{rel}/{nm}")));
+                        self.stack.push((format!("{abs}/{nm}"), format!("{rel}/{nm}"), e.ino()));
                     }
                 }
             }
-            self.read_cg(&abs, &rel, tick, wall_s, slow_ticks);
+            self.read_cg(&abs, &rel, ino, tick, wall_s, slow_ticks);
             n += 1;
         }
+        self.attribute_ooms();
         let gone: Vec<String> = self.cgs.iter().filter(|(_, s)| s.e.seen != tick).map(|(k, _)| k.clone()).collect();
         for k in gone {
             if let Some(s) = self.cgs.remove(&k) {
@@ -573,8 +630,32 @@ impl Collector {
         self.n_cgroups = n;
     }
 
-    fn read_cg(&mut self, abs: &str, rel: &str, tick: u64, wall_s: u64, slow_ticks: u64) {
-        let Collector { cfg, names, ids, slurp, cgs, pbuf, frame, events, limit_updates, resets, next_serial, start, stacked, procs, .. } = self;
+    /// One `oom_kill` event per kill (S-05). Cgroups with `memory.events.local` already emitted
+    /// theirs. For the others only the hierarchical counter exists, and it rises in the victim's
+    /// cgroup and in every ancestor: the event belongs to the deepest cgroup whose counter rose.
+    fn attribute_ooms(&mut self) {
+        let is_desc = |anc: &str, d: &str| d.len() > anc.len() && d.starts_with(anc) && d.as_bytes()[anc.len()] == b'/';
+        for i in 0..self.oom_cand.len() {
+            let (rel, counter, delta, total) = &self.oom_cand[i];
+            let deeper = self.oom_cand.iter().any(|c| is_desc(rel, &c.0)) || self.oom_local.iter().any(|l| is_desc(rel, l));
+            if !deeper {
+                let d = format!("{{\"counter\":\"{counter}\",\"delta\":{delta},\"total\":{total}}}");
+                let ev = mk_event(self.start, "oom_kill", &ent_of_rel(rel), &d);
+                self.events.push(ev);
+            }
+        }
+    }
+
+    fn read_cg(&mut self, abs: &str, rel: &str, ino: u64, tick: u64, wall_s: u64, slow_ticks: u64) {
+        let Collector { cfg, names, ids, slurp, cgs, pbuf, frame, events, limit_updates, resets, next_serial, start, stacked, stacked_last, procs, oom_cand, oom_local, .. } = self;
+        // The same path with another kernel id is a different cgroup (stopped and started again
+        // between two samples): the old counters, limits and missing-file bits do not carry over.
+        if let Some(s) = cgs.get(rel) {
+            if ino != 0 && s.ino != 0 && s.ino != ino {
+                events.push(mk_event(*start, "cgroup_vanished", &ent_of_rel(rel), "{\"reason\":\"recreated\"}"));
+                cgs.remove(rel);
+            }
+        }
         if !cgs.contains_key(rel) {
             let id = names.dict.ent(&ent_of_rel(rel), wall_s);
             *next_serial += 1;
@@ -582,8 +663,9 @@ impl Collector {
                 rel.to_string(),
                 CgState {
                     e: Ent::new(id, tick > 1),
+                    ino,
                     missing: 0,
-                    fail: [0; 9],
+                    fail: [0; NCG],
                     serial: *next_serial,
                     fresh: true,
                     limits: Default::default(),
@@ -603,7 +685,9 @@ impl Collector {
         let thr = [cfg.events.psi_cpu_some_avg10, cfg.events.psi_memory_some_avg10, cfg.events.psi_io_some_avg10];
         let eid = st.e.id;
         let mut em = Em { out: &mut st.e.vals, prev: &mut st.e.prev, base_zero: st.e.base_zero, resets: &mut *resets };
-        for i in 0..9 {
+        // oom counters that rose in the hierarchical memory.events of this cgroup
+        let mut hier: Vec<(String, u64, u64)> = Vec::new();
+        for i in 0..NCG {
             if (st.missing >> i) & 1 == 1 {
                 continue;
             }
@@ -625,8 +709,8 @@ impl Collector {
                 }
             };
             match i {
-                0 | 2 | 3 => {
-                    let kind = [K_CPUSTAT, 0, K_MEMSTAT, K_MEMEV][i];
+                0 | 2 | 3 | 9 => {
+                    let kind = [K_CPUSTAT, 0, K_MEMSTAT, K_MEMEV, 0, 0, 0, 0, 0, K_MEMEVL][i];
                     for l in lines(b) {
                         let (k, v) = match split_sp(l) {
                             Some(x) => x,
@@ -642,11 +726,17 @@ impl Collector {
                         };
                         if c {
                             em.counter(m, x);
-                            if i == 3 && (k == b"oom_kill" || k == b"oom_group_kill") {
+                            if (i == 3 || i == 9) && (k == b"oom_kill" || k == b"oom_group_kill") {
                                 if let Some(lv) = em.out.last() {
                                     if lv.m == m && lv.st == stc::VALUE && lv.v > 0.0 {
-                                        let d = format!("{{\"counter\":\"{}\",\"delta\":{},\"total\":{}}}", String::from_utf8_lossy(k), lv.v, x);
-                                        events.push(mk_event(*start, "oom_kill", &ent_name, &d));
+                                        if i == 9 {
+                                            // the cgroup's own counter: this cgroup is the victim's
+                                            let d = format!("{{\"counter\":\"{}\",\"delta\":{},\"total\":{}}}", String::from_utf8_lossy(k), lv.v, x);
+                                            events.push(mk_event(*start, "oom_kill", &ent_name, &d));
+                                            oom_local.push(rel.to_string());
+                                        } else {
+                                            hier.push((String::from_utf8_lossy(k).into_owned(), lv.v as u64, x));
+                                        }
                                     }
                                 }
                             }
@@ -663,18 +753,24 @@ impl Collector {
                     Some(x) => em.gauge(ids.pids_current, x as f64),
                     None => em.state(ids.pids_current, stc::UN_PARSE),
                 },
+                10 => match parse_u64(trim(b)) {
+                    Some(x) => em.gauge(ids.swap_current, x as f64),
+                    None => em.state(ids.swap_current, stc::UN_PARSE),
+                },
                 4 => {
                     let mut tot = [0u64; 6];
                     let mut cost = [0u64; 3];
                     let mut have_cost = false;
                     let mut vrate: Option<f64> = None;
+                    // A value that does not parse makes the whole sum unavailable, never 0.
+                    let (mut bad_io, mut bad_cost) = (false, false);
                     for l in lines(b) {
                         let mut it = fields(l);
                         let dev = match it.next() {
                             Some(d) => d,
                             None => continue,
                         };
-                        let bottom = is_bottom(stacked, &cfg.sampler.sys_root, dev);
+                        let bottom = is_bottom(stacked, stacked_last, &cfg.sampler.sys_root, dev);
                         for kv in it {
                             if let Some((k, v)) = split_eq(kv) {
                                 let slot = match k {
@@ -696,21 +792,35 @@ impl Collector {
                                         // collector semantics, `io.stat:cost_usage`).
                                         have_cost = true;
                                         let ci = match k { b"cost.usage" => 0, b"cost.wait" => 1, _ => 2 };
-                                        cost[ci] += parse_u64(v).unwrap_or(0);
+                                        match parse_u64(v) {
+                                            Some(x) => cost[ci] += x,
+                                            None => bad_cost = true,
+                                        }
                                         continue;
                                     }
                                     _ => continue,
                                 };
                                 if bottom {
-                                    tot[slot] += parse_u64(v).unwrap_or(0);
+                                    match parse_u64(v) {
+                                        Some(x) => tot[slot] += x,
+                                        None => bad_io = true,
+                                    }
                                 }
                             }
                         }
                     }
                     for k in 0..6 {
-                        em.counter(ids.io[k], tot[k]);
+                        if bad_io {
+                            em.state(ids.io[k], stc::UN_PARSE);
+                        } else {
+                            em.counter(ids.io[k], tot[k]);
+                        }
                     }
-                    if have_cost {
+                    if have_cost && bad_cost {
+                        for k in 0..3 {
+                            em.state(ids.io_cost[k], stc::UN_PARSE);
+                        }
+                    } else if have_cost {
                         for k in 0..3 {
                             em.counter(ids.io_cost[k], cost[k]);
                         }
@@ -744,7 +854,8 @@ impl Collector {
                                     if let Some(x) = parse_f64(v) {
                                         em.gauge(ids.psi[r * 4 + kind * 2], x);
                                         if kind == 0 && thr[r] > 0.0 {
-                                            let above = x >= thr[r];
+                                            // hysteresis: back below 80% of the threshold to count as down
+                                            let above = if st.psi_above[r] == Some(true) { x >= thr[r] * 0.8 } else { x >= thr[r] };
                                             if let Some(prev) = st.psi_above[r] {
                                                 if prev != above {
                                                     let d = format!(
@@ -774,6 +885,12 @@ impl Collector {
                 }
             }
         }
+        // Attribute hierarchical oom counters only when this cgroup has no `.local` file.
+        if (st.missing >> 9) & 1 == 1 {
+            for (counter, delta, total) in hier {
+                oom_cand.push((rel.to_string(), counter, delta, total));
+            }
+        }
         if procs.scanned {
             em.gauge(ids.d_state, procs.dmap.get(rel).copied().unwrap_or(0) as f64);
         }
@@ -782,14 +899,14 @@ impl Collector {
         }
         if slow {
             // Files that are absent right now: a sticky state, so `current` says why.
-            for i in 0..9 {
+            for i in 0..NCG {
                 if (st.missing >> i) & 1 == 1 {
                     let (n, c) = CG_REP[i];
                     let m = names.dict.met(n, c);
                     limit_updates.push((eid, Val { m, v: 0.0, raw: NONE, st: st.fail[i] }));
                 }
             }
-            for j in 0..10 {
+            for j in 0..NSLOW {
                 pbuf.clear();
                 pbuf.push_str(abs);
                 pbuf.push('/');
@@ -849,7 +966,7 @@ impl Collector {
     fn host(&mut self, tick: u64, dt: f64) {
         use std::fmt::Write;
         let wall_s = wall_ms() / 1000;
-        let Collector { cfg, names, ids, slurp, hosts, pbuf, frame, resets, selfin, page_size, .. } = self;
+        let Collector { cfg, names, ids, slurp, hosts, pbuf, frame, resets, selfin, page_size, procs, cgs, .. } = self;
         let root = cfg.sampler.proc_root.as_str();
         let sys = cfg.sampler.sys_root.as_str();
         let mut name = String::new();
@@ -877,6 +994,8 @@ impl Collector {
                     let s0 = em.out.len();
                     for j in 0..8 {
                         match it.next().and_then(parse_u64) {
+                            // iowait is not monotonic on NO_HZ kernels: clamp, never a reset
+                            Some(x) if j == 4 => em.counter_mono(ids.cpu[j], x),
                             Some(x) => em.counter(ids.cpu[j], x),
                             None => break,
                         }
@@ -911,7 +1030,11 @@ impl Collector {
                         b"ctxt" => em.counter(ids.ctxt, x),
                         b"processes" => em.counter(ids.forks, x),
                         b"procs_running" => em.gauge(ids.procs_running, x as f64),
-                        _ => em.gauge(ids.procs_blocked, x as f64),
+                        _ => {
+                            em.gauge(ids.procs_blocked, x as f64);
+                            // D tasks of the host that the process scan did not see (S-10)
+                            procs.d_gap = if procs.scanned { x.saturating_sub(procs.dstate as u64) } else { 0 };
+                        }
                     }
                 }
             }
@@ -967,16 +1090,52 @@ impl Collector {
         // vmstat counters
         pbuf.clear();
         let _ = write!(pbuf, "{root}/vmstat");
-        if let Ok(b) = slurp.read(pbuf) {
+        {
+            let rd = slurp.read(pbuf).map(|b| b.to_vec());
             let e = Self::hent(hosts, &mut names.dict, "host", tick, wall_s);
             let bz = e.base_zero;
             let mut em = Em { out: &mut e.vals, prev: &mut e.prev, base_zero: bz, resets: &mut *resets };
-            for l in lines(b) {
-                let mut it = fields(l);
-                if let (Some(k), Some(v)) = (it.next(), it.next().and_then(parse_u64)) {
-                    if let Some((m, _)) = names.key(K_VMSTAT, k) {
-                        em.counter(m, v);
+            let mut seen = [false; VM_KEYS.len()];
+            if let Ok(b) = &rd {
+                for l in lines(b) {
+                    let mut it = fields(l);
+                    if let (Some(k), Some(v)) = (it.next(), it.next().and_then(parse_u64)) {
+                        if let Some((m, _)) = names.key(K_VMSTAT, k) {
+                            if let Some(p) = VM_KEYS.iter().position(|x| x.as_bytes() == k) {
+                                seen[p] = true;
+                            }
+                            em.counter(m, v);
+                        }
                     }
+                }
+            }
+            // A key the kernel does not list (zswap off) or an unreadable file is a typed
+            // state, never a missing metric.
+            for (p, k) in VM_KEYS.iter().enumerate() {
+                if !seen[p] {
+                    if let Some((m, _)) = names.key(K_VMSTAT, k.as_bytes()) {
+                        em.state(m, match &rd { Ok(_) => stc::NA_FEATURE, Err(e) => err_state(e, stc::UN_READ) });
+                    }
+                }
+            }
+        }
+        // Root cgroup: no memory.current / memory.swap.current there; use the host's meminfo.
+        if let Some(root) = cgs.get("") {
+            let g = |k: &str| mi.get(k).copied();
+            let mut add: Vec<Val> = Vec::new();
+            if (root.missing >> 1) & 1 == 1 {
+                if let (Some(t), Some(a)) = (g("MemTotal"), g("MemAvailable")) {
+                    add.push(Val { m: ids.mem_current, v: t.saturating_sub(a) as f64, raw: NONE, st: stc::VALUE });
+                }
+            }
+            if (root.missing >> 10) & 1 == 1 {
+                if let (Some(t), Some(f)) = (g("SwapTotal"), g("SwapFree")) {
+                    add.push(Val { m: ids.swap_current, v: t.saturating_sub(f) as f64, raw: NONE, st: stc::VALUE });
+                }
+            }
+            if !add.is_empty() {
+                if let Some(f) = frame.iter_mut().find(|(i, _)| *i == root.e.id) {
+                    f.1.extend(add);
                 }
             }
         }
@@ -1116,8 +1275,8 @@ impl Collector {
                 if dn.starts_with("loop") || dn.starts_with("ram") {
                     continue;
                 }
-                let n = |i: usize| parse_u64(f[i]).unwrap_or(0);
-                if n(3) == 0 && n(7) == 0 {
+                let nv = |i: usize| parse_u64(f[i]);
+                if nv(3) == Some(0) && nv(7) == Some(0) {
                     continue;
                 }
                 name.clear();
@@ -1127,7 +1286,17 @@ impl Collector {
                 let bz = e.base_zero;
                 let mut em = Em { out: &mut e.vals, prev: &mut e.prev, base_zero: bz, resets: &mut *resets };
                 let s0 = em.out.len();
-                for (j, &fi) in [3usize, 5, 6, 7, 9, 10, 12, 13].iter().enumerate() {
+                // A field that does not parse is unavailable, never 0.
+                let cols = [3usize, 5, 6, 7, 9, 10, 12, 13];
+                if cols.iter().chain([11usize].iter()).any(|&i| nv(i).is_none()) {
+                    for j in 0..8 {
+                        em.state(ids.dk[j], stc::UN_PARSE);
+                    }
+                    em.state(ids.dk_inflight, stc::UN_PARSE);
+                    continue;
+                }
+                let n = |i: usize| nv(i).unwrap_or(0);
+                for (j, &fi) in cols.iter().enumerate() {
                     em.counter(ids.dk[j], n(fi));
                 }
                 em.gauge(ids.dk_inflight, n(11) as f64);

@@ -27,10 +27,23 @@ serde 1.0.229, serde_json 1.0.154, toml 0.9.8, ruzstd 0.9.1 (pure Rust, no C com
 Two transitive crates are pinned below their newest release because that was under 14 days old:
 toml_writer 1.1.3 (newest 1.2.0, 2026-11-04) and winnow 1.0.4 (newest 1.0.5, 2026-11-05).
 
+## Threads and durability
+Sampling thread (reads, rates, snapshot; no disk IO), writer thread (tiers, dictionary with fsync,
+events; bounded queue, oldest frame dropped and counted), command-line helper pool (3 threads, a
+D-state task's `cmdline` read may hang), serving threads. Frames on disk are
+`TSF1 | len | crc32 | ts_ms | payload`; a torn tail is cut at start-up. SIGTERM/SIGINT drain the
+writer. Segments of tiers that are not configured are deleted at start-up. Files are mode 0600;
+the socket is root-only (0600), one instance per socket (flock on `<socket>.lock`).
+Panics unwind (`panic = "unwind"`): a request that panics gets an `internal` error.
+
 ## Known limits
 - x86_64 uses raw `openat/read/close` syscalls (musl's `open` adds an `fcntl` per open); other
   targets use std (untested). Tested on kernel 7.2.11 only.
-- Process `schedstat` and `delayacct_blkio_ticks` are the main thread's, not the process total.
+- Process `state`, `schedstat` and `delayacct_blkio_ticks` are per task; threads are read for
+  candidates only (see the protocol document, "Threads").
+- Not done from the S2 review: S-21 (sticky map clone cost), `statfs` check that `tmpfs_dir` is
+  tmpfs, a separate OOM-event file and per-entity event rate limit (S-14), dictionary header line
+  count check (S-09), versioned dictionary flag (S-20). The memory-stat classification is explicit now.
 - Process series are not stored, only served in `current`; counters of cgroup-level `io.max` are
   reduced to a "capped" flag.
 - Entity ids are reclaimed only after the longest tier's retention; metric names are never collected
