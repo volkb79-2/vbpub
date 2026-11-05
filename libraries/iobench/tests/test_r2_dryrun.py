@@ -112,7 +112,7 @@ def test_r2_dryrun_a_stored_calibration_alone_is_checked_for_staleness():
     calibrate(host)
     host.remove("/var/lib/iobench/result.json")  # a calibration exists, no run result does
     assert dryrun.rate_source(host, config()) > 0
-    host.devices["/dev/vda7"].partuuid = "00000000-0000-0000-0000-0000deadbeef"
+    host.put("/sys/devices/pci0/block/vda/size", f"{(500 << 30) // 512 + 2048}\n")  # another disk size: another disk (a partition's PARTUUID is not identity)
     with pytest.raises(Exception) as err:
         dryrun.rate_source(host, config())
     assert err.value.condition == "dry_run_rate_unusable"

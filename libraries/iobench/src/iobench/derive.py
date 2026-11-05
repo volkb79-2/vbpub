@@ -103,6 +103,8 @@ def r6_keys(*, direction: str, metering: str, worst_bps: float, worst_iops: floa
     working set, so their per-IO and per-byte costs encode the CACHED rate exactly like the cell the BPS basis is scaled from.
     """
     p = direction[0]
+    if metering == "coarse":  # veryquick: worst_bps is the 128 KiB sequential rate, worst_iops the 4 KiB random rate
+        return {f"{p}bps": int(worst_bps), f"{p}seqiops": int(worst_bps // PLAIN_BPS_IOPS_DIV), f"{p}randiops": int(worst_iops)}
     if metering == "byte":
         iops = int(worst_bps // PLAIN_BPS_IOPS_DIV)
         return {f"{p}bps": int(worst_bps), f"{p}seqiops": iops, f"{p}randiops": iops}

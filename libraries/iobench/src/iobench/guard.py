@@ -93,6 +93,62 @@ def disk_attr(host: Host, disk_name: str, rel: str) -> str | None:
 
 
 @dataclass(frozen=True)
+class DiskFacts:
+    """The whole disk behind a target (IOB-CEI-06): what the disk-scope identity is made of."""
+
+    name: str
+    devno: str
+    size_bytes: int
+    model: str | None
+    serial: str | None
+    wwn: str | None
+    scheduler: str | None
+    rotational: str | None
+
+
+def disk_facts(host: Host, name: str) -> DiskFacts:
+    """Facts of the whole disk ``name`` (a ``/sys/class/block`` entry that is not a partition)."""
+    base = f"/sys/class/block/{name}"
+    return DiskFacts(name, host.read_text(base + "/dev").strip(), int(host.read_text(base + "/size")) * 512,
+                     disk_attr(host, name, "device/model"), disk_attr(host, name, "device/serial"), disk_attr(host, name, "wwid"),
+                     disk_attr(host, name, "queue/scheduler"), disk_attr(host, name, "queue/rotational"))
+
+
+def find_disk(host: Host, *, model: str | None, serial: str | None, wwn: str | None, size_bytes: int, hint: str | None) -> DiskFacts | None:
+    """The whole disk that matches a stored disk scope without any target path (the throwaway partition may be gone).
+
+    Every stored non-null field must match and the size always must.  ``/sys/block`` lists whole disks only.  Several matches
+    (two identical disks without a serial) are resolved by the remembered name; a tie that cannot be broken is ``None``,
+    never a guess."""
+    found = []
+    try:
+        names = sorted(host.listdir("/sys/block"))
+    except OSError:
+        return None  # no block devices at all: the disk is gone
+    for name in names:
+        try:
+            facts = disk_facts(host, name)
+        except (OSError, ValueError):
+            continue  # a device that vanished or has no size (an unbound loop device) cannot be the disk
+        if facts.size_bytes != size_bytes:
+            continue
+        if any(want is not None and want != have for want, have in ((model, facts.model), (serial, facts.serial), (wwn, facts.wwn))):
+            continue
+        found.append(facts)
+    if len(found) > 1:
+        found = [f for f in found if f.name == hint]
+    return found[0] if len(found) == 1 else None
+
+
+def backing_disk(host: Host, path: str) -> str | None:
+    """The name of the disk behind the filesystem that holds ``path`` (a file target), ``None`` when no single block device is behind it."""
+    fs = fs_info(host, posixpath.dirname(path))
+    if not host.exists(f"/sys/dev/block/{fs.devno}"):
+        return None
+    return device_chain(host, fs.devno).disk_name
+
+
+@dataclass(frozen=True)
 class DeviceFacts:
     path: str
     devno: str

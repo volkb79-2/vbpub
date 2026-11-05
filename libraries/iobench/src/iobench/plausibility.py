@@ -39,8 +39,8 @@ def compare_group(values: Mapping[str, float], ref_before: float, ref_after: flo
             "reasons": ["ceiling_moved"] if moved else [], "finding": "reference_shift" if moved else None}
 
 
-def shift_observation(ts: str, direction: str, ref_after_iops: float) -> dict[str, Any]:
-    return ceilings.reference_shift(ts, direction, ref_after_iops * 4096)
+def shift_observation(ts: str, direction: str, ref_after_iops: float, kind: str) -> dict[str, Any]:
+    return ceilings.reference_shift(ts, direction, ref_after_iops * 4096, kind)
 
 
 @dataclass(frozen=True)
@@ -126,6 +126,33 @@ def pla_09(fill_bps: float, seq_rewrite_bps: float, moved: bool) -> Check:
 
 def pla_10(cache_state: str, reasons: Sequence[str]) -> Check:
     return Check("IOB-PLA-10", "info", f"cache state {cache_state}" + (f" ({', '.join(reasons)})" if reasons else ""), value=cache_state)
+
+
+VERDICTS = {"cold_measured": "pass", "rate_cap": "pass", "cold_hit_like": "fail", "no_cache_observed": "inconclusive", "undetermined": "inconclusive"}
+READ_OVER_WRITE = 20.0  # [I] a sequential read more than 20x the sequential write of the same disk is a cache's rate, not a device's
+
+
+def pla_19(read_bps: float | None, write_bps: float | None) -> Check:
+    """veryquick only: the gross cache-inflation test (a 4.3 GB/s read from a 20 MB/s disk).  Same block size, queue depth and region."""
+    if read_bps is None or write_bps is None:
+        return Check("IOB-PLA-19", "not_applicable", "no sequential read and write cell pair")
+    ratio = read_bps / write_bps
+    if ratio > READ_OVER_WRITE:
+        return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.0f}x the sequential write (> {READ_OVER_WRITE:.0f}x): a cache is serving the reads", value=round(ratio, 1))
+    return Check("IOB-PLA-19", "pass", f"sequential read is {ratio:.1f}x the sequential write", value=round(ratio, 1))
+
+
+def verdict(cache_state: str, *, vq: bool = False, inflated: bool = False) -> dict[str, str]:
+    """The plausibility verdict of a calibration (``quality.plausibility``).
+
+    ``pass``: the cold region was measured (or a flat rate cap): the figure is not a cache.  ``fail``: the cold region reads like the
+    hit reference with a cliff or a slower cold rate, so the rate is a cache's (or, veryquick, a read 20x its write: ``inflated``): a model
+    that contradicts it must be refused.  ``inconclusive``: no cold probe (quick, or cut by the budget), a drifting one, or no cliff to
+    tell a cache from no cache.  A veryquick run has no ladder, so a hit-like cold region there is ``inconclusive`` (no cache looks the same)."""
+    found = VERDICTS[cache_state]
+    if vq and found == "fail":
+        found = "inconclusive"
+    return {"verdict": "fail" if inflated else found, "cache_state": cache_state}
 
 
 def pla_11(fit_by_dir: Mapping[str, str]) -> Check:

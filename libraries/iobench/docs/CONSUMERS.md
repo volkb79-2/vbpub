@@ -36,10 +36,12 @@ root refusals can never be overridden. Without a marker no `calibrate` or `matri
 iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
 
-* Hard budgets: `quick` 12 min, `standard` 60 min, `thorough` 75 min. Skipped stages are recorded, never shortened silently.
+* Hard budgets: `veryquick` 3.5 min (173 s planned), `quick` 12 min, `standard` 60 min, `thorough` 75 min. Skipped stages are recorded, never shortened silently.
 * A live host REQUIRES `--confirm-quiet-window`, `--protect-cgroup` and `--abort-psi` (no defaults; the run refuses without them). Unlisted systemd units are not detected: you are the guard.
 * Output: `/var/lib/iobench/calibration.json`. Re-run on an identity change (`check` exit 3) or when `check` warns `recalibrate_recommended`.
 * `quick` reports every cache-dependent value as `unproven: quick_profile` (honest, not absent).
+* `veryquick` (about 3 minutes, for an installer that wants a binding and a plausibility check, not tuning values): S1, a 20 s fill, a cold probe, one 30 s write series and four 12 s cells. **Every cap and model value is `unproven: veryquick_profile`**; the model is a coarse estimate (`metering: coarse`, also `formula_only`: bps = the 128 KiB sequential rate, randiops = the 4 KiB random rate), QoS latencies and writeback are `absent: stage_skipped`, and it adds nothing to the ceiling history. Use it for: the disk binding (`identity.disk_scope`), `quality.plausibility.verdict` (`pass`, `fail`, `inconclusive`: refuse an operator model that contradicts a `fail`), and `calibration.veryquick.write_burst_seen`. Prove nothing from it: a `proven` value needs `standard` or `thorough`.
+* Every calibration records `quality.plausibility = {verdict, cache_state}`: `pass` (the cold region was measured), `fail` (it reads like the cache-hit reference, or a veryquick read is more than 20x its write), `inconclusive` (no cold probe, or nothing to tell a cache from no cache).
 
 ## 3. Matrix iteration (the fast path)
 
@@ -118,6 +120,7 @@ nothing; host-setup renders and verifies the persistent files.
 | `device_smaller_than_cache_margin` | the largest rung is below 1.2x the cliff, or the cold probe is hit-like with a cliff: the target is too small to see past the cache |
 | `ceiling_moved` | the provider rate changed during a comparison; both values are in the evidence |
 | `budget_limited` / `short_observation` / `quick_profile` | the time budget limited the evidence / a write series was not observed long enough after its knee / the `quick` profile |
+| `veryquick_profile` | the `veryquick` profile measured it (every cap and model value of that profile; the model also says `formula_only`) |
 | `worst_from_single_run` | worst/best plateaus come from this run only (no ceiling history yet) |
 | `metering_undetermined` / `operator_override` | S6 did not pass both metering tests / you typed `--metering` |
 | `shape_fit_poor` | the per-IO + per-byte linear fit is poor |
@@ -130,8 +133,8 @@ nothing; host-setup renders and verifies the persistent files.
 ### 5.3 Cache state, metering, fit, limits
 
 * `cache_state` (reads): `cold_measured` (the earliest-written region read as cache-free: proven), `rate_cap` (the cold-region probe itself is flat at a provider cap: proven; a flat line elsewhere is only a recorded fact), `no_cache_observed` (the cold region runs as fast as the warm one, no cliff, unimodal: **unproven**, `cache_not_excluded`, because it cannot be told from a cache at least as large as the written extent), `cold_hit_like` (hit-like with a cliff, on a file target, or a cold rate below the warm reference: unproven), `undetermined`. Writes have no cache state: they are proven by the time axis (>= 120 s after the knee, bytes after >= 2x the burst).
-* `metering`: `byte`, `iops`, `mixed`, `undetermined`; E1 `fit` (informational): `good`, `poor`, `insufficient`, `plateau`.
-* `limits`: `quick-profile`, `limited-by-budget`, `short-observation`, `single-run`, `stage_skipped:<Sn>`, `filesystem_layer` (file target: extent mapping and journal overhead are inside every figure), `fresh_semantics_filesystem` (file target: the "fresh" write is `fresh_fs_alloc` and counts toward the cap only on a `discard` mount), `bucket_exclusion_s<=<N>` (the longest observation: bursts longer than that are not excluded).
+* `metering`: `byte`, `iops`, `mixed`, `undetermined`, `coarse` (veryquick: a two-cell estimate, no class determined); E1 `fit` (informational): `good`, `poor`, `insufficient`, `plateau`.
+* `limits`: `quick-profile`, `very-quick-profile`, `limited-by-budget`, `short-observation`, `single-run`, `stage_skipped:<Sn>`, `filesystem_layer` (file target: extent mapping and journal overhead are inside every figure), `fresh_semantics_filesystem` (file target: the "fresh" write is `fresh_fs_alloc` and counts toward the cap only on a `discard` mount), `bucket_exclusion_s<=<N>` (the longest observation: bursts longer than that are not excluded).
 * Write caps are proven by one series: the observation runs at QD32 (240 s, `thorough` 900 s) and bounds `cap_basis.write.value` (`inputs` lists every figure the minimum was taken over); a cap without the fresh half says `fresh_not_measured`
   (or `budget_limited`); this also covers a file target on a mount without `discard`, where the measured fresh penalty is excluded by design. The write BPS cap is `unproven: short_observation` until the sequential series is itself time-proven (backlog IOB-BL-02). BPS caps and the read model keys carry the real reasons of the basis they rest on. **Exit 0 of `check` for the BPS caps and the model needs a ceiling history for `seq1m`**: nothing iobench writes
   populates it yet (the S6 sequential cells are 30 s, below the 60 s plateau rule), so BPS caps and the model keys need `iobench ceilings add` (or a later P4-derived history) to reach exit 0; exit 7 is the honest answer meanwhile (backlog IOB-BL-03).
@@ -143,7 +146,7 @@ nothing; host-setup renders and verifies the persistent files.
 
 * `basis` (how a value was reached): `measured`, `confirmed-by-sweep`, `ratio-inferred`, `formula-only` (the sweep was skipped, so the formula was never confirmed), `single-run`.
 * `check` states and their exit codes: `current` 0, `current_unproven` 7, `stale` 3, `absent` 4, `unreadable` 5, `aborted_only` 6 (only an aborted or failed record exists).
-* `check` warnings (advisory, never change the exit code): `scheduler_changed`, `ram_changed`, `kernel_changed`, `root_source_changed`, `workdir_fs_changed` (the host drifted since the run), `older_than_180_days`, `recalibrate_recommended` (the ceiling history moved away from the calibrated plateau), `last_run_aborted` (a newer run was aborted; the good result is kept).
+* `check` warnings (advisory, never change the exit code): `scheduler_changed`, `ram_changed`, `kernel_changed`, `root_source_changed`, `workdir_fs_changed` (the host drifted since the run; a work dir that was removed after the run is not a change), `target_changed` (the partition or file that was measured is gone, formatted, replaced or resized: the disk it was on is what the result describes, so this is not `stale`), `older_than_180_days`, `recalibrate_recommended` (the ceiling history moved away from the calibrated plateau), `last_run_aborted` (a newer run was aborted; the good result is kept).
 
 ## 6. mdt-cockpit wizard (MDT-HS-05 and the io.cost wizard, D-IOC-4)
 
@@ -155,9 +158,12 @@ nothing; host-setup renders and verifies the persistent files.
 ## 7. Ceiling history (governor or timer probe)
 
 ```bash
-iobench ceilings add --dir write --workload seq1m --bps 14680064 --duration-s 600 --source governor
+iobench ceilings add --dir write --workload seq1m --bps 14680064 --duration-s 600 --source governor --kind file
 iobench ceilings summary --window-days 30 --json
+iobench ceilings summary --kind probe --json
 ```
+
+The history belongs to the **disk**, not to the partition: its key is the disk scope (model, serial, wwn and size of the whole disk; a disk without a serial or wwn is also bound to its host), so a throwaway partition that is deleted after a calibration, or a file benchmark and a raw one of the same disk, share one history. Each observation says what it was measured on (`--kind`): `raw` (a device or partition), `file` (a file on a filesystem, e.g. a governor's scratch-file write bench) or `probe` (a read-only raw probe). `--kind` may be left out for a benchmark (the calibrated target's kind) and a probe (`probe`); a governor must say. **Which kind may confirm stability:** writes: raw and file; reads: raw and probe (a file read is never cache-free, a probe never writes). `ceilings summary` aggregates only those, and adds `by_kind` to report each class apart; `--kind K` summarises one class whatever it counts for. A calibration made before the disk scope existed (`schema_minor` 0) is `stale` for `check` and refused by `ceilings add` (`identity_legacy`): recalibrate.
 
 ```json
 {"history": "recorded", "window_days": 30, "write": {"seq1m": {"worst": 6291456, "median": 14680064, "best": 18874368, "n": 41}}, "read": {"seq1m": {"worst": 1300000000, "median": 1400000000, "best": 1400000000, "n": 12}}}
@@ -188,7 +194,10 @@ calibrate-then-mkfs sequence). `--installer` only waives the live-host refusals;
 ```bash
 iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007
 iobench calibrate --target /dev/vda7 --work-dir /mnt/iobench-work --profile quick --installer
+iobench calibrate --target /dev/vda7 --work-dir /mnt/iobench-work --profile veryquick --installer
 ```
+
+The second run is the 3-minute profile: a binding and a plausibility verdict, no tuning values. A partition that is wiped, formatted or deleted afterwards does not invalidate the result: `check` finds the disk by its serial / wwn / model and size (`target_changed` is the only trace), and `ceilings add` keeps joining the same history. Replace or resize the disk and `check` says `stale` (exit 3).
 
 ## 9. Dry run and planning
 

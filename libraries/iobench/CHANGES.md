@@ -4,6 +4,19 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 
 ## [Unreleased]
 
+### Added
+- **`veryquick` calibration profile** (`calibrate --profile veryquick`, `IOB-PRF-03`): about 3 minutes (173 s planned, 210 s hard budget) for an installer that wants a binding and a plausibility check. S0, S1, a 20 s fill, E-cold (QD32, QD1 histogram, and a cache-hit reference on the last GiB written), one 30 s write series, four 12 s cells (4 KiB random and 128 KiB sequential, read and write). **Every cap and model value is `unproven: veryquick_profile`**; the model is a coarse formula estimate (`metering: coarse`, also `formula_only`); QoS latencies and writeback are `absent: stage_skipped`; the run adds nothing to the ceiling history. New vocabulary: unproven reason `veryquick_profile`, limit `very-quick-profile`, metering `coarse`. `calibration.veryquick` records whether a write burst ended inside the series.
+- **`quality.plausibility = {verdict, cache_state}`** on every calibration (`pass`, `fail`, `inconclusive`), and `IOB-PLA-19` (veryquick: a sequential read more than 20x the sequential write is a cache, the 4.3 GB/s read from a 20 MB/s disk). The 20x is an inferred threshold, not yet measured on a real host (`IOB-BL-23`).
+- **Disk-scope identity and history key** (`IOB-CEI-06`, host-tuning review B2): `identity.disk_scope` (`model|serial|wwn|size_bytes` of the whole disk; a serial-less disk is also bound to its host by a hash of `/etc/machine-id`, unless the id is missing or `uninitialized`). The ceiling history header (`identity_digest`) is this key, so a raw calibration, a file observation and a read probe of one disk share one history.
+- **Evidence classes** (`IOB-CEI-07`): every observation has a `kind` (`raw`, `file`, `probe`); writes are confirmed by raw and file observations, reads by raw and probe ones. `ceilings add --kind`, `ceilings summary --kind` and `by_kind` in the summary report each class apart; `summary` and `recalibrate_recommended` count only what the table allows. Benchmark observations also record the measured partition's `devno` and `partuuid`.
+- `target_changed` check warning: the measured partition or file is gone, formatted, replaced or resized.
+
+### Changed
+- **Result validity is the disk, not the partition** (`IOB-RES-03`): `check` is `stale` only when the whole-disk size, a stored model / serial / wwn, or (serial-less disk) the host differs, or the disk cannot be found. A throwaway partition that was deleted after the run, or a re-created one with another PARTUUID, no longer makes the result stale; `live_identity` finds the disk by serial / wwn / model and size when no target exists. A work dir that was removed after the run is no `workdir_fs_changed`.
+- **Breaking, schema minor 1 (nothing of iobench has run on a real host yet):** a calibration or result written before the disk scope (`schema_minor` 0) is `stale`, `ceilings add` refuses its identity (`identity_legacy`) and its history is moved aside by the next calibration. Observations require a `kind`; `ceilings add --source governor` requires `--kind` (a governor measures on a scratch file or a raw device, it has to say which).
+- `ceilings summary` adds `by_kind`, and its aggregate (like the one in `show --ceilings`) counts only stability-eligible observations; a file target's history now shares the disk's key instead of being kept apart by the target kind (`IOB-TGT-09`).
+- `FakeHost` lists `/sys/block` (whole disks) and symlinks in `listdir`; `standard_host` has an `/etc/machine-id`.
+
 <!-- cmru: release history -->
 
 ## [0.1.1] - 2026-11-04

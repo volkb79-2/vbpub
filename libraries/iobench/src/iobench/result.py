@@ -1,6 +1,7 @@
 """Schemas, atomic IO, identity, ``check`` and ``show`` (IOB-RES-01..04, IOB-CHK-01..04, IOB-STA-05)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import posixpath
 from dataclasses import dataclass, field
@@ -11,13 +12,12 @@ from .errors import Refusal
 from .host import Host
 
 SCHEMA = 1
-SCHEMA_MINOR = 0
+SCHEMA_MINOR = 1  # 1: identity.disk_scope (IOB-CEI-06), calibration quality.plausibility, the veryquick profile
 DEFAULT_DIR = "/var/lib/iobench"
 NOT_MEASURED = "not_measured"
 REQUIRED_TOP = ("schema", "schema_minor", "tool", "run", "identity", "targets", "evidence", "proposals", "quality", "restore")
 REQUIRED_CAL_TOP = ("schema", "schema_minor", "tool", "run", "identity", "quality", "calibration")
-STRICT_DISK = ("devno", "partuuid", "size_bytes")
-OPTIONAL_STRICT = ("model", "serial", "wwn")
+OPTIONAL_STRICT = ("model", "serial", "wwn")  # of the disk scope: each one that is non-null in the stored record must still match
 AGE_WARN_DAYS = 180
 EXIT = {"current": 0, "stale": 3, "absent": 4, "corrupt": 5, "aborted_only": 6, "current_unproven": 7}
 LOAD_REASONS = ("corrupt", "schema_unsupported", "unreadable", "calibration_missing", "calibration_superseded", "damaged_proposals")
@@ -103,59 +103,126 @@ def root_source(host: Host) -> str:
     return next(e.source for e in guard.parse_mountinfo(host.read_text("/proc/self/mountinfo")) if e.mountpoint == "/")
 
 
+def machine_id_hash(host: Host) -> str | None:
+    """A hash of ``/etc/machine-id`` (never the id itself): what binds a serial-less disk to its host.
+
+    ``None`` when there is no usable id (missing, empty, or systemd's ``uninitialized`` placeholder of a first boot in an installer
+    chroot): such a record is then not compared on the host, so the real id that appears at first boot does not make it stale."""
+    try:
+        text = host.read_text("/etc/machine-id").strip()
+    except OSError:
+        return None
+    return hashlib.sha256(("iobench-machine-id:" + text).encode()).hexdigest() if text not in ("", "uninitialized") else None
+
+
+def disk_scope(host: Host, disk: guard.DiskFacts) -> dict[str, Any]:
+    """The disk-scope identity (IOB-CEI-06): the whole disk, never a partition.  ``name`` is only a hint for finding the disk again."""
+    strong = bool(disk.serial or disk.wwn)
+    scope = {"model": disk.model, "serial": disk.serial, "wwn": disk.wwn, "size_bytes": disk.size_bytes,
+             "strength": "strong" if strong else "weak", "machine_id_hash": None if strong else machine_id_hash(host), "name": disk.name}
+    scope["key"] = ceilings.scope_key(scope)
+    return scope
+
+
+def _workdir_fs(host: Host, path: str | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    fs = guard.fs_info(host, path)
+    return {"path": path, "type": fs.fstype, "uuid": fs.uuid}
+
+
+def _identity(host: Host, tgt: dict[str, Any] | None, disk: dict[str, Any], scope: dict[str, Any] | None, wd: dict[str, Any] | None) -> dict[str, Any]:
+    return {"target": tgt, "disk": disk, "disk_scope": scope, "identity_strength": scope["strength"] if scope else "weak",
+            "root_source": root_source(host), "workdir_fs": wd, "kernel": kernel_mm(host), "ram_bytes": mem_total(host), "virt": "unknown"}
+
+
 def s0_identity(host: Host, target: guard.Target, workdir_path: str | None) -> dict[str, Any]:
-    """The S0 identity record (IOB-RES-03); also what ``check`` re-reads live."""
+    """The S0 identity record (IOB-RES-03, IOB-CEI-06); also what ``check`` re-reads live.
+
+    ``disk`` keeps what is true of the measured partition or file (its devno, PARTUUID and size: fields of the observation);
+    ``disk_scope`` is the whole disk behind it and is the only thing that decides whether a result is still current."""
     if target.kind == "device":
         disk = {"devno": target.devno, "model": target.model, "serial": target.serial, "wwn": target.wwn,
                 "partuuid": target.partuuid, "size_bytes": target.size_bytes,
                 "scheduler": guard.disk_attr(host, target.disk_name, "queue/scheduler"),
                 "rotational_flag": guard.disk_attr(host, target.disk_name, "queue/rotational")}
         tgt = {"kind": "device", "path": target.path}
+        disk_name = target.disk_name
     else:
         fs = guard.fs_info(host, posixpath.dirname(target.path))
         disk = {"devno": fs.devno, "model": None, "serial": None, "wwn": None, "partuuid": None, "size_bytes": target.size_bytes,
                 "scheduler": None, "rotational_flag": None}
         tgt = {"kind": "file", "path": target.path, "fs_uuid": target.fs_uuid, "inode": target.inode}
-    wd = None
-    if workdir_path is not None:
-        fs = guard.fs_info(host, workdir_path)
-        wd = {"path": workdir_path, "type": fs.fstype, "uuid": fs.uuid}
-    return {"target": tgt, "disk": disk, "identity_strength": "strong" if (disk["serial"] or disk["wwn"]) else "weak",
-            "root_source": root_source(host), "workdir_fs": wd, "kernel": kernel_mm(host), "ram_bytes": mem_total(host),
-            "virt": "unknown"}
+        disk_name = guard.backing_disk(host, target.path)
+    scope = disk_scope(host, guard.disk_facts(host, disk_name)) if disk_name else None
+    return _identity(host, tgt, disk, scope, _workdir_fs(host, workdir_path))
 
 
 def live_identity(host: Host, stored: Mapping[str, Any]) -> dict[str, Any] | None:
-    """Identity of the stored target as it is now; ``None`` if the target cannot be found at all."""
+    """Identity of the stored measurement as it is now; ``None`` if the disk cannot be found at all.
+
+    The target is read first (it still carries the partition facts).  A target that is gone (a throwaway partition, a
+    formatted data partition, a deleted file) is not a changed identity: the disk is then found by its serial / wwn / model and
+    size alone (IOB-CEI-06).  Only a disk that cannot be found, or that differs, is stale."""
     path = stored["target"]["path"]
+    wd = stored.get("workdir_fs")
+    wd_path = wd["path"] if wd else None
     try:
         target = guard.load_target(host, path)
     except (Refusal, OSError, KeyError, ValueError):
-        # a vanished device / replaced file is a changed identity (stale), not an unreadable result
+        target = None
+    try:
+        wd_live = _workdir_fs(host, wd_path)
+    except (OSError, ValueError):
+        wd_live = None  # the work dir is removed after a run: nothing to compare
+    if target is not None:
+        return {**s0_identity(host, target, None), "workdir_fs": wd_live}
+    stored_scope = stored.get("disk_scope")
+    if stored_scope is None:
+        return None  # a record from before the disk scope: nothing to find the disk with
+    facts = guard.find_disk(host, model=stored_scope["model"], serial=stored_scope["serial"], wwn=stored_scope["wwn"],
+                            size_bytes=stored_scope["size_bytes"], hint=stored_scope.get("name"))
+    if facts is None:
         return None
-    wd = stored.get("workdir_fs")
-    return s0_identity(host, target, wd["path"] if wd else None)
+    disk = {"devno": None, "model": facts.model, "serial": facts.serial, "wwn": facts.wwn, "partuuid": None, "size_bytes": None,
+            "scheduler": facts.scheduler, "rotational_flag": facts.rotational}
+    return _identity(host, None, disk, disk_scope(host, facts), wd_live)
 
 
 def identity_differs(stored: Mapping[str, Any], live: Mapping[str, Any] | None) -> bool:
-    """IOB-RES-03: strict fields only (devno, partuuid, size and each non-null model/serial/wwn; the file target tuple)."""
+    """IOB-RES-03: the disk scope only: the whole-disk size, each non-null model/serial/wwn, and for a serial-less disk the host.
+
+    The partition (devno, PARTUUID, size) or file (filesystem uuid, inode) that was measured is no part of it: it may be gone
+    (``target_changed`` warns), the disk it was on is what the result describes."""
     if live is None:
         return True
-    st, lv = stored["target"], live["target"]
-    if any(st.get(k) != lv.get(k) for k in ("kind", "fs_uuid", "inode")):
+    ss, ls = stored.get("disk_scope"), live.get("disk_scope")
+    if ss is None or ls is None:
+        return True  # a record from before the disk scope cannot be shown to describe this disk
+    if ss["size_bytes"] != ls["size_bytes"] or any(ss.get(k) is not None and ss[k] != ls.get(k) for k in OPTIONAL_STRICT):
         return True
-    sd, ld = stored["disk"], live["disk"]
-    if any(sd.get(k) != ld.get(k) for k in STRICT_DISK):
-        return True
-    return any(sd.get(k) is not None and sd[k] != ld.get(k) for k in OPTIONAL_STRICT)
+    # a serial-less disk is bound to its host; a disk that has since gained a serial is the same disk (nothing to compare the host with)
+    return ss["strength"] == "weak" and ls["strength"] == "weak" and ss.get("machine_id_hash") is not None and ss["machine_id_hash"] != ls["machine_id_hash"]
 
 
-WARNINGS = ("scheduler_changed", "ram_changed", "kernel_changed", "root_source_changed", "workdir_fs_changed", "older_than_180_days",
-            "recalibrate_recommended", "last_run_aborted")
+def target_changed(stored: Mapping[str, Any], live: Mapping[str, Any]) -> bool:
+    """Whether the partition or file that was measured is no longer the same (or is gone): advisory, the disk still describes it."""
+    st, lt = stored["target"], live["target"]
+    if lt is None:
+        return True
+    if any(st.get(k) != lt.get(k) for k in ("kind", "fs_uuid", "inode")):
+        return True
+    return any(stored["disk"].get(k) != live["disk"].get(k) for k in ("devno", "partuuid", "size_bytes"))
+
+
+WARNINGS = ("scheduler_changed", "ram_changed", "kernel_changed", "root_source_changed", "workdir_fs_changed", "target_changed",
+            "older_than_180_days", "recalibrate_recommended", "last_run_aborted")
 
 
 def advisory_warnings(stored: Mapping[str, Any], live: Mapping[str, Any], started: float | None, now: float) -> list[str]:
     out = []
+    if target_changed(stored, live):
+        out.append("target_changed")
     if stored["disk"].get("scheduler") != live["disk"].get("scheduler"):
         out.append("scheduler_changed")
     if stored.get("ram_bytes") != live.get("ram_bytes"):
@@ -164,8 +231,9 @@ def advisory_warnings(stored: Mapping[str, Any], live: Mapping[str, Any], starte
         out.append("kernel_changed")
     if stored.get("root_source") != live.get("root_source"):
         out.append("root_source_changed")
-    if (stored.get("workdir_fs") or {}).get("uuid") != (live.get("workdir_fs") or {}).get("uuid"):
-        out.append("workdir_fs_changed")
+    live_wd = live.get("workdir_fs")
+    if live_wd is not None and (stored.get("workdir_fs") or {}).get("uuid") != live_wd.get("uuid"):
+        out.append("workdir_fs_changed")  # a work dir that is gone (removed after the run) has nothing to compare
     if started is not None and now - started > AGE_WARN_DAYS * 86400:
         out.append("older_than_180_days")
     return out

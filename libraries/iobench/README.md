@@ -12,12 +12,12 @@ requirements and the result schema.
 
 | Capability | One line | Spec |
 |---|---|---|
-| Calibration (once per host or storage class; `quick` 12, `standard` 60, `thorough` 75 min) | cold-region probe (primary, direct) cross-checked by a latency-mode split, working-set ladder, time-axis proof for writes, fresh vs rewritten blocks, ceiling, cost-shape grid, latency-vs-load curve | `IOB-CAL`, `IOB-CCH`, `IOB-SHP`, `IOB-LAT` |
+| Calibration (once per host or storage class; `veryquick` 3, `quick` 12, `standard` 60, `thorough` 75 min; `veryquick` is for an installer and proves nothing: `unproven: veryquick_profile`) | cold-region probe (primary, direct) cross-checked by a latency-mode split, working-set ladder, time-axis proof for writes, fresh vs rewritten blocks, ceiling, cost-shape grid, latency-vs-load curve | `IOB-CAL`, `IOB-CCH`, `IOB-SHP`, `IOB-LAT` |
 | Matrix iteration (6 cells: typical 11, worst case 15 min; one knob A/B typical 4 min) | reuses the calibration; interference cells with a sync-latency probe under buffered writeback load, the read cost of small requests, a noise floor | `IOB-MAT`, `IOB-SWP`, `IOB-RDC` |
 | Proof model | every proposed value is `proven`, `unproven` (with reasons) or `absent`; `check` exit 0 only if every requested proposal is proven, exit 7 if valid but some are not | `IOB-STA`, `IOB-CHK` |
 | Plausibility | rejects numbers that are a cache, a burst, a flat provider cap, a moved ceiling or a too-short run; never keys on the `rotational` flag | `IOB-PLA`, `IOB-REF` |
 | Proposals | `proposals.writeback`, `proposals.caps`, `proposals.iocost_model`, `proposals.iocost_qos`, each value with `rule`, `inputs`, `status` | `IOB-DER` |
-| Ceiling history | an append-only list of sustained plateaus from which the vrate bounds derive | `IOB-CEI` |
+| Ceiling history | an append-only list of sustained plateaus from which the vrate bounds derive; keyed by the **disk** (model, serial, wwn, size), not by the partition, so a raw calibration, a file observation and a read probe of one disk share it and each observation says its kind (`raw`, `file`, `probe`); a deleted partition is `target_changed`, not `stale` | `IOB-CEI` |
 | Safety | targets are a dedicated device **or a preallocated file** on an existing filesystem; refuses a target that is mounted, swap, signature-bearing or the root disk, writes nothing without its marker; the Host itself binds every writer and discard to the authorised extent (a plain `run`/`spawn` can only create `iobench-*` load files, never reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
 
 ## Quick use
