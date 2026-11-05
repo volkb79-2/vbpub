@@ -54,7 +54,7 @@ cockpit. The current split of responsibilities breaks that:
 |---|---|---|
 | D1 | Each service receives its listening sockets from **systemd `.socket` units**, one unit per access level. | systemd creates the socket with the configured owner, group and mode, and holds it across daemon restarts (no inode churn, no stale-socket logic). No tmpfiles, `RuntimeDirectory=` or drop-in conflicts. |
 | D2 | **One group per service per access level** (`topos-observe`, `cgprofile-control`, `cgprofile-observer`). A user is granted a level by joining that group. A host may map a level to an existing group instead (cockpit hosts: `docker`). | Least privilege for standalone consumers; `docker` is root-equivalent and must not be the only way in. |
-| D3 | **Per-level layout** `/run/<svc>/<level>/<svc>.sock`, with a **transition release** that also serves today's paths. | A consumer bind-mounts exactly the level directory it is entitled to and cannot see the others. |
+| D3 | **Per-level layout** `/run/<svc>/<level>/<svc>.sock`. **No legacy support** (ruling later on 2026-11-05, superseding the transition release): no dual paths, no client fallbacks, no migration flag, no `legacy` doctor check. A host gets a fresh install, or the old installation is removed by hand first (section 4). | A consumer bind-mounts exactly the level directory it is entitled to and cannot see the others. |
 | D4 | Each service owns its **install verb**, an optional **TTY wizard** for missing values, and a **`doctor` verb**, all on **cli-extended**. mdt host-setup and debian-install-v2 only call these verbs with their values. | Standalone hosts get the same installer; one owner per path. |
 | D5 | **dockerd configuration stays out of scope.** debian-install-v2 and host-setup already merge disjoint `daemon.json` keys (D-F1: `scripts/debian-install-v2/debian_install_v2/installer.py:991-998`, `:1070-1073`; host-setup owns only `cgroup-parent` and the `docker.socket` drop-in). | Measured: no duplication, only a documented key split. |
 | D6 | Delivery is distributed by a cross-tool agent (this plan is the handoff). | Operator instruction. |
@@ -118,12 +118,18 @@ cockpit. The current split of responsibilities breaks that:
 - **P-10. Phase-1 releases are not deployable through the old host-setup installer.**
   `mdt-cgprofile-install.sh` renders only `cgpd.service` and `cgprofile.slice`. A
   2.2.0 service would `Requires=` socket units that do not exist, and P-9 would refuse
-  self-bind. host-setup must keep `CGPROFILE_WHEEL` below 2.2.0 until phase 2.
-  On a host previously installed by host-setup (old `ctl_socket`/`observer_socket`
-  keys in `/etc/cgprofile/cgpd.toml`), `cgpd install` refuses unless
-  `--migrate-from-host-setup` is given. That flag rewrites the old config keys to
-  `[sockets.*]`. It touches nothing outside cgprofile's own tree: host-setup removes its
-  own files in phase 2.
+  self-bind. On every host, host-setup keeps `CGPROFILE_WHEEL` below 2.2.0 until that
+  host's cutover (phase 3), which installs the phase-2 host-setup.
+- **P-11. Install verbs refuse an old installation instead of migrating it.**
+  - `cgpd install` and `toposd install` refuse when they find leftovers of the old
+    layout:
+    - old config keys (`ctl_socket`, `observer_socket` in `/etc/cgprofile/cgpd.toml`);
+    - host-setup's tmpfiles rules or drop-ins for their tree;
+    - a `/run/<svc>` tree whose owner or mode differs from 3.1.
+  - The refusal lists the manual removal steps (section 4, "Manual removal"). Nothing
+    is rewritten or chmodded in place.
+  - A re-run on a host the verb itself installed (owner and modes match 3.1) is a
+    normal upgrade.
 
 ## 3. Target design
 
@@ -136,7 +142,6 @@ cockpit. The current split of responsibilities breaks that:
 /run/topos/state/                    0700 root:root   (RuntimeDirectory=topos/state)
 /run/topos/state/bpf/                (was /run/topos/bpf)
 /run/topos/state/squeeze/            (was /run/topos/squeeze)
-/run/topos/topos.sock                TRANSITION ONLY: second ListenStream of topos-observe.socket
 
 /run/cgprofile/                      0755 root:root
 /run/cgprofile/control/              0755 root:root
@@ -144,9 +149,10 @@ cockpit. The current split of responsibilities breaks that:
 /run/cgprofile/observer/             0755 root:root
 /run/cgprofile/observer/cgprofile.sock   0660 root:cgprofile-observer
 /run/cgprofile/state/                0700 root:root   (damon.lock moves here)
-/run/cgprofile/ctl.sock              TRANSITION ONLY: second ListenStream of cgprofile-control.socket
-/run/cgprofile/observer/resource-observer.sock   TRANSITION ONLY: second ListenStream of cgprofile-observer.socket
 ```
+
+The old paths (`/run/topos/topos.sock`, `/run/cgprofile/ctl.sock`,
+`/run/cgprofile/observer/resource-observer.sock`) are not served at all.
 
 Access control is the socket file's group and mode; directories are root-owned and
 not writable by anyone else, so a consumer cannot replace a socket. Directories are
@@ -163,8 +169,6 @@ Description=cgprofile daemon, control access level
 
 [Socket]
 ListenStream=/run/cgprofile/control/cgprofile.sock
-# transition release only (config [sockets.control].legacy); systemd has no inline comments
-ListenStream=/run/cgprofile/ctl.sock
 SocketUser=root
 # from config [sockets.control].group
 SocketGroup=cgprofile-control
@@ -178,9 +182,10 @@ Service=cgpd.service
 WantedBy=sockets.target
 ```
 
-`cgprofile-observer.socket` has the same shape: `FileDescriptorName=observer`,
-`SocketGroup=cgprofile-observer`, and the legacy second path. `topos-observe.socket`
-has `FileDescriptorName=observe` and `Service=topos.service`.
+`cgprofile-observer.socket` has the same shape, with `FileDescriptorName=observer` and
+`SocketGroup=cgprofile-observer`. `topos-observe.socket` has
+`FileDescriptorName=observe` and `Service=topos.service`. Each socket unit has exactly
+one `ListenStream=`.
 
 Ordering lives in the **service** unit:
 
@@ -213,8 +218,8 @@ so they start at boot, not on first connect.
 Both daemons implement the same contract:
 
 1. When `LISTEN_PID == getpid()` and `LISTEN_FDS` is set, read `LISTEN_FDNAMES`.
-   Build `{level: [socket, ...]}` from fds 3..3+N-1. A level may have several fds
-   (new path plus legacy path).
+   Build `{level: socket}` from fds 3..3+N-1. Exactly one fd per level; a second fd
+   with the same name is an error at start.
 2. In activated mode, the daemon:
    - never binds, chmods, chowns or unlinks a socket node;
    - skips the stale-socket probe;
@@ -245,26 +250,23 @@ config file is the single source for `unit print`, `install` and `doctor`.
 path   = "/run/cgprofile/control/cgprofile.sock"
 group  = "cgprofile-control"      # an existing group name maps the level (e.g. "docker")
 mode   = "0660"
-legacy = ["/run/cgprofile/ctl.sock"]          # transition release default; [] after
 
 [sockets.observer]
 path   = "/run/cgprofile/observer/cgprofile.sock"
 group  = "cgprofile-observer"     # must not be the docker group (P-5)
 mode   = "0660"
-legacy = ["/run/cgprofile/observer/resource-observer.sock"]
 ```
 
 - Today's `ctl_socket` and `observer_socket` keys (`daemon_config.py:62-64`) are
-  replaced. An old key in a config file gets a named refusal with the new spelling, in
-  the style of `STALE_ENV` at `daemon_config.py:91`.
+  removed. An old key in a config file gets a named refusal with the new spelling, in
+  the style of `STALE_ENV` at `daemon_config.py:91`. That is an error message, not a
+  migration (P-11).
 - `damon_lock` moves to `/run/cgprofile/state/damon.lock`.
 - Validation:
   - the control group differs from the observer group;
   - the observer group is not the docker group (P-5);
   - paths are absolute and distinct;
   - `mode` is an octal string.
-- `legacy` paths share their level's group and mode, because they are extra
-  `ListenStream=` lines of the same socket unit.
 - topos gets `/etc/topos/toposd.toml` with `[sockets.observe]` of the same shape, plus
   `state_dir` defaulting to `/run/topos/state`. Its `config.py` user config stays
   client-side.
@@ -311,12 +313,13 @@ Steps:
    then `daemon-reload`.
    - Restart a socket unit only when its own unit text changed; its service follows
      through `Requires=`. Otherwise enable/start/restart/reload only the service.
-   - **Normalize the service's own runtime tree.** systemd creates parent directories
-     only when they are absent and never chmods an existing one. The installer
-     therefore chowns and chmods `/run/<svc>`, its level directories and `state/` to
-     the layout in 3.1. This is the one-time migration of hosts whose directories were
-     created by host-setup's old tmpfiles rules (`0770 root:docker`,
-     `0750 root:docker`, `0751 root:cgprofile-observer`).
+   - **No in-place normalization** (P-11). systemd creates parent directories only when
+     they are absent and never chmods an existing one. So before applying anything, the
+     installer checks `/run/<svc>`, its level directories and `state/` against 3.1, and
+     refuses when one exists with another owner or mode. Directories created by
+     host-setup's old tmpfiles rules (`0770 root:docker`, `0750 root:docker`,
+     `0751 root:cgprofile-observer`) fall into that case. The refusal names the manual
+     removal steps.
    - **Refuse a downgrade** to a version without socket units while socket units are
      installed, unless `--allow-downgrade`, which first disables and removes them. An
      old daemon would unlink and rebind the node under systemd's socket.
@@ -349,40 +352,61 @@ and each failure carries a `remedy`:
 docker GID), `socket-units` (enabled and active), `socket-nodes` (each path: is a
 socket, owner root, group and mode per config), `socket-dirs` (root-owned, not
 group/other-writable), `state-dir` (0700 root), `service` (active, version =
-installed), `connect` (per level: connect plus a health or contract probe), `legacy`
-(the transition paths are present while `legacy` is non-empty; warn while legacy fds
-see traffic once the cut is planned), `foreign-rules` (warn if any tmpfiles rule or
-drop-in outside the service claims its tree; detects the old `mdt-topos*.conf` and
-`mdt-cgprofile*.conf` files), `caller-access` (does the caller belong to each level
-group; informational for root).
+installed), `connect` (per level: connect plus a health or contract probe),
+`foreign-rules` (fail if any tmpfiles rule or drop-in outside the service claims its
+tree; detects the old `mdt-topos*.conf` and `mdt-cgprofile*.conf` files; the remedy is
+the manual removal), `caller-access` (does the caller belong to each level group;
+informational for root).
 
 Doctor limits:
 - `connect` for a level the caller does not belong to is `skip` (with a note), not
   `fail`: EACCES there is expected.
 - Checks that need root (a config or state directory the caller cannot read) report
   `skip` with "run as root" instead of failing.
-- On a cockpit host still running old host-setup (until phase 2), `socket-dirs` and
-  `foreign-rules` are `warn`, not `fail`, because the old tmpfiles rules re-apply
-  `0770 root:docker` on `systemd-tmpfiles --create`.
 
 `cgpctl doctor` (client side, `cgpctl.py:727-736`) keeps its client checks, updated to
 the new paths and groups.
 
-## 4. Transition and release sequence
+## 4. Release and cutover sequence
 
-Hosts run released versions, so the change cannot be made atomic by commit; it is made
-safe by compatibility. Every phase leaves every mix of old and new components working.
+There is no legacy support (D3). Old and new components do not interoperate: a new
+client finds no socket on an old host, and an old client finds no socket on a new host.
+Safety therefore comes from the order below, with each host switched in one bounded
+**cutover**. Lanes and devcontainers on that host are down during the cutover.
 
 | Phase | Content | Lands as | Gate to next phase |
 |---|---|---|---|
-| **1. Services and clients, dual-path** | topos and cgpd: socket units with new and legacy paths, level groups, state dirs, install/uninstall/doctor, `--self-bind`. All clients resolve **new path first, then legacy**: topos attach/mcp/status, `cgpctl`/`ctlwire`, run-gate (including the preflight rules of 5.5), assay tools (including the in-container observer basename, 5.6). | One integration branch, per-tool commits, **one `--no-ff` merge**; then releases in orchestration order: (cli-extended if touched) → topos, cgroup-profiler → run-gate-project → assay. **Not deployed to cockpit hosts in this phase** (P-10). | Releases published; test suites and doctors green in a VM-harness host without mdt host-setup (`scripts/debian-install-v2/testing/vm/`); new run-gate and assay releases verified against **old** cgpd paths on a cockpit host. |
-| **2. mdt host-setup becomes a consumer** | Remove host-setup's foreign rules and drop-ins; call `cgpd install --migrate-from-host-setup` / `toposd install` with host-setup.env values (control and topos observe mapped to `docker`, observer stays `cgprofile-observer`); the service installers normalize the live directory modes (3.5 step 7); host-setup deletes its old owned files; `check.sh` calls the doctors. | Second merge; mdt-cockpit release. | Gate before starting: `modern-debian-tools-python-debug` retired on main (5.10). Rolled out on r1002, then v1001, then the controller host (never nano1), with run-gate/assay already on their phase-1 releases. Each host's doctor is green, and legacy consumers (old devcontainers, running lanes) still work. |
-| **3. Consumers switch mounts** | devcontainer templates and vbpub `.devcontainer` mount only the level directories; `initializeCommand` checks the declared sockets **and a floor on the in-container `cgpctl`/`topos` versions** (an older client inside an image looks for the legacy names, which these mounts no longer show); Netcup runner mounts the control dir; run-gate/assay lane mounts use the observer level dir. | Third merge; mdt-cockpit (and run-gate, if its mount source changes) release. Containers rebuilt per user. | Every live devcontainer recreated on the new mounts. |
-| **4. Drop legacy paths** | Remove the legacy `ListenStream` lines and the client fallbacks. | Fourth merge; cgroup-profiler 3.0.0, topos minor bump with a breaking note. | Doctor's `legacy` check shows no legacy traffic for an agreed period, and every consumer runs at least its phase-1 release. |
+| **1. Services and clients** | topos and cgpd: socket units on the new paths only, level groups, state dirs, install/uninstall/doctor with the P-11 refusal, `--self-bind`. Clients use the new paths only: topos attach/mcp/status, `cgpctl`/`ctlwire`, run-gate (preflight rules of 5.5), assay tools (in-lane basename, 5.6). | One integration branch, per-tool commits, **one `--no-ff` merge**; then releases in orchestration order: (cli-extended if touched) → topos, cgroup-profiler → run-gate-project → assay. **Not deployed to cockpit hosts** (P-10), and lanes on cockpit hosts keep their current run-gate/assay pins until that host's cutover. | Releases published; test suites and doctors green in a VM-harness host without mdt host-setup (`scripts/debian-install-v2/testing/vm/`). |
+| **2. Consumers ready** | mdt host-setup becomes a consumer (5.3): it calls `cgpd install` / `toposd install` with host-setup.env values (control and topos observe mapped to `docker`, observer stays `cgprofile-observer`) and refuses while its own old files exist. Devcontainer templates and vbpub `.devcontainer` (5.4) mount only the level directories, and `initializeCommand` checks the declared sockets and a floor on the in-container `cgpctl`/`topos` versions. Netcup runner (5.7). | Second merge; mdt-cockpit release. | `modern-debian-tools-python-debug` retired on main (5.10). |
+| **3. Per-host cutover** | r1002, then v1001, then the controller host (never nano1), one host at a time, following the cutover steps below. | No merge: operations, done by a Sonnet agent or the controller with the operator's go per host. | That host's doctors and `check.sh` are green; a lane and a rebuilt devcontainer work on it. |
 
-Phases 1 and 2 must not be merged together. Phase 2 removes host-setup's directory
-rules, and a host must have the phase-1 services installed before that happens (the
-devcontainer `--mount` of `/run/cgprofile` refuses a missing source).
+**Cutover steps (per host)**:
+1. Drain: wait for or stop running lanes and cgpd live sessions. Never force without
+   the operator.
+2. Stop and disable the old `cgpd` and `topos` units.
+3. Manual removal, listed below.
+4. Install the phase-2 mdt host-setup, which installs the services.
+5. Pin the phase-1 run-gate and assay releases for that host's lanes.
+6. Recreate the devcontainers on that host from the phase-2 templates.
+
+**Manual removal (old installation)**. This is documented in cgprofile's
+`docs/NATIVE-DEPLOYMENT.md`, topos's `docs/DAEMON.md` and host-setup's README, and the
+P-11 refusals print it. Remove:
+- `/etc/tmpfiles.d/mdt-topos.conf`, `/etc/tmpfiles.d/mdt-cgprofile.conf`,
+  `/etc/tmpfiles.d/mdt-cgprofile-observer.conf`;
+- `/etc/systemd/system/topos.service.d/50-mdt-socket-group.conf`;
+- `/etc/sysusers.d/mdt-cgprofile.conf`. The `cgprofile-observer` group and its GID stay;
+  cgprofile's own sysusers file declares it from now on.
+- `/usr/local/sbin/mdt-cgprofile-install.sh`;
+- the old units `/etc/systemd/system/{cgpd.service,cgprofile.slice}` and topos's old
+  `topos.service` / `topos.slice` copies;
+- the old `/etc/cgprofile/cgpd.toml`. Keep `/var/lib/cgprofile` unless the operator wants
+  it purged.
+- then `systemctl daemon-reload`, and `rm -rf /run/cgprofile /run/topos`. Containers
+  that bind-mounted these lose them; they are recreated in step 6.
+
+Phases 1 and 2 may be merged separately in either order, but no host is cut over before
+both are released.
 
 ## 5. Per-tool work items
 
@@ -399,7 +423,7 @@ rule, user-facing docs ship in the same change as the code.
      `:206`) when activated.
    - In self-bind mode, drop the parent-directory chmod/chown.
 2. **Config** `src/cgprofile/daemon_config.py`:
-   - `[sockets.control|observer]` tables (path, group, mode, legacy) replace
+   - `[sockets.control|observer]` tables (path, group, mode) replace
      `ctl_socket` and `observer_socket` (`:62-64`), with named refusals for the old keys;
    - `damon_lock` default moves to `/run/cgprofile/state/damon.lock` (also `damon.py:63`,
      `:187`);
@@ -423,8 +447,8 @@ rule, user-facing docs ship in the same change as the code.
      the `installer=mdt host-setup (MDT-055)` MANIFEST line.
    - Keep `DEFAULT_RELEASE_BASE` as the default source.
    - Keep the test seams (systemctl, fetch, poll intervals) as injectable parameters.
-   - Add `--migrate-from-host-setup` (P-10), the directory normalization, and the
-     downgrade refusal (3.5 step 7).
+   - Add the old-installation refusal (P-11; config keys, foreign rules, directory
+     owner and mode) and the downgrade refusal (3.5 step 7). There is no migration flag.
    - `MANIFEST` records `installer=cgpd install <ver>`. host-setup's `check.sh`
      currently pins the `installer=mdt host-setup (MDT-055)` line; phase 2 replaces that
      check with `cgpd doctor`.
@@ -436,8 +460,8 @@ rule, user-facing docs ship in the same change as the code.
 5. **`cgpd doctor`** (new, service side) with the checks in 3.5. Update `cgpctl doctor`
    (`cli/cgpctl.py:727-736`, `register_doctor` `:883`): its `socket`, `caller-group`
    and `observer-dir` checks move to the new paths and groups.
-6. **Client defaults**: `ctlwire.py:16` (and `CGPCTL_SOCKET` `:17`, remedy `:28`)
-   resolve new then legacy; `tools/observer-live-acceptance.py:31`.
+6. **Client defaults**: `ctlwire.py:16` (and `CGPCTL_SOCKET` `:17`, remedy `:28`) and
+   `tools/observer-live-acceptance.py:31` use the new paths only, with no fallback.
 7. **Zipimport bootstrap** (P-7): `python3 -m cgprofile.cli.cgpd install ...` with
    `PYTHONPATH=<cgprofile.whl>:<cli-extended.whl>`. Add a test that imports the install
    and doctor modules with only those two on the path.
@@ -450,9 +474,11 @@ rule, user-facing docs ship in the same change as the code.
      `test_cgpd.py:238-243`, `:370-372`, `test_ctlwire.py`, `test_cgpd_units.py`,
      `test_deployment_contract.py`.
    - New: an fd-passing test (spawn the daemon with `LISTEN_FDS`/`LISTEN_FDNAMES` and
-     pre-bound sockets), legacy-plus-new on one level, missing-level fd, unknown fd name.
-9. **Docs**: `docs/NATIVE-DEPLOYMENT.md` (`:109` and the deployment story), README,
-   CONSUMERS, CHANGES `[Unreleased]`.
+     pre-bound sockets), two fds with one name (refused), missing-level fd, unknown fd
+     name; the P-11 refusal cases.
+9. **Docs**: `docs/NATIVE-DEPLOYMENT.md` (`:109`, the deployment story, and the manual
+   removal of an old installation from section 4), README, CONSUMERS, CHANGES
+   `[Unreleased]` (a breaking change: new paths only).
 10. **Legacy 1.x container files** (`ciu.defaults.toml.j2:28`, `:50`,
     `ciu.compose.yml.j2:107-112`): confirm unused; delete or mark legacy.
 
@@ -460,22 +486,21 @@ rule, user-facing docs ship in the same change as the code.
 
 1. **Activated mode** in `daemon/api.py` `serve_versioned_unix_socket` (`:773-785`) and
    `daemon/broker.py` `serve_unix_socket` (`:573-591`):
-   - accept passed fds by name (`observe`; new plus legacy);
-   - construct the servers with `bind_and_activate=False` on the passed sockets and
-     serve every listener;
+   - accept the passed fd by name (`observe`, exactly one);
+   - construct the server with `bind_and_activate=False` on the passed socket;
    - do not unlink on close (`broker.py:500-502`) or probe stale sockets
      (`broker.py:37-67`) in activated mode;
    - the unused `mode` kwarg (`api.py:666`) is removed or used.
 2. **Paths**:
    - `DEFAULT_DAEMON_SOCKET` (`deploy.py:13`) becomes `/run/topos/observe/topos.sock`;
-   - clients fall back to the legacy path when the new one is absent: `cli.py:26`,
-     `65-70`, `138`, `152`, `178`, `187`, `202`, `218`, `244`, guidance at `:350`,
-     `daemon/status.py:24`, `126`, `168`, `mcp/server.py:35`, `39`, `466`;
+   - clients use the new path only, with no fallback: `cli.py:26`, `65-70`, `138`,
+     `152`, `178`, `187`, `202`, `218`, `244`, guidance at `:350`, `daemon/status.py:24`,
+     `126`, `168`, `mcp/server.py:35`, `39`, `466`;
    - `state_dir` default `config.py:166` becomes `/run/topos/state/bpf` (also `:322`,
      `:482`, `:648`; `cli.py:133` help);
    - `DEFAULT_RECOVERY_DIR` (`actions/squeeze.py:123`) becomes
-     `/run/topos/state/squeeze`; read records from the legacy directory too for one
-     release.
+     `/run/topos/state/squeeze`. Records in the old directory are not read; the manual
+     removal clears them.
 3. **Assets** `src/topos/assets/systemd/`:
    - `topos.service`: drop `Group=topos`, `RuntimeDirectory=topos` and
      `RuntimeDirectoryMode=0750`; add `RuntimeDirectory=topos/state`, mode 0700,
@@ -536,21 +561,16 @@ rule, user-facing docs ship in the same change as the code.
    **Replace** `--cgprofile-only` (`:355-379`) and the full-install service step
    (`:1519-1530`) with calls to `cgpd install` (zipimport bootstrap from the pinned wheel)
    using the `host-setup.env` values.
-3. **Migration on upgrade**. Order matters:
-   - First remove host-setup's tmpfiles rules (below).
-   - Then call the service installers, which normalize the directory modes.
-   - If the rules are removed after the installers run, a later
-     `systemd-tmpfiles --create` re-applies `0770 root:docker`.
-
-   Remove the previously installed owned files:
-   - `/etc/tmpfiles.d/mdt-topos.conf`, `/etc/tmpfiles.d/mdt-cgprofile.conf`,
-     `/etc/tmpfiles.d/mdt-cgprofile-observer.conf`;
-   - `/etc/systemd/system/topos.service.d/50-mdt-socket-group.conf`;
-   - `/etc/sysusers.d/mdt-cgprofile.conf` (the `cgprofile-observer` group and its GID
-     stay; cgprofile's own sysusers file now declares it);
-   - `/usr/local/sbin/mdt-cgprofile-install.sh` (`:1418-1419`; replace with a one-line
-     shim that execs `cgpd install` for one release, or delete).
-   Follow the existing "owned units removed when the role is left" pattern.
+3. **No automatic migration.**
+   - The new host-setup refuses to run while any of its old files exist:
+     - `/etc/tmpfiles.d/mdt-topos.conf`, `mdt-cgprofile.conf`, `mdt-cgprofile-observer.conf`;
+     - `/etc/systemd/system/topos.service.d/50-mdt-socket-group.conf`;
+     - `/etc/sysusers.d/mdt-cgprofile.conf`;
+     - `/usr/local/sbin/mdt-cgprofile-install.sh` (installed at `:1418-1419`; that
+       install step is deleted).
+   - The refusal prints the manual removal steps from section 4, and the operator runs
+     them in the cutover.
+   - The service installers also refuse on their own leftovers (P-11).
 4. **New env keys** in `host-setup.env.example` (`:903-947`) and the wizard validators
    (`mdt-host-setup-wizard.py:915-922`, `:1051-1053`, `:1408`):
    - `CGPROFILE_CONTROL_GROUP` (default `docker` on cockpit hosts);
@@ -571,7 +591,7 @@ rule, user-facing docs ship in the same change as the code.
    what host-setup passes to each service's install verb". Also `CGROUP-NOTES.md:889`
    and CHANGES.
 
-### 5.4 mdt-cockpit devcontainer templates and vbpub `.devcontainer` (phase 3)
+### 5.4 mdt-cockpit devcontainer templates and vbpub `.devcontainer` (phase 2)
 
 1. **Mounts**:
    - `templates/devcontainer.json:96`, `templates/host-folder/devcontainer.json:111`
@@ -591,23 +611,23 @@ rule, user-facing docs ship in the same change as the code.
    - path exists and is a socket;
    - its gid is the docker GID or another group the container is added to;
    - `connect()` succeeds when the host user can.
-   Required: error. Optional: warning.
+   Required: error. Optional: warning. It also checks a floor on the in-container
+   `cgpctl`/`topos` versions: an older client in an image looks for the old socket
+   names, which no longer exist.
 4. **In-container**: optionally add a `cgpctl doctor`/`toposd doctor --check connect`
    line to the finalize summary (`scripts/finalize_container_environment.py` already
    lists both CLIs at `:261`).
 5. **Docs**: template comments, `templates/README.md`, `docs/DEVCONTAINER-MECHANISMS.md`,
    CHANGES.
 
-### 5.5 run-gate-project (phase 1 for paths and checks; phase 3 if its mount source changes)
+### 5.5 run-gate-project (phase 1)
 
 1. `PROFILE_SOCKET_PATH_DEFAULT` (`run_gate.py:727`; uses at `:1724`, `:1738`,
-   `:3806`, `:4014`, `:6068`, `:15425`, `:15781`, `:15989`): new path first, then legacy.
+   `:3806`, `:4014`, `:6068`, `:15425`, `:15781`, `:15989`) becomes the new path only.
 2. **Observer mount** (`:506-512`). run-gate bind-mounts the observer **directory**, so
-   the file name inside the lane is the host's.
-   - During the transition both `cgprofile.sock` and `resource-observer.sock` sit in the
-     host's `/run/cgprofile/observer/`.
-   - The in-lane constant becomes `/run/cgprofile-observer/cgprofile.sock`, with
-     `resource-observer.sock` as the fallback, in step with assay (5.6).
+   the file name inside the lane is the host's. The in-lane constant becomes
+   `/run/cgprofile-observer/cgprofile.sock`, in step with assay (5.6). There is no
+   fallback.
 3. **Observer preflight** (`:8750-8800`; `:2802` is only an error message). Phase 1
    replaces three rules and adds one:
    - `:8779` "the socket gid equals its directory's gid" goes away (the new directories
@@ -618,9 +638,10 @@ rule, user-facing docs ship in the same change as the code.
      control socket's gid.
    - `--group-add observed.st_gid` keeps using the socket's gid.
    - `:8832` compares the daemon-advertised observer path (`serve.py:1018`) with the old
-     constant. Accept the new and the legacy path.
-   - All rules must pass on both the old layout (`/run/cgprofile 0770 root:docker`) and
-     the new one, or phase 2 breaks running gates.
+     constant. Compare it with the new path.
+   - The rules target the new layout only. A phase-1 run-gate on a host that has not
+     been cut over fails its preflight with a message naming the cutover, so lanes on
+     that host stay on their previous run-gate pin (section 4).
 4. Docs: `CONSUMERS.md`, `SPEC.md`, `README.md`, CHANGES.
 
 ### 5.6 assay tools (phase 1)
@@ -628,16 +649,15 @@ rule, user-facing docs ship in the same change as the code.
 - **Source path.** In `tools/resource-observer-gid.sh:6`, `:57`,
   `tools/tester-unified-gate.sh:38-46`, `:1514` and
   `tools/self-qualification-container.sh:25-42`, `:351`, `:562`, the observer source
-  path becomes new-then-legacy.
+  path becomes `/run/cgprofile/observer/cgprofile.sock`, with no fallback.
 - **In-container basename.** A directory bind keeps the host file name, so the
   container-side default of `ASSAY_RESOURCE_OBSERVER_SOCKET` becomes
-  `/run/cgprofile-observer/cgprofile.sock`, falling back to
-  `/run/cgprofile-observer/resource-observer.sock`. `src/assay/resource_limits.py:1088`
-  reads that variable; give it the same fallback. Keep it in step with run-gate (5.5.2).
+  `/run/cgprofile-observer/cgprofile.sock`. `src/assay/resource_limits.py:1088` reads
+  that variable. Keep it in step with run-gate (5.5.2).
 - **Docs.** `docs/CONSUMERS.md:538` ("never mount the control socket") stays true; update
   the basename there.
 
-### 5.7 Netcup runner (phase 3)
+### 5.7 Netcup runner (phase 2)
 
 `scripts/netcup/runner/start-cockpit-runner.sh:19` bind-mounts `/run/cgprofile/control`
 instead of the whole `/run/cgprofile`.
@@ -663,7 +683,7 @@ on it.
 
 The operator retired it; `mdt-cockpit` is its successor. It holds older copies of
 `check.sh`, `mdt-cgprofile.conf` and `mdt-cgprofile.sysusers`, so a host installed from it
-would reintroduce the foreign rules that phase 2 removes.
+would reintroduce the foreign rules that the cutover removes.
 
 The retirement runs as its own package on branch `retire-mdt-legacy-20261105`:
 - remove the directory and its cmru registration;
@@ -681,8 +701,10 @@ each tool's cmru release range stays scoped to its own project. Releases follow
 `cmru.orchestration.toml` order.
 
 Deployment safety does not come from commit atomicity (hosts run releases). It comes
-from the phase order in section 4: dual-path services and fallback clients first, then
-host-setup, then the mounts, then removal.
+from section 4:
+- services, clients and consumers are released before any host changes;
+- each host then switches in one drained cutover, with its lanes' run-gate/assay pins
+  and its devcontainers moved in the same step.
 
 ## 7. Acceptance per phase
 
@@ -696,28 +718,30 @@ host-setup, then the mounts, then removal.
   - `systemctl restart <svc>-<level>.socket` restarts the service as well, and the
     daemon answers on the new inode;
   - a start without `LISTEN_FDS` and without `--self-bind` is refused;
-  - legacy paths answer;
+  - the old paths do not exist after install;
+  - install on a VM prepared with the old host-setup layout (old tmpfiles rules,
+    `/run/cgprofile 0770 root:docker`, old `cgpd.toml` keys) is refused, and lists the
+    manual removal; after the manual removal it succeeds;
   - a downgrade below the socket-unit release is refused without `--allow-downgrade`;
   - uninstall leaves nothing from the list in 3.5: no service, slice or socket unit, no
     sysusers file, no `/etc/<svc>`, no `/opt/<svc>`, no socket node, level directory or
     state directory, and no failed units. Groups survive without `--remove-groups`, and
     `/var/lib/cgprofile` survives without `--purge-data`.
-  - New run-gate and assay releases pass their observer and control preflight against a
-    cockpit host still on the old layout.
-  - Existing devcontainers and lanes on a phase-1 host still work unchanged.
-- **Phase 2**, on r1002 then v1001:
-  - the live directories have the 3.1 modes without a reboot;
-  - after normalization (`/run/cgprofile` from `0770 root:docker` to `0755 root:root`),
-    already-running legacy devcontainers and lanes still connect on the legacy paths;
-  - `check.sh` is green through the doctors;
-  - no `mdt-topos*` or `mdt-cgprofile*` tmpfiles or drop-ins remain;
-  - `foreign-rules` is ok;
-  - cgpd restarted only after its drain;
-  - a running devcontainer keeps working throughout.
-- **Phase 3**: a rebuilt devcontainer has only the level directories mounted, and
-  `initializeCommand` fails for a declared-required socket that is absent and warns for
-  an optional one.
-- **Phase 4**: doctor's `legacy` check is clean; old paths are gone.
+  - New run-gate and assay releases pass their observer and control preflight on the
+    VM host, and fail with the cutover message on a host with the old layout.
+- **Phase 2**:
+  - the new host-setup refuses on a VM with its old files and lists the manual removal;
+  - after the removal it installs both services through their install verbs;
+  - a devcontainer from the new templates has only the level directories mounted;
+  - `initializeCommand` fails for a declared-required socket that is absent, warns for
+    an optional one, and refuses an in-container client below the floor.
+- **Phase 3**, per host (r1002, then v1001, then the controller host):
+  - the drain completed before any stop;
+  - no `mdt-topos*` or `mdt-cgprofile*` tmpfiles rules or drop-ins remain;
+  - the directories have the 3.1 modes;
+  - `foreign-rules` is ok and `check.sh` is green through the doctors;
+  - a lane on the phase-1 run-gate/assay pins passes its preflight;
+  - a recreated devcontainer reaches both sockets.
 
 ## 8. Execution notes for the distributing agent
 
