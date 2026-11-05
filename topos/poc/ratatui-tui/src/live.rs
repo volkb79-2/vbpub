@@ -53,13 +53,46 @@ fn state(x: &Value, val: Option<f64>) -> Mv {
         _ => NA,
     }
 }
-/// A gauge or other plain value.
+/// A gauge or other plain value. Compact replies (`"compact": true`) send a gauge as a bare number and a
+/// counter as `[delta, rate]`; `unavailable` states stay objects (`counter_reset`, `read_timeout`, any state
+/// this code does not know: all `n/a`), and `not_applicable` metrics are left out, which reads as `n/a`.
 fn g(m: &Value, k: &str) -> Mv {
-    m.get(k).map_or(NA, |x| state(x, x["v"].as_f64()))
+    m.get(k).map_or(NA, |x| match x {
+        Value::Number(_) => x.as_f64().map_or(NA, |v| Mv { v: Some(v), src: Src::Exact }),
+        Value::Array(a) => a.first().and_then(Value::as_f64).map_or(NA, |v| Mv { v: Some(v), src: Src::Exact }),
+        _ => state(x, x["v"].as_f64()),
+    })
 }
 /// A counter as a per-second rate.
 fn r(m: &Value, k: &str) -> Mv {
-    m.get(k).map_or(NA, |x| state(x, x["rate"].as_f64()))
+    m.get(k).map_or(NA, |x| match x {
+        Value::Array(a) => a.get(1).and_then(Value::as_f64).map_or(NA, |v| Mv { v: Some(v), src: Src::Exact }),
+        Value::Number(_) => NA, // a gauge is no rate
+        _ => state(x, x["rate"].as_f64()),
+    })
+}
+
+/// Exactly the metrics the view shows (`current` `fields`; a trailing `*` is a prefix).
+pub const VIEW_FIELDS: &[&str] = &[
+    "cpu.usage_usec", "cpu.throttled_usec", "mem.current", "mem.anon", "mem.file", "mem.shmem", "mem.zswap", "mem.zswapped", "mem.swapcached",
+    "mem.swap_current", "mem.workingset_refault_anon", "mem.workingset_refault_file", "mem.zswpin", "mem.pgmajfault", "mem.pgscan", "mem.pgsteal",
+    "memev.high", "memev.max", "memev.oom_kill", "psi.cpu.some.avg10", "psi.cpu.full.avg10", "psi.memory.some.avg10", "psi.memory.full.avg10",
+    "psi.io.some.avg10", "psi.io.full.avg10", "io.rbytes", "io.wbytes", "io.rios", "io.wios", "io.cost.vrate", "pids.current", "procs.d_state",
+    "limit.*",
+    "host.load1", "host.load5", "host.load15", "host.procs_running", "host.procs_blocked",
+    "meminfo.MemTotal", "meminfo.MemAvailable", "meminfo.SwapTotal", "meminfo.SwapFree", "meminfo.SwapCached",
+    "memstack.anon", "memstack.file_cache", "memstack.shmem",
+    "zswap.pool_bytes", "zswap.stored_bytes", "zswap.max_pool_percent", "zswap.reject_*", "vm.zswpin", "vm.zswpout", "vm.zswpwb",
+    "cpu.busy_pct", "cpu.idle", "cpupct.us", "cpupct.sy", "cpupct.io", "cpupct.st",
+    "disk.rd_sectors", "disk.wr_sectors", "disk.reads", "disk.writes", "disk.await_ms", "disk.util_pct",
+];
+
+/// Swap held on disk: swap in use minus what is compressed in zswap minus the swap cache (all three or `n/a`).
+fn swap_disk(swap: Mv, zswapped: Mv, swapcached: Mv) -> Mv {
+    match (swap.v, zswapped.v, swapcached.v) {
+        (Some(s), Some(z), Some(c)) => Mv { v: Some((s - z - c).max(0.0)), src: Src::Derived },
+        _ => NA,
+    }
 }
 fn sc(m: Mv, f: f64) -> Mv {
     Mv { v: m.v.map(|v| v * f), src: m.src }
@@ -87,7 +120,8 @@ fn kind_of(key: &str) -> String {
     key.rsplit('/').next().and_then(|s| s.rsplit_once('.')).map_or("", |(_, ext)| ext).to_string()
 }
 
-fn cg_metrics(m: &Value) -> HashMap<String, Mv> {
+/// *host* backs the root cgroup, which has no memory.stat (its Zswapped and SwapCached are the host's).
+fn cg_metrics(m: &Value, host: Option<&Value>) -> HashMap<String, Mv> {
     let mut o: HashMap<String, Mv> = HashMap::new();
     let mut put = |k: &str, v: Mv| {
         o.insert(k.to_string(), v);
@@ -133,6 +167,12 @@ fn cg_metrics(m: &Value) -> HashMap<String, Mv> {
     put("io_r_iops", r(m, "io.rios"));
     put("io_w_iops", r(m, "io.wios"));
     put("pids_current", g(m, "pids.current"));
+    put("pids_max", lim(m, "limit.pids.max"));
+    let sw = g(m, "mem.swap_current");
+    put("swap_disk", match host {
+        Some(h) => swap_disk(sw, g(h, "zswap.stored_bytes"), g(h, "meminfo.SwapCached")),
+        None => swap_disk(sw, g(m, "mem.zswapped"), g(m, "mem.swapcached")),
+    });
     put("mem_min", lim(m, "limit.memory.min"));
     put("mem_low", lim(m, "limit.memory.low"));
     put("mem_high", lim(m, "limit.memory.high"));
@@ -215,7 +255,7 @@ pub fn to_snap(v: &Value) -> Result<Snap, String> {
         let parent = if key.is_empty() { None } else { Some(key.rfind('/').map_or(String::new(), |p| key[..p].to_string())) };
         let mut e = Ent::bare(&key);
         e.kind = kind_of(&key);
-        e.m = cg_metrics(m);
+        e.m = cg_metrics(m, if key.is_empty() { ev.get("host") } else { None });
         for n in ["cpu_weight", "io_weight", "mem_min", "mem_low", "mem_high", "mem_max"] {
             e.limits.push(Limit { name: n.into(), live: e.m[n], origin: String::new(), rec_origin: None, rec_val: None, drift: false, reason: String::new() });
         }
@@ -248,7 +288,8 @@ pub fn to_snap(v: &Value) -> Result<Snap, String> {
     }
     hput("host_zswap_ratio",ratio(g(hm, "zswap.stored_bytes"), g(hm, "zswap.pool_bytes")));
     hput("host_cpu_busy_pct", g(allm, "cpu.busy_pct"));
-    hput("host_iocost_vrate", g(rootm, "io.cost.vrate"));
+    // io.cost off is `not_applicable`, which a compact reply leaves out: absent next to a present root is a dot
+    hput("host_iocost_vrate", if rootm.is_object() && rootm.get("io.cost.vrate").is_none() { NOTAPP } else { g(rootm, "io.cost.vrate") });
     for (n, l) in [("cpu", "cpu"), ("memory", "mem"), ("io", "io")] {
         for w in ["some", "full"] {
             hput(&format!("host_psi_{l}_{w}_avg10"), g(rootm, &format!("psi.{n}.{w}.avg10")));
@@ -264,7 +305,7 @@ pub fn to_snap(v: &Value) -> Result<Snap, String> {
             None => Mv { v: Some(all.iter().filter_map(|m| m.v).sum()), src: Src::Derived },
         }
     };
-    let zrates = [r(hm, "vm.zswpin").cn(), r(hm, "vm.zswpout").cn(), r(hm, "zswap.written_back_pages").cn(), rej.cn()];
+    let zrates = [r(hm, "vm.zswpin").cn(), r(hm, "vm.zswpout").cn(), r(hm, "vm.zswpwb").cn(), rej.cn()];
 
     // per-CPU
     let mut cpun: Vec<(u32, &Value)> = ev.iter().filter_map(|(k, m)| k.strip_prefix("cpu:").and_then(|n| n.parse::<u32>().ok()).map(|n| (n, m))).collect();
@@ -285,7 +326,8 @@ pub fn to_snap(v: &Value) -> Result<Snap, String> {
                 wbps: o(sc(r(m, "disk.wr_sectors"), 512.0)),
                 riops: o(r(m, "disk.reads")),
                 wiops: o(r(m, "disk.writes")),
-                await_ms: g(m, "disk.await_ms").cn(),
+                // not_applicable (no IO to wait for) is left out of a compact reply: a disk that answers without await is idle
+                await_ms: if m.get("disk.await_ms").is_none() && m.get("disk.util_pct").is_some() { Cn::Unset } else { g(m, "disk.await_ms").cn() },
                 util_pct: g(m, "disk.util_pct").cn(),
             }
         })
@@ -420,7 +462,7 @@ fn session(path: &str, tick_override: Option<u64>, tx: &Sender<Msg>, pause: &mut
     let mut next_status = Instant::now();
     loop {
         let t0 = Instant::now();
-        let (v, bytes, parse) = match call(&mut rd, &json!({"req": "current", "procs": true, "id": 2})) {
+        let (v, bytes, parse) = match call(&mut rd, &json!({"req": "current", "procs": true, "fields": VIEW_FIELDS, "compact": true, "id": 2})) {
             Ok(x) => x,
             Err(e) => return fail(e),
         };

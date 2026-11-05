@@ -132,8 +132,44 @@ mod fake {
     fn unavail() -> Value {
         json!({"s": "unavailable", "why": "first_sample"})
     }
+    fn reset() -> Value {
+        json!({"s": "unavailable", "why": "counter_reset", "raw": 5})
+    }
     fn notapp() -> Value {
         json!({"s": "not_applicable", "why": "feature_absent"})
+    }
+
+    /// What the real sampler does with `fields` and `compact` (SAMPLER-PROTOCOL.md, `current` shaping):
+    /// unrequested metrics and entities without any are dropped; compact turns a gauge into a bare number,
+    /// a counter into `[delta, rate]`, keeps `unavailable` states as `{s, why}` and leaves `not_applicable` out.
+    pub fn shape(mut cur: Value, req: &Value) -> Value {
+        let fields: Vec<String> = req["fields"].as_array().map(|a| a.iter().filter_map(|f| f.as_str().map(String::from)).collect()).unwrap_or_default();
+        let compact = req["compact"] == true;
+        let wanted = |m: &str| fields.is_empty() || fields.iter().any(|f| f.strip_suffix('*').map_or(f == m, |p| m.starts_with(p)));
+        let mut out = serde_json::Map::new();
+        for (name, metrics) in cur["entities"].as_object().unwrap() {
+            let mut kept = serde_json::Map::new();
+            for (m, o) in metrics.as_object().unwrap() {
+                if !wanted(m) {
+                    continue;
+                }
+                if !compact {
+                    kept.insert(m.clone(), o.clone());
+                    continue;
+                }
+                match o["s"].as_str() {
+                    Some("value") if o.get("rate").is_some() => drop(kept.insert(m.clone(), json!([o["v"], o["rate"]]))),
+                    Some("value") => drop(kept.insert(m.clone(), o["v"].clone())),
+                    Some("not_applicable") => {}
+                    _ => drop(kept.insert(m.clone(), json!({"s": o["s"], "why": o["why"]}))),
+                }
+            }
+            if !kept.is_empty() {
+                out.insert(name.clone(), Value::Object(kept));
+            }
+        }
+        cur["entities"] = Value::Object(out);
+        cur
     }
 
     pub fn sock(name: &str) -> PathBuf {
@@ -159,13 +195,15 @@ mod fake {
         let psi = |c: f64| json!({"psi.cpu.some.avg10": val(c), "psi.cpu.full.avg10": unavail(), "psi.memory.some.avg10": val(0.0), "psi.memory.full.avg10": val(0.0), "psi.io.some.avg10": val(0.0), "psi.io.full.avg10": val(0.0)});
         let mut root = psi(5.0);
         let ro = root.as_object_mut().unwrap();
-        for (k, v) in [("cpu.usage_usec", ctr(3_000_000.0)), ("mem.current", val(8e9)), ("limit.memory.min", val(0.0)), ("limit.memory.max", val(-1.0)), ("procs.d_state", val(0.0)), ("pids.current", val(400.0)), ("io.cost.vrate", notapp())] {
+        for (k, v) in [("cpu.usage_usec", ctr(3_000_000.0)), ("mem.current", val(8e9)), ("limit.memory.min", val(0.0)), ("limit.memory.max", val(-1.0)), ("procs.d_state", val(0.0)), ("pids.current", val(400.0)), ("io.cost.vrate", notapp()), ("mem.swap_current", val(2e9)), ("limit.pids.max", notapp())] {
             ro.insert(k.into(), v);
         }
         let mut sys = psi(2.0);
         let so = sys.as_object_mut().unwrap();
         for (k, v) in [("cpu.usage_usec", ctr(1_500_000.0)), ("mem.current", val(4e9)), ("mem.zswap", val(1e8)), ("mem.zswapped", val(4e8)), ("io.rbytes", unavail()), ("io.wbytes", ctr(2048.0)),
-            ("limit.memory.min", val(1e9)), ("limit.memory.high", val(-1.0)), ("limit.memory.max", val(6e9)), ("procs.d_state", val(1.0)), ("pids.current", val(100.0))] {
+            ("limit.memory.min", val(1e9)), ("limit.memory.high", val(-1.0)), ("limit.memory.max", val(6e9)), ("procs.d_state", val(1.0)), ("pids.current", val(100.0)),
+            ("limit.pids.max", val(4096.0)), ("mem.swap_current", val(5e8)), ("mem.swapcached", val(1e7)),
+            ("io.rios", reset()), ("mem.pgscan", json!({"s": "unavailable", "why": "read_timeout"})), ("mem.pgsteal", json!({"s": "future_state"}))] {
             so.insert(k.into(), v);
         }
         let mut svc = psi(1.0);
@@ -179,7 +217,9 @@ mod fake {
                 "cg:/": root, "cg:/system.slice": sys, "cg:/system.slice/a.service": svc,
                 "host": {"host.load1": val(1.5), "host.load5": val(1.0), "host.load15": val(0.5), "host.procs_running": val(3.0), "host.procs_blocked": val(1.0),
                     "meminfo.MemTotal": val(16e9), "meminfo.MemAvailable": val(8e9), "meminfo.SwapTotal": val(8e9), "meminfo.SwapFree": val(7e9),
-                    "zswap.pool_bytes": val(1e8), "zswap.stored_bytes": val(4e8), "zswap.max_pool_percent": val(20.0)},
+                    "zswap.pool_bytes": val(1e8), "zswap.stored_bytes": val(4e8), "zswap.max_pool_percent": val(20.0),
+                    "meminfo.SwapCached": val(1e8), "vm.zswpin": ctr(12.0), "vm.zswpout": ctr(7.0), "vm.zswpwb": ctr(3.0),
+                    "zswap.reject_alloc_fail": json!({"s": "unavailable", "why": "debugfs_unreadable"})},
                 "cpu:all": {"cpu.busy_pct": val(50.0)},
                 "cpu:0": {"cpupct.us": val(40.0), "cpupct.sy": val(10.0), "cpupct.io": val(0.0), "cpupct.st": val(0.0)},
                 "cpu:1": {"cpupct.us": unavail(), "cpupct.sy": val(10.0), "cpupct.io": val(0.0), "cpupct.st": val(0.0)},
@@ -216,7 +256,12 @@ mod fake {
                             break;
                         }
                         n += 1;
-                        current(n, epoch)
+                        // the view must ask for its fields in compact form (the answer is 15x smaller)
+                        if req["compact"] != true || !req["fields"].as_array().is_some_and(|f| f.iter().any(|x| x == "mem.current") && f.iter().any(|x| x == "limit.*")) {
+                            json!({"ok": false, "protocol": 1, "epoch": epoch, "error": {"code": "bad_request", "message": "view must send fields and compact"}})
+                        } else {
+                            shape(current(n, epoch), &req)
+                        }
                     }
                     Some("status") => json!({"ok": true, "req": "status", "protocol": 1, "epoch": epoch, "uptime_s": 99.0,
                         "self": {"cpu_pct_recent_60s": val(0.5), "rss_bytes": val(1.5e6)}, "timing": {"tick_overruns": 0, "skipped_ticks": 0}}),
@@ -294,8 +339,21 @@ fn live_shows_sampler_values_and_never_zero_for_missing() {
     let row = line_with(&t, "system.slice");
     assert!(row.contains("n/a"), "unavailable value must print n/a: {row}");
     assert!(row.contains('\u{b7}'), "unlimited/not-applicable must print a dot: {row}");
-    // zswap rates are missing from the answer: n/a each, not 0
-    assert!(t.contains("in/out/wb/rej n/a/n/a/n/a/n/a pages/s"), "{t}");
+    // zswap rates: in/out/wb come from vm.zswpin/zswpout/zswpwb, rej needs debugfs (unavailable): n/a, not 0
+    assert_eq!(s.live.as_ref().unwrap().zrates, [data::Cn::Val(12.0), data::Cn::Val(7.0), data::Cn::Val(3.0), data::Cn::NA]);
+    assert!(line_with(&t, "in/out/wb/rej").contains("/n/a pages/s"), "{t}");
+    // new fields: pids.max, per-cgroup swap on disk (swap - zswapped - swapcached), root RAM, root swap from the host
+    assert_eq!(s.ents[sys].cn("pids_max"), data::Cn::Val(4096.0));
+    assert_eq!(s.ents[sys].cn("swap_disk"), data::Cn::Val(5e8 - 4e8 - 1e7));
+    let rt = s.ents.iter().position(|e| e.key.is_empty()).unwrap();
+    assert_eq!(s.ents[rt].cn("ram"), data::Cn::Val(8e9));
+    assert_eq!(s.ents[rt].cn("swap_disk"), data::Cn::Val(2e9 - 4e8 - 1e8));
+    assert_eq!(s.ents[rt].cn("pids_max"), data::Cn::NA, "the root has no pids.max");
+    assert_eq!(s.ents[svc].cn("swap_disk"), data::Cn::NA, "no swap.current in the answer: n/a, not 0");
+    // counter_reset, read_timeout and a state this code has never heard of: n/a for that tick, never a spike or 0
+    for k in ["io_r_iops", "pgscan_per_s", "pgsteal_per_s"] {
+        assert_eq!(s.ents[sys].cn(k), data::Cn::NA, "{k}");
+    }
     // the memory stack is not in the answer: n/a, not 0B
     assert!(t.contains("anon n/a") && t.contains("file n/a"), "{t}");
     // a CPU whose us is unavailable prints n/a

@@ -80,8 +80,13 @@ Keys: `?` help, `n` noise (all/middle/hot), `/` filter, `s`/`S` sort (or click a
 - Cost (measured on a 4-vCPU host, 79 cgroups, 1 Hz): the `current` answer is about 480 KB; parsing and converting it takes
   about 14 ms per tick on the feed thread (shown in the status line as `feed ... parse ...`), a full-screen draw 1.4 ms (260x60),
   so the live TUI uses roughly 2.5% of one core. The protocol has no field filter yet, so the parse is the main cost.
-- Not in the sampler, shown `n/a`: per-cgroup network (NET_*), swap used per cgroup (SWAP), `pids.max` (PIDS.MAX),
-  IOCOST per cgroup, and who set a limit (ORIGIN, DRIFT, DRIFTED).
+- Request shape: `current` is asked with `fields` (exactly the metrics the view shows; `limit.*` and `zswap.reject_*`
+  as prefixes) and `compact` (bare gauges, `[delta, rate]` counters, no `raw`, `not_applicable` left out). A metric
+  missing from a compact reply reads `n/a`, except io.cost off and a disk with no await, which read `·`.
+  `counter_reset` (no delta this tick), `read_timeout` and any unknown state are `n/a` for that tick, never a spike or 0.
+- Per-cgroup SWAP = `mem.swap_current` - `mem.zswapped` - `mem.swapcached` (root: the host's Zswapped and SwapCached);
+  PIDS.MAX = `limit.pids.max`; zswap in/out/wb = `vm.zswpin|zswpout|zswpwb`.
+- Not in the sampler, shown `n/a`: per-cgroup network (NET_*), IOCOST per cgroup, and who set a limit (ORIGIN, DRIFT, DRIFTED).
 - Process rows float under their owning cgroup when hot (cpu >= 3%, io >= 1 MiB/s) or blocked (D), blocked first
   then by CPU, at most `proc_cap` per collapsed cgroup; an expanded cgroup lists every process the sampler sent
   (the sampler's own cap is `process.cap`, default 64). `g` ranks all processes flat.
