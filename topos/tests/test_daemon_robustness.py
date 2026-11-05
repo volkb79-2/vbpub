@@ -540,6 +540,26 @@ def test_operator_interrupt_clears_producer_failure_but_signals_do_not() -> None
     assert fresh.reason == "KeyboardInterrupt"
 
 
+def test_only_the_first_shutdown_request_decides_the_reason_and_exit_status() -> None:
+    class _Server:
+        def __init__(self) -> None:
+            self.shutdowns = threading.Semaphore(0)
+
+        def shutdown(self) -> None:
+            self.shutdowns.release()
+
+    server = _Server()
+    coordinator = ShutdownCoordinator(server)
+
+    assert coordinator.request("SIGTERM") is True
+    assert coordinator.request("frame producer failed", producer_failed=True) is False
+
+    assert coordinator.reason == "SIGTERM"
+    assert coordinator.producer_failed is False
+    assert server.shutdowns.acquire(timeout=30.0)
+    assert not server.shutdowns.acquire(blocking=False)
+
+
 # --- diff-coverage round (2026-11-05): daemon error branches ----------------
 
 
