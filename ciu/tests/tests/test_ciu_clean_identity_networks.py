@@ -49,13 +49,18 @@ def _profile():
 class FakeDocker:
     """Stateful docker stand-in for the network/volume passes (STATE-faithful)."""
 
-    def __init__(self, networks=None, volumes=None, network_labels=None):
+    def __init__(self, networks=None, volumes=None, network_labels=None,
+                 volume_owners=None, container_owners=None):
         # networks: {name: [endpoint, ...]}; volumes: {name: compose-project}
         self.networks = dict(networks or {})
         self.volumes = dict(volumes or {})
         # compose-project label per network (defaults to the <project>_default
         # convention when unset); networks absent here carry no compose label.
         self.network_labels = dict(network_labels or {})
+        # CIU-191: ownership label (``ciu.instance``) per volume / container;
+        # volumes default to the fixtures' own instance id.
+        self.volume_owners = dict(volume_owners or {})
+        self.container_owners = dict(container_owners or {})
         self.calls: list[list[str]] = []
         self.fail_disconnect_for: set[str] = set()
         self.daemon_down_for: set[str] = set()  # argv[0] ops to fail wholesale
@@ -105,6 +110,10 @@ class FakeDocker:
                 return _proc(0 if removed is not None else 1, "", "" if removed is not None else "not found")
             raise AssertionError(f"unhandled docker network argv: {args}")
 
+        if op == "inspect":
+            owner = self.container_owners.get(args[-1], "")
+            return _proc(0, f"{owner}\t\n", "")
+
         if op == "volume":
             if args[1] == "ls":
                 named = sorted(self.volumes)
@@ -114,6 +123,10 @@ class FakeDocker:
                     # everything after 'label=<key>=' is the project name
                     project = label.split("=", 2)[2]
                     named = sorted(v for v, p in self.volumes.items() if p == project)
+                if any("ciu.instance" in a for a in args):
+                    named = [
+                        f"{v}\t{self.volume_owners.get(v, 'abc123')}\t" for v in named
+                    ]
                 return _proc(0, "\n".join(named), "")
             if args[1] == "rm":
                 for v in args[2:]:
@@ -147,7 +160,7 @@ def _write_facts(root, **facts):
 
 
 def _instance_repo(tmp_path: Path) -> Path:
-    _write_facts(tmp_path, network="proj-abc123-network")
+    _write_facts(tmp_path, network="proj-abc123-network", instance_id="abc123")
     (tmp_path / "ciu.worktree-instance.json").write_text(
         '{"schema_version": 1}\n', encoding="utf-8"
     )
@@ -156,7 +169,7 @@ def _instance_repo(tmp_path: Path) -> Path:
 
 
 def _main_repo(tmp_path: Path) -> Path:
-    _write_facts(tmp_path, network="proj-abc123-network")
+    _write_facts(tmp_path, network="proj-abc123-network", instance_id="abc123")
     (tmp_path / "apps" / "vault").mkdir(parents=True)
     return tmp_path
 

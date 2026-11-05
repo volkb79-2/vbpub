@@ -924,7 +924,10 @@ def build_cli() -> Any:
         ),
         group=VerbGroup.MAINTENANCE.value, mutating=True, expensive=True, include_json=False,
         include_progress=False, include_confirmation=True, options=clean_options,
-        handler=adapter(["clean"], clean_options, yes=True),
+        dry_run=True,
+        dry_run_help="print the containers, volumes and networks clean would remove (and the "
+                     "ones it would leave, with the reason); change nothing",
+        handler=adapter(["clean"], clean_options, yes=True, dry_run=True),
         constraints=(
             Requires("--expected-checkout", ("--identity",),
                      "--expected-checkout qualifies an --identity clean"),

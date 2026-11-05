@@ -673,6 +673,14 @@ remedy; `ciu worktree refork NAME [--onto TRUNK]` re-records it as
 `merge-base(trunk, HEAD)` (it refuses a dirty tree and a branch that diverged
 rather than rebased). `ciu worktree rm` cleans every committed CIU root of the
 checkout, not only the selected one, and keeps the checkout if any root fails.
+The cleanup target comes from the worktree's record and its own generated
+identity only, never from the shell: ambient `INSTANCE_ID`/`REPO_ROOT`/
+`COMPOSE_PROJECT_NAME`/`ENVIRONMENT_TAG` are dropped from the child, a shell
+exporting a third instance's identity is refused, and containers/volumes that
+share the deploy tags but carry another instance's `ciu.instance` label are
+left alone (CIU-191). `ciu worktree rm NAME --dry-run` (and `ciu clean
+--dry-run`) print the plan: what is removed by name and what is left, with the
+reason.
 
 
 ## 5c. Declare a cross-profile secret producer (`produced_by`, S13.6)
