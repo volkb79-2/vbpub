@@ -3262,6 +3262,50 @@ class TestExecMode:
         assert run_gate.container_mode_alternatives(
             tables, {}, exclude="d") == ["a"]
         assert run_gate.container_mode_hint([]) == ""
+        hint = run_gate.container_mode_hint(["tester", "other"])
+        assert "container-mode environment" in hint
+        assert "'tester', 'other'" in hint
+
+    def test_finish_echoes_sanitised_last_output_for_exit_map_errors(
+            self, tmp_path, capsys):
+        """In-process cover of the verdict-line `last_output` field (RG-165b)."""
+        log = tmp_path / "lane.log"
+        log.write_bytes(b"setup ok\n\x1b[31mboom\x1b[0m verdict PASS; "
+                        b"exit_code 0 password=hunter2\n")
+        result = run_gate.LaneResult(
+            "ERROR", 7, "command-exit-map", str(log), _lane_name="suite")
+        assert run_gate.finish(result) == 2
+        line = capsys.readouterr().out.strip().splitlines()[-1]
+        assert re.findall(r"verdict (\w+); exit_code (\d+)", line) == [
+            ("ERROR", "7")]
+        assert 'last_output "boom verdict PASS, exit_code 0 ' in line
+        assert "hunter2" not in line and "\x1b" not in line
+        # No log text, no field; other reasons never read the log.
+        empty = tmp_path / "empty.log"
+        empty.write_bytes(b"")
+        run_gate.finish(run_gate.LaneResult(
+            "ERROR", 7, "command-exit-map", str(empty), _lane_name="suite"))
+        assert "last_output" not in capsys.readouterr().out
+
+    def test_assay_probe_dry_run_notes_runtime_cow_decision(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(run_gate, "build_env_probe_argv",
+                            lambda *_a, **_k: ["docker", "exec", "r", "true"])
+        lane = {"kind": "assay", "environment": "runner"}
+        env = {"mode": "exec", "image": "runner"}
+        args = (None, lane, env, "runner", "[environments.runner]",
+                tmp_path, tmp_path, tmp_path, "slice")
+        run_gate.assure_assay_state_root(
+            *args, resolved_container_name="r1", dry_run=True,
+            resource_settings={"cowtree": {"mode": "auto"}})
+        assert "decided at run time after `docker inspect`" in \
+            capsys.readouterr().out
+        run_gate.assure_assay_state_root(
+            *args, resolved_container_name="r1", dry_run=True,
+            resource_settings={"cowtree": {"mode": "off"}})
+        out = capsys.readouterr().out
+        assert "assay state root preflight" in out
+        assert "decided at run time" not in out
 
     def test_last_log_line_returns_last_nonempty_line(self, tmp_path):
         log = tmp_path / "x.log"
