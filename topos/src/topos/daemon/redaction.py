@@ -109,7 +109,18 @@ def _redact_metric_map(
 def _finding_ceiling_breach(
     source_metrics: object, metrics_meta: Mapping[str, Mapping[str, object]], ceiling: Sensitivity
 ) -> Sensitivity | None:
-    """Return the worst above-ceiling sensitivity named by a finding, else None."""
+    """Return the worst above-ceiling sensitivity named by a finding, else None.
+
+    A finding that names no source metric (missing or empty) cannot be
+    classified from its metrics, and its prose may still carry counts or
+    process names; it is therefore treated as ``sensitive``.
+    """
+    if source_metrics is None or (
+        isinstance(source_metrics, Sequence)
+        and not isinstance(source_metrics, (str, bytes))
+        and len(source_metrics) == 0
+    ):
+        return Sensitivity.SENSITIVE if _above(Sensitivity.SENSITIVE, ceiling) else None
     if not isinstance(source_metrics, Sequence) or isinstance(source_metrics, (str, bytes)):
         return None
     worst: Sensitivity | None = None

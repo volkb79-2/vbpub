@@ -572,14 +572,8 @@ def _filter_frames_by_window(
 # Entity → slice ancestry
 # ---------------------------------------------------------------------------
 
-def _find_slice_ancestor(entity_key: str, frames: list[Frame]) -> str:
-    """Return the nearest ``*.slice`` ancestor key for *entity_key*.
-
-    Walks the parent chain across all available frames.  If the entity itself
-    ends with ``.slice`` it is returned directly.  If no slice ancestor can
-    be found, returns the entity's direct parent or the root (``""``).
-    """
-    # Build a parent map from the first frame that has this entity
+def _build_parent_map(frames: list[Frame]) -> dict[str, str]:
+    """Map each entity key to its parent from the first frame that has it."""
     parent_map: dict[str, str] = {}
     for frame in frames:
         for ek, ef in frame.entities.items():
@@ -587,6 +581,24 @@ def _find_slice_ancestor(entity_key: str, frames: list[Frame]) -> str:
                 parent_map[ek] = ef.entity.parent
             if ek not in parent_map:
                 parent_map[ek] = ""
+    return parent_map
+
+
+def _find_slice_ancestor(
+    entity_key: str,
+    frames: list[Frame],
+    parent_map: dict[str, str] | None = None,
+) -> str:
+    """Return the nearest ``*.slice`` ancestor key for *entity_key*.
+
+    Walks the parent chain across all available frames.  If the entity itself
+    ends with ``.slice`` it is returned directly.  If no slice ancestor can
+    be found, returns the entity's direct parent or the root (``""``).
+    Callers resolving many entities pass a prebuilt *parent_map* (built once
+    with :func:`_build_parent_map`) so the frames are not rescanned per entity.
+    """
+    if parent_map is None:
+        parent_map = _build_parent_map(frames)
 
     # If the entity itself is a slice, return it
     if entity_key.endswith(".slice"):
@@ -673,12 +685,17 @@ def _group_frames(
     to ``_GaugeSamples`` or ``_RateSamples``.
     """
     groups: dict[str, dict[str, object]] = defaultdict(dict)
+    parent_map = _build_parent_map(frames) if group_by == "slice" else {}
+    slice_of: dict[str, str] = {}
 
     for idx, frame in enumerate(frames):
         for entity_key, ef in frame.entities.items():
             # Determine group key
             if group_by == "slice":
-                group_key = _find_slice_ancestor(entity_key, frames)
+                group_key = slice_of.get(entity_key)
+                if group_key is None:
+                    group_key = _find_slice_ancestor(entity_key, frames, parent_map)
+                    slice_of[entity_key] = group_key
             else:
                 group_key = entity_key
 

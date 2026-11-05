@@ -27,6 +27,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(topos): real_docker_inspect opt-out so the production resolver stays testable (B-039) (cadfc34d1)
 
 <!-- cmru: pending release notes begin -->
+- fix(topos/daemon): `daemon serve` handles SIGTERM/SIGINT through the normal shutdown path (history flush, paddr stop, socket unlink) (B-01, D-01)
+- fix(topos/daemon): the daemon exits non-zero when the frame producer dies instead of serving a frozen frame; `daemon status` reports a frame older than 3 intervals as stale (B-02)
+- fix(topos/daemon): a cursor ahead of the daemon's latest sequence is `gap=true`; responses carry a per-start `epoch` and `stream_frames` raises on a restart (B-04)
+- fix(topos/daemon): request and response phases have a total deadline (trickling clients no longer hold slots); the busy reply is an envelope error for envelope clients (B-05)
+- fix(topos/daemon): legacy (no `v`) requests go through the authorization hook, audit log and response byte cap; deeply nested JSON gets an error reply (B-06, B-19)
+- fix(topos/daemon): component health errors carry the exception text (D-18)
+- fix(topos/query): `coverage.complete` is false when the data does not span the requested window; `coverage.requested_span_s` added (B-10)
+- fix(topos/query): integral, state_duration and derived rates no longer bridge holes wider than 1.5 intervals; integral/state_duration report `covered_s` and `span_s` (B-11)
+- fix(topos/report): `--group-by slice` builds the parent map once instead of per entity per frame (B-12)
+- fix(topos/compare): totals (`counter_delta`, `event_count`, `integral`) over windows whose spans differ by more than 10% are refused as `incomplete_coverage` (B-13)
+- fix(topos/gateway): HTTP handlers time out after 5 s idle and live handler threads are capped at 32 (excess answered 503 `gateway_busy`) (B-16)
+- fix(topos/daemon): all `proc_*` metrics are classified `sensitive`; a finding with no `source_metrics` is treated as `sensitive` when redacting (B-17)
+- fix(topos/record): appending to a plain recording first cuts a torn final line; appending to a truncated or corrupt zstd recording is refused instead of corrupting it (B-18)
+- fix(topos/snapshot): a 1-frame snapshot no longer includes every previous frame; redacted bundles drop docker `Cmd`/`Entrypoint`; bundles are created mode 0600 (B-19)
+- fix(topos/daemon): `daemon serve` refuses to start over a socket a live daemon is serving (stale sockets are still replaced); deeply nested request JSON gets an error reply (B-19)
+- fix(topos/mcp): `topos_history` reports `gap`, `truncated`, `frames_returned`, `oldest_ts`, `newest_ts` and `requested_since_ts` (B-15)
 - fix(topos/tests): B-047 version assertions compare against `topos.__version__` (fallback test reads pyproject `fallback_version`) instead of the literal "0.1.0"
 - fix(topos/tests): B-003 MCP-dependent smoke/server tests skip cleanly (`requires_mcp`) when the `topos[mcp]` extra is absent; the P84 gate still fails such a run
 - fix(topos/cli): B-023 an unresolvable selector in the live TUI exits 2 with the typed message, as `--once` does
@@ -50,6 +66,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(inspect-files): docker-json-log returns the tail of the log (C-13); journald read streams with a hard byte cap and honours `--max-bytes` (C-14)
 - fix(actions): `action preview` for kill applies the same target validation and protected-service refusal as execute (C-16)
 - fix(ui): `s` in the drill screen opens the typed DAMON confirmation and reports which sessions were stopped if a later one fails (D-08)
+- fix(collect): cgroup io totals (`io_r_bps`/`io_w_bps`/`io_r_iops`/`io_w_iops`/`io_discard_bps`) count only bottom-level block devices (stacked dm/md devices from `/sys/dev/block/<dev>/slaves` are excluded, no double counting); src `exact`, or `derived` when /sys cannot classify; empty io.stat lines skipped
+- feat(collect): io.cost visibility: `host_io_cost_vrate_pct`, `host_io_cost_enabled` (root cgroup `io.cost.qos` + `io.stat` `cost.vrate`, typed unavailable when off) and per-cgroup `io_cost_usage_per_s`
+- fix(collect): docker inspect cached by 64-hex id and evicted when the id leaves the tree; `docker inspect`, `systemctl show` and `tc` have timeouts that degrade to unavailable; `UnitView` 30 s per-unit TTL cache (A-01, A-04)
+- fix(net): one shared interface filter (exact `lo`, `veth*`, `br-*`, `docker*`) for host_meta, the host row and the netns candidate (A-02, A-17)
+- fix(collect): counter baselines pruned when an entity leaves, per-device io.stat deltas taken every tick, intervals from a monotonic clock (A-07)
+- fix(collect): `swap_disk` without `swapcached`, `ratio`, `headroom_*` and `rf_*` report a typed unavailable state instead of exact/None or "warming"; absent `zswpin` makes every anon refault a device refault (A-05, A-06, A-15)
+- fix(registry): `cpu_pct`, `psi_*` and `pids_current` are subtree-scoped; dead `aggregatable` field removed; scope table test (A-09)
+- fix(collect): `io.max` parsed once per cgroup; cgroupfs-driver `docker/<id>` cgroups are recognised (A-18, A-19)
+- fix(damon): no region data is typed unavailable instead of "0 bytes hot exact"; the hot/warm/cold/idle split is `derived` (A-10)
+- fix(net): the BPF provider refuses a snapshot older than 3 intervals (`generated_at`) so a dead producer does not read as idle, and aggregates in a single pass (A-12, B-14)
+- fix(procs): idle processes are not "hot" (rate > 0 floor); a pin is bound to a ProcessKey so a reused pid does not inherit it (A-14)
+- fix(diag): `protected_disk_refault` honours the warn band, `memory_high_user_visible` is red at crit, `pressure` is unavailable when no input is readable (A-16)
 <!-- cmru: pending release notes end -->
 
 ## [0.4.2] - 2026-10-21

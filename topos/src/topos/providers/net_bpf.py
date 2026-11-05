@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,9 @@ from topos.model import Entity, EntityKey
 from topos.providers.base import NetSample, unavailable_sample
 
 SNAPSHOT_FILENAME = "snapshot.json"
+# Three default sweep intervals: a producer that has not refreshed the snapshot for this
+# long is considered dead, and its frozen counters must not read as an idle container.
+DEFAULT_MAX_SNAPSHOT_AGE_S = 15.0
 
 
 class BpfProvider:
@@ -36,7 +40,15 @@ class BpfProvider:
 
     name = "net_bpf"
 
-    def __init__(self, bpf_root: Path | None = None, state_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        bpf_root: Path | None = None,
+        state_dir: Path | None = None,
+        max_age_s: float = DEFAULT_MAX_SNAPSHOT_AGE_S,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.max_age_s = max_age_s
+        self.clock = clock
         self.bpf_root = bpf_root
         self.state_dir = state_dir or bpf_root
         self._status: dict[str, Any] = {
@@ -66,6 +78,14 @@ class BpfProvider:
         if snapshot is None:
             return self._all_unavailable(f"failed to parse BPF snapshot at {snapshot_path}")
 
+        generated_at = snapshot.get("generated_at")
+        if isinstance(generated_at, (int, float)) and not isinstance(generated_at, bool):
+            age = self.clock() - float(generated_at)
+            if age > self.max_age_s:
+                # Lower-ranked providers fill the frame; frozen counters would read as 0 B/s.
+                self._status["stale"] = True
+                return self._all_unavailable(f"stale BPF snapshot: {age:.0f}s old (limit {self.max_age_s:g}s)")
+
         maps = snapshot.get("maps", {})
         cgroup_map = snapshot.get("cgroup_map", {})
         if not isinstance(maps, dict) or not isinstance(cgroup_map, dict):
@@ -82,8 +102,8 @@ class BpfProvider:
                 continue
             entity_to_cgroup.setdefault(ekey, []).append(cid)
 
-        # Parse all map entries
-        entries = self._parse_entries(maps)
+        # Parse all map entries once and pre-aggregate per cgroup id (single pass).
+        entries = self._index_entries(self._parse_entries(maps))
 
         # Aggregate per entity
         result: dict[EntityKey, NetSample] = {}
@@ -152,45 +172,56 @@ class BpfProvider:
                 entries.append(entry)
         return entries
 
+    @staticmethod
+    def _index_entries(entries: list[dict[object, object]]) -> dict[int, dict[str, Any]]:
+        """Fold the flat entry list into ``{cgroup_id: totals}`` in one pass."""
+        index: dict[int, dict[str, Any]] = {}
+        for entry in entries:
+            cid = entry.get("cgroup_id")
+            if cid is None or not isinstance(cid, int) or isinstance(cid, bool):
+                continue
+            row = index.setdefault(cid, {"rx_bytes": 0, "tx_bytes": 0, "rx_pkts": 0, "tx_pkts": 0, "proto": {}})
+            direction = str(entry.get("direction", ""))
+            bytes_val = _int_or_none(entry.get("bytes", 0)) or 0
+            pkts_val = _int_or_none(entry.get("packets", 0)) or 0
+            if direction == "ingress":
+                row["rx_bytes"] += bytes_val
+                row["rx_pkts"] += pkts_val
+            elif direction == "egress":
+                row["tx_bytes"] += bytes_val
+                row["tx_pkts"] += pkts_val
+            else:
+                continue
+            family = str(entry.get("family", "other"))
+            proto = str(entry.get("proto", "other"))
+            row["proto"].setdefault(family, {}).setdefault(proto, 0)
+            row["proto"][family][proto] += pkts_val
+        return index
+
     def _aggregate_for_entity(
         self,
         key: EntityKey,
         cgroup_ids: list[int],
-        entries: list[dict],
+        index: dict[int, dict[str, Any]] | list[dict[object, object]],
     ) -> NetSample | None:
-        cid_set = frozenset(cgroup_ids)
-        rx_bytes = 0
-        tx_bytes = 0
-        rx_pkts = 0
-        tx_pkts = 0
+        if isinstance(index, list):  # raw entry list (direct callers)
+            index = self._index_entries(index)
+        rx_bytes = tx_bytes = rx_pkts = tx_pkts = 0
         proto_map: dict[str, dict[str, int]] = {}
         matched = False
-
-        for entry in entries:
-            cid = entry.get("cgroup_id")
-            if cid is None or not isinstance(cid, int):
-                continue
-            if cid not in cid_set:
+        for cid in set(cgroup_ids):
+            row = index.get(cid)
+            if row is None:
                 continue
             matched = True
-            direction = str(entry.get("direction", ""))
-            family = str(entry.get("family", "other"))
-            proto = str(entry.get("proto", "other"))
-            bytes_val = _int_or_none(entry.get("bytes", 0)) or 0
-            pkts_val = _int_or_none(entry.get("packets", 0)) or 0
-
-            if direction == "ingress":
-                rx_bytes += bytes_val
-                rx_pkts += pkts_val
-            elif direction == "egress":
-                tx_bytes += bytes_val
-                tx_pkts += pkts_val
-            else:
-                continue
-
-            proto_map.setdefault(family, {})
-            proto_map[family].setdefault(proto, 0)
-            proto_map[family][proto] += pkts_val
+            rx_bytes += row["rx_bytes"]
+            tx_bytes += row["tx_bytes"]
+            rx_pkts += row["rx_pkts"]
+            tx_pkts += row["tx_pkts"]
+            for family, protos in row["proto"].items():
+                for proto, pkts in protos.items():
+                    proto_map.setdefault(family, {}).setdefault(proto, 0)
+                    proto_map[family][proto] += pkts
 
         if not matched:
             return None

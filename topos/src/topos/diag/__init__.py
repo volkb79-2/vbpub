@@ -17,7 +17,12 @@ def annotate(
 
     for entity_frame in frame.entities.values():
         if not preserve_existing_pressure or _needs_pressure(entity_frame.metrics.get("pressure")):
-            entity_frame.metrics["pressure"] = MetricValue(score_entity(entity_frame, config).score, "derived")
+            breakdown = score_entity(entity_frame, config)
+            # No readable input at all is "unknown", not a healthy 0 (A-16).
+            if any(item.get("value") is not None for item in breakdown.contributions):
+                entity_frame.metrics["pressure"] = MetricValue(breakdown.score, "derived")
+            else:
+                entity_frame.metrics["pressure"] = MetricValue(None, "unavail_kernel")
         if not preserve_existing_findings or not entity_frame.findings:
             entity_frame.findings = evaluate_rules(entity_frame, config)
 

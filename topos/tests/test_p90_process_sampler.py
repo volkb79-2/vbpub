@@ -286,11 +286,10 @@ def test_o3_pid_reuse_never_joins_history_end_to_end(tmp_path: Path) -> None:
     tick_b = sampler.sample({})
     key_b = ProcessKey(pid=pid, start_ticks=999, boot_id=sampler._boot_id)
     assert key_a != key_b
-    reused_row = tick_b.frame.entities[key_b.entity_key()]
-    # First tick of the new incarnation: no prior baseline under the NEW key,
-    # so the rate must be None (cold), never a spurious inherited value.
-    assert reused_row.metrics["proc_cpu_pct"].v is None
-    assert reused_row.process["comm"] == "reincarnated"
+    # The pin was bound to the original incarnation (A-14), so the reincarnation
+    # inherits neither the pin nor the old baseline: it is an idle, unpinned newcomer
+    # and is not retained.
+    assert key_b.entity_key() not in tick_b.frame.entities
     # The old incarnation's row must not reappear under the new key's entity.
     assert key_a.entity_key() != key_b.entity_key()
 
