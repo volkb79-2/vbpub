@@ -6,6 +6,8 @@ test module, and a child pytest runs there. Nothing about git or pytest is mocke
 
 from __future__ import annotations
 
+import contextlib
+import ctypes
 import importlib.util
 import os
 import shutil
@@ -211,11 +213,89 @@ def test_snapshot_timeout_is_not_blocked_by_a_session_leaving_descendant(repo: P
         with pytest.raises(guard.GitGuardUnavailable, match="did not finish within 1s"):
             guard.snapshot(repo / "pwmcp", git_executable=str(slow), timeout=1)
         assert time.monotonic() - started < 15
-    finally:  # the escapee is deliberately outside the kill; remove it so the test leaks nothing
+    finally:  # the escapee is deliberately outside the kill; remove and reap it so the test leaks nothing
         if pid_file.exists():
             pid = int(pid_file.read_text(encoding="ascii"))
             if not _process_is_gone(pid):
                 os.kill(pid, 9)
+            with contextlib.suppress(ChildProcessError):  # the guard made this process its subreaper
+                os.waitpid(pid, 0)
+
+
+@contextlib.contextmanager
+def _acting_as_gate_subreaper():
+    """Be the gate's process-tree window: a child subreaper that adopts every orphan of its subtree."""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    prior = ctypes.c_int(0)
+    assert libc.prctl(37, ctypes.byref(prior), 0, 0, 0) == 0
+    assert libc.prctl(36, 1, 0, 0, 0) == 0
+    try:
+        yield
+    finally:
+        libc.prctl(36, prior.value, 0, 0, 0)
+
+
+def _adopted_children() -> list[str]:
+    """``pid comm state`` of every process whose parent is this process."""
+
+    found = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            raw = (entry / "stat").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        head, _, tail = raw.rpartition(")")
+        fields = tail.split()
+        if len(fields) > 1 and int(fields[1]) == os.getpid():
+            found.append(f"{entry.name} {head.partition('(')[2]} {fields[0]}")
+    return found
+
+
+_SNAPSHOT_CHILD = (
+    "import importlib.util, sys\n"
+    "spec = importlib.util.spec_from_file_location('g', sys.argv[1])\n"
+    "g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)\n"
+    "from pathlib import Path\n"
+    "try:\n"
+    "    g.snapshot(Path(sys.argv[2]), git_executable=sys.argv[3], timeout=1)\n"
+    "except g.GitGuardUnavailable:\n"
+    "    pass\n"
+)
+
+
+@pytest.mark.parametrize("wrapper", ["sleep 30", "sleep 30 &\nwait"], ids=["foreground-child", "background-child"])
+def test_snapshot_timeout_leaves_no_orphan_for_the_gates_subreaper(repo: Path, wrapper: str) -> None:
+    """PWMCP-40: the killed wrapper's children must be reaped, not adopted (and counted) by the gate.
+
+    ``assay`` runs the suite under a child subreaper and counts every adopted process, dead or alive, as a
+    leaked process tree. A dead-but-unreaped ``sleep`` (SIGKILLed together with its parent) is adopted by it
+    unless the guard itself reaps it.
+    """
+
+    slow = repo / "slow-git"
+    slow.write_text(f"#!/bin/sh\n{wrapper}\n", encoding="utf-8")
+    slow.chmod(0o755)
+    with _acting_as_gate_subreaper():
+        done = subprocess.run(
+            [sys.executable, "-c", _SNAPSHOT_CHILD, str(CONFTEST), str(repo / "pwmcp"), str(slow)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        deadline = time.monotonic() + 3
+        leaked = _adopted_children()
+        while leaked and time.monotonic() < deadline:
+            time.sleep(0.05)
+            leaked = _adopted_children()
+        for line in leaked:  # never leave them behind, whatever the assertion says
+            with contextlib.suppress(ProcessLookupError, ChildProcessError):
+                os.kill(int(line.split()[0]), 9)
+                os.waitpid(int(line.split()[0]), 0)
+    assert done.returncode == 0, done.stderr
+    assert leaked == [], f"processes outlived the snapshot and were adopted by the gate: {leaked}"
 
 
 @pytest.mark.parametrize(

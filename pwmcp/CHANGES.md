@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- fix(pwmcp): the cleanliness guard also reaps the processes its killed `git status` wrapper orphaned (they were adopted as zombies by the gate's subreaper and reported as `leaked-process-tree` at the R2 baseline even after PWMCP-33); regression test plays the subreaper (PWMCP-40)
+
 <!-- cmru: release history -->
 
 ## [1.64.1-r3] - 2026-11-05

@@ -14308,3 +14308,17 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Why it matters.** `requires-python` and `CONSUMERS.md` ("the `requires-python = '>=3.11'` floor is sufficient") promise 3.11; a consumer whose shipped runtime is 3.11 (Passenger webhosting) cannot judge its own interpreter's lane without a second Python. The workaround costs coverage fidelity: naf judges on 3.14 and runs 3.11 as a plain pytest command lane.
 
 **Wanted.** Replace the `MappingProxyType(...)` field default with `default_factory` (or an empty frozen default that is hashable), then add a 3.11 import smoke to assay's own gate (`python:3.11` lane: `assay --version`, `assay lanes` on the consumer template), so the declared floor is tested rather than asserted. Alternatively raise `requires-python` to 3.12 and say so in `CONSUMERS.md`.
+
+## B233 — `leaked-process-tree` verdicts carried no process identity, so a baseline leak could not be diagnosed
+
+**Status: FIXED on branch `pwmcp-leak2-20261105` (pending merge/release).** The R0 claim detail was the bare string `leaked-process-tree`; the `descendants` evidence existed only on mutation-candidate entries and never reached a baseline verdict or the progress stream. pwmcp R2 baseline at `pwmcp-v1.64.1-r3` failed with the bare string twice and the cause needed a local reproduction to find.
+
+**Fix.** The claim detail, the `command_finished` progress event (`leaked_descendants`) and stderr now list each leaked process as `pid`, `ppid`, `comm` and a bounded, redacted argv (new optional `cmdline` on the descendant wire record). Tests: `tests/core/test_leak_diagnostics.py`.
+
+## B234 — a zombie leaked descendant is indistinguishable from a live process with an unreadable cmdline in the `leaked-process-tree` diagnostic
+
+**Status:** OPEN (follow-up of B233 review F4).
+
+**Why it matters.** A zombie prints `pid=N ppid=M comm=C` with no argv, the same as a live process whose `/proc/<pid>/cmdline` could not be read. The fix action differs (a zombie needs its parent to reap it; a live process needs a kill).
+
+**Wanted.** Add an optional `state` field (the `/proc/<pid>/stat` state letter, already parsed in `_process_identity`) to the descendant wire record, render ` state=Z` in `ProcessTreeDescendant.describe()`, accept it in `verify.py` as an optional key (a verdict carrying it fails the key-set check of an older verifier, as with B233 `cmdline`), and test the zombie and live cases.
