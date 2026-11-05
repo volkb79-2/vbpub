@@ -2033,7 +2033,7 @@ def _main_daemon(argv: list[str]) -> int:
             broker.start()
             server.serve_forever()
         except KeyboardInterrupt:
-            pass
+            shutdown.operator_interrupt()
         finally:
             restore_signals()
             if shutdown.producer_failed:

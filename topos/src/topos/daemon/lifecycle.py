@@ -68,6 +68,18 @@ class ShutdownCoordinator:
             self._spawn_shutdown(server)
         return True
 
+    def operator_interrupt(self) -> None:
+        """``serve_forever`` was left by KeyboardInterrupt: an operator-driven stop.
+
+        An interrupt delivered straight to the serving loop is a deliberate stop,
+        not a producer-caused shutdown, so it must not be reported as failure even
+        if the producer had already ended (finite source, test-driven stop).
+        """
+        with self._lock:
+            if self._reason is None:
+                self._reason = "KeyboardInterrupt"
+            self._producer_failed = False
+
     def on_producer_terminal(self, kind: str) -> None:
         """``FrameBroker`` terminal callback: failed/exhausted must stop the daemon."""
         if kind in ("failed", "exhausted"):
