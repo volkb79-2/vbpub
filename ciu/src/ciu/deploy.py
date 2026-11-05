@@ -4744,17 +4744,16 @@ def _is_worktree_instance(repo_root: Path) -> bool:
 
 def _is_linked_git_worktree(repo_root: Path) -> bool:
     """True when *repo_root* is inside a linked git worktree (git-dir != common-dir)."""
-    import subprocess
-
-    def rev(flag: str) -> Optional[str]:
+    def rev(flag: str) -> str:
+        # procutil always captures text; "" (not None) is the only "unknown" value,
+        # which the truthiness test below treats uniformly (CIU-201).
         try:
-            done = subprocess.run(
+            done = procutil.run_cmd(
                 ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute", flag],
-                capture_output=True, text=True, check=False,
             )
         except OSError:
-            return None
-        return done.stdout.strip() if done.returncode == 0 else None
+            return ""
+        return done.stdout.strip() if done.returncode == 0 else ""
 
     git_dir, common = rev("--git-dir"), rev("--git-common-dir")
     return bool(git_dir and common and os.path.realpath(git_dir) != os.path.realpath(common))

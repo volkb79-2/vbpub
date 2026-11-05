@@ -6218,3 +6218,41 @@ Acceptance: `ciu worktree create` + `ciu up --dir <stack>` works in a worktree o
 **Still OPEN / not done.** (1) `ciu check` has no reset-precondition stage; with the fallback the only remaining refusal is a missing `deploy.project_name` (a tagless config that `up` supports via the identity project but `reset_service` refuses) - consider making reset use the identity project name there. (2) The `worktree rm` per-root atomicity across sibling roots is unchanged: a refusal in a later sibling root still follows a completed clean of an earlier one.
 
 **Related.** CIU-198, CIU-46, CIU-19.
+
+## CIU-201 - R2 mutation survivors of ciu 7.23.0 (deploy.py clean ownership, worktree.py leftover adoption, engine.py symlink walks, workspace_env.py own-container inspect, cli_registry.py dry-run forwarding)
+
+**Status:** FIXED 2026-11-05 on branch ciu-survivors2-20261105 (unreleased); severity: minor (test strength; one behaviour-neutral simplification). Campaign `ciu-v7230-r2-sup` (b9df2475c, base ciu-v7.22.0): 191 judged, 153 killed, 38 survived (0 crashed/hung/budget). Root cause by class: (a) the ownership-filtered `clean` helpers and the own-container inspect were only tested with fakes that ignore `capture`/`check`/`text`, so those flags were unpinned; fixed with a fake `docker` EXECUTABLE on PATH (real child process, real flag handling); (b) symlink-following walks, `allow_repair=False`, `flush=True`, dry-run forwarding and the leftover-adoption tail (`record unlink missing_ok`, `resumed`, branch `tip`, `.git` pointer guards) had no behavioural test; (c) two provably equivalent mutants (`_is_linked_git_worktree`: `text=True` and `return None`, both only feed a truthiness test; verified `True/True/False/False` for text on and off in a real linked worktree) are removed at the source by calling `procutil.run_cmd` (always text; unknown is `""`), the module's stated single-subprocess rule. Line numbers are 7.23.0; "now" is the line on the branch.
+
+| Survivor (7.23.0 line) | Mutation | Class | Test / change |
+| --- | --- | --- | --- |
+| cli_registry.py:618 | `dry_run=True`->False (`worktree rm`) | gap | `test_adapters_respell_the_validated_command[worktree rm one --dry-run]` |
+| cli_registry.py:930 | `dry_run=True`->False (`clean`) | gap | `...[clean --dry-run]` |
+| config_model.py:330 | `or`->`and` (gitdir shape) | gap | `test_hint_needs_a_dot_git_worktrees_pointer[.git/other/wt, notgit/worktrees/wt]` |
+| deploy.py:4432 | `frozen=True`->False | gap | `test_clean_owner_is_an_immutable_record_that_is_attributable_by_default` |
+| deploy.py:4447 | `unattributable=False`->True (default) | gap | same test |
+| deploy.py:4464 | `allow_repair=False`->True in `_clean_owner` | gap | `test_clean_owner_reads_outdated_facts_without_repairing_them` |
+| deploy.py:4517 (x2) | `capture`->False, `check`->True in `_owned_names` | gap | `test_owned_names_keeps_owned_and_reports_foreign_with_reason`, `..._refuses_a_failed_listing_with_its_own_error` |
+| deploy.py:4528, 4529 | `>`->`>=` label-field guards | gap | `test_owned_names_tolerates_lines_with_fewer_than_three_fields` |
+| deploy.py:4753 | `text=True`->False (`_is_linked_git_worktree`) | EQUIVALENT | site removed: `procutil.run_cmd`; `test_linked_git_worktree_is_detected_with_real_git` |
+| deploy.py:4756 | `return None`->`[]` | EQUIVALENT | site removed (`return ""`) |
+| deploy.py:4974 (x2) | `capture`/`check` in `_endpoint_foreign_reason` | gap | `test_endpoint_ownership_is_read_from_the_inspect_labels`, `..._cannot_be_inspected_is_foreign_not_an_exception` |
+| deploy.py:4976, 4978, 4980 | `!=`->`==`; `or`->`and`; `>`->`>=` | gap | `test_endpoint_*` (own label, one-field output) |
+| deploy.py:4991 (x2) | `capture`/`check` in `_network_foreign_reason` | gap | `test_network_ownership_is_read_from_its_labels`, `test_network_that_cannot_be_inspected_...` |
+| deploy.py:5599 | `or`->`and` (plan root line) | gap | `test_clean_plan_names_the_known_root_and_marks_an_unknown_one` |
+| deploy.py:5604 | `all_states=True`->False (plan) | gap | `test_clean_plan_lists_stopped_containers_too` |
+| deploy.py:6588 | `plan_only: True`->False (`--clean --dry-run`) | gap | `test_clean_dry_run_reaches_the_cleanup_in_plan_only_mode` |
+| engine.py:456 | `flush=True`->False (slice warning) | gap | `test_unverified_slice_warning_is_flushed` |
+| engine.py:616, 643 | `followlinks=False`->True | gap | `test_ownership_scan_does_not_follow_a_symlink_out_of_the_tree`, `test_make_writable_does_not_follow_a_symlink_out_of_the_tree` |
+| workspace_env.py:1028-1030 | `capture_output`, `text`, `check` of the own-container inspect | gap | `test_own_container_name_comes_from_the_inspect_output`, `test_failed_own_inspect_warns_with_the_docker_error_and_keeps_the_name` |
+| workspace_env.py:1034 (x2) | `or`->`and` in the warning detail | gap | `test_failed_own_inspect_warns_*`, `..._without_stderr_says_no_name_was_returned` |
+| worktree.py:6225 | `allow_repair=False`->True | gap | `TestCiu201SurvivorClosure::test_outdated_primary_facts_are_refused_never_repaired` |
+| worktree.py:7785, 7805 | `follow_symlinks=False`->True (leak / protected scans) | gap | `..._leak_scan_does_not_follow_a_symlink`, `..._leftover_protected_scan_does_not_follow_a_symlink` |
+| worktree.py:8115 | `and`->`or` (`.git` pointer guard) | gap | `..._leftover_without_a_git_file_is_refused_as_pointerless` (+ symlinked `.git` case) |
+| worktree.py:8170 | `or`->`and` (branch tip) | gap | `..._adopting_a_leftover_reports_its_tip_and_tolerates_a_gone_record` |
+| worktree.py:8206 | `missing_ok=True`->False | gap | same test (record already dropped by another remover) |
+| worktree.py:8216 | `resumed=True`->False | gap | same test |
+| worktree.py:8405 | `!=`->`==` (dry-run branch plan) | gap | `..._dry_run_branch_plan_omits_the_internal_delete_flag` |
+
+Every new test was verified to FAIL with its mutation hand-applied in a scratch copy (`reports/ciu-survivors2-REPORT.md`). Tests: `tests/tests/test_ciu_201_survivors2.py`, `test_ciu_worktree.py::TestCiu201SurvivorClosure`, `test_ciu_cli_registry.py`.
+
+**Related.** CIU-195 (previous closeout, same pattern), CIU-191 (clean ownership), CIU-182 (dry-run / leftover adoption).
