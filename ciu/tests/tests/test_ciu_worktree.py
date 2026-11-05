@@ -5347,8 +5347,18 @@ class TestPermissionRemovalRetry:
         assert blocked.exists()
         assert checkout.exists()
 
+    @pytest.mark.parametrize(
+        ("mtime_offset_s", "expected"),
+        [
+            (3600, "changed after the permission checkpoint"),
+            # CIU-196: a coarse filesystem clock can stamp state created just
+            # after the checkpoint at or before the checkpoint time; the
+            # protected-name check must still refuse it.
+            (-3600, "new protected-state component"),
+        ],
+    )
     def test_same_call_retry_refuses_new_protected_state_before_library_rmtree(
-        self, tmp_repo, fake_generate_env, monkeypatch
+        self, tmp_repo, fake_generate_env, monkeypatch, mtime_offset_s, expected
     ):
         real_refresh = worktree._refresh_permission_retry_checkpoint_time
         new_state: list[Path] = []
@@ -5360,6 +5370,11 @@ class TestPermissionRemovalRetry:
             payload = state / "mutants.json"
             payload.write_text("preserve", encoding="utf-8")
             new_state.append(payload)
+            # Pin every mtime explicitly: the outcome must not depend on the
+            # filesystem timestamp granularity relative to time.time_ns().
+            stamp = checkpoint["checkpoint_time_ns"] + mtime_offset_s * 10**9
+            for entry in (payload, state, state.parent, checkout):
+                os.utime(entry, ns=(stamp, stamp))
 
         monkeypatch.setattr(
             worktree, "_refresh_permission_retry_checkpoint_time",
@@ -5379,7 +5394,7 @@ class TestPermissionRemovalRetry:
 
         assert isinstance(failure, worktree.WorktreeRemovalError)
         assert "permission-specific checkout retry failed" in str(failure)
-        assert "changed after the permission checkpoint" in str(failure)
+        assert expected in str(failure)
         assert checkout.is_dir()
         assert new_state[0].read_text(encoding="utf-8") == "preserve"
 
