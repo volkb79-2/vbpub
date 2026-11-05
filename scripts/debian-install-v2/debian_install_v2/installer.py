@@ -348,15 +348,11 @@ class Installer:
             f"swap={_code(str(plan['swap_policy']))}, "
             f"swap total={_code(swap_total)}",
         ]
-        if plan["root_max_size_gb"] is not None:
+        if plan["partitioning"]:
             plan_lines.append(
-                f"Root size cap: {_code(str(plan['root_max_size_gb']))} GiB; "
-                "space between root and the end-of-disk swap remains unallocated"
-            )
-        if plan["data_area"] != "none":
-            plan_lines.append(
-                f"Data area: {_code(str(plan['data_area']))} directly in front of the end-of-disk swap "
-                "(see README \"Data area\")"
+                f"Partitioning: {_code(json.dumps(plan['partitioning'], sort_keys=True))}; "
+                f"{len(plan['data_partitions'])} data partition(s) in front of the end-of-disk swap "
+                "(see README \"Disk layout\")"
             )
         if plan["swap_policy"] == "on":
             plan_lines.append(
@@ -765,10 +761,12 @@ class Installer:
                 if shrink_needed
                 else "not required"
             ),
-            "root_resize_policy": self.config.root_resize_policy,
-            "root_max_size_gb": self.config.root_max_size_gb,
-            "disk_layout": self.config.disk_layout,
-            "data_area": self.config.data_area,
+            "root_resize_policy": self._root_policy(),
+            "partitioning": self.config.partitioning or {},
+            "data_partitions": [
+                {"device": f"{self._partition_base}{number}", "start": start, "sectors": size}
+                for number, start, size in self._data_area_layout(partitions, self._planned_before_root())
+            ],
             "swap_policy": self.config.swap_policy,
             "swap_total_gb": swap_total,
             "swap_retained_before_root_gb": retained_total_gb,
@@ -1934,7 +1932,9 @@ MaxFileSec=1month
                     "cannot safely retain or replace swap partition(s) with incomplete geometry: "
                     + ", ".join(map(str, sorted(incomplete_swap)))
                 )
-        if self.config.root_resize_policy != "untouched" or self.config.swap_policy in {"on", "off"}:
+        spec = self._disk_spec()
+        policy = self._root_policy()
+        if policy != "untouched" or self.config.swap_policy in {"on", "off"}:
             unknown_geometry = [
                 number for number, entry in entries.items()
                 if number != self.root_number
@@ -1998,32 +1998,8 @@ MaxFileSec=1month
             next_starts = [int(entry["start"]) for _number, entry in after_root]
             if next_starts:
                 boundary = min(boundary, min(next_starts))
-        if self.config.swap_policy == "on":
+        if self.config.swap_policy == "on" or spec is not None:
             boundary = (boundary // alignment) * alignment
-
-        policy = self.config.root_resize_policy
-        root_size_cap = None
-        cap_gb = self._root_cap_gb(disk_sectors * 512)
-        if cap_gb is not None:
-            # The configured cap is a partition length measured from the
-            # existing root start. Do not round its absolute end down: that
-            # would silently reduce the cap for a non-MiB-aligned start.
-            cap_sectors = cap_gb * GIB // 512
-            root_size_cap = cap_sectors
-            if root_size_cap <= 0:
-                raise InstallerError(
-                    "root_max_size_gb leaves no space for the root partition"
-                )
-            if policy == "untouched" and root_size > root_size_cap:
-                raise InstallerError(
-                    "root_resize_policy=untouched cannot satisfy root_max_size_gb "
-                    f"({self.config.root_max_size_gb} GiB) because the current root is larger"
-                )
-            if policy == "grow-only" and root_size > root_size_cap:
-                raise InstallerError(
-                    "root_resize_policy=grow-only cannot satisfy root_max_size_gb "
-                    f"({self.config.root_max_size_gb} GiB) without shrinking the current root"
-                )
 
         partitions: list[tuple[int, int]] = []
         actual_swap_sectors = 0
@@ -2068,14 +2044,14 @@ MaxFileSec=1month
             available_after_current_root = max(0, boundary - current_swap_start)
             if (
                 actual_swap_sectors > available_after_current_root
-                and self.config.root_resize_policy in {"untouched", "grow-only"}
+                and policy in {"untouched", "grow-only"}
             ):
                 available_gib = available_after_current_root * 512 / GIB
                 requested_gib = tail_target_sectors * 512 / GIB
                 raise InstallerError(
                     f"swap_policy=on requests {requested_gib:.2f} GiB, but only "
                     f"{available_gib:.2f} GiB is free after the current root; "
-                    f"root_resize_policy={self.config.root_resize_policy} forbids the shrink needed "
+                    f"root_resize_policy={policy} forbids the shrink needed "
                     "to make room. Reduce swap_disk_total_gb or choose root_resize_policy=resize."
                 )
 
@@ -2093,16 +2069,27 @@ MaxFileSec=1month
                 "reduce swap_disk_total_gb or increase the disk size"
             )
 
-        if policy == "untouched":
+        pool_plan: layout_policy.PoolPlan | None = None
+        if spec is not None:
+            # The explicit plan decides root and data from the config alone; pool_end is the first swap start
+            # (or the aligned end of the disk when no swap is managed).
+            try:
+                pool_plan = layout_policy.plan_pool(
+                    spec,
+                    root_start=root_start,
+                    pool_end=max_root_end,
+                    root_current_size=root_size,
+                    min_root_sectors=self.config.preserve_root_size_gb * GIB // 512,
+                )
+            except layout_policy.LayoutPolicyError as exc:
+                raise InstallerError(str(exc)) from exc
+            target_root_size = pool_plan.root_size
+        elif policy == "untouched":
             target_root_size = root_size
         elif policy == "grow-only":
             target_root_size = max(root_size, max_root_size)
-            if root_size_cap is not None:
-                target_root_size = min(target_root_size, root_size_cap)
         else:  # resize
             target_root_size = max_root_size
-            if root_size_cap is not None:
-                target_root_size = min(target_root_size, root_size_cap)
 
         if self.config.swap_policy == "on":
             root_end = root_start + target_root_size
@@ -2138,33 +2125,7 @@ MaxFileSec=1month
                 if "start" in entry and "size" in entry
             ]
 
-        if root_size_cap is not None:
-            if self.config.swap_policy != "on" or not partitions:
-                raise InstallerError(
-                    "root_max_size_gb / disk_layout=dev-host need managed tail swap "
-                    "(swap_policy=on with at least one new swap partition) so the "
-                    "space between root and swap is the unallocated cow/reserve area"
-                )
-        data_extent: list[tuple[int, int]] = []
-        area = self._data_area_cfg()
-        if area.mode != "none":
-            if self.config.swap_policy != "on" or not partitions:
-                raise InstallerError(
-                    "data_area needs managed tail swap (swap_policy=on with at least one new swap "
-                    "partition): the data area sits directly in front of the end-of-disk swap"
-                )
-            if root_size_cap is None:
-                raise InstallerError("data_area needs a capped root (disk_layout=dev-host or root_max_size_gb)")
-            try:
-                data_plan = layout_policy.plan_data_area(
-                    area,
-                    disk_sectors=disk_sectors,
-                    root_end=root_start + target_root_size,
-                    first_swap_start=min(start for start, _size in partitions),
-                )
-            except layout_policy.LayoutPolicyError as exc:
-                raise InstallerError(str(exc)) from exc
-            data_extent = [(data_plan.start, data_plan.size)]
+        data_extent: list[tuple[int, int]] = list(pool_plan.extents) if pool_plan is not None else []
         if self.config.swap_policy == "on" and partitions:
             try:
                 layout_policy.validate_swap_last(
@@ -2180,19 +2141,6 @@ MaxFileSec=1month
                 )
             except layout_policy.LayoutPolicyError as exc:
                 raise InstallerError(str(exc)) from exc
-        # The root minimum binds capped/dev-host roots and, for full-root, every plan in which the installer
-        # itself shrinks root to make room for managed swap (a tiny root caused by swap sizing is refused too).
-        # An untouched root, or one the installer does not shrink, is never judged here.
-        if policy != "untouched" and (
-            self.config.disk_layout == "dev-host"
-            or root_size_cap is not None
-            or (self.config.swap_policy == "on" and bool(partitions) and target_root_size < root_size)
-        ):
-            try:
-                layout_policy.validate_root_size(target_root_size, disk_sectors)
-            except layout_policy.LayoutPolicyError as exc:
-                raise InstallerError(str(exc)) from exc
-
         if target_root_size < root_size and policy != "resize":
             raise InstallerError(f"root_resize_policy={policy} cannot shrink root")
         if target_root_size < root_size:
@@ -2209,15 +2157,22 @@ MaxFileSec=1month
                 )
         return partitions, target_root_size
 
-    def _root_cap_gb(self, disk_bytes: int | None = None) -> int | None:
-        """Effective root cap: the configured one, or the dev-host rule value."""
-        if self.config.root_max_size_gb is not None:
-            return self.config.root_max_size_gb
-        if self.config.disk_layout == "dev-host":
-            if disk_bytes is None:
-                disk_bytes = self._disk_facts()[0] * 512
-            return layout_policy.recommended_root_gib(disk_bytes / GIB)
-        return None
+    def _disk_spec(self) -> layout_policy.DiskSpec | None:
+        """The explicit `partitioning` plan, or None (plain root growth)."""
+        try:
+            return layout_policy.disk_spec(self.config.partitioning)
+        except layout_policy.LayoutPolicyError as exc:
+            raise InstallerError(str(exc)) from exc
+
+    def _root_policy(self) -> str:
+        """Root resize behaviour: derived from partitioning.root when a plan is set, else the config knob."""
+        spec = self._disk_spec()
+        return spec.root_policy if spec is not None else self.config.root_resize_policy
+
+    def _root_guarded(self) -> bool:
+        """Root must not be grown later by cloud-init/initramfs: its size is a decision of the plan."""
+        spec = self._disk_spec()
+        return spec is not None and spec.root.kind != "star"
 
     def _memory_total_bytes(self) -> int:
         if self.actions.dry_run:
@@ -2256,41 +2211,50 @@ MaxFileSec=1month
         return self._parse_partition_entries(dump)
 
     def _data_area_cfg(self) -> layout_policy.DataArea:
-        try:
-            return layout_policy.parse_data_area(
-                self.config.data_area, self.config.data_partition, self.config.data_lvm
-            )
-        except layout_policy.LayoutPolicyError as exc:
-            raise InstallerError(str(exc)) from exc
+        spec = self._disk_spec()
+        return spec.data if spec is not None else layout_policy.DataArea("none")
 
     def _is_data_partition(self, entry: dict[str, str]) -> bool:
-        """The installer-managed data-area partition (type GUID and GPT name match the config)."""
-        area = self._data_area_cfg()
-        return (
-            area.mode != "none"
-            and (entry.get("type") or "").lower() == area.type_guid.lower()
-            and entry.get("name", "") == area.partlabel
-        )
+        """An installer-managed data-area partition (type GUID and GPT name match one planned data partition)."""
+        wanted = {(e.type_guid.lower(), e.partlabel) for e in self._data_area_cfg().entries()}
+        return ((entry.get("type") or "").lower(), entry.get("name", "")) in wanted
+
+    def _pool_end(self, swap_partitions: list[tuple[int, int]]) -> int:
+        """End of the root+data pool: the first swap start, or the aligned disk end (minus 1 MiB) without managed swap."""
+        if swap_partitions:
+            return min(start for start, _size in swap_partitions)
+        disk_sectors, _root_start, _root_size = self._disk_facts()
+        return ((disk_sectors - 2048) // 2048) * 2048
+
+    def _planned_before_root(self) -> dict[int, dict[str, str]]:
+        """Partitions wholly before root (they keep their numbers); empty when no data area needs numbering."""
+        if not self._data_area_cfg().partition_count:
+            return {}
+        disk_sectors, root_start, root_size = self._disk_facts()
+        return self._partitions_before_root(self._live_partition_entries(disk_sectors, root_start, root_size), root_start)
 
     def _data_area_layout(
         self,
         swap_partitions: list[tuple[int, int]],
         reserved_numbers: Iterable[int],
-    ) -> tuple[int, int, int] | None:
-        """(partition number, start, size) of the data area, directly in front of the first swap."""
-        area = self._data_area_cfg()
-        if area.mode == "none" or not swap_partitions:
-            return None
-        disk_sectors, _root_start, _root_size = self._disk_facts()
-        first_swap = min(start for start, _size in swap_partitions)
+    ) -> list[tuple[int, int, int]]:
+        """(partition number, start, size) of every data partition, in disk order (empty without a data area)."""
+        spec = self._disk_spec()
+        if spec is None or spec.partition_count == 0:
+            return []
+        _disk_sectors, root_start, root_size = self._disk_facts()
         try:
-            plan = layout_policy.plan_data_area(
-                area, disk_sectors=disk_sectors, root_end=0, first_swap_start=first_swap,
+            plan = layout_policy.plan_pool(
+                spec,
+                root_start=root_start,
+                pool_end=self._pool_end(swap_partitions),
+                root_current_size=root_size,
+                min_root_sectors=self.config.preserve_root_size_gb * GIB // 512,
             )
         except layout_policy.LayoutPolicyError as exc:
             raise InstallerError(str(exc)) from exc
-        number = self._tail_swap_numbers(len(swap_partitions) + 1, reserved_numbers)[-1]
-        return number, plan.start, plan.size
+        numbers = self._tail_numbers(spec.partition_count, reserved_numbers)
+        return [(number, start, size) for number, (start, size) in zip(numbers, plan.extents)]
 
     @staticmethod
     def _is_swap_partition(entry: dict[str, str]) -> bool:
@@ -2338,18 +2302,27 @@ MaxFileSec=1month
             if self._is_swap_partition(entry)
         }
 
-    def _tail_swap_numbers(self, count: int, reserved_numbers: Iterable[int]) -> list[int]:
-        """Choose swap IDs that do not collide with root or preserved partitions."""
+    def _tail_numbers(self, count: int, reserved_numbers: Iterable[int]) -> list[int]:
+        """The first `count` ascending partition numbers after root, skipping preserved partitions' numbers."""
         reserved = {*reserved_numbers, self.root_number}
         available = [
-            number for number in range(self.root_number + 1, 129)
+            number for number in range(self.root_number + 1, layout_policy.GPT_MAX_PARTITIONS + 1)
             if number not in reserved
         ]
         if count > len(available):
             raise InstallerError(
-                f"cannot allocate {count} swap partitions after root: GPT partition-number limit reached"
+                f"cannot allocate {count} partitions after root: GPT partition-number limit reached"
             )
         return available[:count]
+
+    def _tail_swap_numbers(self, count: int, reserved_numbers: Iterable[int]) -> list[int]:
+        """Swap numbers: they follow the data partitions, because swap is physically last.
+
+        Numbers after root ascend with disk position: data partitions (config order) first, swaps after.
+        """
+        spec = self._disk_spec()
+        data_count = spec.partition_count if spec is not None else 0
+        return self._tail_numbers(data_count + count, reserved_numbers)[data_count:]
 
     def _validate_root_shrink_target(
         self,
@@ -2721,13 +2694,11 @@ MaxFileSec=1month
         if not inserted:
             rebuilt.append(f"size={new_root_size}")
         lines.append(f"{prefix}{self.root_number} : " + ", ".join(rebuilt))
-        data_layout = self._data_area_layout(partitions, preserved_before_root)
-        if data_layout is not None:
-            area = self._data_area_cfg()
-            number, start, size = data_layout
+        data_entries = self._data_area_cfg().entries()
+        for (number, start, size), data in zip(self._data_area_layout(partitions, preserved_before_root), data_entries):
             lines.append(
-                f"{prefix}{number} : start={start}, size={size}, type={area.type_guid}, "
-                f'name="{area.partlabel}"'
+                f"{prefix}{number} : start={start}, size={size}, type={data.type_guid}, "
+                f'name="{data.partlabel}"'
             )
         for number, (start, size) in zip(
             self._tail_swap_numbers(len(partitions), preserved_before_root), partitions
@@ -3828,13 +3799,17 @@ MaxFileSec=1month
 
     def _data_mount_entry(self, source: str, mount: str, fs: str) -> str:
         options = "noatime,user_subvol_rm_allowed,nofail" if fs == "btrfs" else "defaults,nofail"
+        docker = "/var/lib/docker"
+        if mount == docker or mount.startswith(docker + "/") or docker.startswith(mount + "/"):
+            # nofail alone would let docker start and fill the root fs when this mount is missing
+            options += ",x-systemd.required-by=docker.service"
         return f"{source} {mount} {fs} {options} 0 2" if fs == "ext4" else f"{source} {mount} {fs} {options} 0 0"
 
     def _configure_data_area(self) -> None:
         """Create filesystem / LVM on the data-area partition the table already holds, mount it, persist fstab."""
         area = self._data_area_cfg()
-        if area.mode == "none":
-            self._mark_step("data_area", "not_needed", "data_area=none")
+        if area.kind == "none":
+            self._mark_step("data_area", "not_needed", "no data area in partitioning")
             return
         self._packages(layout_policy.data_area_packages(area), "data-area")
         disk_sectors, root_start, root_size = self._disk_facts()
@@ -3842,23 +3817,31 @@ MaxFileSec=1month
         before_root = self._partitions_before_root(live, root_start)
         tail_partitions, _target_root_size = self._plan_swap_partitions()
         layout = self._data_area_layout(tail_partitions, before_root)
-        if layout is None:
-            raise InstallerError("data_area is configured but the plan has no data partition")
-        number, _start, _size = layout
-        device = f"{self._partition_base}{number}"
-        if not self.actions.dry_run and not self._is_data_partition(live.get(number, {})):
-            raise InstallerError(f"expected data-area partition {number} ({area.partlabel}) is not in the partition table")
+        if not layout:
+            raise InstallerError("a data area is configured but the plan has no data partition")
+        devices = []
+        for (number, _start, _size), entry in zip(layout, area.entries()):
+            if not self.actions.dry_run and not self._is_data_partition(live.get(number, {})):
+                raise InstallerError(f"expected data-area partition {number} ({entry.partlabel}) is not in the partition table")
+            devices.append(f"{self._partition_base}{number}")
+        device = devices[0]
         mounts: list[tuple[str, str, str]] = []  # (fstab source, mount point, fs)
-        if area.mode == "partition":
-            self._ensure_data_filesystem(device, area.fs, area.label)
-            others = [d for d in self._devices_with_label(area.label) if os.path.realpath(d) != os.path.realpath(device)]
-            if others:
-                raise InstallerError(
-                    f"label {area.label} is also on {', '.join(others)}: an ambiguous cow label would leave "
-                    f"{area.mount} on the root filesystem; wipe or relabel the stale device and rerun"
-                )
-            uuid = self._blkid_value(device, "UUID")
-            mounts.append((f"UUID={uuid}" if uuid else f"LABEL={area.label}", area.mount, area.fs))
+        if area.kind == "partitions":
+            for part_device, volume in zip(devices, area.volumes):
+                if volume.fs == "none":
+                    continue  # a raw partition (e.g. for a hand-made zfs pool): nothing to create or mount
+                self._ensure_data_filesystem(part_device, volume.fs, volume.label)
+                others = [
+                    d for d in self._devices_with_label(volume.label or "")
+                    if os.path.realpath(d) != os.path.realpath(part_device)
+                ]
+                if others:
+                    raise InstallerError(
+                        f"label {volume.label} is also on {', '.join(others)}: an ambiguous label would leave "
+                        f"{volume.mount} on the root filesystem; wipe or relabel the stale device and rerun"
+                    )
+                uuid = self._blkid_value(part_device, "UUID")
+                mounts.append((f"UUID={uuid}" if uuid else f"LABEL={volume.label}", volume.mount or "", volume.fs))
         else:
             pv_type = self._blkid_value(device, "TYPE")
             if pv_type not in {"", "LVM2_member"}:
@@ -3883,19 +3866,32 @@ MaxFileSec=1month
                 except ActionError:
                     have = set()
             self._run(["/usr/sbin/vgchange", "-ay", area.vg], f"activate {area.vg}")
-            for lv in area.lvs:
+            vg_extents = layout_policy.estimate_vg_extents(layout[0][2])
+            if not self.actions.dry_run:
+                try:
+                    vg_extents = int(self._run(
+                        ["/usr/sbin/vgs", "--noheadings", "-o", "vg_extent_count", area.vg]
+                    ).split()[0])
+                except (ActionError, ValueError, IndexError) as exc:
+                    raise InstallerError(f"cannot read the extent count of volume group {area.vg}: {exc}") from exc
+            try:
+                lv_plans = layout_policy.plan_lvs(area, vg_extents)
+            except layout_policy.LayoutPolicyError as exc:
+                raise InstallerError(str(exc)) from exc
+            for lv in lv_plans:  # fixed and percent LVs first, the "*" LV last (it takes what is left)
                 if lv.name not in have:
                     self._run(
-                        ["/usr/sbin/lvcreate", "-y", "-n", lv.name, "-L", f"{lv.size_gb}G", area.vg],
+                        ["/usr/sbin/lvcreate", "-y", "-n", lv.name, *lv.args, area.vg],
                         f"lvcreate {area.vg}/{lv.name}", dangerous=True,
                     )
             self._run(["/usr/bin/udevadm", "settle"], "wait for LV device nodes")
-            for lv in area.lvs:
+            for lv in area.volumes:
                 if lv.fs == "none":
-                    continue  # left unformatted on purpose (e.g. for zfs, which is not managed here)
+                    continue  # left unformatted on purpose (e.g. for a hand-made zfs pool)
                 lv_device = f"/dev/{area.vg}/{lv.name}"
                 self._ensure_data_filesystem(lv_device, lv.fs, lv.label)
                 mounts.append((lv_device, lv.mount or "", lv.fs))
+        mounts.sort(key=lambda item: item[1])  # parents before children in fstab
         wanted = {mount for _source, mount, _fs in mounts}
         retained = [
             line for line in self._read_fstab_lines()
@@ -3917,15 +3913,15 @@ MaxFileSec=1month
                 self._run(["/usr/bin/mount", mount], f"mount {mount}", dangerous=True)
         self._mark_step(
             "data_area", "planned" if self.actions.dry_run else "success",
-            f"{area.mode} on {device}: " + ", ".join(f"{mount} ({fs})" for _s, mount, fs in mounts),
+            f"{area.kind} on {device}: " + ", ".join(f"{mount} ({fs})" for _s, mount, fs in mounts),
         )
 
     def _grow_root_to_plan(self) -> None:
         """Grow the root partition/filesystem after its final boundary is present."""
         _disk_sectors, root_start, current_size = self._disk_facts()
         _partitions, target_size, _shrink_needed = self._resolve_swap_plan()
-        if self.config.root_resize_policy == "untouched":
-            self._mark_step("root_resize", "not_needed", "root_resize_policy=untouched")
+        if self._root_policy() == "untouched":
+            self._mark_step("root_resize", "not_needed", "root is untouched (root_resize_policy=untouched or partitioning.root=keep)")
             return
         if current_size > target_size:
             raise InstallerError(
@@ -3959,13 +3955,13 @@ MaxFileSec=1month
                 and int(entry["start"]) >= root_start + current_size
             ]
             boundary_now = min(next_starts) if next_starts else disk_sectors_now
-            if boundary_now - root_start > target_size + 2048 and not self.actions.dry_run:
-                # Unallocated space (cow area + reserve) separates root from
-                # swap: growpart would swallow it. Resize to exactly the plan.
+            if boundary_now - root_start >= target_size and not self.actions.dry_run:
+                # The plan's final root end is known exactly (the data area or a reserve starts there; growpart would
+                # stop at the same place or swallow a reserve): resize to exactly the plan.
                 self._run(
                     ["/usr/sbin/sfdisk", "--no-reread", "--no-tell-kernel", "-N", str(self.root_number),
                      f"/dev/{self.root_disk}"],
-                    "grow root partition to the planned size (unallocated space follows)",
+                    "grow root partition to the planned size",
                     dangerous=True,
                     input=f",{target_size}\n",
                 )
@@ -4799,6 +4795,15 @@ MaxFileSec=1month
         if self.config.swap_policy == "off":
             if existing_swap:
                 return False
+            if self._data_area_cfg().partition_count:
+                before_root = self._partitions_before_root(live, root_start)
+                for number, start, size in self._data_area_layout([], before_root):
+                    entry = live.get(number, {})
+                    if not (
+                        self._is_data_partition(entry)
+                        and entry.get("start") == str(start) and entry.get("size") == str(size)
+                    ):
+                        return False
             self._mark_step("partitions", "success", "no swap-type partitions remain on the root disk")
             return True
 
@@ -4829,9 +4834,7 @@ MaxFileSec=1month
         }
         if actual != expected:
             return False
-        data_layout = self._data_area_layout(planned_partitions, before_root)
-        if data_layout is not None:
-            number, start, size = data_layout
+        for number, start, size in self._data_area_layout(planned_partitions, before_root):
             entry = live.get(number, {})
             if not (
                 self._is_data_partition(entry)
@@ -4868,7 +4871,7 @@ MaxFileSec=1month
 
     def _configure_root_cap_boot_guards(self) -> None:
         """Keep cloud-init and initramfs from growing a capped root later."""
-        if self._root_cap_gb() is None:
+        if not self._root_guarded():
             return
         self.actions.write_file(
             "/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg",
@@ -4923,7 +4926,7 @@ MaxFileSec=1month
         self._grow_root_to_plan()
         self._configure_root_cap_boot_guards()
         self._activate_swap_partitions()
-        if self.config.data_area != "none":
+        if self._data_area_cfg().kind != "none":
             self._configure_data_area()
         self._health_gate_swap_devices()
         # While the host is still idle (apt timers not released yet, no workload

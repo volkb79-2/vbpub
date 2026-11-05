@@ -179,13 +179,10 @@ keys `root_resize_policy` and `swap_policy` control them independently. By
 default, `root_resize_policy: "resize"` sizes the ext root partition to the
 largest safe extent after the configured swap area; it may grow online or
 shrink offline in an initramfs pre-mount hook. `grow-only` can use available
-space but never shrinks root. `untouched` forbids root geometry changes.
-Set `root_max_size_gb` to cap the root partition while keeping the space
-between root and the end-of-disk swap unallocated for a later data (cow)
-partition. A cap requires `swap_policy: "on"` and at least one managed tail swap
-partition; swap is always placed at the END of the disk (see
-[Disk layout policy](#disk-layout-policy)). This limit is not a request to
-format or mount that space. See the
+space but never shrinks root. `untouched` forbids root geometry changes. These two knobs describe plain root
+growth; to size root, create a data area or keep space free, use the single
+`partitioning` object instead (see [Disk layout](#disk-layout)). Swap is always
+placed at the END of the disk. See the
 [root sizing design](docs/DESIGN-GUIDE.md#root-and-swap-policies) and the
 [consumer example](docs/CONSUMERS.md#root-and-swap-policy).
 
@@ -234,13 +231,14 @@ The default root and swap layout settings are:
 }
 ```
 
-To cap root and choose a fixed managed swap size, use:
+To give root a fixed size, keep the rest free on purpose, and choose a fixed
+managed swap size, use `partitioning` (root 40 GiB, `reserve_gb: "*"` = the rest
+stays unallocated):
 
 ```json
 {
   "schema_version": 1,
-  "root_resize_policy": "resize",
-  "root_max_size_gb": 40,
+  "partitioning": {"root": 40, "reserve_gb": "*"},
   "swap_policy": "on",
   "swap_disk_total_gb": 8,
   "swap_partition_count": 4,
@@ -248,23 +246,17 @@ To cap root and choose a fixed managed swap size, use:
 }
 ```
 
-`root_max_size_gb` is an optional upper bound in GiB. With `resize`, a larger
-current root is shrunk safely and a smaller root can grow up to the cap. The
-cap must be at least `preserve_root_size_gb`. `grow-only` and `untouched`
-refuse a current root larger than the cap because honoring it would require a
-shrink. A cap requires `swap_policy: "on"` and at least one managed tail swap
-partition at the end of the disk, with the gap after root left
-unallocated. Swap off, untouched swap, or a plan where retained pre-root swap
-needs no tail partition is refused. A cap below the layout minimum
-(`min_root_gib`, below) is refused. Stage-two growth resizes root to exactly the
-plan when unallocated space follows it (`growpart` would consume the gap). The cap measures root
-partition length from its existing start, so a non-MiB-aligned start does not
-reduce the configured limit. When a cap is set, stage one installs and stage
-two repeats guards against automatic root growth by writing
-`/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
-`growpart: {mode: off}` and `resize_rootfs: false`, and creating
-`/etc/growroot-disabled` for initramfs growroot. The remaining space after
-root and managed swap stays unallocated across later boots.
+With a `partitioning` plan the root behaviour is derived from `partitioning.root`
+(`"keep"` = untouched; a size, a percent or `"*"` = resize: a larger current root
+is shrunk safely, a smaller one grows to the planned size) and
+`root_resize_policy` must not be set. A plan needs `swap_policy` `on` (swap at
+the end of the disk) or `off` (the pool ends at the disk end); `untouched` swap
+is refused. Stage-two growth resizes root to exactly the plan (`growpart` would
+consume a following gap). When the plan fixes the root size (anything but
+`"*"`), stage one installs and stage two repeats guards against automatic root
+growth by writing `/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg`
+with `growpart: {mode: off}` and `resize_rootfs: false`, and creating
+`/etc/growroot-disabled` for initramfs growroot.
 
 When `swap=on` cannot fit without shrinking, `root=untouched` and
 `root=grow-only` fail with the requested and available space rather than
@@ -289,141 +281,90 @@ added/removed/changed partition-number ranges. See the
 [root/swap design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies) and
 [adoption examples](docs/CONSUMERS.md#root-and-swap-policy).
 
-### Disk layout policy
+### Disk layout
 
 ```
-ESP | /boot | root (ext4) | [unallocated: cow area + reserve] | swap (END of disk)
+[pre-root partitions] | root | DATA PARTITION(S) or one LVM PV | [reserve] | swap (END of disk)
 ```
 
-Rules the planner enforces (`debian_install_v2/layout_policy.py`; hermetic tests
-in `tests/test_layout_policy.py`):
-
-- **Swap is last.** Swap partitions (or swap files, when a layout uses them)
-  sit at the very end of the disk, after every other allocation. Swap is the one
-  area that never needs to grow, so it must not stand between root, the cow
-  partition and free space: a partition cannot grow past its right neighbour, and
-  moving swap means a swapoff plus table rewrite on a live host. The planner
-  refuses any plan in which a non-swap partition follows the first swap or more
-  than 2 MiB of the disk follows the last swap. The original r1002/v1001 layout
-  (40 GiB root, swap in the middle, 455 GiB cow behind it) could never grow root
-  or cow and filled root at 91-97%.
-- **Root has a minimum.** `min_root_gib(disk) = clamp(20% of disk, 8, 100)` GiB
-  (100 GiB on 512 GiB). It is enforced for a capped root, for `dev-host`, and for
-  a `full-root` plan in which the installer itself shrinks root to make room for
-  managed swap (`swap_policy=on`, `root_resize_policy=resize`). It is not judged
-  for `root_resize_policy=untouched` or a root the installer leaves as it is.
-  `root_max_size_gb` below the minimum is a plan-time error (breaking change,
-  see CHANGES.md): remove it and use `"disk_layout": "dev-host"`.
-- **`untouched` / `grow-only` with `swap_policy=on`:** swap now goes to the END
-  of the disk, so a gap appears between root and swap where swap used to follow
-  root directly. The gap is never formatted by the installer.
-- **Alignment:** 1 MiB (2048 sectors), a 1 MiB end buffer, partition order
-  ESP, `/boot`, root, free gap, swap. Swap partition numbers follow root
-  (`root+1..`); the cow partition is created last by `provision-runner.sh` and
-  gets whatever number parted assigns (the script finds it by its `MDT_COW`
-  label, not by number).
-- **Gap, not a data partition, by default.** The installer does not format
-  anything it does not own: the unallocated gap is carved into the Btrfs cow
-  partition by `scripts/netcup/runner/provision-runner.sh` (`COW_SIZE_GIB`,
-  default a third of the disk), placed at the END of the gap (directly before
-  swap). The remainder is unallocated reserve directly BEHIND ROOT: root grows
-  into it (`sfdisk -N` + `resize2fs`, no data move) and cow, a disposable
-  cache, is re-created larger or extended by a second btrfs device. So neither
-  root nor cow is ever boxed in by swap. Final order:
-  `ESP | /boot | root | reserve | cow | swap`.
-
-`disk_layout: "dev-host"` selects the dev/test host sizing (default
-`"full-root"` keeps root = everything not swap):
-
-| Disk | root | cow (btrfs) | swap | reserve |
-| ---: | ---: | ---: | ---: | ---: |
-| 512 GiB (Netcup RS 4000 test hosts) | 160 GiB | 168 GiB | 16 GiB (auto: min(2 x RAM, 20%)) | ~166 GiB |
-
-Rule: root = 5/16 of the disk in 8 GiB steps, clamped to 24..200 GiB; cow = 1/3
-of the disk in 8 GiB steps; swap = the existing auto rule; reserve = the rest.
-Reasoning for 512 GiB: measured need on a test host is docker 27 GB (images and
-layers) plus build cache, runner checkouts, logs and the campaign directories, so
-160 GiB leaves 3-4x headroom and about 50% free at the observed footprint (the old
-40 GiB root sat at 91-97%). Cow trees for parallel candidates are ~170-250 MB per
-worker, so 168 GiB is generous; it is a third of the disk because that was the
-operator's sizing and it keeps IO away from a nearly full disk (hoster VMs slow to
-~6 MB/s as the disk fills, so a large permanent reserve stays unwritten, which also
-keeps the thin-provisioned backing storage unused). `root_max_size_gb` overrides
-the root size (still checked against the minimum). Set via
-`"disk_layout": "dev-host"` in the config.
-
-#### Data area (`data_area = none | partition | lvm`)
-
-The cow area no longer has to be carved after the install. With `data_area` the
-installer creates the data partition itself, in the same partition-table
-transaction as swap, directly in front of swap:
+The layout depends ONLY on the config: the single `partitioning` object plus the
+`swap_*` keys. There is no rule-based sizing and no hidden reserve. Design,
+algorithm and exact refusal messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
+Tests: `tests/test_layout_policy.py` (pure planner, properties), `tests/test_data_area.py`
+(installer), `tests/test_data_area_vm.py` (real loop disk in the `r1-vm-real-commit` VM lane).
 
 ```
-ESP | /boot | root | reserve (unallocated) | DATA AREA | swap (END)
+{"partitioning": {
+  "root": "*" | "keep" | 160 | "40%",
+  "reserve_gb": 0 | 25 | "*",
+  "data": {"kind": "partitions" | "lvm", "vg": "vg_data", "pv_size": "*" | 200 | "60%",
+           "vg_free_gib": 0,
+           "volumes": [{"name": "cow", "size": "*", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}}}
 ```
 
-| `data_area` | what is created |
-| --- | --- |
-| `none` (default) | nothing; the gap stays unallocated and `scripts/netcup/runner/cow-carve.sh` may carve a cow partition after install (unchanged) |
-| `partition` | one GPT partition (PARTLABEL = `label`) with one filesystem `btrfs`/`ext4`/`xfs`, mounted at `mount` |
-| `lvm` | one GPT partition (PARTLABEL `MDT_LVM_PV`) used as the only PV of one VG, with the listed LVs; VG free space is left for later `lvcreate`/`lvextend` |
+- **Sizes** are an integer GiB, a percent string (`"40%"`, 0-100, two decimals) or `"*"`
+  (the remainder). An omitted size is `"*"`. Exactly ONE `"*"` per plan (root, a
+  data partition or the PV, or `reserve_gb: "*"`); without a `"*"` the entries must be
+  percentages adding up to 100%. Percent is a share of the POOL = from the end of the
+  pre-root partitions to the first swap, less a fixed `reserve_gb`. Mixing percent and
+  fixed sizes without a `"*"` is refused as ambiguous. Swap is defined separately and is
+  subtracted first. The whole disk is accounted for (only the 1 MiB head and end
+  buffers remain); a plan that leaves space over is refused with the fix computed
+  (`set volume[0] to "*" (it becomes N GiB), or set reserve_gb to "*"`).
+- **`root`**: `"keep"` leaves the current size (no grow, no shrink); a size, percent or
+  `"*"` resizes (shrinking uses the existing offline path and safety checks). There is no
+  `root_resize_policy` with a plan. Root must be at least `preserve_root_size_gb`.
+- **`reserve_gb`**: default 0. A number or `"*"` keeps that much unallocated directly in
+  front of swap on purpose (usable later for another partition; root cannot grow into it).
+- **`data.kind = "partitions"`**: one GPT partition per volume `{size, fs, mount, label}`,
+  `fs` is `btrfs`, `ext4`, `xfs` or `none` (a raw partition; `type: "zfs"` sets the ZFS
+  GPT type for a hand-made pool). `label` is required and unique (it is the GPT partition
+  name used to recognise the partition on a rerun, and the filesystem label). `mount` is the
+  filesystem top level. Minimums: btrfs/xfs 512 MiB, ext4 64 MiB.
+- **`data.kind = "lvm"`**: one PV partition (`pv_size`, default `"*"`, at least 2 GiB, GPT
+  name `MDT_LVM_PV`), one VG `vg`, and LVs `{name, size, fs, mount, label}` (`fs` default
+  `none`). LV sizes: `N` GiB (`-L`), `"P%"` of the whole VG (`-l` extents) or `"*"`
+  (`-l 100%FREE`, created last whatever the config order). `vg_free_gib` (default 0) is kept
+  free in the VG for `lvextend`; without a `"*"` LV the rest of the VG stays free.
+- **Numbering follows disk position**: partitions after root ascend with their start sector,
+  root, then the data partitions in config order, then the swaps. Pre-root partitions keep
+  the numbers they have (a cloud image has root = 1 and 14/15 before it). Find volumes by
+  label, never by number.
+- **Not supported**: `fs: zfs` as a managed filesystem (refused with a clear message; deferred),
+  btrfs `subvol`. Mounts on `/`, `/boot`, `/etc`, `/usr` and other system trees,
+  `/srv/tree-cache` and `/srv/tree-upper` are refused; equal or nested mounts are refused.
+- **Safety**: `mkfs`/`pvcreate` only touch a BLANK device (the same filesystem again is kept, any
+  other signature is refused); fstab uses `UUID=` and `nofail` (btrfs `noatime,user_subvol_rm_allowed`),
+  a mount that holds `/var/lib/docker` also gets `x-systemd.required-by=docker.service`; another
+  device with the same label is refused; a `blkid` failure other than "no signature" is never
+  treated as blank; a rerun that would delete or move a data partition holding a signature is
+  refused (no wipe override: `wipefs -a` by hand on an empty host). The table is written in
+  ONE crash-safe transaction after any root shrink and before root growth; the plan is a pure
+  function of (config, disk size, root start), so a resume recomputes it.
+- Runner integration: `provision-runner.sh` finds an installer-created cow by label
+  (`MDT_COW`, a partition or an LV listed by `lsblk` as `/dev/mapper/<vg>-<lv>`) and does NOT
+  carve a second one. It refuses a non-btrfs cow and a cow mounted somewhere other than `COW_MOUNT`.
+- The keys `root_max_size_gb`, `disk_layout`, `data_area`, `data_partition`, `data_lvm` were removed
+  (no migration): a config containing them is refused with a pointer to `partitioning`.
 
-`data_partition` keys (all optional, defaults give the 512 GiB layout): `fs`
-(`btrfs`), `size_gb` or `size_fraction` (`"1/3"` of the disk in 8 GiB steps, 168
-GiB on 512), `mount` (`/srv/cow`), `label` (`MDT_COW`, max 12 characters). With
-`disk_layout: "dev-host"` and `"data_area": "partition"` the 512 GiB numbers are
-root 160, data 168, swap 16, about 166 GiB reserve, as in the table above.
-
-`data_lvm` keys: `vg` (required), `pv_size_gb` or `pv_size_fraction` (default
-`"1/3"`) for the PV partition, `lvs`: list of `{name, size_gb, fs, mount, label}`
-with `fs` `btrfs`/`ext4`/`xfs` (needs `mount`; `label` optional) or `none` (an
-unformatted LV, e.g. for ZFS: zfs is NOT a managed filesystem). Example:
+Examples (512 GiB host, swap 4 x 4 GiB):
 
 ```json
-{"schema_version": 1, "disk_layout": "dev-host", "data_area": "lvm",
- "data_lvm": {"vg": "vg_data", "pv_size_gb": 200, "lvs": [
-   {"name": "cow", "size_gb": 120, "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
-   {"name": "spare", "size_gb": 40, "fs": "none"}]}}
+{"schema_version": 1, "swap_disk_total_gb": 16, "swap_partition_count": 4,
+ "partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [
+   {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}}}
 ```
 
-Rules (config validation and planner; `tests/test_data_area.py`):
+```json
+{"schema_version": 1, "swap_disk_total_gb": 16, "swap_partition_count": 4,
+ "partitioning": {"root": 100, "data": {"kind": "lvm", "vg": "vg_data", "volumes": [
+   {"name": "cow", "size": "60%", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+   {"name": "scratch", "fs": "xfs", "mount": "/srv/scratch", "label": "SCRATCH"}]}}}
+```
 
-- Needs `swap_policy=on` (managed tail swap), `root_resize_policy=resize` and a
-  capped root (`disk_layout=dev-host` or `root_max_size_gb`); otherwise the data
-  area has no guaranteed gap and the configuration is refused. Swap stays the last
-  allocation, the data area ends where swap starts, the reserve stays between
-  root and the data area, so root remains growable (root minimum applies as before).
-- Refused: unknown keys, a filesystem other than btrfs/ext4/xfs (LV: or `none`),
-  relative/nested/duplicate mount points, mounts on `/`, `/boot`, `/etc`, `/usr`
-  and other system trees, duplicate LV names or labels, LV sizes above the PV
-  (less 1 GiB LVM metadata), LV sizes that leave no free VG space, and a data
-  area that does not fit between root and swap.
-- Safety: `data_partition.label` must be `MDT_COW`; `/srv/tree-cache` and `/srv/tree-upper` are refused as mounts;
-  partition mode writes `UUID=` to fstab and refuses when another device carries the same label; a `blkid` failure
-  other than "no signature" (exit 2) is never treated as blank; a rerun that would delete, renumber or resize a data
-  partition holding a signature (e.g. changed swap count) is refused; there is no wipe override (remedy: `wipefs -a`
-  by hand on the data partition of an empty host, see the reinstall runbook).
-- `lvm2`, `btrfs-progs` and/or `xfsprogs` are installed in stage two exactly when
-  the chosen layout needs them.
-- Stage two runs after swap activation. `mkfs`/`pvcreate` only touch a BLANK
-  device; the same filesystem again is kept (re-runs converge), any other
-  signature, or a VG that lives on other PVs, is refused. The fstab entries use
-  `nofail`; btrfs gets `noatime,user_subvol_rm_allowed` (what the runner's cow
-  expects). Partition number: the first free number after the swap partitions;
-  find the volume by label, never by number.
-- Runner integration: `provision-runner.sh` finds an installer-created cow by
-  label (`PARTLABEL=MDT_COW`, or a partition/LV whose filesystem label is
-  `MDT_COW`; an LV is listed by `lsblk` under its PV as `/dev/mapper/<vg>-<lv>`)
-  and does NOT carve a second one. It refuses a non-btrfs cow, and a cow mounted
-  somewhere other than `COW_MOUNT`.
-- Reserve behaviour: the reserve (disk - boot - root - data - swap) is never
-  allocated by the installer. Grow root into it (`sfdisk -N` + `resize2fs`) or
-  create/extend things by hand; with `lvm`, free space inside the PV is the other
-  reserve.
-- No installer ref before this change knows `data_area`; a bundle that sets it
-  needs the matching branch. `install-host.py` needs no change: the keys travel in
-  the customScript config (`VBPUB_CONFIG_EXTRA_JSON`) built by
-  `debian-install-v2.py build-customscript`.
+Swap rules (unchanged): swap is the LAST allocation on the disk; the planner refuses a plan in
+which a non-swap partition follows the first swap or more than 2 MiB follows the last swap.
+Alignment is 1 MiB with a 1 MiB end buffer.
 
 ### zswap
 

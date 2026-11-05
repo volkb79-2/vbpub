@@ -71,7 +71,7 @@ elif test -b "$COW_DEVICE" && test "$(lsblk -dn -o PKNAME "$COW_DEVICE")" = "$(b
   # legacy: an unlabelled partition at the configured device; the filesystem checks below refuse anything foreign
   :
 else
-  # The debian-install-v2 layout (disk_layout=dev-host) leaves the cow area + reserve UNALLOCATED between root and
+  # A debian-install-v2 plan with reserve_gb "*" and no data area leaves the cow area + reserve UNALLOCATED between root and
   # the END-of-disk swap, so the cow partition is carved from the LARGEST free row (never the last row, which is a
   # sliver after swap), ends at the row end, and takes COW_SIZE_GIB (default: a third of the disk, 8 GiB steps,
   # capped to the row). The rest stays unallocated reserve directly behind root.

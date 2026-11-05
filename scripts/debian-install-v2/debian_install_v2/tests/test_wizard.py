@@ -146,7 +146,9 @@ def test_wizard_exposes_independent_disk_policies_and_auto_swap_size():
         for field in section.fields
     }
     assert fields_by_name["root_resize_policy"].choices == ("resize", "untouched", "grow-only")
-    assert fields_by_name["root_max_size_gb"].kind == "optional-integer"
+    assert fields_by_name["partitioning"].kind == "json"
+    for removed in ("root_max_size_gb", "disk_layout", "data_area", "data_partition", "data_lvm"):
+        assert removed not in fields_by_name
     assert fields_by_name["swap_policy"].choices == ("on", "off", "untouched")
     assert fields_by_name["swap_disk_total_gb"].kind == "optional-integer"
 

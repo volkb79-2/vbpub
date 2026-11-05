@@ -1,8 +1,13 @@
-"""Hermetic tests for the flexible data area (data_area = none | partition | lvm)."""
+"""Hermetic installer-level tests for the `partitioning` plan: numbering, sfdisk plan, stage-two commands.
+
+Every argv goes through the production HostActions._validate (dry-run HostActions, FakeActions below, or
+argv_guard). Pure planner/schema tests are in test_layout_policy.py; the real loop-device proof is test_data_area_vm.py.
+"""
 
 from __future__ import annotations
 
 import json
+import random
 import shlex
 
 import pytest
@@ -14,215 +19,231 @@ from debian_install_v2.customscript import build_customscript_bundle
 from debian_install_v2.disk_layout import GIB
 from debian_install_v2.installer import Installer, InstallerError
 
+from .argv_guard import validate_argv
 from .test_disk_policy import make_planner
 
 S = lp.SECTORS_PER_GIB
-LVM_CFG = {
-    "vg": "vg_data",
-    "pv_size_gb": 200,
-    "lvs": [
-        {"name": "cow", "size_gb": 120, "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
-        {"name": "spare", "size_gb": 40, "fs": "none"},
-    ],
+LINUX = "0fc63daf-8483-4772-8e79-3d69d8477de4"
+SWAP = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
+
+COW = {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}
+ROOT160_DATA_STAR = {"root": 160, "data": {"kind": "partitions", "volumes": [COW]}}
+LVM_PLAN = {
+    "root": 160,
+    "data": {"kind": "lvm", "vg": "vg_data", "volumes": [
+        {"name": "cow", "size": "60%", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+        {"name": "spare", "fs": "none"},
+    ]},
 }
+TWO_PARTS = {"root": 100, "data": {"kind": "partitions", "volumes": [
+    {"size": 200, "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+    {"fs": "xfs", "mount": "/srv/scratch", "label": "SCRATCH"},
+]}}
 
 
-def _set(installer: Installer, **values) -> None:
-    for key, value in values.items():
-        object.__setattr__(installer.config, key, value)
-
-
-# ---------------------------------------------------------------- validation
-
-def test_default_partition_is_the_512_gib_layout():
-    area = lp.parse_data_area("partition", None, None)
-    assert (area.fs, area.mount, area.label) == ("btrfs", "/srv/cow", "MDT_COW")
-    rec = lp.recommended_layout(512, 16)
-    assert (rec.root_gib, rec.cow_gib, rec.swap_gib) == (160, 168, 16)
-    assert lp.data_area_size_gib(area, 512) == rec.cow_gib == 168
-    disk = 512 * S
-    swap_start = disk - 2048 - 16 * S
-    plan = lp.plan_data_area(area, disk_sectors=disk, root_end=2048 + 160 * S, first_swap_start=swap_start)
-    assert plan.size == 168 * S
-    assert plan.start + plan.size <= swap_start
-    assert plan.reserve_sectors > 150 * S  # the reserve stays between root and data
-
-
-@pytest.mark.parametrize(
-    ("mode", "partition", "lvm", "message"),
-    [
-        ("zfs", None, None, "none, partition or lvm"),
-        ("partition", {"fs": "zfs"}, None, "fs must be one of"),
-        ("partition", {"fs": "ntfs"}, None, "fs must be one of"),
-        ("partition", {"mount": "srv/cow"}, None, "absolute path"),
-        ("partition", {"mount": "/srv/cow/"}, None, "trailing slash"),
-        ("partition", {"mount": "/"}, None, "system tree"),
-        ("partition", {"mount": "/boot/data"}, None, "system tree"),
-        ("partition", {"mount": "/srv/../etc"}, None, "dot segments"),
-        ("partition", {"label": "THIS_LABEL_IS_TOO_LONG"}, None, "label"),
-        ("partition", {"label": "OTHER"}, None, "label must be MDT_COW"),
-        ("partition", {"mount": "/srv/tree-cache"}, None, "system tree"),
-        ("partition", {"mount": "/srv/tree-upper/x"}, None, "system tree"),
-        ("lvm", None, {"vg": "v", "lvs": [{"name": "a", "size_gb": 1, "fs": "ext4", "mount": "/srv/tree-cache"}]}, "system tree"),
-        ("partition", {"size_gb": 0}, None, "integer GiB"),
-        ("partition", {"size_gb": 100, "size_fraction": "1/3"}, None, "not both"),
-        ("partition", {"size_fraction": "3/2"}, None, "fraction"),
-        ("partition", {"bogus": 1}, None, "unknown key"),
-        ("lvm", None, None, "requires data_lvm"),
-        ("lvm", None, {"vg": "v", "lvs": []}, "non-empty list"),
-        ("lvm", None, {"vg": "bad name", "lvs": [{"name": "a", "size_gb": 1, "fs": "none"}]}, "volume group"),
-        ("lvm", None, {"vg": "v", "lvs": [{"name": "a", "size_gb": 1, "fs": "zfs"}]}, "zfs is not managed"),
-        ("lvm", None, {"vg": "v", "lvs": [{"name": "a", "size_gb": 1, "fs": "ext4"}]}, "needs a mount point"),
-        ("lvm", None, {"vg": "v", "lvs": [{"name": "a", "size_gb": 1, "fs": "none", "mount": "/x"}]}, "takes no mount"),
-        (
-            "lvm", None,
-            {"vg": "v", "lvs": [
-                {"name": "a", "size_gb": 1, "fs": "ext4", "mount": "/srv/a"},
-                {"name": "a", "size_gb": 1, "fs": "ext4", "mount": "/srv/b"},
-            ]},
-            "used twice",
-        ),
-        (
-            "lvm", None,
-            {"vg": "v", "lvs": [
-                {"name": "a", "size_gb": 1, "fs": "ext4", "mount": "/srv/a"},
-                {"name": "b", "size_gb": 1, "fs": "xfs", "mount": "/srv/a"},
-            ]},
-            "mount point collision",
-        ),
-        (
-            "lvm", None,
-            {"vg": "v", "lvs": [
-                {"name": "a", "size_gb": 1, "fs": "ext4", "mount": "/srv"},
-                {"name": "b", "size_gb": 1, "fs": "xfs", "mount": "/srv/b"},
-            ]},
-            "mount point collision",
-        ),
-    ],
-)
-def test_parse_refusals(mode, partition, lvm, message):
-    with pytest.raises(lp.LayoutPolicyError, match=message):
-        lp.parse_data_area(mode, partition, lvm)
-
-
-def test_lvm_sizes_must_fit_the_pv_and_leave_free_vg_space():
-    disk = 512 * S
-    swap_start = disk - 2048 - 16 * S
-    kwargs = {"disk_sectors": disk, "root_end": 2048 + 160 * S, "first_swap_start": swap_start}
-    ok = lp.parse_data_area("lvm", None, LVM_CFG)
-    plan = lp.plan_data_area(ok, **kwargs)
-    assert plan.size == 200 * S
-    assert plan.lv_free_gib == 200 - lp.LVM_METADATA_GIB - 160
-    too_big = {**LVM_CFG, "lvs": [{**LVM_CFG["lvs"][0], "size_gb": 200}]}
-    with pytest.raises(lp.LayoutPolicyError, match="exceed the physical volume"):
-        lp.plan_data_area(lp.parse_data_area("lvm", None, too_big), **kwargs)
-    exact = {**LVM_CFG, "lvs": [{**LVM_CFG["lvs"][0], "size_gb": 200 - lp.LVM_METADATA_GIB}]}
-    with pytest.raises(lp.LayoutPolicyError, match="no free VG space"):
-        lp.plan_data_area(lp.parse_data_area("lvm", None, exact), **kwargs)
-
-
-def test_data_area_must_fit_between_root_and_swap():
-    disk = 512 * S
-    area = lp.parse_data_area("partition", {"size_gb": 400}, None)
-    with pytest.raises(lp.LayoutPolicyError, match="does not fit"):
-        lp.plan_data_area(area, disk_sectors=disk, root_end=2048 + 160 * S, first_swap_start=disk - 2048 - 16 * S)
-
-
-def test_config_prereqs_swap_at_end_and_capped_root():
-    base = {"data_area": "partition"}
-    with pytest.raises(ConfigError, match="capped root"):
-        load_config(raw_json=json.dumps(base))
-    with pytest.raises(ConfigError, match="swap_policy=on"):
-        load_config(raw_json=json.dumps({**base, "disk_layout": "dev-host", "swap_policy": "untouched"}))
-    with pytest.raises(ConfigError, match="swap_policy=on"):
-        load_config(raw_json=json.dumps({"data_area": "lvm", "data_lvm": LVM_CFG, "root_max_size_gb": 100, "swap_policy": "off"}))
-    with pytest.raises(ConfigError, match="root_resize_policy=resize"):
-        load_config(raw_json=json.dumps({**base, "root_max_size_gb": 100, "root_resize_policy": "grow-only"}))
-    ok = load_config(raw_json=json.dumps({**base, "disk_layout": "dev-host"}))
-    assert ok.data_area == "partition"
-    assert load_config(raw_json="{}").data_area == "none"
-
-
-# ---------------------------------------------------------------- packages
-
-def test_package_set_follows_the_choice():
-    assert lp.data_area_packages(lp.parse_data_area("none", None, None)) == []
-    assert lp.data_area_packages(lp.parse_data_area("partition", None, None)) == ["btrfs-progs"]
-    assert lp.data_area_packages(lp.parse_data_area("partition", {"fs": "xfs"}, None)) == ["xfsprogs"]
-    assert lp.data_area_packages(lp.parse_data_area("partition", {"fs": "ext4"}, None)) == ["util-linux"]
-    assert lp.data_area_packages(lp.parse_data_area("lvm", None, LVM_CFG)) == ["lvm2", "btrfs-progs"]
-
-
-# ---------------------------------------------------------------- planner
-
-def _planner(tmp_path, mode="partition", partition=None, lvm=None):
-    installer = make_planner(
-        tmp_path, disk_gib=512, root_gib=500, swap_disk_total_gb=16, swap_partition_count=4,
+def _planner(tmp_path, partitioning=None, *, swap_count=4, swap_total=16, **kw):
+    return make_planner(
+        tmp_path, disk_gib=512, root_gib=500, swap_disk_total_gb=swap_total, swap_partition_count=swap_count,
+        partitioning=partitioning or ROOT160_DATA_STAR, **kw,
     )
-    _set(installer, disk_layout="dev-host", data_area=mode, data_partition=partition or {}, data_lvm=lvm or {})
-    return installer
 
 
-def test_sfdisk_plan_places_root_reserve_data_swap_in_that_order(tmp_path):
-    installer = _planner(tmp_path)
+def _table(installer):
+    """Plan, write the sfdisk plan and return (entries by number, swap extents, root size)."""
     swap, root = installer._plan_swap_partitions()
+    entries = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, root))
+    return entries, swap, root
+
+
+def _assert_numbers_follow_disk_position(entries):
+    ordered = sorted(entries, key=lambda number: int(entries[number]["start"]))
+    assert ordered == sorted(entries), f"numbers do not follow disk position: {ordered}"
+
+
+def _assert_whole_disk_used(entries, disk_sectors, root_start):
+    """Every partition after root touches the next one, and the last ends at the 1 MiB end buffer."""
+    tail = sorted((e for n, e in entries.items() if int(e["start"]) >= root_start), key=lambda e: int(e["start"]))
+    for first, second in zip(tail, tail[1:]):
+        assert int(first["start"]) + int(first["size"]) == int(second["start"]), "gap inside the plan"
+    assert disk_sectors - (int(tail[-1]["start"]) + int(tail[-1]["size"])) <= lp.SWAP_END_SLACK_SECTORS
+
+
+# ---------------------------------------------------------------- numbering and geometry (the v1001 bug)
+
+def test_root_160_data_star_numbers_follow_disk_position_and_leave_no_gap(tmp_path):
+    installer = _planner(tmp_path)
+    entries, swap, root = _table(installer)
     assert root * 512 == 160 * GIB
-    plan = installer._write_sfdisk_plan(swap, root)
-    entries = installer._parse_partition_entries(plan)
-    data = [e for e in entries.values() if e.get("name") == "MDT_COW"]
-    assert len(data) == 1
-    start, size = int(data[0]["start"]), int(data[0]["size"])
-    assert size == 168 * S
-    assert data[0]["type"].upper() == lp.LINUX_FS_TYPE_GUID
-    root_entry = entries[3]
-    assert int(root_entry["start"]) + int(root_entry["size"]) < start  # reserve in between
-    assert start + size <= swap[0][0]
-    assert swap[0][0] - (start + size) < 4096  # data sits directly in front of swap
-    numbers = sorted(entries)
-    assert len(numbers) == len(set(numbers)) and 3 in numbers
-    disk_sectors = 512 * S
-    assert disk_sectors - (swap[-1][0] + swap[-1][1]) <= lp.SWAP_END_SLACK_SECTORS  # swap stays last
+    assert sorted(entries) == [3, 4, 5, 6, 7, 8]  # root 3, data 4, swaps 5-8 (v1001 had data 8 behind 4-7)
+    data = entries[4]
+    assert data["name"] == "MDT_COW" and data["type"].upper() == lp.LINUX_FS_TYPE_GUID
+    assert [entries[n]["type"].lower() for n in (5, 6, 7, 8)] == [SWAP] * 4
+    assert int(entries[3]["start"]) + int(entries[3]["size"]) == int(data["start"])  # no hole behind root
+    _assert_numbers_follow_disk_position(entries)
+    _assert_whole_disk_used(entries, 512 * S, int(entries[3]["start"]))
+    assert int(data["size"]) > 330 * S  # the data area took the remainder, not 1/3
     installer._validate_plan_geometry(installer._parse_partition_entries(
         installer._current_partition_dump(2048, 500 * S)), entries, root)
 
 
-def test_sfdisk_plan_lvm_uses_pv_type_and_label(tmp_path):
-    installer = _planner(tmp_path, "lvm", lvm=LVM_CFG)
+def test_lvm_pv_partition_has_the_pv_type_label_and_the_remainder(tmp_path):
+    installer = _planner(tmp_path, LVM_PLAN)
+    entries, _swap, _root = _table(installer)
+    pv = entries[4]
+    assert pv["name"] == lp.LVM_PV_PARTLABEL and pv["type"].upper() == lp.LINUX_LVM_TYPE_GUID
+    _assert_numbers_follow_disk_position(entries)
+    _assert_whole_disk_used(entries, 512 * S, int(entries[3]["start"]))
+
+
+def test_two_data_partitions_get_consecutive_numbers_in_config_order(tmp_path):
+    installer = _planner(tmp_path, TWO_PARTS)
+    entries, _swap, root = _table(installer)
+    assert sorted(entries) == [3, 4, 5, 6, 7, 8, 9]
+    assert (entries[4]["name"], int(entries[4]["size"])) == ("MDT_COW", 200 * S)
+    assert entries[5]["name"] == "SCRATCH" and int(entries[5]["size"]) > 190 * S
+    assert root * 512 == 100 * GIB
+    _assert_numbers_follow_disk_position(entries)
+    _assert_whole_disk_used(entries, 512 * S, int(entries[3]["start"]))
+
+
+def test_cloud_image_root_one_with_preserved_14_and_15_numbers_data_then_swap(tmp_path):
+    """Root is partition 1 on cloud images, 14/15 sit before it: tail numbers just ascend after root."""
+    disk = 512 * S
+    entries = {
+        14: {"start": "2048", "size": "6144", "type": LINUX},
+        15: {"start": "8192", "size": "217088", "type": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"},
+        1: {"start": "262144", "size": str(3 * S), "type": LINUX},
+    }
+    installer = make_planner(
+        tmp_path, disk_gib=512, root_gib=3, root_start=262144, swap_disk_total_gb=16, swap_partition_count=4,
+        partitioning=ROOT160_DATA_STAR, entries=entries,
+    )
+    installer.root_number = 1
+    installer._disk_facts = lambda: (disk, 262144, 3 * S)
     swap, root = installer._plan_swap_partitions()
-    plan = installer._write_sfdisk_plan(swap, root)
-    pv = [e for e in installer._parse_partition_entries(plan).values() if e.get("name") == lp.LVM_PV_PARTLABEL]
-    assert len(pv) == 1 and int(pv[0]["size"]) == 200 * S
-    assert pv[0]["type"].upper() == lp.LINUX_LVM_TYPE_GUID
+    plan = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, root))
+    assert plan[14] == entries[14] and plan[15] == entries[15]
+    assert plan[2]["name"] == "MDT_COW" and sorted(n for n in plan if n not in (1, 14, 15)) == [2, 3, 4, 5, 6]
+    ordered = sorted((n for n in plan if int(plan[n]["start"]) >= 262144), key=lambda n: int(plan[n]["start"]))
+    assert ordered == [1, 2, 3, 4, 5, 6]  # ascending after root == ascending on disk
 
 
-def test_planner_refuses_unfitting_data_area_and_writes_nothing(tmp_path):
-    installer = _planner(tmp_path, partition={"size_gb": 400})
-    with pytest.raises(InstallerError, match="does not fit"):
+@pytest.mark.parametrize("seed", range(6))
+def test_property_numbers_follow_position_and_sizes_account_for_the_disk(tmp_path, seed):
+    rng = random.Random(seed)
+    for case in range(12):
+        n_data = rng.choice([0, 1, 2, 3])
+        volumes = [
+            {"fs": rng.choice(["btrfs", "ext4", "xfs"]), "mount": f"/srv/v{i}", "label": f"V{i}",
+             **({"size": rng.choice([20, 30, "5%"])} if i else {})}
+            for i in range(n_data)
+        ]
+        partitioning = {"root": rng.choice([60, 100, "keep", "*"]), "reserve_gb": "*"}
+        if volumes:
+            partitioning["data"] = {"kind": "partitions", "volumes": volumes}
+        if partitioning["root"] == "*" and volumes:
+            partitioning["data"]["volumes"][0]["size"] = 50
+        if any(isinstance(v.get("size"), str) for v in volumes) and any(isinstance(v.get("size"), int) for v in volumes):
+            continue
+        swap_count = rng.choice([1, 2, 4, 8])
+        installer = _planner(tmp_path / f"{seed}-{case}", partitioning, swap_count=swap_count, swap_total=rng.choice([4, 16]))
+        try:
+            entries, swap, root = _table(installer)
+        except InstallerError:
+            continue
+        assert len(swap) == swap_count and sorted(entries)[0] == 3
+        assert sorted(entries) == list(range(3, 3 + 1 + n_data + swap_count))
+        _assert_numbers_follow_disk_position(entries)
+        starts = [int(entries[n]["start"]) for n in sorted(entries)]
+        assert starts == sorted(starts) and all(s % 2048 == 0 for s in starts[1:])
+        assert disk_end_ok(entries)
+
+
+def disk_end_ok(entries):
+    last = max(entries.values(), key=lambda e: int(e["start"]))
+    return 512 * S - (int(last["start"]) + int(last["size"])) <= lp.SWAP_END_SLACK_SECTORS
+
+
+def test_root_keep_leaves_the_root_alone_and_data_takes_the_rest(tmp_path):
+    installer = make_planner(
+        tmp_path, disk_gib=512, root_gib=20, swap_disk_total_gb=16, swap_partition_count=4,
+        partitioning={"root": "keep", "data": {"kind": "partitions", "volumes": [COW]}},
+    )
+    entries, _swap, root = _table(installer)
+    assert root == 20 * S and int(entries[3]["size"]) == 20 * S
+    assert int(entries[4]["start"]) == int(entries[3]["start"]) + 20 * S
+    _assert_numbers_follow_disk_position(entries)
+    _assert_whole_disk_used(entries, 512 * S, int(entries[3]["start"]))
+    assert installer._root_policy() == "untouched"
+
+
+def test_swap_off_still_creates_the_data_partition_up_to_the_disk_end(tmp_path):
+    installer = _planner(tmp_path, ROOT160_DATA_STAR, swap_count=1)
+    installer.config = installer.config.__class__(**{**installer.config.__dict__, "swap_policy": "off"})
+    swap, root = installer._plan_swap_partitions()
+    assert swap == []
+    entries = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, root))
+    assert sorted(entries) == [3, 4]
+    assert 512 * S - (int(entries[4]["start"]) + int(entries[4]["size"])) <= lp.SWAP_END_SLACK_SECTORS
+
+
+# ---------------------------------------------------------------- refusals at plan time
+
+def test_planner_refuses_unfitting_and_unaccounted_plans_and_writes_nothing(tmp_path):
+    with pytest.raises(InstallerError, match="over-allocates the pool"):
+        _planner(tmp_path / "a", {"root": 600, "data": {"kind": "partitions", "volumes": [COW]}})._plan_swap_partitions()
+    with pytest.raises(InstallerError, match=r'leave 196\.00 GiB of the disk unallocated: set volume\[0\]'):
+        _planner(tmp_path / "b", {"root": 100, "data": {"kind": "partitions", "volumes": [{**COW, "size": 200}]}})._plan_swap_partitions()
+    with pytest.raises(InstallerError, match="ambiguous"):
+        _planner(tmp_path / "c", {"root": 100, "data": {"kind": "partitions", "volumes": [{**COW, "size": "50%"}]}})._plan_swap_partitions()
+
+
+def test_root_below_preserve_floor_is_refused(tmp_path):
+    installer = _planner(tmp_path, {"root": 5, "data": {"kind": "partitions", "volumes": [COW]}}, preserve_root_size_gb=10)
+    with pytest.raises(InstallerError, match="root is .* below the minimum of 10240 MiB"):
         installer._plan_swap_partitions()
-    installer = _planner(tmp_path, "lvm", lvm={**LVM_CFG, "lvs": [{**LVM_CFG["lvs"][0], "size_gb": 300}]})
-    with pytest.raises(InstallerError, match="exceed the physical volume"):
-        installer._plan_swap_partitions()
 
 
-def test_planner_refuses_data_area_without_managed_swap(tmp_path):
-    installer = make_planner(tmp_path, disk_gib=512, root_gib=500, swap_policy="off", root_max_size_gb=100)
-    _set(installer, data_area="partition")
-    with pytest.raises(InstallerError, match="need managed tail swap"):
-        installer._plan_swap_partitions()
+def test_shrink_path_the_table_write_follows_the_shrunk_root(tmp_path):
+    """Root 500 GiB -> 160 GiB: data would overlap the live root until the filesystem shrink has happened."""
+    installer = _planner(tmp_path)
+    swap, root = installer._plan_swap_partitions()
+    assert root * 512 == 160 * GIB < 500 * GIB
+    current = installer._parse_partition_entries(installer._current_partition_dump(2048, 500 * S))
+    # (1) the table written AFTER the shrink (root at the target) is valid
+    installer._validate_plan_geometry(current, installer._parse_partition_entries(installer._write_sfdisk_plan(swap, root)), root)
+    # (2) writing it while the old, larger root is still in the table overlaps and is refused
+    overlapping = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, 500 * S))
+    with pytest.raises(InstallerError, match="overlap"):
+        installer._validate_plan_geometry(current, overlapping, 500 * S)
+    # (3) stage two refuses to write the full table before the shrink happened
+    installer.actions.dry_run = False
+    installer._run = lambda *a, **k: ""
+    installer._preflight_disk_transaction = lambda: {}
+    with pytest.raises(InstallerError, match="root shrink was required"):
+        installer._apply_known_swap_shape()
+
+
+def test_a_resume_recomputes_the_same_plan_whatever_the_root_size_is_now(tmp_path):
+    """The plan depends on (config, disk size, root START), never on the current root SIZE: crash after the
+    table write (root still small) and after root growth give identical extents."""
+    installer = _planner(tmp_path)
+    swap, root = installer._plan_swap_partitions()
+    expected = installer._data_area_layout(swap, [])
+    for current_root in (3 * S, 160 * S, 500 * S):
+        installer._disk_facts = lambda c=current_root: (512 * S, 2048, c)
+        assert installer._data_area_layout(swap, []) == expected
 
 
 def test_existing_installer_data_partition_is_not_a_foreign_partition(tmp_path):
     installer = _planner(tmp_path)
-    swap, root = installer._plan_swap_partitions()
-    plan = installer._write_sfdisk_plan(swap, root)
-    entries = installer._parse_partition_entries(plan)
+    entries, swap, root = _table(installer)
     entries[3]["size"] = str(root)
     installer._live_partition_entries = lambda *_a: entries  # second run: the table already holds data + swap
     installer._disk_facts = lambda: (512 * S, 2048, root)
     swap2, root2 = installer._plan_swap_partitions()
     assert (swap2, root2) == (swap, root)
-    # without data_area configured the same table is a foreign partition after root and is refused
-    _set(installer, data_area="none")
+    installer.config = Config(**{**installer.config.__dict__, "partitioning": {}})  # no plan: data is foreign
     with pytest.raises(InstallerError, match="non-swap partition"):
         installer._plan_swap_partitions()
 
@@ -233,42 +254,75 @@ def _argvs(installer):
     return [list(action.argv) for action in installer.actions.planned]
 
 
-def _stage_two(tmp_path, mode, partition=None, lvm=None):
-    installer = _planner(tmp_path, mode, partition, lvm)
+def _stage_two(tmp_path, partitioning):
+    installer = _planner(tmp_path, partitioning)
     installer._read_fstab_lines = lambda: ["UUID=abc / ext4 defaults 0 1"]
     installer._apt_get = lambda *a, **k: None
     installer._configure_data_area()
+    for argv in _argvs(installer):
+        validate_argv(argv)
     return installer
 
 
 def test_partition_commands_pass_the_allowlist(tmp_path):
-    installer = _stage_two(tmp_path, "partition")
+    installer = _stage_two(tmp_path, ROOT160_DATA_STAR)
     argvs = _argvs(installer)
-    assert ["/usr/sbin/mkfs.btrfs", "-L", "MDT_COW", "/dev/vda8"] in argvs or any(
-        a[0].endswith("mkfs.btrfs") and a[-2:] != [] and a[1:3] == ["-L", "MDT_COW"] for a in argvs
-    )
+    assert ["/usr/sbin/mkfs.btrfs", "-L", "MDT_COW", "/dev/vda4"] in argvs  # data is partition 4, before the swaps
     assert any(a[0].endswith("mount") and a[1] == "/srv/cow" for a in argvs)
     written = installer.actions.dry_run_writes["/etc/fstab"]
     assert "LABEL=MDT_COW /srv/cow btrfs noatime,user_subvol_rm_allowed,nofail 0 0" in written  # dry run: no UUID yet
     assert "UUID=abc / ext4" in written
 
 
-def test_lvm_commands_pass_the_allowlist_and_leave_spare_unformatted(tmp_path):
-    installer = _stage_two(tmp_path, "lvm", lvm=LVM_CFG)
+def test_two_partitions_each_get_their_own_filesystem_and_fstab_line_sorted_by_path(tmp_path):
+    installer = _stage_two(tmp_path, TWO_PARTS)
     argvs = _argvs(installer)
+    assert ["/usr/sbin/mkfs.btrfs", "-L", "MDT_COW", "/dev/vda4"] in argvs
+    assert ["/usr/sbin/mkfs.xfs", "-L", "SCRATCH", "/dev/vda5"] in argvs
+    lines = installer.actions.dry_run_writes["/etc/fstab"].splitlines()
+    mounts = [line.split()[1] for line in lines if line.split()[1:2] in (["/srv/cow"], ["/srv/scratch"])]
+    assert mounts == ["/srv/cow", "/srv/scratch"]
+
+
+def test_raw_partition_is_planned_but_never_formatted_or_mounted(tmp_path):
+    plan = {"root": 100, "data": {"kind": "partitions", "volumes": [
+        {"size": 20, "fs": "none", "type": "zfs", "label": "ZPOOL"}, COW]}}
+    installer = _stage_two(tmp_path, plan)
+    names = [a[0].rsplit("/", 1)[-1] for a in _argvs(installer)]
+    assert names.count("mkfs.btrfs") == 1
+    entries, _swap, _root = _table(_planner(tmp_path / "t", plan))
+    assert entries[4]["type"].upper() == lp.ZFS_TYPE_GUID and entries[4]["name"] == "ZPOOL"
+
+
+def test_lvm_commands_pass_the_allowlist_star_lv_is_last_and_unformatted_lv_is_skipped(tmp_path):
+    plan = {"root": 160, "data": {"kind": "lvm", "vg": "vg_data", "volumes": [
+        {"name": "scratch", "fs": "ext4", "mount": "/srv/scratch", "label": "SCRATCH"},
+        {"name": "cow", "size": "60%", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+        {"name": "spare", "size": 2, "fs": "none"}]}}
+    installer = _stage_two(tmp_path, plan)
+    argvs = _argvs(installer)
+    lvcreates = [a for a in argvs if a[0].endswith("lvcreate")]
+    assert [a[a.index("-n") + 1] for a in lvcreates] == ["cow", "spare", "scratch"]  # "*" LV last
+    assert lvcreates[1][-3:] == ["-L", "2G", "vg_data"] and lvcreates[2][-3:] == ["-l", "100%FREE", "vg_data"]
+    assert lvcreates[0][-3] == "-l" and lvcreates[0][-2].isdigit()  # percent of the VG, in extents
     names = [a[0].rsplit("/", 1)[-1] for a in argvs]
-    for tool in ("pvcreate", "vgcreate", "lvcreate", "mkfs.btrfs"):
-        assert tool in names
-    assert sum(1 for n in names if n == "lvcreate") == 2
-    assert names.count("mkfs.btrfs") == 1 and "mkfs.ext4" not in names  # spare LV: no mkfs
-    assert ["/usr/sbin/lvcreate", "-y", "-n", "cow", "-L", "120G", "vg_data"] in argvs
+    assert names.count("mkfs.btrfs") == 1 and names.count("mkfs.ext4") == 1
     written = installer.actions.dry_run_writes["/etc/fstab"]
     assert "/dev/vg_data/cow /srv/cow btrfs" in written and "spare" not in written
+
+
+def test_a_mount_that_holds_docker_data_requires_the_mount_for_docker(tmp_path):
+    plan = {"root": 160, "data": {"kind": "partitions", "volumes": [{**COW, "mount": "/var/lib/docker"}]}}
+    installer = _stage_two(tmp_path, plan)
+    assert "x-systemd.required-by=docker.service" in installer.actions.dry_run_writes["/etc/fstab"]
+    plain = _stage_two(tmp_path / "p", ROOT160_DATA_STAR)
+    assert "required-by" not in plain.actions.dry_run_writes["/etc/fstab"]
 
 
 def test_new_commands_are_allowlisted_strictly():
     actions = HostActions(dry_run=True)
     actions.run(["/usr/sbin/lvcreate", "-y", "-n", "x", "-L", "1G", "vg"])
+    actions.run(["/usr/sbin/lvcreate", "-y", "-n", "x", "-l", "100%FREE", "vg"])
     with pytest.raises(ActionError):
         actions.run(["/usr/sbin/lvcreate", "--force", "-n", "x", "vg"])
     with pytest.raises(ActionError):
@@ -280,13 +334,13 @@ def test_new_commands_are_allowlisted_strictly():
 class FakeActions(HostActions):
     """Non-dry-run runner with scripted blkid/vgs/lvs/findmnt answers; records every command."""
 
-    def __init__(self, signatures=None, vg_pvs="", lvs="", blkid_errors=None, label_devices=(), uuids=None):
+    def __init__(self, signatures=None, vg_pvs="", lvs="", blkid_errors=None, label_devices=(), uuids=None, extents=40000):
         super().__init__(dry_run=False)
         self.blkid_errors = dict(blkid_errors or {})
         self.label_devices = list(label_devices)
         self.uuids = dict(uuids or {})
         self.signatures = dict(signatures or {})
-        self.vg_pvs, self.lvs = vg_pvs, lvs
+        self.vg_pvs, self.lvs, self.extents = vg_pvs, lvs, extents
         self.calls: list[list[str]] = []
         self.files: dict[str, str] = {}
 
@@ -306,6 +360,8 @@ class FakeActions(HostActions):
                 return self.signatures[device] + "\n"
             raise ActionError("action failed (2): blkid")
         if tool == "vgs":
+            if "vg_extent_count" in argv:
+                return f"  {self.extents}\n"
             if not self.vg_pvs:
                 raise ActionError("action failed (5): vgs")
             return self.vg_pvs
@@ -319,8 +375,8 @@ class FakeActions(HostActions):
         self.files[path] = content
 
 
-def _real_stage_two(tmp_path, actions, mode, partition=None, lvm=None):
-    installer = _planner(tmp_path, mode, partition, lvm)
+def _real_stage_two(tmp_path, actions, partitioning):
+    installer = _planner(tmp_path, partitioning)
     swap, root = installer._plan_swap_partitions()
     entries = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, root))
     entries[3]["size"] = str(root)
@@ -336,107 +392,119 @@ def _real_stage_two(tmp_path, actions, mode, partition=None, lvm=None):
 
 def test_blank_partition_is_formatted_once_and_existing_same_fs_is_kept(tmp_path):
     actions = FakeActions()
-    _real_stage_two(tmp_path, actions, "partition")._configure_data_area()
+    _real_stage_two(tmp_path, actions, ROOT160_DATA_STAR)._configure_data_area()
     assert any(c[0].endswith("mkfs.btrfs") for c in actions.calls)
-    actions = FakeActions(signatures={"/dev/vda8": "btrfs"})
-    _real_stage_two(tmp_path, actions, "partition")._configure_data_area()  # rerun: idempotent
+    actions = FakeActions(signatures={"/dev/vda4": "btrfs"})
+    _real_stage_two(tmp_path, actions, ROOT160_DATA_STAR)._configure_data_area()  # rerun: idempotent
     assert not any(c[0].rsplit("/", 1)[-1].startswith("mkfs") for c in actions.calls)
 
 
 def test_foreign_signature_is_refused_never_overwritten(tmp_path):
-    actions = FakeActions(signatures={"/dev/vda8": "ext4"})
+    actions = FakeActions(signatures={"/dev/vda4": "ext4"})
     with pytest.raises(InstallerError, match="already holds a ext4 signature"):
-        _real_stage_two(tmp_path, actions, "partition")._configure_data_area()
+        _real_stage_two(tmp_path, actions, ROOT160_DATA_STAR)._configure_data_area()
     assert not any(c[0].rsplit("/", 1)[-1].startswith("mkfs") for c in actions.calls)
-    actions = FakeActions(signatures={"/dev/vda8": "crypto_LUKS"})
+    actions = FakeActions(signatures={"/dev/vda4": "crypto_LUKS"})
     with pytest.raises(InstallerError, match="LVM physical volume"):
-        _real_stage_two(tmp_path, actions, "lvm", lvm=LVM_CFG)._configure_data_area()
+        _real_stage_two(tmp_path, actions, LVM_PLAN)._configure_data_area()
     assert not any(c[0].rsplit("/", 1)[-1] == "pvcreate" for c in actions.calls)
 
 
 def test_lvm_rerun_creates_only_what_is_missing(tmp_path):
     actions = FakeActions(
-        signatures={"/dev/vda8": "LVM2_member", "/dev/vg_data/cow": "btrfs"},
-        vg_pvs="/dev/vda8", lvs="cow",
+        signatures={"/dev/vda4": "LVM2_member", "/dev/vg_data/cow": "btrfs"}, vg_pvs="/dev/vda4", lvs="cow",
     )
-    _real_stage_two(tmp_path, actions, "lvm", lvm=LVM_CFG)._configure_data_area()
+    _real_stage_two(tmp_path, actions, LVM_PLAN)._configure_data_area()
     tools = [c[0].rsplit("/", 1)[-1] for c in actions.calls]
     assert "pvcreate" not in tools and "vgcreate" not in tools and "mkfs.btrfs" not in tools
-    assert tools.count("lvcreate") == 1  # only the missing spare LV
-    actions = FakeActions(signatures={"/dev/vda8": "LVM2_member"}, vg_pvs="/dev/vdb1")
+    assert tools.count("lvcreate") == 1  # only the missing "*" LV (spare)
+    actions = FakeActions(signatures={"/dev/vda4": "LVM2_member"}, vg_pvs="/dev/vdb1")
     with pytest.raises(InstallerError, match="already exists on other physical volumes"):
-        _real_stage_two(tmp_path, actions, "lvm", lvm=LVM_CFG)._configure_data_area()
+        _real_stage_two(tmp_path, actions, LVM_PLAN)._configure_data_area()
+
+
+def test_lv_sizes_use_the_real_extent_count_of_the_vg(tmp_path):
+    actions = FakeActions(extents=1000)
+    _real_stage_two(tmp_path, actions, LVM_PLAN)._configure_data_area()
+    lvcreates = [c for c in actions.calls if c[0].endswith("lvcreate")]
+    assert lvcreates[0][-3:] == ["-l", "600", "vg_data"]  # 60% of 1000 extents
+    actions = FakeActions(extents=10)
+    with pytest.raises(InstallerError, match="below the minimum"):
+        _real_stage_two(tmp_path / "t", actions, LVM_PLAN)._configure_data_area()
 
 
 def test_blkid_failure_is_not_blank_fail_closed(tmp_path):
-    actions = FakeActions(blkid_errors={"/dev/vda8": 4})  # probe error, not "no signature"
-    with pytest.raises(InstallerError, match="cannot determine whether /dev/vda8 is blank"):
-        _real_stage_two(tmp_path, actions, "partition")._configure_data_area()
+    actions = FakeActions(blkid_errors={"/dev/vda4": 4})  # probe error, not "no signature"
+    with pytest.raises(InstallerError, match="cannot determine whether /dev/vda4 is blank"):
+        _real_stage_two(tmp_path, actions, ROOT160_DATA_STAR)._configure_data_area()
     assert not any(c[0].rsplit("/", 1)[-1].startswith("mkfs") for c in actions.calls)
-    actions = FakeActions(blkid_errors={"/dev/vda8": 4})
+    actions = FakeActions(blkid_errors={"/dev/vda4": 4})
     with pytest.raises(InstallerError, match="cannot determine whether"):
-        _real_stage_two(tmp_path, actions, "lvm", lvm=LVM_CFG)._configure_data_area()
+        _real_stage_two(tmp_path, actions, LVM_PLAN)._configure_data_area()
     assert not any(c[0].rsplit("/", 1)[-1] == "pvcreate" for c in actions.calls)
 
 
 def test_fstab_uses_uuid_and_ambiguous_label_is_refused(tmp_path):
-    actions = FakeActions(uuids={"/dev/vda8": "1234-abcd"}, label_devices=["/dev/vda8"])
-    _real_stage_two(tmp_path, actions, "partition")._configure_data_area()
+    actions = FakeActions(uuids={"/dev/vda4": "1234-abcd"}, label_devices=["/dev/vda4"])
+    _real_stage_two(tmp_path, actions, ROOT160_DATA_STAR)._configure_data_area()
     assert "UUID=1234-abcd /srv/cow btrfs noatime,user_subvol_rm_allowed,nofail 0 0" in actions.files["/etc/fstab"]
-    actions = FakeActions(uuids={"/dev/vda8": "1234-abcd"}, label_devices=["/dev/vda8", "/dev/vdb1"])
+    actions = FakeActions(uuids={"/dev/vda4": "1234-abcd"}, label_devices=["/dev/vda4", "/dev/vdb1"])
     with pytest.raises(InstallerError, match="also on /dev/vdb1"):
-        _real_stage_two(tmp_path, actions, "partition")._configure_data_area()
+        _real_stage_two(tmp_path, actions, ROOT160_DATA_STAR)._configure_data_area()
     assert "/etc/fstab" not in actions.files
 
 
 def test_rerun_with_changed_swap_count_cannot_disturb_a_populated_data_partition(tmp_path):
+    """Swaps follow the data partitions now, so a changed swap count never renumbers data; a changed DATA plan
+    (here: a second data partition shifting the first one's neighbours) is refused when a signature exists."""
     old = _planner(tmp_path)
-    swap, root = old._plan_swap_partitions()
-    current = old._parse_partition_entries(old._write_sfdisk_plan(swap, root))
-    new = make_planner(tmp_path, disk_gib=512, root_gib=500, swap_disk_total_gb=16, swap_partition_count=2)
-    _set(new, disk_layout="dev-host", data_area="partition", data_partition={}, data_lvm={})
-    swap2, root2 = new._plan_swap_partitions()
-    planned = new._parse_partition_entries(new._write_sfdisk_plan(swap2, root2))
-    data_number = next(n for n, e in current.items() if e.get("name") == "MDT_COW")
+    current, _swap, _root = _table(old)
+    new = _planner(tmp_path / "n", {"root": 100, "data": {"kind": "partitions", "volumes": [{**COW, "size": 150}, {"fs": "xfs", "mount": "/srv/x", "label": "X"}]}})
+    planned, _s, _r = _table(new)
     # populated: refused with a clear error
-    new.actions = FakeActions(signatures={f"/dev/vda{data_number}": "btrfs"})
+    new.actions = FakeActions(signatures={"/dev/vda4": "btrfs"})
     with pytest.raises(InstallerError, match="refusing to delete or resize data-area partition"):
         new._refuse_to_disturb_data_partitions(current, planned)
-    # unreadable probe counts as in use
-    new.actions = FakeActions(blkid_errors={f"/dev/vda{data_number}": 1})
+    new.actions = FakeActions(blkid_errors={"/dev/vda4": 1})
     with pytest.raises(InstallerError, match="cannot determine"):
         new._refuse_to_disturb_data_partitions(current, planned)
-    # provably blank (blkid exit 2): may be re-planned
-    new.actions = FakeActions()
+    new.actions = FakeActions()  # provably blank: may be re-planned
     new._refuse_to_disturb_data_partitions(current, planned)
-    # unchanged layout: never probed, never refused
-    new.actions = FakeActions(signatures={f"/dev/vda{data_number}": "btrfs"})
+    new.actions = FakeActions(signatures={"/dev/vda4": "btrfs"})  # unchanged layout: never probed
     new._refuse_to_disturb_data_partitions(current, current)
 
 
-# ---------------------------------------------------------------- customscript
+def test_changed_swap_count_keeps_the_data_partition_number(tmp_path):
+    a, _s, _r = _table(_planner(tmp_path / "a", swap_count=4))
+    b, _s, _r = _table(_planner(tmp_path / "b", swap_count=2))
+    assert a[4]["name"] == b[4]["name"] == "MDT_COW" and a[4]["start"] == b[4]["start"]
 
-def test_customscript_carries_the_data_area_config():
-    config = Config(
-        disk_layout="dev-host", data_area="lvm", data_lvm=LVM_CFG,
-        telegram_bot_token="", telegram_chat_id="",
-    )
+
+# ---------------------------------------------------------------- show_plan, customscript
+
+def test_show_plan_lists_the_data_partitions(tmp_path):
+    plan = _planner(tmp_path).show_plan()
+    assert plan["partitioning"] == ROOT160_DATA_STAR
+    assert [p["device"] for p in plan["data_partitions"]] == ["/dev/vda4"]
+    assert plan["swap_partitions"][0]["device"] == "/dev/vda5"
+
+
+def test_customscript_carries_the_partitioning_object():
+    config = Config(partitioning=LVM_PLAN, telegram_bot_token="", telegram_chat_id="")
     bundle = build_customscript_bundle(config)
-    assert bundle["config"]["data_area"] == "lvm"
+    assert bundle["config"]["partitioning"] == LVM_PLAN
     token = next(
         part for part in shlex.split(bundle["customScript"]) if part.startswith("VBPUB_CONFIG_EXTRA_JSON=")
     )
     embedded = json.loads(token.split("=", 1)[1])
-    assert embedded["data_lvm"]["vg"] == "vg_data"
-    assert embedded["data_lvm"]["lvs"][1]["fs"] == "none"
-    # the host side loads exactly what the producer embedded
-    assert load_config(raw_json=json.dumps(embedded)).data_lvm == LVM_CFG
+    assert load_config(raw_json=json.dumps(embedded)).partitioning == LVM_PLAN
 
 
-def test_customscript_refuses_an_invalid_data_area():
-    config = Config(disk_layout="dev-host", data_area="lvm", data_lvm={"vg": "v", "lvs": []},
-                    telegram_bot_token="", telegram_chat_id="")
+def test_customscript_refuses_an_invalid_plan():
+    config = Config(
+        partitioning={"data": {"kind": "partitions", "volumes": []}}, telegram_bot_token="", telegram_chat_id="",
+    )
     with pytest.raises(ConfigError, match="non-empty list"):
         build_customscript_bundle(config)
     with pytest.raises(ConfigError):
-        validate_config(Config(data_area="partition", telegram_bot_token="", telegram_chat_id=""))
+        validate_config(Config(partitioning={"root": "fast"}, telegram_bot_token="", telegram_chat_id=""))

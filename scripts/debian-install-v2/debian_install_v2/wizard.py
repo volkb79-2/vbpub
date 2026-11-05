@@ -81,11 +81,12 @@ WIZARD_SECTIONS = (
         "Root, swap, and memory policy",
         (
             WizardField("root_resize_policy", "Root partition policy", "choice", ("resize", "untouched", "grow-only")),
-            WizardField("root_max_size_gb", "Maximum root partition size in GiB (blank for no cap)", "optional-integer"),
-            WizardField("disk_layout", "Disk layout (dev-host caps root by rule, leaves cow/reserve space, swap at end)", "choice", ("full-root", "dev-host")),
-            WizardField("data_area", "Data area between root and swap (none, partition, lvm)", "choice", ("none", "partition", "lvm")),
-            WizardField("data_partition", "data_area=partition settings as JSON {fs, size_gb|size_fraction, mount, label} ({} = btrfs, 1/3 of the disk, /srv/cow, MDT_COW)", "json"),
-            WizardField("data_lvm", "data_area=lvm settings as JSON {vg, pv_size_gb|pv_size_fraction, lvs:[{name,size_gb,fs,mount,label}]}", "json"),
+            WizardField(
+                "partitioning",
+                "Disk plan as JSON {root: \"*\"|\"keep\"|GiB|\"N%\", reserve_gb, data: {kind: partitions|lvm, volumes: "
+                "[{size, fs, mount, label}]}} ({} = plain root growth; an omitted size is \"*\" = the remainder)",
+                "json",
+            ),
             WizardField("swap_policy", "Swap policy", "choice", ("on", "off", "untouched")),
             WizardField("swap_disk_total_gb", "Total swap capacity in GiB (blank or auto derives from disk and RAM)", "optional-integer"),
             WizardField("swap_partition_count", "Number of swap partitions", "integer"),

@@ -94,10 +94,12 @@ those effects explicit in profiles and in the install plan.
 Swap is always the last allocation on the disk. A root cap used to force swap
 directly after root, which on the Netcup test hosts left swap in the middle of
 a 512 GiB disk with the cow partition behind it: neither root nor cow could
-grow (NC-12). Now the cap leaves a gap between root and an end-of-disk swap, a
-minimum root (`layout_policy.min_root_gib`) is enforced, and
-`disk_layout=dev-host` sizes root, cow and reserve by one rule (README "Disk
-layout policy"). The rule is configuration plus pure functions so it is testable
+grow (NC-12). The later rule-sized `dev-host` layout then numbered the data
+partition behind the swaps although it sat before them and left a 166 GiB hole.
+Both are gone: the single `partitioning` object (README "Disk layout",
+`DESIGN-data-area-v2.md`) states root, data area and reserve explicitly, one `"*"`
+takes the remainder so the whole disk is accounted for, and partition numbers follow
+disk position. The planner is configuration plus pure functions so it is testable
 without a device; the real write path is unchanged.
 
 `root_resize_policy=resize` means “maximize root subject to the selected swap
@@ -109,40 +111,34 @@ a shrink. `untouched` is the strict no-partition-change choice. The existing
 `preserve_root_size_gb` remains a minimum root-capacity floor; it is not the
 resize target.
 
-`root_max_size_gb` adds an optional upper bound for hosts that need a compact
-system partition and a separate data area. Under `resize`, the planner uses
-the smaller of this cap and the largest safe root extent after swap. A current
-root below the cap can grow to it; a root above it can shrink only after the
-normal usage and ext-filesystem minimum checks pass. The area after root and
-managed swap remains unallocated: the installer does not invent a filesystem,
-partition, or mount point. The cap must be at least
-`preserve_root_size_gb`. It also requires `swap_policy: "on"` and at least one
-managed tail swap partition at the end of the disk (the gap after root stays unallocated). Swap off, untouched swap, or
-a plan where retained pre-root swap needs no tail partition is refused because
-boot-time or stage-two growth could consume the cap. `grow-only` and
-`untouched` refuse when a larger current root would have to shrink to satisfy
-the cap. The cap is a root partition length measured from its existing start,
-not an absolute disk end; an unaligned start therefore does not lower the
-configured GiB limit.
+`partitioning.root` replaces the removed `root_max_size_gb` for hosts that need a
+compact system partition and a separate data area. A size or percent resizes (a
+current root below it grows, a root above it shrinks only after the normal usage and
+ext-filesystem minimum checks pass); `"keep"` leaves root alone; `"*"` takes the
+remainder. The planner derives the resize behaviour from this value, so
+`root_resize_policy` cannot be combined with a plan. The area after root is the data
+area, or an explicit `reserve_gb` that stays unallocated on purpose; the installer never
+leaves space over silently. A plan needs `swap_policy` `on` (a managed tail swap
+partition at the end of the disk, or retained pre-root swap that needs no tail
+partition) or `off`; untouched swap is refused because the end of the pool would be
+unknown. The root size is at least `preserve_root_size_gb`.
 
-Before the first reboot, stage one resolves and validates the root cap and
-tail-swap layout, then installs both growth guards before it installs the
-initramfs shrink hook. Both guards are in place if an unplanned reboot occurs
-while `update-initramfs` rebuilds images. Stage two repeats these idempotent
-guards. The installer writes
+Before the first reboot, stage one resolves and validates the plan, then installs both
+growth guards before it installs the initramfs shrink hook. Both guards are in place if
+an unplanned reboot occurs while `update-initramfs` rebuilds images. Stage two repeats
+these idempotent guards. The installer writes
 `/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
 `growpart: {mode: off}` and `resize_rootfs: false`, and creates
 `/etc/growroot-disabled` so the initramfs growroot integration also stays off.
-Both guards are installed only when `root_max_size_gb` is set and accepted.
+Both guards are installed only when the plan fixes root (anything but `"*"`).
 
 For example, this keeps a 40 GiB root and 8 GiB of managed swap while leaving
-the rest of a larger disk available for a manually created data partition:
+the rest of a larger disk unallocated on purpose (`reserve_gb: "*"`):
 
 ```json
 {
   "schema_version": 1,
-  "root_resize_policy": "resize",
-  "root_max_size_gb": 40,
+  "partitioning": {"root": 40, "reserve_gb": "*"},
   "preserve_root_size_gb": 10,
   "swap_policy": "on",
   "swap_disk_total_gb": 8,

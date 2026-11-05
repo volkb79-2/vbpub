@@ -52,33 +52,35 @@ def test_all_documented_config_examples_use_the_current_loader_and_schema():
     assert count >= 2
 
 
-def test_root_size_cap_is_adoptable_from_user_documents():
-    for path in DOCS:
+def test_partitioning_is_adoptable_from_user_documents():
+    for path in (PROJECT / "README.md", PROJECT / "docs" / "CONSUMERS.md", PROJECT / "docs" / "DESIGN-GUIDE.md"):
         text = path.read_text(encoding="utf-8")
-        assert "`root_max_size_gb`" in text
+        assert "partitioning" in text, path
+        for removed in ("root_max_size_gb", "disk_layout", "data_area"):
+            for example in _markdown_config_examples(path):
+                assert removed not in example, (path, removed)
     assert any(
-        example.get("root_max_size_gb") is not None
-        for path in DOCS
-        for example in _markdown_config_examples(path)
+        example.get("partitioning") for path in DOCS for example in _markdown_config_examples(path)
     )
 
 
-def test_each_user_doc_explains_the_root_cap_requires_end_of_disk_managed_tail_swap():
+def test_each_user_doc_explains_a_plan_needs_end_of_disk_managed_swap():
     for path in DOCS:
+        text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8").lower())
+        assert "swap_policy" in text and "partitioning" in text, path
+    for path in (PROJECT / "docs" / "CONSUMERS.md", PROJECT / "docs" / "DESIGN-GUIDE.md"):
         text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8").lower())
         assert "managed tail swap partition at the end of the disk" in text, path
         assert "pre-root swap" in text and "needs no tail partition" in text, path
-        assert "swap_policy" in text and "root_max_size_gb" in text, path
 
 
-def test_readme_keeps_the_uncapped_defaults_next_to_the_capped_layout():
+def test_readme_keeps_the_plain_defaults_next_to_the_partitioning_layout():
     examples = list(_markdown_config_examples(PROJECT / "README.md"))
     assert any(
-        example.get("swap_disk_total_gb", "missing") is None
-        and example.get("root_max_size_gb") is None
+        example.get("swap_disk_total_gb", "missing") is None and not example.get("partitioning")
         for example in examples
     )
-    assert any(example.get("root_max_size_gb") is not None for example in examples)
+    assert any(example.get("partitioning") for example in examples)
 
 
 def test_every_cloud_init_cleanup_mode_is_named_in_user_docs():

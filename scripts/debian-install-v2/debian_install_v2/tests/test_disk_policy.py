@@ -12,6 +12,11 @@ from debian_install_v2.installer import Installer, InstallerError
 from .argv_guard import validate_argv
 
 
+def cap(gib: int | str) -> dict:
+    """A root of `gib` GiB (or "keep") with the remainder left unallocated on purpose."""
+    return {"root": gib, "reserve_gb": "*"}
+
+
 def make_planner(
     tmp_path: Path,
     *,
@@ -24,7 +29,7 @@ def make_planner(
     swap_disk_total_gb: int | None = 2,
     swap_partition_count: int = 4,
     preserve_root_size_gb: int = 2,
-    root_max_size_gb: int | None = None,
+    partitioning: dict | None = None,
     root_used_gib: int = 1,
     minimum_blocks: int = 100_000,
     entries: dict[int, dict[str, str]] | None = None,
@@ -42,7 +47,7 @@ def make_planner(
         swap_disk_total_gb=swap_disk_total_gb,
         swap_partition_count=swap_partition_count,
         preserve_root_size_gb=preserve_root_size_gb,
-        root_max_size_gb=root_max_size_gb,
+        partitioning=partitioning or {},
         telegram_bot_token="",
         telegram_chat_id="",
     )
@@ -84,7 +89,7 @@ def test_root_max_size_leaves_the_remaining_disk_free_after_swap(tmp_path):
         tmp_path,
         disk_gib=128,
         root_gib=127,
-        root_max_size_gb=40,
+        partitioning=cap(40),
         swap_disk_total_gb=8,
         swap_partition_count=4,
         preserve_root_size_gb=10,
@@ -104,70 +109,65 @@ def test_root_max_size_leaves_the_remaining_disk_free_after_swap(tmp_path):
     end_of_swap = partitions[-1][0] + partitions[-1][1]
     assert (disk_sectors - end_of_swap) * 512 <= 2 * 1024 * 1024
     assert (partitions[0][0] - aligned_root_end) * 512 >= 79 * GIB
-    assert installer.show_plan()["root_max_size_gb"] == 40
+    assert installer.show_plan()["partitioning"] == cap(40)
 
 
-def test_root_max_size_requires_managed_tail_swap_when_swap_is_off(tmp_path):
+def test_a_plan_with_swap_off_pools_up_to_the_disk_end(tmp_path):
     installer = make_planner(
         tmp_path,
         disk_gib=128,
         root_gib=127,
-        root_max_size_gb=40,
+        partitioning=cap(40),
         swap_policy="off",
         swap_disk_total_gb=None,
     )
 
-    with pytest.raises(
-        InstallerError,
-        match=r"need managed tail swap",
-    ):
-        installer._plan_swap_partitions()
+    partitions, target_root = installer._plan_swap_partitions()
+
+    assert partitions == []
+    assert target_root * 512 == 40 * GIB
 
 
-def test_grow_only_root_policy_obeys_cap_without_shrinking(tmp_path):
+def test_a_smaller_current_root_grows_to_the_planned_size(tmp_path):
     installer = make_planner(
         tmp_path,
         disk_gib=128,
         root_gib=16,
-        root_resize_policy="grow-only",
-        root_max_size_gb=40,
+        partitioning=cap(40),
         swap_disk_total_gb=8,
         preserve_root_size_gb=10,
     )
 
     _partitions, target_root = installer._plan_swap_partitions()
 
-    assert target_root * 512 <= 40 * GIB
-    assert target_root * 512 >= 40 * GIB - 1024 * 1024
+    assert target_root * 512 == 40 * GIB
 
 
-@pytest.mark.parametrize("policy", ["untouched", "grow-only"])
-def test_non_shrinking_policy_refuses_a_root_larger_than_its_cap(tmp_path, policy):
+def test_a_larger_current_root_shrinks_to_the_planned_size(tmp_path):
     installer = make_planner(
         tmp_path,
         disk_gib=128,
         root_gib=127,
-        root_resize_policy=policy,
-        root_max_size_gb=40,
+        partitioning=cap(40),
         swap_disk_total_gb=8,
         preserve_root_size_gb=10,
     )
 
-    with pytest.raises(InstallerError, match=rf"root_resize_policy={policy} cannot satisfy root_max_size_gb"):
-        installer._plan_swap_partitions()
+    _partitions, target_root = installer._plan_swap_partitions()
+
+    assert target_root * 512 == 40 * GIB
 
 
-def test_untouched_root_at_its_cap_is_allowed_with_unaligned_start(tmp_path):
+def test_root_keep_preserves_an_unaligned_start_and_exact_size(tmp_path):
     cap_sectors = 40 * GIB // 512
     installer = make_planner(
         tmp_path,
         disk_gib=64,
         root_start=2049,
         root_gib=40,
-        root_resize_policy="untouched",
         swap_policy="on",
         swap_disk_total_gb=2,
-        root_max_size_gb=40,
+        partitioning=cap("keep"),
     )
 
     _partitions, target_root = installer._plan_swap_partitions()
@@ -180,14 +180,14 @@ def _planner_with_pre_root_swap(
     *,
     pre_root_gib: int,
     swap_total_gib: int = 4,
-    root_max_size_gb: int | None = None,
+    partitioning: dict | None = None,
 ):
     installer = make_planner(
         tmp_path,
         disk_gib=20,
         swap_disk_total_gb=swap_total_gib,
         swap_partition_count=4,
-        root_max_size_gb=root_max_size_gb,
+        partitioning=partitioning,
     )
     disk_sectors = 20 * GIB // 512
     pre_root_start = 4096
@@ -263,19 +263,18 @@ def test_pre_root_swap_larger_than_total_is_kept_without_tail_partitions(tmp_pat
     assert plan["swap_after_root_gb"] == 0
 
 
-def test_root_max_size_requires_tail_swap_when_pre_root_swap_meets_target(tmp_path):
+def test_a_plan_needs_no_tail_swap_when_a_pre_root_swap_meets_the_target(tmp_path):
     installer, _live = _planner_with_pre_root_swap(
         tmp_path,
         pre_root_gib=4,
         swap_total_gib=4,
-        root_max_size_gb=8,
+        partitioning=cap(8),
     )
 
-    with pytest.raises(
-        InstallerError,
-        match=r"need managed tail swap",
-    ):
-        installer._plan_swap_partitions()
+    partitions, target_root = installer._plan_swap_partitions()
+
+    assert partitions == []
+    assert target_root * 512 == 8 * GIB
 
 
 @pytest.mark.parametrize("policy", ["untouched", "grow-only"])
@@ -283,24 +282,6 @@ def test_non_shrinking_root_policy_refuses_swap_that_does_not_fit(tmp_path, poli
     installer = make_planner(tmp_path, root_resize_policy=policy)
 
     with pytest.raises(InstallerError, match=rf"root_resize_policy={policy} forbids the shrink"):
-        installer._plan_swap_partitions()
-
-
-def test_non_shrinking_root_cap_refusal_names_cap_before_swap_fit(tmp_path):
-    installer = make_planner(
-        tmp_path,
-        disk_gib=128,
-        root_gib=127,
-        root_resize_policy="grow-only",
-        root_max_size_gb=40,
-        swap_disk_total_gb=64,
-        preserve_root_size_gb=10,
-    )
-
-    with pytest.raises(
-        InstallerError,
-        match=r"root_resize_policy=grow-only cannot satisfy root_max_size_gb \(40 GiB\)",
-    ):
         installer._plan_swap_partitions()
 
 

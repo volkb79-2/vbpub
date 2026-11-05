@@ -79,8 +79,7 @@ control root sizing and swap:
 ```json
 {
   "schema_version": 1,
-  "root_resize_policy": "resize",
-  "root_max_size_gb": 40,
+  "partitioning": {"root": 40, "reserve_gb": "*"},
   "swap_policy": "on",
   "swap_disk_total_gb": 8,
   "swap_partition_count": 4,
@@ -88,19 +87,22 @@ control root sizing and swap:
 }
 ```
 
-Choose one root policy: `resize` (default) uses the largest safe root extent
-after managed swap and can grow or shrink; `grow-only` expands when possible
-but never shrinks; `untouched` forbids root partition changes. Optional
-`root_max_size_gb` caps the root partition at that many GiB and leaves disk
-space after root and swap unallocated for a later data partition. It does not
-format or mount the remaining space. A cap requires `swap_policy: "on"` and at
-least one managed tail swap partition at the end of the disk (the gap after root stays unallocated; `disk_layout: "dev-host"` sizes root, cow and reserve by rule); swap off, untouched
-swap, or a layout where retained pre-root swap needs no tail partition is
-refused. The cap must be at least `preserve_root_size_gb`; `grow-only` and
-`untouched` refuse if the current root is larger than the cap. The cap is
-measured from the root partition's existing start, so an unaligned start does
-not lower the configured limit. When set, stage one installs and stage two
-repeats guards against automatic root growth by writing
+Without `partitioning`, choose one root policy: `resize` (default) uses the
+largest safe root extent after managed swap and can grow or shrink; `grow-only`
+expands when possible but never shrinks; `untouched` forbids root partition
+changes. The optional `partitioning` object replaces the removed
+`root_max_size_gb`, `disk_layout` and `data_area*` keys and describes the whole
+disk: `root` (`"*"`, `"keep"`, GiB or `"N%"`), `reserve_gb` (default 0, a number or
+`"*"` to keep space unallocated on purpose) and an optional `data` area (physical
+partitions or LVM, each volume with `size`, `fs`, `mount`, `label`). Exactly one
+`"*"` takes the remainder, so the whole disk is accounted for (README "Disk layout",
+`docs/DESIGN-data-area-v2.md`). With a plan the root behaviour is derived from `root`
+(`"keep"` = untouched) and `root_resize_policy` must not be set. A plan needs
+`swap_policy` `on` (a managed tail swap partition at the end of the disk; retained
+pre-root swap that needs no tail partition is fine, the pool then ends at the disk
+end) or `off`; untouched swap is refused. Root must be at least
+`preserve_root_size_gb`. When the plan fixes root (anything but `"*"`), stage one
+installs and stage two repeats guards against automatic root growth by writing
 `/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
 `growpart: {mode: off}` and `resize_rootfs: false`, and creating
 `/etc/growroot-disabled` for initramfs growroot. Choose one swap

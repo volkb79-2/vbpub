@@ -1,22 +1,16 @@
 # debian-install-v2 — TODO / backlog
 
-## DONE in code, OPEN live (NC-12, 2026-11-05): swap at the end of the disk, root minimum, dev-host layout
+## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
 
-The root-cap rule "swap directly after root" produced the r1002/v1001 layout (40 GiB root, swap in the
-middle, cow behind it). Replaced by the layout policy (README "Disk layout policy",
-`debian_install_v2/layout_policy.py`). Not yet run in a QEMU guest (`r1-vm-real-commit`) nor on a real host:
-the sfdisk-based root growth (`_grow_root_to_plan`, gap case) is exercised by the reinstall of v1001
-(`reports/div2-reinstall-RUNBOOK.md`). Filed as NC-12 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
+Replaces the rule-sized `dev-host` layout, `root_max_size_gb` and `data_area*` (removed, no migration). Partition
+numbers follow disk position, the whole disk is accounted for (one `"*"`), see README "Disk layout" and
+`docs/DESIGN-data-area-v2.md`. Proven in unit tests and the `r1-vm-real-commit` VM lane; NOT yet run on a real
+host. Deferred: `fs: zfs` as a managed filesystem, btrfs `subvol`.
 
-## DONE (root-cap follow-ups, 2026-11-02)
+## DONE (root-cap follow-ups, 2026-11-02; superseded by `partitioning`)
 
-`root_max_size_gb` requires `swap_policy=on` and managed tail-swap partitions
-directly after root, so neither the first reboot nor stage-two `growpart` can
-consume the cap. Stage one installs cloud-init and initramfs growth guards
-after the capped tail-swap plan validates and before any initramfs shrink hook
-is installed; stage two repeats them. The cap is measured from the root
-partition start without rounding its configured length down to an absolute
-1 MiB boundary. User-facing examples retain uncapped and capped layouts.
+Stage one installs cloud-init and initramfs growth guards after the plan validates and before any initramfs
+shrink hook is installed; stage two repeats them. They are installed whenever the plan fixes root (anything but `"*"`).
 
 ## DONE (requirements naming, 2026-11-02): name the optional wizard dependency by use case
 

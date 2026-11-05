@@ -4,6 +4,29 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Changed (BREAKING, div2-data-area-v2): one explicit `partitioning` plan, partition numbers follow disk position
+- Live finding 2026-11-05 (v1001): data partition numbered 8 although it sat before swaps 4-7, and a 166.8 GiB hole between root
+  and data (rule-sized `dev-host`: root 5/16, data 1/3, rest "reserve").
+- NEW `partitioning` config object: `root` (`"*"`/`"keep"`/GiB/`"N%"`), `reserve_gb` (0 default, number or `"*"`), optional `data`
+  (`kind: partitions|lvm`, volumes with `size`/`fs`/`mount`/`label`, LVM `vg`/`pv_size`/`vg_free_gib`). Exactly one `"*"` takes the
+  remainder; the plan must account for the whole disk or it is refused with the fix computed. Design, algorithm and exact messages:
+  `docs/DESIGN-data-area-v2.md`; README "Disk layout".
+- Numbering: after root, data partitions first (config order), swaps last; ascending numbers == ascending start sectors. The data
+  partition is no longer numbered after the swaps.
+- Root behaviour derives from `partitioning.root` (`"keep"` = untouched); `root_resize_policy` is refused together with a plan.
+  A plan accepts `swap_policy` `on`/`off` (not `untouched`).
+- LVM: LV sizes GiB / percent of the VG (`-l` extents) / `"*"` (`-l 100%FREE`, created last); `vg_free_gib` keeps VG space.
+  Raw partitions (`fs: none`, optional `type: zfs`) are planned but never formatted. A mount holding `/var/lib/docker` requires its
+  mount for `docker.service`. Allowlist: `lvcreate -l`.
+- REMOVED, no migration: `disk_layout`, `root_max_size_gb`, `data_area`, `data_partition`, `data_lvm` (a config with one is
+  refused with a pointer to `partitioning`), and the rule sizing (`recommended_root_gib`, 1/3 data, `min_root_gib` floor).
+  Migration by hand: old `dev-host` + `data_area: partition` (root 160, data 168, 166 GiB hole) is
+  `{"partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [{"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}}}`
+  (data takes the rest); old `root_max_size_gb: N` alone is `{"partitioning": {"root": N, "reserve_gb": "*"}}`.
+- Deferred: `fs: zfs` as a managed filesystem, btrfs `subvol` (both refused with a clear message).
+- Tests: `test_layout_policy.py` (schema, pool/LV planners, property tests), `test_data_area.py` (numbering, sfdisk plan, shrink
+  path, resume, stage-two commands), `test_data_area_vm.py` extended (existing lane `r1-vm-real-commit`).
+
 ### Tests / hardening (div2-layout-tests)
 - Every fake or mocked run path in the installer tests now validates its argv through the production
   `HostActions._validate` (`tests/argv_guard.py`), so allowlist drift fails unit tests. This is the

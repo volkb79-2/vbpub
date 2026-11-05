@@ -98,25 +98,16 @@ class Config:
     swap_partition_count: int = 4
     swap_priority: int = 10
     swap_discard: bool = True
-    # Optional upper bound for the ext root partition. Unlike
-    # preserve_root_size_gb, this is a sizing target that leaves disk space
-    # after the configured swap layout available for a later data partition.
-    root_max_size_gb: int | None = None
-    # `full-root` (default): root takes all space not used by swap. `dev-host`:
-    # root is capped at the rule value (layout_policy.recommended_root_gib,
-    # 160 GiB on a 512 GiB disk) unless root_max_size_gb is set; the space
-    # between root and the END-of-disk swap stays unallocated for the Btrfs cow
-    # area (~1/3 of the disk) and reserve. Swap is last in both layouts.
-    disk_layout: Literal["full-root", "dev-host"] = "full-root"
-    # Flexible DATA AREA between root and the end-of-disk swap (README "Data
-    # area"). `none`: nothing is created. `partition`: one partition with one
-    # filesystem, keys fs/size_gb|size_fraction/mount/label (defaults: btrfs,
-    # 1/3 of the disk, /srv/cow, MDT_COW). `lvm`: one PV partition + VG + LVs,
-    # keys vg/pv_size_gb|pv_size_fraction/lvs=[{name,size_gb,fs,mount,label}].
-    # Needs swap_policy=on, root_resize_policy=resize and a capped root.
-    data_area: Literal["none", "partition", "lvm"] = "none"
-    data_partition: dict = field(default_factory=dict)
-    data_lvm: dict = field(default_factory=dict)
+    # The explicit disk plan (README "Disk layout", docs/DESIGN-data-area-v2.md):
+    #   {"root": "*"|"keep"|GiB|"N%", "reserve_gb": 0|GiB|"*",
+    #    "data": {"kind": "partitions"|"lvm", "vg", "pv_size", "vg_free_gib",
+    #             "volumes": [{"name","size","fs","mount","label"}]}}
+    # An omitted size is "*" (the remainder); exactly one "*" per plan; the plan
+    # must account for the whole disk. Empty/absent = plain root growth governed
+    # by root_resize_policy and swap. When set, the root behaviour is DERIVED
+    # from `root` ("keep" = untouched, anything else = resize) and
+    # root_resize_policy must stay at its default.
+    partitioning: dict = field(default_factory=dict)
     preserve_root_size_gb: int = 10
     zswap_compressor: Literal["zstd", "lz4", "lzo-rle"] = "zstd"
     zswap_pool_percent: int = 25
@@ -322,6 +313,9 @@ def _reject_obsolete(data: dict[str, Any]) -> None:
     renamed = sorted({str(key).lower() for key in data} & set(RENAMED_V1_SETTINGS))
     if renamed:
         raise ConfigError("; ".join(f"{key} was replaced by {RENAMED_V1_SETTINGS[key]}" for key in renamed))
+    removed = [key for key in layout_policy.REMOVED_KEYS if key.upper() in data]
+    if removed:
+        raise ConfigError(layout_policy.removed_keys_message(removed))
     unsupported = sorted({str(key).lower() for key in data} & UNSUPPORTED_V2_SETTINGS)
     if unsupported:
         raise ConfigError(f"setting(s) are not part of minimal v2: {', '.join(unsupported)}")
@@ -393,10 +387,6 @@ def validate_config(config: Config) -> None:
         isinstance(config.swap_disk_total_gb, bool) or not isinstance(config.swap_disk_total_gb, int)
     ):
         raise ConfigError("swap_disk_total_gb must be an integer GiB value or null for auto")
-    if config.root_max_size_gb is not None and (
-        isinstance(config.root_max_size_gb, bool) or not isinstance(config.root_max_size_gb, int)
-    ):
-        raise ConfigError("root_max_size_gb must be an integer GiB value or null")
     string_names = [
         "log_dir", "state_dir", "stage2_output",
         "telegram_bot_token", "telegram_chat_id",
@@ -465,30 +455,17 @@ def validate_config(config: Config) -> None:
         value = getattr(config, name)
         if not _SIZE_RE.fullmatch(str(value)) or not 1 <= value <= 10240:
             raise ConfigError(f"{name} must be an integer from 1 to 10240")
-    if config.root_max_size_gb is not None:
-        if not 1 <= config.root_max_size_gb <= 10240:
-            raise ConfigError("root_max_size_gb must be an integer from 1 to 10240 or null")
-        if config.root_max_size_gb < config.preserve_root_size_gb:
-            raise ConfigError(
-                "root_max_size_gb must be greater than or equal to preserve_root_size_gb"
-            )
-    if not isinstance(config.disk_layout, str) or config.disk_layout not in {"full-root", "dev-host"}:
-        raise ConfigError("disk_layout must be full-root or dev-host")
-    if config.disk_layout == "dev-host" and (
-        config.swap_policy != "on" or config.root_resize_policy != "resize"
-    ):
-        raise ConfigError(
-            "disk_layout=dev-host requires swap_policy=on and root_resize_policy=resize "
-            "(swap is placed at the end of the disk, root is sized by the layout rule)"
-        )
+    if not isinstance(config.partitioning, dict):
+        raise ConfigError("partitioning must be an object")
     try:
-        area = layout_policy.parse_data_area(config.data_area, config.data_partition, config.data_lvm)
-        if area.mode != "none":
-            layout_policy.validate_data_area_prereqs(
-                swap_policy=config.swap_policy,
-                root_resize_policy=config.root_resize_policy,
-                root_capped=config.disk_layout == "dev-host" or config.root_max_size_gb is not None,
-            )
+        spec = layout_policy.disk_spec(config.partitioning)
+        if spec is not None:
+            layout_policy.validate_prereqs(swap_policy=config.swap_policy)
+            if config.root_resize_policy != "resize":
+                raise layout_policy.LayoutPolicyError(
+                    "root_resize_policy cannot be combined with partitioning: the root behaviour is derived from "
+                    "partitioning.root (\"keep\" = untouched, a size or \"*\" = resize); remove root_resize_policy"
+                )
     except layout_policy.LayoutPolicyError as exc:
         raise ConfigError(str(exc)) from exc
     if not 5 <= config.zswap_pool_percent <= 60:

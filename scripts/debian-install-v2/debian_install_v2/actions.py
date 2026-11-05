@@ -88,7 +88,7 @@ _SAFE_COMMANDS = {
     "pvcreate": {"-y"},
     "vgcreate": {"-s"},  # non-empty so unknown options are refused
     "vgchange": {"-ay"},
-    "lvcreate": {"-y", "-n", "-L"},
+    "lvcreate": {"-y", "-n", "-L", "-l"},  # -L NG fixed, -l N extents, -l 100%FREE for the "*" LV
     "lvs": {"--noheadings", "-o"},
     "vgs": {"--noheadings", "-o"},
     "pvs": {"--noheadings", "-o"},

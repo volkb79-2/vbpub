@@ -254,9 +254,9 @@ See [README](README.md#unattended-restore-iso-workflow) for the feature
 overview and [DESIGN-GUIDE](DESIGN-GUIDE.md#restore-iso-lifecycle) for the
 two-stage lifecycle rationale.
 
-## Install-time data area (debian-install-v2 `data_area`)
+## Install-time data area (debian-install-v2 `partitioning`)
 
-The producer config keys `data_area`, `data_partition` and `data_lvm` (debian-install-v2 README "Data area") ride in the customScript config that `debian-install-v2.py build-customscript` embeds (`VBPUB_CONFIG_EXTRA_JSON`); `install-host.py` passes the customScript through untouched and needed no change. They require `swap_policy=on`, `root_resize_policy=resize` and `disk_layout=dev-host` (or `root_max_size_gb`); the bundle is refused at build time otherwise. When the installer created the cow (a partition or LVM LV with filesystem label `MDT_COW`, btrfs, mounted at the runner's `COW_MOUNT`, default `/srv/cow`), `runner/provision-runner.sh` detects it by label and skips carving; it exits 4 for a non-btrfs cow and 8 when the cow is mounted elsewhere than `COW_MOUNT`. With `data_area=none` the carve from the free row works as before.
+The producer config key `partitioning` (debian-install-v2 README "Disk layout"; it replaced the removed `data_area`, `data_partition`, `data_lvm`, `disk_layout` and `root_max_size_gb`) rides in the customScript config that `debian-install-v2.py build-customscript` embeds (`VBPUB_CONFIG_EXTRA_JSON`); `install-host.py` passes the customScript through untouched and needed no change. A plan needs `swap_policy` `on` or `off`; the bundle is refused at build time when the plan is invalid or does not account for the whole disk. When the installer created the cow (a partition or LVM LV with filesystem label `MDT_COW`, btrfs, mounted at the runner's `COW_MOUNT`, default `/srv/cow`), `runner/provision-runner.sh` detects it by label and skips carving; it exits 4 for a non-btrfs cow and 8 when the cow is mounted elsewhere than `COW_MOUNT`. Without a data area (`reserve_gb: "*"`, free space behind root) the carve from the free row works as before.
 
 ## Remote gate (run a lane on a test host)
 
