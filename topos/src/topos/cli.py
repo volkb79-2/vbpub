@@ -428,7 +428,13 @@ def parse_squeeze_args(argv: list[str]) -> argparse.Namespace:
     subcommands (unlike ``topos action preview/execute``).
     """
     parser = ToposArgumentParser(prog="topos squeeze")
-    parser.add_argument("--target", type=str, required=True, help="cgroup path to squeeze")
+    parser.add_argument("--target", type=str, default=None, help="cgroup path to squeeze (required unless --recover)")
+    parser.add_argument(
+        "--recover",
+        action="store_true",
+        help="restore memory.high from leftover recovery records of interrupted squeezes "
+        "(all, or only --target); needs root",
+    )
     parser.add_argument("--admin", action="store_true", help="enable admin mode (required)")
     parser.add_argument("--confirm", type=str, default="", help="type SQUEEZE to confirm the measurement")
     parser.add_argument("--step", type=str, default="256M", help="step size (default: 256M)")
@@ -456,6 +462,12 @@ def _main_squeeze(argv: list[str]) -> int:
     )
 
     args = parse_squeeze_args(argv)
+
+    if args.recover:
+        return _main_squeeze_recover(args.target)
+    if args.target is None:
+        print_cli_error("error: --target is required (unless --recover)")
+        return 2
 
     try:
         step_bytes = parse_size(args.step)
@@ -488,8 +500,18 @@ def _main_squeeze(argv: list[str]) -> int:
         confirm=args.confirm,
     )
 
-    result = run_squeeze_gated(config)
+    from topos.actions.squeeze import _Terminated
 
+    try:
+        result = run_squeeze_gated(config)
+    except _Terminated as term:
+        return 128 + term.signum
+
+    if result.stop_reason == "restore_failed":
+        # The loud stderr line with the stuck value was already printed by the
+        # runner; repeat it with the rendering so it is not lost in --json mode.
+        print(render_squeeze_result(result), file=sys.stderr)
+        return 3
     if result.stop_reason == "error":
         print(render_squeeze_result(result), file=sys.stderr)
         return 2
@@ -501,7 +523,35 @@ def _main_squeeze(argv: list[str]) -> int:
 
     if result.stop_reason == "interrupted":
         return 130
+    if result.exit_signal:
+        return 128 + result.exit_signal
     return 0
+
+
+def _main_squeeze_recover(target: str | None) -> int:
+    """``topos squeeze --recover``: restore memory.high from recovery records."""
+    import os
+
+    from topos.actions.squeeze import recover_squeeze
+
+    if os.geteuid() != 0:
+        print_cli_error("error: --recover requires root privileges")
+        return 2
+    outcomes = recover_squeeze(target)
+    if not outcomes:
+        print("nothing to recover")
+        return 0
+    failed = 0
+    for outcome in outcomes:
+        if outcome.ok:
+            print(f"recovered {outcome.target}: memory.high restored to {outcome.value}")
+        else:
+            failed += 1
+            print(
+                f"RECOVERY FAILED for {outcome.target} ({outcome.path}): {outcome.error}",
+                file=sys.stderr,
+            )
+    return 3 if failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -796,6 +846,13 @@ def parse_action_args(argv: list[str]) -> argparse.Namespace:
     execute.add_argument("--property", type=str, default=None, help="property for systemd-set-property (e.g. memory.high)")
     execute.add_argument("--value", type=str, default=None, help="value for systemd-set-property (e.g. max or byte count)")
     execute.add_argument("--mode", type=str, default=None, help="persistence mode: runtime|persistent (default: auto-detect)")
+    execute.add_argument(
+        "--expect-current",
+        type=str,
+        default=None,
+        dest="expect_current",
+        help="systemd-set-property: refuse (stale) unless the current memory.high equals this value (max or bytes)",
+    )
     # P72 kill-specific execute arguments
     execute.add_argument("--signal", type=str, default=None, help="signal name for kill action (e.g. TERM, KILL)")
     execute.add_argument("--force", action="store_true", help="allow KILL signal (required for --signal KILL)")
@@ -831,7 +888,7 @@ def _main_action(argv: list[str]) -> int:
 
     try:
         resolved_target = _resolve_mutual_exclusive_target(
-            args.target, args.container, "action"
+            args.target, args.container, "action", getattr(args, "kind", None)
         )
     except (ValueError, ContainerResolveError) as exc:
         print(str(exc), file=sys.stderr)
@@ -963,6 +1020,7 @@ def _main_action(argv: list[str]) -> int:
                 admin=args.admin,
                 confirm=args.confirm,
                 timeout=args.timeout,
+                expect_current=args.expect_current,
             )
         elif args.kind in ("docker-kill", "systemd-kill"):
             from topos.actions.execute import execute_kill
@@ -1418,7 +1476,12 @@ def _resolve_container_target(name_or_prefix: str) -> str:
     return key
 
 
-def _resolve_mutual_exclusive_target(target: str | None, container: str | None, command: str) -> str:
+def _resolve_mutual_exclusive_target(
+    target: str | None,
+    container: str | None,
+    command: str,
+    kind: str | None = None,
+) -> str:
     """Resolve --target / --container mutual exclusivity.
 
     Returns the effective target string. Raises ValueError on misuse
@@ -1442,7 +1505,19 @@ def _resolve_mutual_exclusive_target(target: str | None, container: str | None, 
             f"choose either --target or --container for {command}"
         )
     if container is not None:
-        return _resolve_container_target(container)
+        key = _resolve_container_target(container)
+        if kind is not None and kind.startswith("docker-"):
+            # C-08: docker verbs / docker-json-log take the container ID, not
+            # the cgroup key (which contains '/' and is always refused).
+            from topos.collect.dockerjoin import docker_id_from_key
+
+            cid = docker_id_from_key(key)
+            if cid is None:
+                raise ContainerResolveError(
+                    f"container {container!r} did not resolve to a docker container ID"
+                )
+            return cid
+        return key
     if target is not None:
         return target
     raise ValueError(
@@ -1468,7 +1543,7 @@ def _main_inspect_files(argv: list[str]) -> int:
     # Resolve --container to --target before validation
     try:
         resolved_target = _resolve_mutual_exclusive_target(
-            args.target, args.container, "inspect-files"
+            args.target, args.container, "inspect-files", getattr(args, "kind", None)
         )
     except (ValueError, ContainerResolveError) as exc:
         print(str(exc), file=sys.stderr)

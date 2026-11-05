@@ -26,7 +26,7 @@ def test_execute_set_property_resolves_target_and_forwards_public_options(monkey
     expected = _result("systemd-set-property", "resolved.service")
     monkeypatch.setattr(
         "topos.cli._resolve_mutual_exclusive_target",
-        lambda target, container, command: calls.append(("resolve", target, container, command)) or "resolved.service",
+        lambda target, container, command, kind=None: calls.append(("resolve", target, container, command, kind)) or "resolved.service",
     )
     monkeypatch.setattr(
         "topos.actions.execute.execute_set_property",
@@ -39,11 +39,11 @@ def test_execute_set_property_resolves_target_and_forwards_public_options(monkey
         "--admin", "--confirm", "EXECUTE", "--timeout", "7",
     ]) == 0
     assert calls == [
-        ("resolve", None, "prefix", "action"),
+        ("resolve", None, "prefix", "action", "systemd-set-property"),
         ("set", ("resolved.service",), {
             "property_name": "memory.high", "property_value": "512M",
             "persistence": "persistent", "admin": True, "confirm": "EXECUTE",
-            "timeout": 7.0,
+            "timeout": 7.0, "expect_current": None,
         }),
     ]
 
