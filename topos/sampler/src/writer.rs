@@ -23,6 +23,18 @@ pub struct Job {
     pub delta: Delta,
 }
 
+impl Job {
+    /// Heap this job keeps alive while it waits in the queue (X-05): the frame, the events and the
+    /// dictionary delta. An estimate, but monotone in what is actually held.
+    pub fn bytes(&self) -> u64 {
+        let vals: usize = self.frame.iter().map(|(_, v)| v.len() * std::mem::size_of::<Val>() + std::mem::size_of::<(u32, Vec<Val>)>()).sum();
+        let ev: usize = self.events.iter().map(|e| e.len() + std::mem::size_of::<String>()).sum();
+        let d: usize = self.delta.mets.iter().map(|(n, _)| n.len() + std::mem::size_of::<(String, bool)>()).sum::<usize>()
+            + self.delta.ents.iter().map(|(_, n)| n.len() + std::mem::size_of::<(u32, String)>()).sum::<usize>();
+        (vals + ev + d + std::mem::size_of::<Job>()) as u64
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct WInfo {
     pub tiers: Vec<TierInfo>,
@@ -34,7 +46,9 @@ pub struct WInfo {
 }
 
 struct Inner {
-    q: VecDeque<Job>,
+    q: VecDeque<(Job, u64)>,
+    /// Sum of the queued jobs' sizes.
+    bytes: u64,
     closed: bool,
 }
 
@@ -42,41 +56,60 @@ pub struct Shared {
     inner: Mutex<Inner>,
     cv: Condvar,
     cap: usize,
+    cap_bytes: u64,
     pub dropped_frames: AtomicU64,
+    pub dropped_bytes: AtomicU64,
     pub submitted_ts_ms: AtomicU64,
     pub info: Mutex<WInfo>,
 }
 
 impl Shared {
-    pub fn new(cap: usize) -> Arc<Shared> {
+    /// `cap` jobs and `cap_bytes` bytes (both are limits; the newest job always stays).
+    pub fn new(cap: usize, cap_bytes: u64) -> Arc<Shared> {
         Arc::new(Shared {
-            inner: Mutex::new(Inner { q: VecDeque::new(), closed: false }),
+            inner: Mutex::new(Inner { q: VecDeque::new(), bytes: 0, closed: false }),
             cv: Condvar::new(),
             cap: cap.max(2),
+            cap_bytes,
             dropped_frames: AtomicU64::new(0),
+            dropped_bytes: AtomicU64::new(0),
             submitted_ts_ms: AtomicU64::new(0),
             info: Mutex::new(WInfo::default()),
         })
     }
 
-    /// Never blocks on the writer: at worst the oldest queued frame is dropped and counted.
+    /// Never blocks on the writer: at worst the oldest queued frames are dropped and counted,
+    /// when the queue holds more than `cap` jobs or more than `cap_bytes` bytes.
     pub fn submit(&self, job: Job) {
         self.submitted_ts_ms.store(job.ts_ms, Ordering::SeqCst);
+        let sz = job.bytes();
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        g.q.push_back(job);
-        while g.q.len() > self.cap {
-            let old = g.q.pop_front().unwrap();
+        g.q.push_back((job, sz));
+        g.bytes += sz;
+        while g.q.len() > 1 && (g.q.len() > self.cap || g.bytes > self.cap_bytes) {
+            let (old, osz) = g.q.pop_front().unwrap();
+            g.bytes = g.bytes.saturating_sub(osz);
             self.dropped_frames.fetch_add(1, Ordering::SeqCst);
-            if let Some(next) = g.q.front_mut() {
+            self.dropped_bytes.fetch_add(osz, Ordering::SeqCst);
+            let mut grew = 0u64;
+            if let Some((next, nsz)) = g.q.front_mut() {
                 // the frame is lost; the dictionary ids and the events it carried are not
                 next.delta.prepend(old.delta);
                 let mut ev = old.events;
                 ev.append(&mut next.events);
                 next.events = ev;
+                let after = next.bytes();
+                grew = after.saturating_sub(*nsz);
+                *nsz = after;
             }
+            g.bytes += grew;
         }
         drop(g);
         self.cv.notify_one();
+    }
+
+    pub fn queue_bytes(&self) -> u64 {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).bytes
     }
 
     pub fn queue_len(&self) -> u64 {
@@ -91,7 +124,8 @@ impl Shared {
     pub fn next(&self) -> Option<Job> {
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         loop {
-            if let Some(j) = g.q.pop_front() {
+            if let Some((j, sz)) = g.q.pop_front() {
+                g.bytes = g.bytes.saturating_sub(sz);
                 return Some(j);
             }
             if g.closed {

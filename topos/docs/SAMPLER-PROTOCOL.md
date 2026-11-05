@@ -226,6 +226,17 @@ table). A client that ignores unknown fields and treats unknown states as `unava
 - **Transport.** Socket mode stays 0600 (root only): `current` carries full command lines. One sampler per
   socket (`<socket>.lock`); a second one fails to start. A reply has an overall write deadline of
   4 x `client_write_ms`.
+- **S3 additions (X-01..X-15), all additive.** `status.store`: `queue_bytes`, `queue_cap_bytes`,
+  `dropped_bytes` (the writer queue is also bounded in bytes), `tmpfs_dir_is_tmpfs` (`null`/`true`/`false`),
+  `notes` (start-up findings); `status.sampling`: `last_tick_age_ms`, `stalled` (no tick finished for 3
+  tick periods), `stalled_after_ms`. `series` on rollup tiers adds `bucket_ticks`, `valid_ticks` (parallel
+  to `points`: ticks of the bucket that held a value; `null` for frames written before this field) and
+  `partial_points`; a counter bucket's sum covers only its valid ticks while `dt_ms` spans all of them.
+  `current`: `"na":true` (with `compact`) keeps `not_applicable` states; with `fields`, `entities_omitted`
+  counts entities left out because none of the requested metrics exist on them. `cmdline` values are
+  redacted (`<redacted>`). `io.*` of a cgroup gives `counter_reset` for the tick on which a block device
+  dropped out of its `io.stat` or returned after dropping out. Dictionary files start with a count
+  header line `#TOPOS-DICT 1 n=<20 digits>`. Start-up refusals exit 2 (see `sampler/README.md`).
 - **Limits that remain.** Rollup bucket boundaries are tick counts since start, not wall-aligned; a
   counter bucket's `dt_ms` includes state ticks. `memory.stat` keys unknown to the classifier default to
   gauge; the classification is stored in `mets.dict` at first sight.

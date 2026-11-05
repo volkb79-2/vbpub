@@ -20,8 +20,9 @@ Restart=on-failure
 RestartSec=5s
 
 # The daemon needs host cgroup, Docker, BPF and optional DAMON access, so it is
-# intentionally a host service rather than a privileged container.  Its slice
-# carries the D-024 envelope (128M memory, 25% CPU quota, low weights).
+# intentionally a host service rather than a privileged container.  Its slice,
+# topos-legacy.slice, keeps the limits the daemon always had (256M/512M memory, weight 50,
+# no CPU quota, so incident collection is not throttled); the D-024 envelope is the sampler's.
 NoNewPrivileges=true
 PrivateTmp=true
 

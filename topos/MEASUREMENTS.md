@@ -945,7 +945,7 @@ under `/dev/shm`, cold tier under `/tmp`, everything removed afterwards), store 
 | writer last job | about 2 ms, on the writer thread, not on the tick |
 | VmHWM / VmRSS at exit | 10.5 MB / 3.3 MB |
 | overruns / skipped ticks / counter resets / dropped frames / write errors | 0 / 0 / 0 / 0 / 0 |
-| tmpfs tiers / cold tier | 7.8 MB / 140 KB zstd (1.6 GB/day extrapolation not meaningful: 5 min) |
+| tmpfs tiers / cold tier | 7.8 MB / 140 KB zstd in 5 min (about 40 MB/day if linear; not measured over a day) |
 | process rows / thread scans per tick | 11 / 7 (`pids.d_unseen` 0) |
 
 The earlier Rust 0.1.0 row for r1002 (about 1.4-1.5%) is lower; this run adds the per-thread scan of candidates,

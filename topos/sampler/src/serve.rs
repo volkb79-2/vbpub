@@ -14,10 +14,9 @@ use crate::store::{self, TierInfo};
 use crate::util::*;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -40,6 +39,12 @@ pub struct StoreStatus {
     pub corrupt_frame_reads: u64,
     pub frames_skipped: u64,
     pub cold_other_bytes: u64,
+    pub queue_bytes: u64,
+    pub dropped_bytes: u64,
+    /// `None` when the store is disabled; false = the hot/warm tiers sit on a disk-backed filesystem.
+    pub tmpfs_dir_is_tmpfs: Option<bool>,
+    /// Start-up findings (tmpfs warning, foreign files); bounded.
+    pub notes: Vec<String>,
 }
 
 #[derive(Default, Clone)]
@@ -158,6 +163,17 @@ pub struct Ctx {
     snap: Mutex<Arc<Snapshot>>,
     clients: AtomicUsize,
     heavy: AtomicUsize,
+    /// Wall ms when the sampling thread last finished a tick (X-11 watchdog).
+    last_beat_ms: AtomicU64,
+}
+
+/// A sampling thread that has not finished a tick for this many tick periods is reported stalled.
+pub const STALL_TICKS: u64 = 3;
+
+/// (age of the last completed tick in ms, stalled?) — pure, so it is testable without a clock.
+pub fn stall_state(now_ms: u64, beat_ms: u64, tick_ms: u64) -> (u64, bool) {
+    let age = now_ms.saturating_sub(beat_ms);
+    (age, age > STALL_TICKS.saturating_mul(tick_ms.max(1)))
 }
 
 /// Releases a heavy-request slot when dropped.
@@ -173,7 +189,24 @@ impl Ctx {
         let started_ms = wall_ms();
         static SEQ: AtomicUsize = AtomicUsize::new(0);
         let epoch = format!("{:x}-{:x}-{:x}", started_ms, std::process::id(), SEQ.fetch_add(1, Ordering::SeqCst));
-        Ctx { cfg, epoch, started_ms, view_json, snap: Mutex::new(Arc::new(Snapshot::default())), clients: AtomicUsize::new(0), heavy: AtomicUsize::new(0) }
+        Ctx {
+            cfg,
+            epoch,
+            started_ms,
+            view_json,
+            snap: Mutex::new(Arc::new(Snapshot::default())),
+            clients: AtomicUsize::new(0),
+            heavy: AtomicUsize::new(0),
+            last_beat_ms: AtomicU64::new(started_ms),
+        }
+    }
+    /// Called by the sampling thread after each completed tick.
+    pub fn beat(&self) {
+        self.last_beat_ms.store(wall_ms(), Ordering::SeqCst);
+    }
+    #[cfg(test)]
+    pub fn set_beat_for_test(&self, ms: u64) {
+        self.last_beat_ms.store(ms, Ordering::SeqCst);
     }
     /// The lock is held only for the pointer swap; readers serialize outside it.
     pub fn publish(&self, s: Snapshot) {
@@ -191,24 +224,14 @@ impl Ctx {
     }
 }
 
-pub fn spawn(ctx: Arc<Ctx>) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    let path = ctx.cfg.sampler.socket_path.clone();
-    if let Some(p) = std::path::Path::new(&path).parent() {
-        let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(p);
-    }
-    // One sampler per socket: a second instance would steal the socket and share the store files.
-    let lock = std::fs::OpenOptions::new().create(true).write(true).mode(0o600).open(format!("{path}.lock"))?;
-    if !try_flock(&lock) {
-        return Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, format!("{path}.lock is held: another topos-sampler is running")));
-    }
-    let _ = std::fs::remove_file(&path);
-    let l = UnixListener::bind(&path)?;
-    // Root only: `current` carries full command lines. Group access is an operator decision
-    // that needs command-line redaction first (docs/SAMPLER-PROTOCOL.md, Transport).
-    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+/// Start serving on the socket. The caller already holds the instance lock (`fsafe::Instance`,
+/// X-02), which lives as long as the accept thread. The socket is created private (X-08).
+pub fn spawn(ctx: Arc<Ctx>, inst: crate::fsafe::Instance) -> std::io::Result<()> {
+    // Root only: `current` carries command lines (redacted, but still host internals). Group
+    // access is an operator decision (docs/SAMPLER-PROTOCOL.md, Transport).
+    let l = crate::fsafe::bind_private(&inst)?;
     std::thread::Builder::new().name("accept".into()).spawn(move || {
-        let _lock = lock;
+        let _inst = inst;
         for s in l.incoming() {
             let s = match s {
                 Ok(s) => s,
@@ -468,7 +491,28 @@ fn status(ctx: &Ctx, o: &mut String) -> bool {
         w.enabled, w.queue_len, w.dropped_frames, w.lag_ms, w.last_job_us, w.write_errors, w.frames_skipped, w.torn_frames_seen, w.corrupt_frame_reads
     ));
     jstr(o, &w.last_error);
-    o.push_str(&format!("}},\"cmdline\":{{\"pending\":{},\"timeouts\":{}}}", st.cmd_pending, st.cmd_timeouts));
+    o.push_str(&format!(
+        ",\"queue_bytes\":{},\"queue_cap_bytes\":{},\"dropped_bytes\":{},\"tmpfs_dir_is_tmpfs\":{},\"notes\":[",
+        w.queue_bytes,
+        ctx.cfg.store.writer_queue_bytes,
+        w.dropped_bytes,
+        w.tmpfs_dir_is_tmpfs.map_or("null".to_string(), |b| b.to_string())
+    ));
+    for (i, n) in w.notes.iter().enumerate() {
+        if i > 0 {
+            o.push(',');
+        }
+        jstr(o, n);
+    }
+    // X-11: a sampling thread stuck in an uninterruptible read cannot report itself; this is
+    // computed here, from the time its last tick finished.
+    let (age, stalled) = stall_state(wall_ms(), ctx.last_beat_ms.load(Ordering::SeqCst), ctx.cfg.sampler.tick_ms);
+    o.push_str(&format!(
+        "]}},\"sampling\":{{\"last_tick_age_ms\":{age},\"stalled\":{stalled},\"stalled_after_ms\":{}}},\"cmdline\":{{\"pending\":{},\"timeouts\":{}}}",
+        STALL_TICKS * ctx.cfg.sampler.tick_ms,
+        st.cmd_pending,
+        st.cmd_timeouts
+    ));
     false
 }
 
@@ -481,12 +525,14 @@ pub struct Proj {
     names: Vec<String>,
     any: bool,
     compact: bool,
+    /// `"na":true`: compact keeps `not_applicable` states as typed objects (X-14).
+    na: bool,
 }
 
 impl Proj {
     pub fn from_req(v: &serde_json::Value) -> Proj {
         let names: Vec<String> = v["fields"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-        Proj { any: v["fields"].is_array(), names, compact: v["compact"].as_bool().unwrap_or(false) }
+        Proj { any: v["fields"].is_array(), names, compact: v["compact"].as_bool().unwrap_or(false), na: v["na"].as_bool().unwrap_or(false) }
     }
     fn keep(&self, name: &str) -> bool {
         !self.any || self.names.iter().any(|n| n == name || (n.ends_with('*') && name.starts_with(&n[..n.len() - 1])))
@@ -500,7 +546,7 @@ fn put_metric(o: &mut String, s: &Snapshot, dt: f64, v: &Val, pj: &Proj, first: 
         return false;
     }
     if pj.compact {
-        if v.st != stc::VALUE && v.st <= stc::NA_NO_FULL {
+        if v.st != stc::VALUE && v.st <= stc::NA_NO_FULL && !pj.na {
             return false;
         }
         if !*first {
@@ -561,6 +607,7 @@ fn current(ctx: &Ctx, prefix: &str, with_procs: bool, pj: &Proj, out: &mut Strin
     ));
     let mut truncated = false;
     let mut first = true;
+    let mut omitted = 0u64;
     // Entities with values this tick, then entities that only have sticky states (every
     // file unreadable): a cgroup in the tree is always listed, never silently dropped.
     let in_frame: std::collections::HashSet<u32> = s.frame.iter().map(|(i, _)| *i).collect();
@@ -591,6 +638,7 @@ fn current(ctx: &Ctx, prefix: &str, with_procs: bool, pj: &Proj, out: &mut Strin
             }
         }
         if pj.any && f2 {
+            omitted += 1;
             continue; // nothing of what was asked for on this entity
         }
         e.push('}');
@@ -604,7 +652,12 @@ fn current(ctx: &Ctx, prefix: &str, with_procs: bool, pj: &Proj, out: &mut Strin
         first = false;
         out.push_str(&e);
     }
-    out.push_str("},\"procs\":[");
+    out.push_str("}");
+    if pj.any {
+        // entities left out because none of the requested metrics exist on them: not vanished
+        out.push_str(&format!(",\"entities_omitted\":{omitted}"));
+    }
+    out.push_str(",\"procs\":[");
     if with_procs {
         let mut fp = true;
         for p in &s.procs {
