@@ -2391,7 +2391,11 @@ class TestArgvConstruction:
         idx = lambda flag: run_call.index(flag)  # noqa: E731
         assert run_call[0:3] == ["run", "-d", "--name"]
         assert run_call[4] == "--init"
-        assert run_call[idx("--name") + 1].startswith("run-gate-repo-suite-")
+        # RG-242: <repo>-run-gate-<project>-<lane>-<sha8>-<stamp>-<ns9>
+        assert run_call[idx("--name") + 1].startswith("repo-run-gate-proj-suite-")
+        assert run_gate.is_lane_container_name(run_call[idx("--name") + 1])
+        assert "run-gate.lane=suite" in run_call
+        assert "run-gate.project=proj" in run_call
         assert run_call[idx("--cgroup-parent") + 1] == "dev-gates.slice"
         assert run_call[idx("-e") + 1] == f"{CGROUP_VAR}=dev-gates.slice"
         # REAL derivation (subprocess can't see module monkeypatches): /tmp is

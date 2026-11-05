@@ -40,7 +40,9 @@ for n in $list; do
     sleep 5
   done
   if kill -0 "$lane_pid" 2>/dev/null; then
-    cn=$(docker ps --format '{{.Names}}' | grep "^run-gate-$commit-" | head -1 || true)
+    # RG-242: label first (new names carry no commit-prefix), then the pre-RG-242 `run-gate-<sha>-` name
+    cn=$(docker ps --filter "label=run-gate.commit=$commit" --format '{{.Names}}' | head -1 || true)
+    [[ -n $cn ]] || cn=$(docker ps --format '{{.Names}}' | grep "^run-gate-$commit-" | head -1 || true)
     [[ -n $cn ]] && docker stop "$cn" >/dev/null
   fi
   set +e; wait "$lane_pid"; rc=$?; set -e

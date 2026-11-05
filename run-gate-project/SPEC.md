@@ -555,7 +555,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   judged worktree must have zero `git status --porcelain` entries; refusal
   names the count, first entry, and the flag escape.
 - `R-15` **Container lanes** run detached: `docker run -d --name
-  run-gate-<repo>-<lane>-<pid>-<epoch> --init --cgroup-parent <slice> -e
+  <repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9> --init
+  --label run-gate.{repo,project,lane,commit,started,name-schema}=...
+  (RG-242; pre-RG-242 name `run-gate-<repo>-<lane>-<pid>-<epoch>`, no labels)
+  --cgroup-parent <slice> -e
   CGROUP_PARENT_DEV_GATES=<slice> <mounts per R-23>
   [--memory M] <image> bash -c <inner>` — the slice passed BOTH ways
   (`--cgroup-parent` AND `-e`), the repo dual-mounted (physical AND

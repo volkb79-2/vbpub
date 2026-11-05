@@ -490,7 +490,7 @@ finish() {
       if docker inspect "$n" 2>/dev/null | grep -oE '/rg-[A-Za-z0-9._-]+' | grep -qxF -- "/$CK"; then
         docker rm -f -- "$n" >/dev/null 2>&1 && log "removed container $n"
       fi
-    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^run-gate-' || true)
+    done < <({ docker ps -a --filter label=run-gate.lane --format '{{.Names}}' 2>/dev/null; docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^run-gate-' || true; } | sort -u)
   fi
   docker exec -u vscode "$COCKPIT" rm -f "$PIDF" 2>/dev/null || true
   if [[ -d $CKDIR && $CK == rg-* && $CKDIR == "$HOME/checkouts/$REPO/.worktrees"/rg-* ]]; then

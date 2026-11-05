@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Changed
+- feat(run-gate): lane containers are named `<repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9>` (was `run-gate-<repo>-<lane>-<pid>-<epoch>`, which read as `run-gate-<40-hex>-...` for release checkouts) and carry labels `run-gate.repo/project/lane/commit/started/name-schema` (+ `job`/`campaign` from `RUN_GATE_JOB`/`RUN_GATE_CAMPAIGN`). Tools should filter by label; the old `^run-gate-` name match stays valid for containers started before this change. remote-gate cleanup and run-jobs-window match both generations (RG-242)
+
 ### Testing
 - test(run-gate): kill the three R2 survivors in `--list --json` (host env without docker, container env with docker, key-sorted flushed output) (RG-169)
 
