@@ -282,11 +282,17 @@ def test_a_trickling_client_is_cut_off_by_the_total_request_deadline(tmp_path: P
                 try:
                     sock.sendall(b" ")
                 except OSError:
+                    # The server replied and closed between our recv and this
+                    # send. The reply is still queued on this socket: read it
+                    # below rather than treating the closed peer as no reply.
                     break
                 try:
                     reply = sock.recv(65536)
                 except socket.timeout:
                     pass
+            if not reply:
+                sock.settimeout(15.0)
+                reply = sock.recv(65536)
         assert json.loads(reply.decode().splitlines()[0]) == {
             "type": "error",
             "error": "request timed out",
