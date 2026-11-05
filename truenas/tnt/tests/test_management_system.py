@@ -11,7 +11,7 @@ from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea, T
 
 from dataclasses import replace
 
-from helpers import wait_until
+from helpers import wait_until, wait_until_sync
 
 # A deliberately hung RPC is released by the test itself (in its finally), never by a short timer
 # racing the event loop under host load; this ceiling only keeps a broken test from hanging forever.
@@ -355,6 +355,9 @@ def test_update_apply_binds_target_and_emits_job_progress():
             progress = []
             apply_plan(plan, session.rpc, allow_write=True, typed_confirmation=plan.action.confirm_target,
                        job_progress=lambda job: progress.append(job.get("progress", {}).get("percent")))
+            # Progress callbacks run on the client's callback thread and are advisory: the final
+            # 100% event may land just after the job result is returned, so wait for it.
+            wait_until_sync(lambda: len(progress) >= 3, what="final job progress event")
             assert progress == [25, 75, 100]
             request = next(row for row in server.requests if row["method"] == "update.run")
             assert request["params"] == [{"dataset_name": None, "resume": False,
