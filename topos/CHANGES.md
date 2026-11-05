@@ -33,6 +33,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(topos/daemon): request and response phases have a total deadline (trickling clients no longer hold slots); the busy reply is an envelope error for envelope clients (B-05)
 - fix(topos/daemon): legacy (no `v`) requests go through the authorization hook, audit log and response byte cap; deeply nested JSON gets an error reply (B-06, B-19)
 - fix(topos/daemon): component health errors carry the exception text (D-18)
+- fix(topos/query): `coverage.complete` is false when the data does not span the requested window; `coverage.requested_span_s` added (B-10)
+- fix(topos/query): integral, state_duration and derived rates no longer bridge holes wider than 1.5 intervals; integral/state_duration report `covered_s` and `span_s` (B-11)
+- fix(topos/report): `--group-by slice` builds the parent map once instead of per entity per frame (B-12)
+- fix(topos/compare): totals (`counter_delta`, `event_count`, `integral`) over windows whose spans differ by more than 10% are refused as `incomplete_coverage` (B-13)
+- fix(topos/mcp): `topos_history` reports `gap`, `truncated`, `frames_returned`, `oldest_ts`, `newest_ts` and `requested_since_ts` (B-15)
 - fix(topos/tests): B-047 version assertions compare against `topos.__version__` (fallback test reads pyproject `fallback_version`) instead of the literal "0.1.0"
 - fix(topos/tests): B-003 MCP-dependent smoke/server tests skip cleanly (`requires_mcp`) when the `topos[mcp]` extra is absent; the P84 gate still fails such a run
 - fix(topos/cli): B-023 an unresolvable selector in the live TUI exits 2 with the typed message, as `--once` does

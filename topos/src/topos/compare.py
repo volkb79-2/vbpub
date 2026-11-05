@@ -149,6 +149,33 @@ def _coverage_reason(current_meta: dict[str, Any], baseline_meta: dict[str, Any]
     )
 
 
+# Extensive semantics scale with the length of the window: a total over 30 s
+# is not comparable with a total over an hour.
+_EXTENSIVE_SEMANTICS = frozenset({"counter_delta", "event_count", "integral"})
+_EXTENSIVE_SPAN_TOLERANCE = 0.10
+
+
+def _span_reason(current_meta: dict[str, Any], baseline_meta: dict[str, Any]) -> str | None:
+    """Refusal reason when the two observed windows differ in length."""
+    spans: list[float] = []
+    for meta in (current_meta, baseline_meta):
+        cov = meta.get("coverage")
+        span = cov.get("span_s") if isinstance(cov, dict) else None
+        if span is None or isinstance(span, bool) or not isinstance(span, (int, float)):
+            return None
+        spans.append(float(span))
+    cur_span, base_span = spans
+    if base_span <= 0.0 and cur_span <= 0.0:
+        return None
+    reference = max(base_span, cur_span)
+    if abs(cur_span - base_span) / reference <= _EXTENSIVE_SPAN_TOLERANCE:
+        return None
+    return (
+        f"window length differs (current span {cur_span:g}s vs baseline span {base_span:g}s); "
+        f"totals scale with window length, so re-run both queries over the same duration"
+    )
+
+
 def compare_summaries(
     current: dict[str, Any],
     baseline: dict[str, Any],
@@ -194,6 +221,7 @@ def compare_summaries(
 
     keys = sorted(set(cur_rows) | set(base_rows))
     coverage_reason = _coverage_reason(cur_meta, base_meta)
+    span_reason = _span_reason(cur_meta, base_meta)
 
     deltas: list[Delta] = []
     for key in keys:
@@ -201,7 +229,14 @@ def compare_summaries(
         base_cells = base_rows.get(key, {})
         for metric in metric_names:
             deltas.append(
-                _compare_cell(key, metric, cur_cells.get(metric), base_cells.get(metric), coverage_reason)
+                _compare_cell(
+                    key,
+                    metric,
+                    cur_cells.get(metric),
+                    base_cells.get(metric),
+                    coverage_reason,
+                    span_reason=span_reason,
+                )
             )
     return deltas
 
@@ -212,6 +247,8 @@ def _compare_cell(
     cur_cell: dict[str, Any] | None,
     base_cell: dict[str, Any] | None,
     coverage_reason: str | None,
+    *,
+    span_reason: str | None = None,
 ) -> Delta:
     def refuse(outcome: str, reason: str) -> Delta:
         return Delta(key, metric, outcome, None, None, None, None, reason)
@@ -258,6 +295,9 @@ def _compare_cell(
 
     if coverage_reason is not None:
         return refuse(OUTCOME_INCOMPLETE_COVERAGE, coverage_reason)
+
+    if span_reason is not None and cur_sem in _EXTENSIVE_SEMANTICS:
+        return refuse(OUTCOME_INCOMPLETE_COVERAGE, span_reason)
 
     if base_val == 0.0:
         if cur_val == 0.0:

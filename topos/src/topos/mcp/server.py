@@ -443,6 +443,15 @@ class McpServer:
             "sensitivity": sensitivity.value,
             "series": series,
             "count": len(series),
+            # Payload honesty: the daemon's RAM ring holds only the newest
+            # frames and a window answer returns at most the newest `limit`.
+            # Say so instead of presenting a partial range as the answer.
+            "requested_since_ts": since_ts,
+            "oldest_ts": result.entries[0][1].ts if result.entries else None,
+            "newest_ts": result.entries[-1][1].ts if result.entries else None,
+            "frames_returned": len(result.entries),
+            "gap": result.gap,
+            "truncated": len(result.entries) >= limit,
         }
         redaction.redact_payload(
             data,
