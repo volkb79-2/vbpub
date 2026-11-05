@@ -9256,3 +9256,250 @@ class TestRemovalDegradesInDevcontainer:
         leftover.mkdir()
         with pytest.raises(worktree.WorktreeRemovalError, match="leftover checkout directory"):
             worktree.remove(tmp_repo, "ghost")
+
+
+class TestRemovalDryRunAndLeftoverAdoption:
+    """CIU-182: `rm --dry-run`, and `rm NAME` finishing a deregistered checkout."""
+
+    @staticmethod
+    def _deregister(repo: Path, name: str) -> Path:
+        """Drop Git's administration the way a failed `git worktree remove --force` does."""
+        admin = worktree._git_common_dir(repo) / "worktrees" / name
+        assert admin.is_dir()
+        shutil.rmtree(admin)
+        return repo / ".worktrees" / name
+
+    def test_dry_run_reports_blockers_and_leaves_everything_in_place(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        exclude = worktree._git_common_dir(tmp_repo) / "info" / "exclude"
+        exclude.write_text(exclude.read_text(encoding="utf-8") + "vol-data/\n", encoding="utf-8")
+        (target / "vol-data").mkdir()
+        (target / "vol-data" / "f").write_text("x", encoding="utf-8")
+        (target / "dirty.txt").write_text("y", encoding="utf-8")
+        monkeypatch.setattr(
+            worktree, "_clean_in",
+            lambda *a, **k: pytest.fail("a dry run must not clean"),
+        )
+        monkeypatch.setattr(
+            worktree, "_removal_leaks",
+            lambda _p: [{"path": str(target / "vol-data"), "reason": "foreign"}],
+        )
+        monkeypatch.setattr(
+            worktree._shared_worktree(), "mounts_under", lambda _p: [Path("/mnt/x")],
+        )
+        doc = worktree.remove_document(tmp_repo, "wt1", yes=True, dry_run=True)
+        assert doc["status"] == "dry-run"
+        assert doc["adopt_leftover"] is False
+        text = "\n".join(doc["blockers"])
+        assert "mount at or under the checkout: /mnt/x" in text
+        assert "--discard-protected-state wt1" in text
+        assert "--discard-changes wt1" in text
+        assert doc["leaks"] == [{"path": str(target / "vol-data"), "reason": "foreign"}]
+        assert (target / "dirty.txt").is_file()
+        assert target.is_dir()
+
+    def test_dry_run_failure_is_a_removal_error(self, tmp_repo, fake_generate_env, monkeypatch):
+        create_path(tmp_repo, "wt1", base="main")
+
+        def broken(_path):
+            raise worktree.WorktreeError("cannot list")
+
+        monkeypatch.setattr(worktree, "_ignored_state_summary", broken)
+        with pytest.raises(worktree.WorktreeRemovalError, match="cannot list"):
+            worktree.remove_document(tmp_repo, "wt1", dry_run=True)
+
+    def test_leaks_report_unreadable_and_foreign_unwritable_directories(
+        self, tmp_path, monkeypatch,
+    ):
+        if os.geteuid() == 0:
+            pytest.skip("root reads every directory")
+        root = tmp_path / "co"
+        (root / "secret").mkdir(parents=True)
+        (root / "secret" / "f").write_text("x", encoding="utf-8")
+        (root / "empty").mkdir()
+        (root / "foreign" / "inner").mkdir(parents=True)
+        (root / "foreign" / "f").write_text("x", encoding="utf-8")
+        (root / "foreign").chmod(0o555)
+        (root / "secret").chmod(0)
+        try:
+            real = os.getuid()
+            assert [item["path"] for item in worktree._removal_leaks(root)] == [
+                str(root / "secret")
+            ]
+            monkeypatch.setattr(worktree.os, "getuid", lambda: real + 1)
+            leaks = worktree._removal_leaks(root)
+            assert {item["path"] for item in leaks} >= {str(root / "foreign")}
+            reasons = {item["path"]: item["reason"] for item in leaks}
+            assert "not writable by uid" in reasons[str(root / "foreign")]
+            monkeypatch.undo()
+            real_lstat = Path.lstat
+
+            def failing(self, *a, **k):
+                if self == root / "foreign":
+                    raise PermissionError("denied")
+                return real_lstat(self, *a, **k)
+
+            monkeypatch.setattr(Path, "lstat", failing)
+            assert any(
+                item["path"] == str(root / "foreign") and "unreadable" in item["reason"]
+                for item in worktree._removal_leaks(root)
+            )
+        finally:
+            (root / "secret").chmod(0o700)
+            (root / "foreign").chmod(0o755)
+
+    def test_leftover_protected_entries_found_by_name_and_unreadable(self, tmp_path):
+        if os.geteuid() == 0:
+            pytest.skip("root reads every directory")
+        root = tmp_path / "co"
+        (root / "a" / "vol-db").mkdir(parents=True)
+        (root / ".assay").mkdir()
+        (root / "sealed").mkdir()
+        (root / "sealed").chmod(0)
+        try:
+            assert worktree._leftover_protected_entries(root) == sorted([
+                str(root / "a" / "vol-db"), str(root / ".assay"), str(root / "sealed"),
+            ])
+        finally:
+            (root / "sealed").chmod(0o700)
+
+    def test_rm_adopts_a_deregistered_leftover_with_exact_consent(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        (target / "vol-keep").mkdir()
+        (target / "vol-keep" / "f").write_text("x", encoding="utf-8")
+        leftover = self._deregister(tmp_repo, "wt1")
+        assert leftover == target
+        monkeypatch.setattr(
+            worktree, "_clean_in",
+            lambda *a, **k: pytest.fail("adoption must not run clean"),
+        )
+        with pytest.raises(worktree.WorktreeRemovalError) as refused:
+            worktree.remove(tmp_repo, "wt1", yes=True)
+        assert "--discard-protected-state wt1" in str(refused.value)
+        assert "--discard-changes wt1" in str(refused.value)
+        plan = worktree.remove_document(tmp_repo, "wt1", dry_run=True)
+        assert plan["adopt_leftover"] is True and plan["blockers"]
+        assert target.is_dir()
+        document = worktree.remove_document(
+            tmp_repo, "wt1", yes=True, discard_protected_state="wt1",
+            discard_changes="wt1",
+        )
+        assert not target.exists()
+        assert document["branch"]["outcome"] == "kept-leftover"
+        assert document["discarded_state"][0]["class"] == "protected"
+        assert document["phase_report"]["phases"]["checkout_deletion"] == "complete"
+        assert worktree._shared_record_for_logical_name(tmp_repo, "wt1") is None
+        branches = subprocess.run(
+            ["git", "branch", "--list", "wt1"], cwd=tmp_repo, text=True,
+            capture_output=True, check=True,
+        ).stdout
+        assert "wt1" in branches
+
+    def test_leftover_without_protected_state_needs_only_change_consent(
+        self, tmp_repo, fake_generate_env,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        self._deregister(tmp_repo, "wt1")
+        doc = worktree.remove_document(tmp_repo, "wt1", discard_changes="wt1")
+        assert doc["discarded_state"] == []
+        assert not target.exists()
+
+    def test_leftover_adoption_refusals(
+        self, tmp_repo, fake_generate_env, monkeypatch, tmp_path,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        self._deregister(tmp_repo, "wt1")
+        shared = worktree._shared_worktree()
+        record = worktree._shared_record_for_logical_name(tmp_repo, "wt1")
+        gitfile = target / ".git"
+        original = gitfile.read_text(encoding="utf-8")
+
+        gitfile.write_text("not a pointer\n", encoding="utf-8")
+        with pytest.raises(worktree.WorktreeRemovalError, match="no `.git` pointer"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        gitfile.write_text("gitdir: " + str(tmp_path / "elsewhere") + "\n", encoding="utf-8")
+        with pytest.raises(worktree.WorktreeRemovalError, match="outside this repository"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        gitfile.write_text(original, encoding="utf-8")
+
+        monkeypatch.setattr(shared, "mounts_under", lambda _p: [Path("/mnt/x")])
+        with pytest.raises(worktree.WorktreeRemovalError, match="mount"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        def broken_mounts(_p):
+            raise shared.WorkspaceError("mountinfo unreadable")
+
+        monkeypatch.setattr(shared, "mounts_under", broken_mounts)
+        with pytest.raises(worktree.WorktreeRemovalError, match="mountinfo unreadable"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        monkeypatch.undo()
+
+        real_read = Path.read_text
+
+        def unreadable(self, *a, **k):
+            if self == gitfile:
+                raise OSError("io")
+            return real_read(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_text", unreadable)
+        with pytest.raises(worktree.WorktreeRemovalError, match="could not read"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        monkeypatch.undo()
+
+        # a record that names another path is not proof of ownership
+        other = replace(record, worktree_path=tmp_path / "other")
+        monkeypatch.setattr(worktree, "_shared_record_for_logical_name", lambda *_a: other)
+        monkeypatch.setattr(worktree, "_instance_record_from_shared", lambda *_a: None)
+        with pytest.raises(worktree.WorktreeRemovalError, match="names"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        monkeypatch.undo()
+        # an escaping name never resolves to <worktrees>/NAME
+        (tmp_repo / ".worktrees" / "x").mkdir()
+        monkeypatch.setattr(worktree, "_shared_record_for_logical_name", lambda *_a: record)
+        monkeypatch.setattr(worktree, "_instance_record_from_shared", lambda *_a: None)
+        with pytest.raises(worktree.WorktreeRemovalError, match="resolves outside"):
+            worktree.remove(tmp_repo, "x/../wt1", discard_changes="wt1")
+        monkeypatch.undo()
+        # an unrecorded directory is only named
+        (tmp_repo / ".worktrees" / "ghost").mkdir()
+        with pytest.raises(worktree.WorktreeRemovalError, match="no shared record proves"):
+            worktree.remove(tmp_repo, "ghost")
+        assert target.is_dir()
+
+    def test_leftover_with_live_administration_is_not_adopted(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        record = worktree._shared_record_for_logical_name(tmp_repo, "wt1")
+        monkeypatch.setattr(worktree, "find_worktree", lambda *_a, **_k: None)
+        monkeypatch.setattr(worktree, "find_instance_record", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            worktree, "_instance_record_from_shared", lambda *_a: None,
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="still has Git administration"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        assert target.is_dir() and record is not None
+
+    def test_detached_leftover_is_refused_and_failed_delete_is_reported(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        from ciu import engine
+
+        target = create_path(tmp_repo, "wt1", base="main")
+        self._deregister(tmp_repo, "wt1")
+        real = worktree._shared_record_for_logical_name(tmp_repo, "wt1")
+        detached = replace(real, branch="HEAD")
+        monkeypatch.setattr(worktree, "_instance_record_from_shared", lambda *_a: None)
+        monkeypatch.setattr(
+            worktree, "_shared_record_for_logical_name", lambda *_a: detached,
+        )
+        with pytest.raises(worktree.WorktreeRemovalError, match="detached leftover"):
+            worktree.remove(tmp_repo, "wt1")
+        monkeypatch.undo()
+        monkeypatch.setattr(engine, "_rmtree_with_fallback", lambda *_a, **_k: None)
+        with pytest.raises(worktree.WorktreeRemovalError, match="leftover checkout remains"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        assert target.is_dir()

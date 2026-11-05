@@ -133,7 +133,8 @@ the technical detail below it.
 
 ### Fixed
 - `ciu up` in a managed worktree no longer stops at STEP 13 on the PRIMARY checkout's outdated (schema-v1) generated facts without saying where to repair them; `ciu worktree create`/`ensure` detect it up front, and every refusal now names the primary CIU root and `cd <primary> && ciu env generate` (CIU-180).
-- `ciu worktree rm` / `ciu clean` work in a devcontainer: an inconclusive S6.5 root-helper slice probe (systemd not PID 1) warns and proceeds instead of aborting (CIU-181, CIU-164 design); caller-owned `vol-*` trees have read-only entries made writable before deletion; read-only caller-owned entries (0444 files, 0555 dirs) no longer strand a checkout; a repeat `rm` of a deregistered-but-present checkout names the leftover directory. `rm --dry-run` and registration-keeping on failed deletion remain open (CIU-182).
+- `ciu worktree rm` / `ciu clean` work in a devcontainer: an inconclusive S6.5 root-helper slice probe (systemd not PID 1) warns and proceeds instead of aborting (CIU-181, CIU-164 design); caller-owned `vol-*` trees have read-only entries made writable before deletion; read-only caller-owned entries (0444 files, 0555 dirs) no longer strand a checkout; a repeat `rm` of a deregistered-but-present checkout names the leftover directory. 
+- `ciu worktree rm --dry-run` lists what removal would refuse on or leave behind and changes nothing; a failed checkout deletion now restores the Git registration instead of stranding an unregistered directory; a repeat `rm NAME` adopts and finishes a deregistered leftover under the worktrees dir (shared record, dangling `.git` pointer, no mounts, exact `--discard-protected-state`/`--discard-changes` consents; the branch is kept) (CIU-182).
 
 ### Adoption / Migration Notes
 - Safe to ignore: additive; the new refusals name the command to run.

@@ -6078,7 +6078,7 @@ record and the remedy (`ciu worktree rm <name>`, and for a record whose path no 
 
 ## CIU-182 — `ciu worktree rm --force` can deregister a checkout it then fails to delete; `rm` has no `--dry-run` listing what `--force` would leak
 
-**Status: OPEN (filed 2026-11-05). Severity: P3.**
+**Status: FIXED 2026-11-05 (branch ciu-triage-20261105; unreleased). Severity: P3.** Implemented: (a) `worktree.remove_workspace` copies the Git admin directory before `git worktree remove --force` and restores it when deletion fails without a permission-recovery offer, so the registration survives and `rm` can be retried; (b) `ciu worktree rm NAME --dry-run [--json]` lists blockers (mounts, protected state, uncommitted changes) and entries that would be left behind (unreadable or foreign-owned unwritable directories) and changes nothing; (c) `rm NAME` adopts and finishes a deregistered `.worktrees/NAME` directory when its shared record, dangling `.git` pointer, no mounts, and the exact `--discard-protected-state BRANCH` (protected names) and `--discard-changes BRANCH` consents all hold; the branch is always kept.
 
 **Observed.** `git worktree remove --force` drops the administrative registration even when deleting the working tree fails (root cause lives in git plus `libraries/worktree` `remove_workspace`, which runs git first). After CIU-181 the common trigger (read-only caller-owned files) is gone, but a checkout holding foreign-uid entries still leaves a registered-nowhere directory on a failed delete (the leftover is now named, but there is no retry path).
 

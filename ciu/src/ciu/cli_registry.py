@@ -611,9 +611,11 @@ def _worktree_cli() -> Any:
             "requires exact branch consent for changes or protected ignored state."
         ),
         group=VerbGroup.MODIFICATION.value, mutating=True, include_progress=False,
+        dry_run=True,
+        dry_run_help="list what removal would do, refuse on or leave behind; change nothing",
         arguments=(logical,), options=rm, examples=("ciu worktree rm pkg-under-test --yes",),
         handler=adapter(["worktree", "rm"], rm, (logical,), json_tokens=["--json"], yes=True,
-                        positional_first=True),
+                        dry_run=True, positional_first=True),
     ))
     registry.register(VerbSpec(
         "list", description="List linked checkouts.", group=VerbGroup.EXPLORATION.value,

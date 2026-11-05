@@ -17,6 +17,7 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -1407,6 +1408,35 @@ def _refuse_if_mounts_under(
     )
 
 
+def _restore_dropped_registration(
+    current: WorkspaceRecord, admin: Path, backup: Path
+) -> bool:
+    """Re-register a checkout whose deletion failed after Git dropped its admin dir.
+
+    ``git worktree remove --force`` deletes the administrative directory even
+    when it then fails to delete the working tree, leaving a checkout Git no
+    longer knows about. Only when the checkout still exists and the admin
+    directory is absent, put back the byte-for-byte copy taken before the call
+    (CIU-182). Returns whether a registration was restored.
+    """
+
+    if admin.exists() or admin.is_symlink():
+        return False
+    if not _is_directory(current.worktree_path):
+        return False
+    try:
+        shutil.copytree(backup, admin, symlinks=True)
+        restored = any(
+            item.path == current.worktree_path
+            for item in list_git_worktrees(current.source_git_root)
+        )
+    except (OSError, WorkspaceError):
+        restored = False
+    if not restored:
+        shutil.rmtree(admin, ignore_errors=True)
+    return restored
+
+
 def remove_unrecorded_workspace(
     source_git_root: Path | str,
     target: Path | str,
@@ -1527,19 +1557,46 @@ def remove_workspace(
         # first check is already immediately before the deletion.
         if cleanup is not None:
             _refuse_if_mounts_under(current.worktree_path, mountinfo_reader)
-        result = subprocess.run(
-            ["git", "worktree", "remove", "--force", str(current.worktree_path)],
-            cwd=current.source_git_root, text=True, capture_output=True, check=False,
-        )
+        # CIU-182: keep a copy of the admin directory so a failed deletion can
+        # put the registration back instead of stranding an unregistered checkout.
+        admin_backup = Path(tempfile.mkdtemp(
+            prefix=".worktree-admin-backup-", dir=current.git_common_dir
+        )) / "admin"
+        try:
+            shutil.copytree(admin_snapshot[0], admin_backup, symlinks=True)
+            result = subprocess.run(
+                ["git", "worktree", "remove", "--force", str(current.worktree_path)],
+                cwd=current.source_git_root, text=True, capture_output=True, check=False,
+            )
+            offered_recovery = (
+                result.returncode != 0 and checkout_recovery is not None
+                and _permission_denial(
+                    f"git worktree remove failed ({result.returncode}) for "
+                    f"{current.worktree_path}; checkout may be partially removed: "
+                    f"{(result.stderr or result.stdout).strip()}"
+                )
+            )
+            restored = (
+                result.returncode != 0 and not offered_recovery
+                and _restore_dropped_registration(
+                    current, admin_snapshot[0], admin_backup
+                )
+            )
+        finally:
+            shutil.rmtree(admin_backup.parent, ignore_errors=True)
         if result.returncode:
             failure = WorkspaceError(
                 f"git worktree remove failed ({result.returncode}) for "
                 f"{current.worktree_path}; checkout may be partially removed: "
-                f"{(result.stderr or result.stdout).strip()}",
+                f"{(result.stderr or result.stdout).strip()}"
+                + (
+                    "; the Git registration was restored, so the removal can be "
+                    "retried after fixing the cause" if restored else ""
+                ),
                 category="cleanup-refusal",
             )
             recovered = False
-            if checkout_recovery is not None and _permission_denial(str(failure)):
+            if offered_recovery:
                 recovered = checkout_recovery(
                     current.context(), admin_snapshot[0], failure
                 )
