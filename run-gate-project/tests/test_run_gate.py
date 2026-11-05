@@ -2391,7 +2391,11 @@ class TestArgvConstruction:
         idx = lambda flag: run_call.index(flag)  # noqa: E731
         assert run_call[0:3] == ["run", "-d", "--name"]
         assert run_call[4] == "--init"
-        assert run_call[idx("--name") + 1].startswith("run-gate-repo-suite-")
+        # RG-242: <repo>-run-gate-<project>-<lane>-<sha8>-<stamp>-<ns9>
+        assert run_call[idx("--name") + 1].startswith("repo-run-gate-proj-suite-")
+        assert run_gate.is_lane_container_name(run_call[idx("--name") + 1])
+        assert "run-gate.lane=suite" in run_call
+        assert "run-gate.project=proj" in run_call
         assert run_call[idx("--cgroup-parent") + 1] == "dev-gates.slice"
         assert run_call[idx("-e") + 1] == f"{CGROUP_VAR}=dev-gates.slice"
         # REAL derivation (subprocess can't see module monkeypatches): /tmp is
@@ -17467,7 +17471,7 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
 
 
 def state_containers(state: Path) -> list[str]:
-    return sorted(p.name for p in state.glob("run-gate-*"))
+    return sorted(p.name for p in state.glob("*run-gate-*"))  # RG-242: repo-prefixed
 
 
 def fake_docker_logstream(tmp_path, monkeypatch) -> tuple[Path, Path]:
@@ -17581,7 +17585,7 @@ def logstream_container(state: Path) -> str | None:
     background writer discovers it the same way `TestReattachAcrossADeadClient`
     discovers a real one: by polling the state directory. Excludes the
     `.stream` sidecar files, which also start with `run-gate-`."""
-    names = sorted(p.name for p in state.glob("run-gate-*")
+    names = sorted(p.name for p in state.glob("*run-gate-*")  # RG-242
                    if not p.name.endswith(".stream"))
     return names[0] if names else None
 
@@ -21086,7 +21090,8 @@ class TestContainerFinishPathsInProcess:
         assert "docker logs exit 1" in err
         assert "could not read the container's exit status" in err
         assert "refusing to guess" in err
-        assert list((tmp_path / "ev").glob("run-gate-*.log"))
+        # the log is named after the container (RG-242: `<repo>-run-gate-...`)
+        assert list((tmp_path / "ev").glob("*-run-gate-*.log"))
 
     def test_an_unknown_lane_names_the_known_ones(self, tmp_path, monkeypatch,
                                                   capsys):
@@ -33499,7 +33504,11 @@ class TestFinalChangedLineCoverageOracles:
                 "slice source", dry_run=True, profile_plan=plan,
                 admission_group=group) == 0
         assert "ciu.reservation.group=ciu-res-gates-1" in argvs[0]
-        assert "--label" not in argvs[1]
+        # RG-242: run-gate.* labels are always present; only the ciu
+        # admission-group label is conditional.
+        assert not any(arg.startswith("ciu.reservation.group")
+                       for arg in argvs[1])
+        assert any(arg.startswith("run-gate.lane=") for arg in argvs[1])
 
     def test_bare_host_popen_failure_runs_optional_tee_cleanup_safely(
             self, tmp_path, monkeypatch):

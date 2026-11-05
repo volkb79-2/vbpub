@@ -15833,6 +15833,110 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                                                      recorded=pending))
 
 
+# RG-242: lane container identity. The name is self-explaining
+# (`<repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9>`) and every
+# fact in it is ALSO a docker label with the full, unsanitised value, so tools
+# filter by label (`docker ps --filter label=run-gate.lane=<lane>`) rather than
+# parse the name. Pre-RG-242 containers were named
+# `run-gate-<repo>-<lane>-<pid>-<epoch>` and carry no `run-gate.*` labels;
+# LANE_CONTAINER_NAME_RE matches both generations for the transition.
+LANE_LABEL_PREFIX = "run-gate."
+LANE_NAME_SCHEMA = "2"
+LANE_NAME_REPO_MAX, LANE_NAME_PROJECT_MAX, LANE_NAME_LANE_MAX = 24, 24, 32
+# repo + "-run-gate-" + project + "-" + lane + "-" + sha8 + "-" + yymmdd-HHMM
+# + "-" + ns9: the worst case, by construction (not by a post-hoc cut).
+LANE_NAME_MAX_LEN = (LANE_NAME_REPO_MAX + 10 + LANE_NAME_PROJECT_MAX + 1
+                     + LANE_NAME_LANE_MAX + 1 + 8 + 1 + 11 + 1 + 9)
+_LANE_NAME_ALLOWED = re.compile(r"[^A-Za-z0-9_.-]+")
+_LANE_NAME_LEGACY_RE = r"run-gate-[A-Za-z0-9][A-Za-z0-9_.-]*"
+_LANE_NAME_NEW_RE = (r"[A-Za-z0-9][A-Za-z0-9_.-]*-run-gate-[A-Za-z0-9_.-]+-"
+                     r"[0-9a-f]{8}-[0-9]{6}-[0-9]{4}-[0-9]{9}")
+LANE_CONTAINER_NAME_RE = re.compile(
+    rf"(?:{_LANE_NAME_NEW_RE}|{_LANE_NAME_LEGACY_RE})")
+_lane_names_issued: set[str] = set()
+
+
+def sanitize_name_part(text: str, limit: int, fallback: str = "x") -> str:
+    """Docker names are `[a-zA-Z0-9][a-zA-Z0-9_.-]*`: collapse every other run
+    of characters to one '-', strip a non-alphanumeric head/tail, truncate."""
+    cleaned = _LANE_NAME_ALLOWED.sub("-", text or "")
+    cleaned = cleaned.lstrip("-_.")[:limit].rstrip("-_.")
+    return cleaned or fallback
+
+
+def lane_repo_name(repo: Path) -> str:
+    """The repository's name. A release/throwaway checkout is often a directory
+    named by commit (`<40-hex>`), which says nothing: then the `origin` URL's
+    last path component names it, else the directory name stands."""
+    name = repo.name
+    if re.fullmatch(r"[0-9a-f]{12,64}", name):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo), "config", "--get",
+                 "remote.origin.url"], capture_output=True, text=True,
+                env=host_git_environment(), timeout=10)
+            tail = proc.stdout.strip().rstrip("/").rsplit("/", 1)[-1]
+            tail = tail.rsplit(":", 1)[-1].removesuffix(".git")
+            if proc.returncode == 0 and tail:
+                return tail
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return name
+
+
+def lane_container_identity(repo: Path, project_dir: Path, lane_name: str,
+                            commit: str | None, *, now_ns: int | None = None
+                            ) -> dict:
+    """The container name and its label set for one detached lane run.
+
+    Name: `<repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9>` (UTC;
+    `<ns9>` is the nanosecond-of-second, `date +%N`). Uniqueness: the stamp
+    carries nanoseconds; within one process a used name is never issued twice
+    (the nanosecond field is advanced past it); across processes a collision
+    needs the same repo, project, lane, commit AND nanosecond, and docker
+    itself refuses a duplicate `--name`, so the loser fails loudly instead of
+    adopting a stranger's container. The stored in-flight record, not the
+    name, is what re-attach trusts. Length is bounded by LANE_NAME_MAX_LEN
+    (each part is truncated; labels keep the full values).
+    """
+    ns_total = time.time_ns() if now_ns is None else now_ns
+    repo_part = lane_repo_name(repo)
+    project_part = project_dir.name if project_dir.name else repo_part
+    sha8 = commit[:8] if commit and re.fullmatch(r"[0-9a-f]{8,}", commit) \
+        else "00000000"  # no resolvable HEAD (an all-zero id is never real)
+    repo_s = sanitize_name_part(repo_part, LANE_NAME_REPO_MAX)
+    project_s = sanitize_name_part(project_part, LANE_NAME_PROJECT_MAX)
+    lane_s = sanitize_name_part(lane_name, LANE_NAME_LANE_MAX)
+    while True:
+        seconds, ns = divmod(ns_total, 1_000_000_000)
+        stamp = time.strftime("%y%m%d-%H%M", time.gmtime(seconds))
+        name = (f"{repo_s}-run-gate-{project_s}-{lane_s}-{sha8}-{stamp}-"
+                f"{ns:09d}")
+        if name not in _lane_names_issued:
+            break
+        ns_total += 1
+    _lane_names_issued.add(name)
+    labels = {
+        "repo": repo_part, "project": project_part, "lane": lane_name,
+        "commit": commit or "", "name-schema": LANE_NAME_SCHEMA,
+        "started": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                 time.gmtime(ns_total // 1_000_000_000)),
+    }
+    for env_name, key in (("RUN_GATE_JOB", "job"),
+                          ("RUN_GATE_CAMPAIGN", "campaign")):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            labels[key] = value
+    return {"name": name,
+            "labels": {f"{LANE_LABEL_PREFIX}{k}": v
+                       for k, v in labels.items()}}
+
+
+def is_lane_container_name(name: str) -> bool:
+    """True for a lane container name of either generation."""
+    return LANE_CONTAINER_NAME_RE.fullmatch(name) is not None
+
+
 def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                        worktree: Path, env: dict, env_source: str,
                        slice_name: str, slice_src: str,
@@ -15904,13 +16008,17 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         else build_command_inner(lane, worktree, request_base)
     if env.get("user"):
         inner = passwd_entry_guard() + " && " + inner
-    name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
+    identity = lane_container_identity(repo, project_dir, lane_name,
+                                       head_commit(worktree))
+    name = identity["name"]
     argv = [docker, "run", "-d", "--name", name, "--init",
             "--cgroup-parent", slice_name,
             "-e", f"{CGROUP_ENV_VAR}={slice_name}",
             *mounts]
     if admission_group:
         argv += ["--label", f"ciu.reservation.group={admission_group}"]
+    for label_key, label_value in identity["labels"].items():
+        argv += ["--label", f"{label_key}={label_value}"]
     if env.get("user"):
         # Additive, optional (default unset — every OTHER environment,
         # tester-unified included, is unaffected): the 'host' default's own

@@ -326,7 +326,7 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   <text>` (the verdict line's `reason`, the lane script's last own diagnostic line, else the job log's refusal line; `result.json` has the same `reason`).
   Known causes append a `[hint: ...]`. Known silent-looking causes: an exec-mode lane without a stack (above), a declared base given `--base`,
   a lane whose script requires `/workspaces/<repo>` to be a bind mount of its own (assay `self-qualification*`, backlog NC-14), a run-gate below the floor.
-- **Cleanup.** On exit (pass, fail, cancel) the job removes, by exact name, only `run-gate-*` containers whose `docker inspect` references
+- **Cleanup.** On exit (pass, fail, cancel) the job removes, by exact name, only lane containers (label `run-gate.lane`, or a pre-RG-242 `run-gate-*` name) whose `docker inspect` references
   this run's unique checkout directory `rg-<id>-<sha12>` (and only once the lane started, so a PSI refusal removes nothing), then the
   throwaway checkout and its pid file; logs stay. Another run's containers are never matched. `cancel <id>` sends SIGTERM to the job
   only while the recorded pid's cmdline is this run's `job.sh`; the job then stops the lane via its in-cockpit pid.
