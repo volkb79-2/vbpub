@@ -15,6 +15,16 @@ environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree} && export PYTHONPATH=topos/src:topos && /opt/tester-venv/bin/python -m pytest topos/tests -q -n auto --cov=topos/src/topos --cov-branch --cov-report=json:/tmp/topos-coverage.json && /opt/tester-venv/bin/python topos/tools/coverage_gate.py --repo . --base main --coverage-json /tmp/topos-coverage.json --source topos/src/topos"]
 budget = "30m"
 
+# topos-sampler (Rust, D-026): `cargo test` runs inside a `docker build` against the host daemon, then
+# the conformance test runs the built binary against the Python collector. UNVERIFIED lane: needs the
+# gate container to reach the Docker socket (see topos 4-backlog TOP-SAMPLER-GATE); do not register it
+# as a required gate until a real run proves it.
+[lanes.topos-sampler]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/topos && set -euo pipefail && rm -rf /tmp/topos-sampler-out && docker build -f sampler/Dockerfile --target test --progress=plain . && docker build -f sampler/Dockerfile --target artifact -o type=local,dest=/tmp/topos-sampler-out . && PYTHONPATH=src:. TOPOS_SAMPLER_BIN=/tmp/topos-sampler-out/topos-sampler /opt/tester-venv/bin/python -m pytest tests/test_sampler_conformance.py -q -rs"]
+budget = "20m"
+
 [lanes.py-compile]
 kind = "command"
 # tester-unified, not `host`: this lane writes __pycache__ into the bind-mounted worktree, so it must
