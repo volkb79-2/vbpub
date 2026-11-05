@@ -696,6 +696,10 @@ def resolve_primary_image_references(repo_root: Path) -> set[str]:
     from . import image_isolation
 
     primary_root = worktree_pkg.primary_ciu_root(Path(repo_root).resolve())
+    try:
+        worktree_pkg.require_current_primary_facts(Path(repo_root).resolve())
+    except worktree_pkg.WorktreeError as exc:
+        raise ValueError(str(exc)) from exc
     document = resolve_identities(
         primary_root,
         render_environ=_render_environment_for_checkout(primary_root),

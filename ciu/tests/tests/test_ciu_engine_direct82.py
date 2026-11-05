@@ -96,7 +96,7 @@ def test_privileged_rmtree_fails_closed_without_slice_or_for_unsafe_path(
     assert calls == []
 
     monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "dev-interactive.slice")
-    monkeypatch.setattr(engine.governance, "check_slice_unit", lambda _name: (None, "unknown"))
+    monkeypatch.setattr(engine.governance, "check_slice_unit", lambda _name: (False, "absent"))
     with pytest.raises(RuntimeError, match="not verified loaded"):
         engine.privileged_rmtree(
             tmp_path / "target", target_identity=(1, 2), parent_identity=(1, 1)

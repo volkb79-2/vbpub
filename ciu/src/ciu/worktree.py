@@ -2672,6 +2672,7 @@ def remove_document(
     discard_protected_state: str | tuple[str, ...] | list[str] | None = None,
     discard_changes: str | tuple[str, ...] | list[str] | None = None,
     json_output: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Run clean-then-remove and return its versioned lifecycle report."""
     repo_root = Path(repo_root).resolve()
@@ -2682,6 +2683,7 @@ def remove_document(
             repo_root, name, yes=yes, force=force,
             keep_branch=keep_branch, delete_branch=delete_branch,
             root_escalation=root_escalation, _json_output=json_output,
+            dry_run=dry_run,
             discard_protected_state=discard_protected_state,
             discard_changes=discard_changes,
             _phase_report=phase_report, _details=details,
@@ -2716,6 +2718,17 @@ def remove_document(
                     "removal stopped before branch deletion; the ref was not changed"
                 )
         raise
+    if dry_run:
+        return {
+            "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
+            "operation": "remove",
+            "status": "dry-run",
+            "removed_path": str(removed_path),
+            "branch": details["branch"],
+            "ignored_state": details["ignored_state"],
+            "uncommitted_changes": details["uncommitted_changes"],
+            **details["dry_run"],
+        }
     doc: dict[str, Any] = {
         "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
         "operation": "remove",
@@ -6164,6 +6177,40 @@ def _local_base_branch(repo_root: Path, base: str, base_commit: str) -> str | No
     return name
 
 
+def require_current_primary_facts(repo_root: Path) -> None:
+    """CIU-180: refuse early, naming the PRIMARY root, when its facts are outdated.
+
+    Worktree operations read the primary CIU root's generated identity (image
+    map comparison, family admission). A schema-v1 / header-less file written
+    by an older CIU there cannot be repaired from inside a linked checkout, so
+    the refusal must name the primary root and the command to run THERE.
+    """
+    from .workspace_env import (
+        WorkspaceEnvError,
+        generated_facts_path,
+        read_generated_facts,
+    )
+
+    try:
+        primary = primary_ciu_root(Path(repo_root).resolve())
+    except WorktreeError:
+        return  # not a resolvable family: the caller's own checks report it
+    if not generated_facts_path(primary).is_file():
+        return
+    try:
+        read_generated_facts(primary, allow_repair=False)
+    except WorkspaceEnvError as exc:
+        raise WorktreeError(
+            f"[CIU-180] the primary checkout's generated facts are not current "
+            f"({exc}). Run `ciu env generate` in the primary CIU root "
+            f"(cd {shlex.quote(str(primary))} && ciu env generate), then retry. "
+            "If `ciu env generate` itself refuses because the primary stack is "
+            "still running, stop that stack first (the refusal names the exact "
+            "`ciu clean --identity <old id>` to run), rerun `ciu env generate`, "
+            "then retry; no worktree can be prepared from outdated primary facts."
+        ) from exc
+
+
 def _allocation_remedy(exc: Exception, logical_name: str) -> str:
     """Remedy text for a refused allocation whose path is still recorded (CIU-174)."""
     if "already recorded" not in str(exc):
@@ -6244,6 +6291,7 @@ def create(
         _validate_name(display_name, label="display name")
     if branch is not None and not branch:
         raise WorktreeError("[S16] --branch cannot be empty")
+    require_current_primary_facts(repo_root)
 
     shared_infra_intent: SharedInfraIntent | None = None
     if (
@@ -6436,6 +6484,7 @@ def ensure(
 ) -> WorktreeInstanceRecord:
     """Return an exact ready match or resume one CIU-owned partial allocation."""
     _validate_name(logical_name, label="logical name")
+    require_current_primary_facts(repo_root)
     with _allocation_lock(repo_root):
         record = find_instance_record(repo_root, logical_name)
         if record is None:
@@ -7622,6 +7671,67 @@ def _verify_permission_retry_identity(
             raise WorktreeError("CIU worktree identity record changed during removal")
 
 
+def _removal_leaks(checkout: Path) -> list[dict[str, str]]:
+    """Entries a removal run by this uid could not delete (CIU-182 dry-run).
+
+    Read-only entries the caller owns are made writable by ``rm``; what stays
+    is a directory owned by another uid that this uid cannot write, or any
+    directory it cannot list. Only the top-most such directory is reported, and
+    nothing is followed through symlinks or modified.
+    """
+    uid = os.getuid()
+    leaks: list[dict[str, str]] = []
+    pending = [checkout]
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as entries:
+                children = list(entries)
+        except OSError as exc:
+            leaks.append({"path": str(current), "reason": f"unreadable: {exc}"})
+            continue
+        if current != checkout and children:
+            try:
+                owner = current.lstat().st_uid
+            except OSError as exc:
+                leaks.append({"path": str(current), "reason": f"unreadable: {exc}"})
+                continue
+            if owner != uid and not os.access(current, os.W_OK | os.X_OK):
+                leaks.append({
+                    "path": str(current),
+                    "reason": (
+                        f"directory owned by uid {owner} is not writable by uid "
+                        f"{uid}; its {len(children)} entr(ies) need the root helper"
+                    ),
+                })
+                continue
+        pending.extend(
+            Path(child.path) for child in children
+            if child.is_dir(follow_symlinks=False)
+        )
+    return sorted(leaks, key=lambda item: item["path"])
+
+
+def _leftover_protected_entries(checkout: Path) -> list[str]:
+    """Protected-by-name state (``.assay``, ``vol-*``) in an unregistered leftover."""
+    found: list[str] = []
+    pending = [checkout]
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as entries:
+                children = list(entries)
+        except OSError:
+            found.append(str(current))  # unreadable counts as protected
+            continue
+        for child in children:
+            if child.name == ".assay" or child.name.startswith("vol-"):
+                found.append(child.path)
+            elif child.is_dir(follow_symlinks=False):
+                pending.append(Path(child.path))
+    return sorted(found)
+
+
 def remove(
     repo_root: Path,
     name: str,
@@ -7633,6 +7743,7 @@ def remove(
     root_escalation: str | tuple[str, ...] | list[str] | None = None,
     discard_protected_state: str | tuple[str, ...] | list[str] | None = None,
     discard_changes: str | tuple[str, ...] | list[str] | None = None,
+    dry_run: bool = False,
     _json_output: bool = False,
     _phase_report: dict[str, Any] | None = None,
     _details: dict[str, Any] | None = None,
@@ -7903,6 +8014,133 @@ def remove(
         }
         return path
 
+    def adopt_leftover(leftover: Path, logical_shared: object) -> Path:
+        """CIU-182: finish a checkout that a failed `rm --force` deregistered.
+
+        Git no longer knows the directory, so nothing about it can be read from
+        Git: ownership is proven by the shared record plus the dangling `.git`
+        pointer, protected state is found by name, and tracked changes cannot be
+        inspected, so both exact consents are required. Only the exact
+        `<worktrees dir>/NAME` path is removed; the branch is always kept.
+        """
+        shared = _shared_worktree()
+        resolved = leftover.resolve()
+        worktrees_dir = (repo_root / DEFAULT_WORKTREE_DIR).resolve()
+        if resolved.parent != worktrees_dir or resolved.name != name:
+            raise fail(f"refusing to adopt {leftover}: it resolves outside {worktrees_dir}")
+        if Path(logical_shared.worktree_path).resolve() != resolved:
+            raise fail(
+                f"refusing to adopt {leftover}: the shared record for {name!r} "
+                f"names {logical_shared.worktree_path}"
+            )
+        gitfile = resolved / ".git"
+        try:
+            pointer = (
+                gitfile.read_text(encoding="utf-8").strip()
+                if gitfile.is_file() and not gitfile.is_symlink() else ""
+            )
+        except OSError as exc:
+            raise fail(f"could not read {gitfile}: {exc}") from exc
+        if not pointer.startswith("gitdir:"):
+            raise fail(f"refusing to adopt {leftover}: it has no `.git` pointer file")
+        admin = Path(pointer[len("gitdir:"):].strip())
+        admin = (admin if admin.is_absolute() else resolved / admin).resolve(strict=False)
+        try:
+            admin.relative_to(Path(logical_shared.git_common_dir) / "worktrees")
+        except ValueError as exc:
+            raise fail(
+                f"refusing to adopt {leftover}: its `.git` pointer {admin} is "
+                "outside this repository's worktree administration"
+            ) from exc
+        if admin.exists():
+            raise fail(
+                f"{leftover} still has Git administration at {admin}; it is not a "
+                "deregistered leftover, so ordinary removal must handle it"
+            )
+        branch_name = logical_shared.branch
+        if branch_name in {"HEAD", "(detached)", "(bare)", "(unknown)"}:
+            raise fail(
+                f"refusing to adopt detached leftover {leftover}: it has no branch "
+                "name for the exact consent options"
+            )
+        try:
+            mounted = shared.mounts_under(resolved)
+        except shared.WorkspaceError as exc:
+            raise fail(str(exc), phase="lifecycle_preflight") from exc
+        if mounted:
+            raise fail(
+                f"refusing to remove {resolved}: mount(s) at or under the checkout: "
+                + "; ".join(f"{item} (detach it first)" for item in mounted)
+                + ". Nothing was removed or unmounted.",
+                phase="lifecycle_preflight",
+            )
+        protected = _leftover_protected_entries(resolved)
+        leaks = _removal_leaks(resolved)
+        consents = {
+            "protected": discard_names == [branch_name],
+            "changes": discard_change_names == [branch_name],
+        }
+        blockers: list[str] = []
+        if protected and not consents["protected"]:
+            blockers.append(
+                f"protected state ({_format_changed_paths(protected)}); pass "
+                f"--discard-protected-state {branch_name}"
+            )
+        if not consents["changes"]:
+            blockers.append(
+                "tracked and untracked changes cannot be inspected without Git "
+                f"registration; pass --discard-changes {branch_name}"
+            )
+        tip = _git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch_name}"],
+                   repo_root).stdout.strip() or None
+        details["branch"] = {
+            "name": branch_name, "tip": tip, "outcome": "kept-leftover",
+            "reason": "an adopted leftover never deletes its branch",
+        }
+        details["ignored_state"] = []
+        details["removed_by_clean"] = []
+        details["discarded_changes"] = []
+        details["discarded_state"] = [
+            {"path": item, "class": "protected", "file_count": 0, "bytes": 0}
+            for item in protected
+        ] if consents["protected"] else []
+        details["uncommitted_changes"] = []
+        if dry_run:
+            details["dry_run"] = {
+                "path": str(resolved), "adopt_leftover": True,
+                "blockers": blockers, "leaks": leaks,
+            }
+            return resolved
+        if blockers:
+            raise fail(
+                f"unregistered leftover {resolved} needs explicit consent: "
+                + "; ".join(blockers)
+            )
+        from . import engine as engine_module
+        mark("target_resolution", "complete")
+        mark("resource_cleanup", "skipped-leftover")
+        mark("lease_release", "skipped-leftover")
+        mark("lifecycle_preflight", "complete")
+        mark("checkout_deletion", "running")
+        try:
+            with shared.workspace_lock(logical_shared.git_common_dir):
+                engine_module._rmtree_with_fallback(resolved, repo_root=repo_root)
+                if resolved.exists() or resolved.is_symlink():
+                    raise WorktreeError(f"leftover checkout remains: {resolved}")
+                mark("checkout_deletion", "complete")
+                Path(logical_shared.record_path).unlink(missing_ok=True)
+        except Exception as exc:
+            raise fail(
+                f"could not finish the leftover checkout {resolved}: {exc}",
+                phase="checkout_deletion",
+            ) from exc
+        mark("git_registration", "complete")
+        mark("shared_record_removal", "complete")
+        mark("ciu_record_removal", "complete")
+        mark("branch_removal", "kept-leftover")
+        details["resumed"] = True
+        return resolved
+
     if keep_branch and delete_branch:
         raise fail("--keep-branch and --delete-branch cannot be used together")
     if root_escalation is None or root_escalation == [] or root_escalation == ():
@@ -7964,9 +8202,19 @@ def remove(
                 logical_shared.metadata.get(_CIU_WORKTREE_REMOVAL_METADATA), dict
             ):
                 return resume_permission_retry(logical_shared, managed)
+            leftover = repo_root / DEFAULT_WORKTREE_DIR / name
+            if leftover.is_dir() and not leftover.is_symlink() and logical_shared is not None:
+                return adopt_leftover(leftover, logical_shared)
+            hint = (
+                f"; an unregistered leftover checkout directory exists at "
+                f"{leftover} but no shared record proves it belongs to {name!r}: "
+                "review it, then remove it by hand with `rm -rf` (make read-only "
+                "entries writable first with `chmod -R u+w`)"
+                if leftover.is_dir() else ""
+            )
             raise fail(
                 f"no worktree named {name!r} under {repo_root}; "
-                "`ciu worktree list` shows what exists"
+                f"`ciu worktree list` shows what exists{hint}"
             )
         if wt.is_primary or wt.path.resolve() == repo_root.resolve():
             raise fail(
@@ -8025,6 +8273,55 @@ def remove(
     mark("ciu_record_removal", "not-run" if managed is not None else "skipped-no-record")
     report["phases"]["shared_record_removal"] = "not-run"
     path = wt.path
+    if dry_run:
+        # CIU-182: report what a removal would do or leave behind; change nothing.
+        # F2: Git must not refresh the index or take index.lock for a read-only plan.
+        previous_locks = os.environ.get("GIT_OPTIONAL_LOCKS")
+        os.environ["GIT_OPTIONAL_LOCKS"] = "0"
+        try:
+            dry_ignored = _ignored_state_summary(wt.path)
+            dry_dirty = _worktree_change_paths(wt.path, managed)
+            dry_branch = _branch_removal_plan(
+                repo_root, wt, managed,
+                keep_branch=keep_branch, delete_branch=delete_branch,
+            )
+            dry_mounts = [str(item) for item in _shared_worktree().mounts_under(wt.path)]
+            dry_leaks = _removal_leaks(wt.path)
+        except (WorktreeError, _shared_worktree().WorkspaceError) as exc:
+            raise fail(str(exc)) from exc
+        finally:
+            if previous_locks is None:
+                os.environ.pop("GIT_OPTIONAL_LOCKS", None)
+            else:
+                os.environ["GIT_OPTIONAL_LOCKS"] = previous_locks
+        dry_branch_name = (
+            None if wt.branch in {"(detached)", "(bare)", "(unknown)", "HEAD"}
+            else wt.branch
+        )
+        dry_blockers = [
+            f"mount at or under the checkout: {item} (detach it first; --force "
+            "does not override)" for item in dry_mounts
+        ]
+        dry_protected = [item for item in dry_ignored if item["class"] == "protected"]
+        if dry_protected:
+            dry_blockers.append(
+                "protected ignored state ("
+                + ", ".join(_format_ignored_state_item(item) for item in dry_protected)
+                + f"); pass --discard-protected-state {dry_branch_name}"
+            )
+        if dry_dirty:
+            dry_blockers.append(
+                f"uncommitted changes ({_format_changed_paths(dry_dirty)}); pass "
+                f"--discard-changes {dry_branch_name}"
+            )
+        details["branch"] = {key: value for key, value in dry_branch.items() if key != "delete"}
+        details["ignored_state"] = dry_ignored
+        details["uncommitted_changes"] = dry_dirty
+        details["dry_run"] = {
+            "path": str(wt.path), "adopt_leftover": False,
+            "blockers": dry_blockers, "leaks": dry_leaks,
+        }
+        return wt.path
     # WT-OW-01: refuse before `ciu clean` / any cleanup can touch content that
     # lives on a mount under the checkout. The shared library repeats the check
     # right before deletion; this one protects the adapter's earlier phases.
@@ -8569,9 +8866,20 @@ def remove(
                     f"could not save exact removal recovery evidence: {exc}",
                     phase="lifecycle_preflight",
                 ) from exc
+        # CIU-181: read-only entries this uid owns (0444 files, 0555 dirs) must not
+        # leave `git worktree remove --force` half-done after it deregisters.
+        # It runs as the library's pre-removal callback, i.e. after every library
+        # refusal (lease, record mismatch, mounts), so a refused removal changes
+        # no permissions.
+        from . import engine as _engine_module
+
+        def make_checkout_writable(_context: object) -> None:
+            _engine_module._make_tree_writable(wt.path)
+
         if shared_record is not None:
             shared.remove_workspace(
                 shared_record,
+                cleanup=make_checkout_writable,
                 force=force,
                 delete_branch=bool(branch["delete"]),
                 expected_branch_tip=branch["tip"] if branch["delete"] else None,
@@ -8586,6 +8894,7 @@ def remove(
                 expected_branch=git_branch,
                 purpose="ciu-legacy",
                 force=force,
+                cleanup=make_checkout_writable,
                 delete_branch=bool(branch["delete"]),
                 expected_branch_tip=branch["tip"] if branch["delete"] else None,
                 on_phase=report_library_phase,
