@@ -35,7 +35,11 @@ async def wait_until(pilot, predicate, *, deadline=UI_WAIT_DEADLINE, interval=UI
     while True:
         await pilot.pause(interval)
         if ready():
-            return
+            # A pushed screen or mounted view is not composed until its pending messages have been
+            # processed; flush them so the caller can query the new widgets (a bare timed pause does not).
+            await pilot.pause()
+            if ready():
+                return
         if time.monotonic() >= end:
             break
     assert ready(), f"{what} did not become true within {deadline:g}s"

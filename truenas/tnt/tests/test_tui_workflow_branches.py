@@ -9,7 +9,6 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from textual.css.query import NoMatches
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TextArea, Tree
 
 from helpers import wait_until

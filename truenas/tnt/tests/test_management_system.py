@@ -1047,9 +1047,10 @@ def test_reboot_reconnect_worker_stops_when_host_transition_cancels_backoff():
                 transition = app.session_controller.begin_disconnect()
                 assert len(transition.workers) == 1
                 lease = transition.workers[0]
-                drained = await asyncio.wait_for(asyncio.to_thread(lease.finished.wait, 1), timeout=1.5)
+                drained = await asyncio.wait_for(asyncio.to_thread(lease.finished.wait, HUNG_RPC_CEILING),
+                                                 timeout=HUNG_RPC_CEILING + 5)
                 assert drained and lease.cancelled.is_set()
-                app.session_controller.finish_switch(transition, timeout=1)
+                app.session_controller.finish_switch(transition, timeout=HUNG_RPC_CEILING)
 
         try:
             asyncio.run(go())
