@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -1062,7 +1063,10 @@ def test_signal_during_restore_write_keeps_the_outcome_truthful(tmp_path, write_
     rec.write_text("{}")
 
     def writer(_path, _name, _value):
-        os.kill(os.getpid(), signal.SIGTERM)
+        # to this thread, which blocks it during the write, not to the process: in a process with other
+        # threads (the xdist worker) the kernel may hand a process signal to one of them, and the
+        # Python handler then runs at an arbitrary point (3 failures in 12 runs under -n 2 --cov)
+        signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
         if write_fails:
             raise OSError(22, "EINVAL")
 
@@ -1076,8 +1080,9 @@ def test_signal_during_restore_write_keeps_the_outcome_truthful(tmp_path, write_
         # every guarded signal, not only SIGTERM: a squeeze handler left on SIGPIPE or SIGINT turns a
         # later test's broken pipe or Ctrl-C in this worker into _Terminated
         for s, handler in previous.items():
-            signal.signal(s, handler)
-    assert {s: signal.getsignal(s) for s in squeeze._GUARDED_SIGNALS} == previous
+            if handler is not None:  # None: installed outside Python, cannot be put back from here
+                signal.signal(s, handler)
+    assert all(signal.getsignal(s) == h for s, h in previous.items() if h is not None)
 
     assert guard.restore_failed is write_fails
     assert rec.exists() is write_fails
