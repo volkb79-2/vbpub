@@ -31,6 +31,7 @@ _REPOSITORY = Path(__file__).resolve().parent
 _GIT_EXECUTABLE_ENV = "PWMCP_TEST_GIT_EXECUTABLE"
 _ALLOW_NO_GUARD_ENV = "PWMCP_ALLOW_NO_GIT_GUARD"
 _GIT_TIMEOUT_SECONDS = 60
+_REAP_TIMEOUT_SECONDS = 2
 _REPORT_LIMIT = 20
 _SNAPSHOT_KEY = pytest.StashKey[tuple[str, ...]]()
 
@@ -104,7 +105,14 @@ def _kill_group(process: subprocess.Popen[str]) -> None:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    process.communicate()
+    try:
+        process.communicate(timeout=_REAP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # A descendant that left the group (setsid) may still hold the pipes open: stop reading them.
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        process.wait()
 
 
 def describe_change(before: tuple[str, ...], after: tuple[str, ...], limit: int = _REPORT_LIMIT) -> str:

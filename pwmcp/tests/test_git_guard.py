@@ -168,7 +168,8 @@ def test_snapshot_timeout_kills_the_descendants_of_git(repo: Path) -> None:
 
 def test_snapshot_interrupt_kills_the_process_group(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     slow = repo / "slow-git"
-    slow.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    pid_file = repo / "grandchild.pid"
+    slow.write_text(f'#!/bin/sh\nsleep 30 &\necho $! > "{pid_file}"\nwait\n', encoding="utf-8")
     slow.chmod(0o755)
     seen: list[int] = []
     real_communicate = subprocess.Popen.communicate
@@ -176,16 +177,45 @@ def test_snapshot_interrupt_kills_the_process_group(repo: Path, monkeypatch: pyt
     def interrupted(self, *args, **kwargs):
         if not seen:
             seen.append(self.pid)
+            wait_until = time.monotonic() + 5
+            while not (pid_file.exists() and pid_file.read_text(encoding="ascii").strip()):
+                assert time.monotonic() < wait_until, "wrapper never recorded its grandchild"
+                time.sleep(0.01)
             raise KeyboardInterrupt
         return real_communicate(self, *args, **kwargs)
 
     monkeypatch.setattr(subprocess.Popen, "communicate", interrupted)
     with pytest.raises(KeyboardInterrupt):
         guard.snapshot(repo / "pwmcp", git_executable=str(slow))
+    grandchild = int(pid_file.read_text(encoding="ascii"))
     deadline = time.monotonic() + 5
-    while not _process_is_gone(seen[0]) and time.monotonic() < deadline:
+    while not _process_is_gone(grandchild) and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert _process_is_gone(seen[0])
+    try:
+        assert _process_is_gone(grandchild), f"descendant {grandchild} outlived the interrupted snapshot()"
+    finally:
+        if not _process_is_gone(grandchild):
+            os.kill(grandchild, 9)
+
+
+def test_snapshot_timeout_is_not_blocked_by_a_session_leaving_descendant(repo: Path) -> None:
+    """A setsid'd descendant holding git's pipes must not hang the timeout path."""
+
+    require_binary("setsid", "the descendant must leave git's process group")
+    pid_file = repo / "escaped.pid"
+    slow = repo / "slow-git"
+    slow.write_text(f'#!/bin/sh\nsetsid sleep 30 &\necho $! > "{pid_file}"\nwait\n', encoding="utf-8")
+    slow.chmod(0o755)
+    started = time.monotonic()
+    try:
+        with pytest.raises(guard.GitGuardUnavailable, match="did not finish within 1s"):
+            guard.snapshot(repo / "pwmcp", git_executable=str(slow), timeout=1)
+        assert time.monotonic() - started < 15
+    finally:  # the escapee is deliberately outside the kill; remove it so the test leaks nothing
+        if pid_file.exists():
+            pid = int(pid_file.read_text(encoding="ascii"))
+            if not _process_is_gone(pid):
+                os.kill(pid, 9)
 
 
 @pytest.mark.parametrize(
