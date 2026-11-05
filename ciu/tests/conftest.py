@@ -382,6 +382,19 @@ def _default_docker_gid(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _default_cgroup_parent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CIU-193: governance's cgroup parent is pinned, never read from the runner.
+
+    ``resolve_cgroup_parent`` falls back to ``$CGROUP_PARENT_DEV_BACKGROUND``,
+    which a devcontainer injects but a gate container only has when the launcher
+    forwards it. Tests that reach governance without configuring a parent used to
+    pass only through an ``os.environ`` leak from an earlier test (removed by
+    CIU-192). Tests of the missing-parent refusal ``delenv`` it explicitly.
+    """
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_own_container(monkeypatch: pytest.MonkeyPatch) -> None:
     """CIU-176: tests never read the real cockpit's own container id."""
     from ciu import workspace_env
