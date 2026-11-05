@@ -317,7 +317,11 @@ def _check_doc(text: str) -> None:
     )
     assert report.ok
     doc = _doc_levels(text)
-    assert doc == _graph_levels(report)
+    assert doc == _graph_levels(report), (
+        "docs/BOOTSTRAP-FROM-ZERO.md `project-order` block is out of date with cmru.orchestration.toml "
+        "(a project was added, moved or removed): copy the LEVELS section of `cmru dependencies` "
+        "into that block"
+    )
     # And the doc's flattened order is itself a valid release order for every declared edge.
     flattened = [name for level in sorted(doc) for name in doc[level]]
     position = {name: index for index, name in enumerate(flattened)}

@@ -4,6 +4,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+- `docs/BOOTSTRAP-FROM-ZERO.md`'s `project-order` block lists `test-policy` (L0), registered in `cmru.orchestration.toml`
+  by the flakehunt merge; its absence failed `test_the_bootstrap_doc_order_agrees_with_the_graph` in the 7.2.2 release gate.
+  The test's failure message now names the doc and the `cmru dependencies` LEVELS section to copy, and the guide says
+  that source-only registered projects still belong in the table.
+
 - `docs/BOOTSTRAP-FROM-ZERO.md` names the current Run-Gate release (25.1.1) in its build, retained-wheel and release
   commands; the 25.0.2 pin had gone stale after the Run-Gate 25.1.1 release and failed
   `test_the_release_commands_follow_the_declared_graph_and_one_set_of_versions` in the release gate.
