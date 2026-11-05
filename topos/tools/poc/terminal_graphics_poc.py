@@ -243,7 +243,6 @@ def detect() -> dict[str, bool]:
 
 
 def text_panels(cpu: Series, psi: Series) -> str:
-    half = cpu[: WIDTH // 2]
     half_p = psi[-WIDTH // 2 :]
     lines = [
         "A  block sparkline (1 row, 8 levels, per-sample colour; gap shown as ·)",
@@ -266,7 +265,6 @@ def text_panels(cpu: Series, psi: Series) -> str:
         f"   MEM {RED}████{RESET}{AMBER}██████████{RESET}{CYAN}▒▒{RESET}{DIM}░░░░░░░░{RESET}  anon 2.1G file 4.0G zsw 0.3G avail 6.4G",
         f"   CPU {RED}▇{RESET}{AMBER}▅{RESET}{CYAN}▂{RESET}{AMBER}▆{RESET}  us32 sy9 io5 st2     PSI io {block_spark(half_p[-12:])} 1.1/0.9",
     ]
-    _ = half
     return "\n".join(lines)
 
 
@@ -307,7 +305,7 @@ def main() -> int:
             sys.stdout.write(fn(px, w, h, tmux))
         else:
             print(f"G  {name} protocol: not detected, skipped (use --all to force)")
-    print("\nTell the operator-facing plan which of A-G look right here, and whether any glyphs are missing or misaligned.")
+    print("\nNote which of A-G look right in this terminal, and whether any glyphs are missing or misaligned.")
     return 0
 
 
