@@ -105,6 +105,10 @@ impl Config {
         if p.max_request_bytes < 64 || p.max_response_bytes < 4096 || p.max_clients == 0 {
             return Err("protocol limits too small (request >= 64, response >= 4096, clients >= 1)".into());
         }
+        if p.client_idle_ms == 0 || p.client_write_ms == 0 {
+            // a zero socket timeout is an error in std and would silently disable the protection
+            return Err("protocol.client_idle_ms and protocol.client_write_ms must be > 0".into());
+        }
         let mut disk = 0;
         let mut last_step = 0;
         for t in &c.tier {

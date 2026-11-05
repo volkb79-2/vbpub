@@ -22,7 +22,7 @@ budget = "30m"
 [lanes.topos-sampler]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/topos && set -euo pipefail && rm -rf /tmp/topos-sampler-out && docker build -f sampler/Dockerfile --target test --progress=plain . && docker build -f sampler/Dockerfile --target artifact -o type=local,dest=/tmp/topos-sampler-out . && PYTHONPATH=src:. TOPOS_SAMPLER_BIN=/tmp/topos-sampler-out/topos-sampler /opt/tester-venv/bin/python -m pytest tests/test_sampler_conformance.py -q -rs"]
+argv = ["bash", "-c", "cd {worktree}/topos && set -euo pipefail && rm -rf /tmp/topos-sampler-out && docker build -f sampler/Dockerfile --target test --progress=plain . && docker build -f sampler/Dockerfile --target artifact -o type=local,dest=/tmp/topos-sampler-out . && PYTHONPATH=src:. TOPOS_REQUIRE_SAMPLER=1 TOPOS_SAMPLER_BIN=/tmp/topos-sampler-out/topos-sampler /opt/tester-venv/bin/python -m pytest tests/test_sampler_conformance.py -q -rs"]
 budget = "20m"
 
 [lanes.py-compile]

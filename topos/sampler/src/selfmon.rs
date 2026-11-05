@@ -10,6 +10,10 @@ pub struct SelfMon {
     first: Option<(u64, u64)>,
     slurp: Slurp,
     path: String,
+    n: u64,
+    resolved: bool,
+    limit_cpu: Option<String>,
+    limit_mem: Option<String>,
 }
 
 pub struct SelfSample {
@@ -19,11 +23,14 @@ pub struct SelfSample {
     pub cpu_avg: PV,
     /// nr_throttled, throttled_usec, memory.events high, memory.events max.
     pub throttle: [PV; 4],
+    /// Cgroup (path relative to the cgroup root) the cpu.stat / memory.events values were read
+    /// from; None = no ancestor carries that limit.
+    pub throttle_src: [Option<String>; 2],
 }
 
 impl SelfMon {
     pub fn new() -> SelfMon {
-        SelfMon { hist: VecDeque::new(), first: None, slurp: Slurp::new(), path: String::new() }
+        SelfMon { hist: VecDeque::new(), first: None, slurp: Slurp::new(), path: String::new(), n: 0, resolved: false, limit_cpu: None, limit_mem: None }
     }
 
     fn kv(&mut self, file: &str, keys: [&[u8]; 2]) -> [PV; 2] {
@@ -85,16 +92,61 @@ impl SelfMon {
                 }
             }
         }
-        let rel = if self.path == "-" { "" } else { self.path.as_str() };
-        let throttle = if self.path.is_empty() {
-            [PV::st(stc::UN_READ); 4]
+        let rel = if self.path == "-" { "" } else { self.path.as_str() }.to_string();
+        // The limits (CPUQuota, MemoryHigh/Max) sit on an ancestor slice, and so do the
+        // counters that show them biting (S-06): read the first ancestor that carries a limit.
+        if !self.path.is_empty() && (self.n % 60 == 0 || !self.resolved) {
+            self.resolve(cfg, &rel);
+        }
+        self.n += 1;
+        let (throttle, src) = if self.path.is_empty() {
+            ([PV::st(stc::UN_READ); 4], [None, None])
         } else {
-            let base = format!("{}{}", cfg.sampler.cgroup_root, rel);
-            let a = self.kv(&format!("{base}/cpu.stat"), [b"nr_throttled", b"throttled_usec"]);
-            let b = self.kv(&format!("{base}/memory.events"), [b"high", b"max"]);
-            [a[0], a[1], b[0], b[1]]
+            let (lc, lm) = (self.limit_cpu.clone(), self.limit_mem.clone());
+            let a = match &lc {
+                Some(c) => self.kv(&format!("{}{c}/cpu.stat", cfg.sampler.cgroup_root), [b"nr_throttled", b"throttled_usec"]),
+                None => [PV::st(stc::NA_FEATURE); 2],
+            };
+            let b = match &lm {
+                Some(c) => self.kv(&format!("{}{c}/memory.events", cfg.sampler.cgroup_root), [b"high", b"max"]),
+                None => [PV::st(stc::NA_FEATURE); 2],
+            };
+            ([a[0], a[1], b[0], b[1]], [lc, lm])
         };
-        SelfSample { cpu_ticks, rss, cpu_recent: recent, cpu_avg: avg, throttle }
+        SelfSample { cpu_ticks, rss, cpu_recent: recent, cpu_avg: avg, throttle, throttle_src: src }
+    }
+
+    /// Walk from `rel` towards the root; the first cgroup with `cpu.max` set is the CPU limit
+    /// carrier, the first with `memory.max` or `memory.high` set the memory one.
+    fn resolve(&mut self, cfg: &Config, rel: &str) {
+        self.resolved = true;
+        self.limit_cpu = None;
+        self.limit_mem = None;
+        let mut cur = rel.to_string();
+        while !cur.is_empty() {
+            let base = format!("{}{}", cfg.sampler.cgroup_root, cur);
+            if self.limit_cpu.is_none() {
+                if let Ok(b) = self.slurp.read(&format!("{base}/cpu.max")) {
+                    if fields(b).next().map_or(false, |q| q != b"max") {
+                        self.limit_cpu = Some(cur.clone());
+                    }
+                }
+            }
+            if self.limit_mem.is_none() {
+                for f in ["memory.max", "memory.high"] {
+                    if let Ok(b) = self.slurp.read(&format!("{base}/{f}")) {
+                        if trim(b) != b"max" && !trim(b).is_empty() {
+                            self.limit_mem = Some(cur.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+            match cur.rfind('/') {
+                Some(p) => cur.truncate(p),
+                None => break,
+            }
+        }
     }
 }
 

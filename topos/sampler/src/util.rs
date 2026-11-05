@@ -96,11 +96,15 @@ impl Slurp {
             match raw::read(fd, &mut self.buf[n..]) {
                 Ok(k) => {
                     n += k;
-                    if k == 0 || n < self.buf.len() {
+                    if k == 0 {
                         break;
                     }
-                    let l = self.buf.len();
-                    self.buf.resize(l * 2, 0);
+                    // seq_file files (/proc/vmstat, memory.stat, io.stat, ...) answer a read
+                    // with one chunk even when the buffer is larger: only a 0 means the end.
+                    if n == self.buf.len() {
+                        let l = self.buf.len();
+                        self.buf.resize(l * 2, 0);
+                    }
                 }
                 Err(e) => {
                     err = Some(e);
@@ -122,11 +126,13 @@ impl Slurp {
         loop {
             let k = f.read(&mut self.buf[n..])?;
             n += k;
-            if k == 0 || n < self.buf.len() {
+            if k == 0 {
                 break;
             }
-            let l = self.buf.len();
-            self.buf.resize(l * 2, 0);
+            if n == self.buf.len() {
+                let l = self.buf.len();
+                self.buf.resize(l * 2, 0);
+            }
         }
         Ok(&self.buf[..n])
     }
@@ -180,7 +186,11 @@ pub mod stc {
     pub const UN_PARSE: u8 = 9;
     pub const UN_FIRST: u8 = 10;
     pub const UN_NOT_ENRICHED: u8 = 11;
-    pub const MAX: u8 = 11;
+    /// A counter went backwards: no delta for that tick (S-04). The reading is the new baseline.
+    pub const UN_RESET: u8 = 12;
+    /// A bounded helper did not answer within its deadline (cmdline of a task stuck in D).
+    pub const UN_TIMEOUT: u8 = 13;
+    pub const MAX: u8 = 13;
 }
 
 /// (state, reason) for a code.
@@ -198,6 +208,8 @@ pub fn state_name(c: u8) -> (&'static str, &'static str) {
         stc::UN_PARSE => ("unavailable", "parse_error"),
         stc::UN_FIRST => ("unavailable", "first_sample"),
         stc::UN_NOT_ENRICHED => ("unavailable", "not_read_this_tick"),
+        stc::UN_RESET => ("unavailable", "counter_reset"),
+        stc::UN_TIMEOUT => ("unavailable", "read_timeout"),
         _ => ("unavailable", "unknown_state_code"),
     }
 }
@@ -236,6 +248,60 @@ pub fn perr(code: &'static str, msg: impl Into<String>) -> PErr {
 
 extern "C" {
     fn sysconf(name: i32) -> i64;
+    fn signal(signum: i32, handler: usize) -> usize;
+    fn flock(fd: i32, op: i32) -> i32;
+}
+
+/// Set by SIGTERM/SIGINT: the main loop exits between ticks and drains the writer.
+pub static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_stop(_sig: i32) {
+    STOP.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+pub fn install_stop_handlers() {
+    unsafe {
+        signal(15, on_stop as extern "C" fn(i32) as usize);
+        signal(2, on_stop as extern "C" fn(i32) as usize);
+    }
+}
+
+/// Non-blocking exclusive advisory lock on an open file (instance lock).
+pub fn try_flock(f: &std::fs::File) -> bool {
+    use std::os::unix::io::AsRawFd;
+    unsafe { flock(f.as_raw_fd(), 2 | 4) == 0 }
+}
+
+/// CRC-32 (IEEE 802.3, reflected), table built at compile time.
+const CRC_TABLE: [u32; 256] = {
+    let mut t = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = i as u32;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            k += 1;
+        }
+        t[i] = c;
+        i += 1;
+    }
+    t
+};
+
+pub fn crc32_parts(parts: &[&[u8]]) -> u32 {
+    let mut c = 0xFFFF_FFFFu32;
+    for p in parts {
+        for &b in p.iter() {
+            c = CRC_TABLE[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
+        }
+    }
+    !c
+}
+
+#[allow(dead_code)]
+pub fn crc32(data: &[u8]) -> u32 {
+    crc32_parts(&[data])
 }
 
 /// (CLK_TCK, from_sysconf). The fallback 100 is reported by `hello`, never silent.
