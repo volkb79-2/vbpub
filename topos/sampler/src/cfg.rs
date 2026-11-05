@@ -21,10 +21,24 @@ pub struct Sampler {
     pub proc_root: String,
     pub sys_root: String,
     pub socket_path: String,
+    /// Socket mode, "0600" (default when absent) or "0660" (the unit's `Group=` may connect).
+    #[serde(default = "default_socket_mode")]
+    pub socket_mode: String,
     /// 0 = run until killed.
     pub duration_s: u64,
     /// Benchmark summary written at exit; empty string = none.
     pub stats_path: String,
+}
+
+fn default_socket_mode() -> String {
+    "0600".into()
+}
+
+impl Sampler {
+    /// The validated `socket_mode` as permission bits.
+    pub fn socket_mode_bits(&self) -> u32 {
+        if self.socket_mode == "0660" { 0o660 } else { 0o600 }
+    }
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -103,6 +117,9 @@ impl Config {
         let c = self;
         if c.sampler.tick_ms == 0 || c.sampler.slow_every_s == 0 {
             return Err("tick_ms and slow_every_s must be > 0".into());
+        }
+        if c.sampler.socket_mode != "0600" && c.sampler.socket_mode != "0660" {
+            return Err(format!("sampler.socket_mode must be \"0600\" or \"0660\", got {:?}", c.sampler.socket_mode));
         }
         if c.process.cap == 0 || c.process.full_sweep_every_s == 0 {
             return Err("process.cap and process.full_sweep_every_s must be > 0".into());

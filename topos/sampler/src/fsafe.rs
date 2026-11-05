@@ -357,9 +357,10 @@ impl Instance {
 #[cfg(test)]
 pub static BIND_PROBE: std::sync::Mutex<Vec<(String, u32)>> = std::sync::Mutex::new(Vec::new());
 
-/// Bind a unix socket so that it is never reachable with a looser mode than 0600 (X-08): the
-/// umask is tightened around `bind`, then the final mode is set and verified.
-pub fn bind_private(inst: &Instance) -> io::Result<std::os::unix::net::UnixListener> {
+/// Bind a unix socket so that it is never reachable with a looser mode than 0600 during bind
+/// (X-08): the umask is tightened around `bind`, then the configured `mode` (0600 or 0660) is
+/// set and verified. The group stays the process's effective group.
+pub fn bind_private(inst: &Instance, mode: u32) -> io::Result<std::os::unix::net::UnixListener> {
     use std::os::unix::fs::PermissionsExt;
     match inst.dir.unlink(&inst.sock_name) {
         Ok(()) => {}
@@ -376,10 +377,10 @@ pub fn bind_private(inst: &Instance) -> io::Result<std::os::unix::net::UnixListe
             BIND_PROBE.lock().unwrap_or_else(|e| e.into_inner()).push((inst.sock_path.clone(), m.mode() & 0o777));
         }
     }
-    std::fs::set_permissions(&inst.sock_path, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::set_permissions(&inst.sock_path, std::fs::Permissions::from_mode(mode))?;
     let md = std::fs::symlink_metadata(&inst.sock_path)?;
-    if !md.file_type().is_socket() || md.uid() != euid() || md.mode() & 0o777 != 0o600 {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} is not a private socket owned by the sampler", inst.sock_path)));
+    if !md.file_type().is_socket() || md.uid() != euid() || md.mode() & 0o777 != mode {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} is not a socket owned by the sampler with mode {mode:04o}", inst.sock_path)));
     }
     Ok(l)
 }

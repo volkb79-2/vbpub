@@ -9,7 +9,7 @@ CLI/MCP/report code and both TUIs. Decision trail: D-024 (envelope), D-025 (tier
 ## Transport
 
 - Unix stream socket, path from `sampler.socket_path` (production: `/run/topos/sampler.sock`),
-  mode 0600. One JSON object per line (`\n` terminated), request and response alike.
+  mode 0600 by default, or 0660 with `sampler.socket_mode = "0660"`. One JSON object per line (`\n` terminated), request and response alike.
 - A connection serves requests sequentially and stays open across errors. Idle connections
   are closed after `protocol.client_idle_ms`; a client that stops reading is dropped after
   `protocol.client_write_ms`. At most `protocol.max_clients` connections; the next one gets a
@@ -223,7 +223,7 @@ table). A client that ignores unknown fields and treats unknown states as `unava
   metric names, an entry ending in `*` is a prefix; entities without a requested metric are omitted;
   absent = all. `compact`: no `raw`; a gauge is a bare number, a counter `[delta, rate_per_s]`, an
   `unavailable` state stays `{"s","why"}`, `not_applicable` states are left out. Default unchanged.
-- **Transport.** Socket mode stays 0600 (root only): `current` carries full command lines. One sampler per
+- **Transport.** Socket mode defaults to 0600 (root only); `sampler.socket_mode = "0660"` opens it to the unit's `Group=`. `current` carries full command lines. One sampler per
   socket (`<socket>.lock`); a second one fails to start. A reply has an overall write deadline of
   4 x `client_write_ms`.
 - **S3 additions (X-01..X-15), all additive.** `status.store`: `queue_bytes`, `queue_cap_bytes`,

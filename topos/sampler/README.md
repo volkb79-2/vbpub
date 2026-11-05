@@ -86,7 +86,9 @@ events; bounded queue, oldest frame dropped and counted), command-line helper po
 D-state task's `cmdline` read may hang), serving threads. Frames on disk are
 `TSF1 | len | crc32 | ts_ms | payload`; a torn tail is cut at start-up. SIGTERM/SIGINT drain the
 writer. Segments of tiers that are not configured are deleted at start-up. Files are mode 0600;
-the socket is root-only (0600), one instance per socket (flock on `<socket>.lock`).
+the socket is root-only (0600) unless `sampler.socket_mode = "0660"` is set (then the unit's
+`Group=` may connect; the socket is still created 0600 and only then widened; any other value is a
+config error, exit 2), one instance per socket (flock on `<socket>.lock`).
 Panics unwind (`panic = "unwind"`): a request that panics gets an `internal` error.
 
 ## Known limits

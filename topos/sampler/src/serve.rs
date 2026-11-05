@@ -227,9 +227,9 @@ impl Ctx {
 /// Start serving on the socket. The caller already holds the instance lock (`fsafe::Instance`,
 /// X-02), which lives as long as the accept thread. The socket is created private (X-08).
 pub fn spawn(ctx: Arc<Ctx>, inst: crate::fsafe::Instance) -> std::io::Result<()> {
-    // Root only: `current` carries command lines (redacted, but still host internals). Group
-    // access is an operator decision (docs/SAMPLER-PROTOCOL.md, Transport).
-    let l = crate::fsafe::bind_private(&inst)?;
+    // Default root only: `current` carries command lines (redacted, but still host internals).
+    // Group access (0660) is an operator decision via `sampler.socket_mode`.
+    let l = crate::fsafe::bind_private(&inst, ctx.cfg.sampler.socket_mode_bits())?;
     std::thread::Builder::new().name("accept".into()).spawn(move || {
         let _inst = inst;
         for s in l.incoming() {

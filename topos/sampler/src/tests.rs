@@ -560,13 +560,17 @@ fn byte_cap_holds_even_for_one_oversized_segment() {
     let mut d = Dict::default();
     let e = d.ent("cg:/x", 0);
     let ms: Vec<u32> = (0..40).map(|i| d.met(&format!("m{i}"), false)).collect();
-    let base = wall_ms() - 200_000;
+    // A whole hour back, so all 150 frames stay in one 3600 s segment at any time of day.
+    let base = wall_ms() / 3_600_000 * 3_600_000 - 3_600_000;
+    let mut peak = 0;
     for i in 0..150u64 {
         let vals: Vec<Val> = ms.iter().enumerate().map(|(k, m)| Val { m: *m, v: ((i * 7919 + k as u64 * 104729) % 100_003) as f64 * 1.37, raw: NONE, st: 0 }).collect();
         st.push(&[(e, vals)], base + i * 1000, 1000, &mut d);
         assert!(st.sizes().1 <= 1500, "cap exceeded at frame {i}: {}", st.sizes().1);
+        peak = peak.max(st.sizes().1);
     }
-    assert!(st.sizes().1 > 0);
+    // Eviction can empty the only segment, so the size after the last frame may be 0.
+    assert!(peak > 0, "nothing was ever stored");
 }
 
 // ---------------------------------------------------------------- protocol
@@ -1690,13 +1694,41 @@ fn x08_the_socket_is_never_created_with_a_looser_mode() {
     fs::write(root.join("victim"), "precious").unwrap();
     symlink(root.join("victim"), &sock).unwrap();
     let inst = Instance::acquire(&sock).unwrap();
-    let _l = fsafe::bind_private(&inst).unwrap();
+    let _l = fsafe::bind_private(&inst, 0o600).unwrap();
     let probe = fsafe::BIND_PROBE.lock().unwrap().iter().find(|(p, _)| *p == sock).map(|x| x.1);
     assert_eq!(probe, Some(0o600), "right after bind, before any chmod, the socket is already private (a plain bind gives 0777 & ~umask)");
     let md = fs::symlink_metadata(&sock).unwrap();
     assert_eq!(md.mode() & 0o777, 0o600);
     assert_eq!(md.uid(), fsafe::euid());
     assert_eq!(fs::read(root.join("victim")).unwrap(), b"precious");
+}
+
+#[test]
+fn socket_mode_0660_is_applied_but_bind_stays_private() {
+    let root = tmp("x08-660");
+    let sock = root.join("g.sock").to_str().unwrap().to_string();
+    let inst = Instance::acquire(&sock).unwrap();
+    let _l = fsafe::bind_private(&inst, 0o660).unwrap();
+    let probe = fsafe::BIND_PROBE.lock().unwrap().iter().find(|(p, _)| *p == sock).map(|x| x.1);
+    assert_eq!(probe, Some(0o600), "during bind the socket is still 0600");
+    let md = fs::symlink_metadata(&sock).unwrap();
+    assert_eq!(md.mode() & 0o777, 0o660);
+    assert_eq!(md.uid(), fsafe::euid());
+}
+
+#[test]
+fn socket_mode_config_default_and_validation() {
+    let root = tmp("cfg-mode");
+    let ok = cfg_text(&root, 4_000_000, TIERS3, 1 << 30, 3);
+    let with = |v: &str| ok.replace("duration_s = 0", &format!("socket_mode = \"{v}\"\nduration_s = 0"));
+    let c = Config::parse(&ok).unwrap();
+    assert_eq!(c.sampler.socket_mode_bits(), 0o600, "absent means private");
+    assert_eq!(Config::parse(&with("0600")).unwrap().sampler.socket_mode_bits(), 0o600);
+    assert_eq!(Config::parse(&with("0660")).unwrap().sampler.socket_mode_bits(), 0o660);
+    for bad in ["0666", "0770", "660", ""] {
+        let e = Config::parse(&with(bad)).unwrap_err();
+        assert!(e.contains("socket_mode") && e.contains("0600") && e.contains("0660"), "{bad}: {e}");
+    }
 }
 
 #[test]
