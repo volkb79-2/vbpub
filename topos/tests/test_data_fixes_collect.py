@@ -200,6 +200,86 @@ def test_docker_inspect_timeout_degrades_and_is_not_cached() -> None:
     assert len(cache) == 0
 
 
+def _scope(cid: str) -> tuple[str, Entity]:
+    key = f"system.slice/docker-{cid}.scope"
+    return key, Entity(key=key, kind="scope", parent="system.slice")
+
+
+def test_failed_inspect_is_negatively_cached_for_a_short_ttl() -> None:
+    now = [0.0]
+    calls: list[str] = []
+
+    def inspect(cid: str):
+        calls.append(cid)
+        raise subprocess.TimeoutExpired("docker", 10)
+
+    cache = DockerInspectCache(clock=lambda: now[0])
+    for _ in range(3):
+        key, ent = _scope(CID)
+        assert enrich_entities({key: ent}, inspect, cache=cache)[key].docker is None
+    assert calls == [CID]  # one timeout per TTL, not one per sweep
+    now[0] = DockerInspectCache.NEGATIVE_TTL_S + 1
+    key, ent = _scope(CID)
+    enrich_entities({key: ent}, inspect, cache=cache)
+    assert calls == [CID, CID]
+
+
+def test_sweep_budget_bounds_total_inspect_time() -> None:
+    now = [0.0]
+    calls: list[str] = []
+    cids = [f"{i:064x}" for i in range(1, 6)]
+
+    def inspect(cid: str):
+        calls.append(cid)
+        now[0] += 10.0  # each hung inspect burns 10 s
+        raise subprocess.TimeoutExpired("docker", 10)
+
+    cache = DockerInspectCache(clock=lambda: now[0])
+    entities = dict(_scope(c) for c in cids)
+    enrich_entities(entities, inspect, cache=cache)
+    assert len(calls) == 2  # budget (15 s) exhausted after the second 10 s timeout
+
+
+def test_positive_inspect_expires_so_a_rename_is_picked_up() -> None:
+    now = [0.0]
+    name = ["web"]
+
+    def inspect(cid: str):
+        return [{"Id": cid, "Name": "/" + name[0], "Config": {"Image": "img", "Labels": {}}}]
+
+    cache = DockerInspectCache(clock=lambda: now[0])
+    key, ent = _scope(CID)
+    assert enrich_entities({key: ent}, inspect, cache=cache)[key].docker.name == "web"
+    name[0] = "renamed"
+    now[0] = DockerInspectCache.POSITIVE_TTL_S - 1
+    key, ent = _scope(CID)
+    assert enrich_entities({key: ent}, inspect, cache=cache)[key].docker.name == "web"
+    now[0] = DockerInspectCache.POSITIVE_TTL_S + 1
+    key, ent = _scope(CID)
+    assert enrich_entities({key: ent}, inspect, cache=cache)[key].docker.name == "renamed"
+
+
+def test_expired_entry_falls_back_to_last_known_data_while_docker_is_down() -> None:
+    now = [0.0]
+    up = [True]
+
+    def inspect(cid: str):
+        if not up[0]:
+            return None
+        return [{"Id": cid, "Name": "/web", "Config": {"Image": "img", "Labels": {}}}]
+
+    cache = DockerInspectCache(clock=lambda: now[0])
+    key, ent = _scope(CID)
+    enrich_entities({key: ent}, inspect, cache=cache)
+    up[0] = False
+    now[0] = DockerInspectCache.POSITIVE_TTL_S + 1
+    key, ent = _scope(CID)
+    assert enrich_entities({key: ent}, inspect, cache=cache)[key].docker.name == "web"
+    now[0] += 1  # inside the negative TTL: still the last known data, no new inspect
+    key, ent = _scope(CID)
+    assert enrich_entities({key: ent}, inspect, cache=cache)[key].docker.name == "web"
+
+
 def test_unit_view_ttl_cache_with_injected_clock() -> None:
     now = [0.0]
     cache = UnitViewCache(ttl=30.0, clock=lambda: now[0])

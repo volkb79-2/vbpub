@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -149,23 +150,53 @@ def meta_from_inspect(full_id: str, data: dict[str, Any]) -> DockerMeta:
 class DockerInspectCache:
     """Inspect results by 64-hex container id (A-01).
 
-    A container's inspect data is immutable for a given id, so a successful result is
-    kept until the id leaves the cgroup tree. Failures are never cached (a transient
-    dockerd error must be retried), and a timeout degrades to "no docker metadata".
+    A successful result is kept until the id leaves the cgroup tree but expires after
+    ``POSITIVE_TTL_S`` so a ``docker rename`` is picked up. A failed inspect is cached
+    negatively for ``NEGATIVE_TTL_S`` so a hung dockerd costs at most one timeout per
+    TTL per container, and ``SWEEP_BUDGET_S`` bounds the total inspect time of one
+    sweep. While a fresh inspect is unavailable the last known data (if any) is used.
     """
 
-    def __init__(self) -> None:
-        self._data: dict[str, dict[str, Any]] = {}
+    POSITIVE_TTL_S = 60.0
+    NEGATIVE_TTL_S = 15.0
+    SWEEP_BUDGET_S = 15.0
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self._clock = clock
+        self._data: dict[str, tuple[dict[str, Any], float]] = {}
+        self._failed: dict[str, float] = {}
+
+    def now(self) -> float:
+        return self._clock()
 
     def get(self, cid: str) -> dict[str, Any] | None:
-        return self._data.get(cid)
+        """Fresh positive entry, or None when absent or expired."""
+        entry = self._data.get(cid)
+        if entry is None or self._clock() - entry[1] >= self.POSITIVE_TTL_S:
+            return None
+        return entry[0]
+
+    def stale(self, cid: str) -> dict[str, Any] | None:
+        """Last known data regardless of age."""
+        entry = self._data.get(cid)
+        return entry[0] if entry is not None else None
 
     def put(self, cid: str, data: dict[str, Any]) -> None:
-        self._data[cid] = data
+        self._data[cid] = (data, self._clock())
+        self._failed.pop(cid, None)
+
+    def note_failure(self, cid: str) -> None:
+        self._failed[cid] = self._clock()
+
+    def failed_recently(self, cid: str) -> bool:
+        stamp = self._failed.get(cid)
+        return stamp is not None and self._clock() - stamp < self.NEGATIVE_TTL_S
 
     def retain(self, live_ids: set[str]) -> None:
         for cid in [c for c in self._data if c not in live_ids]:
             del self._data[cid]
+        for cid in [c for c in self._failed if c not in live_ids]:
+            del self._failed[cid]
 
     def __len__(self) -> int:
         return len(self._data)
@@ -181,6 +212,7 @@ def enrich_entities(
     stack_roots = known_stack_roots or set()
     out: dict[EntityKey, Entity] = {}
     live_ids: set[str] = set()
+    sweep_start = cache.now() if cache is not None else 0.0
     for key, entity in entities.items():
         cid = docker_id_from_key(key)
         if cid is None:
@@ -190,9 +222,24 @@ def enrich_entities(
         try:
             data = cache.get(cid) if cache is not None else None
             if data is None:
-                data = _first_inspect(inspect(cid))
-                if data is not None and cache is not None:
-                    cache.put(cid, data)
+                skip = cache is not None and (
+                    cache.failed_recently(cid) or cache.now() - sweep_start >= cache.SWEEP_BUDGET_S
+                )
+                if skip:
+                    data = cache.stale(cid)
+                else:
+                    try:
+                        data = _first_inspect(inspect(cid))
+                    except BaseException:
+                        if cache is not None:
+                            cache.note_failure(cid)
+                        raise
+                    if cache is not None:
+                        if data is not None:
+                            cache.put(cid, data)
+                        else:
+                            cache.note_failure(cid)
+                            data = cache.stale(cid)
             if data is not None:
                 entity.docker = meta_from_inspect(cid, data)
                 # CIU detection: labels first, inference fallback
