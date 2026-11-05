@@ -15,10 +15,12 @@ import dataclasses
 import io
 import json
 import os
+import stat
 import socketserver
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from conftest import fixture_frame
 from topos.daemon import FrameBroker, serve_unix_socket
@@ -27,6 +29,34 @@ from topos.daemon import FrameBroker, serve_unix_socket
 def _current_group_name() -> str:
     import grp
     return grp.getgrgid(os.getgid()).gr_name
+
+
+def _mock_systemd_metadata(monkeypatch, socket_path: Path, group_name: str) -> None:
+    import grp
+
+    from topos.service.config import DEFAULTS
+
+    original_stat = Path.stat
+    original_lstat = Path.lstat
+    group_id = grp.getgrnam(group_name).gr_gid
+
+    def stat_path(path: Path, *args, **kwargs):
+        if path == DEFAULTS.state_dir:
+            return SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFDIR | 0o700)
+        return original_stat(path, *args, **kwargs)
+
+    def lstat_path(path: Path, *args, **kwargs):
+        if path == socket_path:
+            actual = original_lstat(path, *args, **kwargs)
+            return SimpleNamespace(
+                st_uid=0,
+                st_gid=group_id,
+                st_mode=stat.S_IFSOCK | stat.S_IMODE(actual.st_mode),
+            )
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_path)
+    monkeypatch.setattr(Path, "lstat", lstat_path)
 
 
 def _start_socket(socket_path: Path):
@@ -56,14 +86,16 @@ def _serve_lines(socket_path: Path, lines: list[bytes]) -> socketserver.UnixStre
 class TestStatusHelper:
     """Unit tests for build_daemon_status and DaemonStatusReport."""
 
-    def test_status_json_success(self, tmp_path: Path) -> None:
+    def test_status_json_success(self, tmp_path: Path, monkeypatch) -> None:
         """Status JSON against a fixture daemon socket succeeds."""
         socket_path = tmp_path / "topos.sock"
         server = _start_socket(socket_path)
         try:
             from topos.daemon.status import build_daemon_status
 
-            report = build_daemon_status(socket_path, group_name=_current_group_name())
+            group_name = _current_group_name()
+            _mock_systemd_metadata(monkeypatch, socket_path, group_name)
+            report = build_daemon_status(socket_path, group_name=group_name)
             assert report.ok is True
             assert report.protocol.ok is True
             assert report.protocol.message == "Current frame retrieved successfully."
@@ -78,14 +110,16 @@ class TestStatusHelper:
             server.shutdown()
             server.server_close()
 
-    def test_status_text_success(self, tmp_path: Path) -> None:
+    def test_status_text_success(self, tmp_path: Path, monkeypatch) -> None:
         """Status text output contains expected sections."""
         socket_path = tmp_path / "topos.sock"
         server = _start_socket(socket_path)
         try:
             from topos.daemon.status import build_daemon_status
 
-            report = build_daemon_status(socket_path, group_name=_current_group_name())
+            group_name = _current_group_name()
+            _mock_systemd_metadata(monkeypatch, socket_path, group_name)
+            report = build_daemon_status(socket_path, group_name=group_name)
             text = report.to_text()
             assert "topos daemon status" in text
             assert str(socket_path) in text
@@ -95,14 +129,16 @@ class TestStatusHelper:
             server.shutdown()
             server.server_close()
 
-    def test_status_pretty_json(self, tmp_path: Path) -> None:
+    def test_status_pretty_json(self, tmp_path: Path, monkeypatch) -> None:
         """--pretty-json produces parseable indented JSON."""
         socket_path = tmp_path / "topos.sock"
         server = _start_socket(socket_path)
         try:
             from topos.daemon.status import build_daemon_status
 
-            report = build_daemon_status(socket_path, group_name=_current_group_name())
+            group_name = _current_group_name()
+            _mock_systemd_metadata(monkeypatch, socket_path, group_name)
+            report = build_daemon_status(socket_path, group_name=group_name)
             pretty_raw = json.dumps(report.to_jsonable(), indent=2, sort_keys=True)
             assert "\n" in pretty_raw
             assert "  " in pretty_raw
