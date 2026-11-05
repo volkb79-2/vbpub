@@ -1065,7 +1065,8 @@ def test_signal_during_restore_write_keeps_the_outcome_truthful(tmp_path, write_
     def writer(_path, _name, _value):
         # to this thread, which blocks it during the write, not to the process: in a process with other
         # threads (the xdist worker) the kernel may hand a process signal to one of them, and the
-        # Python handler then runs at an arbitrary point (3 failures in 12 runs under -n 2 --cov)
+        # Python handler then runs at an arbitrary point (3 failures in 12 runs under -n 2 --cov).
+        # Python runs signal handlers only in the main thread, which is where pytest runs this test.
         signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
         if write_fails:
             raise OSError(22, "EINVAL")
