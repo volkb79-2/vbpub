@@ -7,7 +7,7 @@ from topos.config import ToposConfig
 from topos.model import EntityFrame, Frame
 from topos.record.ring import HistoryRing
 
-from .table import RenderedRows, _make_table, display_name, format_metric_value, header_label, metric_sort_value, resolve_profile
+from .table import RenderedRows, _make_table, display_name, format_metric_value, header_label, resolve_profile, sort_entity_frames
 
 
 def render_tree_table(
@@ -79,11 +79,7 @@ def _ordered_rows(
 def _sort_branch(branch: list[EntityFrame], sort_by: str, *, reverse: bool | None = None) -> list[EntityFrame]:
     if reverse is None:
         reverse = sort_by != "name"  # name asc by default; numeric desc
-    return sorted(
-        branch,
-        key=lambda entity_frame: display_name(entity_frame.entity).lower() if sort_by == "name" else metric_sort_value(sort_by, entity_frame),
-        reverse=reverse,
-    )
+    return sort_entity_frames(branch, sort_by, reverse=reverse)
 
 
 def _tree_prefix(frame: Frame, entity_frame: EntityFrame, depth: int, *, collapsed: bool) -> Table | str:

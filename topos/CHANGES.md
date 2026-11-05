@@ -78,6 +78,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(net): the BPF provider refuses a snapshot older than 3 intervals (`generated_at`) so a dead producer does not read as idle, and aggregates in a single pass (A-12, B-14)
 - fix(procs): idle processes are not "hot" (rate > 0 floor); a pin is bound to a ProcessKey so a reused pid does not inherit it (A-14)
 - fix(diag): `protected_disk_refault` honours the warn band, `memory_high_user_visible` is red at crit, `pressure` is unavailable when no input is readable (A-16)
+- fix(topos/record): headless record progress reports the real written-frame count and prints a final `done frames=N` line at clean exit (D-02 review round)
+- fix(topos/ui): a frame-source failure no longer crashes the TUI; the last frame is marked STALE with `mode=<src> source failed: <msg>`, attach and live sources retry and clear on recovery (D-02)
+- fix(topos/ui): rows with a missing, NaN or non-numeric metric sort last in both directions and never raise TypeError (D-03)
+- fix(topos/config): one `ConfigError` for syntax errors and invalid values (`topos: config <path>: <msg>`, exit 2); `general.interval` >= 0.1 s; invalid `compression`, non-boolean `paddr_enabled` and invalid `default_view` are rejected instead of coerced; unknown keys warn once each; `[hotkeys]`, `[colors]` and `history.downsample_*` warn that they have no effect yet (D-04, D-05)
+- fix(topos/cli): `--duration`/`--frames` outside `--headless --record` and `--speed`/`--step` without `--replay` exit 2; `--interval` now applies to UI, attach and record modes (D-06)
+- fix(topos/ui): resize re-chooses columns for the real table width (no 80-column floor); replay stepping no longer duplicates history; the live worker stops on quit; `42.0` in the jump prompt is a frame; the `__empty__` placeholder is never the selection; collapsed keys are pruned (D-09, D-10, D-12)
+- fix(topos/ui): TOP PRESSURE drops ancestors of a listed culprit and the root; drill metrics use the table's byte/rate/percent formatting; NAME column capped at 40 characters (middle ellipsis); Footer shows bound keys; the dead `k` binding is removed
+- test(topos): elapsed-time assertions replaced by state assertions, thread errors collected, vacuous no-audit-log test made real, audit-directory checks run on a real filesystem (D-14, D-15)
+- chore(topos): reason comments for each dependency floor in pyproject.toml (D-17)
 <!-- cmru: pending release notes end -->
 
 ## [0.4.2] - 2026-10-21

@@ -27,6 +27,10 @@ from topos.record.ring import HistoryRing
 from topos.registry import REGISTRY
 
 from .damon_control import DamonConfirmScreen
+from .table import _format_metric as _table_format_metric
+
+# Units the shared table formatter already renders with a unit suffix.
+_SELF_UNIT_UNITS = frozenset({"bytes", "bytes/s", "%", "/s", "ratio"})
 
 
 class DrillDownScreen(Screen[None]):
@@ -193,7 +197,8 @@ def render_drill_text(frame: Frame, entity_key: str, *, config: ToposConfig, rin
         for name in names:
             metric = entity_frame.metrics.get(name)
             spec = REGISTRY.get(name)
-            lines.append(f"  {name:<24} {_format_metric(metric)} [{metric.src if metric is not None else 'n/a'}]{'' if spec is None else f' {spec.unit}'}")
+            shown_unit = "" if spec is None or spec.unit in _SELF_UNIT_UNITS else f" {spec.unit}"
+            lines.append(f"  {name:<24} {_table_format_metric(metric, spec).plain} [{metric.src if metric is not None else 'n/a'}]{shown_unit}")
         lines.append("")
 
     lines.extend(_damon_block(entity_frame))

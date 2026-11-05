@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 import sys
@@ -15,7 +16,7 @@ from topos.bpf_gate import report_to_jsonable, render_report, run_bpf_gate
 from topos.collect.collector import Collector
 from topos.collect.cgroup import _validate_slice_name
 from topos.collect.dockerjoin import ContainerResolveError, resolve_container_key
-from topos.config import BpfSnapshotConfig, load
+from topos.config import MIN_INTERVAL_SECONDS, BpfSnapshotConfig, ConfigError, load
 from topos.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, stop_owned_sessions
 from topos.damon.passive import DEFAULT_DAMON_ROOT
 from topos.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
@@ -365,6 +366,31 @@ def _attach_frame_source(socket_path: Path, *, poll_interval_s: float) -> Iterat
         time.sleep(interval_s)
 
 
+class _RestartableSource:
+    """Frame source the UI can restart after a failure.
+
+    The first stream is created eagerly; every later ``iter()`` builds a fresh
+    one. ``stop_event`` is set by the UI on quit so a live collection loop
+    ends instead of running on behind the closed screen.
+    """
+
+    def __init__(self, make_stream, *, retry_delay) -> None:
+        self.stop_event = threading.Event()
+        self._make_stream = make_stream
+        self.retry_delay = retry_delay
+        self._first = make_stream(self.stop_event)
+
+    def __iter__(self):
+        if self._first is not None:
+            first, self._first = self._first, None
+            return iter(first)
+        return iter(self._make_stream(self.stop_event))
+
+
+def _attach_retry_delay(attempt: int) -> float:
+    return min(30.0, float(2 ** min(attempt, 5)))
+
+
 def _replay_frame_source(driver: ReplayDriver, *, speed: float, step: bool) -> Iterator:
     for replay_frame in driver.play(speed=speed, step=step):
         yield replay_frame.frame
@@ -555,6 +581,14 @@ def _main_squeeze_recover(target: str | None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except ConfigError as exc:
+        print(f"topos: config {exc.path}: {exc.message}", file=sys.stderr)
+        return 2
+
+
+def _main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     if raw_argv[:1] == ["damon"]:
         return _main_damon(raw_argv[1:])
@@ -597,6 +631,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.duration is not None and args.frames is not None:
         print_cli_error("--duration and --frames are mutually exclusive")
         return 2
+    if (args.duration is not None or args.frames is not None) and not (args.headless and args.record is not None):
+        print_cli_error("--duration and --frames are only supported with --headless --record FILE")
+        return 2
+    if args.duration is not None and not args.duration > 0:
+        print_cli_error("--duration must be greater than 0")
+        return 2
+    if args.frames is not None and args.frames < 1:
+        print_cli_error("--frames must be at least 1")
+        return 2
+    if args.interval is not None:
+        if not args.interval >= MIN_INTERVAL_SECONDS:
+            print_cli_error(f"--interval must be at least {MIN_INTERVAL_SECONDS:g} seconds")
+            return 2
+        if not args.headless:
+            # The headless driver applies --interval itself.
+            config = dataclasses.replace(config, interval=args.interval)
+    if args.replay is None and (args.step or args.speed != 1.0) and args.attach is None:
+        print_cli_error("--speed and --step require --replay")
+        return 2
     # Validate --slice early so bad values are rejected before collector work
     if args.slice is not None:
         try:
@@ -637,7 +690,10 @@ def main(argv: list[str] | None = None) -> int:
                 _print_frame_json(frame, args.pretty_json)
                 return 0
             ui_code = _run_ui(
-                _attach_frame_source(args.attach, poll_interval_s=config.interval),
+                _RestartableSource(
+                    lambda _stop: _attach_frame_source(args.attach, poll_interval_s=config.interval),
+                    retry_delay=_attach_retry_delay,
+                ),
                 config=config,
                 cgroup_root=None,
                 smoke=args.ui_smoke,
@@ -698,14 +754,17 @@ def main(argv: list[str] | None = None) -> int:
                         max_frames=args.frames,
                     )
                     return exit_code
-                stream = live_frame_stream(collector, writer=writer)
                 if args.once:
+                    stream = live_frame_stream(collector, writer=writer)
                     frame = next(stream)
                     if args.json:
                         _print_frame_json(frame, args.pretty_json)
                     return 0
                 ui_code = _run_ui(
-                    stream,
+                    _RestartableSource(
+                        lambda stop: live_frame_stream(collector, writer=writer, stop_event=stop),
+                        retry_delay=lambda _attempt: float(config.interval),
+                    ),
                     config=config,
                     cgroup_root=args.cgroup_root,
                     smoke=args.ui_smoke,
@@ -725,7 +784,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             collector = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args))  # type: ignore[arg-type]
             ui_code = _run_ui(
-                live_frame_stream(collector),
+                _RestartableSource(
+                    lambda stop: live_frame_stream(collector, stop_event=stop),
+                    retry_delay=lambda _attempt: float(config.interval),
+                ),
                 config=config,
                 cgroup_root=args.cgroup_root,
                 smoke=args.ui_smoke,

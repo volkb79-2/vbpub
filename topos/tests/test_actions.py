@@ -190,12 +190,26 @@ class TestAuditLog:
         audit.record("docker-start", "x", ("docker", "start", "x"), admin=True)
         assert nested.exists()
 
-    def test_no_writes_without_audit_log(self) -> None:
-        """No audit log path means no side effects — verified by the CLI branch."""
-        # The audit log is only written when --audit-log is passed.
-        # Unit-level: AuditLog requires a path, so if you don't construct one,
-        # nothing is written.
-        pass
+    def test_no_writes_without_audit_log(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A preview without --audit-log never constructs an AuditLog and writes no file."""
+        from topos.cli import _main_action
+
+        class _Forbidden:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                raise AssertionError("AuditLog constructed although --audit-log was not given")
+
+        monkeypatch.setattr("topos.actions.audit.AuditLog", _Forbidden)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+        rc = _main_action(["preview", "--kind", "docker-restart", "--target", "my-container", "--admin"])
+
+        assert rc == 0
+        assert "docker" in capsys.readouterr().out
+        assert list(tmp_path.iterdir()) == []
 
 
 class TestNoExecution:

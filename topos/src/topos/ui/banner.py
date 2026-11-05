@@ -83,6 +83,7 @@ def _top_pressure_lines(frame: Frame) -> list[str]:
             continue
         ranked.append((float(metric.v), entity_frame))
     ranked.sort(key=lambda item: item[0], reverse=True)
+    ranked = _drop_pressure_ancestors(frame, ranked, limit=3)
     lines: list[str] = []
     for index, (_, entity_frame) in enumerate(ranked[:3], start=1):
         metrics = entity_frame.metrics
@@ -94,6 +95,39 @@ def _top_pressure_lines(frame: Frame) -> list[str]:
             f"ram {_fmt_bytes_metric(metrics.get('ram'))}"
         )
     return lines
+
+
+def _is_ancestor(frame: Frame, ancestor_key: str, key: str) -> bool:
+    seen: set[str] = set()
+    parent = frame.entities[key].entity.parent if key in frame.entities else None
+    while parent is not None and parent not in seen:
+        if parent == ancestor_key:
+            return True
+        seen.add(parent)
+        entity_frame = frame.entities.get(parent)
+        parent = entity_frame.entity.parent if entity_frame is not None else None
+    return False
+
+
+def _drop_pressure_ancestors(
+    frame: Frame,
+    ranked: list[tuple[float, EntityFrame]],
+    *,
+    limit: int,
+) -> list[tuple[float, EntityFrame]]:
+    """Keep the culprit, not its ancestors: an ancestor is dropped when one of
+    its descendants is listed, and the root ``/`` is listed only when alone."""
+    candidates = [item for item in ranked if item[1].entity.key] or ranked
+    chosen: list[tuple[float, EntityFrame]] = []
+    for item in candidates:
+        key = item[1].entity.key
+        if any(_is_ancestor(frame, key, other[1].entity.key) for other in chosen):
+            continue
+        chosen = [other for other in chosen if not _is_ancestor(frame, other[1].entity.key, key)]
+        chosen.append(item)
+        if len(chosen) >= limit:
+            break
+    return chosen
 
 
 def _host_damon_heat_line(frame: Frame) -> str | None:

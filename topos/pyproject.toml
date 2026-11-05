@@ -7,11 +7,18 @@ name = "topos"
 dynamic = ["version"]
 description = "Host pressure inspector and cgroup forensics collector"
 requires-python = ">=3.11"
+# textual>=8.2.8: current baseline with no upper ceiling (docs/ROADMAP.md P43, replaced the
+# obsolete >=0.58,<1 range); pinned by tests/test_packaging_metadata.py.
 dependencies = ["textual>=8.2.8"]
 
 [project.optional-dependencies]
+# zstandard>=0.22: record/reader.py relies on ZstdDecompressor.stream_reader(read_across_frames=True);
+# 0.22 is the tested floor (exact first release with that argument not verified).
 zstandard = ["zstandard>=0.22"]
 mcp = ["mcp>=1.28.0,<2.0.0"]  # mcp 2.0.0 renamed mcp.server.fastmcp.FastMCP -> mcp.server.mcpserver.MCPServer
+# pytest>=8.0: no known minimum: tested floor.
+# pytest-cov>=5.0: the gate lane runs `--cov --cov-branch`; no known minimum: tested floor.
+# pytest-xdist>=3.6: lane and cmru.toml run `pytest -n auto`; no known minimum: tested floor.
 dev = [
     "topos[zstandard]",
     "topos[mcp]",

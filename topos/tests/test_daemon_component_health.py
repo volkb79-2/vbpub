@@ -326,23 +326,37 @@ def test_concurrent_reads_and_writes() -> None:
             reg.record_success("bpf_snapshot_bridge", detail="ok")
             reg.record_degraded("paddr_lifecycle", detail="partial")
 
-    def _reader() -> None:
-        while not stop_event.is_set():
-            snap = reg.snapshot()
-            assert len(snap.snapshots) == 4
-            for cs in snap.snapshots:
-                assert cs.name in COMPONENT_NAMES
+    errors: list[BaseException] = []
 
-    writer = threading.Thread(target=_writer)
+    def _reader() -> None:
+        # A fixed amount of work instead of a sleep: the reader finishes after
+        # 200 snapshots taken while the writer is running.
+        try:
+            for _ in range(200):
+                snap = reg.snapshot()
+                assert len(snap.snapshots) == 4
+                for cs in snap.snapshots:
+                    assert cs.name in COMPONENT_NAMES
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(exc)
+
+    def _guarded_writer() -> None:
+        try:
+            _writer()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    writer = threading.Thread(target=_guarded_writer)
     reader = threading.Thread(target=_reader)
     writer.start()
     reader.start()
 
-    import time
-    time.sleep(0.2)
+    reader.join(timeout=30)
     stop_event.set()
-    writer.join(timeout=2)
-    reader.join(timeout=2)
+    writer.join(timeout=30)
+    assert not reader.is_alive()
+    assert not writer.is_alive()
+    assert errors == []
 
 
 def test_build_health_response_shape() -> None:
