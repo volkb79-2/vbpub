@@ -131,6 +131,9 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- fix(gate): `[lanes.ciu]` in run-gate.toml declares `resource_observer = "cgprofile"` and `resources.pids = 8192`, so the async R2 mutation lane no longer always ends `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`; lane `ciu` (R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) is now documented in run-gate.toml, assay.toml and README (CIU-190).
+
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=30ef50114b6da9ad7a0e72165104e7687f20af18 -->

@@ -17,6 +17,9 @@
 # owner declares it here or untracks it — fail-closed, by design.
 schema_version = 2
 
+# Lane `ciu` = the async R2 mutation lane (needs run-gate.toml's
+# resource_observer = "cgprofile" + resources.pids because liveness = true below).
+# Lane `ciu-gate` (further down) = the release gate R0/R1/R3 without mutation.
 [lanes.ciu]
 scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]

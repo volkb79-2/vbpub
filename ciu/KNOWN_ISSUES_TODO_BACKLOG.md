@@ -6076,3 +6076,9 @@ record and the remedy (`ciu worktree rm <name>`, and for a record whose path no 
 3. `ciu worktree create` tries to connect a hardcoded devcontainer name (`dstdns-devcontainer-vb`) to the new network and warns `No such container` in any other cockpit; the name must be derived (own container id / hostname), never fixed.
 4. A worktree has none of the main checkout's gitignored `.env.*` files, so `NAF_GUARD_USER` (required by the root template) is missing until the operator sources main's `.env.guard`; the refusal does not say where the value comes from.
 Acceptance: `ciu worktree create` + `ciu up --dir <stack>` works in a worktree of a standalone-root repo with only documented inputs, and a test pins the worktree-local template resolution.
+
+## CIU-190 - the `ciu` R2 mutation lane always ended NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE (no `resource_observer`)
+
+**Status: FIXED 2026-11-05 on branch ciu-r2-observer-20261105 (unreleased; config-only, no src change).** Found by the R2 board agent on r1002 (ciu 7.22.0). `[lanes.ciu]` in run-gate.toml lacked `resource_observer = "cgprofile"` while assay.toml sets `liveness = true`; adding the observer also requires `resources.pids`. Fix: both keys added (pattern of pwmcp/run-gate-project R2 lanes); the `ciu` (async R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) distinction is explicit in run-gate.toml, assay.toml and README; pinned by `test_run_gate_ciu_lane_declares_cgroup_observer_for_r2` in `tests/tests/test_ciu_documentation_contract.py`.
+
+**Acceptance criteria.** An R2 campaign on lane `ciu` reaches mutation judgment instead of NO_MEASUREMENT; `ciu-gate` is unchanged and declares no observer.
