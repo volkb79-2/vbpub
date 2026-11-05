@@ -446,10 +446,11 @@ def _root_helper_cgroup_parent() -> str:
             f"CGROUP_PARENT_DEV_INTERACTIVE is not a slice unit name: {parent!r}"
         )
     loaded, note = governance.check_slice_unit(parent)
-    if loaded is None:
-        # CIU-181 (CIU-164): an INCONCLUSIVE probe (no systemctl, systemd not PID 1
-        # as in a devcontainer) degrades as its own note says: warn, skip the slice
-        # check, still run the helper. Only a definite "not loaded" refuses.
+    if loaded is None and governance.slice_probe_unavailable():
+        # CIU-181 (CIU-164): ONLY an environmental inconclusive probe (no systemctl,
+        # systemd not PID 1 as in a devcontainer) degrades as its own note says:
+        # warn, skip the slice check, still run the helper. A "not loaded" result
+        # AND a probe that failed on a real systemd host (timeout, OSError) refuse.
         print(
             f"[WARN] S6.5 root helper cgroup parent {parent!r} not verified: {note}",
             file=sys.stderr, flush=True,
@@ -624,21 +625,35 @@ def _tree_owned_by_caller(root: Path) -> bool:
 def _make_tree_writable(root: Path) -> None:
     """Add owner rwx to directories and owner w to files below *root* (CIU-181).
 
-    Read-only (0444/0555) entries otherwise block ``rmtree``; only entries the
-    caller owns are touched and symlinks are never followed.
+    Read-only (0444/0555) entries otherwise block ``rmtree``. Only entries the
+    caller owns are touched; symlinks are never followed (a symlinked *root* is
+    left alone), regular files with other hard links are skipped because the
+    inode is shared with paths outside the tree, and the root itself is repaired
+    first so a 0500/0000 root can be listed.
     """
+    uid = os.getuid()
+    try:
+        root_info = os.lstat(root)
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        return
+    if root_info.st_uid == uid and root_info.st_mode & 0o700 != 0o700:
+        os.chmod(root, root_info.st_mode | 0o700)
     for current, dirs, files in os.walk(root, followlinks=False):
         for name in (*dirs, *files):
             path = os.path.join(current, name)
-            info = os.lstat(path)
-            if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+            try:
+                info = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != uid:
+                continue
+            if not stat.S_ISDIR(info.st_mode) and info.st_nlink > 1:
                 continue
             extra = 0o700 if stat.S_ISDIR(info.st_mode) else 0o200
             if info.st_mode & extra != extra:
                 os.chmod(path, info.st_mode | extra)
-    info = root.lstat()
-    if info.st_mode & 0o700 != 0o700:
-        os.chmod(root, info.st_mode | 0o700)
 
 
 def _rmtree_with_fallback(vol_dir: Path, *, repo_root: Optional[Path]) -> None:

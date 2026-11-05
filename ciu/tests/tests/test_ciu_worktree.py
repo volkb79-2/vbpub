@@ -9140,6 +9140,7 @@ class TestPrimaryFactsOutdated:
         message = str(excinfo.value)
         assert str(tmp_repo.resolve()) in message
         assert "ciu env generate" in message and "7125ab" in message
+        assert "still running" in message and "ciu clean --identity" in message
         with pytest.raises(ValueError, match="ciu env generate"):
             deploy.resolve_primary_image_references(linked)
 
@@ -9163,8 +9164,43 @@ class TestRemovalDegradesInDevcontainer:
             engine.governance, "check_slice_unit",
             lambda _n: (None, "systemd is not PID 1; skipping the slice-existence preflight"),
         )
+        monkeypatch.setattr(engine.governance, "slice_probe_unavailable", lambda: True)
         assert engine._root_helper_cgroup_parent() == "dev-interactive.slice"
         assert "not verified" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("failure", [
+        subprocess.TimeoutExpired(["systemctl"], 5), OSError("exec failed"),
+    ])
+    def test_probe_failure_on_a_real_systemd_host_still_refuses(
+        self, monkeypatch, failure,
+    ):
+        """F1: only 'no systemctl' / 'not PID 1' degrade; a failed real probe is fail-closed."""
+        from ciu import engine, governance
+
+        monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "dev-interactive.slice")
+        monkeypatch.setattr(governance.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        monkeypatch.setattr(governance, "_systemd_is_pid1", lambda: True)
+
+        def failing(*_a, **_k):
+            raise failure
+
+        monkeypatch.setattr(governance.subprocess, "run", failing)
+        assert governance.check_slice_unit("dev-interactive.slice")[0] is None
+        assert governance.slice_probe_unavailable() is False
+        with pytest.raises(RuntimeError, match="not verified loaded"):
+            engine._root_helper_cgroup_parent()
+
+    def test_slice_probe_unavailable_truth_table(self, monkeypatch):
+        from ciu import governance
+
+        monkeypatch.setattr(governance.shutil, "which", lambda _n: None)
+        monkeypatch.setattr(governance, "_systemd_is_pid1", lambda: True)
+        assert governance.slice_probe_unavailable() is True  # no systemctl
+        monkeypatch.setattr(governance.shutil, "which", lambda _n: "/bin/systemctl")
+        monkeypatch.setattr(governance, "_systemd_is_pid1", lambda: False)
+        assert governance.slice_probe_unavailable() is True  # not PID 1
+        monkeypatch.setattr(governance, "_systemd_is_pid1", lambda: True)
+        assert governance.slice_probe_unavailable() is False
 
     def test_native_readonly_tree_owned_by_caller_removed_without_root_helper(
         self, tmp_path, monkeypatch,
@@ -9528,3 +9564,118 @@ def test_native_rmtree_skips_permission_repair_for_foreign_trees(tmp_path, monke
     )
     engine._rmtree_with_fallback(vol, repo_root=tmp_path)
     assert not vol.exists()
+
+
+class TestDryRunReadOnlyAndWritableFix:
+    def test_dry_run_leaves_the_git_admin_dir_byte_identical(
+        self, tmp_repo, fake_generate_env,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        (target / "README.md").write_text("changed\n", encoding="utf-8")
+        (target / "new.txt").write_text("untracked\n", encoding="utf-8")
+        os.utime(target / "README.md", (1, 1))  # a stale stat cache invites a refresh
+        admin = worktree._git_common_dir(tmp_repo) / "worktrees" / "wt1"
+
+        def snapshot():
+            return {
+                str(p.relative_to(admin)): (p.stat().st_mtime_ns, p.read_bytes())
+                for p in sorted(admin.rglob("*")) if p.is_file()
+            }
+
+        before = snapshot()
+        doc = worktree.remove_document(tmp_repo, "wt1", dry_run=True)
+        assert doc["uncommitted_changes"]
+        assert snapshot() == before
+        assert "GIT_OPTIONAL_LOCKS" not in os.environ
+
+    def test_dry_run_restores_a_preexisting_optional_locks_value(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        create_path(tmp_repo, "wt1", base="main")
+        monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "1")
+        worktree.remove_document(tmp_repo, "wt1", dry_run=True)
+        assert os.environ["GIT_OPTIONAL_LOCKS"] == "1"
+
+    def test_writable_fix_skips_symlink_root_hardlinks_and_vanished_entries(
+        self, tmp_path, monkeypatch,
+    ):
+        from ciu import engine
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside.chmod(0o500)
+        link_root = tmp_path / "link"
+        link_root.symlink_to(outside)
+        engine._make_tree_writable(link_root)  # symlinked root: untouched
+        assert outside.stat().st_mode & 0o777 == 0o500
+        engine._make_tree_writable(tmp_path / "absent")  # vanished root
+        plain = tmp_path / "plain-file"
+        plain.write_text("x", encoding="utf-8")
+        plain.chmod(0o444)
+        engine._make_tree_writable(plain)  # not a directory
+        assert plain.stat().st_mode & 0o777 == 0o444
+
+        tree = tmp_path / "tree"
+        tree.mkdir()
+        shared = tmp_path / "shared.dat"
+        shared.write_text("x", encoding="utf-8")
+        shared.chmod(0o444)
+        os.link(shared, tree / "hard.dat")
+        own = tree / "own.dat"
+        own.write_text("y", encoding="utf-8")
+        own.chmod(0o444)
+        gone = tree / "gone.dat"
+        gone.write_text("z", encoding="utf-8")
+        real_lstat = engine.os.lstat
+
+        def lstat(path, *a, **k):
+            if str(path) == str(gone):
+                raise FileNotFoundError(path)
+            return real_lstat(path, *a, **k)
+
+        monkeypatch.setattr(engine.os, "lstat", lstat)
+        engine._make_tree_writable(tree)
+        monkeypatch.undo()
+        assert shared.stat().st_mode & 0o222 == 0  # hard-linked inode untouched
+        assert own.stat().st_mode & 0o200
+        outside.chmod(0o700)
+
+    def test_writable_fix_repairs_an_unlistable_root_first(self, tmp_path):
+        from ciu import engine
+
+        if os.geteuid() == 0:
+            pytest.skip("root lists every directory")
+        tree = tmp_path / "tree"
+        (tree / "d").mkdir(parents=True)
+        (tree / "d" / "f").write_text("x", encoding="utf-8")
+        (tree / "d" / "f").chmod(0o444)
+        (tree / "d").chmod(0o555)
+        tree.chmod(0)
+        engine._make_tree_writable(tree)
+        assert tree.stat().st_mode & 0o700 == 0o700
+        assert (tree / "d").stat().st_mode & 0o200
+
+    def test_refused_removal_does_not_loosen_permissions(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        locked = target / "ro.dat"
+        locked.write_text("x", encoding="utf-8")
+        locked.chmod(0o444)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *a, **k: 0)
+        shared = worktree._shared_worktree()
+        seen = {}
+
+        def refuse(_record, **kwargs):
+            seen.update(kwargs)
+            raise shared.WorkspaceError("active lease", category="cleanup-refusal")
+
+        monkeypatch.setattr(shared, "remove_workspace", refuse)
+        with pytest.raises(worktree.WorktreeRemovalError, match="active lease"):
+            worktree.remove(
+                tmp_repo, "wt1", yes=True, discard_changes="wt1",
+                discard_protected_state="wt1",
+            )
+        assert locked.stat().st_mode & 0o200 == 0
+        seen["cleanup"](None)  # the library calls this only after its refusals
+        assert locked.stat().st_mode & 0o200

@@ -74,6 +74,7 @@ def test_hostdir_uid_1000_created_through_helper_without_systemd_pid1(
         engine.governance, "check_slice_unit",
         lambda _n: (None, "systemd is not PID 1; skipping the slice-existence preflight"),
     )
+    monkeypatch.setattr(engine.governance, "slice_probe_unavailable", lambda: True)
 
     def deny(*_args):
         raise PermissionError("not the operator's uid")

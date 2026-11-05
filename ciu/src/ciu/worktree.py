@@ -6203,7 +6203,11 @@ def require_current_primary_facts(repo_root: Path) -> None:
         raise WorktreeError(
             f"[CIU-180] the primary checkout's generated facts are not current "
             f"({exc}). Run `ciu env generate` in the primary CIU root "
-            f"(cd {shlex.quote(str(primary))} && ciu env generate), then retry."
+            f"(cd {shlex.quote(str(primary))} && ciu env generate), then retry. "
+            "If `ciu env generate` itself refuses because the primary stack is "
+            "still running, stop that stack first (the refusal names the exact "
+            "`ciu clean --identity <old id>` to run), rerun `ciu env generate`, "
+            "then retry; no worktree can be prepared from outdated primary facts."
         ) from exc
 
 
@@ -8271,6 +8275,9 @@ def remove(
     path = wt.path
     if dry_run:
         # CIU-182: report what a removal would do or leave behind; change nothing.
+        # F2: Git must not refresh the index or take index.lock for a read-only plan.
+        previous_locks = os.environ.get("GIT_OPTIONAL_LOCKS")
+        os.environ["GIT_OPTIONAL_LOCKS"] = "0"
         try:
             dry_ignored = _ignored_state_summary(wt.path)
             dry_dirty = _worktree_change_paths(wt.path, managed)
@@ -8282,6 +8289,11 @@ def remove(
             dry_leaks = _removal_leaks(wt.path)
         except (WorktreeError, _shared_worktree().WorkspaceError) as exc:
             raise fail(str(exc)) from exc
+        finally:
+            if previous_locks is None:
+                os.environ.pop("GIT_OPTIONAL_LOCKS", None)
+            else:
+                os.environ["GIT_OPTIONAL_LOCKS"] = previous_locks
         dry_branch_name = (
             None if wt.branch in {"(detached)", "(bare)", "(unknown)", "HEAD"}
             else wt.branch
@@ -8856,11 +8868,18 @@ def remove(
                 ) from exc
         # CIU-181: read-only entries this uid owns (0444 files, 0555 dirs) must not
         # leave `git worktree remove --force` half-done after it deregisters.
+        # It runs as the library's pre-removal callback, i.e. after every library
+        # refusal (lease, record mismatch, mounts), so a refused removal changes
+        # no permissions.
         from . import engine as _engine_module
-        _engine_module._make_tree_writable(wt.path)
+
+        def make_checkout_writable(_context: object) -> None:
+            _engine_module._make_tree_writable(wt.path)
+
         if shared_record is not None:
             shared.remove_workspace(
                 shared_record,
+                cleanup=make_checkout_writable,
                 force=force,
                 delete_branch=bool(branch["delete"]),
                 expected_branch_tip=branch["tip"] if branch["delete"] else None,
@@ -8875,6 +8894,7 @@ def remove(
                 expected_branch=git_branch,
                 purpose="ciu-legacy",
                 force=force,
+                cleanup=make_checkout_writable,
                 delete_branch=bool(branch["delete"]),
                 expected_branch_tip=branch["tip"] if branch["delete"] else None,
                 on_phase=report_library_phase,

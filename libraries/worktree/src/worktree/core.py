@@ -1420,19 +1420,24 @@ def _restore_dropped_registration(
     (CIU-182). Returns whether a registration was restored.
     """
 
-    if admin.exists() or admin.is_symlink():
+    if admin.is_symlink():
         return False
-    if not _is_directory(current.worktree_path):
-        return False
+    if admin.exists() and (admin / "gitdir").is_file() and (admin / "HEAD").is_file():
+        return False  # intact: nothing was dropped
+    if not _is_directory(current.worktree_path) or not (current.worktree_path / ".git").exists():
+        return False  # a hollow checkout must not be re-registered
+    partial = admin.exists()
     try:
-        shutil.copytree(backup, admin, symlinks=True)
+        # A partly deleted admin dir is repaired from the backup, never overwritten
+        # file by file beyond what git itself already removed.
+        shutil.copytree(backup, admin, symlinks=True, dirs_exist_ok=partial)
         restored = any(
             item.path == current.worktree_path
             for item in list_git_worktrees(current.source_git_root)
         )
     except (OSError, WorkspaceError):
         restored = False
-    if not restored:
+    if not restored and not partial:
         shutil.rmtree(admin, ignore_errors=True)
     return restored
 
@@ -1443,6 +1448,7 @@ def remove_unrecorded_workspace(
     *,
     expected_branch: str | None = None,
     purpose: str = "legacy",
+    cleanup: Callable[[WorkspaceContext], None] | None = None,
     force: bool = False,
     delete_branch: bool = True,
     expected_branch_tip: str | None = None,
@@ -1471,6 +1477,7 @@ def remove_unrecorded_workspace(
     context = adopt_workspace(source_git_root, target_path, purpose=purpose)
     remove_workspace(
         context,
+        cleanup=cleanup,
         force=force,
         delete_branch=delete_branch,
         expected_branch_tip=expected_branch_tip,
@@ -1559,11 +1566,22 @@ def remove_workspace(
             _refuse_if_mounts_under(current.worktree_path, mountinfo_reader)
         # CIU-182: keep a copy of the admin directory so a failed deletion can
         # put the registration back instead of stranding an unregistered checkout.
-        admin_backup = Path(tempfile.mkdtemp(
-            prefix=".worktree-admin-backup-", dir=current.git_common_dir
-        )) / "admin"
+        backup_root: Path | None = None
         try:
+            backup_root = Path(tempfile.mkdtemp(
+                prefix=".worktree-admin-backup-", dir=current.git_common_dir
+            ))
+            admin_backup = backup_root / "admin"
             shutil.copytree(admin_snapshot[0], admin_backup, symlinks=True)
+        except (OSError, shutil.Error) as exc:
+            if backup_root is not None:
+                shutil.rmtree(backup_root, ignore_errors=True)
+            raise WorkspaceError(
+                f"could not back up Git administration {admin_snapshot[0]} before "
+                f"removal; nothing was removed: {exc}",
+                category="cleanup-refusal",
+            ) from exc
+        try:
             result = subprocess.run(
                 ["git", "worktree", "remove", "--force", str(current.worktree_path)],
                 cwd=current.source_git_root, text=True, capture_output=True, check=False,
