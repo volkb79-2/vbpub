@@ -457,3 +457,29 @@ def test_handler_error_mapping(tmp_path, monkeypatch, capsys):
 def test_handler_is_registered_with_default_all():
     cli = handlers.handlers_cli()
     assert cli.run(argv=["bundle-build", "--help"]) == 0
+
+
+def test_consumers_bundle_build_example_parses(tmp_path):
+    import re
+
+    text = (Path(__file__).parents[1] / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    (block,) = re.findall(r"```bundle-toml\n(.*?)```", text, flags=re.DOTALL)
+    config = tmp_path / "bundle.toml"
+    config.write_text('project_root = "."\n[copy]\nfiles = []\ndirs = []\n' + block, encoding="utf-8")
+    parsed = bundle.parse_config(config)
+    assert parsed.vendor and parsed.stage and parsed.exec_prefix and parsed.manifest_name
+    assert parsed.archive_template.format(version="1.2.3", variant="py311") == "myproj-v1.2.3-py311.tar.xz"
+
+
+@pytest.mark.parametrize("build_arg, expected", [("3.11", "3.11"), ("PYTHON_VERSION=3.13", "3.13"), ("311", "311")])
+def test_interpreter_version_forms(tmp_path, build_arg, expected):
+    recorder = Recorder()
+    bundle.run_bundle(_write(tmp_path, VENDOR), variant=VariantConfig("py", build_arg, None), runner=recorder)
+    argv = recorder.calls[0][0]
+    assert argv[argv.index("--python-version") + 1] == expected
+
+
+@pytest.mark.parametrize("build_arg", ["OTHER=3.11", "PYTHON_VERSION=", "py311", "3.11; rm", "PYTHON_VERSION=x"])
+def test_interpreter_version_rejects_other_forms(tmp_path, build_arg):
+    with pytest.raises(ValueError, match="not an interpreter version"):
+        bundle.run_bundle(_write(tmp_path, VENDOR), variant=VariantConfig("py", build_arg, None), runner=Recorder())

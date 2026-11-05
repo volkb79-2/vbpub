@@ -545,10 +545,10 @@ is `cmru run --step NAME`.
 A project that publishes one tarball per interpreter (`[[project.variants]]`, `tarball-publish --variant`)
 builds them with `bundle.toml` plus the `bundle-build` handler instead of its own script
 (KI-126). The variant list stays in `cmru.toml`; each variant's `build_arg` is the interpreter
-version (for example `"3.11"`) handed to pip. Every table below is optional and inert when
+version (`"3.11"` or the `PYTHON_VERSION=3.11` form naf already declares) handed to pip. Every table below is optional and inert when
 absent, so a `bundle.toml` without them builds exactly the archive it always did.
 
-```toml
+```bundle-toml
 [archive]
 name_template = "myproj-v{version}-{variant}.tar.xz"   # {variant} is mandatory when variants are built
 version_env = "MYPROJ_VERSION"

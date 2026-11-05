@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -631,14 +632,25 @@ def _runner_path(config: BundleConfig, path: Path, prefixed: bool) -> str:
         ) from None
 
 
+_INTERPRETER_VERSION = re.compile(r"[0-9]+(\.[0-9]+)*")
+
+
 def _interpreter_version(variant: Optional[VariantConfig], why: str) -> str:
+    """The variant's interpreter version: ``build_arg`` is ``3.11`` or ``PYTHON_VERSION=3.11``."""
     if variant is None:
         raise ValueError(f"{why} needs a variant (the interpreter version comes from the project's variants)")
     if not variant.build_arg:
         raise ValueError(
             f"{why} needs the interpreter version in variant {variant.name!r} build_arg (e.g. \"3.11\")"
         )
-    return variant.build_arg
+    key, separator, value = variant.build_arg.partition("=")
+    version = value if separator and key == "PYTHON_VERSION" else variant.build_arg
+    if not _INTERPRETER_VERSION.fullmatch(version):
+        raise ValueError(
+            f"variant {variant.name!r} build_arg {variant.build_arg!r} is not an interpreter "
+            "version (use \"3.11\" or \"PYTHON_VERSION=3.11\")"
+        )
+    return version
 
 
 def vendor_dependencies(
