@@ -269,8 +269,9 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 - **Host table.** `--hosts-file` / `$REMOTE_GATE_HOSTS` / `~/.config/remote-gate/hosts.json` (gitignored; template
   `runner/remote-gate-hosts.example.json`): per host the pinned-known-hosts ssh argv (runner user, `StrictHostKeyChecking=yes`), the
   provider identity check command and the on-host guard. Only `r1002` and `v1001` are accepted anywhere (hard allowlist in code).
-- **Host choice.** `auto` reads CPU and memory PSI `some avg10` over ssh on both hosts and takes the one with the lower max;
-  if both exceed 25 it refuses (exit 75) and prints both readings. The Netcup identity check runs before any ssh/scp write and the
+- **Host choice.** `auto` reads memory PSI `some avg10`, io PSI `full avg10` and CPU PSI `some avg10` over ssh on both hosts. Only memory some
+  or io full above 25 refuses a host (CPU PSI is a stall measure, not utilisation, and is not a stop signal: hosts are meant to run at 350-400% CPU);
+  among acceptable hosts the one with the lower CPU PSI is preferred. If both hosts exceed 25 on memory or io it refuses (exit 75) and prints both readings. The Netcup identity check runs before any ssh/scp write and the
   on-host guard (hostname, server id) prefixes every remote command.
 - **Source.** The worktree must have a clean tracked tree (untracked files are ignored); commit first with
   `git commit --only -- <paths>` (agents do anyway). HEAD and, with `--base REF`, the base commit (named by a temporary local ref
@@ -286,7 +287,7 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   A dirty tree is refused rather than patched in: one commit id is what the verdict is about.
   Seeds for the thin bundle are any `~/checkouts/<sha>` that already holds a commit of this repository (other repositories' checkouts are
   skipped by `git cat-file`); release tags of the repository (`*-v<digits>`, e.g. `dstdns-v0.1.0`, `run-gate-v25.0.2`) ride along as before.
-- **Run.** A detached host job (`run-job rg-<id>`, `~/rg/<id>/` and `~/jobs/rg-<id>/{job.log,EXIT}`) waits until PSI is <= 25
+- **Run.** A detached host job (`run-job rg-<id>`, `~/rg/<id>/` and `~/jobs/rg-<id>/{job.log,EXIT}`) waits until memory PSI some and io PSI full are <= 25 (CPU PSI is ignored)
   (`--wait-psi`, default 900 s, else exit 75, verdict `PSI_REFUSED`), then runs `nice -n 19 <run-gate> <lane> [--base SHA] [extra]` in the
   `mdt-cockpit-runner` container from the project dir (default: the worktree path's own subdirectory; pass `--project-dir .` for a repo
   whose `run-gate.toml` is at its root) with `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` and `ASSAY_GATE_HOST_REPO_ROOT=~/checkouts/<repo>` (the host
@@ -300,8 +301,27 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   while an R2 campaign there may resume (r1002's default cockpit run-gate is 24.3.0, see the host board).
 - **Results**, copied to `<out-dir>/<id>/` (default `/home/vscode/vbpub-release-program-20261027/remote-gates`): `job.log`, `lane.log`,
   `lane-detail.log` (the lane's own log), `artifacts/` (`.assay/verdict*.json`, `progress*.jsonl`, `coverage*.json`, `.run-gate/**/*.log`),
-  `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` (read it as a separate
-  step); the command exits with the lane's exit code.
+  `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` for PASS and FAIL; any
+  other verdict appends `; reason <text>` (and possibly ` [hint: ...]`). Parse it with `verdict (\w+); exit_code (\d+)`, never anchored at the end of the
+  line (read it as a separate step); the command exits with the lane's exit code.
+- **Lane declaration checks (before anything is shipped).** The committed `run-gate.toml` / `assay.toml` are read locally and a run that is
+  certain to fail is refused with exit 2 and the reason: `--base` for an assay lane that declares its comparison base (`judge.base_source =
+  "declared"`, or a `judge.base` without `base_source = "request"`; assay refuses `--request-base`, so drop `--base`); a lane in an exec-mode
+  environment with no `container_name` (run-gate needs the worktree's own `ciu up` test-runner stack, which a throwaway host checkout never has
+  and this helper does not start; `--allow-exec-env` overrides); a lane name that is declared nowhere only warns. The effective environment follows run-gate: the lane's own `environment`, else
+  the `[assay] environment` default for assay lanes, `[assay.import].environment` for imported lanes (an `[assay.import]` lane is declared, never
+  warned about; its `--base` check reads `assay.toml` under the same name), and every member of a `kind = "sequence"` lane. Only a provably exec-mode
+  environment without `container_name` is refused. `--min-run-gate VER` raises or lowers the
+  profile's run-gate floor for one run. The vbpub profile floors the host run-gate at 25.0.1 and falls back to the `gate-tools2502` venv, so r1002's
+  default 24.3.0 is not used for estate lanes (add a newer venv with `runner/setup-cockpit-run-gate.sh`; a miss prints that command).
+- **Local `main`.** The throwaway checkout is detached and has no branches, but lanes declare `base = "main"` (assay.toml of nyxloom,
+  cowtree, worktree, ...). The controller's local `main` rides the same thin bundle (head `refs/heads/main`, its commits count towards the
+  "closest host checkout" choice) and the job creates `refs/heads/main` in the checkout without checking it out, so `--base main` and
+  `base = "main"` resolve like on the controller. Only a local branch `main` is shipped (no `origin/main`; no local `main` means none on the host).
+- **Why a run failed.** When the verdict is neither PASS nor FAIL the last line carries the cause: `lane <lane> verdict ERROR; exit_code 2; reason
+  <text>` (the verdict line's `reason`, the lane script's last own diagnostic line, else the job log's refusal line; `result.json` has the same `reason`).
+  Known causes append a `[hint: ...]`. Known silent-looking causes: an exec-mode lane without a stack (above), a declared base given `--base`,
+  a lane whose script requires `/workspaces/<repo>` to be a bind mount of its own (assay `self-qualification*`, backlog NC-14), a run-gate below the floor.
 - **Cleanup.** On exit (pass, fail, cancel) the job removes, by exact name, only `run-gate-*` containers whose `docker inspect` references
   this run's unique checkout directory `rg-<id>-<sha12>` (and only once the lane started, so a PSI refusal removes nothing), then the
   throwaway checkout and its pid file; logs stay. Another run's containers are never matched. `cancel <id>` sends SIGTERM to the job
@@ -318,7 +338,7 @@ Every repository has a profile (built-in `REPO_DEFAULTS` in `remote-gate.py`, ov
 file; unknown keys are refused at load time). A repository without a profile needs only the cockpit and its run-gate. The prerequisites are
 checked in two places. Before anything is uploaded, over read-only ssh (a miss ends the command with exit 4, nothing created on the host): cockpit
 up, required images, a run-gate meeting the floor (a proper PEP 440 comparison: release candidates and dev builds are below the floor, the version is the last
-version-looking word of the first `--version` line), and the `uid_check` (a throwaway `docker run`, so only when the host's PSI is at most 25, otherwise
+version-looking word of the first `--version` line), and the `uid_check` (a throwaway `docker run`, so only when the host's memory PSI some and io PSI full are at most 25, otherwise
 deferred to the job). In the host job (a miss there ends with exit 76, verdict `PREREQ_MISSING`, `PREREQ MISSING: ...` lines and a pointer to this section in
 `job.log`): all of those again, the `uid_check` after the job's own PSI wait, and the `admission_check`, which needs the repo's `run-gate.toml` and so can only
 run once the checkout exists (it is therefore the one prerequisite that fails after the upload). The `admission_check` is fail-closed: an erroring
@@ -328,13 +348,13 @@ run once the checkout exists (it is therefore the one prerequisite that fails af
 | --- | --- | --- |
 | `run_gate_min`, `run_gate_bins` | first in-cockpit run-gate path whose `--version` is >= the floor | `25.0.1` (RG-154: `--jobs` on a pyz-pinned consumer); `/home/vscode/.local/bin/run-gate`, then `/home/vscode/.venvs/gate-tools2502/bin/run-gate` |
 | `required_images` | docker images that must exist on the host | `dstdns/test-runner:local` |
-| `uid_check` | `getent passwd <uid>` inside the image (a throwaway `docker run --rm --network none`, only on a host at PSI <= 25: before the upload when quiet, always in the job after its PSI wait) | image `dstdns/test-runner:local`, uid `1003` (run-gate >= 25 refuses `user = "invoker"` without a passwd entry, DST-27) |
+| `uid_check` | `getent passwd <uid>` inside the image (a throwaway `docker run --rm --network none`, only on a host at memory/io PSI <= 25: before the upload when quiet, always in the job after its PSI wait) | image `dstdns/test-runner:local`, uid `1003` (run-gate >= 25 refuses `user = "invoker"` without a passwd entry, DST-27) |
 | `admission_check` | if `run-gate admission show` in the checkout says `enabled=true`, a `max_concurrent=N` cap must be published | on (dstdns `[admission] enabled = true`; without a cap every lane ends `NOT_RUN no-headroom`, DST-28) |
 | `tester_image` | `RUN_GATE_TESTER_UNIFIED_IMAGE` for this repo on this host | host `image` |
 | `env` | extra `NAME=value` environment for the lane's `docker exec`; the job's own safety variables (`RUN_GATE_ALLOW_*`, `ASSAY_GATE_HOST(S)_REPO_ROOT`, `RUN_GATE_PROFILE`, `RUN_GATE_TESTER_UNIFIED_IMAGE`, `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONFIG`, `LD_PRELOAD`, `LD_LIBRARY_PATH`) are reserved and refused at load time | none |
 
 Bring-up steps for a (re)installed r1002/v1001 (none depends on earlier one-off host state; identity check before every write, one gate at a
-time, CPU and memory PSI `some avg10` <= 25, never nano1):
+time, memory PSI `some avg10` and io PSI `full avg10` <= 25 (CPU PSI is not a stop signal), never nano1):
 
 1. Runner, cockpit and `tester-unified:local`: the generic order in `runner/README.md` (steps 1-5). The cockpit must be running.
 2. **A run-gate >= 25.0.1 for dstdns**: as the runner user, `run-job setup-rg-25.0.2 -- bash ~/runner-scripts/setup-cockpit-run-gate.sh 25.0.2 <wheel-sha256>`.
