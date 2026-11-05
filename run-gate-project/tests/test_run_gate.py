@@ -7054,7 +7054,7 @@ class TestPointerLinkageEstate:
 
         assert gate_doc["lanes"]["selftest"]["environment"] == "tester-unified"
         assert gate_doc["lanes"]["selftest"]["resources"] == {
-            "memory": "1g", "memory_swap": "16g", "cpus": "3",
+            "memory": "2g", "memory_swap": "16g", "cpus": "3",
         }
         assert gate_doc["lanes"]["assay-r1"]["resources"] == {
             "memory": "2g", "memory_swap": "16g",
