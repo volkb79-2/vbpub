@@ -35,6 +35,15 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(actions): the Docker owner / protected-ID gate is always on; omitting `owner_inspect` uses the production `docker inspect` (B-039)
 - fix(actions): Docker verbs run by the inspected canonical full ID instead of the raw name, closing the rename race (B-040)
 - fix(collect): io_cap_saturation_pct is judged per device against that device's own io.max cap, with the device attributed (B-012)
+- fix(topos/record): headless record progress reports the real written-frame count and prints a final `done frames=N` line at clean exit (D-02 review round)
+- fix(topos/ui): a frame-source failure no longer crashes the TUI; the last frame is marked STALE with `mode=<src> source failed: <msg>`, attach and live sources retry and clear on recovery (D-02)
+- fix(topos/ui): rows with a missing, NaN or non-numeric metric sort last in both directions and never raise TypeError (D-03)
+- fix(topos/config): one `ConfigError` for syntax errors and invalid values (`topos: config <path>: <msg>`, exit 2); `general.interval` >= 0.1 s; invalid `compression`, non-boolean `paddr_enabled` and invalid `default_view` are rejected instead of coerced; unknown keys warn once each; `[hotkeys]`, `[colors]` and `history.downsample_*` warn that they have no effect yet (D-04, D-05)
+- fix(topos/cli): `--duration`/`--frames` outside `--headless --record` and `--speed`/`--step` without `--replay` exit 2; `--interval` now applies to UI, attach and record modes (D-06)
+- fix(topos/ui): resize re-chooses columns for the real table width (no 80-column floor); replay stepping no longer duplicates history; the live worker stops on quit; `42.0` in the jump prompt is a frame; the `__empty__` placeholder is never the selection; collapsed keys are pruned (D-09, D-10, D-12)
+- fix(topos/ui): TOP PRESSURE drops ancestors of a listed culprit and the root; drill metrics use the table's byte/rate/percent formatting; NAME column capped at 40 characters (middle ellipsis); Footer shows bound keys; the dead `k` binding is removed
+- test(topos): elapsed-time assertions replaced by state assertions, thread errors collected, vacuous no-audit-log test made real, audit-directory checks run on a real filesystem (D-14, D-15)
+- chore(topos): reason comments for each dependency floor in pyproject.toml (D-17)
 <!-- cmru: pending release notes end -->
 
 ## [0.4.2] - 2026-10-21
