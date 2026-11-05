@@ -9,13 +9,31 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.2.0] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=ba215f35b624e16a35d2ca1ea0c7d80e4bad03c1 -->
+
+### Added
+- feat(run-gate): self-explaining lane container names + run-gate.* labels (RG-242) (5da36a9c2)
+
+### Fixed
+- fix(run-gate): selftest lane memory 1g -> 2g (measured peak 1021 MiB; oom_kill forced ERROR in the 25.2.0 release gate) (c1b8a0190)
+
+### Testing
+- test(run-gate): pin selftest memory 2g; clarify the capped footprint comment (23ab7c6ac)
+- test(run-gate): dry-run/live argv equality ignores the volatile run-gate.started label (RG-242) (fb6e84e8c)
+- test(run-gate): adapt fake-docker helpers and label assertions to RG-242 names (10ade8025)
+- test(run-gate): kill R2 survivors in --list --json (RG-169) (327d84744)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - feat(run-gate): lane containers are named `<repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9>` (was `run-gate-<repo>-<lane>-<pid>-<epoch>`, which read as `run-gate-<40-hex>-...` for release checkouts) and carry labels `run-gate.repo/project/lane/commit/started/name-schema` (+ `job`/`campaign` from `RUN_GATE_JOB`/`RUN_GATE_CAMPAIGN`). Tools should filter by label; the old `^run-gate-` name match stays valid for containers started before this change. remote-gate cleanup and run-jobs-window match both generations (RG-242)
 
 ### Testing
 - test(run-gate): kill the three R2 survivors in `--list --json` (host env without docker, container env with docker, key-sorted flushed output) (RG-169)
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.1.2] - 2026-11-05
 <!-- cmru: generated -->
