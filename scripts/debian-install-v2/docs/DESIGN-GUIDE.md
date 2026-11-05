@@ -91,6 +91,15 @@ could want swap configured without permitting root changes, or want root to
 grow while preserving the image's existing swap state. The four policies make
 those effects explicit in profiles and in the install plan.
 
+Swap is always the last allocation on the disk. A root cap used to force swap
+directly after root, which on the Netcup test hosts left swap in the middle of
+a 512 GiB disk with the cow partition behind it: neither root nor cow could
+grow (NC-12). Now the cap leaves a gap between root and an end-of-disk swap, a
+minimum root (`layout_policy.min_root_gib`) is enforced, and
+`disk_layout=dev-host` sizes root, cow and reserve by one rule (README "Disk
+layout policy"). The rule is configuration plus pure functions so it is testable
+without a device; the real write path is unchanged.
+
 `root_resize_policy=resize` means “maximize root subject to the selected swap
 layout,” not “shrink root to a fixed preferred size.” This supports both an
 already-full cloud image (offline shrink in initramfs) and a small root image
@@ -108,7 +117,7 @@ normal usage and ext-filesystem minimum checks pass. The area after root and
 managed swap remains unallocated: the installer does not invent a filesystem,
 partition, or mount point. The cap must be at least
 `preserve_root_size_gb`. It also requires `swap_policy: "on"` and at least one
-managed tail swap partition directly after root. Swap off, untouched swap, or
+managed tail swap partition at the end of the disk (the gap after root stays unallocated). Swap off, untouched swap, or
 a plan where retained pre-root swap needs no tail partition is refused because
 boot-time or stage-two growth could consume the cap. `grow-only` and
 `untouched` refuse when a larger current root would have to shrink to satisfy

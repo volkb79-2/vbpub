@@ -1553,6 +1553,40 @@ the successful release gate produces for retention. Evidence paths MUST be proje
 MUST contain no `..` escape, and MUST resolve without symlinks in the isolated worktree;
 they are a bounded declaration, never a glob or an inferred directory.
 
+**S-REL.4c — Optional record step (rigor C-1).** `[project.release].record_step = "<step>"`
+names one more declared `[steps.<name>]` command. It MUST NOT be `push`, `run-tests`,
+`prepare` or the `build_step`, and requires `git_tag = true`. Absent (the default) cmru
+behaves byte-identically to a release without the key; no record-related variable is set
+and `--dry-run` output is unchanged. When declared, after the artifact build and before `push`
+cmru runs the step with the release identity (`CMRU_RELEASE_TAG`, `CMRU_RELEASE_COMMIT`) plus
+these protected inputs: `CMRU_BUILD_INVENTORY` (a JSON inventory of `artifact_dirs` with
+sha256 and size, `release.json` shape, outside the worktree), `CMRU_GATE_EVIDENCE_DIR` (the
+first declared `evidence_paths` entry that is a directory, else unset) and `CMRU_RECORD_OUT`
+(an empty transaction-private directory outside the worktree). The step MUST write exactly
+`record.json` (at most 64 KiB) and `release-body.md` (at most 8 KiB, UTF-8): any other
+entry, a missing, empty, non-regular or oversized file refuses with exit 4. The worktree
+MUST stay unchanged (the S4.1 candidate check runs before and after). Any failure is a
+pre-publication failure: the tag is rolled back and the candidate stays resumable. On
+success the `push` step receives the protected `CMRU_RECORD_JSON` and `CMRU_RECORD_BODY`
+paths; the five `CMRU_RECORD_*` / `CMRU_BUILD_INVENTORY` / `CMRU_GATE_EVIDENCE_DIR` names
+are reserved (a project `[env]` may not declare them) and cleared for every other step.
+cmru never parses, signs or commits a record. `release --dry-run` prints the step's plan
+but does not run it (it needs built artifacts); it prints each release body followed by a
+`## Rigor at publication` appendix placeholder naming the step.
+
+**Publication (rigor C-2).** When `CMRU_RECORD_JSON` and `CMRU_RECORD_BODY` are present (both
+or neither; one alone refuses with exit 4), the release-body handlers `wheel-publish`,
+`tarball-publish` (single and `--variant`) and `oci-image-release` (a) append
+`release-body.md` to the release body, after any curated changelog section, under the heading
+`## Rigor at publication`, and (b) upload `record.json` verbatim as
+`<prefix>-v<version>-rigor.json` plus a `.sha256` sidecar to the immutable version release
+(never to the `-latest` pointer; a dev build uploads nothing). After the upload the release's
+asset list is read back and each name must be present at the staged size, else exit 4.
+Absent both variables a handler behaves byte-identically to before. For `oci-image-release`,
+which otherwise lists, deletes and uploads no asset, this is the single named exception:
+exactly those two assets, attached only after the body write was read back and verified, each
+mutation preceded by the release-ID/tag/commit recheck, only same-named assets replaced.
+
 **S-REL.5 — Reproducibility / commit model.** The isolated worktree starts clean, so wheels
 cannot inherit unrelated caller dirt through setuptools-scm. cmru auto-commits **only**
 declared mechanical outputs, never hand-edited source. Every project follows the same
@@ -1659,6 +1693,7 @@ scm_dist    = "<name>"            # optional: python dist name (for wheel type)
 [project.version]
 strategy = "scm"                  # scm | file:PATH | counter | external:VAR | none
 paths    = ["shared-input/"]      # optional project-relative extra watch paths
+# exclude_paths = ["docs/"]       # optional: subtrees/globs that never count as changes (S12.2)
 bump     = "conventional"         # conventional | patch
 
 [project.release]
@@ -1667,6 +1702,7 @@ build_step = "build"                         # required; one declared [steps.<na
 commit_generated = ["generated-input.json"]  # project-relative, mechanical only
 artifact_dirs = ["dist"]                     # required only when retaining artifacts
 # evidence_paths = ["coverage.json"]        # only files/dirs the release gate produces
+# record_step = "record"                    # optional rigor record step (S-REL.4c)
 # changelog defaults to "CHANGES.md". Override only for another project-relative path;
 # `changelog = false` is the explicit opt-out.
 
@@ -3018,7 +3054,7 @@ class ReleaseHost:
 
 **S12.1** `cmru status` performs a dry-run: for each project, reports whether the subtree changed since last `<prefix>-v*` tag and what version would be minted.
 
-**S12.2** Change detection: a project is eligible for release iff `git log <last_tag>..HEAD -- <paths>` succeeds and is non-empty after excluding CMRU release-control files and generated release-history documents. If no prior tag exists, the project is always eligible (first release). A nonzero history-query result MUST refuse release planning with Git's diagnostic; it MUST NOT be interpreted as an empty range or an unchanged project.
+**S12.2** Change detection: a project is eligible for release iff `git log <last_tag>..HEAD -- <paths>` succeeds and is non-empty after excluding CMRU release-control files and generated release-history documents. The project's own `rigor/` directory and `RIGOR.md` (rigor-evidence records and generated views) are always excluded, and `[project.version].exclude_paths` (KI-118) excludes further project-relative subtrees or git globs: `docs/` and `docs` both mean the subtree, `notes/*.md` a glob. An exclude equal to, or an ancestor of, an explicit `paths` entry, an absolute path, `..` or `.` is a config error (exit 2). The same exclusions apply when generated release notes collect commit subjects, so an excluded-only commit is neither a change nor a note. If no prior tag exists, the project is always eligible (first release). A nonzero history-query result MUST refuse release planning with Git's diagnostic; it MUST NOT be interpreted as an empty range or an unchanged project.
 
 **S12.2a — The release plan's baseline MUST reflect the pushed repository (KI-12a).**
 `git tag --list` alone returns local-only refs; a hand-made, never-pushed tag would

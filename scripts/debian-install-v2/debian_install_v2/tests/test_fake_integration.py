@@ -184,7 +184,7 @@ def test_transaction_succeeds_with_checksum_and_manifest(tmp_path):
 def test_mismatched_readback_rolls_back(tmp_path):
     installer, actions = make_installer(tmp_path)
     _, readback = expected_readback(installer)
-    actions.readback = readback.replace("start=23472128", "start=23472129", 1)
+    actions.readback = readback.replace("start=1006630912", "start=1006630913", 1)
     with pytest.raises(RuntimeError, match="verification failed; restored backup"):
         installer._apply_known_swap_shape()
     # Regression, 2026-09-09: sfdisk takes its restore script on stdin, not

@@ -1,0 +1,42 @@
+{
+  "canary": {
+    "mechanism": "import-break",
+    "outcome": "PASS",
+    "targets": [
+      "src/cgprofile/daemon.py"
+    ]
+  },
+  "claims": [
+    {
+      "outcome": "PASS",
+      "rigor": "R0"
+    },
+    {
+      "outcome": "PASS",
+      "rigor": "R3"
+    }
+  ],
+  "config_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "coverage": null,
+  "inputs": [],
+  "judge": {
+    "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "judge_identity": "assay-judge-identity/14",
+    "verdict_schema": "urn:assay:schema:verdict:18",
+    "version": "12.0.0"
+  },
+  "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "judged_paths": [
+    "src"
+  ],
+  "kind": "assay-lane",
+  "lane": "assay-r3",
+  "outcome": "PASS",
+  "project": "cgroup-profiler",
+  "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "r2": null,
+  "reason": null,
+  "schema": "urn:vbpub:rigor-fragment:1",
+  "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+  "verified": true
+}

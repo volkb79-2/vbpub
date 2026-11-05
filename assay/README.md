@@ -133,6 +133,8 @@ assay analyze report --expected-commit "$REVIEW_HEAD" \
 assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json \
   --coverage .assay/coverage-r2.json --command-exit 0
+assay analyze export --verdict .assay/verdict-r2.json --progress .assay/progress-r2.jsonl \
+  --lane r2 --file assay.toml --expected-commit "$REVIEW_HEAD" --out rigor/r2.assay.json
 ```
 
 Set `REVIEW_HEAD` to the full Git commit agreed with the controller and
@@ -247,6 +249,16 @@ assay exists to close that gap mechanically, not by policy:
   infrastructure names, passthrough value fingerprints, cwd, links, project
   prefix, and assay version remain identity inputs. See the
   [B092 design rationale](docs/DESIGN-GUIDE.md#filtered-native-r2-judge-identity-b092).
+- **Native pytest R2 can stop each candidate at its first failure.** Set
+  `judge.mutation.candidate_fail_fast = true` (opt-in; python lanes whose argv
+  invokes pytest) and candidate commands, never the baseline, drop their
+  pytest-cov options and gain `-x -p no:pytest_cov`. A preflight runs the exact
+  candidate command to a full PASS on the unmutated snapshot and refuses the lane
+  otherwise, the transform is part of `judge_sha256` (toggling it invalidates
+  resume records), and a test fixture with an early, a late and a surviving
+  mutant lands in the same buckets with and without the key. Remove any `-x`
+  from the lane argv when adopting it (a declared `-x` disables the witness). See the
+  [consumer guide](docs/CONSUMERS.md#candidate-fail-fast-candidate_fail_fast-wp1).
 - **Native R2 can selectively replay verified kill witnesses after a fresh
   baseline.** `assay plan --reuse-from` previews candidate classifications;
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
@@ -812,6 +824,17 @@ A shallow or grafted **source checkout** is refused as `ERROR`/`GIT_FAILED`;
 run `git fetch --unshallow` before judging it. This is independent of the
 deliberately shallow private seed described above: use
 `snapshot_history = "full"` when the lane's own command walks ancestry.
+
+`isolation.verify_clone = "tiered"` (default) or `"full"` selects how much of
+the clone proof runs per candidate on a copy-on-write workspace; the sealed
+template's index is always refreshed once so `git status` stops hashing the
+whole worktree per candidate. See
+[CONSUMERS.md](docs/CONSUMERS.md) (B219/B220/B222) for the semantics.
+`isolation.materialize = "tmpfs-worker"` (B223) keeps one restored-in-place
+tree per mutation worker on a memory-backed directory (`isolation.tmpfs_root`,
+default `/dev/shm`, bounded by `isolation.tmpfs_max_mib`) and falls back to the
+clone path when that directory is unavailable; the container must provide the
+tmpfs (see CONSUMERS.md).
 
 Why the oracle is a subprocess rather than a Python rule:
 [DESIGN-GUIDE §11, "Go statement positions"](docs/DESIGN-GUIDE.md#go-statement-positions-come-from-the-source-never-from-the-profile-a-217a-239a-397).

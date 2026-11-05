@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:vbpub:rigor-index:1",
+  "title": "rigor-index/1",
+  "description": "The generated <project>/rigor/index.json: labels (tag to commit) and one summary line per recorded commit, labelled commits and the last 200 unlabelled ones. Never hand-edited.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "project", "latest", "stable", "adopted_from", "labels", "commits"],
+  "properties": {
+    "schema": {"const": "urn:vbpub:rigor-index:1"},
+    "project": {"$ref": "rigor-common-1.json#/$defs/project"},
+    "latest": {"oneOf": [{"type": "null"}, {"$ref": "rigor-common-1.json#/$defs/tag"}]},
+    "stable": {"oneOf": [{"type": "null"}, {"$ref": "rigor-common-1.json#/$defs/tag"}]},
+    "adopted_from": {"type": "null"},
+    "labels": {
+      "type": "object",
+      "propertyNames": {"$ref": "rigor-common-1.json#/$defs/tag"},
+      "additionalProperties": {"$ref": "rigor-common-1.json#/$defs/git_oid"}
+    },
+    "commits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["commit", "labels", "judged_at", "levels", "r2_scope", "anchored"],
+        "properties": {
+          "commit": {"$ref": "rigor-common-1.json#/$defs/git_oid"},
+          "labels": {"type": "array", "items": {"$ref": "rigor-common-1.json#/$defs/tag"}},
+          "judged_at": {"oneOf": [{"type": "null"}, {"$ref": "rigor-common-1.json#/$defs/timestamp"}]},
+          "levels": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["R0", "R1", "R3", "review", "R2"],
+            "properties": {
+              "R0": {"type": "string"},
+              "R1": {"type": "string"},
+              "R3": {"type": "string"},
+              "review": {"type": "string", "enum": ["accept", "missing"]},
+              "R2": {"type": "string"}
+            }
+          },
+          "r2_scope": {
+            "oneOf": [
+              {"type": "null"},
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "base_commit"],
+                "properties": {
+                  "kind": {"type": "string", "enum": ["whole-source", "changed-since"]},
+                  "base_commit": {"oneOf": [{"type": "null"}, {"$ref": "rigor-common-1.json#/$defs/git_oid"}]}
+                }
+              }
+            ]
+          },
+          "anchored": {"type": ["boolean", "null"]}
+        }
+      }
+    }
+  }
+}

@@ -51,12 +51,13 @@ source_roots = ["src/cgprofile"]
 base_source = "request"
 
 [lanes.r2.judge.mutation]
-# Resource-event counters belong to the shared tester cgroup, not to a
-# candidate process. Concurrent before/after windows could attribute one
-# worker's limit event to another mutant. Keep one candidate active until
-# per-worker cgroups and counter bindings are available; --resume handles
-# the longer campaign without weakening its 24h safety window.
-jobs = 1
+# Superseded by assay 11/12 (B157/B206): concurrent windows attribute a limit
+# event to every overlapping window (a failing candidate there is `crashed`,
+# a PASS stays `survived`), so the old one-candidate rule is no longer needed.
+# Measured 2026-11-05: 58 s median / 79 s mean per candidate over 557, so two
+# workers halve the ~15 h serial campaign. Ceiling only; run-gate's `jobs`
+# picks the count.
+jobs_max = 2
 # The old pre-wave base eb3af770eb16362cff4c39388193c0180c2d370c is retired:
 # its diff exceeds Assay's 64 MiB git output bound (GIT_FAILED). Use the
 # previous release tag as the request base and refresh it per release

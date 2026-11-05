@@ -7617,6 +7617,9 @@ without evidence of the bytes. **Diagnostic landed:** the `unparsable response` 
 the cause. No product defect is claimed. **Next step:** when either test fails again in a lane, read the warning (reattach) or add `faulthandler`/`py-spy` output to the inner session
 (clean-session) before changing code; treat a differing result between runs under load as inconclusive.
 
+## RG-163 — no lane key for the container's shm/tmpfs size, which Assay's `isolation.materialize = "tmpfs-worker"` (B223) needs
+
+**Status:** OPEN, 2026-11-05 (filed from assay-tmpfs-20261105). The lane container is started with `--memory`, `--cpus`, `--pids-limit` and mounts but no `--shm-size` / `--tmpfs`, so `/dev/shm` is Docker's default 64 MiB, below one worker tree (about 175 MB for a 7.6k-file repository). Assay falls back to clone materialization with one stderr advisory when the directory is too small, so nothing fails, but the option has no effect. **Fix shape:** an optional `resources.shm_size` (and/or `resources.tmpfs = ["/path:size"]`) lane key passed as `--shm-size` / `--tmpfs ...:rw,exec,size=N`, validated against `resources.memory` (tmpfs pages are charged to the container). Until then a measuring run can pass the flag through a wrapper.
 ## RG-161 — `run-gate --list --json`: lane inventory with derived rigor (rigor-evidence package RG-d)
 
 **Status: FIXED on branch rigor-rgd-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo amendment 2 and row RG-d (release program `reports/RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md`). SPEC R-55, `README.md`, `CONSUMERS.md`, tests `TestListJsonDerivedRigor` in `tests/test_run_gate.py`. The three-column `--list` is untouched (R-01); `--json` with any other verb is still refused.
@@ -7648,3 +7651,11 @@ warning (RG-160 diagnostic) before changing code. Until then a differing single-
 race or plan-file gap in `_FakeCgprofileDaemon`, not load. Run 2 (r1002) did not hit it but failed a doctor test (`'[OK] profiler daemon'` missing from the doctor output), another intermittent failure of the same family.
 Both runs also failed `TestHistoryStoreReadableByTheReleasedReader` deterministically: the remote-gate checkout is built from a thin git bundle and carries only a few `run-gate-v25.*` tags, so RG-159's
 "tags present but no `run-gate-v24.>=3` tag" assertion fires. Remote `selftest` can therefore never be clean until remote-gate syncs all `run-gate-v*` tags (or the test skips on a tag-incomplete checkout).
+
+## RG-164 — `run_gate_profile` pytest plugin raised INTERNALERROR (unknown hook `pytest_xdist_node_collection_finished`) in any pytest without xdist (tnt 0.3.0 release gate)
+
+**Status:** FIXED 2026-11-05 (fix-tnt-gate-20261105).
+
+**Cause.** RG-146 (7273126b6) added the `pytest11` entry-point plugin `run_gate_profile`, loaded into every pytest in the tester venv. Its `pytest_xdist_node_collection_finished` hook has its hookspec only from pytest-xdist; tnt's lanes run `-p no:xdist`, so pluggy's `check_pending` raised `PluginValidationError` during collection (deterministic, not load-related).
+
+**Fix.** `@pytest.hookimpl(optionalhook=True)` on the hook; regression test registers the module in a real pytest config with `-p no:xdist` and runs `check_pending`. Any lane using `-p no:xdist` or a venv without xdist was affected (every consumer on the venv with the RG-146 wheel).

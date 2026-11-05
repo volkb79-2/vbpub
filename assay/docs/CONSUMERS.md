@@ -225,6 +225,64 @@ lane runs; that lock serializes Assay lanes only.
 `--dry-run` previews a transaction without executing `run-tests`, so it cannot
 prove cgroup capacity or lane admission.
 
+### Judgment-fact fragment for the rigor-evidence record: `assay analyze export` (B227)
+
+```bash
+assay analyze export --verdict .assay/verdict-r2.json [--progress .assay/progress-r2.jsonl] \
+  --lane r2 --file assay.toml --expected-commit "$REVIEW_HEAD" [--project NAME] --out rigor/r2.assay.json
+```
+
+The command first runs the same verification as `assay analyze verdict` (schema, internal consistency, expected
+commit, no `--allow-dirty` override) and then writes one `urn:vbpub:rigor-fragment:1` document of kind `assay-lane`.
+It reads the verdict and, optionally, the lane file and progress file. It never runs a lane and never imports the
+library that owns the fragment schema; the schema is a published contract (vbpub `libraries/rigor-record`).
+
+| Fragment field | Source |
+|---|---|
+| `project`, `project_tree` | `--project` (default: lower-cased name of the lane file's directory); `git rev-parse <commit>:<project dir>` (the root tree when the lane file is at the repository root) |
+| `lane`, `judged_commit`, `verdict_sha256` | the verdict's lane and commit; sha256 of the verdict file bytes |
+| `outcome`, `reason` | the lane outcome mapped to `PASS`, `FAIL` or `ERROR` (`NO_MEASUREMENT`, `INCONCLUSIVE` and `BUDGET_EXCEEDED` are `ERROR`); the verdict `reason_code`, `null` exactly when the outcome is `PASS` |
+| `config_sha256` | sha256 of the canonical JSON of the lane file's `schema_version` and the `[lanes.<lane>]` table |
+| `judge` | `judge_provenance` (version and wheel or zipapp digest), `assay-judge-identity/N`, `urn:assay:schema:verdict:N`. A verdict without `judge_provenance` (a source checkout or an editable install) is refused |
+| `coverage` | the R1 claim: line percentage, branch percentage, floors, excluded line count. Branch percentage is 0 with a floor of 0 when the coverage format cannot report branches. `null` when R1 was not judged |
+| `canary` | the R3 claim: mechanism, targets, mapped outcome; `null` without R3 |
+| `r2` | the R2 claim: candidate counts, the six bucket counts, `score = killed / (killed + survived)` (`null` when nothing was decided), `worker_counts`, `profile.status_counts`, survivors; `null` without R2 |
+
+Since B228 (rigor-evidence A-1a) the fragment also carries three additive keys. They are optional in the schema (a
+fragment without them reads as "no level above R0 is judged, no declared paths"), and assay always writes them:
+
+| Fragment field | Source |
+|---|---|
+| `claims` | the verified claim set: `[{rigor, outcome}]`, one per computed claim of the verdict that `verified_by_assay` marks, ordered R0..R3, `outcome` mapped as above. **The only source of R1, R2 and R3 for a consumer:** a section (`coverage`, `canary`, `r2`) is never evidence of a level on its own, and a claim whose level was not measured is listed with outcome `ERROR` while its section is `null`. An unverified claim is absent. R4 is outside this vocabulary and not carried. A consumer reads "the verdict proves level L" as: `L` is in `claims` with outcome `PASS` |
+| `inputs` | the lane's declared out-of-project inputs: `isolation.link_paths`, repository-top-relative, sorted (`[]` when none). Names only: the linked content is outside the verdict's identity, so a consumer that matches results by tree identity adds these paths to the judged targets |
+| `judged_paths` | the project-relative paths the lane judges: `judge.source_roots`, sorted (`[]` for a lane without a judge) |
+
+This section and `analysis/tests/fixtures/rigor/schemas/rigor-fragment-1.json` are the normative text and the canonical
+copy of the `assay-lane` fragment; consumers vendor the schema from here.
+
+Rules a consumer can rely on:
+
+- **No resource numbers.** Memory, CPU, IO and time distributions belong to the lane runner; the fragment carries only
+  `profile_status_counts` from the verdict.
+- **Survivors** are sorted by file, line and candidate id. Each carries the `first_failing_test` of the closest killed
+  mutant in the same file (smaller line wins a tie), or `null` when that mutant has none or its test id cannot be
+  represented. Up to 500 are listed; with more, `listed` holds the first 500 and the full list is written next to the
+  fragment as `<out>.survivors.json` (canonical JSON, its sha256 in `survivors.sidecar_sha256`).
+- **`--progress`** is read only for the newest run at the judged commit: `campaign.started_at` is the run header's
+  start, `campaign.completed_at` the last event's `emitted_at`, and `candidates.resumed` the sum of `resume` events
+  (capped at `executed`). Without it, `campaign` is `null` and `resumed` is 0.
+- **Archived verdicts are refused.** A verdict older than the current schema fails with `VERDICT_SCHEMA_ARCHIVED`
+  (exit 1, no file); the record assembler reports the lane as an error with that reason.
+- **Output** is canonical JSON (sorted keys, 2-space indent, final newline), at most 256 KiB, and never overwrites an
+  existing file. Every string in it matches the schema's closed patterns; a value that does not (for example a judge
+  version with a local build suffix) is refused rather than emitted.
+- The command prints a JSON summary (`fragment`, `fragment_sha256`, `outcome`, `reason`, and the sidecar path and
+  digest when one was written) and exits 1 on any refusal.
+
+Assay's tests carry the schemas and two golden fragments under `analysis/tests/fixtures/rigor/`. The `assay-lane` part
+of `rigor-fragment-1.json` is assay's to change (additively); the shared `rigor-common-1.json` and the `run-gate-lane`
+part are copies of their owners' files. Rerun `analysis/tests/test_analysis_rigor_export.py` after any change.
+
 ### Cold-witness R2 (B114)
 
 Cold-witness mode is an explicit opt-in for the supported native Python pytest
@@ -803,6 +861,53 @@ Use the lane-level `snapshot_history = "full"` only when the command itself
 walks ancestry or names an older commit. Tags and refs are not preserved in a
 snapshot, and assay resolves changed-line bases before snapshot creation, so
 ordinary R1/R2/R3 lanes should keep the shallow default.
+
+**Candidate materialization cost on a copy-on-write workspace (B219/B220/B222).**
+The sealed template's Git index is refreshed once before it is sealed, so a
+clone that keeps inode numbers and timestamps (a btrfs snapshot) lets every
+`git status` validate by `lstat` instead of hashing the whole worktree; a clone
+that does not keep them still hashes and stays correct. The lane key
+`isolation.verify_clone` chooses how much of the clone proof runs per candidate:
+`"tiered"` (default) proves the template completely once, repeats the complete
+clone proof for the first and every 25th clone, and otherwise checks only the
+replacement's identity (HEAD, index tree, the blob at the replaced path, the
+replaced file's bytes and mode) and bounds the child closure from the seed's
+recorded totals plus the objects the replacement adds. `"full"` keeps the
+complete per-clone proof and the complete closure walk. The post-command dirt
+check (`status`, untracked scan, HEAD) runs for every candidate in both modes,
+and the limits fire at the same thresholds in both. The measured cost on a
+7.6k-file repository was 173.6 MB read and 2.31 s per candidate before the
+change (`materialize-experiment-REPORT.md`, variants a and a2).
+
+**Per-worker tmpfs trees (B223).** `isolation.materialize = "tmpfs-worker"`
+(default `"cow"`) removes the cold-cache read of every fresh clone: each mutation
+worker thread owns one tree under `isolation.tmpfs_root` (default `/dev/shm`),
+copied once from the sealed template and proved in full on its first candidate.
+Per candidate only the mutated file is written; afterwards that file, the index,
+`HEAD`, any planted `link_paths` and the loose objects the replacement commit
+added are restored, and the whole tree is scanned against its pristine map
+(type, mode, size, mtime, link target). What a candidate ADDED is removed; what
+it changed or deleted makes Assay discard the tree and rebuild it for the next
+candidate, so residue never reaches a later candidate and no verdict changes.
+The post-command dirt check still judges every candidate first. Measured on a
+7.6k-file repository (variants d and d2 of `materialize-experiment-REPORT.md`):
+0 bytes read and about 0.16 s materialize per candidate against 173.6 MB and
+2.3 s. Memory: one tree is the template's size (about 175 MB for that
+repository), charged to the container's `--memory` as shmem and swappable when
+zswap is on; `jobs` workers hold `jobs` trees. A directory that is not a tmpfs
+or ramfs, a template above `tmpfs_max_mib`, too little free space for one more
+tree, or a write error is not a failure: that candidate and the rest use the
+clone path and one advisory is written to stderr. The baseline, nested
+materializations and a non-copy-on-write workspace always use the clone path.
+Residue that appears after the scan (a process that outlives its command)
+cannot be seen; the command runner owns process cleanup, and a tree that ever
+scans unclean is dropped.
+Run-gate side: Docker's `/dev/shm` is 64 MiB, so a lane that selects this mode
+needs a larger memory-backed mount in the container: `--shm-size=<N>` (or
+`--tmpfs /dev/shm:rw,exec,size=<N>`, or `tmpfs_root` pointing at another tmpfs
+mount) with N at least `jobs` times the tree size plus headroom, and still under
+the lane's `--memory`. Run-gate has no lane key for this yet (filed in its
+backlog as RG-163).
 
 The history policy and the project-level object ceilings are adopted together
 in the same `assay.toml` commit. This is a complete lane file shape you can
@@ -1764,6 +1869,88 @@ Omit the key to retain the legacy whole-tree digest exactly. An explicit
 does not resume records made with the omitted key. A filtered declaration also
 changes the digest domain; changing the declaration or removing a path from
 the filter intentionally causes a cache miss and re-executes candidates.
+
+### Candidate fail-fast (`candidate_fail_fast`, WP1)
+
+```toml
+schema_version = 2
+
+[lanes.package]
+scope = "S1"
+rigor = ["R0", "R2"]
+enforcement = "gate"
+argv = ["pytest", "tests", "-q", "--cov=src", "--cov-branch"]
+env = {}
+env_passthrough = ["PATH"]
+budget = "30m"
+allow_argv_append = false
+
+[lanes.package.isolation]
+snapshot_selection = "repository"
+
+[lanes.package.judge]
+language = "python"
+source_roots = ["src"]
+base = "main"
+
+[lanes.package.judge.mutation]
+jobs = 1
+max_mutants = 500
+operators = ["python:compare-swap"]
+candidate_fail_fast = true
+```
+
+An ordinary native R2 candidate runs the lane's whole declared command, with
+coverage, even though a killed mutant only needs one failing test. Measured
+killed mutants cost as much as survivors (cmru: 572.6 s killed against 571.8 s
+survived). With `candidate_fail_fast = true` every **candidate** command is the
+declared argv minus its pytest-cov options (`--cov=...`, `--cov-report=...`,
+`--cov-branch`) plus `-x -p no:pytest_cov`, so a mutant stops at its first
+failing test and pays no coverage cost. The R0/R1 baseline is never changed: it
+keeps its coverage and runs the whole suite.
+
+- **Opt-in, native pytest lanes only.** The load refuses the key unless
+  `judge.language = "python"` and the argv literally invokes pytest, and refuses
+  a coverage option assay cannot remove without guessing (for example
+  `--cov-fail-under=90`).
+- **Full-pass preflight.** Every nonzero exit is a `killed` candidate, so
+  anything that makes the candidate command fail on the UNMUTATED tree would turn
+  the whole sweep into false kills: an option conflict (`addopts = --cov` breaks
+  once pytest-cov is disabled) and also a test that fails only at setup or run
+  time without the plugin (for example a test that uses the `cov` fixture).
+  Before the first candidate, assay runs the exact candidate command (coverage
+  options removed, injected witness plugin, `-x -p no:pytest_cov`) once on the
+  unmutated snapshot and requires a full PASS (exit 0). Otherwise it refuses the
+  lane (`BAD_LANE_CONFIG`) with a message naming the exit and the first failing
+  test. The preflight costs one no-coverage suite run and has its own timeout,
+  twice the baseline's measured wall time (at least 60 s, never more than the
+  remaining lane budget).
+- **Verdict semantics are unchanged.** Buckets still come from the command's
+  exit status. A fail-fast kill is as sound as a full-run kill (one failing test
+  is the whole definition of killed); a survivor still passed the complete suite,
+  because `-x` only matters after a failure. Nothing in the candidate path reads
+  coverage, so no per-candidate coverage output is lost. The failed-call witness
+  stays on **only if the declared lane argv has no `-x`/`--maxfail`** (assay's own
+  `-x` is added after the witness decision): the receipt plugin is injected
+  before the fail-fast tokens and a failed call simply ends the started prefix. Tests that fail only because of
+  test ORDER, or only when a later test runs, are the one place the buckets can
+  differ; the suite's own baseline is green, so such a mutant is a kill either
+  way.
+- **Identity.** The transform is folded into `judge_sha256` (only when the key
+  is on, so every existing identity is unchanged). Turning the key on or off
+  invalidates resume records, and a running campaign restarts its candidates:
+  schedule the change between campaigns.
+- **`--cold-witness`** already stops each candidate at its first verified failure
+  under a stricter proof, so the key is ignored there (with a diagnostic) and
+  stays out of that run's identity.
+- **Do not combine the key with `-x` in the lane argv.** A user `-x` (or
+  `--maxfail=1`) in the declared argv makes `supports_sequential_pytest` refuse
+  ("fail-fast option"), which disables the failed-call witness and
+  `--cold-witness`/`--reuse-from` replay, and it also truncates the R0/R1
+  baseline on a failure. Adopting the key therefore means REMOVING `-x` from the
+  lane argv; assay adds its own `-x` to candidates only. A lane that keeps its
+  `-x` and omits the key still gets the fail-fast effect, but pays for coverage in
+  every candidate and has no witness.
 
 ### Native mutation score vocabulary (B098)
 

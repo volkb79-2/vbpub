@@ -867,6 +867,12 @@ done
 # size-suffixed string — valid for systemd set-property AND the Python
 # watcher's own arithmetic without a unit parser on either side.
 DEV_SWAP_CASCADE_PCT="${DEV_SWAP_CASCADE_PCT:-80}"
+MDT_DEDICATED_MEM=0
+if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+  MDT_DEDICATED_MEM=1
+  # HOST_ROLE=dedicated-dev (MDT-TESTHOST-MEM): a tier's swap ceiling is its parent's, not a percentage of it.
+  DEV_SWAP_CASCADE_PCT=100
+fi
 _host_swap_bytes=""
 if grep -q '^SwapTotal:' /proc/meminfo 2>/dev/null; then
   _host_swap_kib=$(awk '$1 == "SwapTotal:" && $2 ~ /^[0-9]+$/ {print $2; exit}' /proc/meminfo 2>/dev/null)
@@ -932,6 +938,52 @@ for _optional_memory_var in \
     printf -v "$_optional_memory_var" '%s' ""
   fi
 done
+# HOST_ROLE=dedicated-dev memory (MDT-TESTHOST-MEM), PRE-FLIGHT part: derives the dev.slice limits and
+# drops the tiers' own MemoryHigh/MemoryMax so that no tier is tighter than dev.slice. Pins (a non-empty
+# DEV_MEMORY_HIGH/MAX/LOW) win per value; `-` omits one. shared-prod (and an empty role) skip all of it.
+MDT_DEDICATED_PROTECTED_UNITS=""
+MDT_DEDICATED_KEEP=""
+if [ "$MDT_DEDICATED_MEM" = 1 ]; then
+  if ! _ded_mem=$(python3 "$HERE/mdt_capacity.py" dedicated-memory "$CANDIDATE_PATH" --meminfo /proc/meminfo); then
+    echo "ERROR: HOST_ROLE=dedicated-dev: the dev.slice memory limits cannot be derived (see above); nothing was changed." >&2
+    exit 2
+  fi
+  while IFS='=' read -r _ded_key _ded_value; do
+    case "$_ded_key" in
+      DEDICATED_MEM_KEEP) MDT_DEDICATED_KEEP="$_ded_value" ;;
+      DEDICATED_MEM_HIGH) DEV_MEMORY_HIGH="$_ded_value" ;;
+      DEDICATED_MEM_MAX) DEV_MEMORY_MAX="$_ded_value" ;;
+      DEDICATED_MEM_LOW) DEV_MEMORY_LOW="$_ded_value" ;;
+      DEDICATED_MEM_HIGH_SOURCE) _ded_high_src="$_ded_value" ;;
+      DEDICATED_MEM_MAX_SOURCE) _ded_max_src="$_ded_value" ;;
+      DEDICATED_MEM_LOW_SOURCE) _ded_low_src="$_ded_value" ;;
+      DEDICATED_GATES_HIGH_SOURCE) _ded_gates_high_src="$_ded_value" ;;
+      DEDICATED_GATES_MAX_SOURCE) _ded_gates_max_src="$_ded_value" ;;
+      DEDICATED_BACKGROUND_HIGH_SOURCE) _ded_bg_high_src="$_ded_value" ;;
+      DEDICATED_BACKGROUND_MAX_SOURCE) _ded_bg_max_src="$_ded_value" ;;
+      DEDICATED_GATES_HIGH) DEV_GATES_MEMORY_HIGH="$_ded_value" ;;
+      DEDICATED_GATES_MAX) DEV_GATES_MEMORY_MAX="$_ded_value" ;;
+      DEDICATED_BACKGROUND_HIGH) DEV_BACKGROUND_MEMORY_HIGH="$_ded_value" ;;
+      DEDICATED_BACKGROUND_MAX) DEV_BACKGROUND_MEMORY_MAX="$_ded_value" ;;
+      DEDICATED_PROTECTED_UNITS) MDT_DEDICATED_PROTECTED_UNITS="$_ded_value" ;;
+    esac
+  done <<<"$_ded_mem"
+  _ded_ignored=""
+  # gates and background are derived/pinned above (dev.slice minus the protected tiers' MemoryLow); the
+  # interactive and BuildKit tiers carry no ceiling of their own.
+  for _ded_tier_key in \
+    DEV_INTERACTIVE_MEMORY_HIGH DEV_INTERACTIVE_MEMORY_MAX DEV_BUILDKITD_MEMORY_HIGH DEV_BUILDKITD_MEMORY_MAX; do
+    case "${!_ded_tier_key:-}" in
+      ""|-) ;;
+      *) _ded_ignored="$_ded_ignored $_ded_tier_key=${!_ded_tier_key}" ;;
+    esac
+    printf -v "$_ded_tier_key" '%s' ""
+  done
+  echo "HOST_ROLE=dedicated-dev memory: dev.slice MemoryHigh=${DEV_MEMORY_HIGH:-none} (${_ded_high_src}), MemoryMax=${DEV_MEMORY_MAX:-none} (${_ded_max_src}), MemoryLow=${DEV_MEMORY_LOW:-none} (${_ded_low_src}); host keeps ${MDT_DEDICATED_KEEP}B (DEV_HOST_MEMORY_KEEP); dev-gates MemoryHigh=${DEV_GATES_MEMORY_HIGH:-none} MemoryMax=${DEV_GATES_MEMORY_MAX:-none} (${_ded_gates_high_src}/${_ded_gates_max_src}), dev-background MemoryHigh=${DEV_BACKGROUND_MEMORY_HIGH:-none} MemoryMax=${DEV_BACKGROUND_MEMORY_MAX:-none} (${_ded_bg_high_src}/${_ded_bg_max_src}); interactive and buildkitd tiers carry no MemoryHigh/MemoryMax; interactive/buildkitd swap ceilings equal dev.slice's, gates/background swap = dev.slice's minus the protected tiers' MemoryLow sum"
+  if [ -n "$_ded_ignored" ]; then
+    echo "NOTICE: HOST_ROLE=dedicated-dev ignores the per-tier memory ceilings still set in $CONFIG_PATH (clear them to silence this):${_ded_ignored}" >&2
+  fi
+fi
 if [ -n "${DEV_SWAP_MAX:-}" ]; then
   if ! _swap_max_bytes=$(_size_to_bytes "$DEV_SWAP_MAX"); then
     echo "ERROR: DEV_SWAP_MAX is not a systemd size that can be converted to bytes: $DEV_SWAP_MAX" >&2
@@ -959,6 +1011,21 @@ if [ -n "${_host_swap_bytes:-}" ] && [ "$_host_swap_bytes" -gt 0 ]; then
   for _swap_var in DEV_INTERACTIVE_MEMORY_SWAP_MAX DEV_BACKGROUND_MEMORY_SWAP_MAX DEV_GATES_MEMORY_SWAP_MAX DEV_BUILDKITD_MEMORY_SWAP_MAX; do
     _unset_var="${_swap_var}_UNSET"
     if [ -z "${!_swap_var:-}" ] && [ "${!_unset_var:-0}" != 1 ] && [ -n "${DEV_SWAP_MAX:-}" ]; then
+      case "$_swap_var" in
+        DEV_GATES_MEMORY_SWAP_MAX|DEV_BACKGROUND_MEMORY_SWAP_MAX)
+          if [ "$MDT_DEDICATED_MEM" = 1 ]; then
+            # AD2-0: the load tiers get dev.slice's swap minus the protected tiers' MemoryLow sum (one
+            # implementation: mdt_capacity.load_tier_swap), so a leak ends in a memcg OOM inside the tier.
+            if ! _ded_swap=$(python3 "$HERE/mdt_capacity.py" dedicated-memory "$CANDIDATE_PATH" --meminfo /proc/meminfo --dev-swap "$DEV_SWAP_MAX"); then
+              echo "ERROR: HOST_ROLE=dedicated-dev: the load-tier swap ceiling cannot be derived; nothing was changed." >&2
+              exit 2
+            fi
+            printf -v "$_swap_var" '%s' "$(printf '%s\n' "$_ded_swap" | sed -n 's/^DEDICATED_LOAD_SWAP=//p')"
+            echo "$_swap_var: HOST_ROLE=dedicated-dev -> dev.slice's ${DEV_SWAP_MAX}B minus the protected tiers' MemoryLow sum -> ${!_swap_var}B"
+            continue
+          fi
+          ;;
+      esac
       printf -v "$_swap_var" '%s' "$(_pct_of "$DEV_SWAP_MAX" "$DEV_SWAP_CASCADE_PCT")"
       echo "$_swap_var: auto-detected (${DEV_SWAP_CASCADE_PCT}% of dev.slice's ${DEV_SWAP_MAX}B) -> ${!_swap_var}B"
     elif [ -z "${!_swap_var:-}" ] && [ "${!_unset_var:-0}" != 1 ]; then
@@ -982,6 +1049,14 @@ fi
 # Observer-directory/group drift and a missing docker group are refusals too (MDT-039): evaluate
 # them here, not after the units are rendered. Only the writes remain after the commit point.
 provision_cgprofile_observer / preflight || exit $?
+
+# Tree cache plan (AD2-2, MDT-074): gid lookup, the half-of-RAM bound and path rules live in make_plan, not in
+# the wizard validators, so they are evaluated here, before the commit point (a refusal changes nothing).
+if [ "$MDT_DEDICATED_MEM" = 1 ]; then _tree_role=dedicated-dev; else _tree_role=other; fi
+if ! _tree_plan=$(python3 "$HERE/mdt_tree_cache.py" plan --config "$CANDIDATE_PATH" --role "$_tree_role"); then
+  echo "ERROR: the tree cache plan (MDT_TREE_* / DEV_CACHE_* keys) is not valid; nothing was changed." >&2
+  exit 2
+fi
 
 # === COMMIT POINT: nothing above this line mutates the host (MDT-HS-02) ===
 # Every refusal above has been evaluated. Only now are /etc/mdt, the buildx config
@@ -1032,6 +1107,14 @@ rm -f \
   /usr/local/sbin/mdt-container-caps.lib.sh \
   /usr/local/sbin/mdt-slice-audit.py
 
+# HOST_ROLE=dedicated-dev shared tree cache (AD2-2): the plan was validated in the pre-flight (before the
+# COMMIT POINT), so an invalid MDT_TREE_* / DEV_CACHE_* value changed nothing. Not dedicated-dev (or
+# MDT_TREE_CACHE_SIZE=-): the plan is "disabled" and render below removes whatever this installer owns of
+# it, so shared-prod stays byte-identical.
+case "$_tree_plan" in
+  *TREE_CACHE_ENABLED=1*) echo "HOST_ROLE=dedicated-dev tree cache: $(printf '%s' "$_tree_plan" | tr '\n' ' ')" ;;
+esac
+
 echo "== render + install units =="
 RENDER_VARS="DEV_CPU_QUOTA DEV_ZSWAP_WRITEBACK DEV_SWAP_MAX \
 DEV_MEMORY_LOW DEV_MEMORY_HIGH DEV_MEMORY_MAX \
@@ -1076,7 +1159,11 @@ render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd
 render "$HERE/buildkitd.toml.in"              /etc/mdt/buildkitd.toml
 [ "$(_mdt_files_digest "${MDT_BUILDKITD_FILES[@]}")" = "$_BK_DIGEST_BEFORE" ] && BUILDKITD_CHANGED=0 || BUILDKITD_CHANGED=1
 install -m 0755 "$HERE/scripts/mdt-buildkitd-stamp.sh" /usr/local/sbin/mdt-buildkitd-stamp.sh
-render "$HERE/units/mdt-dev-governance-reconcile.timer.in"  /etc/systemd/system/mdt-dev-governance-reconcile.timer
+# dev-cache.slice, the tree-cache/upper tmpfs mount units, the GC timer and the host-capacity.json block:
+# rendered (or removed, when the plan is disabled) by one implementation. Activation follows daemon-reload.
+install -m 0755 "$HERE/mdt_tree_cache.py" /usr/local/sbin/mdt_tree_cache.py
+python3 "$HERE/mdt_tree_cache.py" render --config "$CANDIDATE_PATH" --role "$_tree_role" --units-dir "$HERE/units" || exit 2
+render "$HERE/units/mdt-dev-governance-reconcile.timer.in" /etc/systemd/system/mdt-dev-governance-reconcile.timer
 install -m 0644 "$HERE/units/mdt-dev-governance-reconcile.service" /etc/systemd/system/mdt-dev-governance-reconcile.service
 if [ "${INOTIFY_OK:-}" = 1 ]; then
   install -m 0644 "$HERE/units/mdt-container-memory-inotify-watcher.service" /etc/systemd/system/mdt-container-memory-inotify-watcher.service
@@ -1091,6 +1178,59 @@ install -m 0644 "$HERE/units/mdt-psi-guard.service" /etc/systemd/system/mdt-psi-
 mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
   /etc/systemd/system/docker-.scope.d/50-default-limits.conf
+
+# HOST_ROLE=dedicated-dev host protection (MDT-TESTHOST-MEM): the host's own services outlive the dev tier.
+#   system.slice MemoryLow = DEV_HOST_MEMORY_KEEP   reclaim takes dev pages before the host's;
+#   OOMScoreAdjust=-900 on each DEV_HOST_PROTECTED_UNITS member   the kernel OOM killer picks the dev tier first.
+# One drop-in name, owned by this block: any other role removes exactly the files it finds.
+MDT_DED_DROPIN=50-mdt-dedicated-dev.conf
+MDT_DED_LIVE_UNITS=""
+MDT_SYSTEMD_DIR="${MDT_SYSTEMD_DIR:-/etc/systemd/system}"
+if [ "$MDT_DEDICATED_MEM" = 1 ]; then
+  mkdir -p "$MDT_SYSTEMD_DIR/system.slice.d"
+  printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[Slice]" "MemoryLow=${MDT_DEDICATED_KEEP}" \
+    > "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
+  chmod 0644 "$MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN"
+  echo "host protection: system.slice MemoryLow=${MDT_DEDICATED_KEEP}B ($MDT_SYSTEMD_DIR/system.slice.d/$MDT_DED_DROPIN)"
+  for _ded_unit in $MDT_DEDICATED_PROTECTED_UNITS; do
+    _ded_file="$MDT_SYSTEMD_DIR/$_ded_unit.d/$MDT_DED_DROPIN"
+    if [ ! -f "$_ded_file" ]; then
+      if ! systemctl cat "$_ded_unit" >/dev/null 2>&1; then
+        echo "host protection: $_ded_unit is not installed on this host; skipped"
+        continue
+      fi
+      # Never weaken a unit that is already protected harder than ours (containerd ships -999).
+      _ded_has=$(systemctl show -p OOMScoreAdjust --value "$_ded_unit" 2>/dev/null || true)
+      case "$_ded_has" in
+        -*) if [ "$_ded_has" -le -900 ] 2>/dev/null; then echo "host protection: $_ded_unit already has OOMScoreAdjust=$_ded_has; left alone"; continue; fi ;;
+      esac
+    fi
+    mkdir -p "$MDT_SYSTEMD_DIR/$_ded_unit.d"
+    printf '%s\n' "# RENDERED by host-setup/install.sh (HOST_ROLE=dedicated-dev) - do not edit." "[Service]" "OOMScoreAdjust=-900" \
+      > "$_ded_file"
+    chmod 0644 "$_ded_file"
+    MDT_DED_LIVE_UNITS="$MDT_DED_LIVE_UNITS $_ded_unit"
+    echo "host protection: $_ded_unit OOMScoreAdjust=-900 ($_ded_file)"
+  done
+fi
+# Remove the files this block owns that the current configuration no longer wants: every one when the role is
+# not dedicated-dev, otherwise those of units that left DEV_HOST_PROTECTED_UNITS (or never belonged there,
+# e.g. the ssh drop-in an earlier version rendered: sshd would hand -900 to every login session). The
+# system.slice file stays on the role.
+while IFS= read -r _ded_old; do
+  [ -n "$_ded_old" ] || continue
+  _ded_old_dir="$(basename -- "$(dirname -- "$_ded_old")")"
+  if [ "$MDT_DEDICATED_MEM" = 1 ]; then
+    [ "$_ded_old_dir" = system.slice.d ] && continue
+    case " $MDT_DED_LIVE_UNITS " in *" ${_ded_old_dir%.d} "*) continue ;; esac
+    _ded_why="the unit is not in DEV_HOST_PROTECTED_UNITS (or is already protected harder)"
+  else
+    _ded_why="HOST_ROLE is not dedicated-dev"
+  fi
+  rm -f -- "$_ded_old"
+  rmdir -- "$(dirname -- "$_ded_old")" 2>/dev/null || true
+  echo "host protection: removed $_ded_old ($_ded_why)"
+done < <(find "$MDT_SYSTEMD_DIR" -maxdepth 2 -type f -path "*.d/$MDT_DED_DROPIN" 2>/dev/null)
 
 if [ -n "${IO_SD_DEV:-}" ]; then
   if [ "$(_mdt_host_role)" = dedicated-dev ]; then
@@ -1200,6 +1340,7 @@ if [ -n "$SD_VER" ] && [ "$SD_VER" -lt 256 ] 2>/dev/null; then
     /etc/systemd/system/dev-background.slice \
     /etc/systemd/system/dev-gates.slice \
     /etc/systemd/system/dev-buildkitd.slice
+  [ -f /etc/systemd/system/dev-cache.slice ] && sed -i '/^MemoryZSwapWriteback=/d' /etc/systemd/system/dev-cache.slice
   echo "systemd $SD_VER < 256 — dropped MemoryZSwapWriteback= from dev.slice + every child (runtime raw-write fallback covers it)"
 fi
 
@@ -1318,6 +1459,18 @@ _mdt_apply_iocost || IOCOST_FAILED=1
 
 echo "== activate =="
 systemctl daemon-reload
+# A drop-in's OOMScoreAdjust only reaches a service when it (re)starts, and docker/containerd/sshd are not
+# restarted here: lower the running main process's score directly (never raise it).
+for _ded_unit in $MDT_DED_LIVE_UNITS; do
+  _ded_pid=$(systemctl show -p MainPID --value "$_ded_unit" 2>/dev/null || true)
+  case "$_ded_pid" in ""|0|*[!0-9]*) continue ;; esac
+  _ded_cur=$(cat "/proc/$_ded_pid/oom_score_adj" 2>/dev/null || echo "")
+  if [ -n "$_ded_cur" ] && [ "$_ded_cur" -gt -900 ] 2>/dev/null; then
+    echo -900 > "/proc/$_ded_pid/oom_score_adj" 2>/dev/null \
+      && echo "host protection: $_ded_unit pid $_ded_pid oom_score_adj $_ded_cur -> -900" \
+      || echo "WARN: could not lower oom_score_adj of $_ded_unit (pid $_ded_pid); it applies at the unit's next restart"
+  fi
+done
 # Slices activate on demand, but starting them now makes the cgroups exist so
 # the zswap policy applies immediately and check.sh has something to look at.
 # dev.slice first — its children nest under it by name, but starting it
@@ -1340,6 +1493,8 @@ fi
 echo "verified Docker default cgroup parent: $DOCKER_DAEMON_CGROUP_PARENT (loaded, fragment=$_parent_fragment)"
 systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_min_guaranteed.slice \
   dev-gates.slice dev-buildkitd.slice
+# dedicated-dev only: start dev-cache.slice, mount (or remount) the tree areas, enable the GC timer.
+python3 "$HERE/mdt_tree_cache.py" activate --config "$CANDIDATE_PATH" --role "$_tree_role" || exit 2
 systemctl enable mdt-dev-governance-reconcile.service          # boot-time apply
 systemctl enable --now mdt-dev-governance-reconcile.timer      # periodic sweep
 # PSI guard (MDT_PSI_GUARD): `off` stops it (it reverts anything it owns on stop); `report`

@@ -101,6 +101,12 @@ class Config:
     # preserve_root_size_gb, this is a sizing target that leaves disk space
     # after the configured swap layout available for a later data partition.
     root_max_size_gb: int | None = None
+    # `full-root` (default): root takes all space not used by swap. `dev-host`:
+    # root is capped at the rule value (layout_policy.recommended_root_gib,
+    # 160 GiB on a 512 GiB disk) unless root_max_size_gb is set; the space
+    # between root and the END-of-disk swap stays unallocated for the Btrfs cow
+    # area (~1/3 of the disk) and reserve. Swap is last in both layouts.
+    disk_layout: Literal["full-root", "dev-host"] = "full-root"
     preserve_root_size_gb: int = 10
     zswap_compressor: Literal["zstd", "lz4", "lzo-rle"] = "zstd"
     zswap_pool_percent: int = 25
@@ -456,6 +462,15 @@ def validate_config(config: Config) -> None:
             raise ConfigError(
                 "root_max_size_gb must be greater than or equal to preserve_root_size_gb"
             )
+    if not isinstance(config.disk_layout, str) or config.disk_layout not in {"full-root", "dev-host"}:
+        raise ConfigError("disk_layout must be full-root or dev-host")
+    if config.disk_layout == "dev-host" and (
+        config.swap_policy != "on" or config.root_resize_policy != "resize"
+    ):
+        raise ConfigError(
+            "disk_layout=dev-host requires swap_policy=on and root_resize_policy=resize "
+            "(swap is placed at the end of the disk, root is sized by the layout rule)"
+        )
     if not 5 <= config.zswap_pool_percent <= 60:
         raise ConfigError("zswap_pool_percent must be from 5 to 60")
     if not 0 <= config.swap_priority <= 32767:

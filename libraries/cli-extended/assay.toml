@@ -66,7 +66,11 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.cli-extended.judge.mutation]
-jobs = 1
+# Ceiling (assay >= 11). Measured 1461 candidates, median 10.9 s, mean 15 s;
+# the run-gate r2 lane is a command lane, so it only honours `--jobs N` added
+# to its argv (see reports/assay-jobs-audit-REPORT.md: convert it to
+# kind = "assay" like iobench to get `jobs = "auto"`).
+jobs_max = 3
 # Raised for the unified-adoption wave (2026-10-05): the library roughly
 # doubled (skills, doctor, config, findings, constraints), so the previous
 # 1,200 cap would refuse with MUTANT_LIMIT_EXCEEDED rather than sample.

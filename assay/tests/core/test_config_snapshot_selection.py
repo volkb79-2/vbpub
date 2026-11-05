@@ -467,6 +467,123 @@ def test_unknown_snapshot_history_is_refused(project: Project):
         load_lane_file(project.write(text))
 
 
+def test_verify_clone_defaults_tiered_and_accepts_full(project: Project):
+    """B222: `tiered` is the default and is not echoed back; `full` is."""
+    default = load_lane_file(
+        project.write(
+            _lane_text(rigor='["R0", "R1"]', isolation_block=_repository_block())
+        )
+    ).lane("package")
+    assert default.isolation is not None
+    assert default.isolation.verify_clone == "tiered"
+    assert "verify_clone" not in default.as_declared()["isolation"]
+
+    full = load_lane_file(
+        project.write(
+            _lane_text(
+                rigor='["R0", "R1"]',
+                isolation_block=(
+                    "[lanes.package.isolation]\n"
+                    'snapshot_selection = "repository"\n'
+                    'verify_clone = "full"\n\n'
+                ),
+            )
+        )
+    ).lane("package")
+    assert full.isolation is not None
+    assert full.isolation.verify_clone == "full"
+    assert full.as_declared()["isolation"]["verify_clone"] == "full"
+
+    omission = load_lane_file(
+        project.write(
+            _lane_text(
+                rigor='["R0", "R1"]',
+                isolation_block=(
+                    "[lanes.package.isolation]\n"
+                    'snapshot_selection = "repository-minus-unsafe-symlinks"\n'
+                    'unsafe_symlink_omissions = ["a/link"]\n'
+                    'verify_clone = "full"\n\n'
+                ),
+            )
+        )
+    ).lane("package")
+    assert omission.isolation is not None
+    assert omission.isolation.verify_clone == "full"
+
+
+def test_unknown_verify_clone_is_refused_by_loader_and_constructor(project: Project):
+    text = _lane_text(
+        rigor='["R0", "R1"]',
+        isolation_block=(
+            "[lanes.package.isolation]\n"
+            'snapshot_selection = "repository"\n'
+            'verify_clone = "sometimes"\n\n'
+        ),
+    )
+    with pytest.raises(LaneConfigError, match="verify_clone.*must be one of"):
+        load_lane_file(project.write(text))
+    from assay.config import IsolationConfig
+
+    with pytest.raises(LaneConfigError, match="verify_clone.*must be one of"):
+        IsolationConfig(
+            snapshot_selection="repository",
+            unsafe_symlink_omissions=(),
+            verify_clone=True,
+        )
+
+
+def test_materialize_and_tmpfs_keys_load_from_the_lane_file(project: Project):
+    """B223: the TOML loader (not only the constructor) reads `materialize`,
+    `tmpfs_root` and `tmpfs_max_mib`, refuses unknown modes, and defaults to
+    `cow` without echoing the default back."""
+    default = load_lane_file(
+        project.write(
+            _lane_text(rigor='["R0", "R1"]', isolation_block=_repository_block())
+        )
+    ).lane("package")
+    assert default.isolation is not None
+    assert default.isolation.materialize == "cow"
+    assert "materialize" not in default.as_declared()["isolation"]
+
+    tmpfs = load_lane_file(
+        project.write(
+            _lane_text(
+                rigor='["R0", "R1"]',
+                isolation_block=(
+                    "[lanes.package.isolation]\n"
+                    'snapshot_selection = "repository"\n'
+                    'materialize = "tmpfs-worker"\n'
+                    'tmpfs_root = "/mnt/ram"\n'
+                    "tmpfs_max_mib = 7\n\n"
+                ),
+            )
+        )
+    ).lane("package")
+    assert tmpfs.isolation is not None
+    assert tmpfs.isolation.materialize == "tmpfs-worker"
+    assert tmpfs.isolation.tmpfs_root == "/mnt/ram"
+    assert tmpfs.isolation.tmpfs_max_mib == 7
+    declared = tmpfs.as_declared()["isolation"]
+    assert declared["materialize"] == "tmpfs-worker"
+    assert declared["tmpfs_root"] == "/mnt/ram"
+    assert declared["tmpfs_max_mib"] == 7
+
+    for bad, match in (
+        ('materialize = "overlay"\n', "materialize.*must be one of"),
+        ('tmpfs_root = "relative"\n', "tmpfs_root"),
+        ("tmpfs_max_mib = 0\n", "tmpfs_max_mib"),
+    ):
+        text = _lane_text(
+            rigor='["R0", "R1"]',
+            isolation_block=(
+                "[lanes.package.isolation]\n"
+                'snapshot_selection = "repository"\n' + bad + "\n"
+            ),
+        )
+        with pytest.raises(LaneConfigError, match=match):
+            load_lane_file(project.write(text))
+
+
 def test_project_snapshot_limits_are_loaded_and_invalid_values_refused(project: Project):
     text = (
         "schema_version = 2\n\n"

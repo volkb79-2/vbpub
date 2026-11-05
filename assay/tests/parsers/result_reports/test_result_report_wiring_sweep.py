@@ -44,6 +44,11 @@ EXCLUDED_SITES: dict[tuple[str, str], str] = {
         "the `environment_command` probe (B010): it probes the INVOKING "
         "environment, is not the lane command, and has no report of its own"
     ),
+    ("runner.py", "_candidate_fail_fast_preflight"): (
+        "WP1: a collect-only run of the CANDIDATE command on the unmutated "
+        "snapshot, only to prove it can collect before any candidate runs; "
+        "it is not the lane's R0 command and has no report of its own"
+    ),
     ("mutation.py", "_run_attempt"): (
         "an R2 candidate re-execution: a mutant's signal is whether the suite "
         "fails, run `jobs`-way concurrently against one declared path. This "

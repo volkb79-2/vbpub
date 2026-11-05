@@ -73,6 +73,10 @@ class FakeDocker:
                     if a == "--filter" and args[i + 1].startswith("name=^"):
                         want = args[i + 1][len("name=^"):-1]  # ^<net>$ exact
                         named = [n for n in named if n == want]
+                    elif a == "--filter" and args[i + 1].startswith("name="):
+                        named = [n for n in named if args[i + 1][len("name="):] in n]
+                    elif a == "--filter" and args[i + 1] == "label=com.docker.compose.project":
+                        named = [n for n in named if n in self.network_labels]
                     elif a == "--filter" and args[i + 1].startswith("label=com.docker.compose.project="):
                         project = args[i + 1].split("=", 2)[2]
                         named = [
@@ -157,6 +161,13 @@ def _main_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _stack(root: Path, rel: str) -> Path:
+    d = root / rel
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "ciu.toml.j2").write_text("", encoding="utf-8")
+    return d
+
+
 def _run_clean(monkeypatch, repo_root: Path, fake: FakeDocker, selection=None):
     monkeypatch.setattr(deploy.procutil, "docker", fake)
     sel = selection or [{"path": "apps/vault"}]
@@ -197,7 +208,7 @@ def test_main_workspace_keeps_its_network_and_names_it(monkeypatch, tmp_path, ca
     repo_root = _main_repo(tmp_path)
     fake = FakeDocker(
         networks={
-            "proj-abc123-network": [],
+            "proj-abc123-network": [{"id": "cid-dev", "name": "dstdns-devcontainer-vb"}],
             "proj-env-vault_default": [],
         },
         network_labels={"proj-env-vault_default": "proj-env-vault"},
@@ -447,8 +458,8 @@ def test_rm_verify_daemon_failure_resolved_by_invariant_state(monkeypatch, tmp_p
     fake = InstrumentedDocker(
         networks={"proj-abc123-network": [], "proj-env-vault_default": []},
         network_labels={"proj-env-vault_default": "proj-env-vault"},
-        # filtered-ls ordinals: 1 enum, 2 id-exists, 3 id-verify, 4 vault-exists,
-        # 5 vault-verify (FAILS), 6/7 invariant re-checks
+        # filtered-ls ordinals: 1 enum (no unselected stack dir: no tagged sweep ls),
+        # 2 id-exists, 3 id-verify, 4 vault-exists, 5 vault-verify (FAILS), 6/7 invariant re-checks
         net_ls_fail_at={5},
     )
     rc = _run_clean(monkeypatch, repo_root, fake)
@@ -631,7 +642,7 @@ def test_enumerated_network_matching_a_keep_is_not_targeted(monkeypatch, tmp_pat
     # identity net ALSO carries a compose label matching the selected project:
     # pathological but expressible, and it must resolve to keep-not-remove.
     fake = InstrumentedDocker(
-        networks={"proj-abc123-network": []},
+        networks={"proj-abc123-network": [{"id": "cid-dev", "name": "devcontainer"}]},
         network_labels={"proj-abc123-network": "proj-env-vault"},
     )
     rc = _run_clean(monkeypatch, repo_root, fake)
@@ -643,10 +654,179 @@ def test_kept_network_check_daemon_failure_warns_not_crashes(monkeypatch, tmp_pa
     """The keep-existence check degrading (daemon failure) warns and keeps
     going — the keep was declared by policy, not discovered by state."""
     repo_root = _main_repo(tmp_path)
-    fake = InstrumentedDocker(networks={}, net_ls_fail_at={2})
+    fake = InstrumentedDocker(
+        networks={"proj-abc123-network": [{"id": "cid-dev", "name": "devcontainer"}]},
+        net_ls_fail_at={2},
+    )
     # ordinals: 1 enum(label, empty), 2 keep-check(identity) FAILS -> warn path
     rc = _run_clean(monkeypatch, repo_root, fake)
     assert rc == 0
     out = capsys.readouterr().out
     assert "kept-network check failed" in out
     assert "clean complete" in out
+
+
+def test_main_workspace_network_without_a_devcontainer_is_removed(monkeypatch, tmp_path, capsys):
+    """CIU-171: a standalone/pushed bundle has no devcontainer residence to keep it for."""
+    repo_root = _main_repo(tmp_path)
+    fake = FakeDocker(networks={"proj-abc123-network": []})
+
+    assert _run_clean(monkeypatch, repo_root, fake) == 0
+
+    assert fake.networks == {}
+    out = capsys.readouterr().out
+    assert "proj-abc123-network has no attached devcontainer; removing it" in out
+    assert "kept:" not in out
+
+
+def test_workspace_network_endpoint_check_failure_keeps_the_network(monkeypatch, capsys):
+    """CIU-171: an indeterminate endpoint query keeps the network; removal never guesses."""
+    def boom(_network):
+        raise ValueError("inspect output unparsable")
+    monkeypatch.setattr(deploy, "_network_endpoints", boom)
+    assert deploy._workspace_network_attached("proj-abc123-network") is True
+    assert "endpoint check failed" in capsys.readouterr().out
+
+
+def test_clean_removes_tagged_project_networks_of_a_stack_outside_the_selection(
+    monkeypatch, tmp_path,
+):
+    """CIU-171: `up --dir` stacks own `<project>-<env>-<stack>_default` networks the
+    profile selection never names; the tagged prefix finds them like it finds containers."""
+    repo_root = _main_repo(tmp_path)
+    _stack(repo_root, "apps/whoami")
+    fake = FakeDocker(
+        networks={
+            "proj-env-whoami_default": [],
+            "proj-environment-other_default": [],  # near-miss prefix: untouched
+            "unrelated_default": [],
+        },
+        network_labels={
+            "proj-env-whoami_default": "proj-env-whoami",
+            "proj-environment-other_default": "proj-environment-other",
+            "unrelated_default": "unrelated",
+        },
+    )
+
+    assert _run_clean(monkeypatch, repo_root, fake) == 0
+
+    assert sorted(fake.networks) == ["proj-environment-other_default", "unrelated_default"]
+
+
+def test_kept_network_that_vanished_is_not_announced(monkeypatch, tmp_path, capsys):
+    """CIU-171: the `kept:` line is printed only while the kept network still exists."""
+    repo_root = _main_repo(tmp_path)
+    fake = FakeDocker(networks={"proj-abc123-network": [{"id": "cid-dev", "name": "dstdns-devcontainer-vb"}]})
+    monkeypatch.setattr(deploy, "_network_exists", lambda _net: False)
+
+    assert _run_clean(monkeypatch, repo_root, fake) == 0
+
+    assert "kept:" not in capsys.readouterr().out
+
+
+def test_tagged_sweep_never_removes_a_kept_workspace_network(monkeypatch, tmp_path):
+    """CIU-171: a kept workspace network whose name also carries the tagged prefix is
+    skipped by the tagged sweep (it is already decided), not removed."""
+    _write_facts(tmp_path, network="proj-env-keepme-network")
+    (tmp_path / "apps" / "vault").mkdir(parents=True)
+    _stack(tmp_path, "apps/keepme")
+    fake = FakeDocker(
+        networks={"proj-env-keepme-network": [{"id": "cid-dev", "name": "dstdns-devcontainer-vb"}]},
+        network_labels={"proj-env-keepme-network": "proj-env-keepme"},
+    )
+
+    assert _run_clean(monkeypatch, tmp_path, fake) == 0
+
+    assert sorted(fake.networks) == ["proj-env-keepme-network"]
+
+
+def test_tagged_sweep_matches_the_label_value_exactly_prod_vs_prod_x(monkeypatch, tmp_path):
+    """F1: env `env` must not touch env `env-x`'s network although `proj-env-` prefixes it."""
+    repo_root = _main_repo(tmp_path)
+    _stack(repo_root, "apps/whoami")
+    fake = FakeDocker(
+        networks={
+            "proj-env-whoami_default": [],
+            "proj-env-x-whoami_default": [{"id": "c1", "name": "proj-env-x-whoami-1"}],
+            "proj-env-x-idle_default": [],
+        },
+        network_labels={
+            "proj-env-whoami_default": "proj-env-whoami",
+            "proj-env-x-whoami_default": "proj-env-x-whoami",
+            "proj-env-x-idle_default": "proj-env-x-idle",
+        },
+    )
+
+    assert _run_clean(monkeypatch, repo_root, fake) == 0
+
+    assert sorted(fake.networks) == ["proj-env-x-idle_default", "proj-env-x-whoami_default"]
+    assert not [c for c in fake.calls if c[:2] == ["network", "disconnect"]]
+
+
+def test_tagged_sweep_keeps_a_shared_network_with_a_foreign_endpoint(monkeypatch, tmp_path, capsys):
+    """F1: an exactly-matching network that still has a foreign container is kept, never disconnected."""
+    repo_root = _main_repo(tmp_path)
+    _stack(repo_root, "apps/whoami")
+    fake = FakeDocker(
+        networks={"proj-env-whoami_default": [{"id": "c9", "name": "someone-elses-container"}]},
+        network_labels={"proj-env-whoami_default": "proj-env-whoami"},
+    )
+
+    assert _run_clean(monkeypatch, repo_root, fake) == 0
+
+    assert "proj-env-whoami_default" in fake.networks
+    assert fake.networks["proj-env-whoami_default"] == [{"id": "c9", "name": "someone-elses-container"}]
+    assert not [c for c in fake.calls if c[:2] in (["network", "disconnect"], ["network", "rm"])
+                and "proj-env-whoami_default" in c]
+    out = capsys.readouterr().out
+    assert "kept: proj-env-whoami_default" in out and "someone-elses-container" in out
+
+
+def test_tagged_sweep_keeps_a_network_whose_endpoints_cannot_be_read(monkeypatch, tmp_path):
+    repo_root = _main_repo(tmp_path)
+    _stack(repo_root, "apps/whoami")
+    fake = FakeDocker(
+        networks={"proj-env-whoami_default": []},
+        network_labels={"proj-env-whoami_default": "proj-env-whoami"},
+    )
+    real = deploy._network_endpoints
+
+    def flaky(net):
+        if net == "proj-env-whoami_default":
+            raise ValueError("unparsable")
+        return real(net)
+
+    monkeypatch.setattr(deploy, "_network_endpoints", flaky)
+    assert _run_clean(monkeypatch, repo_root, fake) == 0
+    assert "proj-env-whoami_default" in fake.networks
+
+
+def test_tagged_sweep_does_not_double_target_the_identity_network(monkeypatch, tmp_path):
+    """The workspace network removed with no devcontainer attached can also match a stack project."""
+    _write_facts(tmp_path, network="proj-env-dup_default")
+    (tmp_path / "apps" / "vault").mkdir(parents=True)
+    _stack(tmp_path, "apps/dup")
+    fake = FakeDocker(
+        networks={"proj-env-dup_default": []},
+        network_labels={"proj-env-dup_default": "proj-env-dup"},
+    )
+    assert _run_clean(monkeypatch, tmp_path, fake) == 0
+    assert fake.networks == {}
+
+
+def test_known_stack_projects_scans_stack_dirs_only(tmp_path):
+    _stack(tmp_path, "apps/a")
+    _stack(tmp_path, "deep/er/b")
+    _stack(tmp_path, ".hidden/c")
+    _stack(tmp_path, "vol-x-data/d")
+    _stack(tmp_path, "node_modules/e")
+    (tmp_path / "ciu.toml.j2").write_text("", encoding="utf-8")  # the root itself is no stack
+    assert deploy._known_stack_projects(tmp_path, _config()) == ["proj-env-a", "proj-env-b"]
+    assert deploy._known_stack_projects(tmp_path, {"deploy": {}}) == []
+
+
+def test_tagged_project_network_listing_daemon_failure_is_an_error(monkeypatch, tmp_path):
+    _stack(tmp_path, "apps/a")
+    monkeypatch.setattr(deploy.procutil, "docker", lambda *a, **k: _proc(1, "", "daemon down"))
+    with pytest.raises(ValueError, match="docker network ls failed for compose project 'proj-env-a'"):
+        deploy._tagged_project_networks(tmp_path, _config(), [])

@@ -22,6 +22,7 @@ from . import inuse_partition_editor
 from .actions import ActionError, ActionTimeout, ActionUnreapable, HostActions
 from .config import Config, ConfigError, load_config, persisted_config_data, resolve_notify_backend
 from .disk_layout import GIB, automatic_swap_size_gb
+from . import layout_policy
 from .host_facts import _code, collect_host_facts, format_facts_html
 from .notify import NotifyConfigError, format_mattermost_message, post_webhook, redact_text
 from .state import StateError, StateStore
@@ -350,7 +351,7 @@ class Installer:
         if plan["root_max_size_gb"] is not None:
             plan_lines.append(
                 f"Root size cap: {_code(str(plan['root_max_size_gb']))} GiB; "
-                "space after root and swap remains unallocated"
+                "space between root and the end-of-disk swap remains unallocated"
             )
         if plan["swap_policy"] == "on":
             plan_lines.append(
@@ -761,6 +762,7 @@ class Installer:
             ),
             "root_resize_policy": self.config.root_resize_policy,
             "root_max_size_gb": self.config.root_max_size_gb,
+            "disk_layout": self.config.disk_layout,
             "swap_policy": self.config.swap_policy,
             "swap_total_gb": swap_total,
             "swap_retained_before_root_gb": retained_total_gb,
@@ -1991,11 +1993,12 @@ MaxFileSec=1month
 
         policy = self.config.root_resize_policy
         root_size_cap = None
-        if self.config.root_max_size_gb is not None:
+        cap_gb = self._root_cap_gb(disk_sectors * 512)
+        if cap_gb is not None:
             # The configured cap is a partition length measured from the
             # existing root start. Do not round its absolute end down: that
             # would silently reduce the cap for a non-MiB-aligned start.
-            cap_sectors = self.config.root_max_size_gb * GIB // 512
+            cap_sectors = cap_gb * GIB // 512
             root_size_cap = cap_sectors
             if root_size_cap <= 0:
                 raise InstallerError(
@@ -2093,7 +2096,11 @@ MaxFileSec=1month
 
         if self.config.swap_policy == "on":
             root_end = root_start + target_root_size
-            first_swap_start = ((root_end + alignment - 1) // alignment) * alignment
+            # Swap always sits at the END of the disk (layout_policy): any
+            # space between root and swap stays unallocated for the cow area
+            # and reserve, so root and cow remain growable.
+            adjacent_start = ((root_end + alignment - 1) // alignment) * alignment
+            first_swap_start = max(adjacent_start, max_root_end)
             required_end = first_swap_start + actual_swap_sectors
             if required_end > boundary:
                 available_sectors = max(0, boundary - first_swap_start)
@@ -2122,19 +2129,38 @@ MaxFileSec=1month
             ]
 
         if root_size_cap is not None:
-            aligned_root_end = (
-                (root_start + target_root_size + alignment - 1) // alignment
-            ) * alignment
-            if (
-                self.config.swap_policy != "on"
-                or not partitions
-                or partitions[0][0] != aligned_root_end
-            ):
+            if self.config.swap_policy != "on" or not partitions:
                 raise InstallerError(
-                    "root_max_size_gb needs managed swap partitions directly after root "
-                    "(swap_policy=on with tail swap); otherwise boot-time and stage-two "
-                    "growth would consume the cap"
+                    "root_max_size_gb / disk_layout=dev-host need managed tail swap "
+                    "(swap_policy=on with at least one new swap partition) so the "
+                    "space between root and swap is the unallocated cow/reserve area"
                 )
+        if self.config.swap_policy == "on" and partitions:
+            try:
+                layout_policy.validate_swap_last(
+                    list(partitions),
+                    [(root_start, target_root_size)]
+                    + [
+                        (int(entry["start"]), int(entry["size"]))
+                        for entry in preserved_before_root.values()
+                        if "start" in entry and "size" in entry
+                    ],
+                    disk_sectors - extra_tail_sectors,
+                )
+            except layout_policy.LayoutPolicyError as exc:
+                raise InstallerError(str(exc)) from exc
+        # The root minimum binds capped/dev-host roots and, for full-root, every plan in which the installer
+        # itself shrinks root to make room for managed swap (a tiny root caused by swap sizing is refused too).
+        # An untouched root, or one the installer does not shrink, is never judged here.
+        if policy != "untouched" and (
+            self.config.disk_layout == "dev-host"
+            or root_size_cap is not None
+            or (self.config.swap_policy == "on" and bool(partitions) and target_root_size < root_size)
+        ):
+            try:
+                layout_policy.validate_root_size(target_root_size, disk_sectors)
+            except layout_policy.LayoutPolicyError as exc:
+                raise InstallerError(str(exc)) from exc
 
         if target_root_size < root_size and policy != "resize":
             raise InstallerError(f"root_resize_policy={policy} cannot shrink root")
@@ -2151,6 +2177,16 @@ MaxFileSec=1month
                     safety_facts=root_safety_facts,
                 )
         return partitions, target_root_size
+
+    def _root_cap_gb(self, disk_bytes: int | None = None) -> int | None:
+        """Effective root cap: the configured one, or the dev-host rule value."""
+        if self.config.root_max_size_gb is not None:
+            return self.config.root_max_size_gb
+        if self.config.disk_layout == "dev-host":
+            if disk_bytes is None:
+                disk_bytes = self._disk_facts()[0] * 512
+            return layout_policy.recommended_root_gib(disk_bytes / GIB)
+        return None
 
     def _memory_total_bytes(self) -> int:
         if self.actions.dry_run:
@@ -3666,7 +3702,11 @@ MaxFileSec=1month
         state_path = Path(self.config.state_dir) / "state.json"
         if state_path.is_file():
             prior_status = self.state.load().get("steps", {}).get("root_resize", {}).get("status", "")
-        if current_size == target_size and prior_status in {"success", "not_needed"}:
+        if (
+            current_size == target_size
+            and prior_status in {"success", "not_needed"}
+            and (self.actions.dry_run or self._kernel_partition_sectors() == current_size)
+        ):
             return
         # The planner only grows supported ext filesystems. This read-only
         # probe also refuses unknown root filesystems before growpart edits GPT.
@@ -3677,11 +3717,35 @@ MaxFileSec=1month
             growpart = "/usr/bin/growpart" if self.actions.dry_run else shutil.which("growpart")
             if not growpart:
                 raise InstallerError("cloud-guest-utils installed but growpart is still not on PATH")
-            self._run(
-                [growpart, "--fudge", "0", f"/dev/{self.root_disk}", str(self.root_number)],
-                "grow root partition up to the planned swap/partition boundary",
-                dangerous=True,
-            )
+            disk_sectors_now, _rs, _cs = self._disk_facts()
+            live_now = self._live_partition_entries(disk_sectors_now, root_start, current_size)
+            next_starts = [
+                int(entry["start"]) for number, entry in live_now.items()
+                if number != self.root_number and "start" in entry
+                and int(entry["start"]) >= root_start + current_size
+            ]
+            boundary_now = min(next_starts) if next_starts else disk_sectors_now
+            if boundary_now - root_start > target_size + 2048 and not self.actions.dry_run:
+                # Unallocated space (cow area + reserve) separates root from
+                # swap: growpart would swallow it. Resize to exactly the plan.
+                self._run(
+                    ["/usr/sbin/sfdisk", "--no-reread", "--no-tell-kernel", "-N", str(self.root_number),
+                     f"/dev/{self.root_disk}"],
+                    "grow root partition to the planned size (unallocated space follows)",
+                    dangerous=True,
+                    input=f",{target_size}\n",
+                )
+                self._run(
+                    ["/usr/bin/partx", "-u", "--nr", str(self.root_number), f"/dev/{self.root_disk}"],
+                    "tell the kernel the root partition grew",
+                    dangerous=True,
+                )
+            else:
+                self._run(
+                    [growpart, "--fudge", "0", f"/dev/{self.root_disk}", str(self.root_number)],
+                    "grow root partition up to the planned swap/partition boundary",
+                    dangerous=True,
+                )
         if self.actions.dry_run:
             self._run(
                 ["/usr/sbin/resize2fs", self.root_partition_path],
@@ -3711,7 +3775,7 @@ MaxFileSec=1month
                 if start >= original_root_end:
                     following_starts.append(start)
             permitted_end = min(following_starts) if following_starts else disk_sectors
-            maximum_size = permitted_end - root_start
+            maximum_size = min(permitted_end - root_start, target_size + 2048)
             if grown_size < target_size or grown_size > maximum_size:
                 raise InstallerError(
                     f"growpart produced root size {grown_size} sectors; the plan requires at least "
@@ -3720,12 +3784,63 @@ MaxFileSec=1month
                 )
         else:
             grown_size = current_size
+        # Crash safety: the table (sfdisk --dump) can be ahead of the kernel when an earlier run died between
+        # `sfdisk -N` and `partx -u` (or growpart was interrupted). Compare the KERNEL size to the table and
+        # re-inform the kernel before resize2fs, otherwise resize2fs sees the old size, reports "nothing to do"
+        # and success would be recorded with a small filesystem.
+        kernel_sectors = self._kernel_partition_sectors()
+        if kernel_sectors != grown_size:
+            self._run(
+                ["/usr/bin/partx", "-u", "--nr", str(self.root_number), f"/dev/{self.root_disk}"],
+                f"tell the kernel the root partition is {grown_size} sectors (kernel has {kernel_sectors})",
+                dangerous=True,
+            )
+            kernel_sectors = self._kernel_partition_sectors()
+            if kernel_sectors != grown_size:
+                raise InstallerError(
+                    f"kernel reports root partition {kernel_sectors} sectors but the table says {grown_size} "
+                    "after partx -u; refusing to resize the filesystem or record success (reboot, then re-run)"
+                )
         self._run(
             ["/usr/sbin/resize2fs", self.root_partition_path],
             "grow root filesystem to fill its partition",
             dangerous=True,
         )
+        fs_bytes = self._root_filesystem_bytes()
+        partition_bytes = kernel_sectors * 512
+        # resize2fs fills the partition up to a partial block/group; a filesystem more than 1 MiB + 0.1 percent
+        # short of the partition means the resize did not happen.
+        if fs_bytes > partition_bytes or partition_bytes - fs_bytes > 1048576 + partition_bytes // 1000:
+            raise InstallerError(
+                f"root filesystem is {fs_bytes} bytes but the partition is {partition_bytes} bytes after resize2fs; "
+                "refusing to record root_resize success"
+            )
         self._mark_step("root_resize", "success", f"root partition/filesystem grown to {grown_size} sectors")
+
+    def _kernel_partition_sectors(self) -> int:
+        """Root partition size as the KERNEL sees it (512-byte sectors), not as the table says."""
+        out = self._run(
+            ["/usr/sbin/blockdev", "--getsize64", self.root_partition_path],
+            "read the kernel's root partition size",
+        )
+        try:
+            return int(out.split()[0]) // 512
+        except (IndexError, ValueError) as exc:
+            raise InstallerError(f"cannot parse blockdev --getsize64 output for {self.root_partition_path}: {out!r}") from exc
+
+    def _root_filesystem_bytes(self) -> int:
+        """Current ext filesystem size (block count x block size) of the root partition."""
+        out = self._run(["/usr/sbin/dumpe2fs", "-h", self.root_partition_path], "read root filesystem size")
+        block_size = block_count = 0
+        for line in out.splitlines():
+            key, _sep, value = line.partition(":")
+            if key.strip() == "Block size":
+                block_size = int(value.strip())
+            elif key.strip() == "Block count":
+                block_count = int(value.strip())
+        if block_size <= 0 or block_count <= 0:
+            raise InstallerError("could not read the root filesystem size from dumpe2fs -h")
+        return block_size * block_count
 
     def _ensure_disk_transaction_manifest(self) -> None:
         """Persist a checksummed pre-change table even when the policy is a no-op."""
@@ -4510,7 +4625,7 @@ MaxFileSec=1month
 
     def _configure_root_cap_boot_guards(self) -> None:
         """Keep cloud-init and initramfs from growing a capped root later."""
-        if self.config.root_max_size_gb is None:
+        if self._root_cap_gb() is None:
             return
         self.actions.write_file(
             "/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg",

@@ -440,7 +440,11 @@
       }
     },
     "assay.config.MutationConfig": {
-      "fields": {},
+      "fields": {
+        "candidate_fail_fast": {
+          "default": false
+        }
+      },
       "params": {
         "eq": true,
         "frozen": true,
@@ -654,6 +658,21 @@
       }
     },
     "assay.isolation.SnapshotSpec": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.isolation._BaseClosure": {
       "fields": {},
       "params": {
         "eq": true,

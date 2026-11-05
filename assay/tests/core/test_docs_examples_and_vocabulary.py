@@ -152,9 +152,18 @@ def _assert_current_verdict_schema_is_documented(changes: str, version: int) -> 
     unreleased = next((body for name, body in sections if name == "Unreleased"), "")
     latest_release = next((body for name, body in sections if name != "Unreleased"), "")
     note = f"verdict schema v{version}"
-    assert note in unreleased or note in latest_release, (
-        f"{note} is missing from [Unreleased] and the latest versioned section"
+    current_sections = unreleased + latest_release
+    if note in current_sections:
+        return
+    # A release that does not change the verdict schema carries no schema note of its own: the
+    # note then lives in the (older) section that introduced the schema. What must never pass is
+    # a current section that talks about a DIFFERENT schema version (a stale entry masking a
+    # real schema change), or no section at all that records the current schema.
+    mentioned = {int(n) for n in re.findall(r"verdict schema v(\d+)", current_sections)}
+    assert mentioned <= {version}, (
+        f"[Unreleased]/latest section mention verdict schema {sorted(mentioned)} but the current schema is v{version}"
     )
+    assert note in changes, f"{note} is not recorded in any CHANGES section"
 
 
 def test_consumers_covers_the_latest_two_verdict_schema_cuts():
@@ -184,13 +193,30 @@ def test_readme_documents_current_native_r2_parallel_worker_contract():
     assert "Existing v2 lane files still load" not in text
 
 
-def test_current_verdict_schema_check_ignores_historical_release_notes():
+def test_current_verdict_schema_check_rejects_a_stale_note_in_the_latest_section():
     changes = (
         "## [Unreleased]\n\n"
-        "## [9.0.0] - 2026-10-10\nNo current schema note.\n\n"
+        "## [9.0.0] - 2026-10-10\nverdict schema v16\n\n"
         "## [8.0.0] - 2026-10-07\nverdict schema v15\n"
     )
-    with pytest.raises(AssertionError, match="latest versioned section"):
+    with pytest.raises(AssertionError, match="mention verdict schema"):
+        _assert_current_verdict_schema_is_documented(changes, 15)
+
+
+def test_current_verdict_schema_check_accepts_a_release_that_does_not_change_the_schema():
+    # A later release without a schema change carries no schema note: the note lives in the section
+    # that introduced the schema (this failed every release after the cut before).
+    changes = (
+        "## [Unreleased]\n\n"
+        "## [9.1.0] - 2026-10-20\nNo schema change here.\n\n"
+        "## [9.0.0] - 2026-10-10\nverdict schema v15\n"
+    )
+    _assert_current_verdict_schema_is_documented(changes, 15)
+
+
+def test_current_verdict_schema_check_requires_the_current_schema_to_be_recorded_somewhere():
+    changes = "## [Unreleased]\n\n## [9.0.0] - 2026-10-10\nNo schema note at all.\n"
+    with pytest.raises(AssertionError, match="not recorded in any CHANGES section"):
         _assert_current_verdict_schema_is_documented(changes, 15)
 
 

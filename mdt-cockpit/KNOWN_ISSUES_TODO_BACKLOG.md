@@ -1342,6 +1342,20 @@ install and no result (MDT-063 is the producer), so the least-limiting expressib
 only under `HOST_ROLE=dedicated-dev`; keep IOWeight and the PSI guard. Also: the installer reads `../../scripts/debian-install-v2/tools/` outside `host-setup/`, so a
 `host-setup/`-only copy fails midway (after rendering units) with "cannot stat iocost_coef_gen.py"; either vendor those two files or check for them up front.
 Also seen: the reconcile logs `Permission denied` writing `io.bfq.weight` on docker scopes (non-fatal, scheduler is not bfq).
+## MDT-072 - dedicated-dev memory: follow-ups after MDT-TESTHOST-MEM (2026-11-05)
+
+**Status:** PARTLY DONE. Done: `DEV_HOST_MEMORY_KEEP`, derived dev.slice limits, no tier ceilings, host protection, PSI watch of the host services, check.sh, wizard prompts,
+tests (host-setup/README.md "Memory of the dedicated-dev role"). Open:
+1. The wizard's memory step (step 3) still asks the tiers' MemoryHigh/MemoryMax on this role although they are ignored; skip those prompts when `HOST_ROLE=dedicated-dev`.
+2. `memory.max` is RAM only, so on an overcommitted host the combined RAM+swap bound is not enforceable by one cgroup knob; a pressure-driven reclaim of the dev tier
+   (psi-guard stage 2 on dev.slice itself, `memory.reclaim`) was not built. Measure whether MemoryHigh plus the OOM order is enough under 4-5 parallel mdt-cockpit gates.
+3. psi-guard `enforce` was never validated live on the test hosts (it ships `report`); its CPU `some` 25% signal on docker.service may fire in a CPU-saturated lane burst.
+4. Measure the zswap pool (`max_pool_percent` 25) against a real overcommit run before changing it.
+5. Unmeasured: `io.max` on dev.slice throttles the swap-out of dev pages; reclaim waiting on a throttled device may stall other cgroups (priority inversion). Measure
+   host memory PSI and `kswapd` behaviour in an overcommit run with the IO caps in force.
+6. The memory.swap.max of dev.slice is `SwapTotal - 512M` (MDT_HOST_SWAP_MARGIN), not derived from `DEV_HOST_MEMORY_KEEP`; the two formulas differ (documented, not unified).
+Review fixes (2026-11-05): ssh no longer gets an OOM drop-in (F1), default keep 1G with floors (F2/F5), bounds documented without a memory.max backstop claim (F3), `0` pins mean omit (F4), stale drop-ins removed and mode 0644 (F6).
+
 ## MDT-069 - `mdt-psi-guard.py` writes `cpu.weight` and thereby silently resets `cpu.idle` on the dev slices (2026-11-05)
 
 **Status:** OPEN. Severity P3. Found by the Geekbench exploration on r1002/v1001 (`reports/geekbench-explore-REPORT.md`, finding 1, in the release-program reports dir).
@@ -1389,3 +1403,21 @@ with no score, not a parse of the challenge HTML.
 
 **Status:** OPEN. `scripts/debian-install-v2/tools/cpu_benchmark.pins.json` holds only x86_64 (Geekbench 7.1.0, sha256 read from the real download in HB-1). An architecture without a pin is `warned` by the installer and refused by `install.sh cpu-benchmark`, never run unverified.
 **Acceptance.** Download the `LinuxARMPreview` 7.1.0 archive on an aarch64-capable path, record its sha256 in the pins file, add a test, and bump the pins together with the tool's `.sha256` where needed.
+
+## MDT-073 - VM-only leak test for the load-tier ceilings (AD2-0 gate) (2026-11-05)
+
+**Status:** OPEN. AD2-0 (gates/background MemoryMax = dev.slice MemoryHigh, MemorySwapMax = dev swap minus the protected Lows) is covered by hermetic host-setup tests and verified live by `mdt-host-check.sh`; the behavioural gate of the addendum needs a real VM.
+
+**Next steps.** In `testing/vm` (next to `vm-governance-acceptance.sh`): install host-setup on `HOST_ROLE=dedicated-dev` with swap, start a leaking process in a `dev-gates.slice` leaf, hold an interactive scope with a working set above its Low.
+**Acceptance.** The leaf ends with `oom_kill` in `dev-gates.slice` `memory.events` once its swap is spent, while the interactive scope's memory PSI stays below 5 % and its allocations are not throttled. Never run on a live host.
+## MDT-074 - dedicated-dev shared tree cache host plumbing (AD2-2) (2026-11-05)
+
+**Status:** DONE on branch `mdt-cache-slice-20261105` (host half). `dev-cache.slice`, `/srv/tree-cache` and `/srv/tree-upper` tmpfs mount units, `tree_cache` block of `/etc/mdt/host-capacity.json`, `mdt-tree-cache-gc.timer`, env keys, host-check, tests (host-setup/README.md "Shared tree cache of the dedicated-dev role"). Applied live on v1001 then r1002.
+**Open (other packages / follow-ups).**
+1. AD2-3: cowtree `cache` (ensure, lease, last-used, gc) must publish exactly the directory/lease format of `mdt_tree_cache.py`; once it does, the timer may call `cowtree cache gc` instead of the built-in GC (the hosts have no cowtree wheel in `/opt/mdt`).
+2. AD2-5: run-gate checks `CGROUP_PARENT_DEV_CACHE` (LoadState) and `MDT_TREE_CACHE_ROOT`/`MDT_TREE_UPPER_ROOT`; the host does not export these env keys itself (they travel the `containerEnv` path like `CGROUP_PARENT_DEV_GATES`): the devcontainer template and the runner env still need them, the values are in `host-capacity.json`.
+3. The GC cannot see a lane that holds a key only through a bind in a mount namespace it cannot read; it relies on the lease (flock) plus every /proc/*/mountinfo, and keeps everything when one mountinfo is unreadable. Verify with a real lane in AD2-5.
+4. `shared-prod` opt-in is not offered (design: opt-in on shared-prod); add a key only when a consumer needs it.
+5. `DEV_CACHE_MEMORY_LOW` default is empty: size it from the first measured populate (M-6 / AD2-6).
+6. The upper area (`/srv/tree-upper`, 10 % of RAM) is one shared tmpfs with no per-lane limit: one lane filling it gives ENOSPC to the others. run-gate (AD2-5) must classify ENOSPC in an upper as infrastructure/inconclusive, never a product failure.
+7. On a host without swap the two tmpfs areas (up to 35 % of RAM by default, at most 50 %) are unevictable.

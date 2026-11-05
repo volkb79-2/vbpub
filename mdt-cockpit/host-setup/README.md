@@ -1131,6 +1131,119 @@ model/serial/size/wwn) equals the root disk's; `proven` and `unproven` values co
 `iobench calibrate` (`libraries/iobench/docs/CONSUMERS.md` section 2) or pin `DEV_IO_*_MAX`. Producing the result during debian-install-v2 is backlog MDT-063;
 until then run the calibration by hand on the test hosts.
 
+### Memory of the dedicated-dev role (MDT-TESTHOST-MEM)
+
+The test hosts are planned for overcommit: the 4 GiB gates tier and the 5-8 GiB background tiers held a 1-1.75 GiB cmru lane or a 4 GiB mdt-cockpit test
+behind an artificial ceiling long before the host was short of memory. On `HOST_ROLE=dedicated-dev` the whole of RAM plus disk swap belongs to the dev
+tier, minus what the host keeps (`DEV_HOST_MEMORY_KEEP`, default 1G, minimum 256M; it must cover the host's own working set, see below; not named `*_RESERVE_*` because the 2026-11 rename guard refuses those keys).
+`shared-prod` and an empty role keep sections 2.4 and 3 of the env file exactly as configured; nothing below applies to them.
+
+| control | shared-prod | dedicated-dev |
+|---|---|---|
+| `dev.slice` MemoryMax | `DEV_MEMORY_MAX` (empty = none) | pin, else `MemTotal + SwapTotal - MDT_EXCLUDED_RAM - MDT_EXCLUDED_SWAP - DEV_HOST_MEMORY_KEEP` |
+| `dev.slice` MemoryHigh | `DEV_MEMORY_HIGH` | pin, else `MemTotal - MDT_EXCLUDED_RAM - DEV_HOST_MEMORY_KEEP` |
+| `dev.slice` MemoryLow | `DEV_MEMORY_LOW` | pin, else the sum of the tiers' MemoryLow (a tier's Low protects only when its ancestors carry it) |
+| `dev-interactive` / `dev-buildkitd` MemoryHigh / MemoryMax | `DEV_<TIER>_MEMORY_{HIGH,MAX}` | ignored: no directive rendered (install.sh names the values it ignored) |
+| `dev-gates` / `dev-background` MemoryHigh | `DEV_{GATES,BACKGROUND}_MEMORY_HIGH` | pin, else `dev.slice` MemoryHigh minus P = (`DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW` + `DEV_CACHE_MEMORY_LOW`), never below 1G and never above dev.slice's (see "Load tiers yield first"); `-`/`0` omits |
+| `dev-gates` / `dev-background` MemoryMax | `DEV_{GATES,BACKGROUND}_MEMORY_MAX` | pin, else `dev.slice` MemoryHigh (a reachable RAM ceiling; AD2-0) |
+| `dev-gates` / `dev-background` MemorySwapMax | `DEV_{GATES,BACKGROUND}_MEMORY_SWAP_MAX` | pin, else `dev.slice` swap max minus P (floor 256M, never above dev.slice's) |
+| tier MemoryLow / MemoryMin | as configured | as configured: this is the protection between tiers (e.g. the IDE, BuildKit) |
+| interactive / buildkitd MemorySwapMax | `DEV_SWAP_CASCADE_PCT`% of dev.slice's | equal to dev.slice's |
+| `system.slice` | untouched | MemoryLow = `DEV_HOST_MEMORY_KEEP` |
+| host services (`DEV_HOST_PROTECTED_UNITS`: docker, containerd, cgpd, mdt-psi-guard, journald, oomd; never ssh) | untouched | OOMScoreAdjust=-900 drop-in (never weakening a unit that already has a lower value, e.g. containerd -999); a unit that leaves the list loses its drop-in on the next install |
+| mdt-psi-guard signals | `MDT_PROTECTED_UNITS` + host memory `full` | the same plus the host services above |
+
+Load tiers yield first (MDT-TESTHOST-MEM-2). A running cockpit (`dev-interactive`, MemoryLow 512M) and BuildKit (`dev-buildkitd`, 256M) only keep their Low while the
+siblings that carry the load stay below dev.slice by at least that sum, P = `DEV_INTERACTIVE_MEMORY_LOW` + `DEV_BUILDKITD_MEMORY_LOW` + `DEV_CACHE_MEMORY_LOW`
+(the last is the `dev-cache.slice`'s Low, default empty = 0). So `dev-gates.slice` and `dev-background.slice` get (AD2-0):
+- MemoryHigh = dev.slice MemoryHigh minus P, floored at 1G and capped at dev.slice's value. It is the value that acts: the kernel throttles and reclaims the load tier first.
+- MemoryMax = dev.slice MemoryHigh (never below the tier's MemoryHigh). dev.slice's own Max is a RAM+swap figure that `memory.max` (RAM only) can never reach; a RAM-sized
+  Max is a reachable backstop.
+- MemorySwapMax = dev.slice swap max minus P, floored at 256M and capped at dev.slice's. If gates could take all of dev's swap, dev-level reclaim could not move the
+  cockpit's above-Low pages out and would only throttle it; the subtraction keeps that room.
+- Consequence (intended): a lane that needs more than MemoryHigh..MemoryMax resident with no swap left is OOM-killed inside gates (`oom_kill` in the tier's `memory.events`)
+  instead of thrashing the host. An infrastructure event, never a product verdict. oomd, zswap writeback and dev.slice's values are unchanged.
+
+A `DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}` pin wins (HIGH/MAX floor 256M, HIGH <= MAX); `-`/`0` omit. If dev.slice itself has no MemoryHigh (pin `-`), the tier's
+High and Max are omitted too. CPU weights are unchanged. Example (8 GB RAM, 16 GB swap, keep 1G, Low 512M+256M, no cache): dev.slice high 7246938112, gates/background high 6441631744
+(= minus 805306368), gates/background max 7246938112, swap max = dev swap minus 805306368.
+
+Sizing the keep: `DEV_HOST_MEMORY_KEEP` must cover the host's own working set (dockerd, containerd, journald, cgpd, page cache). Measured on both test hosts:
+`system.slice` memory.current 1.0-1.1 GB, hence the 1G default; `mdt-host-check.sh` warns when the measured `system.slice` memory.current exceeds the keep.
+Pins have floors: a keep below 256M, a `DEV_MEMORY_HIGH`/`DEV_MEMORY_MAX` pin below 256M, or a non-size is refused (the install exits 2 before changing anything);
+a `0` pin (like `-`) omits the directive, the same meaning `0` has in the shared validators.
+
+What bounds the dev tier (and what does not). `memory.max` is NOT a leak backstop: the kernel's `memory.max` counts RAM (and the zswap pool charged to the cgroup)
+only, physical RAM caps that, so `MemTotal + SwapTotal - keep` can never be reached on these hosts; it is kept as the documented combined figure, not as a limit that acts.
+The limits that act, in the order a growing dev tier meets them: (1) dev.slice MemoryHigh = RAM - keep: allocation is throttled (sleeps up to 2 s per event) while
+the kernel reclaims the tier into zswap and disk swap; thrashing and slow lanes come BEFORE any kill. (2) `memory.swap.max` of dev.slice (the tiers share it): when swap is
+used up MemoryHigh can no longer reclaim, the tier stays throttled but keeps allocating. (3) systemd-oomd can act earlier (gates: memory pressure 75%, background: pressure and swap;
+interactive is never a target). (4) With free RAM at zero the global kernel OOM killer runs and takes the largest dev-tier process (host services carry -900). Open and
+unmeasured (MDT-072): `io.max` on dev.slice throttles the swap-out of dev pages, and reclaim that waits on a throttled device can stall other cgroups too (priority
+inversion); watch `memory` PSI on the host, not only the lane. Per-container ceilings stay where a launcher sets them (`docker run --memory`, cmru's `CMRU_TESTER_*`);
+the docker-scope backstop (7.1) is untouched.
+
+ssh is deliberately not protected: sshd restores the OOM score it started with into every login session, so `OOMScoreAdjust=-900` on `ssh.service` would make every login
+shell, IDE server and manual process -900 after the next sshd restart (the sshd listener already runs at -1000). `DEV_HOST_PROTECTED_UNITS` refuses ssh/sshd names, and
+install.sh removes a stale `ssh.service.d/50-mdt-dedicated-dev.conf` an earlier version rendered. Drop-ins are mode 0644.
+
+OOM behaviour: when RAM and swap are genuinely exhausted the dev tier is killed first. In order: (1) reclaim takes dev pages before the host's
+(system.slice MemoryLow, dev.slice MemoryHigh); (2) systemd-oomd kills inside dev-gates / dev-background on sustained pressure (`*_OOM_PRESSURE_LIMIT`, 75%),
+dev-interactive is never an oomd target; (3) the kernel OOM killer prefers any dev-tier process because the host services carry -900 (thrash from step 1 comes before any kill). A killed lane is an
+infrastructure event (its history record survives), never a product verdict. The install lowers a running service's score in place; nothing is restarted.
+
+zswap (read on v1001/r1002, 2026-11-05: zstd, `max_pool_percent` 25, `accept_threshold_percent` 90, shrinker on, writeback `yes` on every tier) already suits
+overcommit: the pool is a cache that drains its coldest pages to disk swap, and the IO caps of the role bound that disk traffic. Unchanged.
+
+mdt-psi-guard reviewed: its thresholds are stall fractions (unit memory `some` 10%, host memory `full` 5%, unit CPU `some` 25%, each held 10 s), and its
+stage 2 lowers a tier's `memory.high` to 90% of that tier's live `memory.current`, so it throttles by pressure, never by a constant limit; the only constant is
+its 256M floor. With no tier `memory.high` the saved original is `max` and is restored on release. The dedicated-dev role adds the host services to the units it
+watches. It stays `report` until `MDT_PSI_GUARD=enforce` is chosen.
+
+Apply and verify: `install.sh` (or `install.sh --wizard`), then `systemctl show dev.slice -p MemoryHigh -p MemoryMax -p MemoryLow`, the cgroup files
+`/sys/fs/cgroup/dev.slice/memory.{high,max,low}`, `/sys/fs/cgroup/system.slice/memory.low` and `mdt-host-check.sh`. Existing tier values in the env file may stay
+(they are ignored and named at every install) or be cleared. Back to the old behaviour: set `HOST_ROLE=shared-prod` (the installer removes its drop-ins) and restore the
+tier values.
+
+### Shared tree cache of the dedicated-dev role (AD2-2, MDT-074)
+
+Many lanes read the same checkout and assay template. Copying it per lane costs RAM once per lane; the design
+(`PARALLELISATION-DESIGN-MEMO-ADDENDUM-2`, sections 2-3) keeps one read-only tree in a host tmpfs and gives each worker an overlay on top of it. This
+section is the **host half**: where and under which policy. run-gate decides when and where a lane or helper is placed, assay owns the content and key, cowtree
+owns the publish/lease mechanism. `HOST_ROLE=dedicated-dev` only; any other role renders and mounts none of it, and a host that leaves the role gets the owned
+units removed by the next `install.sh` (a tmpfs that is still mounted stays until reboot or an operator `umount`).
+
+| Piece | What | Keys |
+|---|---|---|
+| `dev-cache.slice` | persistent, under dev.slice, started by `install.sh`; `MemoryLow` only (no High/Max/SwapMax: it is bounded by the tmpfs size) | `DEV_CACHE_MEMORY_LOW` (empty or `-` = none), `DEV_CACHE_ZSWAP_WRITEBACK` |
+| tree cache tmpfs | `MDT_TREE_CACHE_ROOT`, unit `srv-tree\x2dcache.mount`: `size`, `nr_inodes`, `mode=2770`, `gid` of the runner group, `nosuid,nodev,huge=never`, not `noexec`, never `noswap` | `MDT_TREE_CACHE_ROOT` (`/srv/tree-cache`), `MDT_TREE_CACHE_SIZE` (empty = 25 % of RAM, `-` = whole feature off), `MDT_TREE_CACHE_INODES`, `MDT_TREE_CACHE_GROUP` (`runner`) |
+| upper tmpfs | `MDT_TREE_UPPER_ROOT`, per-worker overlay `upperdir`/`workdir` (`<token>/w<k>/{u,w}`), same flags; pages charged to the writing lane | `MDT_TREE_UPPER_ROOT` (`/srv/tree-upper`), `MDT_TREE_UPPER_SIZE` (empty = 10 %, `-` = none), `MDT_TREE_UPPER_INODES` |
+| GC | `mdt-tree-cache-gc.timer` runs `mdt_tree_cache.py gc` | `MDT_TREE_CACHE_GC_IDLE` (6h), `MDT_TREE_UPPER_GC_IDLE` (1d), `MDT_TREE_CACHE_GC_INTERVAL` (15min) |
+| capacity document | `tree_cache` block merged into `/etc/mdt/host-capacity.json` (root, slice, `size_bytes`, `upper_root`, `upper_size_bytes`, `overlay_opts`, `group`, `mode`, `gc_idle_seconds`); other keys untouched, file created if absent | derived |
+
+Why the slice is persistent: when a cgroup that wrote or swapped pages dies, the charge moves to its parent (measured, `ad2-measurements-REPORT` M-4/M-5).
+A populate helper started with `--cgroup-parent dev-cache.slice` therefore leaves the tree's tmpfs pages and swap entries charged to this slice, not to a
+lane. The slice must exist before run-gate uses it (`systemctl show dev-cache.slice -p LoadState`); `mdt-host-check.sh` FAILs when it does not.
+`DEV_CACHE_MEMORY_LOW` is part of the protected-Low sum: dev.slice's MemoryLow includes it, and the load tiers' MemoryHigh and MemorySwapMax (gates, background) subtract it
+(`mdt_capacity.py`, `_PROTECTED_LOW_KEYS`; their MemoryMax is dev High and does not), so protecting the cache never lets dev exceed its High. Sizes are bounded: cache + upper at most half of RAM.
+The overlay volumes are created by dockerd as `local` volumes (`redirect_dir=on,xino=auto`), which works with no new privilege; the options are published
+in the capacity block so consumers do not hard-code them.
+
+**This is optional and vbpub-specific.** The neutral contract any host can meet without mdt-cockpit (tmpfs path, mode/owner, lease layout, GC rules,
+charging slice, a ten-line systemd example) is `libraries/cowtree/HOST-CONTRACT.md`; the keys and units here are one implementation of it, and consumers
+fall back to private copies when it is absent. cowtree and assay never name host-setup keys.
+
+**Directory and lease format** (the contract between cowtree's `cache` module, which publishes, and the host GC, which removes; the module docstring of
+`mdt_tree_cache.py` is the normative text): `<root>/<key>/{COMPLETE,tree/,.lease,.last-used}`; a build happens in `<key>.tmp-<id>` under an exclusive flock on
+`<root>/.locks/<key>` and is `rename`d to `<key>` after `COMPLETE` is written; every lane holds `LOCK_SH` on `<key>/.lease` for its lifetime and touches
+`.last-used`. GC removes a key only if idle longer than the idle time, `LOCK_EX|LOCK_NB` on `.lease` succeeds, and no process's mountinfo holds it (a bind of
+`<key>/...` of the cache tmpfs, or an overlay `lowerdir=`/`upperdir=`/`workdir=` naming it); stale `<key>.tmp-*` builds when `.locks/<key>` is free; orphan
+upper `<token>` directories when idle and no overlay names them. Any doubt keeps the entry; GC refuses a root that is not a tmpfs mount point.
+
+Apply and verify: `install.sh`, then `systemctl show dev-cache.slice -p LoadState -p MemoryLow`, `findmnt /srv/tree-cache /srv/tree-upper`,
+`systemctl list-timers mdt-tree-cache-gc.timer`, `cat /etc/mdt/host-capacity.json` and `mdt-host-check.sh`. Remove again: `HOST_ROLE=shared-prod` or
+`MDT_TREE_CACHE_SIZE=-`, then `install.sh`. A host rebuilt from the repo plus `/etc/mdt/host-setup.env` gets all of it back; nothing here is host state.
+
 ### Observation: read volume under a low IOPS cap
 
 One R2 campaign container read 15-30 GB within an hour on a 8 GB host while the dev.slice cap was 300 IOPS. No cause is claimed; possible factors

@@ -44,7 +44,9 @@ source_roots = ["."]
 base = "origin/main"
 
 [lanes.r2.judge.mutation]
-jobs = 1
+# Ceiling (assay >= 11). Unmeasured lane: 2 until a first campaign records
+# per-candidate wall time and RSS.
+jobs_max = 2
 max_mutants = 400
 operators = [
   "python:compare-swap",

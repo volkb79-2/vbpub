@@ -8,8 +8,11 @@ assay_lane = "worktree"
 environment = "tester-unified"
 resource_observer = "cgprofile"
 budget = "8h"
+jobs = "auto"                       # assay.toml jobs_max = 3 is the ceiling
 
 [lanes.worktree.resources]
 pids = 8192
+cpus = "3"
+candidate_ram = "300m"
 memory = "2g"
 memory_swap = "16g"

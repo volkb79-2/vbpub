@@ -128,7 +128,9 @@ released. The external owner remains responsible for their lifecycle.
 Argparse reserves status `2` for syntax and usage errors. Cowtree maps each
 `CowError.code` to a separate nonzero status so a configured but invalid root
 cannot be mistaken for malformed command syntax: `cow` → `1`, `root-invalid`
-→ `3`, `space` → `4`, `path` → `5`, `backend` → `6`, and `lease` → `7`.
+→ `3`, `space` → `4`, `path` → `5`, `backend` → `6`, `lease` → `7`,
+`busy` → `8`, `key-missing` → `9`, `tree-invalid` → `10`, `unrepairable` → `11` and
+`level-unavailable` → `12`.
 The generic `cow` status `1` is also the fallback for an unknown subclass code.
 
 Default `gc` scans only the configured area's run directory. Plain-mode runs
@@ -154,3 +156,31 @@ reservation is unchanged. A retry recomputes from memory and rewrites the
 manifest, so the window is self-healing, but a crash in between leaves the
 ledger ahead of reality until the next successful write. Fix: do the in-memory
 update before the final directory fsync, or re-read the manifest on error.
+
+## Shared keyed trees (AD2-3)
+
+Lock order is fixed: the global GC lock, then one key lock; leases are taken
+under a shared key lock and GC removes under an exclusive one. The cross-tool
+guard is the host contract's: a lease is `LOCK_SH` on `<key>/.lease`, GC takes
+`LOCK_EX|LOCK_NB` on it and holds it until the key is gone, and a lessee
+re-validates after its `flock` (same inode at `<key>/.lease`, `COMPLETE`
+still resolving), so a foreign GC that never sees `.locks/<key>` is still
+safe. `.last-used` and `.lease` live in the key directory (as the contract
+says); only `tree/` is sealed, never the key directory, so they stay usable.
+All created directories and files get explicit modes (`0770`/`0660`, setgid
+kept) because the umask would otherwise strip the group bits of the shared
+design. Lock files under `.locks` are zero-byte and retained (unlinking a lock
+file races with waiters); a tmpfs root clears them on reboot. Read-only
+commands (`survey`, `verify`) create nothing. The mountinfo holder check reads
+every process's table (a bind in another mount namespace is invisible to our
+own), but the lease stays the primary guard: it is the only thing that protects
+a mount taken after the scan. GC conservatism: anything it cannot judge (a
+lease that is not a regular file, a key still named in mountinfo, an
+unreadable process entry, a busy key lock, a root that is no longer a tmpfs)
+is kept, so a false negative costs disk and a false positive is impossible
+without a live holder disappearing. Interop is tested against the shipped
+host GC (`tests/test_cache.py`, which loads `mdt_tree_cache.py` when present)
+and against a reference GC written from the contract text.
+Overlay hazards (`redirect_dir=on` needs a root mount; the upper's mode and
+owner become the merged root's; an upper is bound to one lower) are encoded in
+`cowtree.overlay` rather than left to callers.

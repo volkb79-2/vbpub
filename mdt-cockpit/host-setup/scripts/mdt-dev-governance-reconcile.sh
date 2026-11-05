@@ -314,12 +314,14 @@ fi
 # directive) and for slices activated before their unit carried the directive.
 # Slice names with a dash are nested below dev.slice in cgroupfs, even though
 # systemd accepts the unit name directly for set-property.
+: "${DEV_CACHE_ZSWAP_WRITEBACK:=yes}"   # dev-cache.slice (AD2-2) renders `yes` when the key is absent; agree with it
 for _zswap_entry in \
   "dev.slice:DEV_ZSWAP_WRITEBACK" \
   "dev-interactive.slice:DEV_INTERACTIVE_ZSWAP_WRITEBACK" \
   "dev-background.slice:DEV_BACKGROUND_ZSWAP_WRITEBACK" \
   "dev-gates.slice:DEV_GATES_ZSWAP_WRITEBACK" \
-  "dev-buildkitd.slice:DEV_BUILDKITD_ZSWAP_WRITEBACK"; do
+  "dev-buildkitd.slice:DEV_BUILDKITD_ZSWAP_WRITEBACK" \
+  "dev-cache.slice:DEV_CACHE_ZSWAP_WRITEBACK"; do
   IFS=: read -r _zswap_slice _zswap_var <<< "$_zswap_entry"
   _zswap_value="${!_zswap_var:-no}"
   case "$_zswap_value" in

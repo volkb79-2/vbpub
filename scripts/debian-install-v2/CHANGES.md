@@ -4,6 +4,48 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Breaking changes (NC-12 disk layout policy)
+- **Old capped configs are refused.** A `root_max_size_gb` below `min_root_gib`
+  (20% of the disk, clamp 8..100 GiB: 100 GiB on 512 GiB, 40 GiB on 200 GiB)
+  is now a plan-time error. The 2026-11-04 bundles (`root_max_size_gb: 40` on a
+  512 GiB disk) no longer install. Migration: delete `root_max_size_gb` and set
+  `"disk_layout": "dev-host"` (root 160 GiB on 512 GiB), or raise the cap to at
+  least the minimum. An installer ref from before this change keeps the old
+  behaviour (pin the bundle's branch/commit to it if you must re-create the old layout).
+- **Swap moves to the end of the disk also for `root_resize_policy=untouched` /
+  `grow-only`** (with `swap_policy=on`): a gap appears between root and swap
+  where swap used to be adjacent to root. Nothing is formatted in the gap.
+- **Full-root minimum:** with `swap_policy=on` and `root_resize_policy=resize`
+  a root that the installer shrinks below `min_root_gib` for swap is refused
+  (a 20 GiB disk with 16 GiB swap used to produce a 4 GiB root). An untouched
+  or not-shrunk root is never judged.
+- `_grow_root_to_plan` is crash-safe: it compares the kernel's partition size
+  with the table, re-runs `partx -u` when they differ, and records
+  `root_resize: success` only when the ext4 filesystem fills the partition.
+
+### Fixed
+- Disk layout policy (NC-12): swap is always placed at the END of the disk,
+  also when `root_max_size_gb` caps root (the cap no longer forces swap directly
+  after root, which put swap in the middle on r1002/v1001 and boxed in root and
+  the cow partition). The planner refuses plans where a non-swap partition
+  follows swap, where more than 2 MiB follows the last swap, or where a capped
+  root is below `min_root_gib` (20% of the disk, 8..100 GiB). Stage-two growth
+  resizes root to exactly the plan when unallocated space follows it.
+
+### Added
+- `disk_layout` config key (`full-root` default, `dev-host`): `dev-host` sizes root
+  by rule (5/16 of the disk, 160 GiB on 512 GiB), leaves the cow area (1/3 of the
+  disk) and reserve unallocated between root and swap; wizard field and
+  `show_plan` entry. New module `layout_policy.py`, tests
+  `tests/test_layout_policy.py`, README "Disk layout policy".
+- `scripts/netcup/runner/provision-runner.sh` carves the cow partition from the
+  largest free row (`COW_SIZE_GIB`, default 1/3 of the disk), at the end of the gap;
+  the row must hold the whole cow (>= `COW_MIN_GIB`, default 20), the partition is
+  labelled `MDT_COW` (PARTLABEL), re-runs find it by label (never a second cow,
+  independent of the partition number), a stale signature in the carved range is
+  refused unless `COW_WIPE_STALE=1`. Decisions live in `runner/cow-carve.sh`
+  (tests: `scripts/netcup/tests/test_cow_carve.py`).
+
 ### Changed
 - A configured `root_max_size_gb` now installs cloud-init and initramfs root
   growth guards after stage one validates the capped tail-swap plan and before

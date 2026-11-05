@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 from mdt_cli import MdtArgumentParser
 import mdt_capacity
+import mdt_tree_cache
 from decimal import Decimal
 import importlib.util
 import json
@@ -796,6 +797,10 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
             child = parse_size_to_kib(values.get(child_key, "")) if _memory_value_configured(values.get(child_key, "")) else 0
             if not child:
                 continue
+            if (not parent and field == "MemoryLow" and values.get("HOST_ROLE", "") == "dedicated-dev"
+                    and not values.get(parent_key, "").strip()):
+                # dedicated-dev derives dev.slice MemoryLow as the sum of the tiers' values (mdt_capacity.dedicated_memory)
+                continue
             if not parent and field in ("MemoryMin", "MemoryLow"):
                 warnings.append(
                     f"{slice_name} {field} ({child_key}={values[child_key]}) has no configured "
@@ -840,6 +845,20 @@ def _config_value_validators() -> dict[str, Validator]:
     """Return the non-interactive equivalents of the wizard's field checks."""
     validators: dict[str, Validator] = {
         "HOST_ROLE": validate_host_role,
+        "DEV_HOST_MEMORY_KEEP": mdt_capacity.validate_host_memory_keep,
+        "DEV_HOST_PROTECTED_UNITS": mdt_capacity.validate_host_protected_units,
+        "DEV_CACHE_MEMORY_LOW": mdt_capacity.validate_optional_size,
+        "DEV_CACHE_ZSWAP_WRITEBACK": validate_yes_no,
+        "MDT_TREE_CACHE_ROOT": mdt_tree_cache.validate_tree_path,
+        "MDT_TREE_UPPER_ROOT": mdt_tree_cache.validate_tree_path,
+        "MDT_TREE_CACHE_SIZE": mdt_tree_cache.validate_area_size,
+        "MDT_TREE_UPPER_SIZE": mdt_tree_cache.validate_area_size,
+        "MDT_TREE_CACHE_INODES": mdt_tree_cache.validate_inodes,
+        "MDT_TREE_UPPER_INODES": mdt_tree_cache.validate_inodes,
+        "MDT_TREE_CACHE_GROUP": mdt_tree_cache.validate_group,
+        "MDT_TREE_CACHE_GC_IDLE": mdt_tree_cache.validate_timespan,
+        "MDT_TREE_UPPER_GC_IDLE": mdt_tree_cache.validate_timespan,
+        "MDT_TREE_CACHE_GC_INTERVAL": mdt_tree_cache.validate_timespan,
         "IO_DEV_PATH": validate_io_dev_path,
         "DEV_STATIC_RIOPS": validate_positive_int,
         "DEV_STATIC_WIOPS": validate_positive_int,
@@ -2018,7 +2037,7 @@ def check_benchmark_results(
 # ─── interactive sections (Work step 4a-4i) ────────────────────────────────
 
 
-def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str]) -> str:
+def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str], walked: dict[str, str] | None = None) -> str:
     """First question of the wizard: who else uses this disk?  Decides whether dev.slice is sized
     conservatively (shared-prod) or from the MEASURED device capacity (dedicated-dev)."""
     section("Host facts")
@@ -2045,6 +2064,41 @@ def step_host_role(cfg_current: dict[str, str], example_defaults: dict[str, str]
         else:
             out(f"No usable iobench measurement for this host's root disk: {why}.")
             out("Remedy: run `iobench calibrate` (libraries/iobench/docs/CONSUMERS.md section 2; debian-install-v2 runs it at install time) before applying, or pin the four DEV_IO_*_MAX values at the IO caps step. Without one of the two the install refuses.")
+        out("Memory on this role (MDT-TESTHOST-MEM): dev.slice MemoryMax = RAM + swap - the host's share, MemoryHigh = RAM - the host's share; the tiers' own MemoryHigh/MemoryMax (asked later) are IGNORED, so no tier is tighter than dev.slice. The host's services get MemoryLow and an OOM-score drop-in, so the dev tier is killed first.")
+        keep = walk_key(
+            "Memory kept for the host (a size of at least 256M, default 1G; must cover system.slice memory.current)",
+            "DEV_HOST_MEMORY_KEEP",
+            cfg_current,
+            example_defaults,
+            validate=mdt_capacity.validate_host_memory_keep,
+        )
+        units = walk_key(
+            "Host services protected from the dev tier (empty = default list, `-` = none)",
+            "DEV_HOST_PROTECTED_UNITS",
+            cfg_current,
+            example_defaults,
+            validate=mdt_capacity.validate_host_protected_units,
+        )
+        out("Shared tree cache (AD2-2): dev-cache.slice plus a tree-cache tmpfs and an overlay-upper tmpfs; run-gate and assay use them to share one read-only tree between lanes. The mount roots, group, inode bounds and GC timing keep their host-setup.env.example defaults (edit the file to change them).")
+        cache_low = walk_key(
+            "Memory protected for the tree cache slice (DEV_CACHE_MEMORY_LOW: empty or `-` = none, or a size such as 512M)",
+            "DEV_CACHE_MEMORY_LOW",
+            cfg_current,
+            example_defaults,
+            validate=mdt_capacity.validate_optional_size,
+        )
+        cache_size = walk_key(
+            "Tree cache tmpfs size (MDT_TREE_CACHE_SIZE: empty = 25% of RAM, a size of at least 64M, or `-` = no tree cache at all)",
+            "MDT_TREE_CACHE_SIZE",
+            cfg_current,
+            example_defaults,
+            validate=mdt_tree_cache.validate_area_size,
+        )
+        if walked is not None:
+            walked["DEV_HOST_MEMORY_KEEP"] = keep
+            walked["DEV_HOST_PROTECTED_UNITS"] = units
+            walked["DEV_CACHE_MEMORY_LOW"] = cache_low
+            walked["MDT_TREE_CACHE_SIZE"] = cache_size
     return role
 
 
@@ -4086,7 +4140,7 @@ def main(argv: list[str] | None = None) -> int:
         # Step order = STEP_TITLES. The optional disk measurement starts early
         # (step 2) and runs concurrently with steps 3-6; every IO choice is
         # deliberately collected after the one job has finished (steps 7-9).
-        walked["HOST_ROLE"] = step_host_role(cfg_current, example_defaults)
+        walked["HOST_ROLE"] = step_host_role(cfg_current, example_defaults, walked)
         io_dev_path = step_io_device(cfg_current, example_defaults)
         walked["IO_DEV_PATH"] = io_dev_path
         walked.update(step_damon_stat_policy(cfg_current, example_defaults))

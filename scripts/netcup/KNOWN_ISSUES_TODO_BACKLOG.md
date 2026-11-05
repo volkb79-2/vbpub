@@ -16,6 +16,7 @@ docs landed together.
 | NC-02 | Runner provisioning scripts were host-specific task files with six first-run bugs; now generic under `runner/` | Minor | FIXED (this branch) |
 | NC-03 | The install wizard connects with `StrictHostKeyChecking=no`; the host-key pin is trust-on-first-use | Minor | OPEN |
 | NC-04 | A runner account must be uid 1003 (tester-unified lane uid); provisioning created uid 1000 | Major | FIXED (this branch) |
+| NC-12 | Test-host disk layout: 40 GiB root, swap in the middle, cow behind it; root filled to 91-97% and neither root nor cow could grow | Major | CODE DONE 2026-11-05 (div2-disk-layout-20261105); live reinstall of v1001/r1002 OPEN |
 
 ---
 
@@ -156,3 +157,11 @@ with `PYTHONDONTWRITEBYTECODE=1` (or from a throw-away copy), or `provision`-tim
 **Status:** OPEN (observed 2026-11-04). The cockpit's `.env` carried the old protected-server key names; every verb stopped with `invalid protected-server denylist: legacy ... setting(s) are no longer read`.
 The two keys were renamed in place (values unchanged: the single protected server stays protected). Separately, running the same absolute command from another repository checkout's `scripts/truenas` cwd
 answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to the cwd rather than to the script. **Fix.** Load `.env` from the script directory (documented), and print the rename recipe in the legacy-key error.
+
+## NC-12 — test hosts were installed with swap in the middle of the disk and a 40 GiB root
+
+**Status:** CODE DONE 2026-11-05 on `div2-disk-layout-20261105`; reinstall of v1001 then r1002 OPEN (`reports/div2-reinstall-RUNBOOK.md` in the release-program directory). Severity Major.
+
+**Observed.** r1002 and v1001 (512 GiB virtual disks) were installed as ESP 243 MiB, `/boot` 977 MiB, 40 GiB ext4 root, four 4 GiB swap partitions, then a 454.8 GiB btrfs `/srv/cow`. Root reached 91-97% (docker 27 GB, runner checkouts, build cache) and could not grow because the swap partitions sit directly behind it. Cause: debian-install-v2 `root_max_size_gb` required swap directly after root, and `provision-runner.sh` carved cow from the last free row.
+
+**Fix.** debian-install-v2 layout policy (swap last, root minimum, `disk_layout=dev-host`), cow carved from the largest free row at the end of the gap (`COW_SIZE_GIB`). See debian-install-v2 README "Disk layout policy".

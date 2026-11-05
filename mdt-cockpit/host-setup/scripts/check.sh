@@ -255,6 +255,67 @@ if [ -d "$DEV_PATH" ]; then
   printf '  %-14s %s\n' io.bfq.weight "$(cat "$DEV_PATH/io.bfq.weight" 2>/dev/null)"
   _cpu_quota_check dev.slice DEV_CPU_QUOTA
   _swap_max_check dev.slice DEV_SWAP_MAX
+  if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+    # HOST_ROLE=dedicated-dev (MDT-TESTHOST-MEM): the derived values, read through the one implementation.
+    if _ded_mem=$(python3 "$_CAPACITY_PY" dedicated-memory "$CONF" --meminfo /proc/meminfo 2>&1); then
+      for prop_label in "memory.high:DEDICATED_MEM_HIGH" "memory.max:DEDICATED_MEM_MAX"; do
+        prop="${prop_label%%:*}"; want="$(printf '%s\n' "$_ded_mem" | sed -n "s/^${prop_label#*:}=//p")"
+        eff="$(cat "$DEV_PATH/$prop" 2>/dev/null)"
+        [ -n "$want" ] || want=max
+        if [ "$eff" = "$want" ]; then ok "dev.slice $prop=$eff matches the HOST_ROLE=dedicated-dev derivation"
+        else fail "dev.slice $prop=$eff but the HOST_ROLE=dedicated-dev derivation says $want (DEV_HOST_MEMORY_KEEP / pins). Re-run install.sh."; fi
+      done
+      # MDT-TESTHOST-MEM-2: dev-gates / dev-background yield first: MemoryHigh/Max = dev.slice's minus the protected tiers' MemoryLow.
+      for _tier_label in "dev-gates.slice:GATES" "dev-background.slice:BACKGROUND"; do
+        _tier_unit="${_tier_label%%:*}"; _tier_key="${_tier_label#*:}"; _tier_dir="$(_slice_path "$_tier_unit")"
+        [ -d "$_tier_dir" ] || continue
+        for prop_label in "memory.high:HIGH" "memory.max:MAX"; do
+          prop="${prop_label%%:*}"; want="$(printf '%s\n' "$_ded_mem" | sed -n "s/^DEDICATED_${_tier_key}_${prop_label#*:}=//p")"
+          eff="$(cat "$_tier_dir/$prop" 2>/dev/null)"
+          [ -n "$want" ] || want=max
+          if [ "$eff" = "$want" ]; then ok "$_tier_unit $prop=$eff matches the HOST_ROLE=dedicated-dev derivation (dev.slice minus the protected tiers' MemoryLow)"
+          else fail "$_tier_unit $prop=$eff but the HOST_ROLE=dedicated-dev derivation says $want (dev.slice minus the protected tiers' MemoryLow, or a DEV_${_tier_key}_MEMORY_${prop_label#*:} pin). Re-run install.sh."; fi
+        done
+        # AD2-0: memory.max = dev.slice memory.high (checked above), memory.swap.max = dev.slice's minus the protected Lows' sum.
+        _d_swap="$(cat "$DEV_PATH/memory.swap.max" 2>/dev/null)"; _t_swap="$(cat "$_tier_dir/memory.swap.max" 2>/dev/null)"
+        if [ "${_d_swap:-max}" = max ]; then
+          info "$_tier_unit memory.swap.max=$_t_swap (dev.slice has no swap ceiling: nothing to derive from)"
+        elif _ded_swap=$(python3 "$_CAPACITY_PY" dedicated-memory "$CONF" --meminfo /proc/meminfo --dev-swap "$_d_swap" 2>&1); then
+          _want_swap="$(printf '%s\n' "$_ded_swap" | sed -n 's/^DEDICATED_LOAD_SWAP=//p')"
+          _cfg_swap_var="DEV_${_tier_key}_MEMORY_SWAP_MAX"
+          if [ -n "${!_cfg_swap_var:-}" ] && [ "${!_cfg_swap_var}" != auto ]; then
+            info "$_tier_unit memory.swap.max=$_t_swap ($_cfg_swap_var is a pin: not compared with the derivation)"
+          elif [ "$_t_swap" = "$_want_swap" ]; then
+            ok "$_tier_unit memory.swap.max=$_t_swap = dev.slice's $_d_swap minus the protected tiers' MemoryLow sum (AD2-0)"
+          else
+            fail "$_tier_unit memory.swap.max=$_t_swap but the HOST_ROLE=dedicated-dev derivation says $_want_swap (dev.slice's $_d_swap minus the protected tiers' MemoryLow sum). Re-run install.sh."
+          fi
+        else
+          warn "HOST_ROLE=dedicated-dev load-tier swap derivation failed: $_ded_swap"
+        fi
+        _t_high="$(cat "$_tier_dir/memory.high" 2>/dev/null)"; _d_high="$(cat "$DEV_PATH/memory.high" 2>/dev/null)"
+        if [ "$_t_high" != max ] && [ "$_d_high" != max ] && [ "$_t_high" -lt "$_d_high" ] 2>/dev/null; then
+          ok "$_tier_unit memory.high=$_t_high is below dev.slice memory.high=$_d_high (the load yields before the protected tiers)"
+        else warn "$_tier_unit memory.high=$_t_high is not below dev.slice memory.high=$_d_high: the protected tiers' MemoryLow is not shielded from this tier (pin or omitted?)"; fi
+      done
+    else
+      warn "HOST_ROLE=dedicated-dev memory derivation failed: $_ded_mem"
+    fi
+    _sl_low="$(cat "$CG/system.slice/memory.low" 2>/dev/null)"
+    if [ -n "$_sl_low" ] && [ "$_sl_low" != 0 ]; then ok "system.slice memory.low=$_sl_low (host memory protected from the dev tier)"
+    else warn "system.slice memory.low is 0: the host's own memory is not protected from the dev tier (re-run install.sh)"; fi
+    # The keep must cover the host's working set (README "Sizing the keep"): above it the host's pages are reclaimable.
+    _keep_b="$(printf '%s\n' "${_ded_mem:-}" | sed -n 's/^DEDICATED_MEM_KEEP=//p')"
+    _sys_cur="$(cat "$CG/system.slice/memory.current" 2>/dev/null)"
+    if [ -n "$_keep_b" ] && [ -n "$_sys_cur" ]; then
+      if [ "$_sys_cur" -gt "$_keep_b" ] 2>/dev/null; then
+        warn "system.slice memory.current=$_sys_cur exceeds DEV_HOST_MEMORY_KEEP=$_keep_b: the part above the keep is reclaimable by the dev tier and can thrash; raise DEV_HOST_MEMORY_KEEP and re-run install.sh"
+      else ok "system.slice memory.current=$_sys_cur is within DEV_HOST_MEMORY_KEEP=$_keep_b"; fi
+    fi
+    if [ -e /etc/systemd/system/ssh.service.d/50-mdt-dedicated-dev.conf ]; then
+      fail "ssh.service.d/50-mdt-dedicated-dev.conf exists: sshd would hand OOMScoreAdjust=-900 to every login session after its next restart; re-run install.sh (it removes the file)"
+    fi
+  fi
   # dev.slice's own MemoryZSwapWriteback is a safety anchor only (its FILE
   # value does not cascade to children — see units/dev.slice.in), but its
   # ENFORCEMENT does: a 0 here silently disables writeback for the whole
@@ -283,6 +344,11 @@ if [ -d "$GATES_PATH" ]; then
     prop="${prop_label%%:*}"; var="${prop_label#*:}"
     eff="$(cat "$GATES_PATH/$prop" 2>/dev/null)"
     cfg="${!var:-}"
+    if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+      # HOST_ROLE=dedicated-dev: gates' value is derived (dev.slice minus the protected tiers' Low) and checked in the dev.slice block above.
+      info "dev-gates.slice $prop=$eff (HOST_ROLE=dedicated-dev: derived, verified against the derivation under dev.slice)"
+      continue
+    fi
     if [ -z "$cfg" ]; then
       warn "$var not set in $CONF -- dev-gates.slice's effective $prop ($eff) is whatever the installed unit carries, unchecked"
     else
@@ -319,6 +385,12 @@ if [ -d "$BUILDKITD_PATH" ]; then
     prop="${prop_label%%:*}"; var="${prop_label#*:}"
     eff="$(cat "$BUILDKITD_PATH/$prop" 2>/dev/null)"
     cfg="${!var:-}"
+    if [ "$(_mdt_host_role)" = dedicated-dev ]; then
+      # HOST_ROLE=dedicated-dev (MDT-TESTHOST-MEM): a tier carries NO memory ceiling of its own; dev.slice is the bound.
+      if [ "$eff" = max ]; then ok "dev-buildkitd.slice $prop=max (HOST_ROLE=dedicated-dev: no per-tier ceiling)"
+      else fail "dev-buildkitd.slice $prop=$eff but HOST_ROLE=dedicated-dev means no per-tier memory ceiling. Re-run install.sh."; fi
+      continue
+    fi
     if [ -z "$cfg" ]; then
       warn "$var not set in $CONF -- dev-buildkitd.slice's effective $prop ($eff) is whatever the installed unit carries, unchecked"
     else
@@ -1082,6 +1154,29 @@ else
   else
     ok "memory.min of MDT_PROTECTED_UNITS covers MDT_EXCLUDED_RAM; weights are at least 4x dev.slice's"
   fi
+fi
+
+echo "== dev-cache.slice and the shared tree cache (AD2-2, HOST_ROLE=dedicated-dev) =="
+# One implementation (mdt_tree_cache.py check): slice exists with the configured MemoryLow, both tmpfs areas are
+# mounted with the configured size/inodes/gid/mode, the GC timer is active, host-capacity.json carries tree_cache.
+_TREE_PY="${TREE_CACHE_PY:-$(dirname "$0")/mdt_tree_cache.py}"
+[ -f "$_TREE_PY" ] || _TREE_PY="$(dirname "$0")/../mdt_tree_cache.py"
+if [ "$(_mdt_host_role)" != dedicated-dev ]; then
+  info "tree cache not applicable (HOST_ROLE is not dedicated-dev)"
+elif [ ! -f "$_TREE_PY" ]; then
+  warn "$_TREE_PY missing — cannot verify the tree cache; re-run install.sh"
+else
+  _tree_out=$(python3 "$_TREE_PY" check --config "$CONF" --role dedicated-dev 2>&1) || _tree_out="WARN the tree cache check failed to run: $_tree_out"
+  while IFS= read -r _line; do
+    case "$_line" in
+      OK\ *)   ok "${_line#OK }" ;;
+      FAIL\ *) fail "${_line#FAIL }" ;;
+      WARN\ *) warn "${_line#WARN }" ;;
+      INFO\ *) info "${_line#INFO }" ;;
+      "") ;;
+      *)       warn "tree cache check: $_line" ;;
+    esac
+  done <<<"$_tree_out"
 fi
 
 echo "== per-host CPU benchmark (HB-3) =="

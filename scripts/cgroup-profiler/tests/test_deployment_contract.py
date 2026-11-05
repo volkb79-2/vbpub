@@ -196,11 +196,15 @@ def test_host_gate_mounts_linked_worktree_and_git_common_directory(tmp_path):
     ]
 
 
-def test_observer_r2_serializes_mutants_that_share_one_tester_cgroup():
+def test_observer_r2_runs_a_bounded_number_of_overlapping_candidate_windows():
+    # Assay 11/12 attributes a limit event to every overlapping window, so the
+    # old one-candidate rule is replaced by a declared ceiling plus run-gate's
+    # `jobs = "auto"` worker selection.
     gate = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
     assay = tomllib.loads((PROJECT_ROOT / "assay.toml").read_text(encoding="utf-8"))
     assert gate["lanes"]["r2"]["resource_observer"] == "cgprofile"
-    assert assay["lanes"]["r2"]["judge"]["mutation"]["jobs"] == 1
+    assert gate["lanes"]["r2"]["jobs"] == "auto"
+    assert assay["lanes"]["r2"]["judge"]["mutation"]["jobs_max"] == 2
 
 
 def test_canary_lane_has_an_explicit_memory_admission_budget():

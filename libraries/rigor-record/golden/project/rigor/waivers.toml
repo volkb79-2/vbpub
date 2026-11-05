@@ -1,0 +1,7 @@
+schema = "urn:vbpub:rigor-waivers:1"
+
+[[lane]]
+lane = "slow-io"
+level = "R0"
+reason = "flaky under load until the fixture is rewritten"
+expires_before = "3.0.0"

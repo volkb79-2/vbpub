@@ -63,6 +63,7 @@ def _run_clean(monkeypatch, repo_root: Path, *, vanilla=False, fail=False):
         deploy, "render_selected_stacks", lambda *a, **k: {"applications/api": {}}
     )
     monkeypatch.setattr(deploy, "_remove_project_volumes", lambda *a, **k: [])
+    monkeypatch.setattr(deploy, "_tagged_project_networks", lambda *a, **k: ([], []))
     monkeypatch.setattr(deploy, "_workspace_identity_network", lambda *a, **k: None)
     monkeypatch.setattr(deploy, "_list_stack_project_networks", lambda *a, **k: [])
     monkeypatch.setattr(deploy, "_remove_identity_networks", lambda nets: ([], []))

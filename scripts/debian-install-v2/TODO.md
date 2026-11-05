@@ -1,5 +1,13 @@
 # debian-install-v2 — TODO / backlog
 
+## DONE in code, OPEN live (NC-12, 2026-11-05): swap at the end of the disk, root minimum, dev-host layout
+
+The root-cap rule "swap directly after root" produced the r1002/v1001 layout (40 GiB root, swap in the
+middle, cow behind it). Replaced by the layout policy (README "Disk layout policy",
+`debian_install_v2/layout_policy.py`). Not yet run in a QEMU guest (`r1-vm-real-commit`) nor on a real host:
+the sfdisk-based root growth (`_grow_root_to_plan`, gap case) is exercised by the reinstall of v1001
+(`reports/div2-reinstall-RUNBOOK.md`). Filed as NC-12 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
+
 ## DONE (root-cap follow-ups, 2026-11-02)
 
 `root_max_size_gb` requires `swap_policy=on` and managed tail-swap partitions
