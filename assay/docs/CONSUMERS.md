@@ -879,6 +879,44 @@ and the limits fire at the same thresholds in both. The measured cost on a
 7.6k-file repository was 173.6 MB read and 2.31 s per candidate before the
 change (`materialize-experiment-REPORT.md`, variants a and a2).
 
+**Provisioning ladder and shared template (B230).** Assay owns the algorithm;
+no other tool is required, and a third party using only assay gets the best rung
+its environment allows. `isolation.materialize = "template"` tries, per mutation
+worker: **A** an overlay slot (`ASSAY_WORKER_SLOTS=/work/w0:/work/w1:...`, one
+merged directory per worker, lower layer = the template) over the shared
+read-only template `ASSAY_TEMPLATE_DIR` (`<root>/<key>/tree`); **B** a private
+tmpfs copy under `isolation.tmpfs_root`; **C** a copy-on-write clone from a
+`cheap_clone` (btrfs) workspace; **D** a plain build per candidate.
+`"tmpfs-worker"` starts at B, `"cow"` (the default, unchanged) at C. Nothing is
+assumed: absent variables mean rung A is skipped and the advisory says why, a
+template of another commit or key is refused, a slot that does not show the
+template is skipped, and every later step down (no free slot, unrepairable slot,
+tmpfs full) is one stderr line plus an entry in the run's ladder record
+(`SnapshotRepository.ladder`; the plan also rides on the baseline
+`snapshot_materialized` progress event as `ladder`). Build the template with
+`assay template ensure --lane L --root $DIR [--require-tmpfs]` (prints
+`<key> <path>`; a second call with the same tree identity reuses it; the key
+is a sha256 over the format, commit, snapshot manifest digest, project prefix,
+`link_paths`, history mode and resolved base). The tree is never `chmod`-sealed:
+an overlay lower layer must stay writable-safe (a `chmod` forces whole-file
+copy-ups), the mount makes it read-only. If `cowtree` is installed assay uses
+its keyed-tree cache (lock, atomic publish, lease for GC); otherwise a built-in
+publisher writes the same directory layout (`<key>/tree`, `COMPLETE`, `.lease`,
+`.last-used`). Do not mix the two on one key: cowtree cannot verify a built-in
+`COMPLETE` and rebuilds it. A worker whose tree drifted after a candidate is
+repaired from the template (file bytes, modes, mtimes, links, directories)
+instead of recopied; what cannot be repaired abandons the slot (assay never
+removes the caller's volume) or drops the tmpfs copy. Slots are not re-primed:
+an overlay keeps the template's inode numbers and timestamps, so the primed
+index (B219) stays valid, and git falls back to hashing, slower but never
+wrong, if a stat ever mismatches. `--jobs N` above 1 is admitted by any cheap
+per-worker source (N slots, a tmpfs that holds N trees, a `cheap_clone`
+workspace); with only a plain copy per candidate it is admitted for a tree of at
+most 64 MiB and refused with the skipped rungs named otherwise. The caller (for
+example run-gate) owns where the template and slots live and how long;
+assay never mounts anything. Verdict inputs are identical on every rung
+(the equivalence test materializes the same candidates through all four).
+
 **Per-worker tmpfs trees (B223).** `isolation.materialize = "tmpfs-worker"`
 (default `"cow"`) removes the cold-cache read of every fresh clone: each mutation
 worker thread owns one tree under `isolation.tmpfs_root` (default `/dev/shm`),
@@ -887,8 +925,8 @@ Per candidate only the mutated file is written; afterwards that file, the index,
 `HEAD`, any planted `link_paths` and the loose objects the replacement commit
 added are restored, and the whole tree is scanned against its pristine map
 (type, mode, size, mtime, link target). What a candidate ADDED is removed; what
-it changed or deleted makes Assay discard the tree and rebuild it for the next
-candidate, so residue never reaches a later candidate and no verdict changes.
+it changed or deleted is restored from the template (B230; a tree that cannot be
+restored is discarded and rebuilt for the next candidate), so residue never reaches a later candidate and no verdict changes.
 The post-command dirt check still judges every candidate first. Measured on a
 7.6k-file repository (variants d and d2 of `materialize-experiment-REPORT.md`):
 0 bytes read and about 0.16 s materialize per candidate against 173.6 MB and
@@ -898,7 +936,8 @@ zswap is on; `jobs` workers hold `jobs` trees. A directory that is not a tmpfs
 or ramfs, a template above `tmpfs_max_mib`, too little free space for one more
 tree, or a write error is not a failure: that candidate and the rest use the
 clone path and one advisory is written to stderr. The baseline, nested
-materializations and a non-copy-on-write workspace always use the clone path.
+materializations always use the clone path (since B230 a missing `cheap_clone`
+workspace no longer disables this mode: the template is built locally).
 Residue that appears after the scan (a process that outlives its command)
 cannot be seen; the command runner owns process cleanup, and a tree that ever
 scans unclean is dropped.
