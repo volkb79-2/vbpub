@@ -19,10 +19,18 @@ use std::time::{Duration, Instant};
 
 static SEQ: AtomicUsize = AtomicUsize::new(0);
 
+/// A private work area: `<tmp>/tsp-..-name/` is 0700 and owned by the test user, and the returned
+/// root `<..>/w` lives inside it. The sampler refuses data directories whose parent is
+/// group/world-writable (X-01), and `/tmp` itself is sticky and world-writable.
 fn tmp(name: &str) -> PathBuf {
-    let p = std::env::temp_dir().join(format!("tsp-{}-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::SeqCst), name));
-    let _ = fs::remove_dir_all(&p);
-    fs::create_dir_all(&p).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let base = std::env::temp_dir().join(format!("tsp-{}-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::SeqCst), name));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).unwrap();
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+    let p = base.join("w");
+    fs::create_dir(&p).unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
     p
 }
 
@@ -68,6 +76,7 @@ top_io = 20
 cap = 64
 full_sweep_every_s = {sweep_s}
 cmdline_max = 256
+cmdline_backoff_ms = 30000
 [events]
 psi_cpu_some_avg10 = 25.0
 psi_memory_some_avg10 = 10.0
@@ -85,6 +94,8 @@ enabled = true
 tmpfs_dir = "{r}/tm"
 cold_dir = "{r}/cold"
 cold_cap_bytes = {cap}
+require_tmpfs = false
+writer_queue_bytes = 8388608
 {tiers}
 "#
     )
@@ -684,8 +695,8 @@ fn socket_rejects_oversized_requests_and_stalled_clients_do_not_block_publishing
     tick(&mut col, 1);
     tick(&mut col, 2);
     let ctx = ctx_with(&root, &mut col, 4_000_000);
-    crate::serve::spawn(ctx.clone()).unwrap();
     let path = ctx.cfg.sampler.socket_path.clone();
+    crate::serve::spawn(ctx.clone(), crate::fsafe::Instance::acquire(&path).unwrap()).unwrap();
     // an oversized request line (no newline within max_request_bytes) is refused
     {
         let (mut s, mut r) = connect(&path);
@@ -745,6 +756,10 @@ fn config_validation_rejects_bad_shapes() {
     assert!(Config::parse(&ok.replace("step_s = 2", "step_s = 1")).is_err(), "tiers must increase");
     assert!(Config::parse(&ok.replace("client_idle_ms = 5000", "client_idle_ms = 0")).is_err(), "S-15: a zero timeout would switch the protection off");
     assert!(Config::parse(&ok.replace("client_write_ms = 200", "client_write_ms = 0")).is_err());
+    // X-03, X-05, X-06: the new keys are required and validated
+    assert!(Config::parse(&ok.replace("require_tmpfs = false", "")).is_err(), "no defaults in code");
+    assert!(Config::parse(&ok.replace("writer_queue_bytes = 8388608", "writer_queue_bytes = 10")).is_err());
+    assert!(Config::parse(&ok.replace("cmdline_backoff_ms = 30000", "cmdline_backoff_ms = 0")).is_err());
 }
 
 // ================================================================ review fixes (S-01 .. S-22)
@@ -872,7 +887,7 @@ fn s02_a_corrupt_compressed_frame_is_counted_not_fatal() {
 
 #[test]
 fn s03_the_writer_queue_never_blocks_drops_oldest_and_keeps_dictionary_and_events() {
-    let sh = crate::writer::Shared::new(3);
+    let sh = crate::writer::Shared::new(3, 1 << 30);
     for i in 0..6u64 {
         let mut dd = Dict::default();
         dd.met(&format!("m{i}"), false);
@@ -1045,7 +1060,9 @@ fn s09_dictionary_is_durable_before_frames_and_names_stay_one_line() {
     fs::write(root.join("cold/mets.dict"), "G a\nC b\nG tor").unwrap();
     assert_eq!(crate::dict::read_lists(&format!("{}/cold", root.display())).0.len(), 2);
     let _st3 = Store::open(&cfg, 2, 0).unwrap();
-    assert_eq!(fs::read_to_string(root.join("cold/mets.dict")).unwrap(), "G a\nC b\n");
+    // the open also gives a dictionary written before the count header existed its header
+    assert_eq!(fs::read_to_string(root.join("cold/mets.dict")).unwrap(), format!("{}G a\nC b\n", crate::dict::header(2)));
+    assert_eq!(crate::dict::read_lists(&format!("{}/cold", root.display())).0.len(), 2);
 }
 
 #[test]
@@ -1083,14 +1100,20 @@ fn s11_orphans_are_removed_and_the_cap_counts_the_whole_directory() {
     let cfg = cfg_for(&root);
     fs::create_dir_all(root.join("cold")).unwrap();
     fs::create_dir_all(root.join("tm")).unwrap();
-    put(&root, "cold/oldtier-123.seg", "orphan");
+    // an orphan segment of the sampler (frame magic) is removed ...
+    put(&root, "cold/oldtier-123.seg", "TSF1 orphan frame bytes");
     put(&root, "tm/hot-999.seg", "wrong medium dir? no: a configured tier file stays");
     let _ = Store::open(&cfg, 0, 0).unwrap();
     assert!(!root.join("cold/oldtier-123.seg").exists());
-    // a configured tier's file in the wrong directory is an orphan too
-    put(&root, "cold/hot-5.seg", "x");
+    // ... a configured tier's file in the wrong directory is an orphan too
+    put(&root, "cold/hot-5.seg", "TSF1x");
     let _ = Store::open(&cfg, 0, 0).unwrap();
     assert!(!root.join("cold/hot-5.seg").exists());
+    // X-09: but a file that merely has a segment-like name is somebody else's: kept and reported
+    put(&root, "cold/photo-7.seg", "not a topos segment");
+    let _ = Store::open(&cfg, 0, 0).unwrap();
+    assert!(root.join("cold/photo-7.seg").exists(), "foreign file left alone");
+    assert!(crate::store::startup_notes().iter().any(|n| n.contains("photo-7.seg")), "and reported");
     // cap 1500 with 1400 bytes of dictionary: segments must leave room for it
     let tiers = "[[tier]]\nname = \"cold\"\nstep_s = 1\nkeep_s = 86400\nsegment_s = 3600\nmedium = \"disk\"\n";
     let root = tmp("s11b");
@@ -1160,10 +1183,10 @@ fn s15_a_second_instance_is_refused_the_socket() {
     let (root, mut col) = world("s15");
     tick(&mut col, 1);
     let a = ctx_with(&root, &mut col, 4_000_000);
-    crate::serve::spawn(a.clone()).unwrap();
-    let b = ctx_with(&root, &mut col, 4_000_000);
-    let e = crate::serve::spawn(b).unwrap_err();
-    assert_eq!(e.kind(), std::io::ErrorKind::AddrInUse);
+    let sock = a.cfg.sampler.socket_path.clone();
+    crate::serve::spawn(a.clone(), crate::fsafe::Instance::acquire(&sock).unwrap()).unwrap();
+    let e = crate::fsafe::Instance::acquire(&sock).unwrap_err();
+    assert_eq!(e.code, "instance_running");
     let (mut s, mut r) = connect(&a.cfg.sampler.socket_path);
     assert_eq!(rpc(&mut s, &mut r, r#"{"req":"hello"}"#)["ok"], true, "the first instance keeps its socket");
     assert_eq!(fs::metadata(&a.cfg.sampler.socket_path).unwrap().permissions().mode() & 0o777, 0o600);
@@ -1299,4 +1322,596 @@ fn s20_memory_stat_counters_are_classified_explicitly() {
     }
     assert!(!crate::collect::is_mem_counter_for_test("anon"));
     assert!(!crate::collect::is_mem_counter_for_test("file_dirty"));
+}
+
+// ================================================================ S2-review fixes (X-01 .. X-15)
+
+use crate::fsafe::{self, Instance};
+use std::os::unix::fs::{symlink, MetadataExt};
+
+extern "C" {
+    fn mkfifo(path: *const std::os::raw::c_char, mode: u32) -> i32;
+    fn chown(path: *const std::os::raw::c_char, uid: u32, gid: u32) -> i32;
+}
+
+fn cpath(p: &Path) -> std::ffi::CString {
+    std::ffi::CString::new(p.to_str().unwrap()).unwrap()
+}
+
+/// Every file below the given directories: relative path -> bytes.
+fn snapshot(dirs: &[&Path]) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut m = std::collections::BTreeMap::new();
+    for d in dirs {
+        if let Ok(rd) = fs::read_dir(d) {
+            for e in rd.flatten() {
+                if e.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    m.insert(e.path().display().to_string(), fs::read(e.path()).unwrap());
+                }
+            }
+        }
+    }
+    m
+}
+
+#[test]
+fn x01_a_planted_symlink_in_a_data_directory_is_refused_and_its_target_is_never_touched() {
+    for (dir, name) in [("tm", "hot-0.seg"), ("cold", "cold-0.seg"), ("cold", "mets.dict"), ("cold", "ents.dict"), ("cold", "ents.dict.tmp"), ("w", "ev.jsonl")] {
+        let root = tmp("x01a");
+        let cfg = cfg_for(&root);
+        fs::create_dir_all(root.join("tm")).unwrap();
+        fs::create_dir_all(root.join("cold")).unwrap();
+        let victim = root.join("victim");
+        fs::write(&victim, "precious bytes that must survive").unwrap();
+        let at = if dir == "w" { root.clone() } else { root.join(dir) };
+        symlink(&victim, at.join(name)).unwrap();
+        let e = Store::open(&cfg, 0, 0).err().unwrap_or_else(|| panic!("{dir}/{name}: start must be refused"));
+        assert_eq!(e.code, "symlink_in_data_dir", "{dir}/{name}: {}", e.msg);
+        assert!(e.msg.contains(name), "the refusal names the link: {}", e.msg);
+        assert_eq!(fs::read(&victim).unwrap(), b"precious bytes that must survive", "{dir}/{name}: target untouched");
+    }
+}
+
+#[test]
+fn x01_a_link_planted_while_running_is_not_followed_by_dictionary_or_segment_writes() {
+    let root = tmp("x01r");
+    let cfg = cfg_for(&root);
+    let mut st = Store::open(&cfg, 0, 0).unwrap();
+    let victim = root.join("victim");
+    // a segment name that becomes a link before the writer rolls over to it
+    let mut dseg = Dict::default();
+    let (e, m) = (dseg.ent("cg:/x", 0), dseg.met("g", false));
+    let a = wall_ms() / 1000 / 10 * 10 - 100; // aligned to the 10 s hot segment
+    fs::write(&victim, "precious").unwrap();
+    st.push(&one_val(e, m, 1.0), a * 1000, 1000, &dseg);
+    symlink(&victim, root.join(format!("tm/hot-{}.seg", a + 10))).unwrap();
+    let errs = crate::store::CTR.write_errors.load(Ordering::Relaxed);
+    st.push(&one_val(e, m, 2.0), (a + 10) * 1000, 1000, &dseg);
+    assert!(crate::store::CTR.write_errors.load(Ordering::Relaxed) > errs, "the open of the linked segment failed and was counted");
+    assert_eq!(fs::read(&victim).unwrap(), b"precious", "a segment was not written through the link");
+    fs::write(&victim, "precious").unwrap();
+    // the dictionary append: mets.dict replaced by a link after start
+    let mut d = Dict::default();
+    d.met("m1", false);
+    symlink(&victim, root.join("cold/mets.dict")).unwrap();
+    let errs = crate::store::CTR.write_errors.load(Ordering::Relaxed);
+    assert!(!st.sync_dict(&mut d), "the dictionary could not be made durable");
+    assert!(crate::store::CTR.write_errors.load(Ordering::Relaxed) > errs);
+    assert_eq!(fs::read(&victim).unwrap(), b"precious", "append did not go through the link");
+    // the tmp file of the atomic rewrite: a link planted at ents.dict.tmp is replaced, not written through
+    let mut d2 = Dict::default();
+    d2.ent("cg:/a", 0);
+    d2.gc(1_000_000, 10); // frees the slot -> a full rewrite
+    d2.ent("cg:/b", 1_000_000);
+    assert!(d2.ents_dirty);
+    symlink(&victim, root.join("cold/ents.dict.tmp")).unwrap();
+    assert!(st.sync_dict(&mut d2));
+    assert_eq!(fs::read(&victim).unwrap(), b"precious", "rewrite did not go through the link");
+    assert!(fs::symlink_metadata(root.join("cold/ents.dict")).unwrap().file_type().is_file());
+    assert!(fs::symlink_metadata(root.join("cold/ents.dict.tmp")).is_err(), "the tmp name was renamed into place");
+}
+
+#[test]
+fn x01_data_directories_must_be_real_private_directories_with_a_safe_parent() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tmp("x01d");
+    let set = |p: &Path, m: u32| fs::set_permissions(p, fs::Permissions::from_mode(m)).unwrap();
+    // a missing leaf is created private
+    let ok = fsafe::open_checked(root.join("fresh").to_str().unwrap(), "t").unwrap();
+    assert_eq!(fs::metadata(&ok.path).unwrap().mode() & 0o777, 0o700);
+    // world- and group-writable leaves
+    for (name, mode) in [("ww", 0o777), ("gw", 0o770), ("ow", 0o702)] {
+        let p = root.join(name);
+        fs::create_dir(&p).unwrap();
+        set(&p, mode);
+        assert_eq!(fsafe::open_checked(p.to_str().unwrap(), "t").unwrap_err().code, "dir_unsafe", "{name}");
+    }
+    // a symlink to a perfectly good directory is still refused
+    fs::create_dir(root.join("real")).unwrap();
+    set(&root.join("real"), 0o700);
+    symlink(root.join("real"), root.join("link")).unwrap();
+    assert_eq!(fsafe::open_checked(root.join("link").to_str().unwrap(), "t").unwrap_err().code, "dir_symlink");
+    // a file is not a directory; a missing parent is not created
+    fs::write(root.join("afile"), "x").unwrap();
+    assert_eq!(fsafe::open_checked(root.join("afile").to_str().unwrap(), "t").unwrap_err().code, "dir_not_directory");
+    assert_eq!(fsafe::open_checked(root.join("nope/inner").to_str().unwrap(), "t").unwrap_err().code, "dir_missing");
+    assert!(!root.join("nope").exists());
+    // the parent: group/world-writable (even when it is ours) is refused, and nothing is created in it
+    fs::create_dir(root.join("openparent")).unwrap();
+    set(&root.join("openparent"), 0o777);
+    let e = fsafe::open_checked(root.join("openparent/inner").to_str().unwrap(), "t").unwrap_err();
+    assert_eq!(e.code, "dir_parent_unsafe", "{}", e.msg);
+    assert!(!root.join("openparent/inner").exists());
+    // /tmp itself: root-owned but sticky and world-writable
+    if fs::metadata("/tmp").map(|m| m.mode() & 0o1002 == 0o1002).unwrap_or(false) {
+        let p = format!("/tmp/topos-x01-must-not-be-created-{}", std::process::id());
+        assert_eq!(fsafe::open_checked(&p, "t").unwrap_err().code, "dir_parent_unsafe");
+        assert!(!Path::new(&p).exists());
+    }
+    // a directory owned by somebody else
+    if fsafe::euid() == 0 {
+        let p = root.join("foreign");
+        fs::create_dir(&p).unwrap();
+        set(&p, 0o700);
+        assert_eq!(unsafe { chown(cpath(&p).as_ptr(), 4242, 4242) }, 0);
+        let e = fsafe::open_checked(p.to_str().unwrap(), "t").unwrap_err();
+        assert_eq!(e.code, "dir_unsafe");
+        assert!(e.msg.contains("4242"), "{}", e.msg);
+        // ... and a foreign parent that is not root-owned
+        let q = root.join("foreign/inner");
+        let e = fsafe::open_checked(q.to_str().unwrap(), "t").unwrap_err();
+        assert_eq!(e.code, "dir_parent_unsafe");
+    }
+}
+
+#[test]
+fn x01_files_are_opened_nofollow_and_only_when_regular() {
+    let root = tmp("x01f");
+    fs::write(root.join("target"), "t").unwrap();
+    symlink(root.join("target"), root.join("ln")).unwrap();
+    assert_eq!(unsafe { mkfifo(cpath(&root.join("ff")).as_ptr(), 0o600) }, 0);
+    let d = fsafe::Dir::open_plain(root.to_str().unwrap()).unwrap();
+    for flags in [fsafe::O_RDONLY, fsafe::O_WRONLY | fsafe::O_APPEND, fsafe::O_WRONLY | fsafe::O_CREAT] {
+        assert_eq!(d.open_file("ln", flags, 0o600).unwrap_err().raw_os_error(), Some(40), "ELOOP: the link is not followed ({flags})");
+    }
+    assert_eq!(fs::read(root.join("target")).unwrap(), b"t");
+    // a FIFO under a data name neither blocks the open nor is it accepted
+    assert!(d.open_file("ff", fsafe::O_RDONLY, 0).is_err());
+    assert!(d.open_file("ff", fsafe::O_WRONLY, 0).is_err());
+    // names are single components
+    assert!(d.open_file("../x", fsafe::O_RDONLY, 0).is_err());
+    assert!(d.open_file("a/b", fsafe::O_RDONLY, 0).is_err());
+    // unlink removes a link itself, never its target
+    d.unlink("ln").unwrap();
+    assert!(!root.join("ln").exists() && root.join("target").exists());
+    // a symlinked directory is not opened either
+    symlink(&root, std::env::temp_dir().join(format!("tsp-dirlink-{}", std::process::id()))).unwrap();
+    let l = std::env::temp_dir().join(format!("tsp-dirlink-{}", std::process::id()));
+    assert!(fsafe::Dir::open_plain(l.to_str().unwrap()).is_err());
+    let _ = fs::remove_file(l);
+}
+
+#[test]
+fn x02_a_second_instance_exits_having_changed_nothing() {
+    let root = tmp("x02");
+    let cfg = cfg_for(&root);
+    let first = crate::store::start(&cfg).unwrap();
+    let mut st = Store::open_with(&cfg, &first.dirs, 0, 0).unwrap();
+    let mut d = Dict::default();
+    let (e, m) = (d.ent("cg:/x", 0), d.met("g.metric", false));
+    let base = wall_ms() / 1000 * 1000 - 20_000;
+    for i in 0..5 {
+        st.push(&one_val(e, m, i as f64), base + i * 1000, 1000, &d);
+    }
+    st.sync_dict(&mut d);
+    st.append_events(&["{\"ts_ms\":1}".to_string()]);
+    // the live writer is part-way through a frame: a repairing second instance would cut it
+    let hot = seg_files(&root.join("tm"), "hot-").pop().unwrap();
+    let mut f = fs::OpenOptions::new().append(true).open(&hot).unwrap();
+    f.write_all(b"TSF1\xff\x00\x00\x00junk").unwrap();
+    drop(f);
+    // and a segment of a tier this (differently configured) instance would call an orphan
+    put(&root, "tm/other-1.seg", "TSF1 not mine to delete");
+    let dirs = [root.join("tm"), root.join("cold"), root.clone()];
+    let refs: Vec<&Path> = dirs.iter().map(|p| p.as_path()).collect();
+    let before = snapshot(&refs);
+    let listing = |p: &Path| -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(p).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    };
+    let names = (listing(&root.join("tm")), listing(&root.join("cold")), listing(&root));
+    let second = crate::store::start(&cfg).err().expect("the second instance must be refused");
+    assert_eq!(second.code, "instance_running");
+    assert_eq!(snapshot(&refs), before, "every file is byte-identical");
+    assert_eq!((listing(&root.join("tm")), listing(&root.join("cold")), listing(&root)), names, "no file was created or deleted");
+    // control: opening the store the way the old start-up order did really would have changed it
+    let _ = Store::open(&cfg, d.mets.len(), d.ents.len()).unwrap();
+    assert_ne!(snapshot(&refs), before, "(control) the repair path does modify the live files");
+    drop(first);
+    assert!(crate::store::start(&cfg).is_ok(), "the lock is released with the first instance");
+}
+
+#[test]
+fn x03_tmpfs_is_checked_warned_about_and_can_be_required() {
+    let proc_dir = fsafe::Dir::open_plain("/proc").unwrap();
+    let e = fsafe::check_tmpfs(&proc_dir, true).unwrap_err();
+    assert_eq!(e.code, "tmpfs_required");
+    let c = fsafe::check_tmpfs(&proc_dir, false).unwrap();
+    assert!(!c.is_tmpfs && c.detail.contains("NOT tmpfs"), "{}", c.detail);
+    if let Ok(shm) = fsafe::Dir::open_plain("/dev/shm") {
+        if shm.fs_magic() == Some(0x0102_1994) {
+            assert!(fsafe::check_tmpfs(&shm, true).unwrap().is_tmpfs);
+        }
+    }
+    // Dirs::open applies it to store.tmpfs_dir
+    let root = tmp("x03");
+    let text = cfg_text(&root, 4_000_000, TIERS3, 1 << 30, 3).replace("require_tmpfs = false", "require_tmpfs = true");
+    let cfg = Config::parse(&text).unwrap();
+    let here_is_tmpfs = fsafe::Dir::open_plain(root.to_str().unwrap()).unwrap().fs_magic() == Some(0x0102_1994);
+    match crate::store::Dirs::open(&cfg) {
+        Ok(_) => assert!(here_is_tmpfs, "a disk-backed tmpfs_dir must be refused when require_tmpfs is set"),
+        Err(e) => {
+            assert!(!here_is_tmpfs, "{}", e.msg);
+            assert_eq!(e.code, "tmpfs_required", "{}", e.msg);
+        }
+    }
+    // the warning reaches `status`
+    let (root, mut col) = world("x03s");
+    tick(&mut col, 1);
+    let ctx = ctx_status(&root, &mut col, Status { store: crate::serve::StoreStatus { tmpfs_dir_is_tmpfs: Some(false), notes: vec!["WARNING store.tmpfs_dir: not tmpfs".into()], ..Default::default() }, ..Default::default() });
+    let s = j(&handle(&ctx, r#"{"req":"status"}"#));
+    assert_eq!(s["store"]["tmpfs_dir_is_tmpfs"], false);
+    assert_eq!(s["store"]["notes"][0], "WARNING store.tmpfs_dir: not tmpfs");
+    let ok = ctx_status(&root, &mut col, Status::default());
+    assert!(j(&handle(&ok, r#"{"req":"status"}"#))["store"]["tmpfs_dir_is_tmpfs"].is_null());
+}
+
+fn ctx_status(root: &Path, col: &mut Collector, status: Status) -> Arc<Ctx> {
+    let cfg = Config::parse(&cfg_text(root, 4_000_000, TIERS3, 1 << 30, 3)).unwrap();
+    let ctx = Arc::new(Ctx::new(cfg, "{\"mode\":\"host\"}".to_string()));
+    let mut sb = SnapBuilder::default();
+    let snap = sb.build(col, 2, wall_ms(), 1000, 1234, status);
+    ctx.publish(snap);
+    ctx
+}
+
+#[test]
+fn x05_the_writer_queue_is_bounded_in_bytes_too() {
+    let big = |i: u64| crate::writer::Job {
+        ts_ms: 1000 + i,
+        dt_ms: 1000,
+        frame: Arc::new(vec![(0u32, (0..1000).map(|m| Val { m, v: 1.0, raw: NONE, st: 0 }).collect::<Vec<_>>())]),
+        events: vec![format!("ev{i}")],
+        delta: crate::dict::Delta { mets: vec![(format!("m{i}"), false)], ents: vec![] },
+    };
+    let one = big(0).bytes();
+    assert!(one > 24_000, "a 1000-value frame is about 24 KB: {one}");
+    // 1000 jobs allowed by count, but only ~3 by bytes
+    let sh = crate::writer::Shared::new(1000, one * 3 + one / 2);
+    for i in 0..20 {
+        sh.submit(big(i));
+    }
+    assert!(sh.queue_len() <= 3, "bounded by bytes, not by count: {}", sh.queue_len());
+    assert!(sh.queue_bytes() <= one * 4, "{}", sh.queue_bytes());
+    assert_eq!(sh.dropped_frames.load(Ordering::SeqCst), 20 - sh.queue_len(), "the drops are counted");
+    assert!(sh.dropped_bytes.load(Ordering::SeqCst) >= 17 * one);
+    sh.close();
+    let (mut mets, mut events) = (Vec::new(), Vec::new());
+    while let Some(job) = sh.next() {
+        mets.extend(job.delta.mets.iter().map(|x| x.0.clone()));
+        events.extend(job.events.clone());
+    }
+    assert_eq!(mets.len(), 20, "no dictionary id is lost with a dropped frame");
+    assert_eq!(events.len(), 20, "no event is lost either");
+    assert_eq!(sh.queue_bytes(), 0, "the byte count returns to zero when drained");
+    // a single job above the cap is still written (the newest always stays)
+    let sh = crate::writer::Shared::new(10, 1000);
+    sh.submit(big(1));
+    assert_eq!((sh.queue_len(), sh.dropped_frames.load(Ordering::SeqCst)), (1, 0));
+}
+
+#[test]
+fn x06_one_stuck_pid_occupies_one_worker_and_is_not_asked_again() {
+    let root = tmp("x06");
+    let fifo = root.join("stuck-cmdline");
+    assert_eq!(unsafe { mkfifo(cpath(&fifo).as_ptr(), 0o600) }, 0);
+    put(&root, "ok-cmdline", "prog\0--flag\0");
+    let ok = root.join("ok-cmdline").to_str().unwrap().to_string();
+    let w = crate::cmdline::CmdWorkers::new();
+    let f = fifo.to_str().unwrap().to_string();
+    assert!(w.ask(7, 1, f.clone(), 256), "the first ask is queued; its read blocks in open(2)");
+    for _ in 0..10 {
+        assert!(!w.ask(7, 1, f.clone(), 256), "never a second read for a pid whose read is in flight");
+    }
+    assert_eq!(w.in_flight(), 1);
+    // every other pid is still answered: the stuck one holds ONE worker, not all three
+    for pid in 10..16 {
+        assert!(w.ask(pid, 1, ok.clone(), 256));
+    }
+    let mut got = std::collections::HashMap::new();
+    let t0 = Instant::now();
+    while got.len() < 6 {
+        for (k, v) in w.take_answers() {
+            got.insert(k.0, v);
+        }
+        assert!(t0.elapsed() < Duration::from_secs(60), "other pids starved behind the stuck one: {:?}", got.keys());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(got.values().all(|v| v.as_deref() == Ok("prog --flag")));
+    // the stall ends: the answer arrives, and only then may the pid be asked again
+    let mut wr = fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    wr.write_all(b"late\0").unwrap();
+    drop(wr);
+    let t0 = Instant::now();
+    loop {
+        if w.take_answers().iter().any(|(k, v)| k.0 == 7 && v.as_deref() == Ok("late")) {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(60), "the late answer never arrived");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(w.in_flight(), 0);
+    assert!(w.ask(7, 1, ok, 256), "free again after the read returned");
+}
+
+#[test]
+fn x07_secrets_in_command_lines_are_redacted_before_they_leave_the_sampler() {
+    let r = |s: &str| crate::cmdline::render(s.as_bytes());
+    assert_eq!(r("mysql\0--password\0hunter2\0--host\0db\0"), "mysql --password <redacted> --host db");
+    assert_eq!(r("mysql\0--password=hunter2\0--host=db"), "mysql --password=<redacted> --host=db");
+    assert_eq!(r("app\0--api-token\0abc\0--verbose"), "app --api-token <redacted> --verbose");
+    assert_eq!(r("app\0--secret=s3\0--client_secret\0s4"), "app --secret=<redacted> --client_secret <redacted>");
+    assert_eq!(r("app\0--password\0--verbose"), "app --password --verbose", "a following option is not a value");
+    assert_eq!(r("env\0DB_PASSWORD=abc\0API_KEY=zzz\0AWS_SECRET_ACCESS_KEY=q\0LANG=C\0cmd"), "env DB_PASSWORD=<redacted> API_KEY=<redacted> AWS_SECRET_ACCESS_KEY=<redacted> LANG=C cmd");
+    assert_eq!(r("docker\0run\0-e\0GH_TOKEN=abc\0--env=SESSION_TOKEN=x\0img"), "docker run -e GH_TOKEN=<redacted> --env=SESSION_TOKEN=<redacted> img");
+    assert_eq!(r("curl\0https://user:pw@host/path?x=1"), "curl https://user:<redacted>@host/path?x=1");
+    assert_eq!(r("psql\0postgres://app:p%40ss@db:5432/x"), "psql postgres://app:<redacted>@db:5432/x");
+    // names that mention a secret but whose value is not one
+    assert_eq!(r("app\0--password-file\0/etc/pw\0--no-password\0db"), "app --password-file /etc/pw --no-password db");
+    assert_eq!(r("app\0--token-file=/run/t"), "app --token-file=/run/t");
+    // ordinary command lines are untouched
+    assert_eq!(r("/usr/bin/foo\0--bar\0baz=1\0-x\0--author=me\0"), "/usr/bin/foo --bar baz=1 -x --author=me");
+    assert_eq!(r("sshd:\0root@pts/0"), "sshd: root@pts/0");
+    // and it applies to what the reader returns (the path both the helper pool and --once use)
+    let root = tmp("x07");
+    put(&root, "cmdline", "app\0--password\0hunter2\0");
+    assert_eq!(crate::cmdline::read_now(root.join("cmdline").to_str().unwrap(), 256).unwrap(), "app --password <redacted>");
+    // a read cut at cmdline_max inside the value never reveals more than the cut
+    assert_eq!(crate::cmdline::read_now(root.join("cmdline").to_str().unwrap(), 17).unwrap(), "app --password <redacted>");
+}
+
+#[test]
+fn x08_the_socket_is_never_created_with_a_looser_mode() {
+    let root = tmp("x08");
+    let sock = root.join("p.sock").to_str().unwrap().to_string();
+    // a link planted at the socket path is replaced, never written through
+    fs::write(root.join("victim"), "precious").unwrap();
+    symlink(root.join("victim"), &sock).unwrap();
+    let inst = Instance::acquire(&sock).unwrap();
+    let _l = fsafe::bind_private(&inst).unwrap();
+    let probe = fsafe::BIND_PROBE.lock().unwrap().iter().find(|(p, _)| *p == sock).map(|x| x.1);
+    assert_eq!(probe, Some(0o600), "right after bind, before any chmod, the socket is already private (a plain bind gives 0777 & ~umask)");
+    let md = fs::symlink_metadata(&sock).unwrap();
+    assert_eq!(md.mode() & 0o777, 0o600);
+    assert_eq!(md.uid(), fsafe::euid());
+    assert_eq!(fs::read(root.join("victim")).unwrap(), b"precious");
+}
+
+#[test]
+fn x09_dictionary_files_carry_a_line_count_that_is_checked_at_load() {
+    let root = tmp("x09");
+    let cfg = cfg_for(&root);
+    let cold = format!("{}/cold", root.display());
+    let mut st = Store::open(&cfg, 0, 0).unwrap();
+    let mut d = Dict::default();
+    d.met("a", false);
+    d.met("b", true);
+    d.ent("cg:/x", 0);
+    st.sync_dict(&mut d);
+    let text = |f: &str| fs::read_to_string(root.join("cold").join(f)).unwrap();
+    assert_eq!(text("mets.dict"), format!("{}G a\nC b\n", crate::dict::header(2)));
+    assert_eq!(text("ents.dict"), format!("{}cg:/x\n", crate::dict::header(1)));
+    // appends keep the count in step, in place
+    d.met("c", false);
+    d.ent("cg:/y", 0);
+    st.sync_dict(&mut d);
+    assert_eq!(text("mets.dict"), format!("{}G a\nC b\nG c\n", crate::dict::header(3)));
+    assert_eq!(text("ents.dict"), format!("{}cg:/x\ncg:/y\n", crate::dict::header(2)));
+    let (mets, ents) = crate::dict::read_lists_checked(&cold).unwrap();
+    assert_eq!((mets.len(), ents.len()), (3, 2));
+    // lines lost from the end of the file (header says 3): ids would map to the wrong names
+    fs::write(root.join("cold/mets.dict"), format!("{}G a\nC b\n", crate::dict::header(3))).unwrap();
+    assert_eq!(crate::dict::read_lists_checked(&cold).unwrap_err().code, "dict_short");
+    assert_eq!(Dict::load_checked(&cold, 0).err().unwrap().code, "dict_short");
+    // a header BEHIND the lines is a crash between the append and the count update: accepted
+    fs::write(root.join("cold/mets.dict"), format!("{}G a\nC b\nG c\n", crate::dict::header(2))).unwrap();
+    assert_eq!(crate::dict::read_lists_checked(&cold).unwrap().0.len(), 3);
+    // a damaged header is an error, not a guess
+    fs::write(root.join("cold/mets.dict"), "#TOPOS-DICT 1 n=0000000000000000x003\nG a\n").unwrap();
+    assert_eq!(crate::dict::read_lists_checked(&cold).unwrap_err().code, "dict_header_corrupt");
+    // a file from before the header existed still loads
+    fs::write(root.join("cold/mets.dict"), "G a\nC b\n").unwrap();
+    assert_eq!(crate::dict::read_lists_checked(&cold).unwrap().0.len(), 2);
+}
+
+#[test]
+fn x10_slurp_refuses_files_without_end_and_gives_the_memory_back() {
+    let mut s = crate::util::Slurp::with_cap(1 << 20);
+    let e = s.read("/dev/zero").unwrap_err();
+    assert_eq!(e.raw_os_error(), Some(27), "EFBIG, not an out-of-memory kill: {e}");
+    assert!(s.buf_len() <= 1 << 20);
+    // a big but legal file grows the buffer; the next read gives it back
+    let root = tmp("x10");
+    fs::write(root.join("big"), vec![b'1'; 3 << 20]).unwrap();
+    fs::write(root.join("small"), "7\n").unwrap();
+    let mut s = crate::util::Slurp::with_cap(8 << 20);
+    assert_eq!(s.read(root.join("big").to_str().unwrap()).unwrap().len(), 3 << 20);
+    assert!(s.buf_len() > 3 << 20);
+    assert_eq!(s.read(root.join("small").to_str().unwrap()).unwrap(), b"7\n");
+    assert!(s.buf_len() <= 256 * 1024, "{}", s.buf_len());
+}
+
+#[test]
+fn x11_a_hung_sampling_thread_shows_in_status() {
+    assert_eq!(crate::serve::stall_state(10_000, 9_500, 1000), (500, false));
+    assert_eq!(crate::serve::stall_state(10_000, 6_000, 1000), (4000, true), "more than 3 tick periods since the last finished tick");
+    assert_eq!(crate::serve::stall_state(10_000, 20_000, 1000), (0, false), "a clock step backwards never reports a stall");
+    let (root, mut col) = world("x11");
+    tick(&mut col, 1);
+    let ctx = ctx_with(&root, &mut col, 4_000_000);
+    ctx.set_beat_for_test(wall_ms() - 3_600_000);
+    let s = j(&handle(&ctx, r#"{"req":"status"}"#));
+    assert_eq!(s["sampling"]["stalled"], true);
+    assert!(s["sampling"]["last_tick_age_ms"].as_u64().unwrap() >= 3_600_000);
+    ctx.set_beat_for_test(wall_ms() + 3_600_000);
+    assert_eq!(j(&handle(&ctx, r#"{"req":"status"}"#))["sampling"]["stalled"], false);
+}
+
+#[test]
+fn x12_the_first_stop_signal_is_graceful_and_a_later_one_ends_the_process() {
+    use crate::util::{stop_action, StopAction};
+    assert_eq!(stop_action(0), StopAction::Graceful);
+    assert_eq!(stop_action(1), StopAction::Force);
+    assert_eq!(stop_action(7), StopAction::Force);
+    // the real thing, in a child process that never looks at the stop flag (a stuck sampler)
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    if let Ok(dir) = std::env::var("TOPOS_X12_DIR") {
+        crate::util::install_stop_handlers();
+        fs::write(format!("{dir}/ready"), "1").unwrap();
+        loop {
+            if crate::util::STOP.load(Ordering::SeqCst) {
+                let _ = fs::write(format!("{dir}/stopped"), "1");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let dir = tmp("x12");
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "tests::x12_the_first_stop_signal_is_graceful_and_a_later_one_ends_the_process", "--test-threads=1", "--nocapture"])
+        .env("TOPOS_X12_DIR", &dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id() as i32;
+    let wait_for = |f: &str| {
+        let t0 = Instant::now();
+        while !dir.join(f).exists() {
+            assert!(t0.elapsed() < Duration::from_secs(60), "child never wrote {f}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    wait_for("ready");
+    assert_eq!(unsafe { kill(pid, 15) }, 0);
+    wait_for("stopped");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(child.try_wait().unwrap().is_none(), "the first signal only asks for a clean stop");
+    assert_eq!(unsafe { kill(pid, 15) }, 0);
+    // well inside HARD_STOP_S: the second signal itself ended it, with exit code 1
+    let t0 = Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if t0.elapsed() > Duration::from_secs(10) {
+            let _ = child.kill();
+            panic!("a second stop signal did not end the stuck process");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status.code(), Some(1));
+}
+
+#[test]
+fn x13_rollups_say_how_many_ticks_of_a_bucket_held_a_value() {
+    let root = tmp("x13");
+    let cfg = cfg_for(&root);
+    let mut st = Store::open(&cfg, 0, 0).unwrap();
+    let mut d = Dict::default();
+    let e = d.ent("cg:/x", 0);
+    let (c, g) = (d.met("k.counter", true), d.met("k.gauge", false));
+    let base = wall_ms() / 1000 * 1000 - 15_000;
+    // warm tier = 2 ticks per bucket. bucket 1: both ticks valid; bucket 2: the second is a reset; bucket 3: all states
+    let frames = [(5.0, 0u8), (5.0, 0), (5.0, 0), (0.0, stc::UN_RESET), (0.0, stc::UN_RESET), (0.0, stc::UN_RESET)];
+    for (i, (v, s)) in frames.iter().enumerate() {
+        let vals = vec![Val { m: c, v: *v, raw: 100, st: *s }, Val { m: g, v: *v, raw: NONE, st: *s }];
+        st.push(&[(e, vals)], base + i as u64 * 1000, 1000, &d);
+    }
+    st.sync_dict(&mut d);
+    for m in ["k.counter", "k.gauge"] {
+        let w = query(&cfg, "cg:/x", m, "warm");
+        assert_eq!(w["bucket_ticks"], 2, "{m}");
+        assert_eq!(w["valid_ticks"], serde_json::json!([2, 1, 0]), "{m}: partial and all-state buckets are visible");
+        assert_eq!(w["partial_points"], 2, "{m}");
+        assert_eq!(w["points"].as_array().unwrap().len(), 3);
+    }
+    let w = query(&cfg, "cg:/x", "k.counter", "warm");
+    assert_eq!(w["points"][0][1], 10.0, "a full bucket: sum of two ticks");
+    assert_eq!(w["points"][1][1], 5.0, "a partial bucket: sum of ONE valid tick, over dt_ms of two");
+    assert_eq!(w["points"][1][2], 2000);
+    // the raw tier has no buckets and no such fields
+    assert!(query(&cfg, "cg:/x", "k.gauge", "hot").get("valid_ticks").is_none());
+    // the cold (zstd) tier carries it too
+    assert_eq!(query(&cfg, "cg:/x", "k.gauge", "cold")["bucket_ticks"], 4);
+}
+
+#[test]
+fn x14_compact_can_keep_not_applicable_states_and_fields_reports_omitted_entities() {
+    let (root, mut col) = world("x14");
+    tick(&mut col, 1);
+    tick(&mut col, 2);
+    let ctx = ctx_with(&root, &mut col, 4_000_000);
+    // compact: not_applicable states are dropped by default, kept as typed objects with "na":true
+    let plain = j(&handle(&ctx, r#"{"req":"current","procs":false,"compact":true}"#));
+    let with_na = j(&handle(&ctx, r#"{"req":"current","procs":false,"compact":true,"na":true}"#));
+    let count_na = |v: &Value| v["entities"].as_object().unwrap().values().flat_map(|e| e.as_object().unwrap().values()).filter(|x| x["s"] == "not_applicable").count();
+    assert_eq!(count_na(&plain), 0);
+    assert!(count_na(&with_na) > 0, "the expected absences are visible when asked for");
+    // fields: entities with none of the requested metrics are counted, not silently gone
+    let all = j(&handle(&ctx, r#"{"req":"current","procs":false}"#));
+    let n_all = all["entities"].as_object().unwrap().len();
+    let f = j(&handle(&ctx, r#"{"req":"current","procs":false,"fields":["meminfo.MemTotal"]}"#));
+    let kept = f["entities"].as_object().unwrap().len();
+    assert!(kept < n_all);
+    assert_eq!(f["entities_omitted"].as_u64().unwrap() as usize, n_all - kept, "kept + omitted = all");
+    assert!(all.get("entities_omitted").is_none(), "the default form is unchanged");
+}
+
+#[test]
+fn x15_a_device_that_drops_out_of_io_stat_and_returns_is_a_reset_not_one_huge_delta() {
+    let (root, mut col) = world("x15");
+    fs::create_dir_all(root.join("sys/dev/block/253:0/slaves")).unwrap();
+    fs::create_dir_all(root.join("sys/dev/block/254:0/slaves")).unwrap();
+    let io = |a: u64, b: Option<u64>| {
+        let mut s = format!("253:0 rbytes={a} wbytes=0 rios=1 wios=0 dbytes=0 dios=0\n");
+        if let Some(b) = b {
+            s.push_str(&format!("254:0 rbytes={b} wbytes=0 rios=1 wios=0 dbytes=0 dios=0\n"));
+        }
+        s
+    };
+    let rb = |col: &Collector| get(col, "cg:/", "io.rbytes").unwrap();
+    put(&root, "cg/io.stat", &io(100, Some(1000)));
+    tick(&mut col, 1);
+    put(&root, "cg/io.stat", &io(110, Some(1010)));
+    tick(&mut col, 2);
+    assert_eq!((rb(&col).st, rb(&col).v), (stc::VALUE, 20.0));
+    // the second device's blkg goes away: the sum loses its share
+    put(&root, "cg/io.stat", &io(120, None));
+    tick(&mut col, 3);
+    assert_eq!(rb(&col).st, stc::UN_RESET);
+    // ... and comes back with a large cumulative count: that is NOT 5 MB read in one tick
+    put(&root, "cg/io.stat", &io(130, Some(5_000_000)));
+    tick(&mut col, 4);
+    assert_eq!(rb(&col).st, stc::UN_RESET, "the returning device must not turn its history into one delta");
+    // afterwards deltas are normal again, measured from the new baseline
+    put(&root, "cg/io.stat", &io(140, Some(5_000_010)));
+    tick(&mut col, 5);
+    assert_eq!((rb(&col).st, rb(&col).v), (stc::VALUE, 20.0));
+    // a device seen for the first time began at zero: its first reading IS a delta
+    fs::create_dir_all(root.join("sys/dev/block/255:0/slaves")).unwrap();
+    put(&root, "cg/io.stat", &format!("{}255:0 rbytes=7 wbytes=0 rios=1 wios=0 dbytes=0 dios=0\n", io(150, Some(5_000_020))));
+    tick(&mut col, 6);
+    assert_eq!((rb(&col).st, rb(&col).v), (stc::VALUE, 27.0));
 }

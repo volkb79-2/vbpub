@@ -82,6 +82,7 @@ top_io = 20
 cap = 64
 full_sweep_every_s = 10
 cmdline_max = 256
+cmdline_backoff_ms = 30000
 [events]
 psi_cpu_some_avg10 = 25.0
 psi_memory_some_avg10 = 10.0
@@ -99,6 +100,8 @@ enabled = false
 tmpfs_dir = "{r}/tm"
 cold_dir = "{r}/cold"
 cold_cap_bytes = 1000000
+require_tmpfs = false
+writer_queue_bytes = 1048576
 [[tier]]
 name = "hot"
 step_s = 1
@@ -243,6 +246,7 @@ top_io = 20
 cap = 64
 full_sweep_every_s = 1
 cmdline_max = 256
+cmdline_backoff_ms = 30000
 [events]
 psi_cpu_some_avg10 = 25.0
 psi_memory_some_avg10 = 10.0
@@ -260,6 +264,8 @@ enabled = true
 tmpfs_dir = "{r}/tm"
 cold_dir = "{r}/state"
 cold_cap_bytes = 100000000
+require_tmpfs = false
+writer_queue_bytes = 8388608
 [[tier]]
 name = "hot"
 step_s = 1

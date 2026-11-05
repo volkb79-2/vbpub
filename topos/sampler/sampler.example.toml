@@ -16,6 +16,7 @@ top_io = 20
 cap = 64                    # hard cap of the enriched union (D state + top CPU + top IO)
 full_sweep_every_s = 10     # io/schedstat for ALL pids this often; between sweeps only for candidates
 cmdline_max = 256
+cmdline_backoff_ms = 30000  # a pid whose command-line read failed or timed out waits this long before the next ask
 
 [events]
 psi_cpu_some_avg10 = 25.0   # percent; crossing up or down is a hard event
@@ -33,9 +34,14 @@ client_write_ms = 5000      # a client that does not read is dropped after this
 
 [store]
 enabled = true
+# Both directories must be real directories (never symlinks) owned by the user running the sampler,
+# not group- or world-writable, with a parent that is root-owned and not group/world-writable (or
+# owned by the same user). A missing leaf is created with mode 0700. Anything else: exit 2.
 tmpfs_dir = "/run/topos/tiers"       # must be tmpfs in production; hot and warm live here
 cold_dir = "/var/lib/topos"          # disk; zstd segments, canonical dictionary
 cold_cap_bytes = 1073741824
+require_tmpfs = true                 # refuse to start when tmpfs_dir is not tmpfs (false = warn in status and on stderr)
+writer_queue_bytes = 8388608         # the writer queue holds at most this much; the oldest frames are dropped and counted
 
 [[tier]]
 name = "hot"

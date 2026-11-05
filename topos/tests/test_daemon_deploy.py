@@ -255,6 +255,25 @@ def test_install_plan_contains_correct_template_content() -> None:
     assert "topos.tmpfiles" in plan.tmpfiles_asset
 
 
+def test_install_plan_installs_the_legacy_slice_topos_service_runs_in() -> None:
+    """X-07: Slice=topos-legacy.slice needs the unit installed, or systemd runs the daemon unlimited."""
+    from topos.daemon.deploy import build_install_plan, install_plan_to_jsonable
+
+    plan = build_install_plan(slice_dest="/opt/systemd/system/topos.slice")
+    assert "Slice=topos-legacy.slice" in plan.service_content
+    assert plan.legacy_slice_dest == Path("/opt/systemd/system/topos-legacy.slice")
+    assert "MemoryMax=512M" in plan.legacy_slice_content
+    # the unit is written by a plan step, next to the sampler slice, with its real content
+    step = next(s for s in plan.steps if "topos-legacy.slice" in (s.command or ""))
+    assert "install -m 0644 -o root -g root /dev/stdin /opt/systemd/system/topos-legacy.slice" in step.command
+    assert "MemoryMax=512M" in step.command and "MemoryMax=128M" in step.command
+    # the legacy slice never carried a CPU quota or an IO weight; none may appear by accident
+    assert "CPUQuota" not in plan.legacy_slice_content and "IOWeight" not in plan.legacy_slice_content
+    j = install_plan_to_jsonable(plan)
+    assert j["legacy_slice_dest"] == "/opt/systemd/system/topos-legacy.slice"
+    assert "TasksMax=512" in j["legacy_slice_content"]
+
+
 def test_install_plan_steps_reference_every_phase() -> None:
     """All 8 installation steps are present and non-empty."""
     from topos.daemon.deploy import build_install_plan

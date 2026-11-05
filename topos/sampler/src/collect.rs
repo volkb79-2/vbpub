@@ -317,6 +317,17 @@ impl Em<'_> {
     /// spike. The first observation of an entity that existed at start has no delta (state
     /// `first_sample`, with the raw reading); an entity born after sampling started began at
     /// zero, so its first reading is its delta.
+    /// The counter's meaning changed under it (the set of devices that feed a sum changed, X-15):
+    /// no delta for this tick, the reading is the new baseline, and the tick says so.
+    fn rebase(&mut self, m: u32, cur: u64) {
+        let i = m as usize;
+        if self.prev.len() <= i {
+            self.prev.resize(i + 1, NONE);
+        }
+        self.prev[i] = cur;
+        *self.resets += 1;
+        self.out.push(Val { m, v: 0.0, raw: cur, st: stc::UN_RESET });
+    }
     fn counter(&mut self, m: u32, cur: u64) {
         let i = m as usize;
         if self.prev.len() <= i {
@@ -347,12 +358,40 @@ pub struct Ent {
     vals: Vec<Val>,
     base_zero: bool,
     seen: u64,
+    /// Bottom block devices present in `io.stat` last tick, and every one ever seen (X-15).
+    io_devs_last: Vec<u64>,
+    io_devs_ever: Vec<u64>,
 }
 
 impl Ent {
     fn new(id: u32, base_zero: bool) -> Ent {
-        Ent { id, prev: Vec::new(), vals: Vec::new(), base_zero, seen: 0 }
+        Ent { id, prev: Vec::new(), vals: Vec::new(), base_zero, seen: 0, io_devs_last: Vec::new(), io_devs_ever: Vec::new() }
     }
+}
+
+fn dev_hash(dev: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &b in dev {
+        h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
+/// Did the set of devices that feed an `io.stat` sum change in a way that breaks the delta?
+/// A device that dropped out (the sum lost its share) or one that came back after dropping
+/// out (its whole cumulative count would land in one tick) does; a device seen for the first
+/// time began at zero, so its first reading is a real delta. Updates the remembered sets.
+fn io_devs_break(last: &mut Vec<u64>, ever: &mut Vec<u64>, now: &[u64]) -> bool {
+    let first = ever.is_empty() && last.is_empty();
+    let dropped = last.iter().any(|d| !now.contains(d));
+    let returned = now.iter().any(|d| ever.contains(d) && !last.contains(d));
+    for d in now {
+        if !ever.contains(d) && ever.len() < 256 {
+            ever.push(*d);
+        }
+    }
+    *last = now.to_vec();
+    !first && (dropped || returned)
 }
 
 struct CgState {
@@ -759,6 +798,7 @@ impl Collector {
                 },
                 4 => {
                     let mut tot = [0u64; 6];
+                    let mut devs_now: Vec<u64> = Vec::new();
                     let mut cost = [0u64; 3];
                     let mut have_cost = false;
                     let mut vrate: Option<f64> = None;
@@ -771,6 +811,9 @@ impl Collector {
                             None => continue,
                         };
                         let bottom = is_bottom(stacked, stacked_last, &cfg.sampler.sys_root, dev);
+                        if bottom {
+                            devs_now.push(dev_hash(dev));
+                        }
                         for kv in it {
                             if let Some((k, v)) = split_eq(kv) {
                                 let slot = match k {
@@ -809,9 +852,15 @@ impl Collector {
                             }
                         }
                     }
+                    // A device that drops out of io.stat and comes back would turn its whole
+                    // cumulative count into one tick's delta: when the device set changed the
+                    // tick is a counter_reset (no delta) and the sum is the new baseline.
+                    let devs_changed = io_devs_break(&mut st.e.io_devs_last, &mut st.e.io_devs_ever, &devs_now);
                     for k in 0..6 {
                         if bad_io {
                             em.state(ids.io[k], stc::UN_PARSE);
+                        } else if devs_changed {
+                            em.rebase(ids.io[k], tot[k]);
                         } else {
                             em.counter(ids.io[k], tot[k]);
                         }

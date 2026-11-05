@@ -52,7 +52,16 @@ pub fn trim(b: &[u8]) -> &[u8] {
 /// of a tick (measured with strace). Elsewhere std::fs is used.
 pub struct Slurp {
     buf: Vec<u8>,
+    cap: usize,
 }
+
+/// Largest file `Slurp` reads (X-10). Every file the sampler reads is a small kernel
+/// pseudo-file; `proc_root` and `cgroup_root` are configurable, so a FIFO or `/dev/zero`-like
+/// path there must end in an error, not in memory exhaustion.
+pub const SLURP_MAX: usize = 64 << 20;
+const SLURP_START: usize = 256 * 1024;
+/// ENOMEM-like error code for "too large" (EFBIG).
+const EFBIG: i32 = 27;
 
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 mod raw {
@@ -84,11 +93,38 @@ mod raw {
 
 impl Slurp {
     pub fn new() -> Self {
-        Slurp { buf: vec![0u8; 256 * 1024] }
+        Slurp::with_cap(SLURP_MAX)
+    }
+
+    pub fn with_cap(cap: usize) -> Self {
+        Slurp { buf: vec![0u8; SLURP_START.min(cap.max(1))], cap }
+    }
+
+    #[cfg(test)]
+    pub fn buf_len(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// A buffer that grew for one big file does not stay big.
+    fn shrink(&mut self) {
+        if self.buf.len() > 4 * SLURP_START {
+            self.buf = vec![0u8; SLURP_START.min(self.cap.max(1))];
+        }
+    }
+
+    /// Double the buffer, or say the file is too large.
+    fn grow(&mut self) -> Result<(), i32> {
+        let l = self.buf.len();
+        if l >= self.cap {
+            return Err(EFBIG);
+        }
+        self.buf.resize((l * 2).min(self.cap), 0);
+        Ok(())
     }
 
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     pub fn read(&mut self, path: &str) -> std::io::Result<&[u8]> {
+        self.shrink();
         let fd = raw::open_ro(path).map_err(std::io::Error::from_raw_os_error)?;
         let mut n = 0;
         let mut err = None;
@@ -102,8 +138,10 @@ impl Slurp {
                     // seq_file files (/proc/vmstat, memory.stat, io.stat, ...) answer a read
                     // with one chunk even when the buffer is larger: only a 0 means the end.
                     if n == self.buf.len() {
-                        let l = self.buf.len();
-                        self.buf.resize(l * 2, 0);
+                        if let Err(e) = self.grow() {
+                            err = Some(e);
+                            break;
+                        }
                     }
                 }
                 Err(e) => {
@@ -121,6 +159,7 @@ impl Slurp {
 
     #[cfg(not(all(target_arch = "x86_64", target_os = "linux")))]
     pub fn read(&mut self, path: &str) -> std::io::Result<&[u8]> {
+        self.shrink();
         let mut f = File::open(path)?;
         let mut n = 0;
         loop {
@@ -130,8 +169,7 @@ impl Slurp {
                 break;
             }
             if n == self.buf.len() {
-                let l = self.buf.len();
-                self.buf.resize(l * 2, 0);
+                self.grow().map_err(std::io::Error::from_raw_os_error)?;
             }
         }
         Ok(&self.buf[..n])
@@ -250,13 +288,45 @@ extern "C" {
     fn sysconf(name: i32) -> i64;
     fn signal(signum: i32, handler: usize) -> usize;
     fn flock(fd: i32, op: i32) -> i32;
+    fn alarm(seconds: u32) -> u32;
+    fn _exit(code: i32) -> !;
 }
 
 /// Set by SIGTERM/SIGINT: the main loop exits between ticks and drains the writer.
 pub static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Stop signals received so far.
+static STOP_SIGNALS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// After the first stop signal the process has this many seconds to drain; then SIGALRM's
+/// default action ends it (X-12).
+pub const HARD_STOP_S: u32 = 20;
 
+/// What a stop signal does, given how many came before it: the first asks for a clean stop
+/// (and arms the hard stop), any later one ends the process at once.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum StopAction {
+    Graceful,
+    Force,
+}
+
+pub fn stop_action(previous_signals: u32) -> StopAction {
+    if previous_signals == 0 {
+        StopAction::Graceful
+    } else {
+        StopAction::Force
+    }
+}
+
+/// Async-signal-safe: atomics, `alarm` and `_exit` only. A sampling thread or a writer stuck in
+/// an uninterruptible read/write never looks at `STOP`, so the flag alone is not enough (X-12).
 extern "C" fn on_stop(_sig: i32) {
+    let prev = STOP_SIGNALS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     STOP.store(true, std::sync::atomic::Ordering::SeqCst);
+    match stop_action(prev) {
+        StopAction::Graceful => unsafe {
+            alarm(HARD_STOP_S);
+        },
+        StopAction::Force => unsafe { _exit(1) },
+    }
 }
 
 pub fn install_stop_handlers() {
