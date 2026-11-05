@@ -3,7 +3,7 @@
 Standard library only. Two modes:
 
 * ``container`` (default): every run is a throwaway docker container with an exact name, ``--init``,
-  ``--cgroup-parent`` (default ``dev-gates.slice``), never privileged, never sharing a host namespace; the stress
+  ``--cgroup-parent`` and ``--pids-limit`` (both host-owned, required, no default), never privileged, never sharing a host namespace; the stress
   recipe is applied with cgroup limits (cpu.max, io throttle, memory) and exact-named sibling stressor containers.
   Everything it started is removed by exact name in a ``finally``.
 * ``inner``: for use inside a lane container, where there is no docker. pytest runs as a child process and the
@@ -27,7 +27,11 @@ import time
 from collections.abc import Callable, Sequence
 
 EXIT_STABLE, EXIT_FAILED, EXIT_ERROR, EXIT_INCONCLUSIVE = 0, 1, 2, 3
+# Version of the JSON report (docs/FORMATS.md). Additive fields keep it; a rename, removal or type change bumps it.
+REPORT_SCHEMA_VERSION = 1
 PSI_MAX_DEFAULT = 25.0
+ENV_CGROUP_PARENT = "FLAKEHUNT_CGROUP_PARENT"
+ENV_PIDS_LIMIT = "FLAKEHUNT_PIDS_LIMIT"
 RUN_TIMEOUT_FLOOR_S = 120
 TRACE_TAIL_LINES = 60
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,40}$")
@@ -71,7 +75,8 @@ class Options:
     image: str = ""
     mounts: tuple[str, ...] = ()
     workdir: str = "/work"
-    cgroup_parent: str = "dev-gates.slice"
+    cgroup_parent: str = ""  # host-owned: no default; container mode requires it
+    pids_limit: int = 0  # host-owned: no default; container mode requires it
     docker: str = "docker"
     cpus: float = 0.25
     cpu_percent: int = 90
@@ -93,6 +98,7 @@ class Options:
     pytest_python: str = "python"
 
 
+CONTENDED_CPUSET = "0"  # part of the recipe definition (lane and cpu stressor share this cpuset)
 RECIPES = ("none", "slow-cpu", "cpu-contended", "slow-disk", "mem-pressure", "combo")
 _INNER_RECIPES = ("none", "cpu-contended")
 
@@ -119,6 +125,10 @@ def validate(opts: Options) -> None:
         return
     if not opts.image:
         raise HuntError("container mode needs --image")
+    if not opts.cgroup_parent:
+        raise HuntError(f"container mode needs --cgroup-parent (or ${ENV_CGROUP_PARENT}): the slice is host policy, not guessed")
+    if opts.pids_limit < 1:
+        raise HuntError(f"container mode needs --pids-limit N (or ${ENV_PIDS_LIMIT}): the limit is host policy, not guessed")
     if opts.recipe in ("slow-disk", "combo") and not opts.io_device:
         raise HuntError(f"recipe {opts.recipe} needs --io-device (block device of the docker root); it is not guessed")
     if opts.recipe in ("mem-pressure", "combo") and not opts.memory:
@@ -147,17 +157,16 @@ def stress_names(opts: Options, index: int) -> list[str]:
 
 
 def _base_docker(opts: Options, name: str) -> list[str]:
-    return [opts.docker, "run", "--init", "--name", name, "--cgroup-parent", opts.cgroup_parent, "--pids-limit", "4096"]
+    return [opts.docker, "run", "--init", "--name", name, "--cgroup-parent", opts.cgroup_parent, "--pids-limit", str(opts.pids_limit)]
 
 
 def lane_argv(opts: Options, index: int) -> list[str]:
     argv = _base_docker(opts, lane_name(opts, index))
     if opts.recipe in ("slow-cpu", "combo"):
         argv += ["--cpus", f"{opts.cpus:g}"]
-    if opts.recipe == "cpu-contended":
-        argv += ["--cpu-shares", "10", "--cpuset-cpus", "0"]
-    if opts.recipe == "combo":
-        argv += ["--cpu-shares", "10"]
+    if opts.recipe in ("cpu-contended", "combo"):
+        # Pinned to the cpuset the cpu stressor spins on, so the lane really competes with it.
+        argv += ["--cpu-shares", "10", "--cpuset-cpus", CONTENDED_CPUSET]
     if opts.recipe in ("slow-disk", "combo"):
         argv += ["--device-write-bps", f"{opts.io_device}:{opts.io_write_bps}", "--device-read-iops", f"{opts.io_device}:{opts.io_read_iops}"]
     if opts.memory:
@@ -177,7 +186,7 @@ def stress_argvs(opts: Options, index: int) -> list[list[str]]:
     argvs = []
     if uses_cpu_stress(opts):
         argvs.append(
-            [*_base_docker(opts, f"flakehunt-{opts.run_id}-{index}-cpu"), "-d", "--cpu-shares", "1000", "--cpuset-cpus", "0", image,
+            [*_base_docker(opts, f"flakehunt-{opts.run_id}-{index}-cpu"), "-d", "--cpu-shares", "1000", "--cpuset-cpus", CONTENDED_CPUSET, image,
              "stress-ng", "--cpu", str(opts.stress_workers), "--cpu-load", str(opts.cpu_percent), "--timeout", f"{opts.run_timeout}s"]
         )
     if uses_mem_stress(opts):
@@ -188,19 +197,24 @@ def stress_argvs(opts: Options, index: int) -> list[list[str]]:
     return argvs
 
 
-def read_psi(kind: str) -> float:
+def read_psi(kind: str, level: str = "some") -> float:
     with open(f"/proc/pressure/{kind}", encoding="ascii") as handle:
         for line in handle:
-            if line.startswith("some "):
+            if line.startswith(f"{level} "):
                 return float(re.search(r"avg10=([0-9.]+)", line).group(1))
-    raise HuntError(f"no 'some' line in /proc/pressure/{kind}")
+    raise HuntError(f"no '{level}' line in /proc/pressure/{kind}")
 
 
-def psi_gate(opts: Options, reader: Callable[[str], float] = read_psi) -> dict[str, float]:
-    values = {kind: reader(kind) for kind in ("cpu", "memory")}
+# Start refusal signals (operator directive 2026-11-04b): memory pressure (some) and IO pressure (full). CPU PSI is a
+# stall measure while the CPUs are saturated on purpose, not a stop signal, so it is neither read nor gated.
+_PSI_SIGNALS = (("memory", "some"), ("io", "full"))
+
+
+def psi_gate(opts: Options, reader: Callable[[str, str], float] = read_psi) -> dict[str, float]:
+    values = {f"{kind}_{level}": reader(kind, level) for kind, level in _PSI_SIGNALS}
     busy = {k: v for k, v in values.items() if v > opts.psi_max}
     if busy:
-        raise HuntError(f"host pressure above {opts.psi_max:g} (some avg10): {busy}; start only on an idle host")
+        raise HuntError(f"host pressure above {opts.psi_max:g} (avg10): {busy}; start only when memory and IO pressure are low")
     return values
 
 
@@ -274,9 +288,9 @@ def one_run(opts: Options, runner: Runner, index: int) -> tuple[str, Result]:
     return classify(result), result
 
 
-def hunt(opts: Options, runner: Runner, *, psi: Callable[[str], float] = read_psi) -> dict:
+def hunt(opts: Options, runner: Runner, *, psi: Callable[[str, str], float] = read_psi) -> dict:
     validate(opts)
-    report: dict = {"recipe": opts.recipe, "mode": opts.mode, "run_id": opts.run_id, "selection": list(opts.pytest_args),
+    report: dict = {"schema_version": REPORT_SCHEMA_VERSION, "recipe": opts.recipe, "mode": opts.mode, "run_id": opts.run_id, "selection": list(opts.pytest_args),
                     "psi_at_start": psi_gate(opts, psi), "runs": [], "passes": 0, "failures": 0, "first_failure": None}
     for index in range(1, opts.max_runs + 1):
         started = time.monotonic()
@@ -341,7 +355,10 @@ def parse_args(argv: Sequence[str]) -> tuple[Options, argparse.Namespace]:
     parser.add_argument("-v", "--mount", action="append", default=[], help="docker -v SRC:DST[:ro]; repeatable")
     parser.add_argument("-e", "--env", action="append", default=[], help="docker -e KEY=VALUE; repeatable")
     parser.add_argument("--workdir", default="/work")
-    parser.add_argument("--cgroup-parent", default="dev-gates.slice")
+    parser.add_argument("--cgroup-parent", default=os.environ.get(ENV_CGROUP_PARENT, ""),
+                        help=f"host slice for every container (required in container mode; or ${ENV_CGROUP_PARENT}; no default)")
+    parser.add_argument("--pids-limit", type=int, default=int(os.environ.get(ENV_PIDS_LIMIT, "0")),
+                        help=f"docker --pids-limit (required in container mode; or ${ENV_PIDS_LIMIT}; no default)")
     parser.add_argument("--docker", default="docker")
     parser.add_argument("--cpus", type=float, default=0.25, help="slow-cpu/combo lane cpu.max in cores")
     parser.add_argument("--cpu-percent", type=int, default=90, help="stressor load per worker in percent")
@@ -362,7 +379,7 @@ def parse_args(argv: Sequence[str]) -> tuple[Options, argparse.Namespace]:
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit; starts nothing")
     ns = parser.parse_args(own)
     opts = Options(mode=ns.mode, recipe=ns.recipe, image=ns.image, mounts=tuple(ns.mount), workdir=ns.workdir,
-                   cgroup_parent=ns.cgroup_parent, docker=ns.docker, cpus=ns.cpus, cpu_percent=ns.cpu_percent,
+                   cgroup_parent=ns.cgroup_parent, pids_limit=ns.pids_limit, docker=ns.docker, cpus=ns.cpus, cpu_percent=ns.cpu_percent,
                    stress_workers=ns.stress_workers, io_device=ns.io_device, io_write_bps=ns.io_write_bps,
                    io_read_iops=ns.io_read_iops, memory=ns.memory, memory_swap=ns.memory_swap, stress_image=ns.stress_image,
                    env=tuple(ns.env), run_id=ns.run_id or f"{os.getpid()}-{int(time.time())}", psi_max=ns.psi_max,
@@ -371,7 +388,7 @@ def parse_args(argv: Sequence[str]) -> tuple[Options, argparse.Namespace]:
     return opts, ns
 
 
-def main(argv: Sequence[str] | None = None, runner: Runner | None = None, psi: Callable[[str], float] = read_psi) -> int:
+def main(argv: Sequence[str] | None = None, runner: Runner | None = None, psi: Callable[[str, str], float] = read_psi) -> int:
     opts, ns = parse_args(sys.argv[1:] if argv is None else argv)
     try:
         if ns.dry_run:

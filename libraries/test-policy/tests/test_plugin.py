@@ -1,4 +1,7 @@
+import builtins
 import os
+import subprocess
+import threading
 import types
 
 import pytest
@@ -68,10 +71,30 @@ def test_off_mode_checks_nothing(run):
     run("import time\ndef test_a():\n    time.sleep(1)\n", "--estate-policy=off").assert_outcomes(passed=1)
 
 
-def test_leaked_thread_fails_at_teardown(run):
+@pytest.fixture
+def held(monkeypatch):
+    """Resources the generated tests leak on purpose, held until THIS test releases them.
+
+    Nothing here depends on elapsed time: the leaked thread blocks on an event and the leaked child blocks reading a
+    pipe, so they are alive exactly until the finalizer below runs, however long the host stalls. The generated
+    sources reach the holder through the builtin name ``ESTATE_HELD``.
+    """
+    holder = types.SimpleNamespace(release=threading.Event(), things=[])
+    monkeypatch.setattr(builtins, "ESTATE_HELD", holder, raising=False)
+    yield holder
+    holder.release.set()
+    for thing in holder.things:
+        if isinstance(thing, subprocess.Popen):
+            thing.stdin.close()
+            thing.wait()
+        elif isinstance(thing, int):
+            os.close(thing)
+
+
+def test_leaked_thread_fails_at_teardown(run, held):
     body = (
-        "import threading, time\n"
-        "def nap():\n    time.sleep(1)\n"
+        "import threading\n"
+        "def nap():\n    ESTATE_HELD.release.wait()\n"
         "def test_a():\n"
         "    threading.Thread(target=nap, name='leaky', daemon=True).start()\n"
     )
@@ -80,35 +103,32 @@ def test_leaked_thread_fails_at_teardown(run):
     result.stdout.fnmatch_lines(["*thread still running: leaky#*"])
 
 
-def test_leaked_fd_and_child_are_both_reported(run):
+def test_leaked_fd_and_child_are_both_reported(run, held):
     body = (
         "import os, subprocess\n"
-        "KEEP = []\n"
         "def test_a():\n"
-        "    KEEP.append(os.open('/dev/null', os.O_RDONLY))\n"
-        "    KEEP.append(subprocess.Popen(['sleep', '1']))\n"
+        "    ESTATE_HELD.things.append(os.open('/dev/null', os.O_RDONLY))\n"
+        "    ESTATE_HELD.things.append(subprocess.Popen(['cat'], stdin=subprocess.PIPE))\n"
     )
     result = run(body)
     result.stdout.fnmatch_lines(["*file descriptor still open*", "*child process still present*"])
 
 
-def test_thread_that_stops_within_the_settle_window_is_not_a_leak(pytester):
-    pytester.makeini("[pytest]\nestate_policy_settle_seconds = 5\n")
-    pytester.makepyfile(
-        test_sample=(
-            "import threading, time\n"
-        "def nap():\n    time.sleep(1)\n"
-            "def test_a():\n"
-            "    threading.Thread(target=nap).start()\n"
-        )
-    )
-    pytester.runpytest_inprocess(*ARGS).assert_outcomes(passed=1)
-
-
-def test_leak_can_be_allowed(run):
+def test_thread_that_has_stopped_is_not_a_leak(run):
     body = (
-        "import threading, time, pytest\n"
-        "def nap():\n    time.sleep(1)\n"
+        "import threading\n"
+        "def test_a():\n"
+        "    worker = threading.Thread(target=lambda: None)\n"
+        "    worker.start()\n"
+        "    worker.join()\n"
+    )
+    run(body).assert_outcomes(passed=1)
+
+
+def test_leak_can_be_allowed(run, held):
+    body = (
+        "import threading, pytest\n"
+        "def nap():\n    ESTATE_HELD.release.wait()\n"
         "@pytest.mark.estate_allow('resource-leak', reason='daemon outlives the test by design', backlog='TP-02')\n"
         "def test_a():\n"
         "    threading.Thread(target=nap, daemon=True).start()\n"
@@ -142,6 +162,14 @@ def test_static_lines_without_function_or_source():
     ns = {}
     exec("def f():\n    pass\n", ns)
     assert plugin._static_lines(types.SimpleNamespace(function=ns["f"]), set(), 0.2) == []
+
+
+def test_settle_loop_waits_for_a_leak_that_goes_away(monkeypatch):
+    before = policy.Snapshot(frozenset(), frozenset(), frozenset())
+    leaked = policy.Snapshot(frozenset({"x#1"}), frozenset(), frozenset())
+    seen = iter([leaked, leaked, before])  # the leak disappears on the third look, whatever the clock says
+    monkeypatch.setattr(plugin, "take_snapshot", lambda: next(seen))
+    assert plugin._settled_leaks(before, 3600) == []
 
 
 def test_settle_loop_gives_up_after_the_deadline(monkeypatch):

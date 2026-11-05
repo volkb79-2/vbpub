@@ -8,7 +8,7 @@ import pytest
 from flakehunt import hunt
 from flakehunt.hunt import HuntError, Options, Result
 
-IDLE = lambda kind: 1.0  # noqa: E731
+IDLE = lambda kind, level: 1.0  # noqa: E731
 
 
 class FakeRunner:
@@ -48,7 +48,7 @@ class FakeProc:
 
 def opts(**kw):
     base = dict(image="img:1", run_id="t1", pytest_args=("tests/x.py::t",), pass_m=3, max_runs=5,
-                io_device="/dev/vda", memory="1g")
+                io_device="/dev/vda", memory="1g", cgroup_parent="test.slice", pids_limit=777)
     base.update(kw)
     return Options(**base)
 
@@ -95,9 +95,11 @@ def test_lane_argv_per_recipe():
     assert mem[mem.index("--memory") + 1] == "1g" and "--memory-swap" in mem and "-v" in mem and "-e" in mem
     combo = lane(recipe="combo")
     assert "--cpus" in combo and "--device-write-bps" in combo
+    assert combo.count("--cpu-shares") == 1 and combo[combo.index("--cpuset-cpus") + 1] == hunt.CONTENDED_CPUSET
     for argv in (disk, mem, combo, contended):
         assert "--privileged" not in argv and "--init" in argv
-        assert argv[argv.index("--cgroup-parent") + 1] == "dev-gates.slice"
+        assert argv[argv.index("--cgroup-parent") + 1] == "test.slice"
+        assert argv[argv.index("--pids-limit") + 1] == "777"
         assert not any(a in ("--pid=host", "--net=host", "--cgroupns=host") for a in argv)
     assert lane(recipe="none")[-3:] == ["-p", "no:cacheprovider", "tests/x.py::t"][-3:]
 
@@ -131,9 +133,27 @@ def test_cleanup_tolerates_already_removed_containers():
     assert hunt.hunt(opts(recipe="none", pass_m=1), Gone(), psi=IDLE)["verdict"] == "stable"
 
 
-def test_psi_gate_refuses_a_busy_host():
-    with pytest.raises(HuntError, match="pressure above 25"):
-        hunt.hunt(opts(), FakeRunner(), psi=lambda kind: 40.0 if kind == "cpu" else 0.0)
+def test_psi_gate_refuses_on_memory_some_or_io_full_only():
+    def busy(signal):
+        return lambda kind, level: 40.0 if f"{kind}_{level}" == signal else 0.0
+
+    for signal in ("memory_some", "io_full"):
+        with pytest.raises(HuntError, match=f"pressure above 25.*{signal}"):
+            hunt.hunt(opts(), FakeRunner(), psi=busy(signal))
+    # CPU PSI is a stall measure, not a stop signal (operator 2026-11-04b): never read, never gates.
+    asked = []
+
+    def reader(kind, level):
+        asked.append((kind, level))
+        return 0.0
+
+    report = hunt.hunt(opts(recipe="none", pass_m=1), FakeRunner(), psi=reader)
+    assert sorted(asked) == [("io", "full"), ("memory", "some")]
+    assert report["psi_at_start"] == {"memory_some": 0.0, "io_full": 0.0}
+
+
+def test_report_carries_schema_version():
+    assert hunt.hunt(opts(recipe="none", pass_m=1), FakeRunner(), psi=IDLE)["schema_version"] == hunt.REPORT_SCHEMA_VERSION == 1
 
 
 @pytest.mark.parametrize(
@@ -147,6 +167,8 @@ def test_psi_gate_refuses_a_busy_host():
         (dict(fail_n=0), "at least 1"),
         (dict(mode="inner", recipe="slow-cpu"), "outer container"),
         (dict(image=""), "needs --image"),
+        (dict(cgroup_parent=""), "needs --cgroup-parent"),
+        (dict(pids_limit=0), "needs --pids-limit"),
         (dict(recipe="slow-disk", io_device=""), "needs --io-device"),
         (dict(recipe="mem-pressure", memory=""), "needs --memory"),
     ],
@@ -177,23 +199,38 @@ def test_dry_run_plan_container_and_inner_start_nothing():
 
 
 def test_main_dry_run_report_and_errors(tmp_path, capsys):
-    argv = ["--image", "i", "--run-id", "m1", "--recipe", "none", "--dry-run", "--", "t.py"]
+    argv = ["--image", "i", "--cgroup-parent", "s.slice", "--pids-limit", "5", "--run-id", "m1", "--recipe", "none", "--dry-run", "--", "t.py"]
     assert hunt.main(argv) == 0
     assert "lane: docker run" in capsys.readouterr().out
     report_path = tmp_path / "r.json"
-    code = hunt.main(["--image", "i", "--run-id", "m1", "--recipe", "none", "--pass-m", "1", "--report", str(report_path), "--", "t.py"],
+    code = hunt.main(["--image", "i", "--cgroup-parent", "s.slice", "--pids-limit", "5", "--run-id", "m1", "--recipe", "none", "--pass-m", "1", "--report", str(report_path), "--", "t.py"],
                      runner=FakeRunner(), psi=IDLE)
     assert code == 0 and json.loads(report_path.read_text())["verdict"] == "stable"
     assert "stable after 1 runs" in capsys.readouterr().out
-    assert hunt.main(["--image", "i", "--run-id", "m1"], runner=FakeRunner(), psi=IDLE) == 2
+    assert hunt.main(["--image", "i", "--cgroup-parent", "s.slice", "--pids-limit", "5", "--run-id", "m1"], runner=FakeRunner(), psi=IDLE) == 2
     assert "no pytest selection" in capsys.readouterr().err
     assert hunt.main(["--run-id", "m1", "--", "t.py"], runner=FakeRunner(), psi=IDLE) == 2
 
 
 def test_main_default_run_id_is_valid(capsys):
     opts_, _ = hunt.parse_args(["--image", "i", "--", "t.py"])
+    opts_ = dataclasses.replace(opts_, cgroup_parent="s.slice", pids_limit=5)
     hunt.validate(opts_)
-    assert opts_.cgroup_parent == "dev-gates.slice"
+
+
+def test_host_owned_limits_have_no_default_and_come_from_cli_or_environment(monkeypatch):
+    monkeypatch.delenv(hunt.ENV_CGROUP_PARENT, raising=False)
+    monkeypatch.delenv(hunt.ENV_PIDS_LIMIT, raising=False)
+    bare, _ = hunt.parse_args(["--image", "i", "--", "t.py"])
+    assert (bare.cgroup_parent, bare.pids_limit) == ("", 0)
+    with pytest.raises(HuntError, match="needs --cgroup-parent"):
+        hunt.validate(bare)
+    monkeypatch.setenv(hunt.ENV_CGROUP_PARENT, "env.slice")
+    monkeypatch.setenv(hunt.ENV_PIDS_LIMIT, "321")
+    from_env, _ = hunt.parse_args(["--image", "i", "--", "t.py"])
+    assert (from_env.cgroup_parent, from_env.pids_limit) == ("env.slice", 321)
+    explicit, _ = hunt.parse_args(["--image", "i", "--cgroup-parent", "cli.slice", "--pids-limit", "9", "--", "t.py"])
+    assert (explicit.cgroup_parent, explicit.pids_limit) == ("cli.slice", 9)
 
 
 def test_psi_reader_parses_proc_format(tmp_path, monkeypatch):
@@ -202,6 +239,7 @@ def test_psi_reader_parses_proc_format(tmp_path, monkeypatch):
     real_open = open
     monkeypatch.setattr("builtins.open", lambda path, *a, **k: real_open(good if "/proc/pressure" in str(path) else path, *a, **k))
     assert hunt.read_psi("cpu") == 3.5
+    assert hunt.read_psi("cpu", "full") == 0.0
     good.write_text("full avg10=0.00\n")
     with pytest.raises(HuntError, match="no 'some' line"):
         hunt.read_psi("cpu")
@@ -211,9 +249,11 @@ def test_real_runner_runs_times_out_and_spawns():
     runner = hunt.Runner()
     ok = runner.run([sys.executable, "-c", "print('hi')"], timeout=60)
     assert (ok.returncode, ok.stdout.strip()) == (0, "hi")
-    slow = runner.run([sys.executable, "-c", "import time; print('x', flush=True); time.sleep(30)"], timeout=1)
+    # The children block on a pipe nobody writes to: alive until killed, however slow the host is.
+    blocked = "import os; print('x', flush=True); os.read(os.pipe()[0], 1)"
+    slow = runner.run([sys.executable, "-c", blocked], timeout=1)
     assert slow.returncode == 124 and "timed out" in slow.stderr
-    proc = runner.spawn([sys.executable, "-c", "import time; time.sleep(30)"])
+    proc = runner.spawn([sys.executable, "-c", "import os; os.read(os.pipe()[0], 1)"])
     hunt.stop_inner([proc])
     assert proc.returncode is not None
     assert hunt._text(None) == "" and hunt._text(b"a") == "a" and hunt._text("a") == "a"
@@ -232,5 +272,5 @@ def test_inner_spinner_script_is_valid_python():
 
 
 def test_main_without_report_file(capsys):
-    code = hunt.main(["--image", "i", "--run-id", "m2", "--recipe", "none", "--pass-m", "1", "--", "t.py"], runner=FakeRunner(), psi=IDLE)
+    code = hunt.main(["--image", "i", "--cgroup-parent", "s.slice", "--pids-limit", "5", "--run-id", "m2", "--recipe", "none", "--pass-m", "1", "--", "t.py"], runner=FakeRunner(), psi=IDLE)
     assert code == 0 and "stable" in capsys.readouterr().out

@@ -9,8 +9,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
-# Standard library plus pytest. Floor 8: the plugin uses pytest.Pytester-era hooks only through the test suite
-# (pytester ships with pytest >= 6.2); 8 is the estate tester-base pytest line.
+# Standard library plus pytest. Floor 8: the plugin relies on `pytest.Parser`/`pytest.Config`/`pytest.FixtureRequest`
+# exported at top level (pytest >= 7) and `Item.iter_markers`; 8 is the estate tester-base pytest line, and the
+# estate-wide freshness rule prefers the newest line at least 14 days old, so the floor is a minimum, not a pin.
 dependencies = ["pytest>=8"]
 dynamic = ["version"]
 
@@ -26,7 +27,7 @@ flakehunt = "flakehunt.hunt:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Version from the git tag `test-policy-vX.Y.Z` once a release contract exists (TP-01). No fallback_version.
+# Version from the git tag `test-policy-vX.Y.Z` minted by the release contract in cmru.toml. No fallback_version.
 [tool.setuptools_scm]
 root = "../.."
 tag_regex = "^test-policy-v(?P<version>[0-9].*)$"
