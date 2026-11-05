@@ -77,8 +77,8 @@ def git_handlers(dirty="", base_ok=True, count="3", repo="vbpub"):
     ]
 
 
-def psi(cpu, mem):
-    return ("print $2}' /proc/pressure/cpu /proc/pressure/memory", rg.Result(0, f"{cpu}\n{mem}\n"))
+def psi(cpu, mem, io=0):
+    return ("/^full/ {sub", rg.Result(0, f"{cpu}\n{mem}\n{io}\n"))
 
 
 def run_args(tmp_path, *extra):
@@ -90,18 +90,41 @@ def test_auto_picks_the_lower_psi_host(tmp_path):
 
     def per_host(argv):
         calls[argv[1]] = 1
-        return rg.Result(0, "9.0\n1.0\n" if argv[1] == "r1002" else "3.0\n2.0\n")
+        return rg.Result(0, "9.0\n1.0\n0.0\n" if argv[1] == "r1002" else "3.0\n2.0\n0.0\n")
 
     ctx, _ = ctx_for(tmp_path, [("/proc/pressure/cpu", per_host)])
     assert rg.choose_host(ctx, "auto").name == "v1001"
 
 
-def test_auto_refuses_when_both_hosts_are_above_25(tmp_path):
-    ctx, _ = ctx_for(tmp_path, [psi(30.0, 1.0)])
+def test_a_busy_cpu_is_not_a_stop_signal(tmp_path):
+    ctx, out = ctx_for(tmp_path, [psi(60.0, 1.0)])  # CPU PSI 60 with memory PSI 1: accepted
+    assert rg.choose_host(ctx, "auto").name in ("r1002", "v1001")
+    assert "cpu_some=60.0" in out[-1]
+
+
+def test_auto_prefers_the_host_with_less_cpu_stall_among_acceptable_ones(tmp_path):
+    def per_host(argv):
+        return rg.Result(0, "80.0\n20.0\n0\n" if argv[1] == "v1001" else "40.0\n24.0\n0\n")
+
+    ctx, _ = ctx_for(tmp_path, [("/^full/ {sub", per_host)])
+    assert rg.choose_host(ctx, "auto").name == "r1002"
+
+
+@pytest.mark.parametrize("cpu,mem,io", [(1.0, 30.0, 0.0), (1.0, 1.0, 30.0)])
+def test_auto_refuses_when_both_hosts_are_above_25_on_memory_or_io(tmp_path, cpu, mem, io):
+    ctx, _ = ctx_for(tmp_path, [psi(cpu, mem, io)])
     with pytest.raises(rg.GateError) as e:
         rg.choose_host(ctx, "auto")
-    assert e.value.code == 75 and "above PSI 25" in str(e.value)
+    assert e.value.code == 75 and "memory PSI some avg10 or io PSI full avg10" in str(e.value)
     assert not any("run-job" in " ".join(c[0]) for c in ctx.runner.calls)
+
+
+def test_auto_takes_the_only_host_below_the_memory_limit_whatever_its_cpu(tmp_path):
+    def per_host(argv):
+        return rg.Result(0, "5.0\n40.0\n0\n" if argv[1] == "r1002" else "90.0\n2.0\n0\n")
+
+    ctx, _ = ctx_for(tmp_path, [("/^full/ {sub", per_host)])
+    assert rg.choose_host(ctx, "auto").name == "v1001"
 
 
 def test_identity_check_runs_before_any_ssh_and_failure_aborts(tmp_path):

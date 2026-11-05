@@ -238,11 +238,13 @@ def remote(ctx: Ctx, host: Host, script: str, stdin_path: Optional[str] = None, 
 
 
 def psi_of(ctx: Ctx, host: Host) -> tuple:
-    r = remote(ctx, host, "awk '/^some/ {sub(\"avg10=\",\"\",$2); print $2}' /proc/pressure/cpu /proc/pressure/memory", timeout=60)
+    """(cpu some avg10, memory some avg10, io full avg10). CPU PSI is a stall measure, not utilisation: it only ranks hosts."""
+    r = remote(ctx, host, "{ awk '/^some/ {sub(\"avg10=\",\"\",$2); print $2}' /proc/pressure/cpu /proc/pressure/memory; "
+                          "awk '/^full/ {sub(\"avg10=\",\"\",$2); print $2}' /proc/pressure/io; }", timeout=60)
     vals = r.out.split()
-    if r.rc != 0 or len(vals) != 2:
+    if r.rc != 0 or len(vals) != 3:
         raise GateError(f"{host.name}: cannot read PSI over ssh (rc {r.rc}): {r.err.strip()[:200]}", 3)
-    return float(vals[0]), float(vals[1])
+    return float(vals[0]), float(vals[1]), float(vals[2])
 
 
 def choose_host(ctx: Ctx, wanted: str) -> Host:
@@ -256,12 +258,13 @@ def choose_host(ctx: Ctx, wanted: str) -> Host:
             continue
         host = ctx.hosts[name]
         identity(ctx, host)
-        cpu, mem = psi_of(ctx, host)
-        rows.append(f"{name} cpu={cpu} mem={mem}")
-        if max(cpu, mem) <= PSI_LIMIT and (best is None or max(cpu, mem) < best[0]):
-            best = (max(cpu, mem), host)
+        cpu, mem, io = psi_of(ctx, host)
+        rows.append(f"{name} mem_some={mem} io_full={io} cpu_some={cpu}")
+        # refusal signals are memory some / io full only (operator 2026-11-04b); CPU PSI just prefers the less busy host
+        if max(mem, io) <= PSI_LIMIT and (best is None or cpu < best[0]):
+            best = (cpu, host)
     if best is None:
-        raise GateError(f"refusing: every test host is above PSI {PSI_LIMIT:g} some avg10 ({'; '.join(rows)}); retry when quiet", 75)
+        raise GateError(f"refusing: every test host is above {PSI_LIMIT:g} on memory PSI some avg10 or io PSI full avg10 ({'; '.join(rows)}); retry when quiet", 75)
     ctx.say(f"host auto -> {best[1].name} ({'; '.join(rows)})")
     return best[1]
 
@@ -514,7 +517,7 @@ check_prereqs || prereq_fail
 
 waited=0
 while psi_high; do
-  if (( waited >= PSI_WAIT )); then log "PSI above $PSI_LIMIT after ${waited}s: refusing to start"; rc=75; exit 75; fi
+  if (( waited >= PSI_WAIT )); then log "PSI above $PSI_LIMIT (memory some / io full) after ${waited}s: refusing to start"; rc=75; exit 75; fi
   sleep 30; waited=$((waited + 30))
 done
 log "PSI ok (waited ${waited}s)"
@@ -604,7 +607,8 @@ PREREQ_FUNCS = r"""PREREQ_MSGS=()
 SEEN=()
 RG_BIN=
 RG_VER=
-psi_high() { awk -v lim="$PSI_LIMIT" '/^some/ {sub("avg10=","",$2); if ($2+0 > lim) f=1} END {exit !f}' /proc/pressure/cpu /proc/pressure/memory; }
+# stop signals: memory some avg10 and io full avg10 only; CPU PSI is a stall measure, not utilisation (operator 2026-11-04b)
+psi_high() { awk -v lim="$PSI_LIMIT" 'FNR==1 {n++} (n==1 && /^some/) || (n==2 && /^full/) {sub("avg10=","",$2); if ($2+0 > lim) f=1} END {exit !f}' /proc/pressure/memory /proc/pressure/io; }
 # PEP 440 ordering: 25.0.1.dev1 < 25.0.1a1 < 25.0.1b1 < 25.0.1rc1 < 25.0.1 < 25.0.1.post1; an unparsable version is never >= anything.
 VERCMP='import re, sys
 def key(v):
@@ -975,7 +979,7 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--allow-exec-env", action="store_true", help="do not refuse a lane in an exec-mode environment without container_name")
     r.add_argument("--name", default=None)
     r.add_argument("--detach", action="store_true", help="start and return; use status/logs/collect later")
-    r.add_argument("--wait-psi", type=int, default=900, help="seconds the host job may wait for PSI <= 25 before refusing (default 900)")
+    r.add_argument("--wait-psi", type=int, default=900, help="seconds the host job may wait for memory PSI some / io PSI full <= 25 before refusing (default 900)")
     r.add_argument("--poll", type=float, default=20)
     r.add_argument("extra", nargs="*", help="after `--`: extra run-gate arguments")
     for n in ("status", "logs", "collect", "cancel"):

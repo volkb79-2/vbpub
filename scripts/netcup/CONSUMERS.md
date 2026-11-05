@@ -269,8 +269,9 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 - **Host table.** `--hosts-file` / `$REMOTE_GATE_HOSTS` / `~/.config/remote-gate/hosts.json` (gitignored; template
   `runner/remote-gate-hosts.example.json`): per host the pinned-known-hosts ssh argv (runner user, `StrictHostKeyChecking=yes`), the
   provider identity check command and the on-host guard. Only `r1002` and `v1001` are accepted anywhere (hard allowlist in code).
-- **Host choice.** `auto` reads CPU and memory PSI `some avg10` over ssh on both hosts and takes the one with the lower max;
-  if both exceed 25 it refuses (exit 75) and prints both readings. The Netcup identity check runs before any ssh/scp write and the
+- **Host choice.** `auto` reads memory PSI `some avg10`, io PSI `full avg10` and CPU PSI `some avg10` over ssh on both hosts. Only memory some
+  or io full above 25 refuses a host (CPU PSI is a stall measure, not utilisation, and is not a stop signal: hosts are meant to run at 350-400% CPU);
+  among acceptable hosts the one with the lower CPU PSI is preferred. If both hosts exceed 25 on memory or io it refuses (exit 75) and prints both readings. The Netcup identity check runs before any ssh/scp write and the
   on-host guard (hostname, server id) prefixes every remote command.
 - **Source.** The worktree must have a clean tracked tree (untracked files are ignored); commit first with
   `git commit --only -- <paths>` (agents do anyway). HEAD and, with `--base REF`, the base commit (named by a temporary local ref
@@ -286,7 +287,7 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   A dirty tree is refused rather than patched in: one commit id is what the verdict is about.
   Seeds for the thin bundle are any `~/checkouts/<sha>` that already holds a commit of this repository (other repositories' checkouts are
   skipped by `git cat-file`); release tags of the repository (`*-v<digits>`, e.g. `dstdns-v0.1.0`, `run-gate-v25.0.2`) ride along as before.
-- **Run.** A detached host job (`run-job rg-<id>`, `~/rg/<id>/` and `~/jobs/rg-<id>/{job.log,EXIT}`) waits until PSI is <= 25
+- **Run.** A detached host job (`run-job rg-<id>`, `~/rg/<id>/` and `~/jobs/rg-<id>/{job.log,EXIT}`) waits until memory PSI some and io PSI full are <= 25 (CPU PSI is ignored)
   (`--wait-psi`, default 900 s, else exit 75, verdict `PSI_REFUSED`), then runs `nice -n 19 <run-gate> <lane> [--base SHA] [extra]` in the
   `mdt-cockpit-runner` container from the project dir (default: the worktree path's own subdirectory; pass `--project-dir .` for a repo
   whose `run-gate.toml` is at its root) with `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` and `ASSAY_GATE_HOST_REPO_ROOT=~/checkouts/<repo>` (the host
@@ -337,7 +338,7 @@ Every repository has a profile (built-in `REPO_DEFAULTS` in `remote-gate.py`, ov
 file; unknown keys are refused at load time). A repository without a profile needs only the cockpit and its run-gate. The prerequisites are
 checked in two places. Before anything is uploaded, over read-only ssh (a miss ends the command with exit 4, nothing created on the host): cockpit
 up, required images, a run-gate meeting the floor (a proper PEP 440 comparison: release candidates and dev builds are below the floor, the version is the last
-version-looking word of the first `--version` line), and the `uid_check` (a throwaway `docker run`, so only when the host's PSI is at most 25, otherwise
+version-looking word of the first `--version` line), and the `uid_check` (a throwaway `docker run`, so only when the host's memory PSI some and io PSI full are at most 25, otherwise
 deferred to the job). In the host job (a miss there ends with exit 76, verdict `PREREQ_MISSING`, `PREREQ MISSING: ...` lines and a pointer to this section in
 `job.log`): all of those again, the `uid_check` after the job's own PSI wait, and the `admission_check`, which needs the repo's `run-gate.toml` and so can only
 run once the checkout exists (it is therefore the one prerequisite that fails after the upload). The `admission_check` is fail-closed: an erroring
@@ -347,13 +348,13 @@ run once the checkout exists (it is therefore the one prerequisite that fails af
 | --- | --- | --- |
 | `run_gate_min`, `run_gate_bins` | first in-cockpit run-gate path whose `--version` is >= the floor | `25.0.1` (RG-154: `--jobs` on a pyz-pinned consumer); `/home/vscode/.local/bin/run-gate`, then `/home/vscode/.venvs/gate-tools2502/bin/run-gate` |
 | `required_images` | docker images that must exist on the host | `dstdns/test-runner:local` |
-| `uid_check` | `getent passwd <uid>` inside the image (a throwaway `docker run --rm --network none`, only on a host at PSI <= 25: before the upload when quiet, always in the job after its PSI wait) | image `dstdns/test-runner:local`, uid `1003` (run-gate >= 25 refuses `user = "invoker"` without a passwd entry, DST-27) |
+| `uid_check` | `getent passwd <uid>` inside the image (a throwaway `docker run --rm --network none`, only on a host at memory/io PSI <= 25: before the upload when quiet, always in the job after its PSI wait) | image `dstdns/test-runner:local`, uid `1003` (run-gate >= 25 refuses `user = "invoker"` without a passwd entry, DST-27) |
 | `admission_check` | if `run-gate admission show` in the checkout says `enabled=true`, a `max_concurrent=N` cap must be published | on (dstdns `[admission] enabled = true`; without a cap every lane ends `NOT_RUN no-headroom`, DST-28) |
 | `tester_image` | `RUN_GATE_TESTER_UNIFIED_IMAGE` for this repo on this host | host `image` |
 | `env` | extra `NAME=value` environment for the lane's `docker exec`; the job's own safety variables (`RUN_GATE_ALLOW_*`, `ASSAY_GATE_HOST(S)_REPO_ROOT`, `RUN_GATE_PROFILE`, `RUN_GATE_TESTER_UNIFIED_IMAGE`, `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONFIG`, `LD_PRELOAD`, `LD_LIBRARY_PATH`) are reserved and refused at load time | none |
 
 Bring-up steps for a (re)installed r1002/v1001 (none depends on earlier one-off host state; identity check before every write, one gate at a
-time, CPU and memory PSI `some avg10` <= 25, never nano1):
+time, memory PSI `some avg10` and io PSI `full avg10` <= 25 (CPU PSI is not a stop signal), never nano1):
 
 1. Runner, cockpit and `tester-unified:local`: the generic order in `runner/README.md` (steps 1-5). The cockpit must be running.
 2. **A run-gate >= 25.0.1 for dstdns**: as the runner user, `run-job setup-rg-25.0.2 -- bash ~/runner-scripts/setup-cockpit-run-gate.sh 25.0.2 <wheel-sha256>`.
