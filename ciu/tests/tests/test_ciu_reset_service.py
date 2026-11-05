@@ -422,10 +422,35 @@ class TestResetServiceValidation:
         with pytest.raises(ValueError, match="deploy.project_name"):
             reset_service({}, tmp_path, assume_yes=True)
 
-    def test_requires_label_prefix(self, tmp_path):
-        config = {"deploy": {"project_name": "test"}}
-        with pytest.raises(ValueError, match="deploy.labels.prefix"):
+    def test_label_prefix_defaults_to_project_name(self, tmp_path):
+        """CIU-200: a root without the optional [deploy.labels] table (tls-edge,
+        pwmcp, topos, nyxloom) resets, sweeping on <project_name>.component --
+        the label the scaffolded stack template stamps."""
+        config = {"deploy": {"project_name": "tls-edge"}}
+        with patch.object(engine.procutil, "run_cmd", return_value=_ok(stdout="")) as run:
             _reset(config, tmp_path, assume_yes=True)
+        ps = next(c.args[0] for c in run.call_args_list if "ps" in c.args[0])
+        assert f"label=tls-edge.component={tmp_path.name}" in ps
+
+    def test_explicit_label_prefix_wins_over_project_name(self, tmp_path):
+        config = {"deploy": {"project_name": "tls-edge", "labels": {"prefix": "x"}}}
+        with patch.object(engine.procutil, "run_cmd", return_value=_ok(stdout="")) as run:
+            _reset(config, tmp_path, assume_yes=True)
+        ps = next(c.args[0] for c in run.call_args_list if "ps" in c.args[0])
+        assert f"label=x.component={tmp_path.name}" in ps
+        assert not any("tls-edge.component" in str(a) for a in ps)
+
+    def test_refusal_helper_names_both_missing_keys(self):
+        assert engine.reset_refusal({}) == "deploy.project_name is required for reset"
+        assert engine.reset_refusal({"deploy": {"project_name": "p"}}) is None
+        assert engine.reset_label_prefix({"deploy": {}}) is None
+        assert engine.reset_label_prefix({"deploy": {"labels": None, "project_name": "p"}}) == "p"
+        # Unreachable through reset_refusal today (the prefix falls back to the
+        # project name); the guard stays for a future caller-visible change.
+        with patch.object(engine, "reset_label_prefix", return_value=None):
+            assert engine.reset_refusal({"deploy": {"project_name": "p"}}) == (
+                "deploy.labels.prefix is required for reset"
+            )
 
     def test_requires_repo_root_even_when_naming_pair_present(self, tmp_path):
         """CIU-71: --project-directory needs repo_root REGARDLESS of whether

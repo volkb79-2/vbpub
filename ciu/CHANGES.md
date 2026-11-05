@@ -219,6 +219,12 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- fix(ciu): `ciu clean` / `ciu worktree rm` no longer fail on roots without `[deploy.labels]` (tls-edge, pwmcp, topos, nyxloom): `reset_service` derives the orphan-sweep label prefix from `deploy.project_name` when `deploy.labels.prefix` is unset (CIU-200). Clean now evaluates reset's preconditions for every selected stack BEFORE removing any container and refuses with `[CIU-200] ... nothing was removed`; `--dry-run` reports the same refusal. Explains CIU-198's half-cleaned state.
+
+### Adoption / Migration Notes
+- Safe to ignore: no config change needed; an explicit `deploy.labels.prefix` still wins.
+
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=30ef50114b6da9ad7a0e72165104e7687f20af18 -->

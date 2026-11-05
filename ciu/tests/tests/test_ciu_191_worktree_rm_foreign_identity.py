@@ -344,6 +344,7 @@ def test_untagged_plan_uses_the_compose_label_container_listing(monkeypatch, tmp
     monkeypatch.setattr(deploy, "_stack_compose_projects", lambda *a, **k: ["naf-wt0002"])
     monkeypatch.setattr(deploy, "_stack_project_containers", lambda projects: ["naf-wt0002-api-1"])
     monkeypatch.setattr(deploy, "_known_stack_projects", lambda *a, **k: [])
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
     assert deploy.action_clean(
         repo, profile, [{"path": "apps/api"}], ignore_errors=True, plan_only=True
     ) == 0

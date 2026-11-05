@@ -5718,14 +5718,40 @@ def action_clean(
             "refusing to clean. Run `ciu env generate` in that worktree first."
         )
         return 1
+    # CIU-200: render every selected stack and evaluate reset's config
+    # preconditions BEFORE anything is removed. A refusal found only when
+    # step 2 reaches the stack leaves the containers step 1 already removed
+    # gone and the volumes/vol-* dirs/rendered files standing (CIU-198's shape).
+    # The re-render MUST carry the selection facts (S3.12): a consumer template
+    # referencing ciu.deployed_stacks renders during clean exactly as during
+    # up — omitting the context would crash mid-teardown (review B2).
+    rendered = render_selected_stacks(
+        repo_root, profile, selection,
+        ciu_context=profiles_pkg.render_ciu_context(profile, selection),
+    )
+    reset_refusals: list[str] = []
+    for entry in selection:
+        rel = entry["path"]
+        if rel not in rendered or not (repo_root / rel).resolve().is_dir():
+            continue
+        reason = engine.reset_refusal(config_model.deep_merge(config, rendered[rel]))
+        if reason:
+            reset_refusals.append(f"{rel}: {reason}")
     if plan_only:
         # `--dry-run`: print the plan and stop. The destructive passes below
         # never run, and the real clean does not re-print it (the plan is the
         # caller's pre-confirmation step, e.g. `ciu worktree rm`).
-        return _print_clean_plan(
+        plan_rc = _print_clean_plan(
             repo_root, config, stack_projects,
             tagged=tagged, owner=owner, name_owner=name_owner,
         )
+        for message in reset_refusals:
+            error(f"plan: clean would refuse to reset {message}")
+        return 1 if reset_refusals else plan_rc
+    if reset_refusals and not ignore_errors:
+        for message in reset_refusals:
+            error(f"[CIU-200] clean refuses to reset {message}; nothing was removed")
+        return 1
 
     # Step 1: stop + remove project containers. all_states=True so an exited
     # one-shot init/sidecar (e.g. *-vault-init) is removed too — otherwise it
@@ -5752,13 +5778,7 @@ def action_clean(
             warn(f"docker rm failed: {result.stderr}")
 
     # Step 2: per-stack reset (down -v + vol-*/rendered), COMPOSE_PROFILES='*'.
-    # The re-render MUST carry the selection facts (S3.12): a consumer template
-    # referencing ciu.deployed_stacks renders during clean exactly as during
-    # up — omitting the context would crash mid-teardown (review B2).
-    rendered = render_selected_stacks(
-        repo_root, profile, selection,
-        ciu_context=profiles_pkg.render_ciu_context(profile, selection),
-    )
+    # (The selection-aware render happened above, before step 1: CIU-200.)
     saved_profiles = os.environ.get("COMPOSE_PROFILES")
     os.environ["COMPOSE_PROFILES"] = "*"
     try:
