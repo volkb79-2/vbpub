@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from textual.widgets import Button, DataTable, Input, Select, Static, Tree
 
+from helpers import wait_until
 from tnt.actions import apply_plan, make_plan
 from tnt.cli import build_cli
 from tnt.errors import Refused
@@ -19,12 +20,9 @@ from tnt.tui.app import TntApp
 from tnt.tui.workflows import PlanReview
 
 
-async def _wait_for(pilot, predicate, *, count=100):
-    for _ in range(count):
-        await pilot.pause(0.05)
-        if predicate():
-            return
-    assert predicate(), "condition did not become true before the bounded UI wait ended"
+async def _wait_for(pilot, predicate, *, count=None):
+    # ``count`` is accepted for old call sites and ignored: waits are deadline-based (helpers.wait_until).
+    await wait_until(pilot, predicate)
 
 
 def _row(key_id=1, name="automation"):
@@ -311,11 +309,8 @@ def test_api_key_tui_writes_the_one_time_key_without_displaying_it(tmp_path):
                 find(tree.root)
                 assert api_keys is not None
                 tree.select_node(api_keys)
-                for _ in range(60):
-                    await pilot.pause(0.05)
-                    note = str(app.query_one("#apikey-note", Static).render()) if app.query("#apikey-note") else ""
-                    if "API key(s)" in note:
-                        break
+                await wait_until(pilot, lambda: bool(app.query("#apikey-note")) and "API key(s)" in str(
+                    app.query_one("#apikey-note", Static).render()), what="API-key list loading")
                 await pilot.pause(0.1)
                 view = app.query_one("ApiKeysView", ApiKeysView)
                 app.query_one("#apikey-operation", Select).value = "create"
@@ -327,14 +322,8 @@ def test_api_key_tui_writes_the_one_time_key_without_displaying_it(tmp_path):
                 assert plan_button.visible and plan_button.region.height > 0, str(plan_button.region)
                 clicked = await pilot.click(plan_button)
                 assert clicked, f"plan button was obscured by {app.screen.get_widget_at(*plan_button.region.center)}"
-                for _ in range(20):
-                    await pilot.pause(0.05)
-                    if isinstance(app.screen, PlanReview):
-                        break
-                assert isinstance(app.screen, PlanReview), (
-                    str(app.query_one("#apikey-note", Static).render()),
-                    [type(screen).__name__ for screen in app.screen_stack],
-                )
+                await wait_until(pilot, lambda: isinstance(app.screen, PlanReview),
+                                 what=f"plan review (note {str(app.query_one('#apikey-note', Static).render())!r})")
                 await pilot.click("#plan-apply")
                 await _wait_for(pilot, lambda: target.exists(), count=300)
                 raw_key = target.read_text("utf-8").strip()

@@ -4,6 +4,7 @@ import json
 import pytest
 from textual.widgets import Checkbox, DataTable, Static, Tree
 
+from helpers import wait_until
 from tnt.actions import apply_plan, make_plan
 from tnt.cli import build_cli
 from tnt.errors import Refused
@@ -103,10 +104,7 @@ def test_apps_tui_shows_upgrade_state_and_delete_volumes_defaults_no(config):
                 find(tree.root)
                 assert target is not None
                 tree.select_node(target)
-                for _ in range(40):
-                    await pilot.pause(0.05)
-                    if "loaded" in str(app.query_one("#workflow-note", Static).render()):
-                        break
+                await wait_until(pilot, lambda: "loaded" in str(app.query_one("#workflow-note", Static).render()))
                 view = app.query_one("#view-apps", WorkflowView)
                 table = view.query_one("#workflow-table", DataTable)
                 assert table.row_count == 1 and "upgrade_available" in str(table.get_cell_at((0, 2)) or "")

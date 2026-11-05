@@ -6,6 +6,7 @@ import struct
 import pytest
 from textual.widgets import DataTable, Input, Select, Static, TextArea, Tree
 
+from helpers import wait_until
 from tnt.actions import Action, Kind, Plan, RpcCall
 from tnt.adapters.v27 import V27
 from tnt.profile import load_profiles
@@ -116,11 +117,7 @@ def select(app, label):
 
 
 async def settle(pilot, app, until):
-    for _ in range(100):
-        await pilot.pause(0.05)
-        if until():
-            return
-    raise AssertionError("view never settled")
+    await wait_until(pilot, until, what="view settling")
 
 
 def test_navigation_shows_the_disks_view_fed_by_the_query_layer(session, server):
