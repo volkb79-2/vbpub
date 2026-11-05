@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -69,22 +70,41 @@ def snapshot(
             f"git is not on PATH. Install it, set {_GIT_EXECUTABLE_ENV}, or set "
             f"{_ALLOW_NO_GUARD_ENV}=1 to run without the repository-cleanliness guard."
         )
+    # Own session/process group: on a timeout the whole group is killed. subprocess.run() would kill only
+    # the direct child and orphan its descendants (git helpers, a wrapper script's children), which then
+    # outlive the test session and are reported by assay as a leaked process tree (PWMCP-33).
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [git, "--no-optional-locks", "status", "--porcelain", "--untracked-files=all", "--", "."],
             cwd=repository,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            check=False,
+            start_new_session=True,
         )
     except FileNotFoundError as exc:
         raise GitGuardUnavailable(f"git executable {git!r} cannot be run: {exc}") from exc
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
+        _kill_group(process)
         raise GitGuardUnavailable(f"git status did not finish within {timeout:g}s in {repository}") from exc
-    if result.returncode != 0:
-        raise GitGuardUnavailable(classify_git_failure(result.stderr))
-    return tuple(sorted(result.stdout.splitlines()))
+    except BaseException:
+        _kill_group(process)
+        raise
+    if process.returncode != 0:
+        raise GitGuardUnavailable(classify_git_failure(stderr))
+    return tuple(sorted(stdout.splitlines()))
+
+
+def _kill_group(process: subprocess.Popen[str]) -> None:
+    """SIGKILL the child's whole process group and reap it (idempotent)."""
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.communicate()
 
 
 def describe_change(before: tuple[str, ...], after: tuple[str, ...], limit: int = _REPORT_LIMIT) -> str:

@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+- fix(pwmcp): the test-session cleanliness guard killed only `git` on a status timeout and orphaned its descendants, which assay's process-tree check reported as `leaked-process-tree` at the R2 baseline; it now kills the whole process group (PWMCP-33)
+
 <!-- cmru: release history -->
 
 ## [1.64.1-r2] - 2026-11-05

@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -135,6 +136,56 @@ def test_snapshot_timeout_is_reported(repo: Path) -> None:
     slow.chmod(0o755)
     with pytest.raises(guard.GitGuardUnavailable, match="did not finish within 0.2s"):
         guard.snapshot(repo / "pwmcp", git_executable=str(slow), timeout=0.2)
+
+
+def _process_is_gone(pid: int) -> bool:
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text(encoding="ascii").rpartition(")")[2].split()[0]
+    except FileNotFoundError:
+        return True
+    return state == "Z"  # an unreaped zombie is dead; its reaper is not this test's concern
+
+
+def test_snapshot_timeout_kills_the_descendants_of_git(repo: Path) -> None:
+    """A timed-out ``git status`` must not leave helper processes behind (assay: leaked-process-tree)."""
+
+    pid_file = repo / "grandchild.pid"
+    slow = repo / "slow-git"
+    slow.write_text(f'#!/bin/sh\nsleep 30 &\necho $! > "{pid_file}"\nwait\n', encoding="utf-8")
+    slow.chmod(0o755)
+    with pytest.raises(guard.GitGuardUnavailable, match="did not finish within 1s"):
+        guard.snapshot(repo / "pwmcp", git_executable=str(slow), timeout=1)
+    pid = int(pid_file.read_text(encoding="ascii"))
+    deadline = time.monotonic() + 5
+    while not _process_is_gone(pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    try:
+        assert _process_is_gone(pid), f"descendant {pid} of the timed-out git outlived snapshot()"
+    finally:
+        if not _process_is_gone(pid):  # never leave it behind even when the assertion fails
+            os.kill(pid, 9)
+
+
+def test_snapshot_interrupt_kills_the_process_group(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    slow = repo / "slow-git"
+    slow.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    slow.chmod(0o755)
+    seen: list[int] = []
+    real_communicate = subprocess.Popen.communicate
+
+    def interrupted(self, *args, **kwargs):
+        if not seen:
+            seen.append(self.pid)
+            raise KeyboardInterrupt
+        return real_communicate(self, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        guard.snapshot(repo / "pwmcp", git_executable=str(slow))
+    deadline = time.monotonic() + 5
+    while not _process_is_gone(seen[0]) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert _process_is_gone(seen[0])
 
 
 @pytest.mark.parametrize(
