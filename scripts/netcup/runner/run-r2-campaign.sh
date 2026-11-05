@@ -13,6 +13,25 @@ identity_check
 [[ $# -ge 4 ]] || { echo "usage: $0 <name> <checkout-commit> <project-dir> <lane> [run-gate args...]" >&2; exit 2; }
 name=$1; commit=$2; rel=$3; lane=$4; shift 4
 [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'invalid campaign name' >&2; exit 2; }
+clamp_jobs() {  # DST-37: never pass --jobs above the lane's judge.mutation.jobs_max
+  local toml=$RUNNER_HOME/checkouts/$commit/$rel/assay.toml i max
+  [[ -f $toml ]] || return 0
+  max=$(python3 - "$toml" "$lane" <<'PY'
+import sys, tomllib
+cfg = tomllib.load(open(sys.argv[1], "rb"))
+print(cfg.get("lanes", {}).get(sys.argv[2], {}).get("judge", {}).get("mutation", {}).get("jobs_max", ""))
+PY
+  ) || return 0
+  [[ $max =~ ^[0-9]+$ ]] || return 0
+  for i in "${!args[@]}"; do
+    if [[ ${args[i]} == --jobs && ${args[i+1]:-} =~ ^[0-9]+$ ]] && (( args[i+1] > max )); then
+      echo "clamping --jobs ${args[i+1]} -> $max (lane $lane jobs_max)" >&2; args[i+1]=$max
+    elif [[ ${args[i]} =~ ^--jobs=([0-9]+)$ ]] && (( BASH_REMATCH[1] > max )); then
+      echo "clamping ${args[i]} -> --jobs=$max (lane $lane jobs_max)" >&2; args[i]="--jobs=$max"
+    fi
+  done
+}
+args=("$@"); clamp_jobs; set -- "${args[@]}"
 dir=$RUNNER_HOME/campaigns/$name
 install -d -m 0700 "$RUNNER_HOME/campaigns" "$RUNNER_HOME/locks" "$dir"
 exec 9>"$RUNNER_HOME/locks/$name.lock"
@@ -51,4 +70,7 @@ while :; do
 done
 printf '%s\n' "$final" > "$dir/final-exit"
 printf 'finished_utc=%s\nfinal_exit=%s\n' "$(date -u +%FT%TZ)" "$final" >> "$dir/metadata.txt"
+# <campaign>/verdict.json: the campaign summary a board can read without parsing logs (the lane's own verdict JSON stays in the checkout's .assay/)
+printf '{"campaign": "%s", "commit": "%s", "project": "%s", "lane": "%s", "attempts": %s, "final_exit": %s, "verdict": "%s", "finished_utc": "%s"}\n' \
+  "$name" "$commit" "$rel" "$lane" "$attempt" "$final" "$([[ $final == 0 ]] && echo PASS || echo NOT_PASS)" "$(date -u +%FT%TZ)" > "$dir/verdict.json"
 exit "$final"

@@ -191,7 +191,7 @@ def test_collect_maps_the_prereq_exit_code_to_a_verdict(tmp_path):
     ctx.runner.handlers.insert(0, ("/rc", rg.Result(0, "76\n")))
     host, meta, run_dir = rg.load_meta(ctx, "d4")
     assert rg.collect(ctx, host, meta, run_dir) == 76
-    assert out[-1] == "lane run-gate-docs verdict PREREQ_MISSING; exit_code 76"
+    assert out[-1] == "lane run-gate-docs verdict PREREQ_MISSING; exit_code 76; reason no lane output (job exit 76); see job.log"
 
 
 def test_collect_maps_the_psi_refusal_to_a_verdict(tmp_path):
@@ -200,7 +200,7 @@ def test_collect_maps_the_psi_refusal_to_a_verdict(tmp_path):
     ctx.runner.handlers.insert(0, ("/rc", rg.Result(0, "75\n")))
     host, meta, run_dir = rg.load_meta(ctx, "d6")
     assert rg.collect(ctx, host, meta, run_dir) == 75
-    assert out[-1] == "lane docs verdict PSI_REFUSED; exit_code 75"
+    assert out[-1] == "lane docs verdict PSI_REFUSED; exit_code 75; reason no lane output (job exit 75); see job.log"
 
 
 def test_substitution_is_single_pass():

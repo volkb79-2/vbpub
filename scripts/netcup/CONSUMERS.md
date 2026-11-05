@@ -302,6 +302,21 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   `lane-detail.log` (the lane's own log), `artifacts/` (`.assay/verdict*.json`, `progress*.jsonl`, `coverage*.json`, `.run-gate/**/*.log`),
   `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` (read it as a separate
   step); the command exits with the lane's exit code.
+- **Lane declaration checks (before anything is shipped).** The committed `run-gate.toml` / `assay.toml` are read locally and a run that is
+  certain to fail is refused with exit 2 and the reason: `--base` for an assay lane that declares its comparison base (`judge.base_source =
+  "declared"`, or a `judge.base` without `base_source = "request"`; assay refuses `--request-base`, so drop `--base`); a lane in an exec-mode
+  environment with no `container_name` (run-gate needs the worktree's own `ciu up` test-runner stack, which a throwaway host checkout never has
+  and this helper does not start; `--allow-exec-env` overrides); a lane name that is declared nowhere only warns. `--min-run-gate VER` raises or lowers the
+  profile's run-gate floor for one run. The vbpub profile floors the host run-gate at 25.0.1 and falls back to the `gate-tools2502` venv, so r1002's
+  default 24.3.0 is not used for estate lanes (add a newer venv with `runner/setup-cockpit-run-gate.sh`; a miss prints that command).
+- **Local `main`.** The throwaway checkout is detached and has no branches, but lanes declare `base = "main"` (assay.toml of nyxloom,
+  cowtree, worktree, ...). The controller's local `main` rides the same thin bundle (head `refs/heads/main`, its commits count towards the
+  "closest host checkout" choice) and the job creates `refs/heads/main` in the checkout without checking it out, so `--base main` and
+  `base = "main"` resolve like on the controller. Only a local branch `main` is shipped (no `origin/main`; no local `main` means none on the host).
+- **Why a run failed.** When the verdict is neither PASS nor FAIL the last line carries the cause: `lane <lane> verdict ERROR; exit_code 2; reason
+  <text>` (the verdict line's `reason`, the lane script's last own diagnostic line, else the job log's refusal line; `result.json` has the same `reason`).
+  Known causes append a `[hint: ...]`. Known silent-looking causes: an exec-mode lane without a stack (above), a declared base given `--base`,
+  a lane whose script requires `/workspaces/<repo>` to be a bind mount of its own (assay `self-qualification*`, backlog NC-14), a run-gate below the floor.
 - **Cleanup.** On exit (pass, fail, cancel) the job removes, by exact name, only `run-gate-*` containers whose `docker inspect` references
   this run's unique checkout directory `rg-<id>-<sha12>` (and only once the lane started, so a PSI refusal removes nothing), then the
   throwaway checkout and its pid file; logs stay. Another run's containers are never matched. `cancel <id>` sends SIGTERM to the job

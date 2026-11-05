@@ -17,6 +17,8 @@ docs landed together.
 | NC-03 | The install wizard connects with `StrictHostKeyChecking=no`; the host-key pin is trust-on-first-use | Minor | OPEN |
 | NC-04 | A runner account must be uid 1003 (tester-unified lane uid); provisioning created uid 1000 | Major | FIXED (this branch) |
 | NC-12 | Test-host disk layout: 40 GiB root, swap in the middle, cow behind it; root filled to 91-97% and neither root nor cow could grow | Major | CODE DONE 2026-11-05 (div2-disk-layout-20261105); live reinstall of v1001/r1002 OPEN |
+| NC-14 | Assay `self-qualification*` lanes need `/workspaces/<repo>` to be a bind mount of its own; the host cockpit mounts `~runner/checkouts` as `/workspaces`, so a remote-gate run ends `ERROR` ("not inside the declared /workspaces/vbpub bind") | Major | OPEN (remote-gate now names the cause; the cockpit or script fix needs an owner) |
+| NC-15 | Host cockpits carry run-gate 24.3.0 (r1002 default) / 25.0.0 (v1001 default) while the controller runs 25.1.1; only the `gate-tools2502` venv (25.0.2) meets the vbpub floor | Minor | OPEN (host refresh needs the host board; remote-gate floors at 25.0.1 meanwhile) |
 
 ---
 
@@ -165,3 +167,19 @@ answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to 
 **Observed.** r1002 and v1001 (512 GiB virtual disks) were installed as ESP 243 MiB, `/boot` 977 MiB, 40 GiB ext4 root, four 4 GiB swap partitions, then a 454.8 GiB btrfs `/srv/cow`. Root reached 91-97% (docker 27 GB, runner checkouts, build cache) and could not grow because the swap partitions sit directly behind it. Cause: debian-install-v2 `root_max_size_gb` required swap directly after root, and `provision-runner.sh` carved cow from the last free row.
 
 **Fix.** debian-install-v2 layout policy (swap last, root minimum, `disk_layout=dev-host`), cow carved from the largest free row at the end of the gap (`COW_SIZE_GIB`). See debian-install-v2 README "Disk layout policy".
+
+## NC-14 — assay self-qualification lanes cannot run in the host cockpit
+
+**Status:** OPEN. Severity Major.
+
+**Observed.** `remote-gate run r1002 <worktree> self-qualification-provisional --project-dir assay` (run `assay-selfqual-cov-a`) ended `ERROR; exit_code 2` after 3 s with only `self-qualification-container: the selected worktree is not inside the declared /workspaces/vbpub bind`. `assay/tools/self-qualification-container.sh` requires `findmnt --target <worktree>` to report TARGET `/workspaces/vbpub`; in the host cockpit `/workspaces` is the mount (`~runner/checkouts`), so TARGET is `/workspaces`.
+
+**Needed (owner: assay for the script, netcup for the cockpit).** Either `start-cockpit-runner.sh` adds a second bind `~runner/checkouts/vbpub` on `/workspaces/vbpub` (FSROOT then names the right host path), or the script accepts an ancestor mount and derives the host root from it. Until then the lane runs on the controller. remote-gate prints the reason and a hint instead of a bare exit 2.
+
+## NC-15 — host cockpit run-gate is older than the controller's
+
+**Status:** OPEN. Severity Minor.
+
+**Observed.** `docker exec mdt-cockpit-runner /home/vscode/.local/bin/run-gate --version`: r1002 24.3.0, v1001 25.0.0; `~/.venvs/gate-tools2502/bin/run-gate` is 25.0.2 on both; the controller runs 25.1.1.
+
+**Needed.** After the R2 campaigns on a host finish, `runner/setup-cockpit-run-gate.sh 25.1.1 <sha256>` (own venv, the default is left alone) and add that venv to the `run_gate_bins` of the vbpub and dstdns profiles. No host was changed by this entry.

@@ -171,7 +171,7 @@ def test_all_release_tags_ride_the_bundle_and_the_job_script(tmp_path):
     ctx, _ = ctx_for(tmp_path, [("for-each-ref", rg.Result(0, TAG_OUT))] + git_handlers() + [psi(1, 1), ls])
     assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "t3")) == 0
     gitcalls = [c[0] for c in ctx.runner.calls]
-    fer = next(c for c in gitcalls if "for-each-ref" in c)
+    fer = next(c for c in gitcalls if "for-each-ref" in c and "refs/tags/*-v[0-9]*" in c)
     assert fer[-1] == "refs/tags/*-v[0-9]*"
     bundle = next(c for c in gitcalls if "bundle" in c and "create" in c)
     assert "HEAD" in bundle and "refs/tags/run-gate-v24.3.0" in bundle and "refs/tags/assay-v7.2.0" in bundle
@@ -514,7 +514,7 @@ def test_real_git_and_bash_a_base_that_is_not_an_ancestor_of_head_reaches_the_ho
 
     job = rg.render_job(hosts()["v1001"], "t7", {"sha": head, "base": base, "tags": []}, "suite", ".", "", 60, [])
     part = job[job.index("if [[ -f $D/in.bundle ]]"):job.index("# every release tag of the source")]
-    script = f'D={dest.parent}\nCKDIR={host}\nBASE_SHA={base}\nlog() {{ echo "$@" >&2; }}\n' + part
+    script = f'D={dest.parent}\nCKDIR={host}\nBASE_SHA={base}\nMAIN_SHA=\nlog() {{ echo "$@" >&2; }}\n' + part
     r = subprocess.run(["bash", "-euo", "pipefail", "-c", script], capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr
     assert subprocess.run(["git", "cat-file", "-e", f"{base}^{{commit}}"], cwd=host).returncode == 0
