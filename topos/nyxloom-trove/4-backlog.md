@@ -384,20 +384,22 @@ enough: these are tiny reads and writes, not CPU-heavy), tests marked `os_integr
 operator's hypothesis (daemon work belongs in a VM, TUI in the container) holds for (2)-(4); the TUI and
 collector logic stay in containers.
 
-## TOP-SAMPLER-GATE - the topos-sampler lane is unverified in the registered gate (OPEN 2026-11-05)
+## TOP-SAMPLER-GATE - the topos-sampler lane is not yet a release gate (OPEN 2026-11-05)
 
-`topos/run-gate.toml` declares lane `topos-sampler` (docker build of `sampler/Dockerfile` target `test`,
-then the artifact target, then `tests/test_sampler_conformance.py`) and `topos/cmru.toml` declares step
-`build-sampler`. Neither has been run: this session had no permission to launch a gate. Open questions the
-first real run must answer: (1) does the run-gate `tester-unified` ephemeral container expose
-`/var/run/docker.sock` (the cockpit launcher `tester-unified/run` mounts it; the run-gate container launch
-path was not read to the end); (2) is the `mirror.gcr.io` base pullable and the crates.io fetch allowed
-from the gate host; (3) `cmru` has no documented way to run a non-release step by name, so
-`build-sampler` is declared but unwired (see cmru CONSUMERS.md `[steps.*]`). If (1) is false this is a
-product gap in run-gate (a lane that needs a Docker daemon) and must be filed in
-`run-gate-project` and `cmru` backlogs after checking their CHANGES; no shim lane was built. Until then the
-sampler's tests run only by hand: `docker build -f sampler/Dockerfile --target test .` from `topos/`, and the
-conformance script SKIPS (with a reason) when the binary is absent.
+The lane runs and passes: `run-gate topos-sampler` on the controller, 2026-11-05, 81 cargo tests and 9
+conformance tests. It is one BuildKit build of `sampler/Dockerfile` target `gate`. That build runs
+`cargo test` and `tests/test_sampler_conformance.py` against the release binary in parallel stages, with
+`--no-cache-filter test,conformance` so a verdict never comes from a cached layer. The lane is `bare-host`.
+The first run showed that the `tester-unified` gate container has a docker CLI but no buildx and no Docker
+socket. That is not a run-gate gap: a build-only lane needs no gate container, as with mdt-cockpit's
+`oci-push`. The bases (`mirror.gcr.io`), crates.io and PyPI were reachable from the controller.
+
+Still open:
+- the lane is not in the release gates of `topos/cmru.toml`;
+- `build-sampler` is declared but unwired, because `cmru` has no documented way to run a non-release
+  step by name (see cmru CONSUMERS.md `[steps.*]`).
+
+Both wait for the sampler branch to merge.
 
 ## TOP-SAMPLER-ENVELOPE - sampler cost under the D-024 envelope is unmeasured (OPEN 2026-11-05)
 
