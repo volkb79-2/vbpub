@@ -163,6 +163,22 @@ def test_saturated_busy_repliers_close_the_connection_without_a_reply() -> None:
     assert request.sent == b""
 
 
+def test_busy_replier_thread_start_failure_closes_and_releases(monkeypatch: pytest.MonkeyPatch) -> None:
+    server, closed = _bare_server()
+    assert server._client_slots.acquire(blocking=False)
+    server._busy_repliers = threading.BoundedSemaphore(1)
+
+    def no_thread(self: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", no_thread)
+    request = _Request()
+    with pytest.raises(RuntimeError):
+        server.process_request(request, None)
+    assert closed == [request]
+    assert server._busy_repliers.acquire(blocking=False)  # slot was released
+
+
 def test_scheduler_failure_releases_the_reserved_client_slot(monkeypatch: pytest.MonkeyPatch) -> None:
     """A dispatch exception must not permanently consume bounded concurrency."""
     server, _closed = _bare_server()

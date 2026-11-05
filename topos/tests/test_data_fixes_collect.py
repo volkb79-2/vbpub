@@ -222,6 +222,9 @@ def test_failed_inspect_is_negatively_cached_for_a_short_ttl() -> None:
     key, ent = _scope(CID)
     enrich_entities({key: ent}, inspect, cache=cache)
     assert calls == [CID, CID]
+    # A container that left the tree drops its negative entry too.
+    enrich_entities({}, inspect, cache=cache)
+    assert cache.failed_recently(CID) is False
 
 
 def test_sweep_budget_bounds_total_inspect_time() -> None:
