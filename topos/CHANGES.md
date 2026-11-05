@@ -6,6 +6,61 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.6.0] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=66da61266884e688d6276515155191f81a020599 -->
+
+### Added
+- feat(topos/poc): side-by-side terminal drawing PoC for the redesign (6bbf77701)
+
+### Fixed
+- fix(topos): restore bookkeeping before unmask; a real producer crash stays a failure (H-01, H-02, H-03) (94eb46d84)
+- fix(topos): replay jump epoch timestamps, busy reply off the accept thread, tolerant owned_markers (G-08, G-09, G-10) (9cbfbd6a3)
+- fix(topos): docker inspect negative cache, sweep budget, positive TTL (G-07) (50dd52828)
+- fix(topos): record append never truncates a non-recording file (G-06) (4202c90a0)
+- fix(topos): squeeze restore survives second signal, exclusive recovery record, restore original on clean exit (G-04, G-05) (131ef015a)
+- fix(topos): operator interrupt is not a producer failure; refresh stale gate tests (A-02 totals, derived DAMON, strict compression) (c0be18046)
+- fix(topos): first column tier always shown, BPF staleness from interval, more power units refused (G-01, G-02, G-03) (54f07e389)
+- fix(topos): snapshot window, redaction and mode, socket liveness probe before unlink (B-19) (59e7a749c)
+- fix(topos): recording append cuts a torn plain tail and refuses truncated zstd (B-18) (e481087c6)
+- fix(topos): gateway handler timeout and concurrency cap, proc_* sensitive, source-less findings sensitive (B-16, B-17) (6be9fdd2d)
+- fix(topos): query coverage vs requested window, no bridging of holes, slice grouping once, compare span check, MCP history honesty (B-10, B-11, B-12, B-13, B-15) (ceea6bba3)
+- fix(topos): SIGTERM shutdown path, producer-death exit, stale cursor/epoch, total deadlines, legacy hook/audit/cap, health causes (B-01, D-01, B-02, B-04, B-05, B-06, D-18) (97bc9acff)
+- fix(topos): DAMON teardown/markers, docker log tail, bounded journald stream, drill stop confirmation (C-10, C-11, C-13, C-14, D-08) (6c9f20f5f)
+- fix(topos): squeeze validation, signals, recovery file, confinement; container selector; kill preview parity (C-02, C-03, C-04, C-06, C-08, C-15, C-16) (485ba164c)
+- fix(topos): UI survives source failures, resize, replay history, Footer, drop dead k key (D-02, D-09, D-10, D-12) (234c136fc)
+- fix(topos): damon false zeros, bpf staleness and single pass, idle procs and incarnation pins, diag bands (A-10, A-12, B-14, A-14, A-16) (c3ae7ee6a)
+- fix(topos): missing metrics sort last, top-pressure dedupes ancestors, drill uses table formatting, name column capped at 40 (D-03, UI truths) (16110813e)
+- fix(topos): systemd gate maps container scopes, protected+power targets, expect-current, hardened owner inspect (C-01, C-07, C-09, C-12, C-18) (f7b0ba4c7)
+- fix(topos): io.stat stacked-device totals, io.cost metrics, docker/unit caches and timeouts, shared net filter, baselines, registry scopes (A-01, A-02, A-04, A-05, A-06, A-07, A-09, A-15, A-17, A-18, A-19) (a3ac817c3)
+- fix(topos): ConfigError for invalid config, strict values, unknown-key warnings, reject ignored CLI flags (D-04, D-05, D-06) (5c66060fc)
+- fix(topos): headless record progress reports real frame count and final summary (9c917d441)
+
+### Changed
+- chore(topos/poc): tidy the drawing PoC (5095db731)
+- merge(topos-fix-ui-20261105): topos deep-review fix round (fe588f4f7)
+- merge(topos-fix-data-20261105): topos deep-review fix round (329972ff8)
+
+### Documentation
+- docs(topos): single view at 260 columns, D-033 reversed, D-034 host boundary (c971dfe30)
+- docs(topos): documentation truth pass (README, architecture, readiness, trove pointers) (d59db6ca4)
+- docs(topos): new console plan, rewritten TUI-SPEC, truthful status and roadmap from the 2026-11-05 interview (0ff8e6b62)
+- docs(topos): dependency floor reasons and CHANGES entries for the UI/config fix round (D-17) (0ff51d6ac)
+
+### Testing
+- test(topos): fake collectors carry config so the live stream cannot crash mid-test (1f86ab730)
+- test(topos): only the first shutdown request sets the reason and exit status (c89027aa4)
+- test(topos): cover changed error branches in safety, daemon, collect, record and UI code (diff-coverage floor) (6688bf95f)
+- test(topos): BPF daemon loop test expects the configured staleness limit (G-02) (9fabf41a0)
+- test(topos): trickling-client test reads the queued reply after the server closes first (4a07541af)
+- test(topos): cover negative-cache retain and busy-replier start failure (1802f8644)
+- test(topos): convert p113 audit tests to real filesystem; changelog for G fixes (f3f617c35)
+- test(topos): restore pinned default_owner_inspect contract and pid-reuse rate check (G-12) (df2d5d7d0)
+- test(topos): operator interrupt is not a producer failure (6087686c3)
+- test(topos): real no-audit-log test; audit directory checks run on a real filesystem (D-15) (35ce7c8cc)
+- test(topos): replace elapsed-time assertions with state assertions; collect thread errors (D-14) (109981fa3)
+- test(topos): paddr_enabled string is now rejected (D-05) (f1345a925)
+
 ## [0.5.0] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=090d30d874f287192a434b82a87dc12ec506a0d1 -->
