@@ -4,14 +4,28 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [1.64.1-r2] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=2ef3a703070c40f8b7df04c5d236dde9eeb5496a -->
+
+### Added
+- feat(assay): R2 lanes declare jobs_max and run-gate jobs=auto (assay-jobs audit) (fe53428a8)
+- feat(pwmcp): honest bot-protection handling in inspect + human-supplied --storage-state (PWMCP-32) (6f61893f0)
+
+### Fixed
+- fix(pwmcp): R2 is CPU-bound: jobs_max 3, 3g/3 cpus, -x in the R2 argv (20bcd5648)
+- fix(pwmcp): weak bot-check text needs corroboration; scope cookie domains; fstat storage-state (c106ce1aa)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - feat(pwmcp): `inspect` recognises bot protection (Cloudflare managed challenge/block page, Akamai, PerimeterX, DataDome, Imperva, generic CAPTCHA) from status/headers/title/text/frames, exits 4 with an honest message, `--json` `blocked: true` + `provider`/`signals`/`status`/`final_url`/`waited_ms`, never writes `--output`, never retries, and reports a wait that ends on a challenge as blocked instead of a timeout (PWMCP-32)
 - feat(pwmcp): `inspect --storage-state FILE` reuses a human-exported Playwright session (mode 0600, scoped to the URL's host, counts only in output); README "Bot protection" and the pwmcp-fetch skill say to report BLOCKED and offer the human-in-the-loop route. No solver or circumvention (PWMCP-32)
 
 ### Fixed
 - fix(pwmcp): weak bot-check words ("DataDome", "px-captcha", "I'm not a robot", "verify you are human", "are you a robot") now need corroboration (blocking status or a near-empty page) instead of being definitive on any short page; a storage-state cookie scoped to a bare TLD or `co.uk`-style suffix no longer matches every host, and the file is checked on the opened descriptor (regular file, owned by the current user, 0600) (PWMCP-32)
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [1.64.1-r1] - 2026-11-04
 <!-- cmru: generated -->
