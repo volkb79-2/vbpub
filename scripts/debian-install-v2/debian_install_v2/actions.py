@@ -80,8 +80,8 @@ _SAFE_COMMANDS = {
     "mkfs.ext4": {"-F", "-q", "-O", "-L"},
     # Data area (installer._configure_data_area): filesystems on a BLANK new
     # partition/LV only; lvm2 for the optional PV/VG/LV layout.
-    "mkfs.btrfs": {"-f", "-L"},
-    "mkfs.xfs": {"-f", "-L"},
+    "mkfs.btrfs": {"-L"},
+    "mkfs.xfs": {"-L"},
     "pvcreate": {"-y"},
     "vgcreate": {"-s"},  # non-empty so unknown options are refused
     "vgchange": {"-ay"},

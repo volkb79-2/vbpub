@@ -60,6 +60,10 @@ def test_default_partition_is_the_512_gib_layout():
         ("partition", {"mount": "/boot/data"}, None, "system tree"),
         ("partition", {"mount": "/srv/../etc"}, None, "dot segments"),
         ("partition", {"label": "THIS_LABEL_IS_TOO_LONG"}, None, "label"),
+        ("partition", {"label": "OTHER"}, None, "label must be MDT_COW"),
+        ("partition", {"mount": "/srv/tree-cache"}, None, "system tree"),
+        ("partition", {"mount": "/srv/tree-upper/x"}, None, "system tree"),
+        ("lvm", None, {"vg": "v", "lvs": [{"name": "a", "size_gb": 1, "fs": "ext4", "mount": "/srv/tree-cache"}]}, "system tree"),
         ("partition", {"size_gb": 0}, None, "integer GiB"),
         ("partition", {"size_gb": 100, "size_fraction": "1/3"}, None, "not both"),
         ("partition", {"size_fraction": "3/2"}, None, "fraction"),
@@ -245,7 +249,7 @@ def test_partition_commands_pass_the_allowlist(tmp_path):
     )
     assert any(a[0].endswith("mount") and a[1] == "/srv/cow" for a in argvs)
     written = installer.actions.dry_run_writes["/etc/fstab"]
-    assert "LABEL=MDT_COW /srv/cow btrfs noatime,user_subvol_rm_allowed,nofail 0 0" in written
+    assert "LABEL=MDT_COW /srv/cow btrfs noatime,user_subvol_rm_allowed,nofail 0 0" in written  # dry run: no UUID yet
     assert "UUID=abc / ext4" in written
 
 
@@ -276,8 +280,11 @@ def test_new_commands_are_allowlisted_strictly():
 class FakeActions(HostActions):
     """Non-dry-run runner with scripted blkid/vgs/lvs/findmnt answers; records every command."""
 
-    def __init__(self, signatures=None, vg_pvs="", lvs=""):
+    def __init__(self, signatures=None, vg_pvs="", lvs="", blkid_errors=None, label_devices=(), uuids=None):
         super().__init__(dry_run=False)
+        self.blkid_errors = dict(blkid_errors or {})
+        self.label_devices = list(label_devices)
+        self.uuids = dict(uuids or {})
         self.signatures = dict(signatures or {})
         self.vg_pvs, self.lvs = vg_pvs, lvs
         self.calls: list[list[str]] = []
@@ -289,6 +296,12 @@ class FakeActions(HostActions):
         tool = argv[0].rsplit("/", 1)[-1]
         if tool == "blkid":
             device = argv[-1]
+            if device in self.blkid_errors:
+                raise ActionError(f"action failed ({self.blkid_errors[device]}): blkid")
+            if "-t" in argv:
+                return "".join(f"{d}\n" for d in self.label_devices)
+            if "UUID" in argv and device in self.uuids:
+                return self.uuids[device] + "\n"
             if "TYPE" in argv and self.signatures.get(device):
                 return self.signatures[device] + "\n"
             raise ActionError("action failed (2): blkid")
@@ -353,6 +366,52 @@ def test_lvm_rerun_creates_only_what_is_missing(tmp_path):
     actions = FakeActions(signatures={"/dev/vda8": "LVM2_member"}, vg_pvs="/dev/vdb1")
     with pytest.raises(InstallerError, match="already exists on other physical volumes"):
         _real_stage_two(tmp_path, actions, "lvm", lvm=LVM_CFG)._configure_data_area()
+
+
+def test_blkid_failure_is_not_blank_fail_closed(tmp_path):
+    actions = FakeActions(blkid_errors={"/dev/vda8": 4})  # probe error, not "no signature"
+    with pytest.raises(InstallerError, match="cannot determine whether /dev/vda8 is blank"):
+        _real_stage_two(tmp_path, actions, "partition")._configure_data_area()
+    assert not any(c[0].rsplit("/", 1)[-1].startswith("mkfs") for c in actions.calls)
+    actions = FakeActions(blkid_errors={"/dev/vda8": 4})
+    with pytest.raises(InstallerError, match="cannot determine whether"):
+        _real_stage_two(tmp_path, actions, "lvm", lvm=LVM_CFG)._configure_data_area()
+    assert not any(c[0].rsplit("/", 1)[-1] == "pvcreate" for c in actions.calls)
+
+
+def test_fstab_uses_uuid_and_ambiguous_label_is_refused(tmp_path):
+    actions = FakeActions(uuids={"/dev/vda8": "1234-abcd"}, label_devices=["/dev/vda8"])
+    _real_stage_two(tmp_path, actions, "partition")._configure_data_area()
+    assert "UUID=1234-abcd /srv/cow btrfs noatime,user_subvol_rm_allowed,nofail 0 0" in actions.files["/etc/fstab"]
+    actions = FakeActions(uuids={"/dev/vda8": "1234-abcd"}, label_devices=["/dev/vda8", "/dev/vdb1"])
+    with pytest.raises(InstallerError, match="also on /dev/vdb1"):
+        _real_stage_two(tmp_path, actions, "partition")._configure_data_area()
+    assert "/etc/fstab" not in actions.files
+
+
+def test_rerun_with_changed_swap_count_cannot_disturb_a_populated_data_partition(tmp_path):
+    old = _planner(tmp_path)
+    swap, root = old._plan_swap_partitions()
+    current = old._parse_partition_entries(old._write_sfdisk_plan(swap, root))
+    new = make_planner(tmp_path, disk_gib=512, root_gib=500, swap_disk_total_gb=16, swap_partition_count=2)
+    _set(new, disk_layout="dev-host", data_area="partition", data_partition={}, data_lvm={})
+    swap2, root2 = new._plan_swap_partitions()
+    planned = new._parse_partition_entries(new._write_sfdisk_plan(swap2, root2))
+    data_number = next(n for n, e in current.items() if e.get("name") == "MDT_COW")
+    # populated: refused with a clear error
+    new.actions = FakeActions(signatures={f"/dev/vda{data_number}": "btrfs"})
+    with pytest.raises(InstallerError, match="refusing to delete or resize data-area partition"):
+        new._refuse_to_disturb_data_partitions(current, planned)
+    # unreadable probe counts as in use
+    new.actions = FakeActions(blkid_errors={f"/dev/vda{data_number}": 1})
+    with pytest.raises(InstallerError, match="cannot determine"):
+        new._refuse_to_disturb_data_partitions(current, planned)
+    # provably blank (blkid exit 2): may be re-planned
+    new.actions = FakeActions()
+    new._refuse_to_disturb_data_partitions(current, planned)
+    # unchanged layout: never probed, never refused
+    new.actions = FakeActions(signatures={f"/dev/vda{data_number}": "btrfs"})
+    new._refuse_to_disturb_data_partitions(current, current)
 
 
 # ---------------------------------------------------------------- customscript

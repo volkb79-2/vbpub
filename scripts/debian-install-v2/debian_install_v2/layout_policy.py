@@ -180,6 +180,8 @@ LABEL_RE = re.compile(r"[A-Za-z0-9_.-]{1,12}")  # xfs limits labels to 12 charac
 LV_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,30}")
 _RESERVED_MOUNT_PREFIXES = (
     "/boot", "/etc", "/usr", "/var/lib/dpkg", "/proc", "/sys", "/dev", "/run", "/bin", "/sbin", "/lib",
+    # runner tree-cache paths (mdt-cockpit): a data area must never shadow them
+    "/srv/tree-cache", "/srv/tree-upper",
 )
 DATA_ALIGN_SECTORS = 2048
 
@@ -282,6 +284,11 @@ def parse_data_area(mode: object, partition: object, lvm: object) -> DataArea:
         if raw["fs"] not in DATA_FILESYSTEMS:
             raise LayoutPolicyError(f"data_partition fs must be one of {', '.join(DATA_FILESYSTEMS)}")
         size, fraction = _size_fields(raw, "data_partition")
+        if raw["label"] != COW_LABEL:
+            raise LayoutPolicyError(
+                f"data_partition label must be {COW_LABEL}: the runner's cow detection (cow-carve/provision-runner) "
+                "finds the cow area by that label only"
+            )
         return DataArea(
             "partition", fs=raw["fs"], mount=_check_mount(raw["mount"], "data_partition"),
             label=_check_label(raw["label"], "data_partition"), size_gb=size, size_fraction=fraction,

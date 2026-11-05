@@ -2777,6 +2777,7 @@ MaxFileSec=1month
                 for number, entry in plan_entries.items()
             }
             if current_geometry != plan_geometry:
+                self._refuse_to_disturb_data_partitions(current_entries, plan_entries)
                 self.actions.write_file(str(backup_dir / backup_name), current_dump, 0o600)
                 backup_digest = hashlib.sha256(current_dump.encode("utf-8")).hexdigest()
                 self.actions.write_file(str(backup_dir / checksum_name), f"{backup_digest}  {backup_name}\n", 0o644)
@@ -2819,6 +2820,32 @@ MaxFileSec=1month
             0o600,
         )
         self._mark_step("partitions", "planned" if self.actions.dry_run else "success", plan_path)
+
+    def _refuse_to_disturb_data_partitions(
+        self,
+        current_entries: dict[int, dict[str, str]],
+        plan_entries: dict[int, dict[str, str]],
+    ) -> None:
+        """A rerun must never delete, renumber or resize a data-area partition that already holds a signature.
+
+        The data partition number follows the swap partitions, so a changed swap count moves it. Only a partition
+        that is provably blank (blkid exit 2) may be re-planned; an unreadable probe counts as "in use".
+        """
+        for number, entry in current_entries.items():
+            if not self._is_data_partition(entry):
+                continue
+            planned = plan_entries.get(number)
+            if planned is not None and self._is_data_partition(planned) and (
+                self._geometry_for_comparison(entry) == self._geometry_for_comparison(planned)
+            ):
+                continue
+            signature = self._blkid_value(f"{self._partition_base}{number}", "TYPE")
+            if signature:
+                raise InstallerError(
+                    f"refusing to delete or resize data-area partition {number}: it holds a {signature} signature "
+                    "and the requested layout (for example a changed swap partition count) would move or change it. "
+                    "Keep the layout of the installed host, or migrate the data and wipe the partition by hand first"
+                )
 
     def _write_and_verify_partition_plan(
         self,
@@ -3768,8 +3795,24 @@ MaxFileSec=1month
             return ""
         try:
             return self._run(["/usr/sbin/blkid", "-s", tag, "-o", "value", device])
-        except ActionError:
-            return ""
+        except ActionError as exc:
+            # blkid exits 2 only when it found no matching tag (a blank device). Any other failure
+            # (I/O error, missing device node, probe error) is NOT blank: fail closed.
+            if "action failed (2)" in str(exc):
+                return ""
+            raise InstallerError(f"cannot determine whether {device} is blank (blkid failed): {exc}") from exc
+
+    def _devices_with_label(self, label: str) -> list[str]:
+        """Block devices whose filesystem label is `label` (blkid exit 2 = none)."""
+        if self.actions.dry_run:
+            return []
+        try:
+            out = self._run(["/usr/sbin/blkid", "-t", f"LABEL={label}", "-o", "device"])
+        except ActionError as exc:
+            if "action failed (2)" in str(exc):
+                return []
+            raise InstallerError(f"cannot list devices labelled {label} (blkid failed): {exc}") from exc
+        return [line.strip() for line in out.splitlines() if line.strip()]
 
     def _ensure_data_filesystem(self, device: str, fs: str, label: str | None) -> None:
         """mkfs only on a BLANK device; the same fs again is kept; anything else is refused."""
@@ -3808,7 +3851,14 @@ MaxFileSec=1month
         mounts: list[tuple[str, str, str]] = []  # (fstab source, mount point, fs)
         if area.mode == "partition":
             self._ensure_data_filesystem(device, area.fs, area.label)
-            mounts.append((f"LABEL={area.label}", area.mount, area.fs))
+            others = [d for d in self._devices_with_label(area.label) if os.path.realpath(d) != os.path.realpath(device)]
+            if others:
+                raise InstallerError(
+                    f"label {area.label} is also on {', '.join(others)}: an ambiguous cow label would leave "
+                    f"{area.mount} on the root filesystem; wipe or relabel the stale device and rerun"
+                )
+            uuid = self._blkid_value(device, "UUID")
+            mounts.append((f"UUID={uuid}" if uuid else f"LABEL={area.label}", area.mount, area.fs))
         else:
             pv_type = self._blkid_value(device, "TYPE")
             if pv_type not in {"", "LVM2_member"}:

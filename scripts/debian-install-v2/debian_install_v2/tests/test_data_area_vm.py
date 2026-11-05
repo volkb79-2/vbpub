@@ -186,7 +186,8 @@ def test_real_partition_data_area_on_loop_disk(tmp_path):
         assert sh("blkid", "-s", "TYPE", "-o", "value", data) == "btrfs"
         assert sh("blkid", "-s", "LABEL", "-o", "value", data) == lp.COW_LABEL
         assert sh("findmnt", "-n", "-o", "FSTYPE", MOUNT) == "btrfs"
-        assert f"LABEL={lp.COW_LABEL} {MOUNT} btrfs noatime,user_subvol_rm_allowed,nofail 0 0" in fstab_copy.read_text("utf-8")
+        data_uuid = sh("blkid", "-s", "UUID", "-o", "value", data)
+        assert f"UUID={data_uuid} {MOUNT} btrfs noatime,user_subvol_rm_allowed,nofail 0 0" in fstab_copy.read_text("utf-8")
         rows = sh("lsblk", "-P", "-o", "PATH,PARTLABEL,FSTYPE,LABEL", loop).splitlines()
         cows = [row for row in rows if 'FSTYPE="btrfs"' in row and f'LABEL="{lp.COW_LABEL}"' in row]
         assert len(cows) == 1 and f"{loop}p2" in cows[0]
