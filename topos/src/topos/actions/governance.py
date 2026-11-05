@@ -193,7 +193,10 @@ def _systemctl_show_reader(unit: str) -> str | None:
         return None
 
     raw = proc.stdout.strip()
-    if not raw or raw in {"", "(null)", "infinity"}:
+    if raw == "infinity":
+        # systemd's spelling of "no limit" is the cgroup "max".
+        return "max"
+    if not raw or raw in {"", "(null)"}:
         return None
 
     return raw

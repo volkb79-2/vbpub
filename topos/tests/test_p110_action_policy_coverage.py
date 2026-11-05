@@ -169,7 +169,7 @@ def test_systemctl_reader_transport_failures_return_none_exactly(
         (7, "ignored\n", None),
         (0, "", None),
         (0, "(null)\n", None),
-        (0, "infinity\n", None),
+        (0, "infinity\n", "max"),
         (0, " 1048576 \n", "1048576"),
     ],
 )
