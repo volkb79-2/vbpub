@@ -43,9 +43,13 @@ unsafe_symlink_omissions = [
 language = "python"
 source_roots = ["src/tnt"]
 mode = "whole_target"
-# Every shipped module except __main__.py (4-line launcher).
+# Every shipped module that has executable lines, except __main__.py (4-line
+# launcher). src/tnt/__init__.py and src/tnt/tui/__init__.py are docstring-only:
+# they have no executable lines, so a whole-target floor refuses them
+# (NO_MEASUREMENT/TARGET_NOT_MEASURED). The same shape is excluded in
+# libraries/iobench and libraries/test-policy; tests/test_assay_lane_inventory.py keeps
+# this inventory honest. src/tnt/adapters/__init__.py has real code and stays.
 targets = [
-  "src/tnt/__init__.py",
   "src/tnt/actions.py",
   "src/tnt/adapters/__init__.py",
   "src/tnt/adapters/base.py",
@@ -69,7 +73,6 @@ targets = [
   "src/tnt/ssh.py",
   "src/tnt/testing.py",
   "src/tnt/transport.py",
-  "src/tnt/tui/__init__.py",
   "src/tnt/tui/apikeys.py",
   "src/tnt/tui/app.py",
   "src/tnt/tui/audit.py",

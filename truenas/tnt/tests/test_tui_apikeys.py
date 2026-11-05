@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from textual.widgets import Button, DataTable, Input, Select, Static
 
+from helpers import wait_until
 from tnt.actions import Action, Kind, Plan, RpcCall
 from tnt.host_store import load_host_store
 from tnt.menu import MENU
@@ -15,12 +16,9 @@ from tnt.tui.apikeys import ApiKeysView
 from tnt.tui.app import TntApp
 
 
-async def _wait_for(pilot, predicate, *, count=120):
-    for _ in range(count):
-        await pilot.pause(0.05)
-        if predicate():
-            return
-    assert predicate(), "API-key view did not settle before the bounded wait ended"
+async def _wait_for(pilot, predicate, *, count=None):
+    # ``count`` is accepted for old call sites and ignored: waits are deadline-based (helpers.wait_until).
+    await wait_until(pilot, predicate, what="API-key view settling")
 
 
 def _create_plan():

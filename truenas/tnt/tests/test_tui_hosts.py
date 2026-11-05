@@ -7,6 +7,7 @@ import pytest
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, Tree
 
+from helpers import wait_until
 from tnt.errors import ProfileError
 from tnt.host_store import HostStore, load_host_store
 from tnt.menu import MENU, MenuItem
@@ -16,12 +17,9 @@ from tnt.tui.app import TntApp, WorkerDrainDecision
 from tnt.tui.hosts import HostForm, HostPicker, HostRemoveConfirm
 
 
-async def _wait_for(pilot, predicate, *, count=160):
-    for _ in range(count):
-        await pilot.pause(0.05)
-        if predicate():
-            return
-    assert predicate(), "condition did not become true before the bounded UI wait ended"
+async def _wait_for(pilot, predicate, *, count=None):
+    # ``count`` is accepted for old call sites and ignored: waits are deadline-based (helpers.wait_until).
+    await wait_until(pilot, predicate)
 
 
 def _select_host(table: DataTable, name: str) -> None:
