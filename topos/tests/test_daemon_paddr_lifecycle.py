@@ -139,12 +139,13 @@ def test_config_paddr_enabled_round_trip() -> None:
 
 
 def test_config_paddr_enabled_string_is_not_truthy(tmp_path: Path) -> None:
-    """A TOML string value for paddr_enabled must not become True."""
-    from topos.config import load
+    """A TOML string value for paddr_enabled is rejected, never truthy (D-05)."""
+    from topos.config import ConfigError, load
 
     path = tmp_path / "config.toml"
     path.write_text('[damon]\npaddr_enabled = "true"\n', encoding="utf-8")
-    assert load(path).damon.paddr_enabled is False
+    with pytest.raises(ConfigError, match="paddr_enabled"):
+        load(path)
 
 
 # ---------------------------------------------------------------------------
