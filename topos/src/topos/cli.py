@@ -78,9 +78,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--source",
         choices=("auto", "sampler", "local"),
-        default="auto",
-        help="live data source for the interactive view: auto (the sampler socket if it answers, else local "
-             "collection with the reason shown), sampler (fail if unavailable), local",
+        default=None,
+        help="live data source: auto (the sampler socket if it answers, else local collection with the reason "
+             "shown), sampler (fail if unavailable), local. Default: auto for the interactive view, local for "
+             "--once, so a script's --once --json output does not change with what the host runs",
     )
     parser.add_argument("--cgroup-root", type=Path, default=None, help="cgroup v2 root for live or fixture collection")
     parser.add_argument("--headless", action="store_true", help="run without UI (requires --record FILE)")
@@ -460,6 +461,36 @@ def _local_only_reason(args: argparse.Namespace) -> str | None:
     return None
 
 
+def _once_from_sampler(args: argparse.Namespace, config) -> int | None:
+    """``--once --json`` with ``--source auto|sampler``: one frame from the sampler.
+
+    Returns the exit code, or None when ``auto`` falls back to local collection; the reason
+    goes to stderr, so stdout stays one JSON frame either way.
+    """
+    from topos.sampler_client import SamplerError
+    from topos.sampler_source import SourceUnavailable, choose_source
+
+    try:
+        choice = choose_source(args.source, config, local_forced=_local_only_reason(args), enrich=_docker_enricher(config))
+    except SourceUnavailable as exc:
+        print_cli_error(str(exc))
+        return 2
+    if choice.kind != "sampler":
+        if choice.note:
+            print(f"topos: {choice.note}", file=sys.stderr)
+        return None
+    stream = iter(choice.source)
+    try:
+        frame = next(stream)
+    except SamplerError as exc:
+        print_cli_error(f"sampler at {config.sampler.socket_path}: {exc}")
+        return 2
+    finally:
+        stream.close()
+    _print_frame_json(frame, args.pretty_json)
+    return 0
+
+
 def _docker_enricher(config):
     """Docker/CIU names for the sampler's cgroup keys, cached; failures only cost the names."""
     from topos.collect.dockerjoin import DockerInspectCache, enrich_entities
@@ -659,8 +690,8 @@ def _main(argv: list[str] | None = None) -> int:
         )
         return 2
     config = load(args.config)
-    if args.source != "auto" and (args.replay is not None or args.attach is not None or args.once or args.record is not None or args.headless):
-        print_cli_error("--source applies to the interactive live view only (not with --replay, --attach, --once, --record or --headless)")
+    if args.source is not None and (args.replay is not None or args.attach is not None or args.record is not None or args.headless):
+        print_cli_error("--source applies to live collection only: the interactive view and --once (not with --replay, --attach, --record or --headless)")
         return 2
     if args.headless and args.replay is not None:
         print_cli_error("--headless is not supported with --replay")
@@ -828,7 +859,7 @@ def _main(argv: list[str] | None = None) -> int:
 
         forced = _local_only_reason(args)
         try:
-            choice = choose_source(args.source, config, local_forced=forced, enrich=_docker_enricher(config))
+            choice = choose_source(args.source or "auto", config, local_forced=forced, enrich=_docker_enricher(config))
         except SourceUnavailable as exc:
             print_cli_error(str(exc))
             return 2
@@ -871,6 +902,10 @@ def _main(argv: list[str] | None = None) -> int:
     if not args.once or not args.json:
         print("topos implements --once --json for live collection and --replay for frame playback", file=sys.stderr)
         return 2
+    if args.source in ("auto", "sampler"):
+        once_code = _once_from_sampler(args, config)
+        if once_code is not None:
+            return once_code
     try:
         frame = Collector(cgroup_root=args.cgroup_root, config=config, **_filter_kwargs(args)).collect_once()  # type: ignore[arg-type]
     except ContainerResolveError as exc:

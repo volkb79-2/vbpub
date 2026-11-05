@@ -11,6 +11,7 @@ import pytest
 from sampler_fake import DOCKER_ID, T0_MS, FakeSampler, build_current, un, v
 
 from topos.config import SamplerConfig, ToposConfig, load
+from topos.model import Frame
 from topos.sampler_adapter import SamplerOverlay, cgroup_metrics, convert_current, describe_event
 from topos.sampler_client import (
     SamplerClient,
@@ -419,6 +420,74 @@ def test_explicit_sampler_source_fails_closed_on_the_command_line(tmp_path, caps
     assert main(["--config", str(cfg), "--source", "sampler"]) == 2
     assert "not available" in capsys.readouterr().err
     assert main(["--config", str(cfg), "--source", "sampler", "--once", "--json"]) == 2
-    assert "interactive live view only" in capsys.readouterr().err
+    assert "not available" in capsys.readouterr().err
     assert main(["--config", str(cfg), "--source", "sampler", "--cgroup-root", str(tmp_path)]) == 2
     assert "--cgroup-root" in capsys.readouterr().err
+    assert main(["--config", str(cfg), "--source", "sampler", "--once", "--json", "--cgroup-root", str(tmp_path)]) == 2
+    assert "--cgroup-root" in capsys.readouterr().err
+    assert main(["--config", str(cfg), "--source", "local", "--replay", str(tmp_path / "r.jsonl")]) == 2
+    assert "live collection only" in capsys.readouterr().err
+
+
+class _LocalCollector:
+    """Stands in for local collection: records that it ran and returns a marker frame."""
+
+    calls = 0
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def collect_once(self):
+        type(self).calls += 1
+        return "local-frame"
+
+
+def _route_once(monkeypatch):
+    import topos.cli as cli
+
+    _LocalCollector.calls = 0
+    printed: list = []
+    monkeypatch.setattr(cli, "Collector", _LocalCollector)
+    monkeypatch.setattr(cli, "_print_frame_json", lambda frame, pretty: printed.append(frame))
+    return cli, printed
+
+
+def test_once_json_stays_local_by_default_and_never_probes(fake, tmp_path, monkeypatch) -> None:
+    cli, printed = _route_once(monkeypatch)
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(f'[sampler]\nsocket_path = "{fake.path}"\n')
+    assert cli.main(["--config", str(cfg), "--once", "--json"]) == 0
+    assert printed == ["local-frame"] and _LocalCollector.calls == 1
+    assert fake.requests == []  # a script's --once --json does not depend on what the host runs
+
+
+def test_once_json_reads_one_frame_from_the_sampler_when_asked(fake, tmp_path, monkeypatch) -> None:
+    cli, printed = _route_once(monkeypatch)
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(f'[sampler]\nsocket_path = "{fake.path}"\ntimeout_s = 1.0\n')
+    for mode in ("sampler", "auto"):
+        printed.clear()
+        assert cli.main(["--config", str(cfg), "--source", mode, "--once", "--json"]) == 0
+        assert len(printed) == 1 and isinstance(printed[0], Frame) and printed[0].entities
+    assert _LocalCollector.calls == 0
+    assert any(r["req"] == "current" and r.get("compact") is True for r in fake.requests)
+
+
+def test_once_json_auto_falls_back_to_local_and_says_why_on_stderr(tmp_path, monkeypatch, capsys) -> None:
+    cli, printed = _route_once(monkeypatch)
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(f'[sampler]\nsocket_path = "{tmp_path}/gone.sock"\n')
+    assert cli.main(["--config", str(cfg), "--source", "auto", "--once", "--json"]) == 0
+    assert printed == ["local-frame"]
+    captured = capsys.readouterr()
+    assert "sampler unavailable" in captured.err and captured.out == ""
+
+
+def test_once_json_a_failing_sampler_is_an_error_not_a_local_frame(fake, tmp_path, monkeypatch, capsys) -> None:
+    cli, printed = _route_once(monkeypatch)
+    fake.remote_error.update(current="internal")
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(f'[sampler]\nsocket_path = "{fake.path}"\ntimeout_s = 1.0\n')
+    assert cli.main(["--config", str(cfg), "--source", "sampler", "--once", "--json"]) == 2
+    assert printed == [] and _LocalCollector.calls == 0
+    assert str(fake.path) in capsys.readouterr().err
