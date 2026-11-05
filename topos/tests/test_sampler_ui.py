@@ -8,6 +8,7 @@ import asyncio
 
 import pytest
 from sampler_fake import T0_MS, FakeSampler, build_current
+from textual.css.query import NoMatches
 
 from topos.config import ToposConfig
 from topos.sampler_adapter import convert_current
@@ -60,11 +61,30 @@ def test_a_frame_or_failure_during_teardown_is_not_a_source_failure(fake) -> Non
         async with app.run_test(size=(120, 40)) as pilot:
             await _until(pilot, lambda: app.frames_received >= 1, "a frame")
             frame = app.current_frame
+            app.exit()  # the app is going away; its widgets are removed one at a time
             await app.query_one("#meters").remove()
             await app.query_one("#status").remove()
             app._apply_frame(frame)  # neither raises NoMatches
             app._on_source_failed("gone", "retrying")
             assert app._source_error == "gone (retrying)"
+
+    _run(run())
+
+
+def test_a_missing_widget_in_a_running_app_still_raises(fake) -> None:
+    """The teardown guard must not hide a real bug such as a renamed widget id."""
+
+    async def run() -> None:
+        app = _app(fake)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _until(pilot, lambda: app.frames_received >= 1, "a frame")
+            app._stop_event.set()  # stop the feed so it cannot hit the missing widget on its own
+            await app.query_one("#meters").remove()
+            with pytest.raises(NoMatches):
+                app._refresh_view()
+            await app.query_one("#status").remove()
+            with pytest.raises(NoMatches):
+                app._refresh_status("x")
 
     _run(run())
 

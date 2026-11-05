@@ -486,10 +486,15 @@ class ToposApp(App[None]):
         try:
             self._redraw()
         except NoMatches:
-            # The feed thread delivered a frame or a failure while the screen is still being built or
-            # is being torn down (the app is exiting): there is nothing to draw into. Raising here
-            # would surface as a source failure, which it is not.
-            return
+            # The feed thread delivered a frame or a failure while the app is exiting and its widgets
+            # are being removed: there is nothing to draw into, and raising would surface as a source
+            # failure, which it is not. In a running app a missing widget is a bug and still raises.
+            if not self._tearing_down():
+                raise
+
+    def _tearing_down(self) -> bool:
+        """``exit()`` was called, or Textual's shutdown began (it clears ``_running`` before removing widgets)."""
+        return bool(getattr(self, "_exit", False)) or not getattr(self, "_running", True)
 
     def _redraw(self) -> None:
         frame = self.current_frame
@@ -667,7 +672,8 @@ class ToposApp(App[None]):
         try:
             self.query_one("#status", Static).update(text)
         except NoMatches:
-            return  # the screen is being built or torn down (see _refresh_view)
+            if not self._tearing_down():  # see _refresh_view
+                raise
 
     # ── table events ──────────────────────────────────────────────────
 

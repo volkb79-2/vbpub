@@ -482,17 +482,18 @@ def _once_from_sampler(args: argparse.Namespace, config) -> int | None:
     stream = iter(choice.source)
     try:
         frame = next(stream)
-        _print_frame_json(frame, args.pretty_json)
     except SamplerError as exc:
         print_cli_error(f"sampler at {config.sampler.socket_path}: {exc}")
         return 2
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
-        # a reply that is valid JSON but not a usable frame (a missing key, a wrong type)
+        # a reply that is valid JSON but not a usable frame (a missing key, a wrong type); only the
+        # read and conversion are covered, printing the frame below is topos's own code
         print_cli_error(f"sampler at {config.sampler.socket_path} returned an unusable frame: {type(exc).__name__}: {exc}")
         return 2
     finally:
         stream.close()
         choice.source.client.close()
+    _print_frame_json(frame, args.pretty_json)
     return 0
 
 
