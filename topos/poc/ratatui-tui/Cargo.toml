@@ -1,0 +1,20 @@
+[package]
+name = "topos-ratatui-poc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Freshness rule: every third-party release below is >= 14 days old at the time of
+# choice (2026-11-05): ratatui 0.30.2 (2026-06-19), serde_json 1.0.154 (2026-10-11),
+# libc 0.2.191 (2026-10-16). Transitive versions are pinned by the committed Cargo.lock.
+[dependencies]
+ratatui = "0.30.2"
+serde_json = "1.0.154"
+libc = "0.2.191"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

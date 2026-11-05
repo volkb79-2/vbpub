@@ -1,0 +1,155 @@
+# Column order and priority for the single main view.
+#
+# File order = display order (left to right). `pri` 1 is kept longest: when the terminal
+# narrows, the highest `pri` numbers disappear first and the columns that remain keep this
+# order. Columns are never clipped at the right edge. `width` and `head` are optional
+# overrides of the built-in defaults. `name` must come first.
+#
+# Looked up as: --config FILE, then topos-columns.toml next to the binary, then this
+# file as embedded at build time.
+#
+# Available ids:
+#   name cpu thr ram_ceil prot zsw rf_d rf_f psi_m psi_i psi_c psi_mf psi_if psi_cf io_r io_w
+#   iops_r iops_w stall blk net_rx net_tx pids anon file shmem swap pgscan pgsteal iocost origin
+#   drift cpu_wt quota mem_min mem_low mem_high mem_max eff_min io_wt pids_max drift_list warn
+#   ev_high ev_max ev_oom
+# (blk is synthetic demo data in this PoC: the recording has no D-state counts.)
+
+# ---- usage ----
+[[column]]
+id = "name"
+pri = 1
+[[column]]
+id = "cpu"
+pri = 1
+[[column]]
+id = "thr"
+pri = 4
+[[column]]
+id = "ram_ceil"
+pri = 1
+[[column]]
+id = "prot"
+pri = 3
+[[column]]
+id = "zsw"
+pri = 5
+[[column]]
+id = "rf_d"
+pri = 2
+[[column]]
+id = "rf_f"
+pri = 6
+[[column]]
+id = "psi_m"
+pri = 2
+[[column]]
+id = "psi_i"
+pri = 2
+[[column]]
+id = "psi_c"
+pri = 3
+[[column]]
+id = "io_r"
+pri = 2
+[[column]]
+id = "io_w"
+pri = 2
+[[column]]
+id = "iops_r"
+pri = 5
+[[column]]
+id = "iops_w"
+pri = 5
+[[column]]
+id = "stall"
+pri = 3
+[[column]]
+id = "blk"
+pri = 1
+[[column]]
+id = "net_rx"
+pri = 6
+[[column]]
+id = "net_tx"
+pri = 6
+[[column]]
+id = "pids"
+pri = 7
+[[column]]
+id = "anon"
+pri = 7
+[[column]]
+id = "file"
+pri = 7
+[[column]]
+id = "shmem"
+pri = 8
+[[column]]
+id = "swap"
+pri = 6
+[[column]]
+id = "pgscan"
+pri = 8
+[[column]]
+id = "pgsteal"
+pri = 8
+[[column]]
+id = "iocost"
+pri = 9
+
+# ---- configuration, same row ----
+[[column]]
+id = "mem_high"
+pri = 4
+[[column]]
+id = "mem_max"
+pri = 4
+[[column]]
+id = "cpu_wt"
+pri = 6
+[[column]]
+id = "quota"
+pri = 6
+[[column]]
+id = "io_wt"
+pri = 7
+[[column]]
+id = "mem_min"
+pri = 7
+[[column]]
+id = "mem_low"
+pri = 7
+[[column]]
+id = "eff_min"
+pri = 8
+[[column]]
+id = "pids_max"
+pri = 8
+[[column]]
+id = "origin"
+pri = 8
+[[column]]
+id = "drift"
+pri = 4
+[[column]]
+id = "warn"
+pri = 5
+width = 26
+
+# ---- stall detail, same row (also in the side pane) ----
+[[column]]
+id = "psi_mf"
+pri = 9
+[[column]]
+id = "psi_if"
+pri = 9
+[[column]]
+id = "ev_high"
+pri = 9
+[[column]]
+id = "ev_max"
+pri = 9
+[[column]]
+id = "ev_oom"
+pri = 9
