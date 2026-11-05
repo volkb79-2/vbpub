@@ -711,6 +711,7 @@ fn draw_status(f: &mut Frame, a: &App, r: Rect) {
             v.push(sp(format!("| sampler down: {why} "), Style::new().fg(Color::Red)));
         }
         v.push(perf);
+        v.push(plain(format!("| feed {}K parse {:.1}ms ", l.feed_bytes / 1024, l.feed_parse_ms)));
         if let Some(st) = &l.status {
             v.push(plain(format!("| sampler cpu {} rss {} ", opt(st.cpu_pct, |c| format!("{c:.1}%")), opt(st.rss, fmt_bytes))));
             if st.overruns.unwrap_or(0.0) + st.skipped.unwrap_or(0.0) > 0.0 {

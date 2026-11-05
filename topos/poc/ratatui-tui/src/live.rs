@@ -36,7 +36,8 @@ pub struct Status {
 
 pub enum Msg {
     Hello(Hello),
-    Snap { snap: Box<Snap>, epoch: String },
+    /// `bytes` and `parse_ms`: size of the `current` answer and the time to parse and convert it.
+    Snap { snap: Box<Snap>, epoch: String, bytes: usize, parse_ms: f64 },
     Status(Status),
     Down(String),
 }
@@ -365,7 +366,8 @@ fn run(path: String, tick_override: Option<u64>, tx: Sender<Msg>) {
     }
 }
 
-fn call(rd: &mut BufReader<UnixStream>, req: &Value) -> Result<(Value, usize), String> {
+/// Returns the answer, its size in bytes and the time spent parsing it.
+fn call(rd: &mut BufReader<UnixStream>, req: &Value) -> Result<(Value, usize, Duration), String> {
     let mut line = req.to_string();
     line.push('\n');
     rd.get_mut().write_all(line.as_bytes()).map_err(|e| format!("write: {e}"))?;
@@ -377,14 +379,16 @@ fn call(rd: &mut BufReader<UnixStream>, req: &Value) -> Result<(Value, usize), S
     if n == 0 {
         return Err("the sampler closed the connection".into());
     }
+    let tp = Instant::now();
     let v: Value = serde_json::from_str(&buf).map_err(|e| format!("bad JSON from the sampler: {e}"))?;
+    let parse = tp.elapsed();
     if v["ok"] != true {
         return Err(format!("sampler error {}: {}", v["error"]["code"].as_str().unwrap_or("?"), v["error"]["message"].as_str().unwrap_or("")));
     }
     if v["protocol"].as_u64() != Some(1) {
         return Err(format!("unsupported protocol {}", v["protocol"]));
     }
-    Ok((v, n))
+    Ok((v, n, parse))
 }
 
 fn session(path: &str, tick_override: Option<u64>, tx: &Sender<Msg>, pause: &mut Duration) -> Exit {
@@ -396,7 +400,7 @@ fn session(path: &str, tick_override: Option<u64>, tx: &Sender<Msg>, pause: &mut
     let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = s.set_write_timeout(Some(Duration::from_secs(2)));
     let mut rd = BufReader::new(s);
-    let (h, _) = match call(&mut rd, &json!({"req": "hello", "id": 1})) {
+    let (h, _, _) = match call(&mut rd, &json!({"req": "hello", "id": 1})) {
         Ok(x) => x,
         Err(e) => return fail(e),
     };
@@ -416,25 +420,27 @@ fn session(path: &str, tick_override: Option<u64>, tx: &Sender<Msg>, pause: &mut
     let mut next_status = Instant::now();
     loop {
         let t0 = Instant::now();
-        let (v, _) = match call(&mut rd, &json!({"req": "current", "procs": true, "id": 2})) {
+        let (v, bytes, parse) = match call(&mut rd, &json!({"req": "current", "procs": true, "id": 2})) {
             Ok(x) => x,
             Err(e) => return fail(e),
         };
         let tk = v["tick"].as_u64().unwrap_or(0);
         if Some(tk) != last_tick {
             last_tick = Some(tk);
+            let tc = Instant::now();
             let snap = match to_snap(&v) {
                 Ok(s) => s,
                 Err(e) => return fail(e),
             };
+            let parse_ms = (parse + tc.elapsed()).as_secs_f64() * 1e3;
             *pause = Duration::from_millis(500);
             let epoch = v["epoch"].as_str().unwrap_or("").to_string();
-            if tx.send(Msg::Snap { snap: Box::new(snap), epoch: epoch.clone() }).is_err() {
+            if tx.send(Msg::Snap { snap: Box::new(snap), epoch: epoch.clone(), bytes, parse_ms }).is_err() {
                 return Exit::Gone;
             }
             if Instant::now() >= next_status {
                 next_status = Instant::now() + Duration::from_secs(5);
-                if let Ok((s, _)) = call(&mut rd, &json!({"req": "status", "id": 3})) {
+                if let Ok((s, _, _)) = call(&mut rd, &json!({"req": "status", "id": 3})) {
                     let val = |x: &Value| match x["s"].as_str() {
                         Some("value") => x["v"].as_f64(),
                         _ => None,

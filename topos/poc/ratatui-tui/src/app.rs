@@ -24,7 +24,9 @@ pub struct LiveState {
     /// Why the feed is down (None while answers arrive).
     pub down: Option<String>,
     pub got_first: bool,
-    pub started: Instant,
+    /// Size of the last `current` answer and the time the feed thread spent parsing and converting it.
+    pub feed_bytes: usize,
+    pub feed_parse_ms: f64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -146,7 +148,7 @@ impl App {
 
     /// Live mode on an existing feed (tests feed it from a fake server).
     pub fn from_feed(path: &str, rx: Receiver<live::Msg>, tick_ms: u64, cols: Vec<Col>, ui: UiCfg) -> App {
-        let lv = LiveState { path: path.to_string(), rx, hello: None, status: None, epoch: None, epoch_changes: 0, last_ok: None, down: Some("connecting".into()), got_first: false, started: Instant::now() };
+        let lv = LiveState { path: path.to_string(), rx, hello: None, status: None, epoch: None, epoch_changes: 0, last_ok: None, down: Some("connecting".into()), got_first: false, feed_bytes: 0, feed_parse_ms: 0.0 };
         App::build(path.to_string(), vec![Snap::empty()], tick_ms, cols, ui, false, Some(lv))
     }
 
@@ -246,7 +248,9 @@ impl App {
                 live::Msg::Hello(h) => l.hello = Some(h),
                 live::Msg::Status(s) => l.status = Some(s),
                 live::Msg::Down(why) => l.down = Some(why),
-                live::Msg::Snap { snap, epoch } => {
+                live::Msg::Snap { snap, epoch, bytes, parse_ms } => {
+                    l.feed_bytes = bytes;
+                    l.feed_parse_ms = parse_ms;
                     let restarted = l.epoch.as_ref().map_or(false, |e| *e != epoch);
                     if restarted {
                         self.msg = format!("sampler restarted (epoch {} -> {}); history cleared", l.epoch.clone().unwrap_or_default(), epoch);

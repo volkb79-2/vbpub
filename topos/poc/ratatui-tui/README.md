@@ -77,6 +77,9 @@ Keys: `?` help, `n` noise (all/middle/hot), `/` filter, `s`/`S` sort (or click a
   (root = `pids.d_state`); process rows from `current.procs`; zswap rates from `vm.zswp*` and `zswap.*` counters
   (pages/s); IO lines from `dev:*` (partitions folded into their disk); effective memory.min computed along the
   ancestor chain; memory stack from `memstack.*`.
+- Cost (measured on a 4-vCPU host, 79 cgroups, 1 Hz): the `current` answer is about 480 KB; parsing and converting it takes
+  about 14 ms per tick on the feed thread (shown in the status line as `feed ... parse ...`), a full-screen draw 1.4 ms (260x60),
+  so the live TUI uses roughly 2.5% of one core. The protocol has no field filter yet, so the parse is the main cost.
 - Not in the sampler, shown `n/a`: per-cgroup network (NET_*), swap used per cgroup (SWAP), `pids.max` (PIDS.MAX),
   IOCOST per cgroup, and who set a limit (ORIGIN, DRIFT, DRIFTED).
 - Process rows float under their owning cgroup when hot (cpu >= 3%, io >= 1 MiB/s) or blocked (D), blocked first
