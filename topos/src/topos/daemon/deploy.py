@@ -429,7 +429,7 @@ def build_install_plan(
     steps = (
         InstallPlanStep(
             1,
-            f"Install the rendered sysusers file to {destinations['topos.sysusers']}",
+            f"Install the rendered observe group sysusers file to {destinations['topos.sysusers']}",
             _install_heredoc_command(units["topos.sysusers"], destinations["topos.sysusers"]),
         ),
         InstallPlanStep(
