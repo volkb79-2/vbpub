@@ -3,6 +3,7 @@ mod app;
 mod cols;
 mod data;
 mod demo;
+mod live;
 mod ui;
 
 use app::App;
@@ -14,9 +15,11 @@ use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: topos-ratatui-poc <recording.jsonl> [--tick-ms 1000] [--config columns.toml]\n\
-       topos-ratatui-poc <recording.jsonl> --bench N [--size WxH]\n\
-       topos-ratatui-poc <recording.jsonl> --dump WxH [--frame N] [--noise all|middle|hot] [--select KEY] [--filter TEXT]";
+const USAGE: &str = "usage: topos-ratatui-poc --socket /run/topos/sampler.sock [--config columns.toml]     (live, from topos-sampler)\n\
+       topos-ratatui-poc <recording.jsonl> [--tick-ms 1000] [--config columns.toml]                   (replay, with demo data)\n\
+       topos-ratatui-poc (<recording.jsonl> | --socket PATH) --bench N [--size WxH]\n\
+       topos-ratatui-poc (<recording.jsonl> | --socket PATH) --dump WxH [--frame N] [--noise all|middle|hot] [--select KEY] [--filter TEXT]\n\
+       topos-ratatui-poc --plan TABLE_WIDTH | --plan-term TERMINAL_WIDTH   [--config columns.toml]";
 
 static BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 struct Count;
@@ -30,7 +33,7 @@ impl Write for Count {
     }
 }
 
-fn load_cols(path: Option<String>) -> Vec<cols::Col> {
+fn load_cols(path: Option<String>) -> (Vec<cols::Col>, cols::UiCfg) {
     let beside = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("topos-columns.toml")));
     let (src, text) = match path {
         Some(p) => (p.clone(), std::fs::read_to_string(&p).unwrap_or_else(|e| { eprintln!("error: {p}: {e}"); std::process::exit(1) })),
@@ -39,7 +42,7 @@ fn load_cols(path: Option<String>) -> Vec<cols::Col> {
             None => ("(embedded columns.example.toml)".to_string(), cols::EXAMPLE.to_string()),
         },
     };
-    cols::parse_config(&text).unwrap_or_else(|e| {
+    cols::parse_full(&text).unwrap_or_else(|e| {
         eprintln!("error: column config {src}: {e}");
         std::process::exit(1)
     })
@@ -63,16 +66,8 @@ fn render_text(a: &mut App, w: u16, h: u16) -> String {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let opt = |k: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned();
-    let Some(path) = args.first().filter(|a| !a.starts_with("--")).cloned() else {
-        eprintln!("{USAGE}");
-        std::process::exit(2);
-    };
-    let tick_ms: u64 = opt("--tick-ms").and_then(|v| v.parse().ok()).unwrap_or(1000);
-    let rec = data::load(&path).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
-    let cols = load_cols(opt("--config"));
+    let socket = opt("--socket");
+    let (cols, ui_cfg) = load_cols(opt("--config"));
     if let Some(w) = opt("--plan") {
         // report which columns survive at a given table width
         let w: u16 = w.parse().unwrap_or(200);
@@ -81,7 +76,46 @@ fn main() {
         println!("table width {w}: name_w={} {}/{} columns: {}", p.name_w, p.cols.len(), p.total, names.join(" "));
         return;
     }
-    let mut a = App::new(rec, tick_ms, cols);
+    if let Some(w) = opt("--plan-term") {
+        // the same for a whole terminal: the side pane takes its configured width first
+        let w: u16 = w.parse().unwrap_or(200);
+        let pane = if w >= ui_cfg.pane_auto_min_width { ui_cfg.pane_width.min(w / 2) } else { 0 };
+        let p = cols::plan(&cols, w - pane);
+        let names: Vec<String> = p.cols.iter().map(|c| c.head.to_string()).collect();
+        println!("terminal {w} (pane {pane}, table {}): {}/{} columns: {}", w - pane, p.cols.len(), p.total, names.join(" "));
+        return;
+    }
+    let tick_ms: u64 = opt("--tick-ms").and_then(|v| v.parse().ok()).unwrap_or(1000);
+    let mut a = if let Some(sock) = &socket {
+        // live: no recording and no demo data is reachable from here
+        let mut cols = cols;
+        for c in cols.iter_mut() {
+            c.demo = false;
+            if c.head == "BLK~" {
+                c.head = "BLK";
+            }
+        }
+        App::new_live(sock, opt("--tick-ms").and_then(|v| v.parse().ok()), cols, ui_cfg)
+    } else {
+        let Some(path) = args.first().filter(|a| !a.starts_with("--")).cloned() else {
+            eprintln!("{USAGE}");
+            std::process::exit(2);
+        };
+        let rec = data::load(&path).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        let mut a = App::new(rec, tick_ms, cols);
+        a.ui = ui_cfg;
+        a
+    };
+    if a.live.is_some() && (opt("--bench").is_some() || opt("--dump").is_some()) {
+        // one-shot modes need real data first: wait for two sampler ticks
+        if !wait_snaps(&mut a, 2, Duration::from_secs(15)) {
+            eprintln!("error: no data from the sampler at {} within 15 s", socket.as_deref().unwrap_or(""));
+            std::process::exit(1);
+        }
+    }
 
     if let Some(n) = opt("--bench") {
         bench(&mut a, n.parse().unwrap_or(1000), opt("--size").as_deref().map_or((170, 48), size_of));
@@ -114,10 +148,24 @@ fn main() {
     }
 }
 
+/// Pump the live feed until `n` frames have arrived (or the time is up).
+fn wait_snaps(a: &mut App, n: usize, limit: Duration) -> bool {
+    let t0 = Instant::now();
+    while t0.elapsed() < limit {
+        a.pump();
+        if a.live.as_ref().map_or(false, |l| l.got_first) && a.snaps.len() >= n {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
 fn run(a: &mut App) -> std::io::Result<()> {
     let mut term = ratatui::init();
     execute!(std::io::stdout(), EnableMouseCapture)?;
-    let tick = Duration::from_millis(a.tick_ms.max(10));
+    // live mode repaints once a second (data age, uptime) and whenever the feed delivers
+    let tick = Duration::from_millis(if a.live.is_some() { 1000 } else { a.tick_ms.max(10) });
     let mut next = Instant::now() + tick;
     let mut dirty = true;
     let res = (|| -> std::io::Result<()> {
@@ -128,7 +176,13 @@ fn run(a: &mut App) -> std::io::Result<()> {
                 a.perf.after_draw(t0.elapsed().as_secs_f64() * 1e3);
                 dirty = false;
             }
-            let timeout = next.saturating_duration_since(Instant::now());
+            if a.live.is_some() {
+                dirty |= a.pump();
+            }
+            let mut timeout = next.saturating_duration_since(Instant::now());
+            if a.live.is_some() {
+                timeout = timeout.min(Duration::from_millis(50));
+            }
             if event::poll(timeout)? {
                 loop {
                     match event::read()? {
@@ -149,7 +203,10 @@ fn run(a: &mut App) -> std::io::Result<()> {
             }
             if Instant::now() >= next {
                 next += tick;
-                if !a.frozen {
+                if a.live.is_some() {
+                    // new data already repainted; the clock only matters while the age counter runs
+                    dirty |= a.stale() || a.age_s().is_none();
+                } else if !a.frozen {
                     a.advance(1);
                     dirty = true;
                 }
@@ -168,7 +225,11 @@ fn bench(a: &mut App, n: usize, (w, h): (u16, u16)) {
     }
     let (c0, t0) = (app::cpu_ms(), Instant::now());
     for _ in 0..n {
-        a.advance(1);
+        if a.live.is_some() {
+            a.recompute(); // rebuild the rows as a new live frame would
+        } else {
+            a.advance(1);
+        }
         term.draw(|f| ui::draw(f, a)).unwrap();
     }
     let (cpu, wall) = (app::cpu_ms() - c0, t0.elapsed().as_secs_f64() * 1e3);

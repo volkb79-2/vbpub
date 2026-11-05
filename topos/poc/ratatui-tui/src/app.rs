@@ -1,11 +1,31 @@
 //! Application state: tree rows, noise/filter/sort, cursor, input handling.
-use crate::cols::{self, Col, ColId, Noise};
-use crate::data::{Recording, Snap};
-use crate::demo::{self, Proc};
+use crate::cols::{self, Col, ColId, Noise, UiCfg};
+use crate::data::{Proc, Recording, Snap};
+use crate::demo;
+use crate::live;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use std::collections::HashSet;
-use std::time::Instant;
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{Duration, Instant};
+
+/// Frames kept for trends and stepping in live mode.
+const HISTORY: usize = 120;
+
+/// The socket feed as the UI sees it. The socket itself belongs to the thread in `live.rs`.
+pub struct LiveState {
+    pub path: String,
+    pub rx: Receiver<live::Msg>,
+    pub hello: Option<live::Hello>,
+    pub status: Option<live::Status>,
+    pub epoch: Option<String>,
+    pub epoch_changes: u32,
+    pub last_ok: Option<Instant>,
+    /// Why the feed is down (None while answers arrive).
+    pub down: Option<String>,
+    pub got_first: bool,
+    pub started: Instant,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RowKind {
@@ -101,18 +121,39 @@ pub struct App {
     pub flat: bool,
     pub rows: Vec<Row>,
     pub hidden: usize,
-    pub blk: Vec<u32>,
+    pub blk: Vec<Option<u32>>,
     pub procs: Vec<Vec<Proc>>,
     pub hit: Hit,
     pub perf: Perf,
     pub msg: String,
+    /// True only in recording mode: per-CPU, D-state, processes and zswap rates are invented.
+    /// Never true with `--socket`.
+    pub demo: bool,
+    pub live: Option<LiveState>,
+    pub ui: UiCfg,
 }
 
 impl App {
     pub fn new(rec: Recording, tick_ms: u64, cols: Vec<Col>) -> App {
+        App::build(rec.host_id, rec.snaps, tick_ms, cols, UiCfg::default(), true, None)
+    }
+
+    /// Live mode: nothing is shown until the sampler answers, and nothing is ever invented.
+    pub fn new_live(path: &str, tick_override: Option<u64>, cols: Vec<Col>, ui: UiCfg) -> App {
+        let rx = live::spawn(path.to_string(), tick_override);
+        App::from_feed(path, rx, tick_override.unwrap_or(1000), cols, ui)
+    }
+
+    /// Live mode on an existing feed (tests feed it from a fake server).
+    pub fn from_feed(path: &str, rx: Receiver<live::Msg>, tick_ms: u64, cols: Vec<Col>, ui: UiCfg) -> App {
+        let lv = LiveState { path: path.to_string(), rx, hello: None, status: None, epoch: None, epoch_changes: 0, last_ok: None, down: Some("connecting".into()), got_first: false, started: Instant::now() };
+        App::build(path.to_string(), vec![Snap::empty()], tick_ms, cols, ui, false, Some(lv))
+    }
+
+    fn build(host_id: String, snaps: Vec<Snap>, tick_ms: u64, cols: Vec<Col>, ui: UiCfg, demo: bool, live: Option<LiveState>) -> App {
         let mut a = App {
-            host_id: rec.host_id,
-            snaps: rec.snaps,
+            host_id,
+            snaps,
             fi: 0,
             tick_ms,
             frozen: false,
@@ -138,6 +179,9 @@ impl App {
             hit: Hit::default(),
             perf: Perf::default(),
             msg: String::new(),
+            demo,
+            live,
+            ui,
         };
         a.fi = a.lo();
         a.expand_depth(1);
@@ -151,13 +195,91 @@ impl App {
 
     /// Frame 0 of a recording has no rates yet, so the loop skips it when there is more than one frame.
     fn lo(&self) -> usize {
-        if self.snaps.len() > 1 { 1 } else { 0 }
+        if self.live.is_none() && self.snaps.len() > 1 { 1 } else { 0 }
     }
 
     pub fn advance(&mut self, d: isize) {
-        let (lo, span) = (self.lo(), (self.snaps.len() - self.lo()) as isize);
-        self.fi = lo + ((self.fi as isize - lo as isize + d).rem_euclid(span)) as usize;
+        if self.live.is_some() {
+            // stepping through the kept history: no wrap-around
+            self.fi = (self.fi as isize + d).clamp(0, self.snaps.len() as isize - 1) as usize;
+        } else {
+            let (lo, span) = (self.lo(), (self.snaps.len() - self.lo()) as isize);
+            self.fi = lo + ((self.fi as isize - lo as isize + d).rem_euclid(span)) as usize;
+        }
         self.recompute();
+    }
+
+    /// Seconds since the last sampler answer; None before the first one or in recording mode.
+    pub fn age_s(&self) -> Option<f64> {
+        self.live.as_ref().and_then(|l| l.last_ok).map(|t| t.elapsed().as_secs_f64())
+    }
+
+    /// No answer for three sampler ticks (at least 3 s), or the feed reported itself down.
+    pub fn stale(&self) -> bool {
+        let Some(l) = &self.live else { return false };
+        let tick = l.hello.as_ref().map_or(self.tick_ms, |h| h.tick_ms);
+        match l.last_ok {
+            Some(t) => l.down.is_some() || t.elapsed() > Duration::from_millis((tick * 3).max(3000)),
+            None => false,
+        }
+    }
+
+    /// Take everything the feed thread has sent. True when the screen needs a redraw.
+    pub fn pump(&mut self) -> bool {
+        let Some(l) = self.live.as_mut() else { return false };
+        let mut msgs = vec![];
+        loop {
+            match l.rx.try_recv() {
+                Ok(m) => msgs.push(m),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    l.down = Some("the feed thread stopped".into());
+                    break;
+                }
+            }
+        }
+        let changed = !msgs.is_empty();
+        let mut new_snap = false;
+        for m in msgs {
+            let l = self.live.as_mut().unwrap();
+            match m {
+                live::Msg::Hello(h) => l.hello = Some(h),
+                live::Msg::Status(s) => l.status = Some(s),
+                live::Msg::Down(why) => l.down = Some(why),
+                live::Msg::Snap { snap, epoch } => {
+                    let restarted = l.epoch.as_ref().map_or(false, |e| *e != epoch);
+                    if restarted {
+                        self.msg = format!("sampler restarted (epoch {} -> {}); history cleared", l.epoch.clone().unwrap_or_default(), epoch);
+                        l.epoch_changes += 1;
+                        self.snaps.clear();
+                    }
+                    if !l.got_first {
+                        self.snaps.clear();
+                        l.got_first = true;
+                    }
+                    l.epoch = Some(epoch);
+                    l.last_ok = Some(Instant::now());
+                    l.down = None;
+                    self.snaps.push(*snap);
+                    if self.snaps.len() > HISTORY {
+                        self.snaps.remove(0);
+                        self.fi = self.fi.saturating_sub(1);
+                    }
+                    if !self.frozen || restarted || self.snaps.len() == 1 {
+                        self.fi = self.snaps.len() - 1;
+                    }
+                    if self.snaps.len() == 1 {
+                        // first frame of this sampler run: show the top-level slices
+                        self.expand_depth(1);
+                    }
+                    new_snap = true;
+                }
+            }
+        }
+        if new_snap {
+            self.recompute();
+        }
+        changed
     }
 
     fn expand_depth(&mut self, max: usize) {
@@ -179,18 +301,39 @@ impl App {
     /// Demo processes and the aggregated demo D-state count per cgroup, then rows.
     pub fn recompute(&mut self) {
         let s = &self.snaps[self.fi];
-        self.procs = (0..s.ents.len()).map(|i| demo::procs_for(s, i, self.fi)).collect();
-        let mut blk = vec![0u32; s.ents.len()];
-        fn go(s: &Snap, i: usize, procs: &[Vec<Proc>], blk: &mut [u32]) -> u32 {
-            let mut n = procs[i].iter().filter(|p| p.state == 'D').count() as u32;
-            for &c in &s.children[i] {
-                n += go(s, c, procs, blk);
+        if let (false, Some(l)) = (self.demo, &s.live) {
+            // live: processes and D-state counts come from the sampler
+            self.procs = l.procs.clone();
+            let mut blk: Vec<Option<u32>> = vec![None; s.ents.len()];
+            fn agg(s: &Snap, i: usize, own: &[Option<u32>], out: &mut [Option<u32>]) -> Option<u32> {
+                let mut sum = own[i];
+                for &c in &s.children[i] {
+                    if let Some(x) = agg(s, c, own, out) {
+                        sum = Some(sum.unwrap_or(0) + x);
+                    }
+                }
+                out[i] = sum;
+                sum
             }
-            blk[i] = n;
-            n
+            agg(s, s.root, &l.dstate, &mut blk);
+            if l.d_total.is_some() {
+                blk[s.root] = l.d_total;
+            }
+            self.blk = blk;
+        } else {
+            self.procs = (0..s.ents.len()).map(|i| demo::procs_for(s, i, self.fi)).collect();
+            let mut blk = vec![None; s.ents.len()];
+            fn go(s: &Snap, i: usize, procs: &[Vec<Proc>], blk: &mut [Option<u32>]) -> u32 {
+                let mut n = procs[i].iter().filter(|p| p.state == 'D').count() as u32;
+                for &c in &s.children[i] {
+                    n += go(s, c, procs, blk);
+                }
+                blk[i] = Some(n);
+                n
+            }
+            go(s, s.root, &self.procs, &mut blk);
+            self.blk = blk;
         }
-        go(s, s.root, &self.procs, &mut blk);
-        self.blk = blk;
         self.rebuild();
     }
 
@@ -232,7 +375,7 @@ impl App {
         if self.flat {
             let mut all: Vec<(usize, usize)> =
                 (0..n).filter(|&i| vis[i]).flat_map(|i| (0..self.procs[i].len()).map(move |p| (i, p))).collect();
-            all.sort_by(|a, b| self.procs[b.0][b.1].cpu.total_cmp(&self.procs[a.0][a.1].cpu));
+            all.sort_by(|a, b| self.procs[b.0][b.1].cpu_f().total_cmp(&self.procs[a.0][a.1].cpu_f()));
             all.truncate(300);
             rows = all.into_iter().map(|(i, p)| Row { kind: RowKind::Flat(i, p), depth: 0, has_kids: false, open: false }).collect();
         } else {
@@ -265,7 +408,7 @@ impl App {
                 }
                 if has_procs {
                     // hot and blocked processes float under their owner, capped; open shows all
-                    let cap = if open { usize::MAX } else { 2 };
+                    let cap = if open { usize::MAX } else { a.ui.proc_cap };
                     let mut shown = 0;
                     for (p, pr) in a.procs[i].iter().enumerate() {
                         if (open || pr.hot()) && shown < cap {

@@ -9,11 +9,24 @@
 # file as embedded at build time.
 #
 # Available ids:
-#   name cpu thr ram_ceil prot zsw rf_d rf_f psi_m psi_i psi_c psi_mf psi_if psi_cf io_r io_w
-#   iops_r iops_w stall blk net_rx net_tx pids anon file shmem swap pgscan pgsteal iocost origin
-#   drift cpu_wt quota mem_min mem_low mem_high mem_max eff_min io_wt pids_max drift_list warn
-#   ev_high ev_max ev_oom
-# (blk is synthetic demo data in this PoC: the recording has no D-state counts.)
+#   name cpu thr ram_ceil prot zsw ratio rf_d rf_z rf_f maj psi_m psi_i psi_c psi_mf psi_if psi_cf
+#   io_r io_w iops_r iops_w io_max stall blk net_rx net_tx pids anon file shmem swap swap_max
+#   pgscan pgsteal iocost origin drift cpu_wt quota mem_min mem_low mem_high mem_max eff_min
+#   io_wt pids_max drift_list warn ev_high ev_max ev_oom
+# This is a superset of the ids of the Textual view's assets/columns.toml: one file drives both
+# views. The Textual loader ignores the `[ui]` table below (it keeps pane_width in its own
+# `[ui]` config, same key names).
+# In a recording blk is synthetic demo data (magenta, BLK~); with --socket it is the sampler's
+# D-state count. iocost has no source yet and prints n/a; origin/drift columns are n/a live
+# because the sampler does not report who set a limit.
+
+# Side pane: this many columns at any terminal width (never more than half the screen); it shows
+# by itself from pane_auto_min_width. proc_cap: hot or blocked process rows kept under a
+# collapsed cgroup (an expanded cgroup shows every process the sampler sent).
+[ui]
+pane_width = 46
+pane_auto_min_width = 140
+proc_cap = 3
 
 # ---- usage ----
 [[column]]
@@ -35,10 +48,19 @@ pri = 3
 id = "zsw"
 pri = 5
 [[column]]
+id = "ratio"
+pri = 6
+[[column]]
 id = "rf_d"
 pri = 2
 [[column]]
+id = "rf_z"
+pri = 5
+[[column]]
 id = "rf_f"
+pri = 6
+[[column]]
+id = "maj"
 pri = 6
 [[column]]
 id = "psi_m"
@@ -61,6 +83,9 @@ pri = 5
 [[column]]
 id = "iops_w"
 pri = 5
+[[column]]
+id = "io_max"
+pri = 7
 [[column]]
 id = "stall"
 pri = 3
@@ -88,6 +113,9 @@ pri = 8
 [[column]]
 id = "swap"
 pri = 6
+[[column]]
+id = "swap_max"
+pri = 8
 [[column]]
 id = "pgscan"
 pri = 8
@@ -136,8 +164,14 @@ pri = 4
 id = "warn"
 pri = 5
 width = 26
+[[column]]
+id = "drift_list"
+pri = 9
 
 # ---- stall detail, same row (also in the side pane) ----
+[[column]]
+id = "psi_cf"
+pri = 9
 [[column]]
 id = "psi_mf"
 pri = 9

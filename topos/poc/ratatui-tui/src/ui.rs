@@ -1,7 +1,7 @@
 //! Drawing: meters, info line, tree table, side pane, status line, footer, help.
 use crate::app::{App, PaneMode, RowKind};
-use crate::cols::{self, band, band_style, dim, fmt_bytes, fmt_count, fmt_pct, ColId, Noise};
-use crate::data::{Cn, Ent, Snap};
+use crate::cols::{self, band, band_style, dim, fmt_bytes, fmt_count, fmt_pct, na_style, ColId, Noise};
+use crate::data::{Cn, Ent, Proc, Snap};
 use crate::demo;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -60,20 +60,30 @@ pub fn draw(f: &mut Frame, a: &mut App) {
     draw_status(f, a, status_r);
     draw_footer(f, a, foot_r);
     if a.help {
-        draw_help(f, area);
+        draw_help(f, area, a.demo);
     }
 }
 
 fn pane_width(a: &App, w: u16) -> u16 {
     let want = match a.pane {
-        PaneMode::Auto => w >= 140,
+        PaneMode::Auto => w >= a.ui.pane_auto_min_width,
         PaneMode::On => true,
         PaneMode::Off => false,
     };
     if !want {
         return 0;
     }
-    (if w >= 220 { 62 } else { 46 }).min(w / 2)
+    // one width at any terminal width, from the config file
+    a.ui.pane_width.min(w / 2)
+}
+
+/// `n/a` for unavailable, a dim dot for not applicable, else the formatted value.
+fn cs(c: Cn, f: impl Fn(f64) -> String) -> String {
+    match c {
+        Cn::Val(v) => f(v),
+        Cn::Unset => "\u{b7}".into(),
+        Cn::NA => "n/a".into(),
+    }
 }
 
 // ---------------------------------------------------------------- meters
@@ -113,6 +123,11 @@ fn opt(v: Option<f64>, f: impl Fn(f64) -> String) -> String {
 
 /// Last `n` values of a host metric, ending at the current frame (wraps with the replay loop).
 fn trend(a: &App, key: &str, n: usize) -> Vec<f64> {
+    if a.live.is_some() {
+        // live: the last frames up to the one shown, no wrap-around; frames without the value are skipped
+        let from = (a.fi + 1).saturating_sub(n);
+        return a.snaps[from..=a.fi].iter().filter_map(|s| s.h(key)).collect();
+    }
     let len = a.snaps.len();
     (0..n.min(len)).rev().map(|k| a.snaps[(a.fi + len - k % len) % len].h(key).unwrap_or(0.0)).collect()
 }
@@ -133,22 +148,31 @@ fn meter_lines(a: &App, w_each: usize) -> (Pl, Pl, Pl) {
     let root_kids = &s.children[s.root];
     let sum = |k: &str| root_kids.iter().filter_map(|&i| s.ents[i].num(k)).sum::<f64>();
     let any = root_kids.iter().any(|&i| s.ents[i].num("cpu_pct").is_some());
-    let cores = if any { Some(sum("cpu_pct") / 100.0) } else { None };
+    let live = s.live.as_ref().filter(|_| !a.demo);
+    let cores = match live {
+        // live: the sampler's busy percentage of all CPUs
+        Some(l) => s.h("host_cpu_busy_pct").filter(|_| !l.cpus.is_empty()).map(|p| p / 100.0 * l.cpus.len() as f64),
+        None if any => Some(sum("cpu_pct") / 100.0),
+        None => None,
+    };
 
-    // ---- CPU: total is real (sum of top-level cgroups); the per-CPU split is demo
+    // ---- CPU: recording mode takes the total from the cgroups and invents the per-CPU split
     let mut ca: Pl = vec![];
+    let tail = match live {
+        Some(_) => format!("  sampler up {}", opt(a.live.as_ref().and_then(|l| l.status.as_ref()).and_then(|st| st.uptime_s), uptime)),
+        None => format!("  up {}", opt(s.h("host_uptime_s"), uptime)),
+    };
     ca.push((
         1,
         Line::from(vec![
             head("CPU "),
             plain(format!("{} busy  ", opt(cores, |c| format!("{c:.1} cores")))),
-            plain(format!("load {} {} {}  up {}", opt(s.h("host_load1"), |v| format!("{v:.2}")), opt(s.h("host_load5"), |v| format!("{v:.2}")), opt(s.h("host_load15"), |v| format!("{v:.2}")), opt(s.h("host_uptime_s"), uptime))),
+            plain(format!("load {} {} {}{}", opt(s.h("host_load1"), |v| format!("{v:.2}")), opt(s.h("host_load5"), |v| format!("{v:.2}")), opt(s.h("host_load15"), |v| format!("{v:.2}")), tail)),
         ]),
     ));
-    ca.push((
-        3,
+    let legend = |first: Span<'static>| {
         Line::from(vec![
-            demo_sp(format!("per-CPU demo({}) ", demo::NCPU)),
+            first,
             sp("us", Style::new().fg(Color::Green)),
             plain(" "),
             sp("sy", Style::new().fg(Color::Red)),
@@ -156,40 +180,82 @@ fn meter_lines(a: &App, w_each: usize) -> (Pl, Pl, Pl) {
             sp("io", Style::new().fg(Color::Blue)),
             plain(" "),
             sp("st", Style::new().fg(Color::Magenta)),
-        ]),
-    ));
-    let cpus = demo::per_cpu(cores.unwrap_or(0.0), a.fi);
-    let bw = (w_each.saturating_sub(12) / 2).clamp(6, 22);
-    for (r, pair) in cpus.chunks(2).enumerate() {
+        ])
+    };
+    // per CPU: fractions us, sy, io, st; None = not available
+    let cpus: Vec<Option<[f64; 4]>> = match live {
+        Some(l) => l
+            .cpus
+            .iter()
+            .map(|c| {
+                let v: Vec<f64> = c.iter().filter_map(|x| if let Cn::Val(v) = x { Some(v / 100.0) } else { None }).collect();
+                (v.len() == 4).then(|| [v[0], v[1], v[2], v[3]])
+            })
+            .collect(),
+        None => demo::per_cpu(cores.unwrap_or(0.0), a.fi).into_iter().map(Some).collect(),
+    };
+    ca.push((3, legend(if live.is_some() { plain(format!("per-CPU ({}) ", cpus.len())) } else { demo_sp(format!("per-CPU demo({}) ", demo::NCPU)) })));
+    let per = (w_each / 17).clamp(1, 4);
+    let bw = (w_each.saturating_sub(per * 9) / per).clamp(4, 22);
+    for (r, group) in cpus.chunks(per).enumerate() {
         let mut spans = vec![];
-        for (k, c) in pair.iter().enumerate() {
-            let tot: f64 = c.iter().sum();
-            spans.push(plain(format!("{:>2}", r * 2 + k)));
+        for (k, c) in group.iter().enumerate() {
+            spans.push(plain(format!("{:>2}", r * per + k)));
             spans.push(sp("[", dim()));
-            spans.extend(stacked_bar(bw, &[(c[0], Color::Green), (c[1], Color::Red), (c[2], Color::Blue), (c[3], Color::Magenta)], 1.0));
-            spans.push(sp("]", dim()));
-            spans.push(demo_sp(format!("{:>3.0}% ", tot * 100.0)));
+            match c {
+                Some(c) => {
+                    spans.extend(stacked_bar(bw, &[(c[0], Color::Green), (c[1], Color::Red), (c[2], Color::Blue), (c[3], Color::Magenta)], 1.0));
+                    spans.push(sp("]", dim()));
+                    let t = format!("{:>3.0}% ", c.iter().sum::<f64>() * 100.0);
+                    spans.push(if live.is_some() { plain(t) } else { demo_sp(t) });
+                }
+                None => {
+                    spans.push(sp("\u{b7}".repeat(bw), dim()));
+                    spans.push(sp("]", dim()));
+                    spans.push(sp(" n/a ", na_style()));
+                }
+            }
         }
         ca.push((4 + r as u8 / 2, Line::from(spans)));
     }
-    let d: u32 = a.blk[s.root];
-    ca.push((
-        2,
-        Line::from(vec![
-            demo_sp(format!("run {}  D-state {}  ", (cores.unwrap_or(0.0) + 0.5) as u32 + 1, d)),
-            plain("(no D-state/us/sy in recording)"),
-        ]),
-    ));
+    match live {
+        Some(_) => {
+            let n = |k: &str| opt(s.h(k), |v| format!("{v:.0}"));
+            let d = a.blk[s.root].map_or("n/a".to_string(), |d| d.to_string());
+            ca.push((2, Line::from(plain(format!("run {}  blocked {}  D-state {}", n("host_procs_running"), n("host_procs_blocked"), d)))));
+        }
+        None => {
+            let d = a.blk[s.root].unwrap_or(0);
+            ca.push((
+                2,
+                Line::from(vec![
+                    demo_sp(format!("run {}  D-state {}  ", (cores.unwrap_or(0.0) + 0.5) as u32 + 1, d)),
+                    plain("(no D-state/us/sy in recording)"),
+                ]),
+            ));
+        }
+    }
 
     // ---- memory
     let mut cb: Pl = vec![];
     let total = s.h("host_mem_total").unwrap_or(0.0);
     let avail = s.h("host_mem_available").unwrap_or(0.0);
-    let (anon, file, shmem) = (sum("anon"), sum("file"), sum("shmem"));
+    // live: the host's memory stack; recording: the sum over the top-level cgroups
+    let stack = |host_key: &str, cg_key: &str| -> Option<f64> { if live.is_some() { s.h(host_key) } else { Some(sum(cg_key)) } };
+    let (anon_o, file_o, shmem_o) = (stack("host_anon", "anon"), stack("host_file", "file"), stack("host_shmem", "shmem"));
+    let (anon, file, shmem) = (anon_o.unwrap_or(0.0), file_o.unwrap_or(0.0), shmem_o.unwrap_or(0.0));
     let zpool = s.h("host_zswap_pool").unwrap_or(0.0);
     cb.push((
         1,
-        Line::from(vec![head("MEM "), plain(format!("{} used of {}  avail {}", fmt_bytes((total - avail).max(0.0)), fmt_bytes(total), fmt_bytes(avail)))]),
+        Line::from(vec![
+            head("MEM "),
+            plain(format!(
+                "{} used of {}  avail {}",
+                opt(s.h("host_mem_total").zip(s.h("host_mem_available")).map(|(t, v)| (t - v).max(0.0)), fmt_bytes),
+                opt(s.h("host_mem_total"), fmt_bytes),
+                opt(s.h("host_mem_available"), fmt_bytes)
+            )),
+        ]),
     ));
     let mut bar = vec![sp("[", dim())];
     bar.extend(stacked_bar(
@@ -199,12 +265,12 @@ fn meter_lines(a: &App, w_each: usize) -> (Pl, Pl, Pl) {
     ));
     bar.push(sp("]", dim()));
     cb.push((1, Line::from(bar)));
-    let lg = |c, t: &str, v: f64| vec![sp("\u{25a0}", Style::new().fg(c)), plain(format!("{t} {} ", fmt_bytes(v)))];
-    let mut legend = lg(Color::Green, "anon", anon);
-    legend.extend(lg(Color::Blue, "file", file));
-    legend.extend(lg(Color::Yellow, "shm", shmem));
-    legend.extend(lg(Color::Magenta, "zswap", zpool));
-    legend.push(plain(format!("\u{b7}free {}", fmt_bytes(avail))));
+    let lg = |c, t: &str, v: Option<f64>| vec![sp("\u{25a0}", Style::new().fg(c)), plain(format!("{t} {} ", opt(v, fmt_bytes)))];
+    let mut legend = lg(Color::Green, "anon", anon_o);
+    legend.extend(lg(Color::Blue, "file", file_o));
+    legend.extend(lg(Color::Yellow, "shm", shmem_o));
+    legend.extend(lg(Color::Magenta, "zswap", s.h("host_zswap_pool")));
+    legend.push(plain(format!("\u{b7}free {}", opt(s.h("host_mem_available"), fmt_bytes))));
     cb.push((3, Line::from(legend)));
     let ratio = s.h("host_zswap_ratio");
     let stored = s.h("host_zswap_stored");
@@ -214,19 +280,27 @@ fn meter_lines(a: &App, w_each: usize) -> (Pl, Pl, Pl) {
             head("ZSWAP "),
             plain(format!(
                 "{} \u{2190} {}  ratio {}  pool {} of {}%",
-                fmt_bytes(zpool),
+                opt(s.h("host_zswap_pool"), fmt_bytes),
                 opt(stored, fmt_bytes),
                 opt(ratio, |r| format!("{r:.2}x")),
-                if total > 0.0 { format!("{:.1}%", zpool / total * 100.0) } else { "n/a".into() },
+                match s.h("host_zswap_pool") { Some(z) if total > 0.0 => format!("{:.1}%", z / total * 100.0), _ => "n/a".into() },
                 opt(s.h("host_zswap_max_pool_percent"), |v| format!("{v:.0}")),
             )),
         ]),
     ));
-    let nz = |k: u64| 20.0 * demo::noise(k + a.fi as u64);
-    cb.push((
-        5,
-        Line::from(vec![plain("  in/out/wb/rej "), demo_sp(format!("{:.0}/{:.0}/{:.0}/{:.0} /s demo", nz(1) * 6.0, nz(2) * 4.0, nz(3) * 0.3, nz(4) * 0.1))]),
-    ));
+    match live {
+        Some(l) => {
+            let z: Vec<String> = l.zrates.iter().map(|c| cs(*c, fmt_count)).collect();
+            cb.push((5, Line::from(plain(format!("  in/out/wb/rej {} pages/s", z.join("/"))))));
+        }
+        None => {
+            let nz = |k: u64| 20.0 * demo::noise(k + a.fi as u64);
+            cb.push((
+                5,
+                Line::from(vec![plain("  in/out/wb/rej "), demo_sp(format!("{:.0}/{:.0}/{:.0}/{:.0} /s demo", nz(1) * 6.0, nz(2) * 4.0, nz(3) * 0.3, nz(4) * 0.1))]),
+            ));
+        }
+    }
     let (st, sf) = (s.h("host_swap_total"), s.h("host_swap_free"));
     let used = st.zip(sf).map(|(t, f)| t - f);
     cb.push((
@@ -268,19 +342,29 @@ fn meter_lines(a: &App, w_each: usize) -> (Pl, Pl, Pl) {
             Line::from(vec![
                 head("IO "),
                 plain(format!(
-                    "{} r {} w {}  {}/{} iops  await n/a util n/a",
+                    "{} r {} w {}  {}/{} iops  await {} util {}",
                     b.name,
                     opt(b.rbps, fmt_bytes),
                     opt(b.wbps, fmt_bytes),
                     opt(b.riops, fmt_count),
-                    opt(b.wiops, fmt_count)
+                    opt(b.wiops, fmt_count),
+                    cs(b.await_ms, |v| format!("{v:.1}ms")),
+                    cs(b.util_pct, |v| format!("{v:.0}%")),
                 )),
             ]),
         ));
     }
-    cc.push((4, Line::from(vec![head("IO.COST "), plain("vrate n/a (not in this recording)")])));
+    if live.is_some() {
+        let vr = s.host.get("host_iocost_vrate").map_or(Cn::NA, |m| m.cn());
+        cc.push((4, Line::from(vec![head("IO.COST "), plain(format!("vrate {}", cs(vr, |v| format!("{v:.0}%"))))])));
+    } else {
+        cc.push((4, Line::from(vec![head("IO.COST "), plain("vrate n/a (not in this recording)")])));
+    }
     for n in s.nets.iter().take(2) {
         cc.push((3, Line::from(vec![head("NET "), plain(format!("{} rx {} tx {}", n.name, opt(n.rx, fmt_bytes), opt(n.tx, fmt_bytes)))])));
+    }
+    if live.is_some() {
+        cc.push((3, Line::from(vec![head("NET "), plain("n/a (the sampler has no network source)")])));
     }
     (ca, cb, cc)
 }
@@ -319,7 +403,10 @@ fn draw_info(f: &mut Frame, a: &mut App, r: Rect, table_r: Rect) {
         spans.push(sp(format!("  filter:\"{}\"", a.filter), Style::new().fg(Color::Yellow)));
     }
     if a.flat {
-        spans.push(demo_sp("  FLAT process ranking (demo)"));
+        spans.push(if a.demo { demo_sp("  FLAT process ranking (demo)") } else { sp("  FLAT process ranking", Style::new().fg(Color::Yellow)) });
+    }
+    if let Some(age) = a.age_s().filter(|_| a.stale()) {
+        spans.push(sp(format!("  data {age:.0}s old"), Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)));
     }
     let p = cols::plan(&a.cols, table_r.width);
     let right = format!("cols {}/{} ({} dropped)  rows {}", p.cols.len(), p.total, p.dropped, a.rows.len());
@@ -414,17 +501,17 @@ fn draw_table(f: &mut Frame, a: &mut App, r: Rect) {
                     let pr = &a.procs[i][p];
                     let ind = " ".repeat(row.depth as usize * 2);
                     let owner = if matches!(row.kind, RowKind::Flat(..)) { format!("  \u{2039}{}\u{203a}", s.ents[i].name) } else { String::new() };
-                    let t = format!("{} {} {} demo{}", pr.state, pr.comm, pr.pid, owner);
-                    Line::from(vec![plain(ind), sp(trunc(&t, w.saturating_sub(row.depth as usize * 2)), demo_style_for(pr.state))])
+                    let t = format!("{} {} {}{}{}", pr.state, pr.comm, pr.pid, if pr.demo { " demo" } else { "" }, owner);
+                    Line::from(vec![plain(ind), sp(trunc(&t, w.saturating_sub(row.depth as usize * 2)), proc_style(pr))])
                 }
-                (RowKind::Proc(i, p) | RowKind::Flat(i, p), ColId::Cpu) => {
-                    Line::from(sp(pad(&fmt_pct(a.procs[i][p].cpu), w, false), demo_style_for(a.procs[i][p].state)))
+                (RowKind::Proc(i, p) | RowKind::Flat(i, p), id) => {
+                    let pr = &a.procs[i][p];
+                    let left = false;
+                    match proc_cell(pr, id) {
+                        Some((t, st)) => Line::from(sp(pad(&t, w, left), st)),
+                        None => Line::from(""),
+                    }
                 }
-                (RowKind::Proc(i, p) | RowKind::Flat(i, p), ColId::Blk) => {
-                    let st = a.procs[i][p].state;
-                    Line::from(sp(pad(if st == 'D' { "D" } else { "" }, w, false), Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD)))
-                }
-                _ => Line::from(""),
             };
             cells.push(line);
         }
@@ -442,12 +529,36 @@ fn draw_table(f: &mut Frame, a: &mut App, r: Rect) {
     }
 }
 
-fn demo_style_for(state: char) -> Style {
-    if state == 'D' {
-        Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD)
-    } else {
-        Style::new().fg(Color::Magenta)
+fn proc_style(p: &Proc) -> Style {
+    match (p.demo, p.state == 'D') {
+        (true, true) => Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        (true, false) => Style::new().fg(Color::Magenta),
+        (false, true) => Style::new().fg(Color::Indexed(208)).add_modifier(Modifier::BOLD),
+        (false, false) => Style::new().fg(Color::Gray),
     }
+}
+
+/// The cells a process row fills; every other column stays empty. `n/a` and `·` as for cgroups.
+fn proc_cell(p: &Proc, id: ColId) -> Option<(String, Style)> {
+    let num = |c: Cn, f: &dyn Fn(f64) -> String| -> (String, Style) {
+        match c {
+            Cn::Val(v) if v == 0.0 => ("0".into(), proc_style(p)),
+            Cn::Val(v) => (f(v), proc_style(p)),
+            Cn::Unset => ("\u{b7}".into(), dim()),
+            Cn::NA => ("n/a".into(), na_style()),
+        }
+    };
+    Some(match id {
+        ColId::Cpu => num(p.cpu, &fmt_pct),
+        ColId::RamCeil => num(p.rss, &fmt_bytes),
+        ColId::IoR => num(p.io_r, &fmt_bytes),
+        ColId::IoW => num(p.io_w, &fmt_bytes),
+        ColId::Maj => num(p.maj, &fmt_count),
+        // demo processes carry no I/O or rss, so only the cpu and D flag exist for them
+        ColId::Blk if p.state == 'D' => ("D".into(), proc_style(p)),
+        _ => return None,
+    })
+    .filter(|_| !(p.demo && matches!(id, ColId::RamCeil | ColId::IoR | ColId::IoW | ColId::Maj)))
 }
 
 // ---------------------------------------------------------------- side pane
@@ -480,7 +591,11 @@ fn pane_lines(a: &App, i: usize, snap: &Snap) -> Vec<Line<'static>> {
         l.push(kv("unit", u.clone()));
     }
     l.push(Line::from(""));
-    l.push(Line::from(head("CONFIG CHAIN  live  <- set (origin)")));
+    if snap.live.is_some() {
+        l.push(Line::from(head("LIMITS  live (origin and drift: n/a, not reported by the sampler)")));
+    } else {
+        l.push(Line::from(head("CONFIG CHAIN  live  <- set (origin)")));
+    }
     let order = ["cpu_weight", "io_weight", "mem_min", "mem_low", "mem_high", "mem_max"];
     for n in order {
         if let Some(lim) = e.limits.iter().find(|x| x.name == n) {
@@ -488,7 +603,8 @@ fn pane_lines(a: &App, i: usize, snap: &Snap) -> Vec<Line<'static>> {
             let set = lim.rec_val.map_or(String::new(), |v| format!(" <- {}", lim_val(n, Cn::Val(v))));
             let org = lim.rec_origin.clone().unwrap_or_else(|| lim.origin.clone());
             let st = if lim.drift { Style::new().fg(Color::Yellow) } else { Style::new().fg(Color::Gray) };
-            l.push(Line::from(vec![sp(format!("{n:<9} "), dim()), sp(format!("{live}{set}  ({org})"), st), if lim.drift { sp(" DRIFT", Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)) } else { plain("") }]));
+            let org = if org.is_empty() { String::new() } else { format!("  ({org})") };
+            l.push(Line::from(vec![sp(format!("{n:<9} "), dim()), sp(format!("{live}{set}{org}"), st), if lim.drift { sp(" DRIFT", Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)) } else { plain("") }]));
             if lim.drift {
                 l.push(Line::from(sp(format!("  {}", lim.reason), Style::new().fg(Color::Yellow))));
             }
@@ -533,9 +649,18 @@ fn pane_lines(a: &App, i: usize, snap: &Snap) -> Vec<Line<'static>> {
     let procs = &a.procs[i];
     if !procs.is_empty() {
         l.push(Line::from(""));
-        l.push(Line::from(demo_sp(format!("PROCESSES (demo), D-state {}", a.blk[i]))));
+        let dn = a.blk[i].map_or("n/a".to_string(), |d| d.to_string());
+        if a.demo {
+            l.push(Line::from(demo_sp(format!("PROCESSES (demo), D-state {dn}"))));
+        } else {
+            l.push(Line::from(head(&format!("PROCESSES  D-state {dn}"))));
+        }
         for p in procs.iter().take(6) {
-            l.push(Line::from(demo_sp(format!("  {} {:<14} {:>6} {}", p.state, p.comm, p.pid, fmt_pct(p.cpu)))));
+            let st = proc_style(p);
+            l.push(Line::from(sp(format!("  {} {:<14} {:>6} {}", p.state, trunc(&p.comm, 14), p.pid, cs(p.cpu, fmt_pct)), st)));
+            if !p.demo {
+                l.push(Line::from(sp(format!("    rss {}  io r/w {}/{}  maj {}/s", cs(p.rss, fmt_bytes), cs(p.io_r, fmt_bytes), cs(p.io_w, fmt_bytes), cs(p.maj, fmt_count)), dim())));
+            }
         }
     }
     l
@@ -555,17 +680,57 @@ fn draw_pane(f: &mut Frame, a: &App, r: Rect) {
 fn draw_status(f: &mut Frame, a: &App, r: Rect) {
     let s = a.snap();
     let t = (s.ts % 86400.0) as u64;
-    let state = if a.frozen { sp(" FROZEN ", Style::new().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)) } else { sp(" replay ", Style::new().fg(Color::Black).bg(Color::Green)) };
-    let mut parts = vec![
-        state,
-        plain(format!(" {} frame {}/{} {:02}:{:02}:{:02}Z tick {}ms ", a.host_id, a.fi, a.snaps.len() - 1, t / 3600, t % 3600 / 60, t % 60, a.tick_ms)),
-        sp(
-            format!("| fps {:.1} cpu {:.1}% draw {:.2}ms rss {}M ", a.perf.fps, a.perf.cpu_pct, a.perf.draw_ms, crate::app::rss_kb() / 1024),
-            Style::new().fg(Color::Cyan),
-        ),
-        plain("| "),
-        demo_sp("~ magenta = synthetic demo data"),
-    ];
+    let badge = |t: &str, fg: Color, bg: Color| sp(t.to_string(), Style::new().fg(fg).bg(bg).add_modifier(Modifier::BOLD));
+    let perf = sp(
+        format!("| fps {:.1} cpu {:.1}% draw {:.2}ms rss {}M ", a.perf.fps, a.perf.cpu_pct, a.perf.draw_ms, crate::app::rss_kb() / 1024),
+        Style::new().fg(Color::Cyan),
+    );
+    let mut parts = if let Some(l) = &a.live {
+        // live: the source is always visible, and so is whether the sampler is still answering
+        let state = if a.frozen {
+            badge(" FROZEN ", Color::Black, Color::Yellow)
+        } else if l.last_ok.is_none() {
+            badge(" WAITING ", Color::Black, Color::Yellow)
+        } else if a.stale() {
+            badge(&format!(" STALE {:.0}s ", a.age_s().unwrap_or(0.0)), Color::White, Color::Red)
+        } else {
+            badge(" LIVE ", Color::Black, Color::Green)
+        };
+        let h = l.hello.as_ref();
+        let src = match h {
+            Some(h) => format!(
+                " {} sampler {} pid {} view:{} epoch {}{} {:02}:{:02}:{:02}Z frame {}/{} ",
+                l.path, h.version, h.pid, h.view_mode, l.epoch.as_deref().unwrap_or("?"),
+                if l.epoch_changes > 0 { format!(" (restarts seen {})", l.epoch_changes) } else { String::new() },
+                t / 3600, t % 3600 / 60, t % 60, a.fi + 1, a.snaps.len()
+            ),
+            None => format!(" {} ", l.path),
+        };
+        let mut v = vec![state, plain(src)];
+        if let Some(why) = &l.down {
+            v.push(sp(format!("| sampler down: {why} "), Style::new().fg(Color::Red)));
+        }
+        v.push(perf);
+        if let Some(st) = &l.status {
+            v.push(plain(format!("| sampler cpu {} rss {} ", opt(st.cpu_pct, |c| format!("{c:.1}%")), opt(st.rss, fmt_bytes))));
+            if st.overruns.unwrap_or(0.0) + st.skipped.unwrap_or(0.0) > 0.0 {
+                v.push(sp(format!("overruns {:.0} skipped {:.0} ", st.overruns.unwrap_or(0.0), st.skipped.unwrap_or(0.0)), Style::new().fg(Color::Yellow)));
+            }
+        }
+        if s.live.as_ref().map_or(false, |x| x.truncated) {
+            v.push(sp("TRUNCATED ", Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        }
+        v
+    } else {
+        let state = if a.frozen { badge(" FROZEN ", Color::Black, Color::Yellow) } else { sp(" replay ", Style::new().fg(Color::Black).bg(Color::Green)) };
+        vec![
+            state,
+            plain(format!(" {} frame {}/{} {:02}:{:02}:{:02}Z tick {}ms ", a.host_id, a.fi, a.snaps.len() - 1, t / 3600, t % 3600 / 60, t % 60, a.tick_ms)),
+            perf,
+            plain("| "),
+            demo_sp("~ magenta = synthetic demo data"),
+        ]
+    };
     if !a.msg.is_empty() {
         parts.push(plain(format!("  {}", a.msg)));
     }
@@ -593,7 +758,7 @@ fn draw_footer(f: &mut Frame, a: &App, r: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), r);
 }
 
-fn draw_help(f: &mut Frame, area: Rect) {
+fn draw_help(f: &mut Frame, area: Rect, demo: bool) {
     let lines = [
         "topos ratatui PoC   (any key closes)",
         "",
@@ -605,14 +770,14 @@ fn draw_help(f: &mut Frame, area: Rect) {
         "  space        freeze; ,  . step back / forward one frame",
         "  arrows jk    move; Right/Enter expand, Left collapse / go to parent",
         "  e  c         expand all / collapse to top level",
-        "  p  g         demo processes on/off; flat process ranking",
+        "  p  g         processes on/off; flat process ranking",
         "  mouse        wheel scrolls, click selects, click the arrow folds",
         "  q  Ctrl-C    quit",
         "",
         "Meaning of cells:  \u{b7} = not set (no limit)    n/a = not available",
         "  0 = real zero.  Colour bands: grey ok, yellow warn, orange high, red critical.",
-        "Magenta / '~' / 'demo' = SYNTHETIC (per-CPU, us/sy, D state, processes,",
-        "  zswap rates): the recording has no such data; only for judging layout.",
+        if demo { "Magenta / '~' / 'demo' = SYNTHETIC (per-CPU, us/sy, D state, processes," } else { "Live: every value comes from the sampler; nothing is invented. · = not applicable here," },
+        if demo { "  zswap rates): the recording has no such data; only for judging layout." } else { "  n/a = unavailable or not reported. STALE = the sampler stopped answering (last data kept)." },
     ];
     let w = 82.min(area.width);
     let h = (lines.len() as u16 + 2).min(area.height);

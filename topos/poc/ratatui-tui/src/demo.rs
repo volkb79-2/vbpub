@@ -1,7 +1,7 @@
 //! SYNTHETIC data. Everything here is invented so the layout can be judged where the
 //! recording has no data (per-CPU, us/sy/io/st split, D state, processes, zswap rates).
 //! The UI marks all of it with `~` / `demo` and a magenta colour; it is never real.
-use crate::data::Snap;
+use crate::data::{Cn, Proc, Snap};
 
 pub fn hash(s: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
@@ -38,18 +38,6 @@ pub fn per_cpu(cores_busy: f64, fi: usize) -> Vec<[f64; 4]> {
         .collect()
 }
 
-pub struct Proc {
-    pub pid: u32,
-    pub comm: &'static str,
-    pub cpu: f64,
-    pub state: char,
-}
-
-impl Proc {
-    pub fn hot(&self) -> bool {
-        self.cpu >= 3.0 || self.state == 'D'
-    }
-}
 
 const COMMS: [&str; 12] = [
     "python3", "postgres", "java", "node", "dockerd", "containerd-shim", "rg", "cc1plus", "sshd", "rsync", "kworker/u16", "mysqld",
@@ -81,9 +69,15 @@ pub fn procs_for(s: &Snap, i: usize, fi: usize) -> Vec<Proc> {
         };
         out.push(Proc {
             pid: 1000 + ((h >> 8) % 60000) as u32 + k as u32 * 7,
-            comm: COMMS[((h >> 3) as usize + k * 5) % COMMS.len()],
-            cpu: c,
+            comm: COMMS[((h >> 3) as usize + k * 5) % COMMS.len()].to_string(),
+            cpu: Cn::Val(c),
             state,
+            rss: Cn::NA,
+            io_r: Cn::NA,
+            io_w: Cn::NA,
+            maj: Cn::NA,
+            cmdline: String::new(),
+            demo: true,
         });
     }
     out

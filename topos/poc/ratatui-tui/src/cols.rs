@@ -8,7 +8,24 @@ pub enum ColId {
     Name, Cpu, Thr, RamCeil, Prot, Zsw, RfD, RfF, PsiM, PsiI, PsiC, PsiCf, PsiMf, PsiIf, IoR, IoW, IopsR, IopsW,
     Stall, Blk, NetRx, NetTx, Pids, Anon, File, Shmem, Swap, Pgscan, Pgsteal, IoCost, Origin, Drift,
     CpuWt, CpuQuota, MemMin, MemLow, MemHigh, MemMax, EffMin, IoWt, PidsMax, DriftList, Warn,
-    EvHigh, EvMax, EvOom,
+    EvHigh, EvMax, EvOom, SwapMax, Ratio, RfZ, IoMax, Maj,
+}
+
+/// Settings from the optional `[ui]` table of the same file (Textual keeps these in its own `[ui]` config).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UiCfg {
+    /// Side pane width in columns at any terminal width (capped to half the screen).
+    pub pane_width: u16,
+    /// The pane shows by itself from this terminal width.
+    pub pane_auto_min_width: u16,
+    /// Hot or blocked process rows shown under a collapsed cgroup.
+    pub proc_cap: usize,
+}
+
+impl Default for UiCfg {
+    fn default() -> UiCfg {
+        UiCfg { pane_width: 46, pane_auto_min_width: 140, proc_cap: 3 }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -42,6 +59,8 @@ const REGISTRY: &[(&str, ColId, &str, u16, bool)] = &[
     ("pids_max", ColId::PidsMax, "PIDS.MAX", 8, false), ("drift_list", ColId::DriftList, "DRIFTED", 22, false),
     ("warn", ColId::Warn, "INCONSISTENCY", 30, false),
     ("ev_high", ColId::EvHigh, "EV_HIGH", 7, false), ("ev_max", ColId::EvMax, "EV_MAX", 6, false), ("ev_oom", ColId::EvOom, "EV_OOM", 6, false),
+    ("swap_max", ColId::SwapMax, "SWAP.MAX", 8, false), ("ratio", ColId::Ratio, "RATIO", 5, false), ("rf_z", ColId::RfZ, "RF_Z", 6, false),
+    ("io_max", ColId::IoMax, "IO.MAX", 9, false), ("maj", ColId::Maj, "MAJ", 5, false),
 ];
 
 pub fn column_ids() -> String {
@@ -58,6 +77,13 @@ pub const EXAMPLE: &str = include_str!("../columns.example.toml");
 /// Parse the column config (a TOML subset: `[[column]]` tables with `id`, `pri`, and optional `width`/`head`).
 /// File order is display order; `pri` 1 is kept longest.
 pub fn parse_config(text: &str) -> Result<Vec<Col>, String> {
+    parse_full(text).map(|x| x.0)
+}
+
+/// Columns plus the optional `[ui]` table (`pane_width`, `pane_auto_min_width`, `proc_cap`).
+pub fn parse_full(text: &str) -> Result<(Vec<Col>, UiCfg), String> {
+    let mut ui = UiCfg::default();
+    let mut in_ui = false;
     let mut out: Vec<Col> = vec![];
     let mut cur: Option<(Option<String>, Option<u8>, Option<u16>, Option<String>)> = None;
     let mut flush = |cur: &mut Option<(Option<String>, Option<u8>, Option<u16>, Option<String>)>, out: &mut Vec<Col>| -> Result<(), String> {
@@ -80,10 +106,26 @@ pub fn parse_config(text: &str) -> Result<Vec<Col>, String> {
         if line == "[[column]]" {
             flush(&mut cur, &mut out)?;
             cur = Some((None, None, None, None));
+            in_ui = false;
+            continue;
+        }
+        if line == "[ui]" {
+            flush(&mut cur, &mut out)?;
+            in_ui = true;
             continue;
         }
         let (k, v) = line.split_once('=').ok_or(format!("line {}: expected key = value", n + 1))?;
         let (k, v) = (k.trim(), v.trim().trim_matches('"'));
+        if in_ui {
+            let num = |what: &str| v.parse::<u16>().map_err(|_| format!("line {}: bad number for {what}", n + 1));
+            match k {
+                "pane_width" => ui.pane_width = num(k)?,
+                "pane_auto_min_width" => ui.pane_auto_min_width = num(k)?,
+                "proc_cap" => ui.proc_cap = num(k)? as usize,
+                _ => return Err(format!("line {}: unknown [ui] key {k}", n + 1)),
+            }
+            continue;
+        }
         let c = cur.as_mut().ok_or(format!("line {}: key outside [[column]]", n + 1))?;
         let bad = |_| format!("line {}: bad number for {k}", n + 1);
         match k {
@@ -98,7 +140,7 @@ pub fn parse_config(text: &str) -> Result<Vec<Col>, String> {
     if out.first().map(|c| c.id) != Some(ColId::Name) {
         return Err("the first column must be \"name\"".into());
     }
-    Ok(out)
+    Ok((out, ui))
 }
 
 pub struct Plan {
@@ -291,10 +333,26 @@ pub fn warnings(e: &Ent) -> Vec<String> {
     w
 }
 
-pub fn cell(id: ColId, s: &Snap, blk: &[u32], i: usize) -> Cell {
+pub fn cell(id: ColId, s: &Snap, blk: &[Option<u32>], i: usize) -> Cell {
     use ColId::*;
     let e = &s.ents[i];
+    // the sampler does not report where a limit was set, so governance columns have no source live
+    if s.live.is_some() && matches!(id, Origin | Drift | DriftList) {
+        return na();
+    }
     match id {
+        SwapMax => cfg_bytes(e.cn("swap_max"), Style::new().fg(Color::Yellow)),
+        Ratio => numcell(e.cn("ratio"), |v| (format!("{v:.1}x"), 1)),
+        RfZ => count_cell(e.cn("rf_z_per_s"), [1.0, 50.0, 500.0]),
+        Maj => count_cell(e.cn("maj_per_s"), [1.0, 50.0, 500.0]),
+        IoMax => match e.cn("io_max_capped") {
+            Cn::Val(c) if c == 1.0 => match e.num("io_cap_saturation_pct") {
+                Some(sat) => (format!("cap {sat:.0}%"), band_style(band(sat, [50.0, 80.0, 95.0]))),
+                None => ("cap".into(), Style::new().fg(Color::Yellow)),
+            },
+            Cn::Val(_) => unset(),
+            _ => na(),
+        },
         Name => (e.name.clone(), Style::new()),
         Cpu => numcell(e.cn("cpu_pct"), |v| (fmt_pct(v), band(v, [20.0, 80.0, 150.0]))),
         Thr => pct_cell(e.cn("cpu_throttled_pct"), [1.0, 10.0, 30.0]),
@@ -330,10 +388,11 @@ pub fn cell(id: ColId, s: &Snap, blk: &[u32], i: usize) -> Cell {
             Some(v) => pct_cell(Cn::Val(v), [1.0, 5.0, 15.0]),
             None => na(),
         },
-        Blk => {
-            let n = blk[i];
-            (if n == 0 { "0".into() } else { n.to_string() }, demo_style(n == 0))
-        }
+        Blk => match blk.get(i).copied().flatten() {
+            None => na(),
+            Some(n) if s.live.is_some() => (n.to_string(), if n == 0 { dim() } else { Style::new().fg(Color::Indexed(208)).add_modifier(Modifier::BOLD) }),
+            Some(n) => (if n == 0 { "0".into() } else { n.to_string() }, demo_style(n == 0)),
+        },
         NetRx => bytes_cell(e.cn("net_rx_bps"), [1e5, 1e7, 1e8]),
         NetTx => bytes_cell(e.cn("net_tx_bps"), [1e5, 1e7, 1e8]),
         Pids => numcell(e.cn("pids_current"), |v| {
@@ -407,11 +466,16 @@ pub fn cell(id: ColId, s: &Snap, blk: &[u32], i: usize) -> Cell {
 }
 
 /// Sort key per column (None = not sortable).
-pub fn sortval(id: ColId, s: &Snap, blk: &[u32], i: usize) -> Option<f64> {
+pub fn sortval(id: ColId, s: &Snap, blk: &[Option<u32>], i: usize) -> Option<f64> {
     use ColId::*;
     let e = &s.ents[i];
     let n = |k: &str| e.num(k).unwrap_or(-1.0);
     Some(match id {
+        SwapMax => n("swap_max"),
+        Ratio => n("ratio"),
+        RfZ => n("rf_z_per_s"),
+        Maj => n("maj_per_s"),
+        IoMax => n("io_cap_saturation_pct"),
         Cpu => n("cpu_pct"),
         Thr => n("cpu_throttled_pct"),
         RamCeil => n("ram"),
@@ -429,7 +493,7 @@ pub fn sortval(id: ColId, s: &Snap, blk: &[u32], i: usize) -> Option<f64> {
         IopsR => n("io_r_iops"),
         IopsW => n("io_w_iops"),
         Stall => max_psi(e, "full").unwrap_or(-1.0),
-        Blk => blk[i] as f64,
+        Blk => blk.get(i).copied().flatten().map_or(-1.0, |b| b as f64),
         NetRx => n("net_rx_bps"),
         NetTx => n("net_tx_bps"),
         Pids => n("pids_current"),
