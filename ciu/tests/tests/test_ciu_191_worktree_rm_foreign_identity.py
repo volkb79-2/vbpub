@@ -559,3 +559,26 @@ def test_rm_dry_run_reports_an_unavailable_plan(tmp_repo, fake_generate_env, mon
     monkeypatch.setattr(worktree, "_clean_in", broken)
     doc = worktree.remove_document(tmp_repo, "one", dry_run=True)
     assert "cleanup plan unavailable: no identity" in doc["blockers"]
+
+
+def test_rm_dry_run_without_a_ciu_root_marker_has_no_plan_to_show(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    worktree.create(tmp_repo, "one", base="main")
+    monkeypatch.setattr(worktree, "_ciu_root_marker_present", lambda _root: False)
+    monkeypatch.setattr(
+        worktree, "_clean_in", lambda *a, **k: pytest.fail("no root, no plan"),
+    )
+    doc = worktree.remove_document(tmp_repo, "one", dry_run=True)
+    assert doc["status"] == "dry-run"
+    assert not any("cleanup plan" in b for b in doc["blockers"])
+
+
+def test_rm_dry_run_json_keeps_the_plan_off_stdout(tmp_repo, fake_generate_env, monkeypatch):
+    worktree.create(tmp_repo, "one", base="main")
+    seen = []
+    monkeypatch.setattr(
+        worktree, "_clean_in", lambda root, **kw: seen.append(kw) or 0,
+    )
+    worktree.remove_document(tmp_repo, "one", dry_run=True, json_output=True)
+    assert seen == [{"yes": False, "plan_only": True, "json_output": True}]
