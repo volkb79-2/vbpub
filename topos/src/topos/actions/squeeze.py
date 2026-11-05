@@ -183,17 +183,33 @@ def _write_recovery(path: Path, *, target: str, original: str | None, relax_to: 
             f"recovery file {path} already exists (a previous squeeze did not "
             "finish); run 'topos squeeze --recover' first"
         )
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     payload = json.dumps(
         {"target": target, "original": original, "relax_to": relax_to}, sort_keys=True
     )
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        tmp.unlink()  # stale temp of a crashed run with the same pid
+    except OSError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         os.write(fd, payload.encode("utf-8"))
         os.fsync(fd)
     finally:
         os.close(fd)
-    os.rename(tmp, path)
+    try:
+        # link() fails if the record exists: atomic create-or-refuse.
+        os.link(tmp, path)
+    except FileExistsError:
+        raise OSError(
+            f"recovery file {path} already exists (a previous or concurrent "
+            "squeeze did not finish); run 'topos squeeze --recover' first"
+        ) from None
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
     dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(dir_fd)
@@ -236,6 +252,9 @@ def recover_squeeze(
             value = data.get("original") or data["relax_to"]
             if not isinstance(tgt, str) or not isinstance(value, str):
                 raise ValueError("malformed recovery record")
+            bad_value = validate_relax_to(value)
+            if bad_value is not None:
+                raise ValueError(f"malformed recovery value: {bad_value}")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             outcomes.append(RecoverOutcome(path, "?", "?", False, f"unreadable: {exc}"))
             continue
@@ -311,6 +330,10 @@ class SqueezeConfig:
     recovery_path: Path | None = None
     """Recovery record path. None = default under /run/topos/squeeze when the
     production cgroup writer is used, none when a writer is injected."""
+
+    relax_explicit: bool = True
+    """False when ``relax_to`` is only the default: the pre-squeeze memory.high
+    (when readable and valid) is restored instead."""
 
     cgroup_root: str = DEFAULT_CGROUP_ROOT
     """Target must resolve under this root (checked with the production writer)."""
@@ -441,13 +464,29 @@ class _RestoreGuard:
             return
         self._attempted = True
         last: OSError | None = None
-        for _ in range(2):  # one retry
-            try:
-                self._writer(self._cgroup_path, "memory.high", self._relax_to)
-                last = None
-                break
-            except OSError as exc:
-                last = exc
+        # G-04: a second signal must not abort the restore write; block the
+        # guarded signals while it runs (they are delivered afterwards).
+        try:
+            old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, _GUARDED_SIGNALS)
+        except (AttributeError, OSError, ValueError):
+            old_mask = None
+        try:
+            failures = 0
+            interruptions = 0
+            while failures < 2 and interruptions < 10:  # one retry on real errors
+                try:
+                    self._writer(self._cgroup_path, "memory.high", self._relax_to)
+                    last = None
+                    break
+                except InterruptedError as exc:
+                    last = exc
+                    interruptions += 1
+                except OSError as exc:
+                    last = exc
+                    failures += 1
+        finally:
+            if old_mask is not None:
+                signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
         if last is not None:
             self.restore_failed = True
             self.restore_error = str(last)
@@ -561,13 +600,20 @@ def run_squeeze(
         if filename == "memory.high":
             last_written.append(value)
 
+    original_high = text_reader(target, "memory.high")
+    if (
+        not config.relax_explicit
+        and original_high is not None
+        and validate_relax_to(original_high) is None
+    ):
+        # G-05: a clean exit restores the pre-squeeze value, like --recover.
+        relax_to = original_high
     restore_guard = _RestoreGuard(
         target,
         relax_to,
         writer=tracked_writer,
         recovery_path=recovery_path,
     )
-    original_high = text_reader(target, "memory.high")
 
     # -- Open the JSONL log
     config.log_path.parent.mkdir(parents=True, exist_ok=True)

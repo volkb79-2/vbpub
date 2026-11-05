@@ -793,7 +793,7 @@ class TestCliSqueezeArgs:
         assert args.delay == 15.0
         assert args.floor == "1G"
         assert args.start is None
-        assert args.relax_to == "max"
+        assert args.relax_to is None  # not explicit: the pre-squeeze value is restored (G-05)
         assert args.psi_some_limit == 10.0
         assert args.psi_full_limit == 5.0
         assert args.rf_limit == 200

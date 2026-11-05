@@ -467,7 +467,7 @@ def parse_squeeze_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--delay", type=float, default=15.0, help="seconds between steps (default: 15)")
     parser.add_argument("--floor", type=str, default="1G", help="never set memory.high below this (default: 1G)")
     parser.add_argument("--start", type=str, default=None, help="initial memory.high (default: current rounded up to step)")
-    parser.add_argument("--relax-to", type=str, default="max", help="restore memory.high to this on exit (default: max)")
+    parser.add_argument("--relax-to", type=str, default=None, help="restore memory.high to this on exit (default: the value it had before the squeeze, else max)")
     parser.add_argument("--psi-some-limit", type=float, default=10.0, help="stop when PSI some avg10 > PCT (default: 10)")
     parser.add_argument("--psi-full-limit", type=float, default=5.0, help="stop when PSI full avg10 > PCT (default: 5)")
     parser.add_argument("--rf-limit", type=int, default=200, help="stop when refaults/s > N (default: 200)")
@@ -515,7 +515,8 @@ def _main_squeeze(argv: list[str]) -> int:
         delay=args.delay,
         floor=floor_bytes,
         start=start_bytes,
-        relax_to=args.relax_to,
+        relax_to=args.relax_to if args.relax_to is not None else "max",
+        relax_explicit=args.relax_to is not None,
         psi_some_limit=max(0.0, args.psi_some_limit),
         psi_full_limit=max(0.0, args.psi_full_limit),
         rf_limit=max(0, args.rf_limit),

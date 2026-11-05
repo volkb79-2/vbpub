@@ -506,6 +506,110 @@ def test_recover_failure_keeps_the_record(tmp_path):
     assert rec.exists()
 
 
+def test_restore_write_runs_with_guarded_signals_blocked_and_retries_eintr(tmp_path):
+    seen: list[set] = []
+    attempts: list[str] = []
+
+    def writer(path, filename, value):
+        seen.append(set(signal.pthread_sigmask(signal.SIG_BLOCK, [])))
+        attempts.append(value)
+        if len(attempts) == 1:
+            raise InterruptedError("EINTR")
+
+    before = set(signal.pthread_sigmask(signal.SIG_BLOCK, []))
+    guard = squeeze._RestoreGuard(
+        "/cg/x", "4096", writer=writer, signal_handler=lambda s, h: signal.SIG_DFL
+    )
+    guard.restore()
+    assert attempts == ["4096", "4096"]
+    assert guard.restore_failed is False
+    for mask in seen:
+        assert {signal.SIGINT, signal.SIGTERM, signal.SIGHUP} <= mask
+    assert set(signal.pthread_sigmask(signal.SIG_BLOCK, [])) == before
+
+
+def test_persistent_eintr_is_reported_as_restore_failed():
+    def writer(path, filename, value):
+        raise InterruptedError("EINTR")
+
+    guard = squeeze._RestoreGuard(
+        "/cg/x", "max", writer=writer, signal_handler=lambda s, h: signal.SIG_DFL
+    )
+    guard.restore()
+    assert guard.restore_failed is True
+
+
+def test_recovery_record_creation_is_exclusive_and_leaves_no_temp(tmp_path):
+    rec = tmp_path / "rec" / "x.json"
+    squeeze._write_recovery(rec, target="/cg/x", original="4096", relax_to="max")
+    assert json.loads(rec.read_text())["original"] == "4096"
+    with pytest.raises(OSError, match="already exists"):
+        squeeze._write_recovery(rec, target="/cg/x", original="1", relax_to="max")
+    assert json.loads(rec.read_text())["original"] == "4096"  # first record untouched
+    assert [p.name for p in rec.parent.iterdir()] == ["x.json"]
+
+
+def test_recovery_record_refuses_a_symlink_planted_as_the_temp_name(tmp_path):
+    rec_dir = tmp_path / "rec"
+    rec_dir.mkdir()
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    import os
+
+    (rec_dir / f"x.json.{os.getpid()}.tmp").symlink_to(victim)
+    squeeze._write_recovery(rec_dir / "x.json", target="/cg/x", original=None, relax_to="max")
+    assert victim.read_text() == "keep"
+
+
+def test_clean_exit_restores_the_original_unless_relax_to_was_explicit(tmp_path, monkeypatch):
+    monkeypatch.setattr(squeeze.time, "sleep", lambda s: None)
+    writes: list[str] = []
+    run_squeeze(
+        _cfg(tmp_path, relax_explicit=False),
+        cgroup_writer=lambda p, f, v: writes.append(v),
+        **_readers(),
+    )
+    assert writes[-1] == "8589934592"
+
+    writes.clear()
+    run_squeeze(
+        _cfg(tmp_path, relax_explicit=True),
+        cgroup_writer=lambda p, f, v: writes.append(v),
+        **_readers(),
+    )
+    assert writes[-1] == "max"
+
+    writes.clear()
+    readers = _readers()
+    readers["cgroup_text_reader"] = lambda t, f: None
+    run_squeeze(
+        _cfg(tmp_path, relax_explicit=False),
+        cgroup_writer=lambda p, f, v: writes.append(v),
+        **readers,
+    )
+    assert writes[-1] == "max"
+
+
+def test_recover_refuses_a_corrupt_recorded_value(tmp_path):
+    rec_dir = tmp_path / "recovery"
+    rec_dir.mkdir()
+    cg = tmp_path / "cgroup"
+    cg.mkdir()
+    (cg / "memory.high").write_text("1\n")
+    rec = recovery_path_for(str(cg), rec_dir)
+    rec.write_text(json.dumps({"target": str(cg), "original": "1x?", "relax_to": "max"}))
+    writes: list = []
+    out = recover_squeeze(
+        None,
+        recovery_dir=rec_dir,
+        cgroup_root=str(tmp_path),
+        writer=lambda p, f, v: writes.append(v),
+    )
+    assert [o.ok for o in out] == [False]
+    assert writes == []
+    assert rec.exists()
+
+
 def test_confinement_requires_path_under_root_with_regular_memory_high(tmp_path):
     root = tmp_path / "cgroup"
     good = root / "a.slice"
