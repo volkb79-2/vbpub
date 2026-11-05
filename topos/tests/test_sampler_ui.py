@@ -90,7 +90,7 @@ def test_wide_screen_meters_carry_the_sampler_sections(fake) -> None:
             assert "run 4  D-state 3" in meters
             assert "await 4.5ms" in meters and "await ·" in meters  # busy device vs a device with no IO
             assert "vda1" not in meters  # partitions are folded into the disk
-            assert "12/7.0/n/a/n/a" in meters  # zswap in/out/wb/rej: debugfs unreadable is n/a, not 0
+            assert "12/7.0/3.0/n/a" in meters  # zswap in/out/wb/rej: the reject counters need debugfs, unreadable is n/a, not 0
             assert "IO.COST" in meters and "SAMPLER cpu" in meters and "over 2" in meters and "thr 4" in meters
             assert "■anon" in meters
             assert "━" not in meters

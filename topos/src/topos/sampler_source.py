@@ -19,7 +19,7 @@ from typing import Any
 
 from topos.config import ToposConfig
 from topos.model import Entity, Frame
-from topos.sampler_adapter import SamplerOverlay, convert_current
+from topos.sampler_adapter import VIEW_FIELDS, SamplerOverlay, convert_current
 from topos.sampler_client import SamplerClient, SamplerError, SamplerRemoteError, SamplerTimeout
 
 SOURCE_MODES = ("auto", "sampler", "local")
@@ -108,7 +108,7 @@ class SamplerSource:
         status = events = None
         changed_ts: float | None = None
         while not self.stop_event.is_set():
-            cur = client.current(procs=True)
+            cur = client.current(procs=True, fields=VIEW_FIELDS, compact=True)
             ts = float(cur["ts_ms"]) / 1000.0
             if client.take_epoch_changes():
                 hello = self.hello = client.hello()

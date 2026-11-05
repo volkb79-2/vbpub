@@ -37,6 +37,28 @@ def _is_value(o: object) -> bool:
     return isinstance(o, dict) and o.get("s") == "value"
 
 
+def _expand_value(o: Any) -> Any:
+    """A ``compact`` value as the full value-object (protocol, ``current`` shaping).
+
+    A bare number is a gauge, ``[delta, rate_per_s]`` a counter; a state object stays as it is
+    (``unavailable`` states are kept, ``not_applicable`` ones are left out of a compact reply,
+    so an absent metric is the way ``not_applicable`` arrives). ``raw`` is not sent.
+    """
+    if isinstance(o, bool):
+        return o
+    if isinstance(o, (int, float)):
+        return {"s": "value", "v": o}
+    if isinstance(o, list) and len(o) == 2 and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in o):
+        return {"s": "value", "v": o[0], "rate": o[1]}
+    return o
+
+
+def expand_entities(ents: Obj) -> Obj:
+    """The ``entities`` of a ``current`` answer with every compact value expanded (full ones pass through)."""
+    return {name: {m: _expand_value(o) for m, o in metrics.items()} if isinstance(metrics, dict) else metrics
+            for name, metrics in ents.items()}
+
+
 def _missing(o: Obj) -> MetricValue:
     """The metric exists but is not a number now: a permission problem or ``n/a``."""
     if o.get("s") == "unavailable" and o.get("why") == "permission_denied":
@@ -122,6 +144,7 @@ _CG_TABLE: tuple[tuple[str, str, str, float], ...] = (
     ("mem_max", "limit.memory.max", _L, 1.0),
     ("swap_max", "limit.memory.swap.max", _L, 1.0),
     ("pids_current", "pids.current", _G, 1.0),
+    ("pids_max", "limit.pids.max", _L, 1.0),
     ("mem_events_low_per_s", "memev.low", _R, 1.0),
     ("mem_events_high_per_s", "memev.high", _R, 1.0),
     ("mem_events_max_per_s", "memev.max", _R, 1.0),
@@ -134,8 +157,21 @@ _CG_TABLE: tuple[tuple[str, str, str, float], ...] = (
 )
 
 
-def cgroup_metrics(raw: Obj) -> dict[str, MetricValue]:
+def cgroup_metrics(raw: Obj, host: Obj | None = None) -> dict[str, MetricValue]:
+    """Registry metrics of one cgroup. *host* backs the root, which has no ``memory.stat``."""
     out: dict[str, MetricValue] = {}
+    # swap held on disk: swap in use minus what sits compressed in zswap minus the swap cache
+    sw = raw.get("mem.swap_current")
+    if sw is not None:
+        if host is not None:  # the root has no memory.stat: the host's Zswapped and SwapCached stand in
+            zd, sc = host.get("zswap.stored_bytes"), host.get("meminfo.SwapCached")
+        else:
+            zd, sc = raw.get("mem.zswapped"), raw.get("mem.swapcached")
+        parts = (_num(sw), _num(zd), _num(sc))
+        if None in parts:
+            out["swap_disk"] = MetricValue(None, "derived")
+        else:
+            out["swap_disk"] = MetricValue(max(0.0, parts[0] - parts[1] - parts[2]), "derived")  # type: ignore[operator]
     for name, key, kind, scale in _CG_TABLE:
         o = raw.get(key)
         if o is None:
@@ -216,8 +252,8 @@ def host_metrics(host: Obj, root: Obj) -> dict[str, MetricValue]:
     if _is_value(vrate):
         out["host_io_cost_vrate_pct"] = MetricValue(float(vrate["v"]), "exact")
         out["host_io_cost_enabled"] = MetricValue(1, "exact")
-    elif vrate is not None and vrate.get("s") == "not_applicable":
-        out["host_io_cost_enabled"] = MetricValue(0, "exact")
+    elif (vrate is not None and vrate.get("s") == "not_applicable") or (vrate is None and root):
+        out["host_io_cost_enabled"] = MetricValue(0, "exact")  # compact replies leave not_applicable out
     return out
 
 
@@ -239,6 +275,7 @@ def block_devices(entities: Obj, limit_n: int = 3) -> list[dict[str, Any]]:
     for name in names:
         if _NOT_DISKS.match(name):
             continue
+        # compact replies leave not_applicable out: a disk that answers but has no await had no IO to wait for
         if _PARTITION.match(name) and re.sub(r"p?\d+$", "", name) in names:
             continue  # the whole disk reports it
         d = entities[f"dev:{name}"]
@@ -249,12 +286,30 @@ def block_devices(entities: Obj, limit_n: int = 3) -> list[dict[str, Any]]:
             "write_bps": None if wr is None else wr * 512.0,
             "read_iops": _rate_num(d.get("disk.reads")),
             "write_iops": _rate_num(d.get("disk.writes")),
-            "await_ms": _await(d.get("disk.await_ms")),
+            "await_ms": _await(d.get("disk.await_ms")) if "disk.await_ms" in d or "disk.util_pct" not in d else "idle",
             "util_pct": _num(d.get("disk.util_pct")),
             "inflight": _num(d.get("disk.inflight")),
         })
     rows.sort(key=lambda r: (-(r["util_pct"] or 0.0), -((r["read_bps"] or 0.0) + (r["write_bps"] or 0.0)), r["name"]))
     return rows[:limit_n]
+
+
+# ── what to ask for ───────────────────────────────────────────────────
+
+VIEW_FIELDS: tuple[str, ...] = tuple(dict.fromkeys((
+    *(key for _n, key, _k, _s in _CG_TABLE),
+    "mem.swap_current", "mem.swapcached", "mem.zswpin", "mem.workingset_refault_anon", "procs.d_state",
+    *(key for _n, key, _k in _HOST_TABLE),
+    *(key for _n, key in _HOST_PSI),
+    "io.cost.vrate",
+    "host.procs_running", "memstack.*", "vm.zswpin", "vm.zswpout", "vm.zswpwb", "vm.pswpin", "vm.pswpout",
+    "zswap.reject_*", "ksm.run", "ksm.pages_sharing", "ksm.pages_shared", "ksm.general_profit",
+    "cpupct.us", "cpupct.sy", "cpupct.io", "cpupct.st",
+    "cpu.idle",  # always a value: keeps a CPU whose percentages are n/a (no jiffies passed) in the per-CPU list
+    "disk.rd_sectors", "disk.wr_sectors", "disk.reads", "disk.writes", "disk.await_ms", "disk.util_pct", "disk.inflight",
+    "sampler.rss_bytes", "sampler.work_us", "sampler.cpu_ticks", "sampler.overruns", "sampler.skipped_ticks",
+)))
+"""Exactly the metrics the single view shows (``current`` ``fields``; ``name*`` is a prefix)."""
 
 
 # ── the extras the frame has no field for ─────────────────────────────
@@ -283,7 +338,7 @@ def _cpus(entities: Obj) -> list[list[float] | None] | None:
 def _ksm(host: Obj, page_size: int) -> dict[str, Any] | None:
     run = host.get("ksm.run")
     if run is None:
-        return None
+        return {"state": "off"} if host else None  # compact replies leave not_applicable (no KSM) out
     if isinstance(run, dict) and run.get("s") == "not_applicable":
         return {"state": "off"}
     if not _is_value(run):
@@ -345,6 +400,13 @@ def sampler_extras(
     pswpin, pswpout = _rate_num(host.get("vm.pswpin")), _rate_num(host.get("vm.pswpout"))
     rej = [_rate_num(host.get(f"zswap.{n}")) for n in _REJECTS]
     vrate = root.get("io.cost.vrate")
+    timing: Obj = (status or {}).get("timing") or {}
+
+    def _count(key: str, metric: str) -> float | None:
+        n = timing.get(key)
+        if isinstance(n, (int, float)) and not isinstance(n, bool):
+            return float(n)
+        return _raw_num(me.get(metric))  # compact replies carry no raw reading
 
     extras: dict[str, Any] = {
         "tick": cur.get("tick"),
@@ -363,7 +425,7 @@ def sampler_extras(
         "zswap": {
             "in": _rate_num(host.get("vm.zswpin")),
             "out": _rate_num(host.get("vm.zswpout")),
-            "wb": _rate_num(host.get("zswap.written_back_pages")),
+            "wb": _rate_num(host.get("vm.zswpwb")),
             "rej": None if any(r is None for r in rej) else float(sum(rej)),  # type: ignore[arg-type]
         },
         "swap_io": {
@@ -371,15 +433,16 @@ def sampler_extras(
             "out": None if pswpout is None else pswpout * page_size,
         },
         "ksm": _ksm(host, page_size),
-        "iocost": None if vrate is None else {
-            "state": "on" if _is_value(vrate) else "off" if vrate.get("s") == "not_applicable" else "na"
-        },
+        "iocost": (  # a compact reply leaves not_applicable (io.cost off) out: absent next to a root is "off"
+            {"state": "off"} if vrate is None and root else None if vrate is None else
+            {"state": "on" if _is_value(vrate) else "off" if vrate.get("s") == "not_applicable" else "na"}
+        ),
         "sampler": {
             "cpu_pct": self_cpu,
             "rss": _num(me.get("sampler.rss_bytes")),
             "work_us": _num(me.get("sampler.work_us")),
-            "overruns": _raw_num(me.get("sampler.overruns")),
-            "skipped": _raw_num(me.get("sampler.skipped_ticks")),
+            "overruns": _count("tick_overruns", "sampler.overruns"),
+            "skipped": _count("skipped_ticks", "sampler.skipped_ticks"),
             "throttled": throttled,
         },
         "events": [e for e in (events or ()) if isinstance(e, dict)],
@@ -406,7 +469,8 @@ def convert_current(
     socket_path: str = "",
     enrich: Callable[[dict[str, Entity]], dict[str, Entity]] | None = None,
 ) -> Frame:
-    ents: Obj = cur.get("entities") or {}
+    cur = {**cur, "entities": expand_entities(cur.get("entities") or {})}
+    ents: Obj = cur["entities"]
     cg_names = sorted(n for n in ents if n.startswith(CG_PREFIX))
     entities: dict[str, Entity] = {}
     for name in cg_names:
@@ -417,9 +481,12 @@ def convert_current(
             entities = enrich(entities)
         except Exception:  # noqa: BLE001 - docker names are decoration; the tree must still draw
             pass
-    frames = {key: EntityFrame(entity=ent, metrics=cgroup_metrics(ents[f"{CG_PREFIX}{key}"])) for key, ent in entities.items()}
-    root: Obj = ents.get(CG_PREFIX) or {}
     host: Obj = ents.get("host") or {}
+    frames = {
+        key: EntityFrame(entity=ent, metrics=cgroup_metrics(ents[f"{CG_PREFIX}{key}"], host if key == "" else None))
+        for key, ent in entities.items()
+    }
+    root: Obj = ents.get(CG_PREFIX) or {}
     dt_ms = cur.get("dt_ms")
     extras = sampler_extras(
         cur, hello=hello, status=status, events=events, epoch_changed_ts=epoch_changed_ts, socket_path=socket_path

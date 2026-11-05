@@ -55,7 +55,12 @@ def test_real_sampler_to_frames(tmp_path) -> None:
         proc.wait(timeout=10)
     frame = frames[-1]
     assert source.hello["protocol"] == 1 and source.hello["cgroup_view"]["mode"] in ("host", "namespaced", "unknown")
-    assert set(frame.entities) == set(walk_entities(r / "cg"))  # the whole fixture tree, keyed like the collector
+    # The fixture tree keyed like the collector. A directory with no kernel file at all has no metric to
+    # project, so a `fields` request omits it (a real cgroup always has files).
+    def has_files(key: str) -> bool:
+        return any(f.name != ".keep" for f in (r / "cg" / key).iterdir() if f.is_file())
+
+    assert set(frame.entities) == {k for k in walk_entities(r / "cg") if k == "" or has_files(k)}
     root = frame.entities[""]
     assert root.metrics["swap_max"].v == 0 and COLUMNS["swap_max"].cell(CellCtx(root))[0] == "0"
     assert frame.host["host_mem_total"].v == 1_000_000 * 1024

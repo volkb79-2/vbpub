@@ -49,6 +49,7 @@ def cgroup(**over: dict) -> dict:
         "mem.workingset_refault_file": c(0), "mem.workingset_refault_anon": c(30), "mem.zswpin": c(10),
         "memev.high": c(0), "memev.max": c(0), "memev.oom_kill": c(0),
         "pids.current": v(10), "procs.d_state": v(0),
+        "mem.swap_current": v(5e8), "mem.swapcached": v(1e7), "limit.pids.max": v(4096),
     }
     base.update(over)
     return base
@@ -58,7 +59,8 @@ def build_current(tick: int = 1, *, epoch: str = "e1", truncated: bool = False, 
     entities = {
         "cg:/": cgroup(**{
             "mem.current": v(6e9), "psi.cpu.some.avg10": v(4.0), "io.cost.vrate": na("feature_absent"),
-            "procs.d_state": v(1),
+            "procs.d_state": v(1), "mem.swap_current": v(2e9),
+            "limit.pids.max": na("controller_or_file_absent"), "mem.swapcached": na(), "mem.zswapped": na(),
         }),
         "cg:/system.slice": cgroup(**{
             "cpu.usage_usec": c(2_000_000), "limit.memory.high": v(2e9), "limit.memory.swap.max": v(0),
@@ -82,7 +84,7 @@ def build_current(tick: int = 1, *, epoch: str = "e1", truncated: bool = False, 
             "zswap.pool_bytes": v(5e8), "zswap.stored_bytes": v(1.5e9), "zswap.enabled": v(1), "zswap.max_pool_percent": v(20),
             "zswap.written_back_pages": un("debugfs_unreadable"),
             "zswap.reject_alloc_fail": un("debugfs_unreadable"),
-            "vm.zswpin": c(12), "vm.zswpout": c(7), "vm.pswpin": c(0), "vm.pswpout": c(25),
+            "vm.zswpin": c(12), "vm.zswpout": c(7), "vm.zswpwb": c(3), "vm.pswpin": c(0), "vm.pswpout": c(25),
             "ksm.run": na("feature_absent"),
         },
         "dev:vda": {
@@ -148,6 +150,31 @@ def build_status() -> dict:
         "throttle": {"nr_throttled": v(4), "throttled_usec": v(900), "memory_high_events": v(0), "memory_max_events": v(0)},
         "tiers": [], "disk": {}, "tmpfs": {}, "dict": {}, "counter_resets": 0, "truncated": False,
     }
+
+
+def shape_current(cur: dict, fields: list[str] | None, compact: bool) -> dict:
+    """What the real sampler does with ``fields`` and ``compact`` (docs/SAMPLER-PROTOCOL.md, ``current`` shaping)."""
+
+    def wanted(metric: str) -> bool:
+        return fields is None or any(metric.startswith(f[:-1]) if f.endswith("*") else metric == f for f in fields)
+
+    def shrink(o: Any) -> Any:
+        if not compact or not isinstance(o, dict):
+            return o
+        if o.get("s") == "value":
+            return [o["v"], o["rate"]] if "rate" in o else o["v"]
+        return {k: o[k] for k in ("s", "why") if k in o}
+
+    ents: dict[str, dict] = {}
+    for name, metrics in cur["entities"].items():
+        kept = {
+            m: shrink(o)
+            for m, o in metrics.items()
+            if wanted(m) and not (compact and isinstance(o, dict) and o.get("s") == "not_applicable")
+        }
+        if kept:
+            ents[name] = kept
+    return {**cur, "entities": ents}
 
 
 class FakeSampler:
@@ -242,7 +269,10 @@ class FakeSampler:
         if name == "current":
             if self.advance:
                 self.tick += 1
-            return {**build_current(self.tick, epoch=self.epoch, truncated=self.truncated, **self.current_over), **base}
+            cur = build_current(self.tick, epoch=self.epoch, truncated=self.truncated, **self.current_over)
+            if req.get("fields") is not None or req.get("compact"):
+                cur = shape_current(cur, req.get("fields"), bool(req.get("compact")))
+            return {**cur, **base}
         if name == "status":
             return {**build_status(), **base}
         if name == "events":

@@ -161,7 +161,8 @@ def test_cells_tell_unset_na_and_zero_apart_for_the_new_columns() -> None:
     assert COLUMNS["io_r"].cell(CellCtx(db_ef))[0] == "n/a"
     assert COLUMNS["origin"].cell(CellCtx(db_ef))[0] == "n/a"  # no governance source: unknown, not "unset"
     assert COLUMNS["blk"].cell(CellCtx(db_ef, blk=None))[0] == "n/a"
-    assert cn(db_ef, "pids_max") == "na"
+    assert cn(db_ef, "pids_max") == 4096.0
+    assert cn(frame.entities[""], "pids_max") == "na"  # the root has no pids.max: n/a
 
 
 def test_the_frame_is_a_tree_keyed_like_the_collector() -> None:
@@ -179,7 +180,7 @@ def test_the_frame_is_a_tree_keyed_like_the_collector() -> None:
 def test_host_extras_keep_states_apart() -> None:
     x = convert_current(build_current()).host_meta["sampler"]
     assert x["cpus"][2] is None and x["cpus"][0] == pytest.approx([0.5, 0.1, 0.05, 0.0])  # first_sample CPU: no bar
-    assert x["zswap"] == {"in": 12.0, "out": 7.0, "wb": None, "rej": None}  # debugfs unreadable: n/a, not 0
+    assert x["zswap"] == {"in": 12.0, "out": 7.0, "wb": 3.0, "rej": None}  # zswpwb is a vm counter; rejects need debugfs: n/a, not 0
     assert x["swap_io"] == {"in": 0.0, "out": 25 * 4096.0}
     assert x["ksm"] == {"state": "off"} and x["iocost"] == {"state": "off"}
     assert x["memstack"]["free"] == 7e9

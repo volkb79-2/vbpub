@@ -16,6 +16,7 @@ import json
 import socket
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -206,11 +207,24 @@ class SamplerClient:
                 self.max_response_bytes = cap
         return data
 
-    def current(self, *, prefix: str | None = None, procs: bool = True) -> dict[str, Any]:
-        fields: dict[str, Any] = {"procs": procs}
+    def current(
+        self,
+        *,
+        prefix: str | None = None,
+        procs: bool = True,
+        fields: Sequence[str] | None = None,
+        compact: bool = False,
+    ) -> dict[str, Any]:
+        """Latest tick. *fields* limits the metrics (exact names, ``prefix*``); *compact* drops ``raw``,
+        sends a gauge as a bare number and a counter as ``[delta, rate]``, and leaves ``not_applicable`` out."""
+        body: dict[str, Any] = {"procs": procs}
         if prefix is not None:
-            fields["prefix"] = prefix
-        return self.request("current", **fields)
+            body["prefix"] = prefix
+        if fields is not None:
+            body["fields"] = list(fields)
+        if compact:
+            body["compact"] = True
+        return self.request("current", **body)
 
     def series(self, entity: str, metric: str, *, tier: str = "hot", window_s: int = 60) -> dict[str, Any]:
         return self.request("series", entity=entity, metric=metric, tier=tier, window_s=int(window_s))
