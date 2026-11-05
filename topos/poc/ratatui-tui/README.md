@@ -15,31 +15,12 @@ Python TUI. Not product code. Two sources:
 
 ## Try it live on a host (copy-paste)
 
-You need two static binaries and two files, from `/home/vscode/topos-poc-20261105/` on the cockpit:
-`topos-sampler`, `topos-ratatui-poc`, `sampler.example.toml`, and (optional) `columns.example.toml`.
-Copy them to the host (for example `scp` into `/tmp/topos-try/`), then on the host:
+Follow `Try it on a host` in `topos/sampler/README.md`: a root-owned 0700 directory on tmpfs under
+`/run`, the envelope in a transient scope, and clean removal. The sampler refuses a data directory
+under a world-writable parent such as `/tmp`. Then attach this view as root:
 
-    # 1. a private working directory and a config in /tmp (the sampler needs root to read every cgroup and /proc)
-    D=/tmp/topos-try; mkdir -p $D/tiers $D/cold && chmod 755 $D
-    sed -e "s#/run/topos/sampler.sock#$D/sampler.sock#" \
-        -e "s#/var/lib/topos/events.jsonl#$D/events.jsonl#" \
-        -e "s#/run/topos/tiers#$D/tiers#" \
-        -e "s#/var/lib/topos\"#$D/cold\"#" \
-        $D/sampler.example.toml > $D/sampler.toml
+    topos-ratatui-poc --socket /run/topos-try/sampler.sock --config columns.example.toml
 
-    # 2. terminal A: the sampler, as root, in the foreground (Ctrl-C stops it)
-    sudo $D/topos-sampler $D/sampler.toml
-
-    # 3. terminal B: the TUI (the socket is mode 0600 root, so the TUI runs as root too)
-    sudo $D/topos-ratatui-poc --socket $D/sampler.sock --config $D/columns.example.toml
-    #    q quits the TUI; ? shows the keys
-
-    # 4. stop and remove everything
-    #    q in terminal B, Ctrl-C in terminal A, then:
-    sudo rm -rf /tmp/topos-try
-
-The sampler writes only under `$D` (socket, hot/warm tiers, cold tier, events); it starts no service and
-changes nothing else. Without root it still runs but sees only what it may read (`n/a`, never zero).
 If the socket path is wrong or the sampler is stopped the TUI does not freeze: the status line shows
 `WAITING` or `STALE` with the reason and reconnects by itself.
 
