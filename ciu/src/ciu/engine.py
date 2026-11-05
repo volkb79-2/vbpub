@@ -976,6 +976,35 @@ def create_hostdirs(
 # ===========================================================================
 
 
+def reset_label_prefix(config: dict) -> Optional[str]:
+    """The container label prefix reset's orphan sweep filters on (CIU-200).
+
+    ``deploy.labels.prefix`` when set; otherwise ``deploy.project_name``, the
+    prefix the scaffolded stack template stamps (``<project_name>.component``)
+    and the value the scaffolded ``[deploy.labels]`` table is documented to
+    mirror. A root that omits the optional table (tls-edge, pwmcp, topos,
+    nyxloom) therefore resets instead of failing after clean already removed
+    its containers.
+    """
+    deployment = config.get("deploy", {})
+    explicit = (deployment.get("labels") or {}).get("prefix")
+    return explicit or deployment.get("project_name") or None
+
+
+def reset_refusal(config: dict) -> Optional[str]:
+    """Why :func:`reset_service` would refuse *config*, or ``None`` (CIU-200).
+
+    The ONE place reset's config preconditions live, so ``ciu clean`` (and its
+    ``--dry-run`` plan) can evaluate them for every selected stack BEFORE any
+    container is removed — a refusal discovered mid-clean is not atomic.
+    """
+    if not config.get("deploy", {}).get("project_name"):
+        return "deploy.project_name is required for reset"
+    if not reset_label_prefix(config):
+        return "deploy.labels.prefix is required for reset"
+    return None
+
+
 def reset_service(
     config: dict,
     stack_dir: Path,
@@ -1009,14 +1038,11 @@ def reset_service(
     materialize.reset_secrets semantics apply (rm the stack/project store files).
     """
     stack_dir = Path(stack_dir).resolve()
-    deployment = config.get("deploy", {})
-    project_name = deployment.get("project_name")
-    label_prefix = deployment.get("labels", {}).get("prefix")
-
-    if not project_name:
-        raise ValueError("deploy.project_name is required for reset")
-    if not label_prefix:
-        raise ValueError("deploy.labels.prefix is required for reset")
+    refusal = reset_refusal(config)
+    if refusal:
+        raise ValueError(refusal)
+    project_name = config["deploy"]["project_name"]
+    label_prefix = reset_label_prefix(config)
 
     service_name = stack_dir.name
     print(f"[INFO] Resetting service: {service_name} (project: {project_name})", flush=True)
