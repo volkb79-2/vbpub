@@ -10,6 +10,23 @@ internal library, not a separately published release target.
   (SPEC P1-P4) and test that a truncated `owner.json` is untrusted and retained.
 
 ### Added
+- Add the shared keyed-tree mechanism (AD2-3): `cowtree.cache` (`Cache.ensure`
+  atomic publish with a verification manifest and an optional `identity=` guard
+  (`key-collision`, exit 13), flock leases on `<key>/.lease` in the layout of
+  `HOST-CONTRACT.md` item 3 (a host GC honours them; interop tested against the
+  shipped `mdt_tree_cache.py`), `release`, holder-checked `gc` that honours
+  leases and every process's mountinfo (binds and overlay `lowerdir=`),
+  mandatory `require_tmpfs=` (explicit opt-out; CLI `--allow-non-tmpfs`),
+  explicit umask-independent `0770`/`0660` modes, read-only `survey`/`verify`,
+  plain-path configuration), `cowtree.provision` (standalone `Settings`,
+  capability `Probes`, `decide` picking and reporting degradation levels A
+  overlay, B tmpfs copy, C reflink, D copy, and a `Provisioner` giving every
+  level the same publish/lease/worker/release/cleanup interface), the
+  `cowtree.adapters` module as the only place that names `MDT_*` host policy, and
+  `cowtree.overlay` (dockerd local overlay volume and `--mount` builders,
+  per-worker upper/work creation, reuse guard, cleanup with a helper-container
+  fallback, `reset_worker`, `repair_entry`, `upper_full`). CLI:
+  `cowtree probe` and `cowtree cache survey|gc|verify --root`; new exit statuses 8-12.
 - Add the stdlib-only run API, btrfs/reflink/copy backends, input-derived
   admission, owner manifests, flock leases, conservative garbage collection,
   CLI, fake ioctl tests, and opt-in live suite.
