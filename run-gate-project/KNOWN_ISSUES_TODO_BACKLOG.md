@@ -7659,3 +7659,11 @@ Both runs also failed `TestHistoryStoreReadableByTheReleasedReader` deterministi
 **Cause.** RG-146 (7273126b6) added the `pytest11` entry-point plugin `run_gate_profile`, loaded into every pytest in the tester venv. Its `pytest_xdist_node_collection_finished` hook has its hookspec only from pytest-xdist; tnt's lanes run `-p no:xdist`, so pluggy's `check_pending` raised `PluginValidationError` during collection (deterministic, not load-related).
 
 **Fix.** `@pytest.hookimpl(optionalhook=True)` on the hook; regression test registers the module in a real pytest config with `-p no:xdist` and runs `check_pending`. Any lane using `-p no:xdist` or a venv without xdist was affected (every consumer on the venv with the RG-146 wheel).
+
+## RG-165 — docs: the exec-mode container-name derivation rule is only in the source
+
+**Status:** OPEN; severity: docs (found adopting run-gate in netcup-api-filter, `netcup-api-filter@38f8731`). `CONSUMERS.md` shows only a declared `container_name` (and prose about a "ciu-derived" name). The rule, `<deploy.project_name>-<deploy.environment_tag>-<environment name>` read from the judged worktree's rendered `ciu.global.toml` (fallback: `network_name` minus `-network`, then `<prefix>-<env>`), lives only in `run_gate.py`. Wanted: state the rule in the exec-mode section, including that the ENVIRONMENT NAME is the service name, so a project with several runners (one per Python version) names its ciu services and environments consistently; add it to the per-project-type recipe for "app estate with its own runner".
+
+## RG-166 — docs: a plain `git worktree add` checkout cannot run exec lanes; the refusal's remedy does not say so
+
+**Status:** OPEN; severity: docs. In a worktree made with plain `git worktree add`, `run-gate <lane> --dry-run` refuses: "needs a declared container_name or this worktree's rendered .../ciu.global.toml ... run 'ciu up --dir <test-runner stack> --deploy --healthcheck'". Neither the refusal nor `CONSUMERS.md` says that the file only exists for a ciu-managed worktree (`ciu worktree create` or `adopt`) or the main checkout, so the remedy cannot succeed on a plain worktree. Wanted: name `ciu worktree create|adopt` as the prerequisite in the refusal and in the "Worktree config and runner follow the JUDGED TREE" section.
