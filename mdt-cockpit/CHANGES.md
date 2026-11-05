@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Changed
+- The IO governor recorder `mdt-cockpit/iogov` moved out into its own independent project `iogovmon/` (host-tuning WP-IGM-a, pure move and rename: console script `iogovmon`, units `iogovmon-*` in `iogovmon.slice`, own cmru release config). mdt-cockpit imports nothing from it; its tests left the `smoke` lane (they run in `iogovmon`'s own `r0-r1` lane), the design note `docs/IO-GOVERNOR-V1-DESIGN.md` is now `iogovmon/docs/DESIGN-GUIDE.md`, backlog items MDT-028..MDT-031 are IGM-04..IGM-07 in `iogovmon/BACKLOG.md`, and `iogov/README.md` is a pointer. Never installed anywhere, so there is no migration.
+
 ### Fixed
 - host-setup `tests/test-render.sh` stopped on unresolved `@DEV_CACHE_MEMORY_LOW@` / `@DEV_CACHE_ZSWAP_WRITEBACK@` (MDT-075): the tree-cache templates belong to `mdt_tree_cache.py`, not install.sh's `render()`. The test now renders them through `mdt_tree_cache.py render` (the installer's own path, one `OWNED_TEMPLATES` list), `_render()` raises on any token it was not given, and `TemplateWiringTests` fails if a template key is wired into neither renderer.
 - Release builds failed at `Dockerfile` "Manifest not found in build context ... curl: (22) 404": a vestigial step pre-fetched the build's own

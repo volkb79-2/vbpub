@@ -32,6 +32,7 @@ registry = ["ghcr.io"]
 #   rigor-record <- cli-extended  (declared release order)
 #   test-policy <- none  (declared release order)
 #   tls-edge <- none  (declared release order)
+#   iogovmon <- none  (declared release order)
 #   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
 #   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project, cgroup-profiler  (declared release order)
@@ -39,7 +40,7 @@ registry = ["ghcr.io"]
 #   tester-base <- none  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
-#   L0: cli-extended, assay, topos, test-policy, tls-edge, tester-base
+#   L0: cli-extended, assay, topos, test-policy, tls-edge, iogovmon, tester-base
 #   L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
 #   L2: run-gate-project
 #   L3: cmru
@@ -53,7 +54,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "iogovmon", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -247,6 +248,13 @@ depends_on = ["cli-extended"]
 # library plus pytest only (the CLI is plain argparse, TP-08), so no first-party dependency: level L0.
 [orchestration.project.test-policy]
 config = "libraries/test-policy/cmru.toml"
+depends_on = []
+
+# iogovmon (iogovmon/, host-tuning WP-IGM-a): the background IO recorder extracted from mdt-cockpit/iogov. Standard library only and
+# independent of every other estate project (no cli-extended, no iobench, no mdt-cockpit), so level L0. Its FIRST release is gated on the
+# live acceptance WP-IGM-ACC (iogovmon/BACKLOG.md IGM-01); registering it here does not authorise a release.
+[orchestration.project.iogovmon]
+config = "iogovmon/cmru.toml"
 depends_on = []
 
 # rigor-record (libraries/rigor-record, RR-1/RR-2): the interchange layer of the rigor-evidence record

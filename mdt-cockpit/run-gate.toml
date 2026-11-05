@@ -21,9 +21,10 @@ schema_version = 1
 [lanes.smoke]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1 && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests iogov/tests -q -rs --deselect scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone --deselect scripts/test_oci_layout_push.py && echo 'smoke: OK'"]
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1 && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests -q -rs --deselect scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone --deselect scripts/test_oci_layout_push.py && echo 'smoke: OK'"]
 # 2m was outgrown by the iogov and host-setup suites (BUDGET_EXCEEDED at ~80% on a loaded host, twice, 2026-11-04);
-# the release flow now runs this lane too (MDT-060), so it must not flake on contention.
+# the release flow now runs this lane too (MDT-060), so it must not flake on contention. The iogov suite has since moved to the
+# independent project `iogovmon/` (own `run-gate r0-r1` lane, 2026-11-05); the budget is kept until the lane's new duration is measured.
 budget = "6m"
 
 [lanes.smoke.resources]

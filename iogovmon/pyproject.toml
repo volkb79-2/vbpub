@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iogovmon"
+description = "Recommend-only background recorder of long-term storage-capability shifts (raw 4 KiB read probes, scratch-file write bench, CUSUM recognizer); runs in its own iogovmon.slice"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Volker Badziong"}]
+# Standard library only, by design: it must run on any host with nothing but python3 (>= 3.11 for `tomllib`) and systemd.
+# No first-party dependency (no cli-extended, no iobench, no mdt-cockpit): consumers read `iogovmon status --json`-style output instead of importing it.
+dependencies = []
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-cov>=6"]
+
+[project.scripts]
+iogovmon = "iogovmon.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Version comes from the git tag `iogovmon-vX.Y.Z` minted by the cmru release transaction, resolved against the enclosing
+# checkout. No fallback_version: a build without git metadata must fail (AGENTS.md "Defaults and fallbacks are hazards").
+[tool.setuptools_scm]
+root = ".."
+tag_regex = "^iogovmon-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "iogovmon-v*"]

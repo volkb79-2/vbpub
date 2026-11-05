@@ -1,0 +1,47 @@
+# iogovmon release contract -- parsed ONLY by cmru. Tags `iogovmon-v*`; a wheel and its sha256 go to GitHub Releases
+# only, never PyPI. Standard library only (no first-party dependency, no external tool floor at the Python level).
+# NOT RELEASED: the first release is gated on the live acceptance WP-IGM-ACC (host-tuning program); no tag may be cut before
+# that evidence is recorded (BACKLOG IGM-01).
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+IOGOVMON_RELEASE_NOTES = "## iogovmon wheel\n\nRecommend-only background recorder of long-term storage-capability shifts: raw 4 KiB read probes, a bounded scratch-file write bench, a CUSUM recognizer; every unit runs in its own `iogovmon.slice`. See `iogovmon/CHANGES.md` for the full entry.\n\n**Read before installing**\n- Never installed on a real host before this release's live acceptance (WP-IGM-ACC); treat the first install as a probe on a non-production host.\n- It changes no cap, io.cost model, queue setting or cgroup file: it only reads, journals and prints recommendations. The only thing it writes is its own scratch region and journal.\n- The raw-disk read needs a read-only ACL on exactly one disk node (a udev rule rendered by `install.sh`); that is a permission change on the disk and is reviewed in the acceptance. `IOWeight` in the slice is advisory (effective only with io.cost or bfq); the budget control is PSI gating plus byte budgets.\n- `install.sh` is a source-tree installer in this release; the wheel-only `iogovmon install` verb is open work (IGM-03).\n\n**Install (wheel)**\n```bash\npython -m pip install --no-index --find-links . iogovmon-*.whl\n```"
+
+[project]
+id = "iogovmon"
+description = "iogovmon -- recommend-only storage-capability recorder"
+template_revision = 4
+prefix = "iogovmon-v"
+artifacts = ["wheel"]
+scm_dist = "iogovmon"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "iogovmon: r0-r1 (unit tests + branch coverage floor)", argv = ["run-gate", "r0-r1"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "iogovmon: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "iogovmon: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "iogovmon", "--cwd", ".", "--notes-env", "IOGOVMON_RELEASE_NOTES"], cwd = "." },
+]
