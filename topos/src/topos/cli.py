@@ -1863,9 +1863,12 @@ def _main_daemon(argv: list[str]) -> int:
 
                 # Integrate BpfProvider at highest rank into the Collector
                 from topos.providers.net_bpf import BpfProvider as BpfProv
+                from topos.providers.net_bpf import staleness_limit_s
 
                 bpf_provider = BpfProv(
-                    bpf_root=bpf_root, state_dir=state_dir
+                    bpf_root=bpf_root,
+                    state_dir=state_dir,
+                    max_age_s=staleness_limit_s(bpf_interval),
                 )
                 # Rebuild network_providers with BPF first, then existing
                 existing_providers = collector.network_providers or ()

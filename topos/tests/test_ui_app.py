@@ -6,6 +6,7 @@ import time as _time
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from textual.widgets import Static
 from textual.widgets import Input
 
@@ -140,6 +141,24 @@ def test_pilot_toggle_view_and_profile_cycle() -> None:
             await pilot.press("p")
             await pilot.pause()
             assert app.profile_name == "triage"
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("size", [(80, 24), (120, 30)])
+def test_pilot_metric_columns_shown_at_standard_terminal_sizes(size) -> None:
+    from topos.ui.data_table import MouseTable
+
+    async def run() -> None:
+        app = _make_app()
+        async with app.run_test(size=size) as pilot:
+            await _wait_for_frame(app)(pilot)
+            await pilot.pause()
+            table = app.query_one("#body-table", MouseTable)
+            labels = [str(c.label) for c in table.columns.values()]
+            assert labels[0] == "NAME"
+            assert "RAM" in labels
+            assert "CPU%" in labels
 
     asyncio.run(run())
 
@@ -1596,7 +1615,8 @@ def test_resize_refreshes_columns_and_narrow_widths_are_not_floored() -> None:
             wide = len(app.query_one("#body-table").columns)
             await pilot.resize_terminal(70, 40)
             await _wait_or_timeout(pilot, lambda: len(app.query_one("#body-table").columns) < wide)
-            assert len(app.query_one("#body-table").columns) < 5  # below the 80-column tier
+            # Narrow widths drop the optional tiers but keep the first tier.
+            assert len(app.query_one("#body-table").columns) == 5
 
     asyncio.run(run())
 

@@ -678,7 +678,15 @@ _FORBIDDEN_SYSTEMD_TARGETS = frozenset(
         "emergency",
         "shutdown",
         "default",
+        "soft-reboot",
+        "suspend",
+        "hibernate",
+        "hybrid-sleep",
+        "suspend-then-hibernate",
+        "ctrl-alt-del",
     )
+) | frozenset(
+    f"systemd-{name}.service" for name in ("reboot", "poweroff", "halt", "kexec")
 )
 # The Docker verb whose owner/protected decision a systemd verb on a container
 # scope must match.

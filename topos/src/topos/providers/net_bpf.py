@@ -15,6 +15,11 @@ SNAPSHOT_FILENAME = "snapshot.json"
 DEFAULT_MAX_SNAPSHOT_AGE_S = 15.0
 
 
+def staleness_limit_s(producer_interval_s: float) -> float:
+    """Staleness limit for a snapshot producer refreshing every *producer_interval_s*."""
+    return 3.0 * float(producer_interval_s)
+
+
 class BpfProvider:
     """BPF-based per-cgroup socket traffic provider.
 

@@ -183,8 +183,10 @@ def resolve_profile(config: ToposConfig, *, width: int, profile: str) -> Profile
     profile = normalize_profile_name(config, profile)
     if profile == "auto":
         active: list[str] = []
-        for minimum, names in _WIDTH_TIERS:
-            if width >= minimum:
+        for index, (minimum, names) in enumerate(_WIDTH_TIERS):
+            # The first tier is always shown: the real table widget is a few
+            # columns narrower than the terminal (scrollbar gutter).
+            if index == 0 or width >= minimum:
                 active.extend(names)
         return ProfileLayout(name=profile, columns=tuple(_dedupe(("name", *active))))
     if profile == "wide":

@@ -145,6 +145,27 @@ def test_power_and_rescue_targets_are_refused_unconditionally(tmp_path, kind, na
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "systemd-reboot.service",
+        "systemd-poweroff.service",
+        "systemd-halt.service",
+        "systemd-kexec.service",
+        "soft-reboot.target",
+        "suspend.target",
+        "hibernate.target",
+        "hybrid-sleep.target",
+        "suspend-then-hibernate.target",
+        "ctrl-alt-del.target",
+    ],
+)
+def test_more_power_units_are_refused_unconditionally(tmp_path, unit):
+    result, calls = _exec("systemd-start", unit, tmp_path)
+    assert result.outcome == "refusal"
+    assert calls == []
+
+
 def test_other_targets_are_not_denylisted(tmp_path):
     result, _ = _exec("systemd-restart", "multi-user.target", tmp_path)
     assert result.outcome == "success"

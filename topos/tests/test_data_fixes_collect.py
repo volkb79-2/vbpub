@@ -418,6 +418,22 @@ def test_bpf_snapshot_older_than_limit_is_not_served_as_live(tmp_path: Path) -> 
     assert stale.status()["stale"] is True
 
 
+def test_bpf_staleness_limit_follows_default_producer_interval(tmp_path: Path) -> None:
+    from topos.config import BpfSnapshotConfig
+    from topos.providers.net_bpf import BpfProvider, staleness_limit_s
+
+    interval = BpfSnapshotConfig().interval
+    limit = staleness_limit_s(interval)
+    assert limit == 3 * interval
+    entities = {"a.slice": Entity(key="a.slice", kind="slice", parent="")}
+    root = _bpf_snapshot(tmp_path, generated_at=1000.0)
+    # Just under one producer interval old: must still be served (no flapping).
+    just_refreshed = BpfProvider(root, max_age_s=limit, clock=lambda: 1000.0 + interval - 1)
+    assert just_refreshed.collect(entities)["a.slice"].source_label == "net:BPF"
+    dead = BpfProvider(root, max_age_s=limit, clock=lambda: 1000.0 + limit + 1)
+    assert dead.collect(entities) == {}
+
+
 def test_bpf_aggregation_sums_all_entries_for_a_cgroup(tmp_path: Path) -> None:
     from topos.providers.net_bpf import BpfProvider
 
