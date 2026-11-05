@@ -110,7 +110,7 @@ and [consumer example](docs/CONSUMERS.md#2-create-a-managed-workspace).
   policy protects the host when those tasks run concurrently.
 - **assay** can consume `ciu provenance --json` before a live evidence lane to
   record the checked artifact identity.
-- **modern-debian-tools-python-debug** provides the real host systemd slices
+- **mdt-cockpit** provides the real host systemd slices
   that governance uses. CIU verifies a configured slice rather than silently
   letting Docker create an unbounded transient one.
 
@@ -326,7 +326,7 @@ field.
 Run-Gate's `mode = "host"` is a general capability; each consumer chooses
 whether it fits its policy. The MDT cockpit policy requires the cockpit to drive gates
 while a stable test environment hosts the suite; see the
-[MDT container doctrine](../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
+[MDT testing design](../mdt-cockpit/docs/DESIGN-GUIDE.md#two-environments-two-claims).
 This nested lane opts out of Run-Gate resource profiling because its
 Docker view cannot inspect the outer tester container's host cgroup; CMRU still
 applies host placement and CPU/memory caps. See
@@ -499,7 +499,7 @@ host mode runs in the environment invoking the CLI, including a cockpit when
 that is the consumer's choice. A stable, declared test environment gives
 repeatable dependencies and resource boundaries; MDT's cockpit policy
 requires it for MDT gates. See the
-[MDT container doctrine](../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md),
+[MDT testing design](../mdt-cockpit/docs/DESIGN-GUIDE.md#two-environments-two-claims),
 [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md), and the
 [enrollment gate design](docs/DESIGN-GUIDE.md#why-enrollment-runs-in-the-isolated-gate).
 

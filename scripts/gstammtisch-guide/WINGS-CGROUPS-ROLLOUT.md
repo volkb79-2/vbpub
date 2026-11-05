@@ -348,7 +348,7 @@ now have real owners, so disabling it is safe:
 | Former responsibility | Owner now |
 |---|---|
 | game floors, `system.slice` MemoryMin | Wings per-server slices (this rollout) |
-| dev-tier measured IO caps, per-container bench/buildkit/devcontainer caps, interactive zswap policy, the io.cost benchmark results | **mdt host-setup companion** — `modern-debian-tools-python-debug/host-setup/` (`install.sh` + `mdt-dev-governance-reconcile.service`/`.timer`). Install it in the same window: `sudo host-setup/install.sh --with-baseline`, then `mdt-host-check.sh` |
+| dev-tier measured IO caps, per-container bench/buildkit/devcontainer caps, interactive zswap policy, the io.cost benchmark results | **mdt host-setup companion** — `mdt-cockpit/host-setup/` (`install.sh` + `mdt-dev-governance-reconcile.service`/`.timer`). Install it in the same window: `sudo host-setup/install.sh --with-baseline`, then `mdt-host-check.sh` |
 | pak-slice zswap bypass (`memory.zswap.max=0`) | still `setup-cgroups.sh`, and also declared in the `soulmask-paks.slice` unit itself (`MemoryZSwapMax=0`) — verify with `systemctl show soulmask-paks.slice -p MemoryZSwapMax` |
 
 `setup-cgroups.sh` in the repo is now **game-side only** (the dev logic was

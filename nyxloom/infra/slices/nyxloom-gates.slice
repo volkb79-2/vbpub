@@ -24,7 +24,7 @@ IOWeight=30
 # Filled in (host dev-tier cgroup governance rollout) from the existing
 # sustained-v3 baseline measured 2026-07-08 (RIOPS_MAX=90173, WIOPS_MAX=58695,
 # RBW_MAX_BPS=2149035554, WBW_MAX_BPS=516276624 -- see
-# modern-debian-tools-python-debug/host-setup/README.md "The IO baseline").
+# mdt-cockpit/host-setup/README.md "The IO baseline").
 # Low end of the 60-80% band (whole-tier ceiling: several gate runs can be
 # concurrent, same reasoning as dev.slice's own DEV_IO_CAP_PCT default).
 # RAM: generous swap on purpose -- a gate that swaps finishes slowly; a gate

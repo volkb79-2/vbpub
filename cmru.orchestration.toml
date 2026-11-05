@@ -32,8 +32,6 @@ registry = ["ghcr.io"]
 #   rigor-record <- cli-extended  (declared release order)
 #   test-policy <- none  (declared release order)
 #   tls-edge <- none  (declared release order)
-#   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
-#     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
 #   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project, cgroup-profiler  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, run-gate-project, cgroup-profiler, nyxloom
 #   tester-base <- none  (declared release order)
@@ -43,7 +41,7 @@ registry = ["ghcr.io"]
 #   L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
 #   L2: run-gate-project
 #   L3: cmru
-#   L4: modern-debian-tools-python-debug, mdt-cockpit
+#   L4: mdt-cockpit
 #
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
@@ -53,7 +51,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -61,7 +59,7 @@ execution_mode = "project-first"
 
 # Estate policy for common gate/build inputs. Project [env] may override a
 # value only where it has a genuinely different requirement (for example,
-# modern-debian-tools-python-debug's Docker-in-Docker image).
+# mdt-cockpit's Docker-in-Docker image).
 [orchestration.defaults.env]
 # ---------------------------------------------------------------------------
 # Values here are inherited by EVERY project's steps; a project's own
@@ -204,13 +202,6 @@ depends_on = []
 config = "nyxloom/cmru.toml"
 # cli-extended: nyxloom's wheel requires it (NYX-CLIX, CX-D1), so the release preflight demands the declaration.
 depends_on = ["cli-extended"]
-
-[orchestration.project.modern-debian-tools-python-debug]
-config = "modern-debian-tools-python-debug/cmru.toml"
-# cli-extended: cmru's wheel requires it and the image install is `pip --no-index`
-# (pip/wheels.list stages it). PWMCP is also released first so the image can install
-# its exact CIU root and client CLI through the generated CMRU get.py.
-depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom"]
 
 [orchestration.project.mdt-cockpit]
 config = "mdt-cockpit/cmru.toml"
