@@ -47,9 +47,12 @@ class RedirectFstab(HostActions):
 
     def run(self, argv, *args, **kwargs):
         # `mount <dir>` resolves the entry from the fstab; point it at the redirected copy.
+        # (`-T` is not on the installer's mount allowlist and must not be added for a test, so the
+        # allowlist check of the real `mount <dir>` argv runs and the command itself is redirected.)
         argv = list(argv)
         if len(argv) == 2 and argv[0] == "/usr/bin/mount":
-            argv = [argv[0], "-T", self.fstab_copy, argv[1]]
+            self._validate(argv)
+            return sh("mount", "-T", self.fstab_copy, argv[1])
         return super().run(argv, *args, **kwargs)
 
 
