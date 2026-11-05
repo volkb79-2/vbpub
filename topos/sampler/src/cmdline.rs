@@ -61,9 +61,25 @@ fn looks_secret(name: &str) -> bool {
     }
     // names that mention a secret word but hold no secret
     const COUNT_ENDINGS: &[&str] = &["max-tokens", "num-tokens", "n-tokens", "batched-tokens", "max_tokens", "num_tokens", "n_tokens", "batched_tokens"];
-    // the ending must be a whole part of the name: `--admin-tokens` ends in `n-tokens` and is a secret
-    let is_count = COUNT_ENDINGS.iter().any(|s| n.strip_suffix(s).is_some_and(|rest| rest.is_empty() || rest.ends_with(['-', '_'])));
-    if n.contains("tokenizer") || is_count || n.contains("password-stdin") {
+    // the ending must be a whole part of the name (`--admin-tokens` ends in `n-tokens` and is a secret),
+    // and what comes before it is judged on its own: `--auth-max-tokens` is a secret,
+    // `--max-num-batched-tokens` is a count
+    for s in COUNT_ENDINGS {
+        if let Some(rest) = n.strip_suffix(s) {
+            if rest.is_empty() {
+                return false;
+            }
+            if rest.ends_with(['-', '_']) {
+                return looks_secret(rest.trim_end_matches(['-', '_']));
+            }
+        }
+    }
+    // `tokenizer` is not a secret word, but the rest of the name may hold one: `--tokenizer-secret`,
+    // `HF_TOKENIZER_API_KEY`. The name gets shorter on each call, so this ends.
+    if n.contains("tokenizer") {
+        return looks_secret(&n.replace("tokenizer", ""));
+    }
+    if n.contains("password-stdin") {
         return false;
     }
     // whole parts, not substrings: `-pw`, `--auth` are secret, `--author`, `--authority` are not
@@ -348,6 +364,12 @@ mod redaction_tests {
         assert_eq!(r(&["--access-tokens=a,b"]), "--access-tokens=<redacted>");
         assert_eq!(r(&["--admin-tokens=abc", "--session-tokens", "abc"]), "--admin-tokens=<redacted> --session-tokens <redacted>");
         assert_eq!(r(&["SESSION_TOKENS=abc", "--xmax-tokens=abc"]), "SESSION_TOKENS=<redacted> --xmax-tokens=<redacted>");
+        // a secret word before the count ending wins
+        assert_eq!(r(&["--auth-max-tokens=abc", "AUTH_N_TOKENS=abc"]), "--auth-max-tokens=<redacted> AUTH_N_TOKENS=<redacted>");
+        assert_eq!(r(&["--password-num-tokens", "abc"]), "--password-num-tokens <redacted>");
+        // `tokenizer` itself is no secret, the rest of the name is still judged
+        assert_eq!(r(&["--tokenizer-secret=abc", "HF_TOKENIZER_API_KEY=abc"]), "--tokenizer-secret=<redacted> HF_TOKENIZER_API_KEY=<redacted>");
+        assert_eq!(r(&["--tokenizer-password", "abc", "--tokenizer-name", "bert"]), "--tokenizer-password <redacted> --tokenizer-name bert");
         assert_eq!(r(&["--auth-tokens=abc"]), "--auth-tokens=<redacted>");
         assert_eq!(r(&["API_TOKENS=abc"]), "API_TOKENS=<redacted>");
         assert_eq!(r(&["--valid-tokens", "abc"]), "--valid-tokens <redacted>");
