@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from textual.widgets import Button, Checkbox, DataTable, Input, Select, Static, TextArea, Tree
 
-from helpers import wait_until
+from helpers import UI_WAIT_DEADLINE, wait_until
 from tnt.actions import Action, ApplyResult, CallExecution, Kind, RpcCall, make_plan
 from tnt.adapters.v27 import V27
 from tnt.errors import Refused
@@ -285,6 +285,9 @@ def test_workflow_view_input_refusals_loading_and_vm_recovery_messages(config):
             containers._plan_applied(make_plan(session.workflows.snapshot_hold_action("tank/home@nightly"), session.rpc),
                                      {"ok": True})
             assert "Applied plan; result:" in str(containers.query_one("#workflow-note", Static).render())
+            # _plan_applied started a refresh worker; leaving the app now tears the view down under it
+            # and the late _loaded() callback raises NoMatches (seen once under load). Let it finish.
+            await asyncio.wait_for(app.workers.wait_for_complete(), timeout=UI_WAIT_DEADLINE)
     asyncio.run(go())
     session.close()
 
