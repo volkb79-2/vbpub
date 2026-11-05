@@ -35,6 +35,9 @@ def _tokens(*argv: str) -> list[str]:
          ["up", "--profile", "a", "--profile", "b", "--phases", "1,2"]),
         # library controls become the implementation's flags
         (["up", "--yes", "--dry-run"], ["up", "--yes", "--dry-run"]),
+        # CIU-201: --dry-run reaches the implementation of the two removal verbs
+        (["clean", "--dry-run"], ["clean", "--dry-run"]),
+        (["worktree", "rm", "one", "--dry-run"], ["worktree", "rm", "one", "--dry-run"]),
         (["status", "--json"], ["status", "--json"]),
         (["graph", "--json"], ["graph", "--format", "json"]),
         (["resolve", "--json"], ["resolve", "--json"]),

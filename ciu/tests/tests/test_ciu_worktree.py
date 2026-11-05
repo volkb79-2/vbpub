@@ -9700,3 +9700,97 @@ class TestDryRunReadOnlyAndWritableFix:
         assert locked.stat().st_mode & 0o200 == 0
         seen["cleanup"](None)  # the library calls this only after its refusals
         assert locked.stat().st_mode & 0o200
+
+
+class TestCiu201SurvivorClosure:
+    """CIU-201: behaviours the ciu 7.23.0 R2 mutation run showed unpinned."""
+
+    def test_outdated_primary_facts_are_refused_never_repaired(
+        self, tmp_repo, write_instance_facts, monkeypatch,
+    ):
+        _make_primary_facts_outdated(tmp_repo, write_instance_facts)
+        monkeypatch.setattr(workspace_env, "_old_identity_resources_exist", lambda _f: False)
+        monkeypatch.setattr(
+            workspace_env, "generate_ciu_env",
+            lambda *_a, **_k: pytest.fail("a read-only family check must never repair facts"),
+        )
+        with pytest.raises(worktree.WorktreeError, match="primary CIU root"):
+            worktree.require_current_primary_facts(tmp_repo)
+
+    def test_removal_leak_scan_does_not_follow_a_symlink(self, tmp_path, monkeypatch):
+        outside = tmp_path / "outside"
+        (outside / "inner").mkdir(parents=True)
+        (outside / "inner" / "f").write_text("x", encoding="utf-8")
+        root = tmp_path / "co"
+        root.mkdir()
+        (root / "link").symlink_to(outside, target_is_directory=True)
+        real = os.getuid()
+        monkeypatch.setattr(worktree.os, "getuid", lambda: real + 1)
+        monkeypatch.setattr(worktree.os, "access", lambda *_a, **_k: False)
+        assert worktree._removal_leaks(root) == []
+
+    def test_leftover_protected_scan_does_not_follow_a_symlink(self, tmp_path):
+        outside = tmp_path / "outside"
+        (outside / ".assay").mkdir(parents=True)
+        root = tmp_path / "co"
+        root.mkdir()
+        (root / "link").symlink_to(outside, target_is_directory=True)
+        assert worktree._leftover_protected_entries(root) == []
+
+    def test_dry_run_branch_plan_omits_the_internal_delete_flag(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        create_path(tmp_repo, "wt1", base="main")
+        monkeypatch.setattr(worktree, "_clean_in", lambda *a, **k: 0)
+        doc = worktree.remove_document(tmp_repo, "wt1", yes=True, dry_run=True)
+        assert set(doc["branch"]) == {"name", "tip", "outcome", "reason"}
+        assert doc["branch"]["name"] == "wt1"
+
+    def test_leftover_without_a_git_file_is_refused_as_pointerless(
+        self, tmp_repo, fake_generate_env,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        TestRemovalDryRunAndLeftoverAdoption._deregister(tmp_repo, "wt1")
+        (target / ".git").unlink()
+        with pytest.raises(worktree.WorktreeRemovalError, match="no `.git` pointer"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        assert target.is_dir()
+
+    def test_leftover_whose_git_entry_is_a_symlink_is_not_trusted(
+        self, tmp_repo, fake_generate_env, tmp_path,
+    ):
+        target = create_path(tmp_repo, "wt1", base="main")
+        TestRemovalDryRunAndLeftoverAdoption._deregister(tmp_repo, "wt1")
+        pointer = (target / ".git").read_text(encoding="utf-8")
+        (target / ".git").unlink()
+        real = tmp_path / "pointer-file"
+        real.write_text(pointer, encoding="utf-8")
+        (target / ".git").symlink_to(real)
+        with pytest.raises(worktree.WorktreeRemovalError, match="no `.git` pointer"):
+            worktree.remove(tmp_repo, "wt1", discard_changes="wt1")
+        assert target.is_dir()
+
+    def test_adopting_a_leftover_reports_its_tip_and_tolerates_a_gone_record(
+        self, tmp_repo, fake_generate_env, monkeypatch,
+    ):
+        from ciu import engine as engine_module
+
+        target = create_path(tmp_repo, "wt1", base="main")
+        TestRemovalDryRunAndLeftoverAdoption._deregister(tmp_repo, "wt1")
+        record_path = Path(
+            worktree._shared_record_for_logical_name(tmp_repo, "wt1").record_path
+        )
+        real_rmtree = engine_module._rmtree_with_fallback
+
+        def rmtree_and_race(path, **kwargs):
+            real_rmtree(path, **kwargs)
+            record_path.unlink()  # another remover already dropped the shared record
+
+        monkeypatch.setattr(engine_module, "_rmtree_with_fallback", rmtree_and_race)
+        tip = _git(["rev-parse", "refs/heads/wt1"], tmp_repo).stdout.strip()
+        document = worktree.remove_document(
+            tmp_repo, "wt1", yes=True, discard_changes="wt1",
+        )
+        assert document["resumed"] is True
+        assert document["branch"]["tip"] == tip
+        assert not target.exists()
