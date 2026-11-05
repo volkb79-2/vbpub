@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import pytest
 from rich.console import Console
 
 from topos.config import ToposConfig
 from topos.model import DockerMeta, Entity, EntityFrame, Frame, MetricValue
 from topos.record.ring import HistoryRing
 from topos.ui.table import (
+    NOW_COLUMNS,
     available_profiles,
     format_metric_value,
     metric_sort_value,
@@ -312,3 +314,71 @@ def test_short_names_are_untouched() -> None:
 
     assert truncate_middle("short", 40) == "short"
     assert truncate_middle("x" * 40, 40) == "x" * 40
+
+
+# ── priority-based column dropping ────────────────────────────────────────────
+
+_NOW_ORDER = [name for name, _ in NOW_COLUMNS]
+
+
+def _auto(width: int, **columns) -> tuple[str, ...]:
+    return resolve_columns(ToposConfig(columns=columns), width=width, profile="auto")
+
+
+@pytest.mark.parametrize(
+    ("width", "survivors", "dropped"),
+    [
+        (80, {"name", "cpu_pct", "ram", "rf_d_per_s", "psi_mem_full_avg10"}, {"net_rx_bps", "anon", "mem_low"}),
+        (120, {"name", "cpu_pct", "ram", "mem_low", "io_r_bps", "io_w_bps", "psi_cpu_some_avg10"}, {"z_pool", "net_rx_bps", "pids_current"}),
+        (170, {"name", "cpu_pct", "ram", "z_pool", "rf_f_per_s", "net_rx_bps", "net_tx_bps", "governance_drift"}, {"anon", "file", "swap_disk", "pids_current"}),
+        (240, {"name", "ram", "anon", "file", "swap_disk", "pids_current", "mem_high"}, {"shmem", "pgscan_per_s", "governance_origin"}),
+    ],
+)
+def test_auto_drops_columns_by_priority_keeping_order(width, survivors, dropped) -> None:
+    columns = _auto(width)
+
+    assert survivors <= set(columns)
+    assert not (dropped & set(columns))
+    # Order is the fixed Now order, whatever survived.
+    assert list(columns) == [name for name in _NOW_ORDER if name in columns]
+
+
+def test_auto_survivors_only_grow_with_width() -> None:
+    previous: set[str] = set()
+    for width in (60, 80, 120, 170, 240, 400):
+        current = set(_auto(width))
+        assert previous <= current
+        previous = current
+    assert "name" in set(_auto(10))
+
+
+def test_auto_keeps_lowest_priority_numbers_longest() -> None:
+    priorities = dict(NOW_COLUMNS)
+    for width in (80, 120, 170, 240):
+        columns = set(_auto(width))
+        worst_kept = max(priorities[c] for c in columns)
+        # Everything strictly better than the worst kept priority survives.
+        assert all(name in columns for name, prio in NOW_COLUMNS if prio < worst_kept)
+
+
+def test_configured_priorities_override_builtin() -> None:
+    base = _auto(80)
+    assert "net_rx_bps" not in base
+    boosted = _auto(80, priorities={"net_rx_bps": 1, "psi_io_some_avg10": 9})
+    assert "net_rx_bps" in boosted
+    assert "psi_io_some_avg10" not in boosted
+    assert list(boosted) == [name for name in _NOW_ORDER if name in boosted]
+
+
+def test_explicit_profile_drops_by_priority_when_narrow_instead_of_clipping() -> None:
+    config = ToposConfig(
+        columns={
+            "profiles": {"mine": {"list": ["name", "net_rx_bps", "ram", "cpu_pct", "anon"]}},
+        }
+    )
+    wide = resolve_profile(config, width=200, profile="mine").columns
+    narrow = resolve_profile(config, width=50, profile="mine").columns
+
+    assert wide == ("name", "net_rx_bps", "ram", "cpu_pct", "anon")
+    # Profile order kept; worst priorities (anon 7, net_rx 6) go first.
+    assert narrow == ("name", "ram", "cpu_pct")

@@ -9,7 +9,7 @@ app actually rendered it.
 
 These tests build a real ``ToposApp`` over frames containing ciu-managed
 entities, press keys through ``pilot``, and assert on the MOUNTED
-``DataTable`` (via ``MouseTable.ordered_rows``/``get_cell``/``get_row``) —
+``MouseTable`` (via ``MouseTable.row_keys``/``get_cell``) —
 never on a renderer's return value, which is what ``tests/test_grouping_ui.py``
 already covers. See ``handoff/P86-ciu-grouped-view-end-to-end.md`` for the
 six numbered acceptance oracles this file implements.
@@ -109,7 +109,7 @@ def _cell_text(mt, row_key: str, column_key: str = "name") -> str:
 def _mounted_row_keys(mt) -> tuple[str, ...]:
     """Row keys in the MOUNTED DataTable's actual display order (``ordered_rows``),
     independent of ``app._visible_row_keys`` (the renderer's return value)."""
-    return tuple(row.key.value for row in mt.ordered_rows)
+    return mt.row_keys
 
 
 def test_direct_grouped_renderer_empty_filter_includes_group_and_ungrouped_context() -> None:

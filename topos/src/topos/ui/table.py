@@ -19,13 +19,51 @@ VIEW_MODES = ("tree", "container", "ciu-grouped")
 PROFILE_ORDER = ("auto", "triage", "memory", "network", "governance", "damon", "wide", "minimal")
 SORT_ORDER = ("pressure", "ram", "cpu_pct", "name")
 
-_WIDTH_TIERS = (
-    (80, ("name", "ram", "rf_d_per_s", "psi_mem_full_avg10", "cpu_pct")),
-    (100, ("anon", "z_pool", "z_eq", "ratio", "rf_z_per_s", "rf_f_per_s")),
-    (120, ("swap_disk", "io_cap_saturation_pct", "headroom_max_pct", "tier", "pids_current")),
-    (160, ("io_r_bps", "io_w_bps", "net_rx_bps", "net_tx_bps", "net_source", "cpu_trend")),
-    (200, ("file", "psi_io_some_avg10", "psi_cpu_some_avg10", "mem_high", "mem_max")),
+# The ``auto`` profile ("Now"): fixed display order, each column with a drop
+# priority (1 is kept longest). The widget's real width decides how many fit by
+# dropping the highest priority numbers first; the order of the rest never
+# changes. Priorities are configuration: ``[columns.priorities]`` overrides them.
+# Columns without a metric yet (THR, IOPS, STALL, BLK, IOCOST) are not listed.
+NOW_COLUMNS: tuple[tuple[str, int], ...] = (
+    ("name", 0),
+    ("tier", 9),
+    ("cpu_pct", 1),
+    ("cpu_trend", 9),
+    ("ram", 1),
+    ("mem_low", 3),
+    ("mem_high", 8),
+    ("mem_max", 8),
+    ("z_pool", 5),
+    ("z_eq", 8),
+    ("ratio", 8),
+    ("rf_d_per_s", 2),
+    ("rf_f_per_s", 6),
+    ("rf_z_per_s", 7),
+    ("psi_mem_full_avg10", 2),
+    ("psi_io_some_avg10", 2),
+    ("psi_cpu_some_avg10", 3),
+    ("io_r_bps", 2),
+    ("io_w_bps", 2),
+    ("io_cap_saturation_pct", 4),
+    ("headroom_max_pct", 8),
+    ("net_rx_bps", 6),
+    ("net_tx_bps", 6),
+    ("net_source", 9),
+    ("pids_current", 7),
+    ("anon", 7),
+    ("file", 7),
+    ("shmem", 8),
+    ("swap_disk", 6),
+    ("pgscan_per_s", 8),
+    ("pgsteal_per_s", 8),
+    ("governance_origin", 8),
+    ("governance_drift", 4),
 )
+_NOW_PRIORITY = dict(NOW_COLUMNS)
+_DEFAULT_PRIORITY = 5
+_COLUMN_GAP = 1
+_COLUMN_WIDTH_ESTIMATE = {"name": 30, "net_source": 12, "governance_origin": 10, "cpu_trend": 10}
+_COLUMN_WIDTH_MIN = 8
 
 _PROFILE_COLUMNS = {
     "triage": ("name", "pressure", "ram", "cpu_pct", "psi_mem_full_avg10", "psi_io_some_avg10", "rf_d_per_s", "io_r_bps", "io_w_bps", "net_rx_bps", "net_tx_bps", "net_source"),
@@ -181,30 +219,65 @@ def resolve_columns(config: ToposConfig, *, width: int, profile: str) -> tuple[s
 
 def resolve_profile(config: ToposConfig, *, width: int, profile: str) -> ProfileLayout:
     profile = normalize_profile_name(config, profile)
+    priorities = column_priorities(config)
     if profile == "auto":
-        active: list[str] = []
-        for index, (minimum, names) in enumerate(_WIDTH_TIERS):
-            # The first tier is always shown: the real table widget is a few
-            # columns narrower than the terminal (scrollbar gutter).
-            if index == 0 or width >= minimum:
-                active.extend(names)
-        return ProfileLayout(name=profile, columns=tuple(_dedupe(("name", *active))))
+        columns = _dedupe(name for name, _ in NOW_COLUMNS)
+        return ProfileLayout(name=profile, columns=fit_columns(columns, width, priorities))
     if profile == "wide":
-        all_columns: list[str] = ["name"]
-        for _, names in _WIDTH_TIERS:
-            all_columns.extend(names)
-        return ProfileLayout(name=profile, columns=tuple(_dedupe(all_columns)))
+        # Everything; the widget scrolls horizontally rather than dropping.
+        return ProfileLayout(name=profile, columns=tuple(_dedupe(name for name, _ in NOW_COLUMNS)))
     configured = _profile_from_config(config, profile)
     if configured is not None:
+        columns = _dedupe(name for name in configured if _column_supported(name))
         return ProfileLayout(
             name=profile,
-            columns=tuple(_dedupe(name for name in configured if _column_supported(name))),
+            columns=fit_columns(columns, width, priorities),
             ignored_columns=tuple(name for name in configured if not _column_supported(name)),
         )
-    return ProfileLayout(
-        name=profile,
-        columns=tuple(_dedupe(name for name in _PROFILE_COLUMNS.get(profile, _PROFILE_COLUMNS["triage"]) if _column_supported(name))),
-    )
+    columns = _dedupe(name for name in _PROFILE_COLUMNS.get(profile, _PROFILE_COLUMNS["triage"]) if _column_supported(name))
+    return ProfileLayout(name=profile, columns=fit_columns(columns, width, priorities))
+
+
+def column_priorities(config: ToposConfig) -> dict[str, int]:
+    """Drop priority per canonical column (1 is kept longest).
+
+    Built-in table, overridden by ``[columns.priorities]`` (alias names accepted).
+    """
+    priorities = dict(_NOW_PRIORITY)
+    configured = (config.columns or {}).get("priorities", {}) or {}
+    if isinstance(configured, dict):
+        for name, value in configured.items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                priorities[resolve_column(str(name))] = value
+    return priorities
+
+
+def estimated_column_width(column: str) -> int:
+    # Header labels are markup in the widget: the "[subtree]" suffix is not shown.
+    visible = Text.from_markup(header_label(column)).plain
+    return _COLUMN_WIDTH_ESTIMATE.get(column, max(len(visible), _COLUMN_WIDTH_MIN))
+
+
+def fit_columns(columns: list[str], width: int, priorities: dict[str, int]) -> tuple[str, ...]:
+    """Keep *columns* in order, dropping the highest priority numbers first until they fit.
+
+    Among equal priorities the rightmost goes first. The first column (name)
+    is never dropped; a *width* of 0 or less disables dropping.
+    """
+    kept = list(columns)
+    if width <= 0:
+        return tuple(kept)
+
+    def total() -> int:
+        return sum(estimated_column_width(c) for c in kept) + _COLUMN_GAP * max(0, len(kept) - 1)
+
+    while len(kept) > 1 and total() > width:
+        victim = max(
+            range(1, len(kept)),
+            key=lambda i: (priorities.get(kept[i], _DEFAULT_PRIORITY), i),
+        )
+        del kept[victim]
+    return tuple(kept)
 
 
 def available_profiles(config: ToposConfig) -> tuple[str, ...]:
