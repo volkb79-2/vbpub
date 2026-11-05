@@ -398,6 +398,11 @@ Rules (config validation and planner; `tests/test_data_area.py`):
   and other system trees, duplicate LV names or labels, LV sizes above the PV
   (less 1 GiB LVM metadata), LV sizes that leave no free VG space, and a data
   area that does not fit between root and swap.
+- Safety: `data_partition.label` must be `MDT_COW`; `/srv/tree-cache` and `/srv/tree-upper` are refused as mounts;
+  partition mode writes `UUID=` to fstab and refuses when another device carries the same label; a `blkid` failure
+  other than "no signature" (exit 2) is never treated as blank; a rerun that would delete, renumber or resize a data
+  partition holding a signature (e.g. changed swap count) is refused; there is no wipe override (remedy: `wipefs -a`
+  by hand on the data partition of an empty host, see the reinstall runbook).
 - `lvm2`, `btrfs-progs` and/or `xfsprogs` are installed in stage two exactly when
   the chosen layout needs them.
 - Stage two runs after swap activation. `mkfs`/`pvcreate` only touch a BLANK
