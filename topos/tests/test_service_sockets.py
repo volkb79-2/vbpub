@@ -267,11 +267,11 @@ def test_config_check_prints_ok_and_json(tmp_path: Path, capsys: pytest.CaptureF
     from topos.service.cli import main
 
     config_path = _write_config(tmp_path / "toposd.toml")
-    assert main(["config", "check", "--config", config_path]) == 0
+    assert main(["config", "check", "--config", str(config_path)]) == 0
     assert capsys.readouterr().out == "ok\n"
-    assert main(["config", "check", "--json", "--config", config_path]) == 0
+    assert main(["config", "check", "--json", "--config", str(config_path)]) == 0
     assert json.loads(capsys.readouterr().out)["ok"] is True
-    assert main(["config", "check", "--config", tmp_path / "missing.toml"]) == 2
+    assert main(["config", "check", "--config", str(tmp_path / "missing.toml")]) == 2
     assert "config file" in capsys.readouterr().err
 
 
@@ -279,11 +279,11 @@ def test_unit_print_emits_all_files_or_one_file(tmp_path: Path, capsys: pytest.C
     from topos.service.cli import main
 
     config_path = _write_config(tmp_path / "toposd.toml")
-    assert main(["unit", "print", "--config", config_path]) == 0
+    assert main(["unit", "print", "--config", str(config_path)]) == 0
     all_output = capsys.readouterr().out
     for name in render_units(DEFAULTS):
         assert f"# --- {name}\n" in all_output
-    assert main(["unit", "print", "--config", config_path, "--unit", "topos-observe.socket"]) == 0
+    assert main(["unit", "print", "--config", str(config_path), "--unit", "topos-observe.socket"]) == 0
     assert capsys.readouterr().out == render_units(DEFAULTS)["topos-observe.socket"]
 
 
@@ -302,18 +302,18 @@ def test_unit_check_clean_drift_and_missing(tmp_path: Path, capsys: pytest.Captu
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(contents, encoding="utf-8")
 
-    assert main(["unit", "check", "--config", config_path, "--root", root]) == 0
+    assert main(["unit", "check", "--config", str(config_path), "--root", str(root)]) == 0
     assert capsys.readouterr().out == "ok\n"
 
     socket_file = root / "etc" / "systemd" / "system" / "topos-observe.socket"
     socket_file.write_text(socket_file.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
-    assert main(["unit", "check", "--config", config_path, "--root", root, "--diff"]) == 1
+    assert main(["unit", "check", "--config", str(config_path), "--root", str(root), "--diff"]) == 1
     drift = capsys.readouterr().out
     assert f"drifted: {socket_file}" in drift
     assert "@@" in drift
 
     (root / "etc" / "systemd" / "system" / "topos.slice").unlink()
-    assert main(["unit", "check", "--config", config_path, "--root", root]) == 1
+    assert main(["unit", "check", "--config", str(config_path), "--root", str(root)]) == 1
     assert "missing:" in capsys.readouterr().out
 
 
@@ -499,7 +499,7 @@ def test_run_reports_missing_observe_mapping_from_activation_result(
 
     monkeypatch.setattr(service_cli, "adopt_listeners", lambda _expected: {})
     config_path = _write_config(tmp_path / "toposd.toml")
-    assert service_cli.main(["run", "--config", config_path]) == 2
+    assert service_cli.main(["run", "--config", str(config_path)]) == 2
     assert "no fd named observe passed; check topos-observe.socket" in capsys.readouterr().err
 
 
