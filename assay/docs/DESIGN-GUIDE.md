@@ -896,7 +896,11 @@ grants access. The launch guard takes the host Docker GID from the
 `ASSAY_GATE_HOST_DOCKER_GID` override forwarded by the outer launcher, else from
 the owning GID of the Docker API socket the launcher uses (`DOCKER_HOST`
 `unix://` path, default `/var/run/docker.sock`), never from a group database,
-and refuses naming both sources when neither is available. It requires the
+and refuses naming both sources when neither is available. The override must
+be a plain non-root decimal GID (set but empty or malformed is an error, the
+same rule as Run-Gate's `RUN_GATE_HOST_DOCKER_GID`); a non-`unix://`
+`DOCKER_HOST` or a socket owned by group 0 is refused with the override hint
+rather than guessed. It requires the
 observer GID to be non-zero and different from Docker. It does not infer a socket group from its parent directory. Run-Gate's
 host preflight also checks that the observer and control socket groups differ.
 These clients use the new paths only. A host still on the earlier layout needs
