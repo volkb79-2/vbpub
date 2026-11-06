@@ -1,4 +1,8 @@
-"""Read-only service-side ``cgpd doctor`` checks for the native install."""
+"""Read-only service-side ``cgpd doctor`` checks for the native install.
+
+The check names, the skip rules (a level the caller is not in, a path a non-root
+caller cannot read) and the remedies are the same as the ``toposd doctor`` ones.
+"""
 
 from __future__ import annotations
 
@@ -9,27 +13,47 @@ import os
 import socket
 import stat
 import subprocess
-from typing import Any, Dict, Mapping, Optional, Tuple
+import tomllib
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
-from cli_extended import CliRegistry, CliRuntime, OptionSpec, register_doctor
+from cli_extended import CliRegistry, CliRuntime, register_doctor
 from cli_extended.doctor import CheckResult, DoctorCheck
 
 from .. import daemon_config, unitfiles
-from .installer import InstallPaths, find_foreign_rules, version_key
+from .installer import (
+    InstallError,
+    InstallPaths,
+    manual_removal_message,
+    old_installation_problems,
+    parse_pin,
+    version_key,
+)
 
 DEFAULT_SYSTEMCTL = "systemctl"
 CONNECT_TIMEOUT = 2.0
+
+
+def _paths(args: argparse.Namespace) -> InstallPaths:
+    # ``root`` is a test seam (the fake-root tests set it); there is no such option.
+    return InstallPaths(getattr(args, "root", "/"))
 
 
 def _config(args: argparse.Namespace) -> Tuple[str, Dict[str, Any]]:
     cache = getattr(args, "_cgpd_service_doctor_config", None)
     if cache is not None:
         return cache
-    path = args.config or daemon_config.DEFAULT_CONFIG_PATH
+    path = args.config or _paths(args).config
     values, _digest = daemon_config.read_config_file(path, explicit=bool(args.config))
     result = (path, values)
     args._cgpd_service_doctor_config = result
     return result
+
+
+def _permission_skip(exc: OSError, label: str) -> Optional[CheckResult]:
+    if isinstance(exc, PermissionError) and os.geteuid() != 0:
+        return CheckResult("skip", f"cannot inspect {label}; run as root")
+    return None
 
 
 def _check_config_valid(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
@@ -52,13 +76,35 @@ def _config_or_skip(args: argparse.Namespace) -> Tuple[Optional[Dict[str, Any]],
     return values, None
 
 
+def _installed_resources(paths: InstallPaths) -> Dict[str, str]:
+    return {
+        "cgprofile.slice": os.path.join(paths.unit_dir, "cgprofile.slice"),
+        "cgpd.service": os.path.join(paths.unit_dir, "cgpd.service"),
+        "cgprofile-control.socket": os.path.join(paths.unit_dir, "cgprofile-control.socket"),
+        "cgprofile-observer.socket": os.path.join(paths.unit_dir, "cgprofile-observer.socket"),
+        "cgprofile.sysusers": os.path.join(paths.sysusers_dir, "cgprofile.conf"),
+    }
+
+
 def _check_units_current(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
     values, skipped = _config_or_skip(args)
     if skipped:
         return skipped
     assert values is not None
-    rendered = unitfiles.render(config_values=values)
-    problems = unitfiles.check(unitfiles.default_installed_map(), rendered)
+    installed = _installed_resources(_paths(args))
+    problems: List[str] = []
+    for name, expected in unitfiles.render(config_values=values).items():
+        try:
+            actual = Path(installed[name]).read_text(encoding="utf-8")
+        except OSError as exc:
+            permission = _permission_skip(exc, installed[name])
+            if permission:
+                return permission
+            problems.append(f"{name}: cannot read {installed[name]}: {exc.strerror or type(exc).__name__}")
+            continue
+        difference = unitfiles.first_difference(expected, actual)
+        if difference is not None:
+            problems.append(f"{name}: {installed[name]} differs from the rendered unit, {difference}")
     if problems:
         return CheckResult("fail", problems[0], remedy="rerun cgpd install with the intended wheel pin",
                            details={"problems": problems})
@@ -121,9 +167,12 @@ def _check_socket_units(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
     return CheckResult("ok", "both per-level socket units are enabled and active")
 
 
-def _expected_socket_stat(path: str, group: str, mode: str) -> Optional[str]:
+def _expected_socket_problem(path: str, group: str, mode: str) -> Optional[str]:
+    """What is wrong with the socket node, or None; PermissionError propagates."""
     try:
         info = os.lstat(path)
+    except PermissionError:
+        raise
     except OSError as exc:
         return f"{path}: {exc.strerror or type(exc).__name__}"
     if not stat.S_ISSOCK(info.st_mode):
@@ -145,10 +194,19 @@ def _check_socket_nodes(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
     if skipped:
         return skipped
     assert values is not None
+    paths = _paths(args)
     sockets = daemon_config.socket_settings(values)
-    problems = [problem for level in daemon_config.SOCKET_LEVELS
-                if (problem := _expected_socket_stat(
-                    sockets[level]["path"], sockets[level]["group"], sockets[level]["mode"]))]
+    problems = []
+    for level in daemon_config.SOCKET_LEVELS:
+        node = paths.at(sockets[level]["path"])
+        try:
+            problem = _expected_socket_problem(node, sockets[level]["group"], sockets[level]["mode"])
+        except PermissionError as exc:
+            if os.geteuid() != 0:
+                return CheckResult("skip", "socket node is unreadable; run as root")
+            problem = f"{node}: {exc.strerror or type(exc).__name__}"
+        if problem:
+            problems.append(problem)
     if problems:
         return CheckResult("fail", problems[0],
                            remedy="restart the affected cgprofile-<level>.socket unit",
@@ -161,39 +219,79 @@ def _check_socket_dirs(runtime: CliRuntime, args: argparse.Namespace) -> CheckRe
     if skipped:
         return skipped
     assert values is not None
+    paths = _paths(args)
     sockets = daemon_config.socket_settings(values)
-    paths = {"/run/cgprofile"}
-    paths.update(os.path.dirname(sockets[level]["path"]) for level in daemon_config.SOCKET_LEVELS)
+    directories = {paths.runtime_root}
+    directories.update(os.path.dirname(paths.at(sockets[level]["path"])) for level in daemon_config.SOCKET_LEVELS)
     problems = []
-    for path in sorted(paths):
+    for path in sorted(directories):
         try:
             info = os.lstat(path)
         except OSError as exc:
+            permission = _permission_skip(exc, path)
+            if permission:
+                return permission
             problems.append(f"{path}: {exc.strerror or type(exc).__name__}")
             continue
         mode = stat.S_IMODE(info.st_mode)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or mode != 0o755:
-            problems.append(f"{path}: {info.st_uid}:{info.st_gid} {mode:04o}, expected root:root 0755")
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or mode & 0o022:
+            problems.append(
+                f"{path}: {info.st_uid}:{info.st_gid} {mode:04o}, expected root-owned and not group/other writable")
     if problems:
-        return CheckResult("fail", problems[0], remedy="remove the mismatched runtime tree, then restart cgpd install",
+        return CheckResult("fail", problems[0],
+                           remedy="remove the mismatched runtime tree and rerun cgpd install",
                            details={"problems": problems})
-    return CheckResult("ok", "socket directories are root:root 0755")
+    return CheckResult("ok", "socket directories are root-owned and not group- or other-writable")
 
 
 def _check_state_dir(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
-    path = "/run/cgprofile/state"
+    path = _paths(args).state_dir
     try:
         info = os.lstat(path)
     except OSError as exc:
-        if os.geteuid() != 0 and isinstance(exc, PermissionError):
-            return CheckResult("skip", "state directory is unreadable; run as root")
+        permission = _permission_skip(exc, path)
+        if permission:
+            return permission
         return CheckResult("fail", f"{path}: {exc.strerror or type(exc).__name__}",
                            remedy="restart cgpd.service to create its state directory")
     mode = stat.S_IMODE(info.st_mode)
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or mode != 0o700:
         return CheckResult("fail", f"{path} is {info.st_uid}:{info.st_gid} {mode:04o}, expected root:root 0700",
-                           remedy="stop cgpd, remove the mismatched state directory, then restart cgpd")
+                           remedy="stop cgpd.service, remove the mismatched state directory, then restart it")
     return CheckResult("ok", f"{path} is root:root 0700")
+
+
+def _read_install_record(path: str) -> Mapping[str, Any]:
+    try:
+        with open(path, "rb") as stream:
+            return tomllib.load(stream)
+    except PermissionError:
+        raise
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def _installed_version(paths: InstallPaths) -> Optional[str]:
+    """The version ``current`` selects, when the record and the MANIFEST agree with it."""
+    if not os.path.islink(paths.current):
+        return None
+    target = os.readlink(paths.current)
+    if not target or os.path.basename(target) != target:
+        return None
+    try:
+        version_key(target)
+    except InstallError:
+        return None
+    if not os.path.isfile(os.path.join(paths.opt, target, "MANIFEST")):
+        return None
+    wheel = _read_install_record(paths.install_record).get("wheel")
+    if not isinstance(wheel, str):
+        return None
+    try:
+        version, _digest = parse_pin(wheel, "install record wheel")
+    except InstallError:
+        return None
+    return target if version == target else None
 
 
 def _version_request(path: str) -> Dict[str, Any]:
@@ -216,50 +314,53 @@ def _version_request(path: str) -> Dict[str, Any]:
 
 
 def _check_service(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
+    paths = _paths(args)
     if not _systemctl("is-active", "--quiet", "cgpd.service"):
         return CheckResult("fail", "cgpd.service is not active", remedy="run systemctl start cgpd.service")
-    current = "/opt/cgprofile/current"
     try:
-        target = os.readlink(current)
-        version = os.path.basename(target.rstrip("/"))
-        version_key(version)
-    except (OSError, ValueError):
+        version = _installed_version(paths)
+    except PermissionError:
+        if os.geteuid() != 0:
+            return CheckResult("skip", "installed version is unreadable; run as root")
+        return CheckResult("fail", "cannot inspect the installed version",
+                           remedy="check /opt/cgprofile and /etc/cgprofile/install.toml permissions")
+    if version is None:
         return CheckResult("fail", "the /opt/cgprofile/current version pointer is missing or invalid",
                            remedy="run cgpd install with the intended release pin")
+    values, skipped = _config_or_skip(args)
+    if skipped:
+        return skipped
+    assert values is not None
+    control = daemon_config.socket_settings(values)["control"]
     try:
-        values, _digest = _config(args)
-        path = daemon_config.socket_settings(values)["control"]["path"]
-        response = _version_request(path)
-        daemon = response.get("daemon") if isinstance(response.get("daemon"), dict) else {}
-        running_version = daemon.get("version")
-        if running_version != version:
-            return CheckResult("fail", f"cgpd reports {running_version}, current points to {version}",
-                               remedy="restart cgpd.service so it runs the installed version")
-        activation = response.get("socket_activation")
-        if not isinstance(activation, dict):
-            return CheckResult("fail", "cgpd does not report socket activation state",
-                               remedy="install the 2.2.0 service units and restart cgpd.service")
-        fds = activation.get("fds", {})
-        mode = activation.get("mode")
-        if (mode != "activated" or not isinstance(fds, dict)
-                or set(fds) != set(daemon_config.SOCKET_LEVELS)
-                or any(type(fds.get(level)) is not int or fds[level] not in (0, 1)
-                       for level in daemon_config.SOCKET_LEVELS)):
-            return CheckResult("fail", "cgpd is not running with valid systemd socket activation",
-                               remedy="start cgpd.service through both cgprofile socket units")
-        state = (f"mode={activation.get('mode')} control_fds={fds.get('control', 0)} "
-                 f"observer_fds={fds.get('observer', 0)}")
-    except (OSError, ValueError, daemon_config.ConfigError, json.JSONDecodeError) as exc:
-        try:
-            group = daemon_config.socket_settings(_config(args)[1])["control"]["group"]
-            gid = grp.getgrnam(group).gr_gid
-        except (daemon_config.ConfigError, KeyError):
-            gid = None
-        if os.geteuid() != 0 and gid is not None and not _caller_in_group(gid):
-            return CheckResult("skip", "cannot verify the running version; caller lacks control-socket access",
-                               details={"reason": str(exc)})
+        gid: Optional[int] = grp.getgrnam(control["group"]).gr_gid
+    except KeyError:
+        gid = None
+    if os.geteuid() != 0 and (gid is None or not _caller_in_group(gid)):
+        return CheckResult("skip", "cannot verify the running version; caller lacks control-socket access")
+    try:
+        response = _version_request(paths.at(control["path"]))
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         return CheckResult("fail", f"cannot verify the running cgpd version: {type(exc).__name__}: {exc}",
                            remedy="check cgpd.service and its control socket")
+    daemon = response.get("daemon") if isinstance(response.get("daemon"), dict) else {}
+    running_version = daemon.get("version")
+    if running_version != version:
+        return CheckResult("fail", f"cgpd reports {running_version}, current points to {version}",
+                           remedy="restart cgpd.service so it runs the installed version")
+    activation = response.get("socket_activation")
+    if not isinstance(activation, dict):
+        return CheckResult("fail", "cgpd does not report socket activation state",
+                           remedy="install the 2.2.0 service units and restart cgpd.service")
+    fds = activation.get("fds", {})
+    if (activation.get("mode") != "activated" or not isinstance(fds, dict)
+            or set(fds) != set(daemon_config.SOCKET_LEVELS)
+            or any(type(fds.get(level)) is not int or fds[level] not in (0, 1)
+                   for level in daemon_config.SOCKET_LEVELS)):
+        return CheckResult("fail", "cgpd is not running with valid systemd socket activation",
+                           remedy="start cgpd.service through both cgprofile socket units")
+    state = (f"mode={activation.get('mode')} control_fds={fds.get('control', 0)} "
+             f"observer_fds={fds.get('observer', 0)}")
     return CheckResult("ok", f"cgpd.service is active at version {version}; {state}",
                        details={"version": version, "socket_activation": state})
 
@@ -291,12 +392,13 @@ def _check_connect(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
     if skipped:
         return skipped
     assert values is not None
+    paths = _paths(args)
     sockets = daemon_config.socket_settings(values)
     problems = []
     skipped_levels = []
     results: Dict[str, Any] = {}
     for level in daemon_config.SOCKET_LEVELS:
-        path = sockets[level]["path"]
+        path = paths.at(sockets[level]["path"])
         group = sockets[level]["group"]
         try:
             gid = grp.getgrnam(group).gr_gid
@@ -310,8 +412,7 @@ def _check_connect(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
         try:
             if level == "control":
                 response = _version_request(path)
-                activation = response.get("socket_activation", {})
-                results[level] = {"ok": True, "socket_activation": activation}
+                results[level] = {"ok": True, "socket_activation": response.get("socket_activation", {})}
             else:
                 _observer_request(path)
                 results[level] = {"ok": True, "contract": 1}
@@ -319,20 +420,27 @@ def _check_connect(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
             problems.append(f"{level}: {type(exc).__name__}: {exc}")
             results[level] = "fail"
     if problems:
-        return CheckResult("fail", problems[0], remedy="restart the matching cgprofile socket unit and inspect cgpd logs",
+        return CheckResult("fail", problems[0],
+                           remedy="restart the matching cgprofile socket unit and inspect cgpd logs",
                            details=results)
     suffix = f"; skipped expected access for {', '.join(skipped_levels)}" if skipped_levels else ""
     return CheckResult("ok", "available access levels answer their health probes" + suffix, details=results)
 
 
 def _check_foreign_rules(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
-    paths = InstallPaths()
-    found = find_foreign_rules(paths)
+    paths = _paths(args)
+    try:
+        found = old_installation_problems(paths, args.config or paths.config)
+    except InstallError as exc:
+        return CheckResult("fail", str(exc), remedy="repair or remove the unreadable config, then rerun")
+    # Unreadable entries appear both as "cannot inspect DIR" and as
+    # "foreign rule or drop-in: PATH (cannot inspect: ...)".
+    if os.geteuid() != 0 and any("cannot inspect" in item for item in found):
+        return CheckResult("skip", "foreign service files are unreadable; run as root")
     if found:
-        return CheckResult("fail", "foreign tmpfiles, sysusers or drop-in files claim the cgprofile service",
-                           remedy="remove the listed old host-setup files manually before installing cgpd",
-                           details={"paths": found}, lines=tuple(found))
-    return CheckResult("ok", "no foreign tmpfiles, sysusers or service drop-ins claim cgprofile")
+        return CheckResult("fail", "old or foreign files conflict with the cgprofile host service",
+                           remedy=manual_removal_message(found), details={"paths": found}, lines=tuple(found))
+    return CheckResult("ok", "no old tmpfiles, drop-ins, runtime paths or installer manifests were found")
 
 
 def _check_caller_access(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
@@ -374,7 +482,7 @@ SERVICE_DOCTOR_CHECKS = (
     DoctorCheck("state-dir", "daemon state directory is root-owned mode 0700", _check_state_dir),
     DoctorCheck("service", "cgpd service is active at the installed version", _check_service),
     DoctorCheck("connect", "each accessible socket answers a health or contract probe", _check_connect),
-    DoctorCheck("foreign-rules", "no foreign tmpfiles or drop-ins claim the service tree", _check_foreign_rules),
+    DoctorCheck("foreign-rules", "no old or foreign state conflicts with the service", _check_foreign_rules),
     DoctorCheck("caller-access", "report the caller's access-group memberships", _check_caller_access),
 )
 
@@ -382,4 +490,3 @@ SERVICE_DOCTOR_CHECKS = (
 def register_service_doctor(registry: CliRegistry) -> None:
     register_doctor(registry, SERVICE_DOCTOR_CHECKS,
                     description="check cgpd installation, systemd sockets, permissions and connectivity")
-
