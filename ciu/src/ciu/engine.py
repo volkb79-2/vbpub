@@ -2460,13 +2460,17 @@ def main_execution(
                 ownership_path.read_text(encoding="utf-8"), materialized
             )
 
-        compose_env = composefile.compose_process_env(
-            specs, materialized, compose_profiles=compose_profiles
-        )
-        file_args = composefile.compose_file_args(working_dir, overlay_path)
-        if ownership_path is not None:
-            file_args += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
-        project = compose_project_name(global_config, working_dir)
+        # `up --dry-run` evaluates none of the compose inputs (it never did:
+        # compose_project_name raises without deploy.project_name/
+        # environment_tag). Only a real start or a prepare-only render needs them.
+        if _prepare_only or not dry_run:
+            compose_env = composefile.compose_process_env(
+                specs, materialized, compose_profiles=compose_profiles
+            )
+            file_args = composefile.compose_file_args(working_dir, overlay_path)
+            if ownership_path is not None:
+                file_args += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
+            project = compose_project_name(global_config, working_dir)
 
         # ---- Step 16: compose up (S8.1) ----
         if _prepare_only:

@@ -16,19 +16,11 @@ from ciu import engine  # noqa: E402
 
 
 def _stub_native_pipeline(monkeypatch: pytest.MonkeyPatch, observed: dict[str, object]) -> None:
-    merged = {
-        "demo": {}, "ciu": {},
-        "deploy": {"project_name": "fixture", "environment_tag": "test"},
-    }
-    global_config = {
-        "deploy": {"project_name": "fixture", "environment_tag": "test"},
-    }
+    merged = {"demo": {}, "ciu": {}, "deploy": {}}
     monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
     monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kwargs: None)
     monkeypatch.setattr(engine, "enforce_standalone_root", lambda _path: None)
-    monkeypatch.setattr(
-        engine.config_model, "render_global_chain", lambda *_args: global_config
-    )
+    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *_args: {})
     monkeypatch.setattr(engine, "configure_logging", lambda _level: None)
     monkeypatch.setattr(engine.config_model, "render_stack", lambda *_args, **_kwargs: {"demo": {}})
     monkeypatch.setattr(engine, "ensure_workspace_network", lambda **_kwargs: None)
