@@ -1061,7 +1061,8 @@ def guard_clean_one_shots(
 
     for container_id in sorted(set(container_ids)):
         inspected = procutil.run_cmd(
-            ["docker", "inspect", container_id], check=False, capture=True,
+            ["docker", "inspect", "--type", "container", container_id],
+            check=False, capture=True,
         )
         if inspected.returncode != 0:
             raise ComposeError(

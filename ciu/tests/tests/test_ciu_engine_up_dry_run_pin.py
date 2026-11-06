@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import engine  # noqa: E402
+from ciu import engine
 
 
 def _stub_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:

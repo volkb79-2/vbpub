@@ -10,15 +10,17 @@ import copy
 import fcntl
 import json
 import os
+import posixpath
 import re
 import signal
 import stat
+import subprocess
 import sys
 import tempfile
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout, suppress
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -31,11 +33,19 @@ _CONTAINER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _LABEL_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-/]*$")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LIMIT_KEYS = ("mem_limit", "memswap_limit", "pids_limit", "cpus")
+# cap_add and security_opt are deliberately NOT extendable (plan 2.4: anything
+# not listed is refused; they would widen the container's privileges).
 _ALLOWED_EXTENSION_KEYS = frozenset({
-    *_LIMIT_KEYS, "group_add", "cap_add", "security_opt", "volumes",
-    "environment", "labels", "init",
+    *_LIMIT_KEYS, "group_add", "volumes", "environment", "labels", "init",
 })
-_APPEND_EXTENSION_KEYS = ("group_add", "cap_add", "security_opt")
+_APPEND_EXTENSION_KEYS = ("group_add",)
+_HEX_LOOKALIKE_RE = re.compile(r"^[0-9a-f]{1,64}$")
+# Docker resolves a hex string as a container ID (prefix) before a name, so a
+# hex-only --name could address another container. Sockets that give control
+# of the daemon may never be bind-mounted through --extend.
+_DOCKER_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock")
+_RUN_ID_LABEL = "ciu.run.id"
+_PLACEHOLDER_AT_LAUNCH = "<assigned at launch>"
 _ALLOWED_EXTENSION_ROOT_KEYS = frozenset({"services", "x-ciu-run"})
 _CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _RUN_EVENT_SCHEMA = "ciu-run-event/1"
@@ -52,6 +62,11 @@ def validate_container_name(name: str) -> str:
         raise ValueError(
             "[CIU-141] container name must match "
             "[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}"
+        )
+    if _HEX_LOOKALIKE_RE.fullmatch(name):
+        raise ValueError(
+            "[CIU-141] container name must not look like a Docker container ID "
+            "(1-64 lowercase hex characters); Docker would resolve it as an ID"
         )
     return name
 
@@ -120,15 +135,35 @@ def _volume_target(volume: Any, *, where: str) -> str:
     if isinstance(volume, Mapping):
         target = volume.get("target")
     elif isinstance(volume, str):
+        # Short form SRC:TARGET[:MODE] (or a bare anonymous TARGET).
         parts = volume.split(":")
-        target = parts[-1]
+        target = parts[1] if len(parts) > 1 else parts[0]
     else:
         raise ValueError(f"[CIU-141] {where} volume must be long-form")
     if not isinstance(target, str) or not target.startswith("/"):
         raise ValueError(f"[CIU-141] {where} volume target must be an absolute path")
     if ".." in PurePosixPath(target).parts:
         raise ValueError(f"[CIU-141] {where} volume target may not contain '..'")
-    return target
+    # Collision checks compare the path Docker will mount, not its spelling:
+    # collapse '//', '/./' and trailing '/' (normpath keeps a leading '//').
+    return "/" + posixpath.normpath(target).lstrip("/")
+
+
+def _bind_source_refusal(source: str) -> str | None:
+    """Return why a bind source is forbidden, or None when it is acceptable."""
+    candidates = {"/" + posixpath.normpath(source).lstrip("/")}
+    # A symlinked source resolves to wherever it points, even when it does not
+    # exist yet (non-strict realpath); judge both spellings.
+    candidates.add(os.path.realpath(source))
+    for candidate in sorted(candidates):
+        if candidate == "/":
+            return "the host root"
+        if posixpath.basename(candidate) == "docker.sock":
+            return "a Docker socket"
+        for socket_path in _DOCKER_SOCKETS:
+            if candidate == socket_path or socket_path.startswith(candidate + "/"):
+                return "a Docker socket or one of its parent directories"
+    return None
 
 
 def _base_environment_keys(value: Any) -> set[str]:
@@ -192,13 +227,6 @@ def validate_extension_document(
             raise ValueError("[CIU-141] --extend group_add must be a list of numeric gids")
         service["group_add"] = [str(gid) for gid in group_add]
 
-    for key in ("cap_add", "security_opt"):
-        if key in service and (
-            not isinstance(service[key], list)
-            or any(not isinstance(item, str) or not item for item in service[key])
-        ):
-            raise ValueError(f"[CIU-141] --extend {key} must be a list of non-empty strings")
-
     if "volumes" in service:
         volumes = service["volumes"]
         if not isinstance(volumes, list):
@@ -224,13 +252,21 @@ def validate_extension_document(
             source = volume.get("source")
             if not isinstance(source, str) or not source:
                 raise ValueError("[CIU-141] --extend volume source must be a non-empty path/name")
-            if kind == "bind" and (
-                not PurePosixPath(source).is_absolute()
-                or ".." in PurePosixPath(source).parts
-            ):
-                raise ValueError(
-                    "[CIU-141] --extend bind source must be absolute and may not contain '..'"
-                )
+            if kind == "bind":
+                if (
+                    not PurePosixPath(source).is_absolute()
+                    or ".." in PurePosixPath(source).parts
+                ):
+                    raise ValueError(
+                        "[CIU-141] --extend bind source must be absolute and "
+                        "may not contain '..'"
+                    )
+                refusal = _bind_source_refusal(source)
+                if refusal is not None:
+                    raise ValueError(
+                        f"[CIU-141] --extend bind source {source!r} is {refusal}"
+                    )
+                source = "/" + posixpath.normpath(source).lstrip("/")
             if kind == "volume" and ("/" in source or source in {".", ".."}):
                 raise ValueError("[CIU-141] --extend named volume source must be a volume name")
             read_only = volume.get("read_only", False)
@@ -296,6 +332,7 @@ def validate_extension_document(
             or ".." in PurePosixPath(observer_dir).parts
         ):
             raise ValueError("[CIU-141] observer-socket-dir must be an absolute path")
+        observer_dir = "/" + posixpath.normpath(observer_dir).lstrip("/")
         matching_mounts = [
             volume for volume in service.get("volumes", [])
             if volume.get("type") == "bind" and volume.get("source") == observer_dir
@@ -476,6 +513,43 @@ def build_run_plan(
     return plan
 
 
+def _dry_run_document(
+    plan: Mapping[str, Any], *, prepared: Any, name: str, name_given: bool,
+    runtime_labels: Mapping[str, str], env_names: Sequence[str], mode: str,
+    argv: Sequence[str], owner_pid: int,
+) -> dict[str, Any]:
+    """The plan plus what a real run would add: name, runtime labels, env.
+
+    Values that only exist at launch (run ID, start time) are placeholders;
+    forwarded environment variables are listed by NAME only, never by value.
+    """
+    shown_labels = {
+        key: value for key, value in runtime_labels.items() if key.startswith("ciu.")
+    }
+    shown_labels["ciu.run.id"] = _PLACEHOLDER_AT_LAUNCH
+    shown_labels["ciu.run.started"] = _PLACEHOLDER_AT_LAUNCH
+    injected = {
+        "CIU_RUN_CONTAINER_NAME": name,
+        "CIU_RUN_ID": _PLACEHOLDER_AT_LAUNCH,
+    }
+    if plan.get("cgroup_parent") is not None:
+        injected["CIU_RUN_CGROUP_PARENT"] = plan["cgroup_parent"]
+    document = dict(plan)
+    document.update({
+        "name": name,
+        "name_generated": not name_given,
+        "name_available": True,
+        "networks_verified": True,
+        "mode": mode,
+        "owner_pid": owner_pid,
+        "argv_len": len(argv),
+        "runtime_labels": dict(sorted(shown_labels.items())),
+        "env": {"forwarded_names": list(env_names), "injected": injected},
+    })
+    _reject_secret_text(document, _secret_values(prepared.secret_values), where="run plan")
+    return document
+
+
 def _prepare_run_stack(
     repo_root: Path,
     selector: str,
@@ -520,9 +594,7 @@ def _stack_prepare_lock(stack_dir: Path):
         raise ValueError(f"[CIU-141] refusing symlinked preparation directory {machine_dir}")
     machine_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_path = machine_dir / ".ciu-run.lock"
-    flags = os.O_CREAT | os.O_RDWR
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(lock_path, flags, 0o600)
     except OSError as exc:
@@ -573,6 +645,7 @@ class _EventWriter:
         if fd is not None and path is not None:
             raise ValueError("[CIU-141] choose one event sink: --events-fd or --events-file")
         self._owned_fd = False
+        self.failed = False
         if fd is not None:
             if isinstance(fd, bool) or fd < 3:
                 raise ValueError("[CIU-141] --events-fd must be 3 or greater")
@@ -586,9 +659,7 @@ class _EventWriter:
             self.fd = fd
         elif path is not None:
             event_path = Path(path).expanduser()
-            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
             try:
                 self.fd = os.open(event_path, flags, 0o600)
                 self._owned_fd = True
@@ -604,15 +675,29 @@ class _EventWriter:
             self.fd = None
 
     def write(self, event: Mapping[str, Any]) -> None:
-        if self.fd is None:
+        """Write one JSONL event. A broken sink never kills the user's command.
+
+        The first write failure (EPIPE on a closed observer pipe, ENOSPC, ...)
+        is reported once on stderr; the sink is then marked dead and later
+        events are dropped while the run continues.
+        """
+        if self.fd is None or self.failed:
             return
         payload = (json.dumps(dict(event), sort_keys=True, separators=(",", ":")) + "\n").encode()
         view = memoryview(payload)
-        while view:
-            written = os.write(self.fd, view)
-            if written <= 0:
-                raise OSError("short write to CIU run event sink")
-            view = view[written:]
+        try:
+            while view:
+                written = os.write(self.fd, view)
+                if written <= 0:
+                    raise OSError("short write to CIU run event sink")
+                view = view[written:]
+        except OSError as exc:
+            self.failed = True
+            print(
+                f"[CIU-141] event sink write failed ({exc}); further run events "
+                "are dropped, the command keeps running",
+                file=sys.stderr, flush=True,
+            )
 
     def close(self) -> None:
         if self._owned_fd:
@@ -669,10 +754,19 @@ def _compose_prefix(prepared: Any, file_args: Sequence[str]) -> list[str]:
     ]
 
 
-def _docker_inspect(name: str) -> dict[str, Any] | None:
+def _docker_inspect(ref: str) -> dict[str, Any] | None:
+    """Inspect one CONTAINER by exact name or full ID; never another object.
+
+    ``--type container`` keeps a network/volume/image of the same name from
+    answering. A full 64-hex reference must return that exact ID; any other
+    reference must return that exact name (hex-lookalike names are refused at
+    validation, so a name can never resolve as another container's ID prefix).
+    """
+    by_id = bool(_CONTAINER_ID_RE.fullmatch(ref))
     try:
         result = procutil.run_cmd(
-            ["docker", "inspect", name], check=False, capture=True,
+            ["docker", "inspect", "--type", "container", ref],
+            check=False, capture=True,
         )
     except OSError as exc:
         raise RuntimeError("[CIU-141] Docker became unavailable while inspecting the one-shot") from exc
@@ -688,20 +782,118 @@ def _docker_inspect(name: str) -> dict[str, Any] | None:
         document = document[0]
     if not isinstance(document, dict):
         raise RuntimeError("[CIU-141] Docker inspect returned an invalid container object")
-    actual_name = str(document.get("Name", "")).lstrip("/")
-    if actual_name != name:
-        raise RuntimeError(
-            f"[CIU-141] Docker inspect for exact name {name!r} returned {actual_name!r}"
-        )
     container_id = document.get("Id")
     if not isinstance(container_id, str) or not _CONTAINER_ID_RE.fullmatch(container_id):
         raise RuntimeError("[CIU-141] Docker inspect did not return a full 64-hex container ID")
+    if by_id:
+        if container_id != ref:
+            raise RuntimeError(
+                f"[CIU-141] Docker inspect for container {ref} returned {container_id}"
+            )
+        return document
+    actual_name = str(document.get("Name", "")).lstrip("/")
+    if actual_name != ref:
+        raise RuntimeError(
+            f"[CIU-141] Docker inspect for exact name {ref!r} returned {actual_name!r}"
+        )
     return document
+
+
+def _ensure_name_free(name: str) -> None:
+    """Refuse (touching nothing) when any container already holds ``name``."""
+    existing = _docker_inspect(name)
+    if existing is not None:
+        raise RuntimeError(
+            f"[CIU-141] container name {name!r} is already in use by container "
+            f"{str(existing['Id'])[:12]}; ciu run never removes a container it did not "
+            "create. Choose another --name or remove it yourself"
+        )
+
+
+def _owned_container_ids(run_id: str) -> list[str]:
+    """Full IDs of containers carrying THIS run's ``ciu.run.id`` label."""
+    try:
+        listing = procutil.run_cmd(
+            [
+                "docker", "ps", "-a", "--no-trunc",
+                "--filter", f"label={_RUN_ID_LABEL}={run_id}",
+                "--format", "{{.ID}}",
+            ],
+            check=False, capture=True,
+        )
+    except OSError as exc:
+        raise RuntimeError("[CIU-141] Docker unavailable while locating the one-shot") from exc
+    if listing.returncode != 0:
+        raise RuntimeError("[CIU-141] Docker failed while locating the one-shot by run ID")
+    ids = [line.strip() for line in (listing.stdout or "").splitlines() if line.strip()]
+    if any(not _CONTAINER_ID_RE.fullmatch(item) for item in ids):
+        raise RuntimeError("[CIU-141] Docker did not return full container IDs for the run")
+    return sorted(set(ids))
+
+
+def _remove_owned_container(run_id: str, *, candidate_id: str | None = None) -> bool:
+    """Force-remove only containers PROVEN to be this run's, by full ID.
+
+    Candidates are the label query for ``ciu.run.id=<run_id>`` plus an optional
+    ID the caller observed. Every candidate is re-inspected by its exact full
+    ID and removed only if its ``ciu.run.id`` label is this run's. Anything
+    else (including a foreign container holding the same NAME) is never
+    touched. Returns False when ownership could not be established or a
+    removal failed; True when no owned container remains.
+    """
+    try:
+        candidates = set(_owned_container_ids(run_id))
+    except RuntimeError:
+        candidates = set()
+        listing_ok = False
+    else:
+        listing_ok = True
+    if candidate_id is not None:
+        candidates.add(candidate_id)
+    clean = listing_ok
+    for container_id in sorted(candidates):
+        try:
+            document = _docker_inspect(container_id)
+        except RuntimeError:
+            clean = False
+            continue
+        if document is None:
+            continue  # already gone
+        try:
+            labels = _event_labels(document)
+        except RuntimeError:
+            clean = False
+            continue
+        if labels.get(_RUN_ID_LABEL) != run_id:
+            continue  # not ours: leave it alone
+        if not _run_docker_rm(container_id):
+            clean = False
+    return clean
+
+
+def _container_started(document: Mapping[str, Any]) -> bool:
+    """True once the container's process was actually started.
+
+    A container that was only created (or whose start failed) reports
+    ``Status: created`` and a zero ``StartedAt``; it is not "launched".
+    """
+    state = document.get("State") or {}
+    if not isinstance(state, Mapping):
+        return False
+    if state.get("Status") in {"running", "paused", "restarting"}:
+        return True
+    started_at = state.get("StartedAt")
+    return (
+        isinstance(started_at, str) and bool(started_at)
+        and not started_at.startswith("0001-01-01")
+    )
 
 
 def _event_labels(document: Mapping[str, Any]) -> dict[str, str]:
     config = document.get("Config") or {}
     labels = config.get("Labels") if isinstance(config, Mapping) else {}
+    if labels is None:  # Docker reports a label-less container as null or {}
+        labels = {}
     if not isinstance(labels, Mapping):
         raise RuntimeError("[CIU-141] inspected container labels have an invalid shape")
     return {str(key): str(value) for key, value in labels.items()}
@@ -875,12 +1067,26 @@ def _run_docker_rm(name: str) -> bool:
     return result.returncode == 0
 
 
+def _stop_compose_client(process: Any) -> None:
+    """Make sure the Compose client of an aborted foreground run is gone."""
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=_SIGNAL_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
 def _run_detached(
     prepared: Any, *, plan: Mapping[str, Any], stack: str, service: str,
     argv: Sequence[str], name: str, run_id: str, labels: Mapping[str, str],
     env_names: Sequence[str], extend: str | Path | None,
 ) -> dict[str, Any]:
     _verify_run_networks(prepared, service)
+    # Refuse before anything is created: a collision is never "cleaned up".
+    _ensure_name_free(name)
     runtime_labels = labels
     with tempfile.TemporaryDirectory(prefix="ciu-run-") as temp_dir:
         file_args = _compose_file_args(
@@ -897,34 +1103,43 @@ def _run_detached(
                 cwd=str(prepared.working_dir),
             )
         except OSError as exc:
+            _remove_owned_container(run_id)
             raise RuntimeError("[CIU-141] Docker Compose could not start the one-shot") from exc
+        # From here every removal is keyed on THIS run's ciu.run.id label (and
+        # the exact full ID), never on the container name: a failed or
+        # inconsistent launch must not be able to remove somebody else's
+        # container that happens to hold the name.
         if result.returncode != 0:
-            maybe_running = _docker_inspect(name)
-            if maybe_running is not None:
-                _run_docker_rm(name)
+            _remove_owned_container(run_id)
             raise RuntimeError(
                 f"[CIU-141] docker compose run failed (exit {result.returncode}); "
                 "no launch event was produced"
             )
         compose_id = (result.stdout or "").strip()
         if not _CONTAINER_ID_RE.fullmatch(compose_id):
-            maybe_running = _docker_inspect(name)
-            if maybe_running is not None:
-                _run_docker_rm(name)
+            _remove_owned_container(run_id)
             raise RuntimeError(
                 "[CIU-141] docker compose run -d did not return one full 64-hex container ID"
             )
-        document = _docker_inspect(name)
+        document = _docker_inspect(compose_id)
         if document is None:
-            raise RuntimeError("[CIU-141] launched container is not inspectable by its exact name")
-        if document["Id"] != compose_id:
-            _run_docker_rm(name)
+            _remove_owned_container(run_id)
             raise RuntimeError(
-                "[CIU-141] docker compose run ID disagrees with exact-name inspect"
+                "[CIU-141] launched container is not inspectable by its full ID"
             )
-        if _event_labels(document).get("ciu.run.id") != labels.get("ciu.run.id"):
-            _run_docker_rm(name)
+        if str(document.get("Name", "")).lstrip("/") != name:
+            _remove_owned_container(run_id, candidate_id=compose_id)
+            raise RuntimeError(
+                "[CIU-141] docker compose run ID disagrees with the requested container name"
+            )
+        if _event_labels(document).get(_RUN_ID_LABEL) != run_id:
+            _remove_owned_container(run_id, candidate_id=compose_id)
             raise RuntimeError("[CIU-141] inspected container has a different ciu.run.id")
+        if not _container_started(document):
+            _remove_owned_container(run_id, candidate_id=compose_id)
+            raise RuntimeError(
+                "[CIU-141] docker compose run -d returned a container that was not started"
+            )
     event = _launched_event(
         document, run_id=run_id, name=name, prepared=prepared,
         stack=stack, service=service, plan=plan,
@@ -939,21 +1154,44 @@ def _run_foreground(
     event_writer: _EventWriter,
 ) -> int:
     _verify_run_networks(prepared, service)
+    # Refuse before anything is created: a collision is never "cleaned up".
+    _ensure_name_free(name)
     launched: dict[str, Any] | None = None
+    container_id: str | None = None
     pending_signal: list[int] = []
     forwarded_signal: int | None = None
     signal_deadline: float | None = None
     escalated = False
     process = None
     signal_handlers: dict[int, Any] = {}
+    interactive = bool(
+        getattr(sys.stdin, "isatty", lambda: False)()
+        and getattr(sys.stdout, "isatty", lambda: False)()
+    )
 
     def remember_signal(signum, _frame):
+        # Only the first terminating signal is forwarded; later ones are
+        # ignored (the documented grace/escalation then applies).
         if not pending_signal:
             pending_signal.append(signum)
 
+    def forward_resize(_signum, _frame):
+        # Compose runs in its own session (so a terminal signal cannot hit it
+        # twice), which means the terminal no longer delivers SIGWINCH to it.
+        # Relay the resize so an interactive container tracks the terminal.
+        if process is not None and process.poll() is None:
+            with suppress(OSError):
+                os.kill(process.pid, signal.SIGWINCH)
+
     try:
-        for signum in (signal.SIGINT, signal.SIGTERM):
+        # SIGHUP (terminal closed) is forwarded like SIGINT/SIGTERM so the
+        # container is stopped instead of orphaned when ciu itself would die.
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal_handlers[signum] = signal.signal(signum, remember_signal)
+        if interactive:
+            signal_handlers[signal.SIGWINCH] = signal.signal(
+                signal.SIGWINCH, forward_resize,
+            )
         with tempfile.TemporaryDirectory(prefix="ciu-run-") as temp_dir:
             file_args = _compose_file_args(
                 prepared, temp_dir=Path(temp_dir), extend=extend, service_name=service,
@@ -962,10 +1200,7 @@ def _run_foreground(
                 prepared, file_args=file_args, service=service, argv=argv, name=name,
                 labels=labels, env_names=env_names, run_id=run_id,
                 cgroup_parent=plan.get("cgroup_parent"), detach=False,
-                interactive=bool(
-                    getattr(sys.stdin, "isatty", lambda: False)()
-                    and getattr(sys.stdout, "isatty", lambda: False)()
-                ),
+                interactive=interactive,
             )
             try:
                 process = procutil.popen(
@@ -975,36 +1210,53 @@ def _run_foreground(
             except OSError as exc:
                 raise RuntimeError("[CIU-141] Docker Compose could not start the one-shot") from exc
 
+            def observe_launch() -> None:
+                """Emit ``launched`` once the container really started.
+
+                ``launched`` means the container's process was started
+                (running, or already exited with a real StartedAt). A
+                container that is only created, or whose start failed, is not
+                launched: no event, and the run ends as a failure.
+                """
+                nonlocal launched, container_id
+                document = _docker_inspect(name)
+                if document is None:
+                    return
+                if _event_labels(document).get(_RUN_ID_LABEL) != run_id:
+                    raise RuntimeError(
+                        "[CIU-141] exact-name container has a different ciu.run.id"
+                    )
+                if not _container_started(document):
+                    return
+                container_id = document["Id"]
+                launched = _launched_event(
+                    document, run_id=run_id, name=name, prepared=prepared,
+                    stack=stack, service=service, plan=plan,
+                )
+                event_writer.write(launched)
+
             launch_deadline = time.monotonic() + _FOREGROUND_INSPECT_TIMEOUT
             while True:
                 if launched is None:
-                    document = _docker_inspect(name)
-                    if document is not None:
-                        if _event_labels(document).get("ciu.run.id") != run_id:
-                            raise RuntimeError(
-                                "[CIU-141] exact-name container has a different ciu.run.id"
-                            )
-                        launched = _launched_event(
-                            document, run_id=run_id, name=name, prepared=prepared,
-                            stack=stack, service=service, plan=plan,
-                        )
-                        event_writer.write(launched)
+                    observe_launch()
 
                 if pending_signal and forwarded_signal is None and launched is not None:
                     forwarded_signal = pending_signal[0]
                     signal_name = signal.Signals(forwarded_signal).name
+                    # Kill by the full ID of OUR container, never by name.
                     try:
                         sent = procutil.run_cmd(
-                            ["docker", "kill", "-s", signal_name, name],
+                            ["docker", "kill", "-s", signal_name, container_id],
                             check=False, capture=True,
                         )
                     except OSError as exc:
                         raise RuntimeError(
-                            f"[CIU-141] could not forward {signal_name} to exact container {name!r}"
+                            f"[CIU-141] could not forward {signal_name} to container "
+                            f"{container_id}"
                         ) from exc
                     if sent.returncode != 0:
                         raise RuntimeError(
-                            f"[CIU-141] docker kill -s {signal_name} failed for {name!r}"
+                            f"[CIU-141] docker kill -s {signal_name} failed for {container_id}"
                         )
                     signal_deadline = time.monotonic() + _SIGNAL_GRACE_SECONDS
 
@@ -1014,48 +1266,39 @@ def _run_foreground(
                     # The no- --rm foreground command stays inspectable, so emit
                     # launched before collecting the terminal state.
                     if launched is None:
-                        document = _docker_inspect(name)
-                        if document is not None:
-                            launched = _launched_event(
-                                document, run_id=run_id, name=name, prepared=prepared,
-                                stack=stack, service=service, plan=plan,
-                            )
-                            event_writer.write(launched)
+                        observe_launch()
                     break
                 if pending_signal and launched is None and time.monotonic() >= launch_deadline:
                     raise RuntimeError(
                         "[CIU-141] interrupted before the one-shot container became inspectable"
                     )
                 if launched is None and time.monotonic() >= launch_deadline:
-                    process.terminate()
-                    process.wait()
                     raise RuntimeError(
-                        "[CIU-141] foreground one-shot did not become inspectable within 30 seconds"
+                        "[CIU-141] foreground one-shot did not start within 30 seconds"
                     )
                 if (
                     forwarded_signal is not None and signal_deadline is not None
                     and not escalated and time.monotonic() >= signal_deadline
-                    and process.poll() is None
                 ):
                     try:
                         killed = procutil.run_cmd(
-                            ["docker", "kill", name], check=False, capture=True,
+                            ["docker", "kill", container_id], check=False, capture=True,
                         )
                     except OSError as exc:
                         raise RuntimeError(
-                            f"[CIU-141] could not escalate termination of {name!r}"
+                            f"[CIU-141] could not escalate termination of {container_id}"
                         ) from exc
                     if killed.returncode != 0:
-                        raise RuntimeError(f"[CIU-141] docker kill failed for {name!r}")
+                        raise RuntimeError(f"[CIU-141] docker kill failed for {container_id}")
                     escalated = True
                 time.sleep(_FOREGROUND_INSPECT_INTERVAL)
 
             if launched is None:
                 raise RuntimeError(
                     f"[CIU-141] docker compose run failed (exit {returncode}); "
-                    "no inspectable container or launch event was produced"
+                    "no started container or launch event was produced"
                 )
-            final = _docker_inspect(name)
+            final = _docker_inspect(container_id)
             if final is None:
                 raise RuntimeError(
                     f"[CIU-141] container {name!r} disappeared before exit status collection"
@@ -1073,10 +1316,6 @@ def _run_foreground(
                     f"[CIU-141] Compose exit {returncode} disagrees with inspected container "
                     f"exit {inspected_code} for {name!r}"
                 )
-            if final.get("Id") != launched["container"]["id"]:
-                raise RuntimeError(
-                    f"[CIU-141] exact-name container {name!r} changed during foreground run"
-                )
             exited = {
                 "schema": _RUN_EVENT_SCHEMA,
                 "event": "exited",
@@ -1086,7 +1325,7 @@ def _run_foreground(
                 "finished_at": state.get("FinishedAt") or _utc_now(),
             }
             event_writer.write(exited)
-            removed = _run_docker_rm(name)
+            removed = _remove_owned_container(run_id, candidate_id=container_id)
             removed_event = {
                 "schema": _RUN_EVENT_SCHEMA,
                 "event": "removed",
@@ -1100,9 +1339,12 @@ def _run_foreground(
             return inspected_code
     except BaseException:
         # A foreground controller owns cleanup if an exception interrupts its
-        # lifecycle after a container was observed.
-        if launched is not None:
-            _run_docker_rm(name)
+        # lifecycle once Compose was started. Removal is keyed on this run's
+        # ciu.run.id label and the exact full ID, never on the name; a
+        # container this run did not create is never touched.
+        if process is not None:
+            _remove_owned_container(run_id, candidate_id=container_id)
+            _stop_compose_client(process)
         raise
     finally:
         for signum, previous in signal_handlers.items():
@@ -1213,7 +1455,8 @@ def reap_project(
     for container_id in sorted(set(ids)):
         try:
             inspected = procutil.run_cmd(
-                ["docker", "inspect", container_id], check=False, capture=True,
+                ["docker", "inspect", "--type", "container", container_id],
+                check=False, capture=True,
             )
         except OSError as exc:
             raise RuntimeError("[CIU-141] Docker unavailable while inspecting a one-shot") from exc
@@ -1383,8 +1626,6 @@ def run_cli(
     # CIU's normal preparation pipeline is chatty on stdout. Preparation and
     # Compose config diagnostics stay on stderr; stdout is reserved for the
     # dry-run JSON or detached launch document.
-    from contextlib import redirect_stdout
-
     with redirect_stdout(sys.stderr):
         prepared, stack, service = _prepare_run_stack(
             repo_root, selector, profiles=profiles, skip_hooks=skip_hooks,
@@ -1393,21 +1634,35 @@ def run_cli(
             prepared, stack=stack, service=service, name=name, extend=extend,
             labels=labels, skip_hooks=skip_hooks,
         )
-    if dry_run:
-        print(json.dumps(plan, sort_keys=True, separators=(",", ":")))
-        return 0
-
+    # Detached default owner is the PARENT process. A caller that launches ciu
+    # through a short-lived wrapper must pass --owner-pid, or `ciu run reap`
+    # will see a dead owner as soon as that wrapper exits (see CONSUMERS.md).
     owner = (
         owner_pid if owner_pid is not None
         else (os.getppid() if detach else os.getpid())
     )
     run_id = str(uuid.uuid4())
     container_name = _select_run_name(prepared.project, service, name)
+    mode = "detached" if detach else "foreground"
     runtime_labels = dict(user_labels)
     runtime_labels.update(_make_runtime_labels(
-        run_id=run_id, stack=stack, service=service,
-        mode="detached" if detach else "foreground", owner_pid=owner,
+        run_id=run_id, stack=stack, service=service, mode=mode, owner_pid=owner,
     ))
+    if dry_run:
+        # Run the same read-only checks a real run performs first, so a dry
+        # run refuses exactly where the real run would (missing stack
+        # network, name already in use); nothing is created or removed.
+        with redirect_stdout(sys.stderr):
+            _verify_run_networks(prepared, service)
+            _ensure_name_free(container_name)
+        document = _dry_run_document(
+            plan, prepared=prepared, name=container_name, name_given=name is not None,
+            runtime_labels=runtime_labels, env_names=forwarded_names, mode=mode,
+            argv=argv, owner_pid=owner,
+        )
+        print(json.dumps(document, sort_keys=True, separators=(",", ":")))
+        return 0
+
     event_writer = _EventWriter(fd=events_fd, path=events_file)
     try:
         if detach:

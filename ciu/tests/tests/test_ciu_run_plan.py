@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from types import SimpleNamespace
 
@@ -132,30 +133,130 @@ def test_plan_projects_compose_config_without_environment_values(tmp_path, monke
     assert kwargs["cwd"] == str(prepared.working_dir)
 
 
-def test_dry_run_cli_prints_only_allowlisted_plan_json(tmp_path, monkeypatch, capsys):
+_NETWORK = "demo_instance-net"
+
+
+def _dry_run_docker(monkeypatch, tmp_path, *, existing_name=None, network_present=True):
+    """Install a read-only docker fake for the dry-run checks and return its call log."""
     prepared = _prepared(tmp_path)
+    calls = []
+
     def prepare(*args, **kwargs):
         print("[STEP 1/17] test preparation")
         return prepared, "tools/runner", "worker"
 
+    def run_cmd(argv, **kwargs):
+        argv = list(argv)
+        calls.append(argv)
+        if argv[:3] == ["docker", "compose", "--progress"] and "config" in argv:
+            return subprocess.CompletedProcess(argv, 0, json.dumps({
+                "services": {"worker": _service()},
+                "networks": {"instance-net": {"name": _NETWORK, "external": True}},
+            }), "")
+        if argv[:3] == ["docker", "network", "inspect"]:
+            if not network_present:
+                return subprocess.CompletedProcess(argv, 1, "", "not found")
+            return subprocess.CompletedProcess(
+                argv, 0, json.dumps([{"Name": argv[-1], "Labels": {}}]), "",
+            )
+        if argv[:4] == ["docker", "inspect", "--type", "container"]:
+            if existing_name is not None and argv[-1] == existing_name:
+                return subprocess.CompletedProcess(argv, 0, json.dumps([{
+                    "Id": "c" * 64, "Name": f"/{existing_name}",
+                    "Config": {"Labels": {}},
+                }]), "")
+            return subprocess.CompletedProcess(argv, 1, "", "")
+        raise AssertionError(f"dry-run must stay read-only: {argv!r}")
+
     monkeypatch.setattr(oneshot, "_prepare_run_stack", prepare)
-    monkeypatch.setattr(
-        oneshot, "build_run_plan",
-        lambda *args, **kwargs: {"schema": "ciu-run-plan/1", "name": "rg-one"},
-    )
+    monkeypatch.setattr(engine, "verify_workspace_runtime_network", lambda *_a: None)
+    monkeypatch.setattr(oneshot.procutil, "run_cmd", run_cmd)
+    return calls
+
+
+def test_dry_run_cli_reports_what_a_real_run_would_do(tmp_path, monkeypatch, capsys):
+    calls = _dry_run_docker(monkeypatch, tmp_path)
 
     result = oneshot.run_cli(
         tmp_path, "tools/runner:worker", ["python", "-c", "print('ok')"],
         dry_run=True, json_output=True, env_names=["OPTIONAL_DSN"],
+        name="rg-one", labels=["run-gate.job=lane 1"], owner_pid=os.getpid(),
     )
 
     captured = capsys.readouterr()
+    document = json.loads(captured.out)
     assert result == 0
-    assert json.loads(captured.out) == {
-        "schema": "ciu-run-plan/1", "name": "rg-one",
+    assert document["schema"] == "ciu-run-plan/1"
+    assert document["name"] == "rg-one"
+    assert document["name_generated"] is False
+    assert document["name_available"] is True
+    assert document["networks_verified"] is True
+    assert document["mode"] == "foreground"
+    assert document["argv_len"] == 3
+    assert document["owner_pid"] == os.getpid()
+    labels = document["runtime_labels"]
+    assert labels["ciu.run"] == "1"
+    assert labels["ciu.run.stack"] == "tools/runner"
+    assert labels["ciu.run.service"] == "worker"
+    assert labels["ciu.run.mode"] == "foreground"
+    assert labels["ciu.run.id"] == labels["ciu.run.started"] == "<assigned at launch>"
+    assert "run-gate.job" not in labels  # user labels live in "labels"
+    assert document["labels"]["run-gate.job"] == "lane 1"
+    assert document["env"] == {
+        "forwarded_names": ["OPTIONAL_DSN"],
+        "injected": {
+            "CIU_RUN_CONTAINER_NAME": "rg-one",
+            "CIU_RUN_ID": "<assigned at launch>",
+            "CIU_RUN_CGROUP_PARENT": "dev-gates.slice",
+        },
     }
+    assert "planted-secret-value" not in captured.out
     assert "STEP" not in captured.out
     assert "STEP" in captured.err  # preparation output is isolated from plan stdout
+    # The same read-only checks a real run performs first; nothing is created.
+    assert any(argv[:3] == ["docker", "network", "inspect"] for argv in calls)
+    assert any(argv[:4] == ["docker", "inspect", "--type", "container"] for argv in calls)
+
+
+def test_dry_run_cli_generates_and_reports_the_effective_name(tmp_path, monkeypatch, capsys):
+    _dry_run_docker(monkeypatch, tmp_path)
+
+    result = oneshot.run_cli(
+        tmp_path, "tools/runner:worker", ["true"], dry_run=True, json_output=True,
+        detach=True, owner_pid=os.getpid(),
+    )
+
+    document = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert document["name_generated"] is True
+    assert document["name"].startswith("demo-runner-worker-run-")
+    assert document["env"]["injected"]["CIU_RUN_CONTAINER_NAME"] == document["name"]
+    assert document["mode"] == "detached"
+
+
+def test_dry_run_cli_refuses_where_the_real_run_would(tmp_path, monkeypatch):
+    _dry_run_docker(monkeypatch, tmp_path, existing_name="taken")
+    with pytest.raises(RuntimeError, match="container name 'taken' is already in use"):
+        oneshot.run_cli(
+            tmp_path, "tools/runner:worker", ["true"], dry_run=True, json_output=True,
+            name="taken", owner_pid=os.getpid(),
+        )
+    _dry_run_docker(monkeypatch, tmp_path, network_present=False)
+    with pytest.raises(ValueError, match="required stack network .* is not present"):
+        oneshot.run_cli(
+            tmp_path, "tools/runner:worker", ["true"], dry_run=True, json_output=True,
+            name="free", owner_pid=os.getpid(),
+        )
+
+
+def test_dry_run_document_never_contains_a_secret(tmp_path):
+    prepared = _prepared(tmp_path)
+    with pytest.raises(ValueError, match="run plan contains a CIU secret"):
+        oneshot._dry_run_document(
+            {"cgroup_parent": None}, prepared=prepared, name="planted-secret-value",
+            name_given=True, runtime_labels={}, env_names=[], mode="foreground",
+            argv=["true"], owner_pid=1,
+        )
 
 
 def test_prepare_run_stack_uses_shared_service_selection_and_profile_context(
@@ -203,8 +304,6 @@ def test_extension_accepts_typed_run_gate_additions_and_init():
             "worker": {
                 "mem_limit": "256m",
                 "group_add": ["1234", 5678],
-                "cap_add": ["SYS_PTRACE"],
-                "security_opt": ["no-new-privileges:true"],
                 "volumes": [{
                     "type": "bind", "source": "/run/observer",
                     "target": "/run/cgprofile", "read_only": True,
@@ -226,8 +325,8 @@ def test_extension_accepts_typed_run_gate_additions_and_init():
 
     assert validated["services"]["worker"]["init"] is True
     assert validated["services"]["worker"]["group_add"] == ["1234", "5678"]
-    assert validated["services"]["worker"]["cap_add"] == ["SYS_PTRACE"]
-    assert validated["services"]["worker"]["security_opt"] == ["no-new-privileges:true"]
+    assert "cap_add" not in validated["services"]["worker"]
+    assert "security_opt" not in validated["services"]["worker"]
     assert validated["services"]["worker"]["volumes"][0]["bind"] == {
         "create_host_path": False,
     }
@@ -239,6 +338,10 @@ def test_extension_accepts_typed_run_gate_additions_and_init():
         ("user", "0:0", "user"),
         ("cgroup_parent", "evil.slice", "cgroup_parent"),
         ("ports", ["8080:8080"], "ports"),
+        # F3: privilege-widening keys are refused outright (plan 2.4), whether
+        # or not the rendered service declares them.
+        ("cap_add", ["SYS_ADMIN"], "cap_add"),
+        ("security_opt", ["seccomp=unconfined", "apparmor=unconfined"], "security_opt"),
     ],
 )
 def test_extension_refuses_unlisted_fields_by_name(field, value, reason):
@@ -255,8 +358,6 @@ def test_extension_refuses_unlisted_fields_by_name(field, value, reason):
         ({"mem_limit": "256m"}, "mem_limit"),
         ({"init": True}, "init"),
         ({"group_add": ["1234"]}, "group_add"),
-        ({"cap_add": ["SYS_PTRACE"]}, "cap_add"),
-        ({"security_opt": ["no-new-privileges:true"]}, "security_opt"),
         ({"volumes": [{
             "type": "bind", "source": "/tmp/other", "target": "/workspace",
         }]}, "target '/workspace'"),
@@ -268,10 +369,6 @@ def test_extension_refuses_silent_compose_collisions(extension_service, reason):
         base_service["init"] = False
     if "group_add" in extension_service:
         base_service["group_add"] = ["2345"]
-    if "cap_add" in extension_service:
-        base_service["cap_add"] = ["SYS_CHROOT"]
-    if "security_opt" in extension_service:
-        base_service["security_opt"] = ["no-new-privileges:true"]
     with pytest.raises(ValueError, match=reason):
         oneshot.validate_extension_document(
             {"services": {"worker": extension_service}}, service_name="worker",
