@@ -1,7 +1,7 @@
 # SPEC MDT-DEVCONTAINER — Ship a template devcontainer.json + canonical agent-state persistence
 
 **Spec ID:** MDT-DEVCONTAINER
-**Repo:** `vbpub` (modern-debian-tools-python-debug).
+**Repo:** `vbpub` (`mdt-cockpit`, successor to the retired image project).
 **Status:** ready. Small–Medium, offline (validation needs one devcontainer rebuild).
 **Motivation:** mdt installs the AI CLI agents (claude, codex, aider, reasonix, openclaw, antigravity,
 deepcode) + signing/auth tooling (minisign, gh, gnupg) but ships **no devcontainer template**, so each
@@ -33,7 +33,7 @@ Persist these (login/keys/history — NOT rebuildable caches, which stay ephemer
 ## 3. Design decisions
 - **Mechanism — two deliverables:**
   1. **Template `templates/devcontainer.json`** in the mdt repo: a copy-and-adapt reference
-     (`image` pinned to `ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:<tag>`,
+     (`image` pinned to `ghcr.io/volkb79-2/mdt-cockpit-devcontainer:<tag>`,
      `remoteUser: vscode`, the `mounts` block below, sensible `runArgs`/`containerEnv`). Consumers copy
      to `.devcontainer/devcontainer.json` and set only their `workspaceFolder`/features.
   2. **A reusable `mounts` fragment** (`templates/agent-state.mounts.json`) + a documented snippet so a
@@ -53,7 +53,7 @@ Persist these (login/keys/history — NOT rebuildable caches, which stay ephemer
   any secret into the image; it only mounts the (host/volume) location. Note this explicitly.
 
 ## 4. Tasks
-A. Add `modern-debian-tools-python-debug/templates/devcontainer.json` (full reference) +
+A. Add `mdt-cockpit/templates/devcontainer.json` (full reference) +
    `templates/agent-state.mounts.json` (the mounts fragment) + a short `templates/README.md` explaining
    named-volume vs bind-mount, the persistence set, and the one-line adoption steps.
 B. (Decide) Optionally add a `mdt-agent-state` devcontainer Feature contributing the mounts; pick template

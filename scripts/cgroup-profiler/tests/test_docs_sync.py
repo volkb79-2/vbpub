@@ -192,8 +192,6 @@ LIVE_DOCS = (
     "mdt-cockpit/host-setup/scripts/check.sh",
     "mdt-cockpit/templates/devcontainer.json",
     "mdt-cockpit/templates/host-folder/devcontainer.json",
-    "modern-debian-tools-python-debug/host-setup/README.md",
-    "modern-debian-tools-python-debug/templates/devcontainer.json",
     ".devcontainer/devcontainer.json",
     "ciu/docs/SPEC-V8.md",
     "ciu/docs/CIU-V8-TESTING-GATE-PROPOSAL.md",

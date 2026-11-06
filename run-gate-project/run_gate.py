@@ -528,7 +528,7 @@ HOST_IMAGE_ENV_VAR = "RUN_GATE_HOST_IMAGE"
 # bind-mounted worktree are owned by the worktree's owner (never a hard-coded
 # uid).
 ENV_USER_INVOKER = "invoker"
-DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest"
+DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest"
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
 # RG-NARROW: a container lane sees only the judged worktree + the git metadata

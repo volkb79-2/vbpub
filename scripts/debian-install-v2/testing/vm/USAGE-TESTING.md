@@ -242,7 +242,7 @@ done
 
 The observed Docker-scope `memory.max` on the 2026-10-14 host was 12 GiB;
 the 4 GiB guest fit beneath it. This cap is a host safety backstop, not a
-`system.slice` limit. See the [MDT host-setup backstop description](../../../../modern-debian-tools-python-debug/host-setup/README.md#what-gets-installed).
+`system.slice` limit. See the [MDT host-setup backstop description](../../../../mdt-cockpit/host-setup/README.md#what-gets-installed).
 Do not remove or override host governance to make a benchmark appear
 unbounded.
 
@@ -676,4 +676,4 @@ status as a proxy for host cgroup state.
 - [Harness commands and base-image details](README.md)
 - [Why this uses QEMU and a separate guest kernel](DESIGN.md)
 - [Test isolation contract](../README.md)
-- [Host cgroup mount-flag rationale](../../../../modern-debian-tools-python-debug/host-setup/CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-unit-setting-at-all)
+- [Host cgroup mount-flag rationale](../../../../mdt-cockpit/host-setup/CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-unit-setting-at-all)

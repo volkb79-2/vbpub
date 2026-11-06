@@ -37,7 +37,7 @@ L0: cli-extended, assay, topos, test-policy, tls-edge, tester-base
 L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
 L2: run-gate-project
 L3: cmru
-L4: modern-debian-tools-python-debug, mdt-cockpit
+L4: mdt-cockpit
 ```
 
 Every project registered in `cmru.orchestration.toml` appears in this table,
@@ -163,17 +163,17 @@ supplies the whole-source line-and-branch qualification.
    `cli_extended-*.whl` produced above into the git-ignored
    `tester-unified/local-wheel/`. Build the Run-Gate wheel from the selected
    commit using the planned stable version (the example is for the current
-   25.1.1 release); its path is derived from what the build produced. The
+   25.2.0 release); its path is derived from what the build produced. The
    handler needs the build parent from the prerequisites
    (`$CGROUP_PARENT_DEV_BACKGROUND` or `CMRU_DOCKER_CGROUP_PARENT`):
 
    ```bash
    mkdir -p tester-unified/local-wheel
    cp "$BOOTSTRAP_CLI_EXTENDED_WHEEL" tester-unified/local-wheel/
-   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=25.1.1 \
+   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=25.2.0 \
      cmru handler wheel-build --cwd run-gate-project
    shopt -s nullglob
-   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-25.1.1-*.whl)
+   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-25.2.0-*.whl)
    test "${#run_gate_wheels[@]}" -eq 1
    RUN_GATE_CANDIDATE_WHEEL="${run_gate_wheels[0]}"
    CMRU_TESTER_MEMORY=1g \
@@ -333,7 +333,7 @@ supplies the whole-source line-and-branch qualification.
    if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then
      run_gate_tester_env+=(RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}")
    fi
-   env "${run_gate_tester_env[@]}" cmru release run-gate-project --set-version 25.1.1
+   env "${run_gate_tester_env[@]}" cmru release run-gate-project --set-version 25.2.0
    ```
 
    The first Run-Gate release publishes the artifact that CMRU's own release
@@ -348,10 +348,10 @@ supplies the whole-source line-and-branch qualification.
    run_gate_wheels_file="$(mktemp)"
    trap 'rm -f "$run_gate_wheels_file"' EXIT
    find run-gate-project/artifacts -type f \
-     -path '*/dist/run_gate-25.1.1-*.whl' -print > "$run_gate_wheels_file"
+     -path '*/dist/run_gate-25.2.0-*.whl' -print > "$run_gate_wheels_file"
    mapfile -t run_gate_wheels < "$run_gate_wheels_file"
    if [ "${#run_gate_wheels[@]}" -ne 1 ]; then
-     echo "Expected exactly one retained Run-Gate 25.1.1 wheel" >&2
+     echo "Expected exactly one retained Run-Gate 25.2.0 wheel" >&2
      exit 2
    fi
    RUN_GATE_RELEASE_WHEEL="${run_gate_wheels[0]}"
