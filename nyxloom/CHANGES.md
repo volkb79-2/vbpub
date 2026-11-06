@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Changed
 - nyxloomd now uses the mdt-cockpit Python 3.14 / PHP 8.5 devcontainer image as its base; the host image target uses the matching image and tag.
+- The nyxloomd wheel-build stage pulls `python:3.14-slim` through `mirror.gcr.io` instead of Docker Hub.
 
 <!-- cmru: release history -->
 

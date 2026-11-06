@@ -30,7 +30,7 @@
 ARG NYXLOOM_BASE=ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest
 
 # ─── stage 1: build the nyxloom wheel from source (hermetic, no git) ──────────
-FROM python:3.14-slim AS wheelbuild
+FROM mirror.gcr.io/library/python:3.14-slim AS wheelbuild
 ARG NYXLOOM_VERSION=0.0.0-dev
 WORKDIR /build
 # Install the builder before copying package sources. The wheel build RUNs below
