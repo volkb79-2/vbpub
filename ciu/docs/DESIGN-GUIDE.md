@@ -813,6 +813,51 @@ cannot be interpreted by a shell or misparsed as CIU flags. The child's exit
 code is returned exactly — an automation lane that runs a gate command through
 `exec` needs that code, not a wrapper's guess.
 
+## Why `ciu run` uses a fresh one-shot service container
+
+The rendered Compose service already owns the runtime facts a command needs:
+its image, user, working directory, network, secrets, mounts and cgroup parent.
+`ciu run` prepares that service through CIU, then asks Compose to run one
+command in a new container under the same project. A caller does not need to
+rebuild the service environment or keep a shared runner alive between tasks.
+
+The command always suppresses dependencies and service aliases. CIU stacks
+already have an explicit startup order, and creating or attaching another
+service during a one-shot would change that lifecycle. The declared network
+must exist before `ciu run`; this makes a missing or foreign network a refusal
+instead of a hidden network-creation side effect.
+
+Foreground execution uses `docker compose run --name N` without `--rm`.
+Compose streams the command correctly and keeps even an immediate exit
+inspectable. CIU polls the exact supplied name, emits the full inspected ID,
+checks the inspected exit status, and then removes that exact container. A
+detached run emits the inspected ID as JSON and leaves cleanup to its caller.
+This preserves an observer's chance to attach and avoids an auto-remove race.
+CIU forwards SIGINT and SIGTERM to the named container because Compose's
+foreground run does not forward them itself.
+
+The observer can attach after the launch event, but v1 has no first-instruction
+readiness barrier. A barrier would require changing the container entrypoint
+and would constrain images that do not contain a shell. If measured gate
+evidence shows that early work is missed, add a separately designed barrier;
+the v1 run contract makes no claim that sampling begins before the command's
+first instruction.
+
+CIU gives every one-shot ownership labels so a dead controller can be
+recovered with `ciu run reap`. The reaper combines Compose's project and
+one-off labels with CIU's run marker, then checks the exact container's root,
+stack, and owner process identity before removing its full ID. `ciu down`
+preserves these one-shots. `ciu clean` uses `down --remove-orphans`, so it
+removes this checkout's own runs and refuses before teardown if a matching
+one-shot belongs to another or unknown checkout.
+
+The per-run extension is a narrow YAML fragment, not an alternate service
+definition. CIU validates its keys and rejects mount-target or append-field
+collisions before Compose runs. Compose appends `group_add`, `cap_add`, and
+`security_opt`; other accepted settings merge by their normal Compose rules.
+That explicit boundary lets a gate add measured resource limits and a
+read-only observer mount while leaving the rendered service authoritative.
+
 ## Why worktree startup is one declared, combined deploy
 
 A worktree's test environment is project policy: every new linked checkout of
@@ -943,7 +988,7 @@ two known aliases for the same root. Missing or contradictory evidence is an
 unknown owner, so CIU refuses before Compose runs. This check belongs at
 deployment time because worktree allocation does not yet know which selected
 stack will start. See [the normative rules](SPEC.md#s88-explicit-container-name-ownership-preflight-ciu-104)
-and [the consumer steps](CONSUMERS.md#25-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
+and [the consumer steps](CONSUMERS.md#26-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
 
 ## Rejected alternatives
 

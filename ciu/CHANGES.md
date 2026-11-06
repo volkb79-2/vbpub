@@ -32,12 +32,17 @@ the technical detail below it.
 - test(ciu): kill R2 survivors of ciu 7.23.0 (CIU-201); _is_linked_git_worktree via procutil (equivalent mutants removed) (77820f737)
 
 <!-- cmru: pending release notes begin -->
+### Added
+- `ciu run [--detach --json] <stack>[:<service>] -- ARGV...` runs one command in a fresh container using the rendered service's identity, mounts, network, secrets, user and cgroup settings. Foreground mode reports the inspected exit status before exact-name cleanup and offers a separate JSONL event channel; detached mode returns the inspected full container ID and leaves cleanup to its observer. `ciu run reap` surveys abandoned runs and removes only eligible, proven-owned containers (CIU-141).
+
 ### Fixed
+- `ciu clean` can now invoke stack reset from the checkout root while still targeting that stack's rendered Compose file and overlays. Absolute stack-scoped file paths let Compose remove the selected checkout's one-shots as documented (CIU-141).
 - fix(ciu): `ciu clean` / `ciu worktree rm` no longer fail on roots without `[deploy.labels]` (tls-edge, pwmcp, topos, nyxloom): `reset_service` derives the orphan-sweep label prefix from `deploy.project_name` when `deploy.labels.prefix` is unset (CIU-200). Clean now evaluates reset's preconditions for every selected stack BEFORE removing any container and refuses with `[CIU-200] ... nothing was removed`; `--dry-run` reports the same refusal. Explains CIU-198's half-cleaned state.
 - Test-strength closeout of the ciu 7.23.0 R2 mutation survivors (CIU-201): new behavioural tests pin the clean ownership helpers (listing, endpoint and network inspection run through a fake `docker` executable), the clean plan, `--dry-run` forwarding of `clean` and `worktree rm`, the symlink-free walks, the own-container inspect, the leftover-adoption tail and the linked-worktree hint shape. `_is_linked_git_worktree` now calls `procutil.run_cmd` (two provably equivalent mutation sites removed). No behaviour change.
 
 ### Adoption / Migration Notes
-- Safe to ignore: no config change needed; an explicit `deploy.labels.prefix` still wins.
+- Additive: no config change is required. `ciu run` requires the declared network to exist and does not start dependencies; a detached container stays until its owner removes it or `ciu run reap` proves it abandoned. `ciu clean` removes this checkout's own one-shots and refuses before teardown if another or unknown checkout owns a matching one.
+- Safe to ignore: an explicit `deploy.labels.prefix` still wins.
 <!-- cmru: pending release notes end -->
 
 ## [7.23.1] - 2026-11-05

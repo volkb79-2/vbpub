@@ -58,7 +58,7 @@ mechanism, so the alternative would be leaving cli-extended out, not an alias.
   Recorded as a settled note in `SPEC-V8.md` (S18). Revisit: the exact NOT_RUN/BUDGET mapping when run-gate merges
   into ciu in v8 (operator wants run-gate integration considered: this keeps the table free for it).
 
-## 3. Voluntary surface changes (CQ2: C4-C8, C11-C12 now; C3, C9, C10 wait for v8)
+## 3. Voluntary surface changes (CQ2: C4-C8, C11-C13 now; C3, C9, C10 wait for v8)
 
 Status column is filled as commits land.
 
@@ -71,7 +71,7 @@ Status column is filled as commits land.
 | C8 | secrets absorbs host-secrets | `host-secrets HOST --materialize\|--list\|--path N` -> `secrets host HOST ...` | v8 parity | 0/0 | done (same commit as C7) |
 | C11 | remove bare `env` | see F8 | deprecated since CIU-75 | small | adoption commit |
 | C12 | confirmation / dry-run honesty | `down`/`clean` keep the `[deploy] protected = true` gate (CIU-105: `--yes` AND `--i-understand-this-is-protected`), now declared as a first-class option; library `--yes` replaces `-y`; `--dry-run` is library-owned on `up` | closes CIU-105 for flagged instances without a new prompt for ordinary scripts (`clean` has 18/255 callers; an unconditional prompt would break them) | `clean` 18/255 | adoption commit (declaration); CIU-162/CIU-103 NOT in scope (they are implementation side effects, not grammar) |
-| C13 | `ciu run` (CIU-141) | **not added** | not in v8 S18; collides with `gate` lanes | - | deferred to v8 (`gate exec`/`run`) |
+| C13 | `ciu run` (CIU-141) | `run [--detach --json] ...` plus `run reap` | v7 lifecycle primitive for one-shot execution from the rendered service; v8 `gate run`/`gate exec` can delegate to it | - | added in v7 by RG-102 part 1; see SPEC S8.9/S10.8 |
 | C14 | keep the `gate` group name unused | `ciu gate` is NOT registered in v7 | keeps v8's run-gate merge clean | - | kept |
 | C3 | `--root` global rename | **not done**; `--root-folder` stays per verb | renames a flag every script uses; v8 | not counted | deferred to v8 |
 | C9 | `build` for `bake` | **not done** | "build" overloaded with cmru; v8 | 8/23 | deferred to v8 |
@@ -87,11 +87,11 @@ Open design points inside the voluntary changes (decided, flagged for veto):
 ## 4. CQ answers recorded
 
 - CQ1 adopt in v7 with v8 names where a name changes: **yes** (this branch).
-- CQ2 which renames now: C4-C8 and C11-C12 (above).
+- CQ2 which renames now: C4-C8 and C11-C13 (above; C13 was amended by RG-102 part 1).
 - CQ3 exit codes: section 2.
 - CQ4 `worktree add` callers: sweep, no alias. `worktree add` was removed in `d1eb98770`; callers in vbpub are
   fixed in the sweep commit; dstdns is NOT touched (migrated later). Verify dstdns's ciu version when it migrates.
-- CQ5 `ciu run`: deferred to v8.
+- CQ5 `ciu run`: amended by RG-102 part 1 — ship the CIU lifecycle primitive in v7; the v8 `gate` surface may build on it.
 - CQ6 v8 sign-off: still pending. This branch does not edit v8 semantics except the exit-table note.
 
 ## 5. Callers swept
@@ -163,3 +163,16 @@ Patterns grepped over the whole monorepo (`git grep`, docs, skills, scripts, tes
 - D-TESTENV: the tester image installs cli-extended but not ciu; `tests/conftest.py` provides a throw-away
   `ciu-0.0.0+tests` dist-info (on `sys.path` and `PYTHONPATH`) so `CliIdentity.resolve` finds a version. Without it
   the CLI exits 3 by design.
+
+## 8. RG-102 amendment (2026-11-05)
+
+CIU-141 adds the v7 `ciu run` lifecycle and `ciu run reap`; it does not register
+`ciu gate` (C14 remains in force). The recommended answers to RG-102 plan
+questions 1–6 were accepted. The real-Compose spike amended question 1's
+foreground mechanism: foreground uses `docker compose run --name N` without
+`--rm`, exact-name inspection, explicit signal forwarding, inspected status,
+and exact-name removal. Run-Gate uses `--detach --json`, then owns observer,
+status collection, and removal by the returned ID. V1 has no first-instruction
+readiness barrier; early-sample coverage is not promised. SQL-mutation keeps
+operator-exported DSNs through `--env-name`, and `[.ciu]` environments retain
+exec-mode service-mount git-hardening parity.

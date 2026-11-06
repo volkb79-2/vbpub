@@ -1199,15 +1199,15 @@ def reset_service(
     down_cmd = [
         "docker", "compose", "-p", compose_project,
         "--project-directory", str(Path(repo_root).resolve()),
-        "-f", CIU_COMPOSE_OUTPUT,
+        "-f", str(stack_dir / CIU_COMPOSE_OUTPUT),
     ]
     if overlay_path.exists():
-        down_cmd += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
+        down_cmd += ["-f", str(overlay_path)]
     # S16.9: the same file set `up` composed with, so `down` addresses exactly
     # the project `up` created (a fragment silently dropped here would leave
     # compose reasoning about a different merged model than the one running).
     if ownership_path.exists():
-        down_cmd += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
+        down_cmd += ["-f", str(ownership_path)]
     down_cmd += ["down", "-v", "--remove-orphans"]
     try:
         guard_clean_one_shots(

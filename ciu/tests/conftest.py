@@ -295,6 +295,10 @@ def pytest_configure(config: pytest.Config) -> None:
         f"{_NO_AUTO_CIU_ROOT_MARK}: this test intentionally exercises a "
         "temporary tree without the default CIU root marker.",
     )
+    config.addinivalue_line(
+        "markers",
+        "os_integration: requires the registered tester-unified lane and its isolated Docker daemon.",
+    )
 
 
 @pytest.fixture(autouse=True)

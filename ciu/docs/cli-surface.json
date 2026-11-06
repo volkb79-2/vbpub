@@ -389,7 +389,7 @@
         ],
         "reason": "an --identity clean removes a retired id's resources by exact labels and cannot be combined with ordinary clean options"
       },
-      "signature": "sha256:db8f65a549b536eaf1fec186f6201f25315d7c71fe02b933bf4aa228fe83cc28"
+      "signature": "sha256:f7669f3b0627c02c5c38975098a3756f3368cdc9a542e43965f3867b455af76f"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/constraint-conflict/3",
@@ -407,7 +407,7 @@
         ],
         "reason": "an --identity clean removes a retired id's resources by exact labels and cannot be combined with ordinary clean options"
       },
-      "signature": "sha256:86520533deadf256fb52b730f64736dd8e4082bd2112c48876769ca70c2e43a5"
+      "signature": "sha256:0fdb553adf7020aa5dfba2aea378cfcb083a811186e474b362642ec429a7bb41"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/constraint-conflict/4",
@@ -425,7 +425,7 @@
         ],
         "reason": "an --identity clean removes a retired id's resources by exact labels and cannot be combined with ordinary clean options"
       },
-      "signature": "sha256:a7d3c508e2c5c5005673dff8db2f59e1355300c04b83ed43db51e9dfc7b7727f"
+      "signature": "sha256:c48658f8efdd2e16e5313e6bfe34efe6c6da8357c3a37096ecd1161eaefb450a"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/constraint-conflict/5",
@@ -443,7 +443,7 @@
         ],
         "reason": "an --identity clean removes a retired id's resources by exact labels and cannot be combined with ordinary clean options"
       },
-      "signature": "sha256:6bcc84a27c64348225636c326f3276fc3c1c3c396899662eeadfd1f4eddebfd4"
+      "signature": "sha256:4799185dc90a4c816150a48a7e7f1564b257357966582c70306a4dc5424c14ee"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/constraint-conflict/6",
@@ -461,7 +461,7 @@
         ],
         "reason": "an --identity clean removes a retired id's resources by exact labels and cannot be combined with ordinary clean options"
       },
-      "signature": "sha256:ec1eb9a4918ef19a8d103531e2585cafa1cd17de6127ac2db69fc3616c7d3abb"
+      "signature": "sha256:012d651017863bb77796e668a2b6c99f279ad524f1ce8344e8dcaa706fe96e5f"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/constraint-requires/1",
@@ -479,7 +479,7 @@
         "option": "--expected-checkout",
         "reason": "--expected-checkout qualifies an --identity clean"
       },
-      "signature": "sha256:fe5e63dacacdc2f696a8cd0d5ca4a87f10fb3dcaa9a1cbd4d09dc4c825c36441"
+      "signature": "sha256:76887ca218fafa0fc89b8febf85deeb14eba446cceccc9ce645fa9309e67e028"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/exclusive-conflict/ksm-override/option:route:entrypoint:ciu/clean/--ksm/option:route:entrypoint:ciu/clean/--no-ksm",
@@ -496,7 +496,7 @@
           "option:route:entrypoint:ciu/clean/--no-ksm"
         ]
       },
-      "signature": "sha256:b6b26546b754dd6f1f612177dbdfef46a5bdaa52b6d9d0547152fafce8a6758c"
+      "signature": "sha256:9f618dc34c71445a5ae12154814cf5f5fe2df3bd72eea335f396b9f8219007f1"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/exclusive-member/ksm-override/option:route:entrypoint:ciu/clean/--ksm",
@@ -510,7 +510,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/clean/--ksm"
       },
-      "signature": "sha256:e3f05ba9dc5d58ede3fefdcdcbe50b35641c03f34d216125626c0326a1cf01c2"
+      "signature": "sha256:9ccc98fc77e020202fcab241899034d1604d05f8bde3711a13578069d1b6758d"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/exclusive-member/ksm-override/option:route:entrypoint:ciu/clean/--no-ksm",
@@ -524,7 +524,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/clean/--no-ksm"
       },
-      "signature": "sha256:243b53eaebccf34009e6ceacc7799f8916a868159b5ae57e4037f2add9c8ade1"
+      "signature": "sha256:3067d291a6ce4550c1ce8d00b8df7db307e3476a1c6d4cc8344d491fd4d3222e"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/minimum",
@@ -552,7 +552,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:4c381a2fcdac882100c2ea37f9f43d785a3ffc8be1817e46319bd07f764807c2"
+      "signature": "sha256:74a39729a4b8b88163d15a8b08655f037d2f209837606152f21657e6cdb354b8"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--debug-raw/--debug-raw",
@@ -565,7 +565,20 @@
         "option_id": "option:route:entrypoint:ciu/clean/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:ad1bcbd324aa5a2dc106e939bf22c67a31038915ef4a48d433c95ddefcc57130"
+      "signature": "sha256:ab1178d401fbc4e44d39e04fe591ffc165fa30fca2d7ae536651741722b04cd4"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/clean/--dry-run"
+      ],
+      "route_id": "route:entrypoint:ciu/clean",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/clean/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:c94634ec5a38e46f8abd593b9e6fceca02ee54bb3addd7953b73c25fa6587f64"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--expected-checkout/--expected-checkout",
@@ -578,7 +591,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--expected-checkout",
         "spelling": "--expected-checkout"
       },
-      "signature": "sha256:2a7441d266597c21604e85872d75d54184a134fb41db3ca6141c37ef16614eac"
+      "signature": "sha256:aef755ae9ecf0007ff7722c04b71d1b4dd0d8780b43f5e0dd7e036bb71b710fb"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--i-understand-this-is-protected/--i-understand-this-is-protected",
@@ -591,7 +604,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--i-understand-this-is-protected",
         "spelling": "--i-understand-this-is-protected"
       },
-      "signature": "sha256:193de898eb299e06ec71626376a4b6f49d89f036081c0c913e0f94065fe72293"
+      "signature": "sha256:af75524d6b3f1a9c39734d443c63f184431a07ff188f25e3d4269fc328b5db83"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--identity/--identity",
@@ -604,7 +617,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--identity",
         "spelling": "--identity"
       },
-      "signature": "sha256:d22297c3b41abf6d453cba379e771e5437b4cef82372300b34c13696eb6ce3a3"
+      "signature": "sha256:c077aa85503fadaafbcf1121332092fb8424dd0d1755d5ccdbbf87893a880b94"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--ignore-errors/--ignore-errors",
@@ -617,7 +630,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--ignore-errors",
         "spelling": "--ignore-errors"
       },
-      "signature": "sha256:27a7024b9a5251861563b94904c4319b94b021ccb71e7cc9a0005a21b87b6c3c"
+      "signature": "sha256:2fdedbe23ba7fe0449dcf977125af3dc6b32e140a3f184913bb53390466e89b6"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--ksm/--ksm",
@@ -630,7 +643,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--ksm",
         "spelling": "--ksm"
       },
-      "signature": "sha256:e34577731df7f18c5ae616c4df414b04ce2dfc60dff37e1764af7c3f3cb654d1"
+      "signature": "sha256:ec620a2c0a94e42af5653fea089aee8741a4065fd0e623747cfd61fcb65c81d9"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--log-prefix-time-short/--log-prefix-time-short",
@@ -643,7 +656,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--log-prefix-time-short",
         "spelling": "--log-prefix-time-short"
       },
-      "signature": "sha256:af7ae822149ce940c5a58a77385892723460c1d2ffa6f7c27ab7a674ad2b2d72"
+      "signature": "sha256:79577f143c71e46375a9c2172bb5e258e6175e744fa5db70e7df922610f1e8e0"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--no-ksm/--no-ksm",
@@ -656,7 +669,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--no-ksm",
         "spelling": "--no-ksm"
       },
-      "signature": "sha256:6d388ff21e15ef426ef80843b2e51833fab8525202216e52c75a3ae576f4cd55"
+      "signature": "sha256:49dfffbabfda28ad082d907e10e9ed78180f36cfe47cfe2298cc327bcd18c3cb"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--phases/--phases",
@@ -669,7 +682,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--phases",
         "spelling": "--phases"
       },
-      "signature": "sha256:ff9272d3ad812bcdc6ef468266015c792b7e316a4bf4e9b0e785f1e95cb6bc00"
+      "signature": "sha256:a3eaf599f1aca1930291d9fd6c74f052ae59cb644a968fadc9fa79ba464a6b39"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--profile/--profile",
@@ -682,7 +695,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--profile",
         "spelling": "--profile"
       },
-      "signature": "sha256:8e870638f188a811c6488c750e76958ab2a1f17a85916ca4c828cdb2f7440ede"
+      "signature": "sha256:c91374c265cd76be5be984a30851473fb204a9ef3a34db36d64255c52e5a36ef"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--root-folder/--root-folder",
@@ -695,7 +708,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--root-folder",
         "spelling": "--root-folder"
       },
-      "signature": "sha256:d7d090cb731fe4d6b51a4b90b648f633f029439a13dd18722dac79dc48f34b98"
+      "signature": "sha256:ded5a0f2b0bfc3f3a2a57e9e74566eba91416b2c5a7e4f4bdbb91dce604794ff"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--vanilla/--vanilla",
@@ -708,7 +721,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--vanilla",
         "spelling": "--vanilla"
       },
-      "signature": "sha256:07831d4bbae625037bf060b08d21fe7e7be4680cc3f2d35f01a96424b0dc123c"
+      "signature": "sha256:eb3fea9e9a332b875cc36b03a5cb1b5002dde917f073fbfd971e21a157a452ad"
     },
     {
       "id": "case:route:entrypoint:ciu/clean/option-spelling/option:route:entrypoint:ciu/clean/--yes/--yes",
@@ -721,7 +734,7 @@
         "option_id": "option:route:entrypoint:ciu/clean/--yes",
         "spelling": "--yes"
       },
-      "signature": "sha256:a45cbd503d4526dc060a6f6367e3ddcd55e4dd037db6a487c2c52ff3c5735447"
+      "signature": "sha256:f790163733b79c4a8e94e835027b21dde0f63a4be7244022a6b3fcab9671a307"
     },
     {
       "id": "case:route:entrypoint:ciu/dev/argument-shape/argument:route:entrypoint:ciu/dev/stack",
@@ -3635,6 +3648,434 @@
         "spelling": "--stack"
       },
       "signature": "sha256:e69eaf453b8ad344244d70c107e0c58abf9cb531764824439e1aaf0cdc18f5d4"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/argument-shape/argument:route:entrypoint:ciu/run/argv",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:ciu/run/argv"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:ciu/run/argv"
+      },
+      "signature": "sha256:bcc9ef520c2f34482aa02ff46896a60feecbaafec075e9557c3e84b973a2023d"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/argument-shape/argument:route:entrypoint:ciu/run/selector",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:ciu/run/selector"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:ciu/run/selector"
+      },
+      "signature": "sha256:fdabd93cd85bf2dcdd0923ae64bc65cc1057e95c63b27b1a6b184a864e190999"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/constraint-requires/1",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:ciu/run/--detach",
+        "option:route:entrypoint:ciu/run/--json"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "any_of": [
+          "--json"
+        ],
+        "kind": "requires",
+        "option": "--detach",
+        "reason": "--detach requires --json"
+      },
+      "signature": "sha256:270671d1f7358faa683fa5796d3ea82c696e2d9ff4b31fd1d4318ee1333305a7"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/constraint-requires/2",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:ciu/run/--dry-run",
+        "option:route:entrypoint:ciu/run/--json"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "any_of": [
+          "--json"
+        ],
+        "kind": "requires",
+        "option": "--dry-run",
+        "reason": "--dry-run requires --json"
+      },
+      "signature": "sha256:004a22829f83535acbd06a7913fb35fbb615e3833f40c315f1455234229dd065"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/exclusive-conflict/event-sink/option:route:entrypoint:ciu/run/--events-fd/option:route:entrypoint:ciu/run/--events-file",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/run/--events-fd",
+        "option:route:entrypoint:ciu/run/--events-file"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "group_id": "event-sink",
+        "options": [
+          "option:route:entrypoint:ciu/run/--events-fd",
+          "option:route:entrypoint:ciu/run/--events-file"
+        ]
+      },
+      "signature": "sha256:291dcded79a72f2947d17fe8ce8f22b999a62721257882326b61d05ec28c7bed"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/exclusive-conflict/ksm-override/option:route:entrypoint:ciu/run/--ksm/option:route:entrypoint:ciu/run/--no-ksm",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:ciu/run/--ksm",
+        "option:route:entrypoint:ciu/run/--no-ksm"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "group_id": "ksm-override",
+        "options": [
+          "option:route:entrypoint:ciu/run/--ksm",
+          "option:route:entrypoint:ciu/run/--no-ksm"
+        ]
+      },
+      "signature": "sha256:7e6d0bb5c5073f8768da1bca95598cf1c8ad509e8cdff6f71b4c31f31980e721"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/exclusive-member/event-sink/option:route:entrypoint:ciu/run/--events-fd",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:ciu/run/--events-fd"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "group_id": "event-sink",
+        "required": false,
+        "selected_option": "option:route:entrypoint:ciu/run/--events-fd"
+      },
+      "signature": "sha256:55d28e8c48b85060a930bc79a77f502ea88b292129c296d746197900ee018557"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/exclusive-member/event-sink/option:route:entrypoint:ciu/run/--events-file",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:ciu/run/--events-file"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "group_id": "event-sink",
+        "required": false,
+        "selected_option": "option:route:entrypoint:ciu/run/--events-file"
+      },
+      "signature": "sha256:e8685f9f7934b522c3bf36ab5e5ac28d0d58b286e8199ba4214e73e9de45743a"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/exclusive-member/ksm-override/option:route:entrypoint:ciu/run/--ksm",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:ciu/run/--ksm"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "group_id": "ksm-override",
+        "required": false,
+        "selected_option": "option:route:entrypoint:ciu/run/--ksm"
+      },
+      "signature": "sha256:d083a3375d8f7dc2572974cb60c30c2a9ffe939b3abd4b9934ccd3f836f05106"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/exclusive-member/ksm-override/option:route:entrypoint:ciu/run/--no-ksm",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:ciu/run/--no-ksm"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "group_id": "ksm-override",
+        "required": false,
+        "selected_option": "option:route:entrypoint:ciu/run/--no-ksm"
+      },
+      "signature": "sha256:452bbf5db2efbe535e3fe93bea9855e737fea72b46ecffedd43654557088d608"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:ciu/run/selector",
+        "option:route:entrypoint:ciu/run/--log-prefix-time-short",
+        "option:route:entrypoint:ciu/run/--ksm",
+        "option:route:entrypoint:ciu/run/--no-ksm",
+        "option:route:entrypoint:ciu/run/--detach",
+        "option:route:entrypoint:ciu/run/--skip-hooks"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:ciu/run/--log-prefix-time-short",
+          "option:route:entrypoint:ciu/run/--ksm",
+          "option:route:entrypoint:ciu/run/--no-ksm",
+          "option:route:entrypoint:ciu/run/--detach",
+          "option:route:entrypoint:ciu/run/--skip-hooks"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:ciu/run/selector": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:ciu/run/selector"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:3411734f13f47e324a65ac613ba94d22b792488b94250a9272b12a7a6ebd47b1"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:14d6f347e0a8fd34de76f3ff67faf8e67ee40492016dfc3e2a0fb881fcb3a1eb"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--detach/--detach",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--detach"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--detach",
+        "spelling": "--detach"
+      },
+      "signature": "sha256:e7c827107784415bb946cdf6b9071f7ba40549d748078430f8df37c05f37fd99"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--dry-run"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:2800c965c26ba89fe8f51b6b55f68dd06b50b3d796bf3331cdeae80e71bf4421"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--env-name/--env-name",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--env-name"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--env-name",
+        "spelling": "--env-name"
+      },
+      "signature": "sha256:214f649cb47dc4fe3e396bcf5c2c54771ec179222bd56335a195a3259bde6648"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--events-fd/--events-fd",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--events-fd"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--events-fd",
+        "spelling": "--events-fd"
+      },
+      "signature": "sha256:06b972b2c0db07e692a86a593f725eba30a2ab3029f8b1be7f8e29ced4365e4e"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--events-file/--events-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--events-file"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--events-file",
+        "spelling": "--events-file"
+      },
+      "signature": "sha256:b56e415e530615e05605188cd1a016f12c82370db6f28e61b6e9101279b0a10f"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--extend/--extend",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--extend"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--extend",
+        "spelling": "--extend"
+      },
+      "signature": "sha256:361e62b3ba5f4c95ef28fd976617c8b2dbe563ac4c78cc7b4d905a7fac410e2e"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--json"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:fc1c7aba5963e7db0d135aa97ade6bf5ae738dccea1c091974575213f8bb4e02"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--ksm/--ksm",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--ksm"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--ksm",
+        "spelling": "--ksm"
+      },
+      "signature": "sha256:275d38007668521dad900d416b630318996092e9b6ebddd944c8b23625a49517"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--label/--label",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--label"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--label",
+        "spelling": "--label"
+      },
+      "signature": "sha256:75284c6dda7ef5c5d57a8f6d9b686b69aece9e62d96e9295f4abb7839e95eba3"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--log-prefix-time-short/--log-prefix-time-short",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--log-prefix-time-short"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--log-prefix-time-short",
+        "spelling": "--log-prefix-time-short"
+      },
+      "signature": "sha256:08ebbdfce23708e0f029f393480aaecec2743ad53b4216066335876da90b03a9"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--name/--name",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--name"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--name",
+        "spelling": "--name"
+      },
+      "signature": "sha256:e817963a5dc8a9c92a9872e0a11a2a81d991e6910f7a171b1a2aa312b0b61698"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--no-ksm/--no-ksm",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--no-ksm"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--no-ksm",
+        "spelling": "--no-ksm"
+      },
+      "signature": "sha256:5c2c7c57e28514914fb4cdbf493c98835cdd4e213af818db0a36ff82204cd701"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--older-than/--older-than",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--older-than"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--older-than",
+        "spelling": "--older-than"
+      },
+      "signature": "sha256:e9df95458cb8e09bbee81b540ae4f5bfb186ada3da17c731ba11e1bf2e2ae436"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--owner-pid/--owner-pid",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--owner-pid"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--owner-pid",
+        "spelling": "--owner-pid"
+      },
+      "signature": "sha256:8bc74491771da94499211f1000e2e78d573602f43b258df63e6498cbce69e728"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--profile/--profile",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--profile"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--profile",
+        "spelling": "--profile"
+      },
+      "signature": "sha256:82d2e77a4abaaa650a7fcddcf865b80b8183cd0663ff351c6670ade976d433ea"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--root-folder/--root-folder",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--root-folder"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--root-folder",
+        "spelling": "--root-folder"
+      },
+      "signature": "sha256:951009f54f5a2ec2cfd259d625a137eedbffe430e0a81158e2c9a8097262a484"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--skip-hooks/--skip-hooks",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--skip-hooks"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--skip-hooks",
+        "spelling": "--skip-hooks"
+      },
+      "signature": "sha256:680bcda555c02a317ee49820dce760da23f7919ffba9b0bace68c3cf4a933337"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/run/option-spelling/option:route:entrypoint:ciu/run/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/run/--yes"
+      ],
+      "route_id": "route:entrypoint:ciu/run",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/run/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:9cb865dcdb75275d6cec4ddbfd69d8148534aa157d3d9a5c6413019196d97a10"
     },
     {
       "id": "case:route:entrypoint:ciu/schema/capabilities/exclusive-conflict/ksm-override/option:route:entrypoint:ciu/schema/capabilities/--ksm/option:route:entrypoint:ciu/schema/capabilities/--no-ksm",
@@ -9251,7 +9692,7 @@
       "shape": {
         "argument_id": "argument:route:entrypoint:ciu/worktree/rm/logical_name"
       },
-      "signature": "sha256:96fc2423b379aa737b07054a1dc8edc456862767773c1701a42a16d4debfd21b"
+      "signature": "sha256:4d81f415dcefaa391c3080e72f209fc0316078fbdd97fed27c3ba50929c7bad9"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/exclusive-conflict/branch-mode/option:route:entrypoint:ciu/worktree/rm/--delete-branch/option:route:entrypoint:ciu/worktree/rm/--keep-branch",
@@ -9268,7 +9709,7 @@
           "option:route:entrypoint:ciu/worktree/rm/--keep-branch"
         ]
       },
-      "signature": "sha256:c2b7c797a11ec6421897a737e1ae8e8a4b4920ffac704d334883b99c0bb4ecba"
+      "signature": "sha256:c270e6e7b9e2b4eba40792e276559a261136c996b31b399e1ada9269b989c05a"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/exclusive-conflict/ksm-override/option:route:entrypoint:ciu/worktree/rm/--ksm/option:route:entrypoint:ciu/worktree/rm/--no-ksm",
@@ -9285,7 +9726,7 @@
           "option:route:entrypoint:ciu/worktree/rm/--no-ksm"
         ]
       },
-      "signature": "sha256:bf82e28ec5b506111dfa51fafc735855ad151409dfc1b7fa79fc8bdd56791df9"
+      "signature": "sha256:c979e8175831506c41846905211a9f7488c5ae269316b1307d3b819fe93861f0"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/exclusive-member/branch-mode/option:route:entrypoint:ciu/worktree/rm/--delete-branch",
@@ -9299,7 +9740,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/worktree/rm/--delete-branch"
       },
-      "signature": "sha256:8701096a79c45162a246f8f8188bd01601c4cb60e49599ccd9a98a027c4f3be5"
+      "signature": "sha256:ef65b05d4d9a0ea55b0eaff6cc9e4c2b23580ac239bc871faa029eb39e4e9e34"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/exclusive-member/branch-mode/option:route:entrypoint:ciu/worktree/rm/--keep-branch",
@@ -9313,7 +9754,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/worktree/rm/--keep-branch"
       },
-      "signature": "sha256:6274c904b634a4c84f85562b013c884eebc3ff4250f8f6fd4a083a3b79941b90"
+      "signature": "sha256:515d152d7be2547ab977f57f9cbab3db0974a23934d407169062acfe336da109"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/exclusive-member/ksm-override/option:route:entrypoint:ciu/worktree/rm/--ksm",
@@ -9327,7 +9768,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/worktree/rm/--ksm"
       },
-      "signature": "sha256:9d1e75f80692a4761cc3bd3dbc0562722824ef5334a48e7891b5fb9c3d408baf"
+      "signature": "sha256:f8436c95d56fc33d1f33b14d751b05a87b9cfe21985ab819ed28bee9b4418a23"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/exclusive-member/ksm-override/option:route:entrypoint:ciu/worktree/rm/--no-ksm",
@@ -9341,7 +9782,7 @@
         "required": false,
         "selected_option": "option:route:entrypoint:ciu/worktree/rm/--no-ksm"
       },
-      "signature": "sha256:ce2c8f026bd855fbb48597e713835a0ef32c5074b1f8a1b2ce35d468abbaccc7"
+      "signature": "sha256:3785f5d52488d80d46fa288b63f777b6841062270353ea7e9c92d7770e9a0b61"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/minimum",
@@ -9374,7 +9815,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:7ca5ba0f53c5a27fae1f4cd521f8a6ee16c6183711f1fc0210ffeb79b0217195"
+      "signature": "sha256:814f7e124f030146e058197bbffe8199ace6d527cd7c7dd918390f3b383ff5e8"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--debug-raw/--debug-raw",
@@ -9387,7 +9828,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:f03e1756f511364ab46a6487b4298809c7f2c546e06c30b1bf47502df4e61262"
+      "signature": "sha256:ca97caa23c2dfaa99898122f6871407056181bd716be21600d31317e515e2713"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--delete-branch/--delete-branch",
@@ -9400,7 +9841,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--delete-branch",
         "spelling": "--delete-branch"
       },
-      "signature": "sha256:9f22438c80e188ed36255da70b20821c4dc3198f87cf3d04359d2f0e69924c35"
+      "signature": "sha256:52bf83973332abac792cd75673d341742021e3e9d2659725eae4c0bc952d0081"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--discard-changes/--discard-changes",
@@ -9413,7 +9854,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--discard-changes",
         "spelling": "--discard-changes"
       },
-      "signature": "sha256:792e760fa14d8f4a687ba17b9711d3abf9e93ef96f52cf37e5e347f7294e683f"
+      "signature": "sha256:b4734cddc444e68f567bb989d147305f79c9e082e446efd48d5025e58394557b"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--discard-protected-state/--discard-protected-state",
@@ -9426,7 +9867,20 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--discard-protected-state",
         "spelling": "--discard-protected-state"
       },
-      "signature": "sha256:a1f7b44876934dec30e59280b1d0b1a3bb14e9f569f2b960735757d8734a80ff"
+      "signature": "sha256:d81ef652fde75b40afd4e26a4349f089da6764508e551edaf927fd5289bc5fa7"
+    },
+    {
+      "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:ciu/worktree/rm/--dry-run"
+      ],
+      "route_id": "route:entrypoint:ciu/worktree/rm",
+      "shape": {
+        "option_id": "option:route:entrypoint:ciu/worktree/rm/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:08b75dfde0a7f187f7b642d33fb23a7b641838d16f0e307a7600e4fc3e096cc5"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--force/--force",
@@ -9439,7 +9893,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--force",
         "spelling": "--force"
       },
-      "signature": "sha256:7ff6ebe1df5cd7b2a2b0832aa245fe1ccea7350007a6898a69ef822f3dd8dc27"
+      "signature": "sha256:1dd7f86d2fb32f5a5a503a9bd764e65363f265ce707e8dfc373b810c421e85b3"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--json/--json",
@@ -9452,7 +9906,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--json",
         "spelling": "--json"
       },
-      "signature": "sha256:f2e5b271961a7cdaf73767ca68d0b27953b6c501515e3dd658e0f02faa848fc1"
+      "signature": "sha256:d48d3e44863a23c6cb663b7920c7718c4215a8fad3c6003daf3483976645e851"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--keep-branch/--keep-branch",
@@ -9465,7 +9919,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--keep-branch",
         "spelling": "--keep-branch"
       },
-      "signature": "sha256:0e0149dfad7c51dc65cd4b8b1a18481c309f0cdc5992ee0c96ab76487c399026"
+      "signature": "sha256:e3f876667dc321bf66597464d3c6e1c930223527a5cc8f7025f66c2b2da83675"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--ksm/--ksm",
@@ -9478,7 +9932,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--ksm",
         "spelling": "--ksm"
       },
-      "signature": "sha256:64e2af8d819bad3758336d305e2ad7555c381553e98f0e8e3d65b506266a3a56"
+      "signature": "sha256:c8aac6fac21a8f56fba1fa2debf4081d0e7c113454e9eb309f156e58f5e2f9da"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--log-prefix-time-short/--log-prefix-time-short",
@@ -9491,7 +9945,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--log-prefix-time-short",
         "spelling": "--log-prefix-time-short"
       },
-      "signature": "sha256:4e14c1c8907571f10885cd968b3d542e548412ab7b3c2f500fcb39614000e5f5"
+      "signature": "sha256:c12580f4669b872ae37eb4d7490d3d0976f07fa297258d6f3ba1b57d701b4fc0"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--no-ksm/--no-ksm",
@@ -9504,7 +9958,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--no-ksm",
         "spelling": "--no-ksm"
       },
-      "signature": "sha256:5e468528c47574ee0fe073593ce58e707f3c74d42a056dfcc727084a7c5f8eda"
+      "signature": "sha256:869a4e740fc1effcff3de68f63108ddc8fd15740e95bab213f4588920a565603"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--root-escalation/--root-escalation",
@@ -9517,7 +9971,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--root-escalation",
         "spelling": "--root-escalation"
       },
-      "signature": "sha256:52a12cb278642cec496bab6a2a5accbfe07701ef58264f6ddd283643ef9aa158"
+      "signature": "sha256:af6dccf77368e8992b48b894fa97c62265e1d74090c449d0ee7087dff34884ae"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--root-folder/--root-folder",
@@ -9530,7 +9984,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--root-folder",
         "spelling": "--root-folder"
       },
-      "signature": "sha256:c05b67eca2c8593f767426448d30c570a270c313aa9f8b8436098f1c36facc82"
+      "signature": "sha256:4c25898dee211b6352783f64580ff1badfd583bc8a15eb926a7a026bebcaab10"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/rm/option-spelling/option:route:entrypoint:ciu/worktree/rm/--yes/--yes",
@@ -9543,7 +9997,7 @@
         "option_id": "option:route:entrypoint:ciu/worktree/rm/--yes",
         "spelling": "--yes"
       },
-      "signature": "sha256:2d159dbccb391274cfd5e659476eee87fd92fa988ac3e91456fcc231305b3f0d"
+      "signature": "sha256:fb3b4cff1279bd7d8157040677d885de2f66021696bce1ab54236e8b68d46c40"
     },
     {
       "id": "case:route:entrypoint:ciu/worktree/up/argument-shape/argument:route:entrypoint:ciu/worktree/up/logical_name",
@@ -10931,12 +11385,14 @@
       "aliases": [],
       "behavior": [
         "mutating",
+        "dry-run",
         "potentially expensive"
       ],
       "common_controls": [
         "--color",
         "--debug",
         "--debug-raw",
+        "--dry-run",
         "--help",
         "--log-level",
         "--no-color",
@@ -11043,7 +11499,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Tear down completely: remove ALL project containers, `docker compose down -v --remove-orphans`, project volumes, vol-* hostdirs and rendered artifacts. The post-clean invariant (S6.4) is enforced: zero project containers AND zero project volumes remain. [mutating; potentially expensive]",
+      "summary": "Tear down completely: remove ALL project containers, `docker compose down -v --remove-orphans`, project volumes, vol-* hostdirs and rendered artifacts. The post-clean invariant (S6.4) is enforced: zero project containers AND zero project volumes remain. [mutating; dry-run; potentially expensive]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -16915,6 +17371,753 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "Read service identities from the rendered config without writing generated files or contacting Docker (S18 / CIU-118). --json is required: it emits one versioned document mirroring v8's resolved.identities.<stack>.<service>.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "ciu.cli_registry._TimePrefixAction",
+          "before_nested_subcommand": false,
+          "canonical": "--log-prefix-time-short",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "prefix severity lines with local HH:MM:SS timestamps; interactive terminals colour INFO/WARN/ERROR, pipes and logs stay plain",
+          "dest": "log_prefix_time_short",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--log-prefix-time-short"
+          ],
+          "help_group": "OUTPUT CONTROL",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--log-prefix-time-short",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "ciu.cli_registry._TimePrefixAction"
+            },
+            "default": false,
+            "nargs": 0
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "ciu.cli_registry._KsmAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ksm",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "inject CIU's KSM shim, THIS run only (never written back to the TOML layer)",
+          "dest": "ksm_on",
+          "effective_default": false,
+          "exclusive_group": "ksm-override",
+          "exclusive_required": false,
+          "flags": [
+            "--ksm"
+          ],
+          "help_group": "RUN OVERRIDES",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--ksm",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "ciu.cli_registry._KsmAction"
+            },
+            "default": false,
+            "dest": "ksm_on",
+            "nargs": 0
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "ciu.cli_registry._KsmAction",
+          "before_nested_subcommand": false,
+          "canonical": "--no-ksm",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "do not inject the KSM shim, THIS run only; PASSTHROUGH: it does NOT disable a KSM an image enables itself (S15.18)",
+          "dest": "ksm_off",
+          "effective_default": false,
+          "exclusive_group": "ksm-override",
+          "exclusive_required": false,
+          "flags": [
+            "--no-ksm"
+          ],
+          "help_group": "RUN OVERRIDES",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--no-ksm",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": {
+              "callable": "ciu.cli_registry._KsmAction"
+            },
+            "default": false,
+            "dest": "ksm_off",
+            "nargs": 0
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "<stack>[:<service>] or reap",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:ciu/run/selector",
+          "kind": "argument",
+          "metavar": "STACK[:SERVICE]|reap",
+          "minimum_values": 1,
+          "name": "selector",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "run"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": [],
+          "description": "exact command argv after `--`",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:ciu/run/argv",
+          "kind": "argument",
+          "metavar": "ARGV",
+          "minimum_values": 0,
+          "name": "argv",
+          "nargs": "*",
+          "parser_kwargs": {
+            "default": [],
+            "nargs": "*"
+          },
+          "parser_path": [
+            "run"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--root-folder",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "override the CIU repo root (no parent walking)",
+          "dest": "root_folder",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--root-folder"
+          ],
+          "help_group": "SELECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--root-folder",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--profile",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "restrict to the named host profile (repeatable; default: active profile)",
+          "dest": "profile",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--profile"
+          ],
+          "help_group": "SELECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--profile",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--name",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use this exact container name (default: generated)",
+          "dest": "name",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--name"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--name",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--label",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "add a container label as KEY=VALUE",
+          "dest": "label",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--label"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--label",
+          "kind": "option",
+          "metavar": "KEY=VALUE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--env-name",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "forward a variable name from CIU's environment",
+          "dest": "env_name",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--env-name"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--env-name",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--extend",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "typed per-run Compose extension file",
+          "dest": "extend",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--extend"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--extend",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--detach",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "launch and return the exact container identity",
+          "dest": "detach",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--detach"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--detach",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--events-fd",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "write foreground JSONL events to an inherited fd",
+          "dest": "events_fd",
+          "effective_default": null,
+          "exclusive_group": "event-sink",
+          "exclusive_required": false,
+          "flags": [
+            "--events-fd"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--events-fd",
+          "kind": "option",
+          "metavar": "N",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--events-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "append foreground JSONL events to a 0600 file",
+          "dest": "events_file",
+          "effective_default": null,
+          "exclusive_group": "event-sink",
+          "exclusive_required": false,
+          "flags": [
+            "--events-file"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--events-file",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--older-than",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "reap abandoned running one-shots older than DURATION",
+          "dest": "older_than",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--older-than"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--older-than",
+          "kind": "option",
+          "metavar": "DURATION",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--owner-pid",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "owner PID used for detached-run liveness",
+          "dest": "owner_pid",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--owner-pid"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--owner-pid",
+          "kind": "option",
+          "metavar": "PID",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--skip-hooks",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "skip pre_secrets and pre_compose hooks",
+          "dest": "skip_hooks",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--skip-hooks"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:ciu/run/--skip-hooks",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "run"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [
+        {
+          "any_of": [
+            "--json"
+          ],
+          "kind": "requires",
+          "option": "--detach",
+          "reason": "--detach requires --json"
+        },
+        {
+          "any_of": [
+            "--json"
+          ],
+          "kind": "requires",
+          "option": "--dry-run",
+          "reason": "--dry-run requires --json"
+        }
+      ],
+      "delegated_metadata": [],
+      "description": "Run exact argv in a fresh container from a rendered CIU service; `reap` surveys or removes abandoned CIU one-shots.",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:ciu/run",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:ciu/run/--ksm.action",
+        "option:route:entrypoint:ciu/run/--log-prefix-time-short.action",
+        "option:route:entrypoint:ciu/run/--no-ksm.action"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "run"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "run"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Run exact argv in a fresh container from a rendered CIU service; `reap` surveys or removes abandoned CIU one-shots. [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -27521,12 +28724,14 @@
       ],
       "aliases": [],
       "behavior": [
-        "mutating"
+        "mutating",
+        "dry-run"
       ],
       "common_controls": [
         "--color",
         "--debug",
         "--debug-raw",
+        "--dry-run",
         "--help",
         "--json",
         "--log-level",
@@ -27614,7 +28819,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Clean THEN remove a managed worktree; keeps an unmerged branch tip by default and requires exact branch consent for changes or protected ignored state. [mutating]",
+      "summary": "Clean THEN remove a managed worktree; keeps an unmerged branch tip by default and requires exact branch consent for changes or protected ignored state. [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

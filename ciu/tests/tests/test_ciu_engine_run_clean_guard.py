@@ -89,3 +89,37 @@ def test_clean_accepts_one_shot_from_the_same_primary_checkout(tmp_path, monkeyp
     )
 
     assert any("compose" in argv and "down" in argv for argv in calls)
+
+
+def test_reset_uses_stack_scoped_absolute_compose_paths(tmp_path, monkeypatch):
+    root = tmp_path / "checkout"
+    stack = root / "tools" / "runner"
+    overlay_dir = stack / ".ciu"
+    overlay_dir.mkdir(parents=True)
+    (stack / "ciu.compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (overlay_dir / "ciu.compose.overlay.yml").write_text("services: {}\n", encoding="utf-8")
+    (overlay_dir / "ciu.compose.ownership.yml").write_text("services: {}\n", encoding="utf-8")
+    calls = []
+
+    def run_cmd(argv, **kwargs):
+        argv = list(argv)
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(engine.procutil, "run_cmd", run_cmd)
+
+    engine.reset_service(
+        {"deploy": {"project_name": "demo", "environment_tag": "dev",
+                     "labels": {"prefix": "demo"}}},
+        stack,
+        assume_yes=True,
+        repo_root=root,
+    )
+
+    down = next(argv for argv in calls if "compose" in argv and "down" in argv)
+    file_values = [down[index + 1] for index, value in enumerate(down[:-1]) if value == "-f"]
+    assert file_values == [
+        str(stack / "ciu.compose.yml"),
+        str(overlay_dir / "ciu.compose.overlay.yml"),
+        str(overlay_dir / "ciu.compose.ownership.yml"),
+    ]
