@@ -79,25 +79,3 @@ def test_attach_once_without_json_rejects_before_daemon_read(
     assert captured.err.strip() == (
         cli_headline() + "\ntopos --attach implements --once --json for canonical daemon frames"
     )
-
-
-def test_daemon_preflight_text_uses_renderer_and_exit_contract(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A usable preflight renders human text and exits successfully."""
-    report = SimpleNamespace(usable=True)
-    calls: list[tuple[object, str, object]] = []
-    monkeypatch.setattr(
-        cli,
-        "preflight_daemon_deployment",
-        lambda socket, group_name, config_path: calls.append((socket, group_name, config_path)) or report,
-    )
-    monkeypatch.setattr(
-        cli,
-        "render_preflight_text",
-        lambda actual: "daemon deployment is ready" if actual is report else "wrong report",
-    )
-
-    assert cli._main_daemon(["preflight", "--socket", "/run/custom.sock", "--group", "ops"]) == 0
-    assert calls == [(Path("/run/custom.sock"), "ops", None)]
-    assert capsys.readouterr().out == "daemon deployment is ready\n"

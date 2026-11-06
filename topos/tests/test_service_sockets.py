@@ -623,6 +623,9 @@ def test_toposd_import_isolated_from_daemon_ui_and_collection() -> None:
 import sys
 sys.path[:] = sys.argv[1].split(":")
 import topos.service.cli
+import topos.service.install
+import topos.service.doctor
+import topos.service.lock
 assert not any(name == "topos.daemon" or name.startswith("topos.daemon.") for name in sys.modules)
 assert not any(name == "topos.ui" or name.startswith("topos.ui.") for name in sys.modules)
 assert "textual" not in sys.modules

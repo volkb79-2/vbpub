@@ -94,12 +94,20 @@ systemd socket activation. Its unit bounds it to 256 MiB `MemoryHigh`,
 [daemon state layout guide](docs/DESIGN-GUIDE.md#socket-and-state-layout) for the reasoning and
 [consumer guide](docs/CONSUMERS.md) for install and client examples.
 
-The `toposd` admin entry point provides `run`, `unit print`, `unit check`, and
-`config check`. `toposd run` requires the activated socket; use
+The `toposd` admin entry point provides `install`, `uninstall`, `doctor`,
+`run`, `unit print`, `unit check`, and `config check`. Install uses pinned
+topos and cli-extended wheels plus a version-matched, sha256-pinned daemon
+dependency lock. Each asset pin has the form
+`<version>@sha256:<64 lowercase hex>`; it records the pins and created groups in
+`/etc/topos/install.toml`. See [the consumer guide](docs/CONSUMERS.md) for
+copyable install commands and [the daemon design guide](docs/DESIGN-GUIDE.md#installation-and-removal)
+for the installer rationale. `toposd run` requires the activated socket; use
 `toposd run --self-bind --socket PATH` only for tests and development. The
 `toposd run --bpf-state-dir PATH` option overrides the BPF snapshot directory.
-The existing `topos daemon preflight`, `install-plan`, and
-`status` commands remain available in this package.
+Use `toposd doctor [--check NAME] [--json]` for host checks and
+`toposd install --dry-run` to preview an installation. An old layout is
+refused for manual removal; see [the removal steps](docs/DAEMON.md#manual-removal-of-an-old-installation).
+`topos daemon status` remains the client-side socket and protocol check.
 
 Without a daemon, the client still works in direct mode: `topos --once`, the
 live TUI, record/replay, report, query, and rootless readable metrics collect

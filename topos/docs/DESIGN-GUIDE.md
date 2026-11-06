@@ -52,5 +52,27 @@ The observe group defaults to `topos-observe` and is declared through
 the rendered sysusers file contains a comment and creates no group.
 
 The daemon serves the configured observe socket and adopts its systemd-passed
-listener. `toposd install`, `uninstall`, and `doctor` are not part of this
-package.
+listener.
+
+## Installation and removal
+
+`toposd install` builds an isolated, immutable versioned virtual environment
+from a pinned topos wheel, cli-extended wheel, and hashed daemon dependency
+lock. `/opt/topos/current` is switched atomically after the version has been
+built; `/etc/topos/install.toml` records the exact pins and installer-created
+groups. This keeps the host service independent of whichever Python happens to
+be installed on the host. `toposd doctor` checks rendered files, group access,
+systemd socket state, runtime paths, running version and socket connectivity.
+
+The installer inspects but does not migrate or repair the former host-setup
+layout. Automatic chmod, ownership repair, or partial removal could hide a
+competing tmpfiles rule or a container bind mount. Install reports every
+conflicting path and prints the concrete [manual removal steps](DAEMON.md#manual-removal-of-an-old-installation).
+Uninstall removes the service and volatile runtime state; it keeps groups and
+memberships unless `--remove-groups` is requested and the install record says
+the installer created them.
+
+The topos-specific differences from cgpd are listed in the
+[daemon operator guide](DAEMON.md#differences-from-cgpd). They follow from
+topos's single read-only observe socket, volatile-only daemon state, and its
+explicit 0.7.0 socket-activation boundary.

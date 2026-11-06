@@ -206,8 +206,8 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     registry = CliRegistry(
         cli_identity or identity(),
         prog="toposd",
-        description="Run the topos host daemon, render its systemd units, and check its config.",
-        getting_started=("toposd config check", "toposd unit print", "toposd run"),
+        description="Install, check, and run the topos host daemon.",
+        getting_started=("toposd install", "toposd doctor", "toposd run"),
         global_options=(
             _opt("--config", "service config (default /etc/topos/toposd.toml; absent default uses built-ins)",
                  group="CONFIG", metavar="PATH"),
@@ -216,6 +216,12 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     )
     read = VerbGroup.EXPLORATION.value
     modify = VerbGroup.MODIFICATION.value
+
+    from .doctor import register_service_doctor
+    from .install import register_install
+
+    register_install(registry)
+    register_service_doctor(registry)
 
     registry.register(
         VerbSpec(

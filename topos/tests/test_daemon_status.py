@@ -14,7 +14,6 @@ from __future__ import annotations
 import dataclasses
 import io
 import json
-import os
 import stat
 import socketserver
 import threading
@@ -27,18 +26,23 @@ from topos.daemon import FrameBroker, serve_unix_socket
 
 
 def _current_group_name() -> str:
-    import grp
-    return grp.getgrgid(os.getgid()).gr_name
+    return "test-observe"
 
 
 def _mock_systemd_metadata(monkeypatch, socket_path: Path, group_name: str) -> None:
-    import grp
-
     from topos.service.config import DEFAULTS
+    import topos.daemon.status as status_module
 
     original_stat = Path.stat
     original_lstat = Path.lstat
-    group_id = grp.getgrnam(group_name).gr_gid
+    group_id = 991
+
+    def getgrnam(name):
+        if name != group_name:
+            raise KeyError(name)
+        return SimpleNamespace(gr_name=name, gr_gid=group_id)
+
+    monkeypatch.setattr(status_module.grp, "getgrnam", getgrnam)
 
     def stat_path(path: Path, *args, **kwargs):
         if path == DEFAULTS.state_dir:
@@ -101,12 +105,14 @@ class TestStatusHelper:
             _mock_systemd_metadata(monkeypatch, socket_path, group_name)
             report = build_daemon_status(socket_path, group_name=group_name)
             assert report.ok is True
+            assert report.socket_node.ok is True
             assert report.protocol.ok is True
-            assert report.protocol.message == "Current frame retrieved successfully."
+            assert "current frame retrieved successfully" in report.protocol.message
 
             j = report.to_jsonable()
             assert j["ok"] is True
             assert j["socket"] == str(socket_path)
+            assert j["socket_node"]["ok"] is True
             assert j["protocol"]["ok"] is True
             assert j["protocol"]["schema_version"] is not None
             assert j["protocol"]["entity_count"] is not None
@@ -127,6 +133,7 @@ class TestStatusHelper:
             text = report.to_text()
             assert "topos daemon status" in text
             assert str(socket_path) in text
+            assert "--- Socket node ---" in text
             assert "--- Protocol ---" in text
             assert "OK" in text or "DEGRADED" in text
         finally:
@@ -164,8 +171,7 @@ class TestStatusHelper:
         assert report.ok is False
         assert report.protocol.ok is False
         assert "Cannot connect" in report.protocol.message
-        assert "preflight" in report.protocol.message
-        assert "install-plan" in report.protocol.message
+        assert "toposd doctor --check connect" in report.protocol.message
 
     def test_status_missing_custom_socket(self, tmp_path: Path) -> None:
         """Missing custom socket returns ok=False with custom-socket guidance."""
@@ -176,8 +182,7 @@ class TestStatusHelper:
         assert report.ok is False
         assert report.protocol.ok is False
         assert "Cannot connect" in report.protocol.message
-        # Custom socket guidance references --socket
-        assert "--socket" in report.protocol.message
+        assert "mounted socket path" in report.protocol.message
 
     def test_status_protocol_error_message(self, tmp_path: Path) -> None:
         """Protocol error mentions compatible daemon and logs."""
@@ -236,6 +241,7 @@ class TestStatusCli:
             payload = json.loads(output)
             assert payload["ok"] is True
             assert payload["socket"] == str(socket_path)
+            assert payload["socket_node"]["ok"] is True
             assert payload["protocol"]["ok"] is True
         finally:
             server.shutdown()
@@ -280,7 +286,7 @@ class TestStatusCli:
         assert code == 1, f"expected 1, got {code}"
         # Guidance is in the status report text printed to stdout
         assert "Cannot connect" in stdout_val
-        assert "--socket" in stdout_val
+        assert str(missing) in stdout_val
 
     def test_status_cli_pretty_json(self, tmp_path: Path, monkeypatch) -> None:
         """topos daemon status --pretty-json produces indented JSON."""

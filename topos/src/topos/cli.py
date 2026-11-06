@@ -21,17 +21,7 @@ from topos.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, 
 from topos.damon.passive import DEFAULT_DAMON_ROOT
 from topos.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
 from topos.daemon.client import DaemonClientError, DaemonConnectError, DaemonProtocolError, DaemonResponseError, current_frame
-from topos.daemon.deploy import (
-    DEFAULT_DAEMON_GROUP,
-    DEFAULT_DAEMON_SOCKET,
-    DEFAULT_SERVICE_DEST,
-    build_install_plan,
-    install_plan_to_jsonable,
-    preflight_daemon_deployment,
-    preflight_report_to_jsonable,
-    render_install_plan_text,
-    render_preflight_text,
-)
+from topos.service.config import DEFAULTS as SERVICE_DEFAULTS
 from topos.daemon import (
     BpfSnapshotBridge,
     BpfSnapshotError,
@@ -52,6 +42,9 @@ from topos.record.writer import RecordWriter
 from topos.registry import METRIC_GROUPS, parse_metrics_selector
 from topos.snapshot import inspect_bundle
 from topos.cli_diagnostics import ToposArgumentParser, print_cli_error
+
+DEFAULT_DAEMON_SOCKET = SERVICE_DEFAULTS.sockets.observe.path
+DEFAULT_DAEMON_GROUP = SERVICE_DEFAULTS.sockets.observe.group
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -122,42 +115,6 @@ def parse_snapshot_args(argv: list[str]) -> argparse.Namespace:
 def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     parser = ToposArgumentParser(prog="topos daemon")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    preflight = subparsers.add_parser("preflight", help="check daemon deployment readiness")
-    preflight.add_argument(
-        "--socket",
-        type=Path,
-        default=None,
-        help="daemon socket path to inspect",
-    )
-    preflight.add_argument("--config", type=Path, default=None, help="toposd config file")
-    preflight.add_argument(
-        "--group",
-        type=str,
-        default=None,
-        help="expected daemon socket group",
-    )
-    preflight.add_argument("--json", action="store_true", help="emit JSON instead of text")
-    install_plan = subparsers.add_parser("install-plan", help="show a safe install plan for the packaged daemon templates")
-    install_plan.add_argument("--config", type=Path, default=None, help="toposd config file")
-    install_plan.add_argument(
-        "--socket",
-        type=Path,
-        default=None,
-        help="daemon socket path for the planned deployment",
-    )
-    install_plan.add_argument(
-        "--group",
-        type=str,
-        default=None,
-        help="expected daemon socket group",
-    )
-    install_plan.add_argument(
-        "--service-dest",
-        type=Path,
-        default=DEFAULT_SERVICE_DEST,
-        help="destination path for the systemd service unit",
-    )
-    install_plan.add_argument("--json", action="store_true", help="emit JSON instead of text")
     current = subparsers.add_parser("current", help="print one canonical frame from the daemon socket as JSON")
     current.add_argument(
         "--socket",
@@ -335,10 +292,10 @@ def _format_daemon_error(exc: DaemonClientError, socket_path: Path) -> str:
     if isinstance(exc, DaemonConnectError):
         lines.append("")
         if socket_path == DEFAULT_DAEMON_SOCKET:
-            lines.append("Try: topos daemon preflight")
-            lines.append("If the daemon is not installed: topos daemon install-plan")
+            lines.append("Try: toposd doctor --check connect")
+            lines.append("If the daemon is not installed: toposd install --dry-run")
         else:
-            lines.append(f"Try: topos daemon preflight --socket {socket_path}")
+            lines.append(f"Try: topos daemon status --socket {socket_path}")
     elif isinstance(exc, (DaemonProtocolError, DaemonResponseError)):
         lines.append("")
         lines.append("Check that the process at the socket is a compatible topos daemon")
@@ -1743,37 +1700,6 @@ def _main_gateway(argv: list[str]) -> int:
 
 def _main_daemon(argv: list[str]) -> int:
     args = parse_daemon_args(argv)
-    if args.command == "preflight":
-        try:
-            report = preflight_daemon_deployment(
-                args.socket,
-                group_name=args.group,
-                config_path=args.config,
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        if args.json:
-            print(json.dumps(preflight_report_to_jsonable(report), sort_keys=True))
-        else:
-            print(render_preflight_text(report))
-        return 0 if report.usable else 1
-    if args.command == "install-plan":
-        try:
-            plan = build_install_plan(
-                socket_path=args.socket,
-                group_name=args.group,
-                service_dest=args.service_dest,
-                config_path=args.config,
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        if args.json:
-            print(json.dumps(install_plan_to_jsonable(plan), sort_keys=True))
-        else:
-            print(render_install_plan_text(plan))
-        return 0
     if args.command == "current":
         from topos.daemon.client import DaemonClient
 

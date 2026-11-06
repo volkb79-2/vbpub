@@ -8,6 +8,14 @@ Spec: the `§` references in this file are to the 2026-07 spec,
 
 ## 1. Repository layout
 
+The host daemon service lifecycle is owned by `topos.service`: `toposd install`
+and `uninstall` manage the pinned host runtime, and `toposd doctor` reports
+service health. The install record at `/etc/topos/install.toml` stores the
+sha256 pins for the topos wheel, cli-extended wheel, and version-matched daemon
+lock, along with the source and group-creation facts. There are no legacy
+deployment command aliases. See
+`docs/DAEMON.md` for the install and manual-removal contracts.
+
 ```
 topos/
   pyproject.toml            # package: topos; console script: topos
