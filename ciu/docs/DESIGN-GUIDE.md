@@ -853,10 +853,21 @@ one-shot belongs to another or unknown checkout.
 
 The per-run extension is a narrow YAML fragment, not an alternate service
 definition. CIU validates its keys and rejects mount-target or append-field
-collisions before Compose runs. Compose appends `group_add`, `cap_add`, and
-`security_opt`; other accepted settings merge by their normal Compose rules.
-That explicit boundary lets a gate add measured resource limits and a
-read-only observer mount while leaving the rendered service authoritative.
+collisions before Compose runs. Compose appends `group_add`; other accepted
+settings merge by their normal Compose rules. `cap_add` and `security_opt` are
+not accepted at all, and a bind source of `/` or of a Docker socket (or a
+symlink to one) is refused: a per-run fragment must not be able to widen the
+container's privileges or hand it the daemon. That explicit boundary lets a
+gate add measured resource limits and a read-only observer mount while leaving
+the rendered service authoritative.
+
+The cleanup rule is deliberately one-directional. A name collision is detected
+before anything is created and is a refusal, not something CIU "fixes": a fixed
+`--name` such as a persistent `test-runner` must never be removed because a
+second launch used the same name. Once CIU has created a container, it removes
+only by full ID and only after proving the container carries this run's
+`ciu.run.id` label; Compose failures, mismatched IDs and unstarted containers
+are cleaned up through that label query, never through the name.
 
 ## Why worktree startup is one declared, combined deploy
 

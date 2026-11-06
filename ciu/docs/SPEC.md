@@ -1748,34 +1748,63 @@ not proof that the host unit exists.
 
 `--extend FILE` MUST contain exactly one `services.<selected-service>` mapping
 and may contain only `mem_limit`, `memswap_limit`, `pids_limit`, `cpus`,
-`group_add`, `cap_add`, `security_opt`, `volumes`, `environment`, `labels`,
-and `init`. `group_add`, `cap_add` and `security_opt` append under Compose's
-merge rules; CIU MUST reject each when the rendered service already declares
-that key. CIU MUST reject collisions for resource-limit and `init` scalars,
-environment variable names, and mount targets. Extension bind sources must
-be absolute, contain no `..`, and disable host-path auto-creation. Extension
-values and the projected dry-run plan MUST not disclose CIU secret values.
-Unknown keys, reserved `ciu.`/`com.docker.` label keys and malformed values
-MUST be refused before launch.
+`group_add`, `volumes`, `environment`, `labels`, and `init`. `cap_add` and
+`security_opt` are refused outright: they widen the container's privileges and
+no consumer needs them per run. `group_add` appends under Compose's merge
+rules; CIU MUST reject it when the rendered service already declares that key.
+CIU MUST reject collisions for resource-limit and `init` scalars, environment
+variable names, and mount targets; mount targets are compared after
+normalisation (`//`, `/./` and trailing `/` collapse), and are stored
+normalised. Extension bind sources must be absolute, contain no `..`, and
+disable host-path auto-creation. A bind source MUST be refused when it, after
+normalisation or symlink resolution, is `/`, a Docker socket
+(`/var/run/docker.sock`, `/run/docker.sock`, any `docker.sock`) or a parent
+directory of one. Extension values and the projected dry-run plan MUST not
+disclose CIU secret values. Unknown keys, reserved `ciu.`/`com.docker.` label
+keys and malformed values MUST be refused before launch.
+
+A container name collision is a refusal, never a cleanup. Before creating
+anything, in foreground, detached and dry-run modes alike, CIU looks the
+chosen name up with `docker inspect --type container` and refuses (exit
+non-zero, naming the holder's short ID, touching nothing) if any container
+holds it. A `--name` that is 1-64 lowercase hex characters is refused, because
+Docker resolves such a string as a container ID. Every `docker inspect` CIU
+issues is limited to containers. Every CIU-initiated `docker rm` and `docker
+kill` targets a full 64-hex container ID that CIU has first re-inspected and
+proven to carry this run's own `ciu.run.id` label; a failure path removes only
+what that label query proves is this run's, and a container that merely holds
+the name, or whose ID Compose printed but which lacks the label, is left
+alone.
 
 Without `--detach`, CIU runs `docker compose --progress quiet run` with an
 exact container name and without `--rm`. It passes `-T --interactive=false`
-unless both CIU stdin and stdout are terminals. CIU polls `docker inspect` by
-the exact name and emits a `launched` event with the full 64-hex ID as soon as
-the container is inspectable. The foreground process preserves command stdout
-and stderr; diagnostics go to stderr. On SIGINT or SIGTERM CIU sends that
-signal to the exact container, waits the bounded grace period, escalates to a
-container kill if needed, then checks the inspected `State.ExitCode`, removes
-the exact name, and returns the command status. It MUST NOT infer the ID or
-status from Compose output. A JSONL event sink (`--events-fd N`, writable and
-inherited, `N >= 3`, or append-only `--events-file PATH` created mode `0600`)
-receives `launched`, `exited`, and `removed` events separate from the command
-streams. The event schema is `ciu-run-event/1`; fields are the declared
-container identity and inspected configuration for `launched`, raw exit code,
-OOM state and finish time for `exited`, and removal result for `removed`.
+unless both CIU stdin and stdout are terminals (stdin is not forwarded
+otherwise). CIU polls `docker inspect` by the exact name and emits a `launched`
+event with the full 64-hex ID as soon as the container has STARTED, that is,
+`State.Status` is running/paused/restarting or `State.StartedAt` is set; a
+container that is only created, or whose start failed, produces no `launched`
+event, ends the run as a failure and is removed by its ID. The foreground
+process preserves command stdout and stderr; diagnostics go to stderr. On
+SIGINT, SIGTERM or SIGHUP CIU sends that signal to the container by its full
+ID, waits the bounded grace period, escalates to a container kill if needed,
+then checks the inspected `State.ExitCode`, removes the container by ID, and
+returns the command status. Only the first terminating signal is forwarded;
+later ones are ignored while the grace period runs. Compose runs in its own
+session, so when both stdin and stdout are terminals CIU relays SIGWINCH to the
+Compose client to keep the container's terminal size current. It MUST NOT infer
+the ID or status from Compose output. A JSONL event sink (`--events-fd N`,
+writable and inherited, `N >= 3`, or append-only `--events-file PATH` created
+mode `0600`) receives `launched`, `exited`, and `removed` events separate from
+the command streams. A sink write failure (a closed observer pipe, a full
+disk) is reported once on stderr; the sink is then dropped and the command
+keeps running, because an observer fault must not kill the user's work. The
+event schema is `ciu-run-event/1`; fields are the declared container identity
+and inspected configuration for `launched`, raw exit code, OOM state and finish
+time for `exited`, and removal result for `removed`.
 
 `--detach` requires `--json`. CIU invokes Compose `run -d` with progress quiet,
-cross-checks its full 64-hex stdout ID against an exact-name inspect, emits one
+cross-checks its full 64-hex stdout ID by inspecting that ID (its name and
+`ciu.run.id` label must be this run's and it must have started), emits one
 `launched` JSON object on stdout, and leaves the container in either running
 or exited state for the caller. It never auto-removes a detached run. This
 keeps immediate exits inspectable while Run-Gate starts and stops any observer
@@ -1787,6 +1816,16 @@ CIU labels every run with `ciu.run=1`, UUID, stack, service, owner PID plus
 process-start/boot/PID-namespace identity, mode and start time. Managed
 worktree runs also use CIU's ownership labels. A caller-supplied `--name` is
 used verbatim after name validation; CIU otherwise generates a unique name.
+The detached owner defaults to the parent process of `ciu`. A caller that
+starts `ciu` through a short-lived wrapper MUST pass `--owner-pid` naming the
+long-lived controller, otherwise the owner is dead as soon as the wrapper exits
+and `ciu run reap --yes` may remove the run once it has exited.
+`ciu run --dry-run --json` runs the same read-only checks as a real launch (the
+network ownership check and the name-availability check) and reports the
+effective name (generated when none is given), the `ciu.run.*` labels (run ID
+and start time as placeholders), injected environment and forwarded variable
+names (never values), mode and argv length, so it refuses wherever a real run
+would.
 `ciu run reap [--root-folder P] [--older-than DUR] [--yes]` surveys only
 containers matching the exact Compose project, `com.docker.compose.oneoff=True`
 and `ciu.run=1` labels, then inspects and removes by full ID only. It removes

@@ -663,6 +663,44 @@ def test_ciu_run_real_docker_acceptance() -> None:
         assert secret_value not in interrupted_stdout + interrupted_stderr
         assert _inspect(interrupted_name) is None
 
+        # Name collision (review F1): a persistent container that is NOT a
+        # ciu run (like dstdns's fixed-name test-runner) holds the requested
+        # name. Every mode refuses and the holder keeps its ID, state and
+        # StartedAt; nothing of ours is created or removed.
+        holder_name = f"{project_name}-persistent-holder"
+        owned_names.add(holder_name)
+        holder_up = _docker([
+            "run", "-d", "--pull=never", "--name", holder_name, image, "sleep", "600",
+        ])
+        assert holder_up.returncode == 0, holder_up.stderr
+        holder_before = _inspect(holder_name)
+        assert holder_before is not None and holder_before["State"]["Status"] == "running"
+        collision_runs = {
+            "detached": _cli(
+                root, "run", "--root-folder", str(root), "--detach", "--json",
+                "--name", holder_name, "tools/runner:worker", "--", "true", env=env,
+            ),
+            "foreground": _cli(
+                root, "run", "--root-folder", str(root), "--name", holder_name,
+                "tools/runner:worker", "--", "true", env=env,
+            ),
+            "dry-run": _cli(
+                root, "run", "--root-folder", str(root), "--dry-run", "--json",
+                "--name", holder_name, "tools/runner:worker", "--", "true", env=env,
+            ),
+        }
+        for mode, collided in collision_runs.items():
+            assert collided.returncode != 0, f"{mode}: name collision was accepted"
+            assert "already in use" in collided.stderr, f"{mode}: {collided.stderr[-2000:]}"
+            assert collided.stdout.strip() == "", f"{mode}: wrote to stdout"
+        holder_after = _inspect(holder_name)
+        assert holder_after is not None
+        assert holder_after["Id"] == holder_before["Id"]
+        assert holder_after["State"]["Status"] == "running"
+        assert holder_after["State"]["StartedAt"] == holder_before["State"]["StartedAt"]
+        holder_removed = _docker(["rm", "-f", holder_name])
+        assert holder_removed.returncode == 0, holder_removed.stderr
+
         # Compose's `run -d` stdout is the exact full ID even when the command
         # exits immediately; --name overrides service container_name.
         immediate_name = f"{project_name}-immediate"

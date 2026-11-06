@@ -2266,27 +2266,47 @@ one runnable service. An explicit `--name` is used verbatim and must be a valid
 Docker name. `--env-name` forwards only the named variable from CIU's
 environment; an unset variable stays unset. `--label KEY=VALUE` adds a
 non-reserved container label. A typed `--extend FILE` may add per-run resource
-limits, supplementary groups, capabilities, security options, non-colliding
-mounts, literal environment entries, labels, or `init`; CIU refuses ambiguous
-merge collisions and extension keys outside that allowlist.
+limits, supplementary groups, non-colliding mounts, literal environment
+entries, labels, or `init`; CIU refuses ambiguous merge collisions and
+extension keys outside that allowlist (including `cap_add` and `security_opt`),
+and bind sources of `/` or a Docker socket. A `--name` that is already held by
+any container (for example a persistent `test-runner`) is refused before
+anything is created and that container is never touched; a name made only of
+hex characters is refused because Docker would read it as a container ID.
 
 Preparation normally runs the selected stack's `pre_secrets` and `pre_compose`
 hooks. Use `--skip-hooks` only when the caller intentionally does not need
-their effects. A detached supervisor can pass its own PID with `--owner-pid`
-so `ciu run reap` tracks that supervisor's lifetime; ordinary callers should
-omit it and CIU records its parent process.
+their effects. A detached supervisor MUST pass its own PID with `--owner-pid`
+so `ciu run reap` tracks that supervisor's lifetime. Without it CIU records its
+parent process, which is the owner only when the parent is the long-lived
+controller; behind a short-lived wrapper shell the owner is dead at once and
+`ciu run reap --yes` may remove the run after it exits.
 
-Foreground runs inherit stdout and stderr. CIU allocates a terminal only when
-both stdin and stdout are terminals. It writes lifecycle JSONL separately from
-the command streams when `--events-fd N` or `--events-file PATH` is supplied;
-the events report the inspected container ID, command exit status, and removal
-result. The event file is created with mode `0600`.
+Foreground runs inherit stdout and stderr. CIU allocates a terminal and
+forwards stdin only when both stdin and stdout are terminals (a piped
+`echo data | ciu run ... -- cat` gets EOF immediately). SIGINT, SIGTERM and
+SIGHUP are forwarded to the container (the first one only; later ones are
+ignored during the grace period) and, with a terminal, window resizes are
+relayed. It writes lifecycle JSONL separately from the command streams when
+`--events-fd N` or `--events-file PATH` is supplied; the events report the
+inspected container ID, command exit status, and removal result, and
+`launched` is emitted only for a container that actually started. If the sink
+breaks (for example the observer closed its pipe), CIU reports it once on
+stderr and keeps running the command. The event file is created with mode
+`0600`.
 
-Preview the allowlisted plan without starting a container:
+Preview what a real run would do without starting a container:
 
 ```console
 $ ciu run --dry-run --json tools/test-runner:test-runner -- pytest -q
 ```
+
+The preview runs the same read-only checks as a launch (network ownership,
+name availability) and fails where the launch would. It reports the effective
+container name (generated when you give none), the `ciu.run.*` runtime labels
+(run ID and start time are placeholders), the injected variables
+(`CIU_RUN_CONTAINER_NAME`, `CIU_RUN_ID`, `CIU_RUN_CGROUP_PARENT`) and the
+forwarded `--env-name` variable names, never values.
 
 For an observer that must inspect the container, detach and keep it after CIU
 returns:
