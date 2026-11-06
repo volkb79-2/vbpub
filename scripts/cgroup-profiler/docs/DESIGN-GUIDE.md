@@ -215,10 +215,11 @@ the real `/proc` and `/sys/fs/cgroup`; its pid-namespace identity check
 (configured proc root versus its own namespace) is a consistency check that
 is always on. Container names, labels, and `self` are resolved on the
 client side (`cgpctl`, which may call `docker inspect`) to full container
-IDs; the daemon locates those IDs in its host cgroup view. The `/run/cgprofile`
-socket directory is created by the host's tmpfiles rule, never by the unit,
-and its group is adopted by `stat`; if it is missing the service fails to
-start instead of creating a directory that hides the missing prerequisite.
+IDs; the daemon locates those IDs in its host cgroup view. Systemd socket
+units own `/run/cgprofile/control/cgprofile.sock` and
+`/run/cgprofile/observer/cgprofile.sock`; the service receives the already
+listening descriptors and never changes their nodes. Their parent directories
+are root-owned and non-writable by consumers.
 The daemon is not a general capability-changing tool: it has no capability
 mutation option, imports no `TempCaps`, and has no Docker socket. It writes its
 session volume and the DAMON admin sysfs state required for observation, in
@@ -258,7 +259,7 @@ and is not needed for this read. Instead, Run-Gate can mount a second,
 observer-only socket from the existing daemon:
 
 ```text
-Assay worker -- {thread_id} --> resource-observer.sock
+Assay worker -- {thread_id} --> cgprofile.sock
                                       |
                        SO_PEERCRED + host proc/cgroup view
                                       |
@@ -301,7 +302,7 @@ and whether that listener bound successfully. This makes a required contract
 upgrade visible before a long mutation lane starts; the control contract number
 itself remains 1.
 
-The observer is a distinct listener, not a read-only bind of `ctl.sock`:
+The observer is a distinct listener, not a read-only bind of the control socket:
 filesystem read-only does not restrict the verbs of an AF_UNIX service. The
 listener accepts one `resource-limits` query and no start/stop/placement
 operation. Run-Gate validates the fixed socket path and bind-mounts its
@@ -427,7 +428,7 @@ The inode check detects an out-of-band replacement between operations; it is
 not a kernel-enforced lease and cannot make a privileged count writer racing
 between a check and a sysfs write atomic. cgprofile closes its own
 cross-process race with an advisory `flock` on the host-shared
-`/run/cgprofile/damon.lock`: a one-shot collector holds the lock for its full
+`/run/cgprofile/state/damon.lock`: a one-shot collector holds the lock for its full
 session, while daemon-pool reserve/release/restore operations take it around
 the registry transaction. This serializes the daemon and one-shot collector
 processes without making one-shot profiling wait behind another DAMON run.
@@ -762,3 +763,50 @@ worker wedged inside a locked action costs one failed finalize (orphan
 recovery on restart) rather than a daemon-wide hang. Known
 limit: each attempt joins for up to 10 s while holding the server-wide lock, so
 a wedged sampler delays every verb for that long per retry.
+
+## systemd owns the service sockets
+
+The daemon exposes two fixed access levels:
+
+- control at `/run/cgprofile/control/cgprofile.sock`, owned by
+  `root:cgprofile-control` with mode `0660`;
+- observer at `/run/cgprofile/observer/cgprofile.sock`, owned by
+  `root:cgprofile-observer` with mode `0660`.
+
+Each level has its own systemd socket unit with one `ListenStream=`. The unit
+creates and owns the filesystem node, then passes exactly one named descriptor
+to `cgpd.service`. This removes socket-node ownership from daemon startup and
+preserves the socket inode when only the service restarts. Restarting a socket
+unit also restarts the service through `Requires=`, so the daemon does not keep
+accepting on a descriptor whose pathname has been replaced.
+
+The daemon validates descriptor names, rejects duplicates and unknown names,
+checks that each descriptor is a listening Unix stream socket, and clears
+`LISTEN_PID`, `LISTEN_FDS`, and `LISTEN_FDNAMES` before starting workers. An
+absent level is logged and left unavailable while the other level continues;
+`cgpd doctor` reports the missing node and gives the matching socket-unit
+restart command. The service never binds, chmods, chowns, or unlinks an
+activated node. `--self-bind` remains available only for tests and development;
+it may set the node mode but does not create or change the parent directory.
+
+The access groups are deliberately separate. A control client can start and
+stop profiling sessions; an observer client can read only the observer
+contract. The observer GID must differ from docker's GID. The parent and level
+directories remain `root:root 0755`, so traversal does not grant access by
+itself. The socket group is the access decision.
+
+The service config is the single source for `unit print`, `install`, and
+`doctor`. Paths, groups, and octal modes live under `[sockets.control]` and
+`[sockets.observer]`; socket settings are fixed until restart. The former
+`ctl_socket` and `observer_socket` keys fail with the replacement spelling.
+Clients use the new paths only. There is no path probing or compatibility
+fallback because the host moves from the old installation in one drained
+cutover.
+
+`cgpd install` refuses old state rather than trying to normalize it. A
+leftover mdt config key, external tmpfiles rule or unit drop-in, runtime tree
+with the wrong identity or mode, mdt installer manifest, or interrupted
+`PENDING` / `current.new` update needs an explicit manual removal. This keeps
+a detected host fact visible to the operator instead of silently chmodding a
+runtime tree or deleting state owned by another installation. The refusal
+prints the removal list; see [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md).

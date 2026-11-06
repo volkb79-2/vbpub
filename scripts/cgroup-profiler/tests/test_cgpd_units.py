@@ -26,7 +26,7 @@ def cli(capsys):
 
 
 class TestRender:
-    @pytest.mark.parametrize("name", ["cgprofile.slice", "cgpd.service"])
+    @pytest.mark.parametrize("name", list(unitfiles.TEMPLATES))
     def test_default_render_is_the_golden(self, name):
         text = unitfiles.render()[name]
         golden = GOLDENS / name
@@ -48,9 +48,25 @@ class TestRender:
 
     def test_the_service_sets_no_environment_and_no_oom_score(self):
         lines = [line for line in unitfiles.render()["cgpd.service"].splitlines() if not line.startswith("#")]
-        assert not any(line.startswith(("Environment", "OOMScoreAdjust", "RuntimeDirectory")) for line in lines)
+        assert not any(line.startswith(("Environment", "OOMScoreAdjust")) for line in lines)
         assert "ExecReload=/bin/kill -HUP $MAINPID" in lines
         assert "Slice=cgprofile.slice" in lines and "StartLimitBurst=5" in lines
+        assert "RuntimeDirectory=cgprofile/state" in lines
+        assert "RuntimeDirectoryMode=0700" in lines and "RuntimeDirectoryPreserve=yes" in lines
+
+    def test_each_socket_unit_has_one_named_listener_and_sysusers_has_default_groups(self):
+        rendered = unitfiles.render()
+        for name, fd_name, path in (
+            ("cgprofile-control.socket", "control", "/run/cgprofile/control/cgprofile.sock"),
+            ("cgprofile-observer.socket", "observer", "/run/cgprofile/observer/cgprofile.sock"),
+        ):
+            lines = rendered[name].splitlines()
+            assert [line for line in lines if line.startswith("ListenStream=")] == [f"ListenStream={path}"]
+            assert f"FileDescriptorName={fd_name}" in lines
+        assert rendered["cgprofile.sysusers"] == (
+            "g cgprofile-control - - -\n"
+            "g cgprofile-observer - - -\n"
+        )
 
     @pytest.mark.parametrize("bad", ["relative/path", "/with space", "/at@sign", '/quo"te', "/pct%x", "/ctl\x01"])
     def test_unusable_paths_are_refused(self, bad):
@@ -80,6 +96,9 @@ class TestPrint:
         code, out, _ = cli("unit", "print")
         assert code == 0
         assert out.startswith("# ---- cgprofile.slice ----\n") and "# ---- cgpd.service ----\n" in out
+        assert "# ---- cgprofile-control.socket ----\n" in out
+        assert "# ---- cgprofile-observer.socket ----\n" in out
+        assert "# ---- cgprofile.sysusers ----\n" in out
 
     def test_one_unit_verbatim(self, cli):
         code, out, _ = cli("unit", "print", "--unit", "cgpd.service", "--wheel-venv", "/opt/cgprofile/2.0.0/venv")
@@ -88,7 +107,7 @@ class TestPrint:
     def test_json(self, cli):
         code, out, _ = cli("unit", "print", "--json")
         doc = json.loads(out.strip().splitlines()[-1])
-        assert code == 0 and set(doc["units"]) == {"cgprofile.slice", "cgpd.service"} and doc["ok"] is True
+        assert code == 0 and set(doc["units"]) == set(unitfiles.TEMPLATES) and doc["ok"] is True
 
     def test_a_bad_path_is_exit_2(self, cli):
         code, _out, err = cli("unit", "print", "--install-root", "relative")
@@ -113,6 +132,7 @@ class TestCheck:
 
     def test_defaults_to_the_systemd_directory(self, cli, installed, monkeypatch):
         monkeypatch.setattr(unitfiles, "DEFAULT_UNIT_DIR", str(installed))
+        monkeypatch.setattr(unitfiles, "DEFAULT_SYSUSERS_DIR", str(installed))
         assert cli("unit", "check")[0] == 0
 
     def test_drift_names_the_first_differing_line(self, cli, installed):

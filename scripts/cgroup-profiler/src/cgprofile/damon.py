@@ -60,7 +60,7 @@ except Exception:
     Classifier = None  # type: ignore[assignment]
     KDAMONDS_DIR = "/sys/kernel/mm/damon/admin/kdamonds"
 
-DAMON_REGISTRY_LOCK_PATH = "/run/cgprofile/damon.lock"
+DAMON_REGISTRY_LOCK_PATH = "/run/cgprofile/state/damon.lock"
 DAMON_HELPER_LOCK_PATH = "/tmp/cgprofile-damon.lock"
 
 

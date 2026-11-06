@@ -70,6 +70,8 @@ def _registry_verbs(registry) -> Dict[str, Set[str]]:
 def _default_text(spec) -> str:
     if spec.kind == "onoff":
         return f'"{spec.default}"'
+    if spec.kind == "socket":
+        return "; ".join(f"{key}={value}" for key, value in spec.default.items())
     if spec.kind in ("slice", "string"):
         return f'"{spec.default}"' if spec.kind == "slice" else str(spec.default)
     if spec.kind in ("slices", "uids"):
@@ -116,11 +118,11 @@ def readme_problems(text: str) -> List[str]:
 
     sockets = _tables(_section(text, "3. Sockets"))[0]
     socket_cells = " ".join(row[0] for row in sockets)
-    for path in (daemon_config.KEYS["ctl_socket"].default, daemon_config.KEYS["observer_socket"].default):
+    for path in (daemon_config.DEFAULT_CONTROL_SOCKET, daemon_config.DEFAULT_OBSERVER_SOCKET):
         if f"`{path}`" not in socket_cells:
             problems.append(f"sockets table lacks {path}")
-    if ctlwire.DEFAULT_SOCKET != daemon_config.KEYS["ctl_socket"].default:
-        problems.append("ctlwire default socket differs from the ctl_socket default")
+    if ctlwire.DEFAULT_SOCKET != daemon_config.DEFAULT_CONTROL_SOCKET:
+        problems.append("ctlwire default socket differs from the sockets.control default")
     if OBSERVER_GROUP not in " ".join(" ".join(row) for row in sockets):
         problems.append(f"sockets table does not name the {OBSERVER_GROUP} group")
     return problems
@@ -133,7 +135,7 @@ def test_readme_overview_matches_the_shipped_surface():
 def test_socket_paths_and_group_names_agree_across_the_documents():
     protocol = PROTOCOL.read_text(encoding="utf-8")
     native = (ROOT / "docs" / "NATIVE-DEPLOYMENT.md").read_text(encoding="utf-8")
-    for path in (daemon_config.KEYS["ctl_socket"].default, daemon_config.KEYS["observer_socket"].default):
+    for path in (daemon_config.DEFAULT_CONTROL_SOCKET, daemon_config.DEFAULT_OBSERVER_SOCKET):
         assert path in protocol, path
         assert path in native, path
     for text in (protocol, native, README.read_text(encoding="utf-8")):
@@ -157,7 +159,7 @@ def test_cgpd_run_is_explicit_in_the_spec_and_the_readme():
         ("| `max_watchers` | `32` | reload |", "| `max_watchers` | `33` | reload |"),
         ("| `busctl` | `busctl` | restart |", "| `busctl` | `busctl` | reload |"),
         ("| `allow_uids` | `[]` | reload |\n", ""),
-        ("`/run/cgprofile/ctl.sock` | directory", "`/run/cgprofile/ctl2.sock` | directory"),
+        ("`/run/cgprofile/control/cgprofile.sock`", "`/run/cgprofile/control/cgprofile2.sock`"),
         ("root:cgprofile-observer` |", "root:observers` |"),
     ],
 )

@@ -38,6 +38,9 @@ class TestValidate:
         ("gates_slice", " dev-gates.slice ", "dev-gates.slice"),
         ("observe_slices", ["a.slice"], ["a.slice"]),
         ("allow_uids", [1, 1, 2], [1, 2]),
+        ("sockets.control", {"path": "/run/cgprofile/control/cgprofile.sock",
+                              "group": "cgprofile-control", "mode": "660"},
+         {"path": "/run/cgprofile/control/cgprofile.sock", "group": "cgprofile-control", "mode": "0660"}),
     ])
     def test_good(self, key, value, expected):
         assert dc.validate(key, value) == expected
@@ -62,6 +65,11 @@ class TestValidate:
         ("allow_uids", 5, "array"),
         ("allow_uids", [-1], "non-negative"),
         ("allow_uids", [True], "non-negative"),
+        ("sockets.control", [], "table"),
+        ("sockets.control", {"path": "relative", "group": "g", "mode": "0660"}, "absolute path"),
+        ("sockets.control", {"path": "/x", "group": "bad group", "mode": "0660"}, "group name"),
+        ("sockets.control", {"path": "/x", "group": "g", "mode": 660}, "octal mode"),
+        ("sockets.control", {"path": "/x", "group": "g"}, "missing mode"),
     ])
     def test_bad(self, key, value, needle):
         with pytest.raises(dc.ConfigError, match=needle):
@@ -114,6 +122,37 @@ class TestFile:
         p = _write(tmp_path / "c.toml", "[interval]\nx = 1\n")
         with pytest.raises(dc.ConfigError, match="number"):
             dc.read_config_file(p, explicit=True)
+
+    def test_old_socket_keys_name_the_new_tables(self, tmp_path):
+        for key, replacement in (("ctl_socket", "sockets.control"),
+                                 ("observer_socket", "sockets.observer")):
+            p = _write(tmp_path / "old.toml", f'{key} = "/run/cgprofile/old.sock"\n')
+            with pytest.raises(dc.ConfigError, match=rf"{key} was removed; use \[{replacement}\] path"):
+                dc.read_config_file(p, explicit=True)
+
+    def test_socket_tables_round_trip_with_top_level_values_first(self):
+        values = {
+            "interval": 2.5,
+            "sockets.control": {"path": "/run/cgprofile/control/cgprofile.sock",
+                                "group": "cgprofile-control", "mode": "0660"},
+            "sockets.observer": {"path": "/run/cgprofile/observer/cgprofile.sock",
+                                 "group": "cgprofile-observer", "mode": "0660"},
+        }
+        rendered = dc.render_config(values)
+        assert rendered.startswith("interval = 2.5\n\n[sockets.control]\n")
+        assert dc.parse_table(rendered) == values
+
+    @pytest.mark.parametrize("control,observer,needle", [
+        ({"path": "/control", "group": "same", "mode": "0660"},
+         {"path": "/observer", "group": "same", "mode": "0660"}, "groups must differ"),
+        ({"path": "/same", "group": "control", "mode": "0660"},
+         {"path": "/same", "group": "observer", "mode": "0660"}, "paths must differ"),
+        ({"path": "/control", "group": "control", "mode": "0660"},
+         {"path": "/observer", "group": "docker", "mode": "0660"}, "must not be docker"),
+    ])
+    def test_socket_table_cross_validation(self, control, observer, needle):
+        with pytest.raises(dc.ConfigError, match=needle):
+            dc.render_config({"sockets.control": control, "sockets.observer": observer})
 
 
 class TestStaleEnv:
@@ -390,7 +429,7 @@ class TestOverridesFileIsDefensive:
             "keep_days = 3\nnope = 1\nctl_socket = \"/x\"\nkeep_sessions = 0\n")
         s.load()
         assert s.get("keep_days") == 3
-        assert s.get("ctl_socket") == "/run/cgprofile/ctl.sock"
+        assert s.get("sockets.control")["path"] == dc.DEFAULT_CONTROL_SOCKET
         assert s.overrides_ignored == 3
         assert len([line for line in lines if "ignored" in line]) == 3
 

@@ -52,7 +52,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, Mapping, MutableMapping, Optional, Sequence, Set, Tuple
 
 from . import access, daemon_config, damon as damon_mod, events as events_mod, metrics, sampler as sampler_mod
 from . import store, subtree, summary, targets as targets_mod, util
@@ -81,10 +81,8 @@ RESOURCE_OBSERVER_CONTRACT_VERSION = (
 RESOURCE_OBSERVER_CONTRACTS = (2, 3)
 CGPROFILE_VERSION = runtime_version(installed_version())
 
-DEFAULT_SOCKET_PATH = "/run/cgprofile/ctl.sock"
-DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH = (
-    "/run/cgprofile/observer/resource-observer.sock"
-)
+DEFAULT_SOCKET_PATH = "/run/cgprofile/control/cgprofile.sock"
+DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH = "/run/cgprofile/observer/cgprofile.sock"
 DEFAULT_SESSIONS_DIR = "/var/lib/cgprofile/sessions"
 DEFAULT_DAEMON_NAME = "cgprofile-host-daemon"
 DEFAULT_MAX_SESSIONS = 16
@@ -129,7 +127,6 @@ STREAMING_VERBS = frozenset({"watch", "export"})
 # socket itself (§8.1 "belt and braces to the host's tmpfiles.d entry",
 # RW-37: the host's own source of truth is mdt host-setup's
 # `mdt-cgprofile.conf`, NOT this daemon — the daemon only re-asserts).
-SOCKET_DIR_MODE = 0o770
 SOCKET_MODE = 0o660
 # The uid allowlist (§8.1) is the `allow_uids` setting (cgpd.toml, runtime
 # `config-set`). Empty = no uid restriction beyond the socket's own group mode
@@ -204,6 +201,71 @@ SOCKET_CHECK_INTERVAL_SECONDS = 5.0
 #: `serve_forever` exit status when the control socket was lost and could
 #: not be rebound: non-zero so the restart policy recreates the daemon.
 EXIT_SOCKET_LOST = 3
+
+
+class SocketActivationError(ValueError):
+    """Invalid systemd socket activation environment or descriptor set."""
+
+
+def adopt_systemd_sockets(
+    environ: Optional[MutableMapping[str, str]] = None,
+    *,
+    pid: Optional[int] = None,
+) -> Optional[Dict[str, socket.socket]]:
+    """Adopt systemd's named listening descriptors, or return ``None``.
+
+    A returned empty mapping means activation was explicitly present but
+    supplied no sockets. Descriptor ownership transfers to the returned
+    socket objects. Activation variables are removed before returning so
+    children cannot mistake the daemon's descriptors for their own.
+    """
+    env = os.environ if environ is None else environ
+    raw_count = env.get("LISTEN_FDS")
+    if raw_count is None:
+        return None
+    current_pid = os.getpid() if pid is None else pid
+    raw_pid = env.get("LISTEN_PID")
+    if raw_pid != str(current_pid):
+        raise SocketActivationError(
+            f"LISTEN_FDS is set but LISTEN_PID {raw_pid!r} does not match process {current_pid}"
+        )
+    try:
+        count = int(raw_count, 10)
+    except ValueError:
+        raise SocketActivationError(f"LISTEN_FDS is not a non-negative integer: {raw_count!r}") from None
+    if count < 0:
+        raise SocketActivationError(f"LISTEN_FDS is not a non-negative integer: {raw_count!r}")
+    names = env.get("LISTEN_FDNAMES", "").split(":") if count else []
+    if len(names) != count:
+        raise SocketActivationError(
+            f"LISTEN_FDNAMES names {len(names)} descriptors but LISTEN_FDS is {count}"
+        )
+    adopted: Dict[str, socket.socket] = {}
+    opened: List[socket.socket] = []
+    try:
+        for offset in range(count):
+            opened.append(socket.socket(fileno=3 + offset))
+        for listener, name in zip(opened, names):
+            if name not in ("control", "observer"):
+                raise SocketActivationError(f"unknown systemd socket descriptor name {name!r}")
+            if name in adopted:
+                raise SocketActivationError(f"more than one systemd socket descriptor is named {name!r}")
+            if listener.family != socket.AF_UNIX or listener.type & socket.SOCK_STREAM != socket.SOCK_STREAM:
+                raise SocketActivationError(f"systemd descriptor {name!r} is not an AF_UNIX stream socket")
+            if not listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN):
+                raise SocketActivationError(f"systemd descriptor {name!r} is not listening")
+            listener.set_inheritable(False)
+            adopted[name] = listener
+        for key in ("LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES"):
+            env.pop(key, None)
+        return adopted
+    except BaseException:
+        for listener in opened:
+            try:
+                listener.close()
+            except OSError:
+                pass
+        raise
 
 
 def daemon_slice_problem(cgroup_root: str, proc_root: str) -> Optional[str]:
@@ -516,6 +578,7 @@ class SessionServer:
         socket_check_interval: float = SOCKET_CHECK_INTERVAL_SECONDS,
         placement_factory: Optional[Callable[..., "placement_mod.LanePlacement"]] = None,
         settings: Optional["daemon_config.Settings"] = None,
+        activated_sockets: Optional[Mapping[str, socket.socket]] = None,
         host_benchmark_path: Optional[str] = None,
         sys_root: Optional[str] = None,
     ) -> None:
@@ -605,6 +668,8 @@ class SessionServer:
         self._lock = threading.RLock()
         self._sock: Optional[socket.socket] = None
         self._observer_sock: Optional[socket.socket] = None
+        self._activated_sockets = None if activated_sockets is None else dict(activated_sockets)
+        self.socket_mode = "self-bind" if activated_sockets is None else "activated"
         self._observer_socket_identity: Optional[Tuple[int, int]] = None
         self._observer_thread: Optional[threading.Thread] = None
         self._stopping = False
@@ -635,7 +700,14 @@ class SessionServer:
             )
             settings.load()
             settings.seed({
-                "sessions_dir": sessions_dir, "ctl_socket": socket_path,
+                "sessions_dir": sessions_dir,
+                "sockets.control": {
+                    "path": socket_path, "group": "cgprofile-control", "mode": "0660",
+                },
+                "sockets.observer": {
+                    "path": observer_socket_path or DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH,
+                    "group": "cgprofile-observer", "mode": "0660",
+                },
                 "damon_default": damon_default, "interval": interval,
                 "keep_sessions": keep_sessions, "keep_days": keep_days,
                 "max_sessions": max_sessions, "observe_slices": list(observe_slices),
@@ -1028,7 +1100,18 @@ class SessionServer:
                 "last_reload_error": self.settings.last_reload_error,
                 "overrides": self.settings.override_count,
             }
+            doc["socket_activation"] = self._socket_activation_state()
         return doc
+
+    def _socket_activation_state(self) -> Dict[str, Any]:
+        """Report the serving mode and the accepted descriptor count per level."""
+        return {
+            "mode": self.socket_mode,
+            "fds": {
+                "control": int(self._sock is not None),
+                "observer": int(self._observer_sock is not None),
+            },
+        }
 
     # ── verbs: config / config-set / config-reset (PROTOCOL 10.4) ────────
 
@@ -2275,6 +2358,7 @@ class SessionServer:
             return {
                 "ok": True, "contract": CONTRACT_VERSION, "at": self._iso(self.clock()),
                 "sessions": entries, "host": self._host_snapshot(),
+                **({"socket_activation": self._socket_activation_state()} if ctx.contract >= 2 else {}),
             }
         if not isinstance(session_id, str) or not _SESSION_ID_RE.match(session_id):
             raise RequestError("unknown-session", f"no session {session_id!r} is live or on record")
@@ -2292,6 +2376,7 @@ class SessionServer:
             "ok": True, "contract": CONTRACT_VERSION, "at": self._iso(self.clock()),
             "session": entry,
             "host": self._host_snapshot(),
+            **({"socket_activation": self._socket_activation_state()} if ctx.contract >= 2 else {}),
         }
 
     def _stored_entries(self) -> List[Dict[str, Any]]:
@@ -3202,9 +3287,21 @@ class SessionServer:
             raise
         self._sock = sock
         self._sock_identity = (bound.st_dev, bound.st_ino)
-        self._assert_socket_permissions(socket_dir)
+        self._apply_self_bind_socket_mode(self.socket_path, "control")
 
     def _bind(self) -> None:
+        if self._activated_sockets is not None:
+            for level in ("control", "observer"):
+                listener = self._activated_sockets.get(level)
+                if listener is None:
+                    self._log(f"systemd socket descriptor missing for configured level {level}")
+                    continue
+                listener.settimeout(self.accept_timeout)
+                if level == "control":
+                    self._sock = listener
+                else:
+                    self._observer_sock = listener
+            return
         self._bind_control_socket()
         try:
             self._bind_observer_socket()
@@ -3295,12 +3392,9 @@ class SessionServer:
             owned_identity = (bound.st_dev, bound.st_ino)
             sock.listen(16)
             sock.settimeout(self.accept_timeout)
-            self._assert_observer_socket_permissions(
-                observer_dir, self.observer_socket_path,
-                require_host_identity=default_directory,
-            )
             self._observer_sock = sock
             self._observer_socket_identity = owned_identity
+            self._apply_self_bind_socket_mode(self.observer_socket_path, "observer")
         except Exception:
             sock.close()
             self._unlink_observer_socket_if_owned(owned_identity)
@@ -3322,122 +3416,21 @@ class SessionServer:
         except OSError:
             pass
 
-    def _assert_observer_socket_permissions(
-        self, socket_dir: str, socket_path: str, *, require_host_identity: bool
-    ) -> None:
-        """Apply socket access without changing the host-owned directory.
+    def _apply_self_bind_socket_mode(self, path: str, level: str) -> None:
+        """Apply the configured node mode in explicit development self-bind mode.
 
-        Host setup owns and persists the directory. The daemon only creates
-        the socket name; it must never widen the directory or invent it.
-        Custom paths are an internal test seam and keep the test process's
-        uid/gid because it may not have permission to chown to root.
+        The caller provisions the parent directory. Production socket access
+        is set by systemd's SocketUser, SocketGroup and SocketMode settings.
         """
-        directory = os.lstat(socket_dir)
-        socket_stat = os.lstat(socket_path)
-        if not stat.S_ISDIR(directory.st_mode) or not stat.S_ISSOCK(socket_stat.st_mode):
-            raise OSError(errno.EINVAL, "invalid resource observer directory or socket")
-        if require_host_identity:
-            if directory.st_uid != 0 or directory.st_mode & 0o022 \
-                    or not directory.st_mode & 0o010:
-                raise OSError(errno.EPERM, "unsafe host resource observer directory", socket_dir)
-            try:
-                os.chown(socket_path, 0, directory.st_gid)
-            except OSError as exc:
-                raise OSError(
-                    exc.errno,
-                    f"could not set observer socket owner root:gid={directory.st_gid}: {exc}",
-                    socket_path,
-                ) from exc
         try:
-            os.chmod(socket_path, SOCKET_MODE)
-        except OSError as exc:
-            raise OSError(exc.errno, f"could not chmod observer socket: {exc}", socket_path) from exc
-        socket_stat = os.lstat(socket_path)
-        expected_uid = 0 if require_host_identity else os.geteuid()
-        if socket_stat.st_uid != expected_uid or socket_stat.st_gid != directory.st_gid \
-                or socket_stat.st_mode & 0o007 or not socket_stat.st_mode & 0o020:
-            raise OSError(errno.EPERM, "resource observer socket permissions do not match its directory", socket_path)
-
-    def _assert_one_socket_permissions(
-        self, socket_dir: str, socket_path: str, *, warn_root_only: bool
-    ) -> None:
+            settings = self.settings.get(f"sockets.{level}")
+            mode = int(settings["mode"], 8)
+        except (KeyError, TypeError, ValueError):
+            mode = SOCKET_MODE
         try:
-            os.chmod(socket_dir, SOCKET_DIR_MODE)
+            os.chmod(path, mode)
         except OSError as exc:
-            self._log(f"could not chmod {socket_dir} to {SOCKET_DIR_MODE:04o}: {exc}")
-        try:
-            os.chmod(socket_path, SOCKET_MODE)
-        except OSError as exc:
-            self._log(f"could not chmod {socket_path} to {SOCKET_MODE:04o}: {exc}")
-        try:
-            dir_gid = os.stat(socket_dir).st_gid
-        except OSError as exc:
-            self._log(f"could not stat {socket_dir}: {exc}")
-            return
-        try:
-            os.chown(socket_path, 0, dir_gid)
-        except OSError as exc:
-            self._log(f"could not set {socket_path} owner root:gid={dir_gid}: {exc}")
-        if warn_root_only and dir_gid == 0:
-            self._log(
-                f"socket carrier root-only until host-setup is installed "
-                f"({socket_dir} is root:root — mdt host-setup's "
-                f"mdt-cgprofile.conf owns that directory); the exec "
-                f"carrier is unaffected"
-            )
-        try:
-            os.chmod(socket_path, SOCKET_MODE)
-        except OSError as exc:
-            self._log(f"could not chmod {socket_path} to {SOCKET_MODE:04o}: {exc}")
-
-    def _assert_socket_permissions(self, socket_dir: str) -> None:
-        """Re-assert §8.1's directory/socket permissions at every start.
-
-        The HOST is the source of truth for the directory's ownership: mdt
-        host-setup ships `mdt-cgprofile.conf` (`d /run/cgprofile 0770 root
-        docker -`, RW-37) and that tmpfiles.d entry decides WHICH group may
-        reach the carrier. This daemon only re-asserts, belt and braces:
-        mode `0770` on the directory, and on the socket owner `root` with
-        THE DIRECTORY'S OWN gid (RW-35(b) — never a hardcoded `docker`,
-        which does not exist inside this image and whose host gid varies
-        per host) at mode `0660`.
-
-        A `root:root` directory means host-setup is not installed yet: the
-        socket ends up root-only and ONE INFO line says so. That is not an
-        error — the exec carrier is unaffected and stays the default
-        (§8.1's carrier table), so the daemon keeps serving either way.
-        Every step is best-effort for the same reason: a permission failure
-        (the unprivileged daemon a test runs) must degrade the SOCKET
-        carrier, never take the daemon down.
-        """
-        dir_gid: Optional[int] = None
-        if socket_dir:
-            try:
-                os.chmod(socket_dir, SOCKET_DIR_MODE)
-            except OSError as exc:
-                self._log(f"could not chmod {socket_dir} to {SOCKET_DIR_MODE:04o}: {exc}")
-            try:
-                dir_gid = os.stat(socket_dir).st_gid
-            except OSError as exc:
-                self._log(f"could not stat {socket_dir}: {exc}")
-        if dir_gid is not None:
-            try:
-                os.chown(self.socket_path, 0, dir_gid)
-            except OSError as exc:
-                self._log(
-                    f"could not set {self.socket_path} owner root:gid={dir_gid}: {exc}"
-                )
-            if dir_gid == 0:
-                self._log(
-                    f"socket carrier root-only until host-setup is installed "
-                    f"({socket_dir} is root:root — mdt host-setup's "
-                    f"mdt-cgprofile.conf owns that directory); the exec "
-                    f"carrier is unaffected"
-                )
-        try:
-            os.chmod(self.socket_path, SOCKET_MODE)
-        except OSError as exc:
-            self._log(f"could not chmod {self.socket_path} to {SOCKET_MODE:04o}: {exc}")
+            self._log(f"could not chmod self-bound {level} socket {path} to {mode:04o}: {exc}")
 
     @staticmethod
     def _log(message: str) -> None:
@@ -3547,7 +3540,8 @@ class SessionServer:
                 self._sock.close()
             finally:
                 self._sock = None
-        self._unlink_control_socket_if_owned()
+        if self.socket_mode == "self-bind":
+            self._unlink_control_socket_if_owned()
         owned_observer_socket = self._observer_sock is not None
         observer_identity = self._observer_socket_identity
         if owned_observer_socket:
@@ -3556,7 +3550,7 @@ class SessionServer:
             finally:
                 self._observer_sock = None
                 self._observer_socket_identity = None
-        if owned_observer_socket:
+        if owned_observer_socket and self.socket_mode == "self-bind":
             self._unlink_observer_socket_if_owned(observer_identity)
 
     def _admit_connection(self, conn: socket.socket) -> None:
@@ -4124,11 +4118,17 @@ class SessionServer:
         try:
             next_check = time.monotonic() + self.socket_check_interval
             while not self._stopping:
-                if self.socket_check_interval > 0 and time.monotonic() >= next_check:
+                if (self.socket_mode == "self-bind" and self._sock is not None
+                        and self.socket_check_interval > 0 and time.monotonic() >= next_check):
                     next_check = time.monotonic() + self.socket_check_interval
                     self._check_control_socket()
                     if self._stopping:
                         break
+                if self._sock is None:
+                    # Keep an observer-only activated service available and
+                    # let doctor report the missing control descriptor.
+                    time.sleep(min(self.accept_timeout, 0.5))
+                    continue
                 try:
                     conn, _addr = self._sock.accept()
                 except socket.timeout:
@@ -4201,7 +4201,7 @@ class SessionServer:
                 observer_sock.close()
             except OSError:
                 pass
-            if still_owned:
+            if still_owned and self.socket_mode == "self-bind":
                 self._unlink_observer_socket_if_owned(observer_identity)
 
     def _handle_observer_connection(self, conn: socket.socket) -> None:

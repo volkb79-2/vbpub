@@ -4,7 +4,7 @@ The supported operator front door is the `cgpctl` console script of the wheel:
 
 ```bash
 cgpctl --version
-# cgpctl 2.0.0
+# cgpctl <installed-version>
 ```
 
 The probe prints one identity line and exits 0; it needs neither the daemon nor
@@ -18,32 +18,73 @@ command or script needs translating.
 
 ## Install and run the native service
 
-The daemon is `cgpd.service`, a native systemd service installed from the
-wheel by mdt host-setup. Nothing is built or pulled as an image, and nothing
-runs from a checkout. The full design is
-[`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md); the consumer-facing steps are:
+The daemon is a native systemd service installed from pinned wheels by
+`cgpd install`. Phase-1 releases are not deployed to cockpit hosts until
+phase 2 updates mdt host-setup; keep `CGPROFILE_WHEEL` below `2.2.0` until the
+operator's drained cutover. Old and new clients do not interoperate.
 
-1. **Install and pin.** Host-setup installs the wheel named by `CGPROFILE_WHEEL`
-   (`<version>@sha256:<hex>`) into `/opt/cgprofile/<version>`, renders
-   `/etc/cgprofile/cgpd.toml` and the two units (`cgpd unit print`), and flips
-   `/opt/cgprofile/current`. Upgrades drain live sessions before the restart
-   ([`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md) sections 5 and 6).
-2. **Groups.** `/run/cgprofile` is `0770 root:<ctl group>`; membership of that
-   group opens `ctl.sock`. `/run/cgprofile/observer` is `0751
-   root:cgprofile-observer` and opens only the observer socket. Off an mdt host
-   with no group set up both are root-only until you create the directory
-   yourself (the daemon adopts the directory's group by `stat`).
-3. **Verify.** `cgpctl doctor` diagnoses the install, the socket, the caller's
-   access and the daemon, and names the remedy for the first failing check.
-   Host-setup's `check.sh` runs `cgpctl doctor --json`; an unexpected runtime
-   override of a declared setting is a warning there, not a failure.
-4. **Identity.** `cgpctl status` shows the daemon version, contracts and config
-   digest; they must match the pinned wheel and its release tag.
+For the first install, bootstrap the CLI from the two wheel files. Set the
+filenames and version-plus-SHA pins to the release artifacts you verified:
 
-A daemon that refuses to start prints one line naming the fix (not root, a
-stale `CGPROFILE_*` variable, `cgprofile.slice` missing or unbounded, another
-daemon already answering on the socket, the socket directory missing). Run
-`cgpd config check` before a restart and `cgpd unit check` to see unit drift.
+```bash
+CGPROFILE_WHEEL_FILE='./cgprofile-X.Y.Z-py3-none-any.whl'
+CLI_EXTENDED_WHEEL_FILE='./cli_extended-X.Y.Z-py3-none-any.whl'
+CGPROFILE_PIN='X.Y.Z@sha256:<cgprofile-sha256>'
+CLI_EXTENDED_PIN='X.Y.Z@sha256:<cli-extended-sha256>'
+
+PYTHONPATH="$CGPROFILE_WHEEL_FILE:$CLI_EXTENDED_WHEEL_FILE" \
+  python3 -m cgprofile.cli.cgpd install \
+  --wheel "$CGPROFILE_PIN" \
+  --cli-extended-wheel "$CLI_EXTENDED_PIN" \
+  --wheel-source ./wheels \
+  --control-group cgprofile-control \
+  --observer-group cgprofile-observer \
+  --enable --yes
+```
+
+`--wheel-source` may name a directory containing both wheels or an HTTPS
+release base. The installer verifies each SHA-256 before unpacking. A TTY
+operator can omit required flags and use the wizard to enter the pins, create
+or map groups, select users, and enable the service. A non-interactive run
+must provide the pins, groups, and either `--enable` or `--no-enable`.
+
+After installation, these checks should pass:
+
+```bash
+sudo cgpd doctor --json
+sudo cgpctl doctor --json
+sudo cgpctl status --json
+```
+
+The control socket is `/run/cgprofile/control/cgprofile.sock`, owned by
+`root:cgprofile-control` mode `0660`. The observer socket is
+`/run/cgprofile/observer/cgprofile.sock`, owned by
+`root:cgprofile-observer` mode `0660`. Their parent directories are
+`root:root` mode `0755`; the daemon never widens or adopts directory access.
+Only the observer group can use the read-only endpoint. `cgpd doctor` lists
+`config-valid`, `units-current`, `groups`, `socket-units`, `socket-nodes`,
+`socket-dirs`, `state-dir`, `service`, `connect`, `foreign-rules`, and
+`caller-access` checks.
+
+`cgpd install` refuses an old `ctl_socket` / `observer_socket` config, foreign
+tmpfiles rules or service drop-ins, a mismatched `/run/cgprofile` tree, an mdt
+installer `MANIFEST`, and leftover `PENDING` or `current.new` markers. It
+prints the manual cleanup steps. It does not migrate, chmod, chown or remove
+old installation state. See
+[`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md#old-installation-refusal-and-manual-removal)
+for the exact list.
+
+For an upgrade, `cgpd install` compares the pinned version, config, and each
+rendered unit. If a restart is needed, it waits for live sessions to drain.
+A drain timeout exits 3 and records `PENDING`; review the state, remove the
+marker manually, then retry. `--force-restart` is explicit and reports the
+sessions it may abort. `--allow-downgrade` is required for an older pin;
+rolling back below the socket-unit release removes the socket units first.
+
+`cgpd uninstall` removes service resources and socket nodes. Groups remain
+unless `--remove-groups` is requested; `/var/lib/cgprofile` remains unless
+`--purge-data` is requested. See the
+[deployment contract](NATIVE-DEPLOYMENT.md#uninstall-and-doctor).
 
 ### Preview the GitHub Release body
 
@@ -84,7 +125,7 @@ also disables only DAMON and still writes the normal finished manifest.
 change the command's exit status (R-36h). Confirm actual DAMON collection from
 a persisted `damon.jsonl` series, not from `cgpctl doctor` or a visible DAMON
 sysfs directory alone. Independent one-shot processes coordinate with the
-daemon through the host-shared `/run/cgprofile/damon.lock`; if another
+daemon through the host-shared `/run/cgprofile/state/damon.lock`; if another
 cgprofile writer holds the lock, the optional DAMON series is refused rather
 than waiting or racing, and ordinary profiling proceeds.
 
@@ -194,18 +235,19 @@ If the observer refuses because the peer threads have different capability
 states, resolve that peer configuration; the counter query will not guess
 which thread state applies.
 
-Host setup provisions `/run/cgprofile/observer` as root-owned mode `0751` in
-the dedicated `cgprofile-observer` group. The daemon owns only the socket entry
-inside this persistent directory. Run-Gate validates the directory and socket,
-then bind-mounts the directory read-only into `tester-unified`. The directory
-bind lets an already-running container see a new socket after daemon restart;
-binding the socket file would pin the old inode. Run-Gate grants only the
-dedicated observer GID and sets `ASSAY_RESOURCE_OBSERVER_SOCKET` inside the
+The `cgprofile-observer.socket` unit owns
+`/run/cgprofile/observer/cgprofile.sock` (`root:cgprofile-observer 0660`) in a
+`root:root 0755` directory. Run-Gate validates the directory and socket, then
+bind-mounts only the observer level directory read-only into `tester-unified`.
+The directory bind lets an already-running container see a new socket after a
+socket-unit restart; binding the socket file would pin the old inode.
+Run-Gate grants only the dedicated observer GID and sets
+`ASSAY_RESOURCE_OBSERVER_SOCKET` to the `cgprofile.sock` path inside the
 container. Observer-backed lanes also declare per-container memory and PID
 ceilings and refuse arbitrary extra mounts. A missing daemon/socket or unsafe
 ownership/mode is an infrastructure refusal, never a silent fallback. The
 selected container retains private PID, cgroup, and network namespaces; do not
-mount `ctl.sock` or the Docker socket for this feature.
+mount the control level directory or the Docker socket for this feature.
 The observer accepts one newline-terminated JSON request of at most 4096 bytes
 including the newline and applies a five-second absolute deadline. Consumers
 must send one complete line; oversized or incomplete requests are not
@@ -342,7 +384,7 @@ The version response has the current wire shape:
   "resource_observer": {
     "contract": 2,
     "contracts": [2, 3],
-    "path": "/run/cgprofile/observer/resource-observer.sock",
+    "path": "/run/cgprofile/observer/cgprofile.sock",
     "listening": true
   }
 }
@@ -486,7 +528,7 @@ remains usable either way under R-36h.
 ## Attach a run-gate lane
 
 Run-gate must start the lane first, inspect its immutable 64-hex container ID,
-then ask the daemon to profile it over `/run/cgprofile/ctl.sock`. Generate a
+then ask the daemon to profile it over `/run/cgprofile/control/cgprofile.sock`. Generate a
 fresh token per lane attempt and pass it through the lane as
 `RUN_GATE_PROFILE_SESSION`; the token makes a retry-safe `(container_id, token)`
 start idempotent. The `meta` object is required and its `kind` is either
@@ -645,9 +687,9 @@ flag is not the P1 acceptance command. The rationale is in the
 
 ## Migration table: 1.x command to cgpctl verb
 
-cgprofile 2.0.0 is one breaking release: the `cgprofile` command is replaced by
+The command migration table below covers the 1.x CLI vocabulary; it does not describe transport compatibility. cgprofile 2.0.0 replaced the `cgprofile` command with
 `cgpctl` (client) and `cgpd` (daemon), the daemon is a native systemd service
-installed by mdt host-setup, and the control socket speaks ctl contract 2
+installed by mdt host-setup, and the control socket speaks ctl contract 2. cgprofile 2.2.0 also moves service access to per-level systemd sockets at the new paths
 ([`CGPCTL-SPEC.md`](CGPCTL-SPEC.md), [`PROTOCOL.md`](PROTOCOL.md) section 10,
 [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md)). There is no alias.
 
@@ -659,7 +701,7 @@ installed by mdt host-setup, and the control socket speaks ctl contract 2
 | `./cgprofile report --run-dir D` | `cgpctl report --run-dir D` |
 | `./cgprofile targets --target T` | `cgpctl start --target T --dry-run` |
 | `./cgprofile doctor` | `cgpctl doctor` |
-| `./cgprofile serve ...` | `cgpd run`, configured by `/etc/cgprofile/cgpd.toml` |
+| `./cgprofile serve ...` | `cgpd run` under systemd socket activation, configured by `/etc/cgprofile/cgpd.toml` |
 | `docker exec cgprofile-host-daemon cgprofile ctl version` | `cgpctl status` |
 | `... ctl host` | `cgpctl host` |
 | `... ctl status` | `cgpctl sessions` / `cgpctl show ID` |
@@ -675,14 +717,14 @@ Consumer notes:
 
 | Consumer | What to do |
 |---|---|
-| run-gate | Socket carrier only on `/run/cgprofile/ctl.sock`; no `exec` or `auto` transport. It keeps speaking contract 1, which a 2.x daemon serves unchanged for `version`, `host`, `status`, `start`, `stop`, `watch` and `gc`, and renders reports with `cgpctl report` or skips them. |
+| run-gate | Socket carrier only on `/run/cgprofile/control/cgprofile.sock`; no `exec`, `auto`, or old-path fallback. It keeps speaking contract 1, which the daemon serves for `version`, `host`, `status`, `start`, `stop`, `watch` and `gc`, and renders reports with `cgpctl report` or skips them. |
 | assay | Nothing: it uses only the observer socket (contracts 2 and 3). |
 | mdt cockpit image | Ships the `cgprofile` wheel (core only) so `cgpctl` is on `PATH`; the finalize step runs `cgpctl skills check`. |
-| mdt host-setup | Installs and pins the service, renders the config and units, drains before restart, and runs `cgpctl doctor --json` in `check.sh`. |
-| Devcontainers and runners | Bind `/run/cgprofile` as before and run `cgpctl --socket PATH` (or `CGPCTL_SOCKET`). |
+| mdt host-setup | Phase 2 will call the install verbs, render its declared config, and run the service-side doctor. Do not deploy cgprofile 2.2.0 before that consumer update and the host cutover. |
+| Devcontainers and runners | After host cutover, mount only `/run/cgprofile/control` or `/run/cgprofile/observer` as required; run `cgpctl --socket PATH` (or set `CGPCTL_SOCKET`) for control. |
 
 A contract-1 `report` request to a 2.x daemon is answered with the error code
 `report-removed`, naming `cgpctl report`. Ownership rules apply to `stop` and
 `prune`: a caller stops its own sessions, and only uid 0 stops or exports
-another uid's. The ctl group is root-equivalent on mdt hosts, so ownership is
-hygiene and not a security boundary.
+another uid's. Control and observer groups are separate; observer membership
+does not grant control operations.

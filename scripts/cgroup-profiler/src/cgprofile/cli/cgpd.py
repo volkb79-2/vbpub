@@ -2,7 +2,7 @@
 
 A cli-extended service entrypoint. ``--help``, ``--version`` and malformed
 arguments never start the service, create state or touch the socket; only
-``run`` does, after the seven preflight checks of section 3.1. The heavy
+``run`` does, after the five preflight checks of section 3.1. The heavy
 modules (``serve``, ``access``) are imported inside ``run`` only, so
 ``unit``, ``config check`` and ``reload`` work for any user without a cgroup
 view.
@@ -94,7 +94,7 @@ def probe_daemon(path: str) -> Optional[Tuple[str, Optional[int]]]:
 
 
 def preflight(config_path: str, explicit: bool, environ: Mapping[str, str]) -> daemon_config.Settings:
-    """The seven checks of CGPCTL-SPEC 3.1, in order. Returns the loaded
+    """The five checks of CGPCTL-SPEC 3.1, in order. Returns the loaded
     settings; every failure is a one-line exit-2 refusal naming the fix."""
     from .. import access
 
@@ -138,18 +138,8 @@ def preflight(config_path: str, explicit: bool, environ: Mapping[str, str]) -> d
     if not os.access(sessions, os.W_OK):
         raise _refuse(f"sessions_dir {sessions} is not writable",
                       "fix its ownership, or set sessions_dir in the config file")
-    # 6. no live daemon on ctl_socket
-    ctl_socket = settings.get("ctl_socket")
-    other = probe_daemon(ctl_socket)
-    if other is not None:
-        version, pid = other
-        raise _refuse(f"another daemon already serves {ctl_socket} (version {version}, pid {pid})",
-                      "stop it first: systemctl stop cgpd")
-    # 7. the socket's directory exists
-    socket_dir = os.path.dirname(ctl_socket)
-    if not os.path.isdir(socket_dir):
-        raise _refuse(f"the directory of ctl_socket does not exist: {socket_dir}",
-                      "the unit's RuntimeDirectory=cgprofile creates it; start through systemd")
+    # systemd owns the activated paths and may have bound them before this
+    # process starts. Self-bind mode performs its own stale-node checks.
     return settings
 
 
@@ -167,18 +157,45 @@ def _export_fixed_keys(settings: daemon_config.Settings) -> None:
 
 def _run(args: argparse.Namespace, runtime: CliRuntime) -> int:
     path, explicit = config_location(args)
-    settings = preflight(path, explicit, os.environ)
-    _export_fixed_keys(settings)
     from .. import serve
 
+    try:
+        activated_sockets = serve.adopt_systemd_sockets(os.environ)
+    except serve.SocketActivationError as exc:
+        raise _refuse(f"cgpd refuses invalid systemd socket activation: {exc}") from None
+    if activated_sockets is not None and args.self_bind:
+        for listener in activated_sockets.values():
+            listener.close()
+        raise _refuse("--self-bind cannot be combined with LISTEN_FDS")
+    if activated_sockets == {}:
+        raise _refuse("systemd set LISTEN_FDS=0; cgpd has no named socket descriptors")
+    if activated_sockets is None and not args.self_bind:
+        raise _refuse(
+            "cgpd run has no systemd listening descriptors",
+            "start cgpd through cgprofile-control.socket and cgprofile-observer.socket, "
+            "or pass --self-bind for tests and development",
+        )
+    try:
+        settings = preflight(path, explicit, os.environ)
+    except BaseException:
+        for listener in (activated_sockets or {}).values():
+            listener.close()
+        raise
+    _export_fixed_keys(settings)
+    sockets = daemon_config.socket_settings({
+        "sockets.control": settings.get("sockets.control"),
+        "sockets.observer": settings.get("sockets.observer"),
+    })
     server = serve.SessionServer(
         settings=settings, sessions_dir=settings.get("sessions_dir"),
-        socket_path=settings.get("ctl_socket"),
-        observer_socket_path=settings.get("observer_socket"),
+        socket_path=sockets["control"]["path"],
+        observer_socket_path=sockets["observer"]["path"],
         proc_root=settings.get("proc_root"),
+        activated_sockets=activated_sockets,
     )
     log("start", version=installed_version(), config=path, digest=settings.digest,
-        socket=settings.get("ctl_socket"), sessions=settings.get("sessions_dir"))
+        mode="activated" if activated_sockets is not None else "self-bind",
+        socket=sockets["control"]["path"], sessions=settings.get("sessions_dir"))
     try:
         return server.serve_forever() or 0
     except serve.ControlSocketError as exc:
@@ -209,7 +226,7 @@ def _reload(args: argparse.Namespace, runtime: CliRuntime) -> int:
     path, explicit = config_location(args)
     try:
         values, _digest = daemon_config.read_config_file(path, explicit=explicit)
-        ctl_socket = values.get("ctl_socket", daemon_config.KEYS["ctl_socket"].default)
+        ctl_socket = daemon_config.socket_settings(values)["control"]["path"]
     except daemon_config.ConfigError as exc:
         raise _refuse(str(exc), "check it with: cgpd config check") from None
     daemon = probe_daemon(ctl_socket)
@@ -245,10 +262,17 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     modify = VerbGroup.MODIFICATION.value
     read = VerbGroup.EXPLORATION.value
     registry.register(VerbSpec(
-        "run", description="load the config, run the preflight, serve until SIGTERM (root only)",
+        "run", description="serve passed systemd sockets (or self-bind explicitly for development)",
         group=modify, mutating=True, include_json=False, include_progress=False,
-        examples=("cgpd run", "cgpd --config /etc/cgprofile/cgpd.toml run"), handler=_run))
+        examples=("cgpd run", "cgpd run --self-bind"),
+        options=(_opt("--self-bind", "bind configured paths directly (tests and development only)",
+                      group="SOCKETS", action="store_true"),), handler=_run))
     _register_unit(registry)
+    from .installer import register_install
+    from .service_doctor import register_service_doctor
+
+    register_install(registry)
+    register_service_doctor(registry)
     config = CliRegistry(
         registry.identity, prog="cgpd config", description="Validate the daemon's config file.",
         global_options=registry.global_options, unexpected_exceptions="report")
@@ -271,9 +295,13 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
 
 def _rendered(args: argparse.Namespace) -> Dict[str, str]:
     try:
-        return unitfiles.render(args.install_root, args.wheel_venv)
+        path, explicit = config_location(args)
+        values, _digest = daemon_config.read_config_file(path, explicit=explicit)
+        return unitfiles.render(args.install_root, args.wheel_venv, config_values=values)
     except unitfiles.UnitError as exc:
         raise _refuse(str(exc)) from None
+    except daemon_config.ConfigError as exc:
+        raise _refuse(str(exc), "check it with: cgpd config check") from None
 
 
 def _unit_print(args: argparse.Namespace, runtime: CliRuntime) -> int:
@@ -293,8 +321,7 @@ def _unit_print(args: argparse.Namespace, runtime: CliRuntime) -> int:
 def _unit_check(args: argparse.Namespace, runtime: CliRuntime) -> int:
     rendered = _rendered(args)
     try:
-        installed = unitfiles.installed_map(args.installed) if args.installed else {
-            name: os.path.join(unitfiles.DEFAULT_UNIT_DIR, name) for name in unitfiles.TEMPLATES}
+        installed = unitfiles.installed_map(args.installed) if args.installed else unitfiles.default_installed_map()
     except unitfiles.UnitError as exc:
         raise _refuse(str(exc)) from None
     problems = unitfiles.check(installed, rendered)
@@ -322,7 +349,7 @@ def _register_unit(registry: CliRegistry) -> None:
         global_options=registry.global_options, unexpected_exceptions="report")
     read = VerbGroup.EXPLORATION.value
     unit.register(VerbSpec(
-        "print", description="print cgprofile.slice and cgpd.service rendered from the wheel's templates",
+        "print", description="print service, socket, slice and sysusers resources from the wheel",
         group=read, include_progress=False,
         examples=("cgpd unit print", "cgpd unit print --unit cgpd.service --wheel-venv /opt/cgprofile/2.0.0/venv"),
         options=(*_unit_options(),

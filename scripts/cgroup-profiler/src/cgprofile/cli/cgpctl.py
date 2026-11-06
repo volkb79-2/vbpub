@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -54,6 +55,7 @@ _KEY_TYPES = {
 DIRECT_MODE_REFUSAL = "direct mode needs cgroupfs; use 'cgpctl start' against the host daemon"
 REPORT_EXTRA_HINT = "pip install 'cgprofile[report]'"
 OBSERVER_DIR = "/run/cgprofile/observer"
+OBSERVER_SOCKET = "/run/cgprofile/observer/cgprofile.sock"
 SLICE_DIR = "/sys/fs/cgroup/cgprofile.slice"
 
 
@@ -154,7 +156,7 @@ def _skew(client: str, daemon: Optional[str]) -> str:
 @guarded
 def _status(args: argparse.Namespace, runtime: CliRuntime) -> None:
     path, source = ctlwire.resolve_socket(getattr(args, "socket", None))
-    version = ctlwire.call(path, "version", None, 1)
+    version = ctlwire.call(path, "version", None, 2)
     contracts = ctlwire.daemon_contracts(version)
     daemon_doc = version.get("daemon") if isinstance(version.get("daemon"), dict) else {}
     observer = version.get("resource_observer") if isinstance(version.get("resource_observer"), dict) else None
@@ -180,6 +182,7 @@ def _status(args: argparse.Namespace, runtime: CliRuntime) -> None:
             "uptime_seconds": _seconds_since(_iso(daemon_doc.get("started_at"))),
             "damon": daemon_doc.get("damon"), "damon_default": daemon_doc.get("damon_default"),
             "sessions_live": daemon_doc.get("sessions_live"), "max_sessions": daemon_doc.get("max_sessions"),
+            "socket_activation": version.get("socket_activation"),
         },
         "socket": {"path": path, "source": source, **group, "listening": True, "allow_uids": allow_uids},
         "resource_observer": observer,
@@ -601,6 +604,9 @@ def _check_caller_group(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
     group = socket_group(probe.path)
     if group["gid"] is None:
         return CheckResult("skip", "the socket is absent", details=group)
+    if os.geteuid() == 0:
+        return CheckResult("ok", "root has administrative access; socket-group membership is informational",
+                           details=group)
     if caller_in_group(group["gid"]):
         return CheckResult("ok", f"caller is in group {group['group'] or group['gid']}", details=group)
     return CheckResult("fail", f"caller is not in group {group['group']} (gid {group['gid']})",
@@ -639,20 +645,72 @@ def _check_contracts(runtime: CliRuntime, args: argparse.Namespace) -> CheckResu
 
 
 def _check_observer_dir(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
+    probe = _probe(args)
+    version = probe.version if isinstance(probe.version, dict) else {}
+    observer_info = version.get("resource_observer")
+    observer_path = observer_info.get("path") if isinstance(observer_info, dict) else None
+    if isinstance(observer_path, str) and os.path.isabs(observer_path):
+        observer_dir = os.path.dirname(observer_path)
+    else:
+        observer_path = OBSERVER_SOCKET
+        observer_dir = OBSERVER_DIR
+    expected_group: Optional[str] = None
+    expected_mode = "0660"
     try:
-        info = os.stat(OBSERVER_DIR)
+        config = probe.config()
+    except WireFailure:
+        config = None
+    keys = config.get("keys") if isinstance(config, dict) else None
+    observer_entry = keys.get("sockets.observer") if isinstance(keys, dict) else None
+    socket_value = observer_entry.get("value") if isinstance(observer_entry, dict) else None
+    if isinstance(socket_value, dict):
+        group_value = socket_value.get("group")
+        mode_value = socket_value.get("mode")
+        if isinstance(group_value, str):
+            expected_group = group_value
+        if isinstance(mode_value, str):
+            expected_mode = mode_value
+    try:
+        info = os.lstat(observer_dir)
     except OSError:
-        return CheckResult("skip", f"{OBSERVER_DIR} is not visible here")
-    mode = info.st_mode & 0o7777
-    ctl_gid = socket_group(_probe(args).path)["gid"]
+        return CheckResult("skip", f"{observer_dir} is not visible here")
     problems = []
-    if mode != 0o751:
-        problems.append(f"mode is {mode:04o}, expected 0751")
-    if info.st_gid == ctl_gid:
-        problems.append("group is the ctl group")
+    mode = stat.S_IMODE(info.st_mode)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or mode != 0o755:
+        problems.append(f"directory identity is {info.st_uid}:{info.st_gid} {mode:04o}, expected root:root 0755")
+    control_gid = socket_group(probe.path)["gid"]
+    try:
+        observer = os.lstat(observer_path)
+    except OSError:
+        return CheckResult("warn", f"{observer_path} is absent",
+                           remedy="start cgprofile-observer.socket and check cgpd doctor")
+    if not stat.S_ISSOCK(observer.st_mode) or observer.st_uid != 0:
+        problems.append("observer endpoint is not a root-owned socket")
+    try:
+        expected_mode_number = int(expected_mode, 8)
+    except ValueError:
+        expected_mode_number = 0o660
+    if stat.S_IMODE(observer.st_mode) != expected_mode_number:
+        problems.append(f"observer socket mode is {stat.S_IMODE(observer.st_mode):04o}, expected {expected_mode_number:04o}")
+    if control_gid is not None and observer.st_gid == control_gid:
+        problems.append("observer socket uses the control socket group")
+    try:
+        observer_group = grp.getgrgid(observer.st_gid).gr_name
+    except KeyError:
+        observer_group = None
+    if expected_group is not None:
+        try:
+            expected_gid = grp.getgrnam(expected_group).gr_gid
+        except KeyError:
+            problems.append(f"configured observer group {expected_group!r} does not exist")
+        else:
+            if observer.st_gid != expected_gid:
+                problems.append(f"observer socket gid is {observer.st_gid}, expected {expected_group} ({expected_gid})")
+    if observer_group == "docker":
+        problems.append("observer socket uses the docker group")
     if problems:
-        return CheckResult("warn", "; ".join(problems), remedy="re-run host-setup to restore the observer directory")
-    return CheckResult("ok", f"{OBSERVER_DIR} mode 0751")
+        return CheckResult("warn", "; ".join(problems), remedy="run cgpd doctor and repair the socket unit configuration")
+    return CheckResult("ok", f"{observer_dir} is root:root 0755 and the observer socket has a separate group")
 
 
 def _check_slice(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
@@ -728,7 +786,8 @@ DOCTOR_CHECKS = (
     DoctorCheck("caller-group", "the caller is in the socket's group", _check_caller_group),
     DoctorCheck("daemon-version", "daemon and client versions agree", _check_daemon_version),
     DoctorCheck("contracts", "ctl and observer contract sets overlap", _check_contracts),
-    DoctorCheck("observer-dir", "the observer directory is 0751 with its own group", _check_observer_dir),
+    DoctorCheck("observer-dir", "the observer directory is root:root 0755 with a separate observer socket group",
+                _check_observer_dir),
     DoctorCheck("slice", "cgprofile.slice exists and is bounded", _check_slice),
     DoctorCheck("damon", "the daemon reports DAMON available", _check_damon),
     DoctorCheck("sessions-dir", "the daemon's sessions directory is usable", _check_sessions_dir),
@@ -755,7 +814,7 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
         cli_identity or identity(), prog="cgpctl",
         description="Control the cgprofile host daemon and profile commands locally.",
         getting_started=("cgpctl status", "cgpctl sessions", "cgpctl doctor"),
-        global_options=(_opt("--socket", "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+        global_options=(_opt("--socket", "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
                              group="CONNECTION", metavar="PATH"),),
         unexpected_exceptions="report",
     )

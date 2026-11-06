@@ -738,11 +738,13 @@ admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire
   unreadable and non-numeric all refuse), because an implicitly auto-created
   slice is unbounded and a "governed-looking" daemon without limits is the
   silent-default hazard. Unprovable counts as unbounded.
-- **D-30 — the socket is the only carrier.** `/run/cgprofile/ctl.sock` is
-  the daemon's control surface, `SO_PEERCRED`-gated (the `allow_uids` key of
-  `cgpd.toml`), bind-mountable into any container that should speak the
-  protocol (`docs/PROTOCOL.md` §1). There is no `docker exec` carrier and no
-  in-image client. CP-2.
+- **D-30 — systemd owns the per-level socket nodes.** The control endpoint is
+  `/run/cgprofile/control/cgprofile.sock`; the read-only observer endpoint is
+  `/run/cgprofile/observer/cgprofile.sock`. Each socket unit sets the node's
+  group and mode and passes one named descriptor to the daemon. `SO_PEERCRED`
+  and the configured `allow_uids` list gate control requests. Consumers mount
+  only the level directory they need (`docs/PROTOCOL.md` §1). There is no
+  legacy path fallback. CP-2.
 - **D-31 — systemd owns the gates slice and delegated per-lane scope.**
   `--place` asks the host manager to create a token-derived transient scope
   directly beneath the verified gates slice. After reading its actual

@@ -8,6 +8,13 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Added
+- feat(cgprofile): systemd-owned per-level control and observer sockets, `cgpd install` / `uninstall` / `doctor`, and explicit `--self-bind` for tests and development (phase 1, plan 5.1)
+
+### Changed
+- breaking(cgprofile): socket defaults move to `/run/cgprofile/control/cgprofile.sock` and `/run/cgprofile/observer/cgprofile.sock`; old config keys are refused and clients have no legacy-path fallback
+- docs(cgprofile): document P-11 manual cleanup, phase-1 rollout boundary, and systemd socket ownership
+
 ### Tests
 - tests(cgprofile): kill the four 2.1.0 R2 survivors in machine.py/metrics.py (CP-60)
 

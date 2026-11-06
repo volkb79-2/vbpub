@@ -11,11 +11,10 @@ Four things are proven here, in rising cost:
   always, everyone the socket mode already admitted when no allowlist is
   configured, and only the listed uids when `allow_uids` is set — an
   unreadable credential is refused in that last case, never waved through.
-* **The permissions the daemon re-asserts at every start** (§8.1 "belt and
-  braces"): `0770` on the directory, `root:<the directory's own gid>` and
-  `0660` on the socket, and ONE INFO line when the directory is still
-  `root:root` (host-setup not installed — the socket is root-only and the
-  daemon serves on regardless).
+* **Explicit self-bind mode.** Development binds the configured socket paths
+  and applies the configured node mode, while leaving parent-directory
+  ownership and mode to the caller. The production service adopts systemd's
+  named descriptors and never changes the nodes.
 * **Documents are stable.** Every verb is run over the socket carrier (a
   plain stdlib client, as P5 wrote) against ONE serve loop, for two
   sessions, and the JSON is diffed. The first session's documents are also
@@ -68,8 +67,8 @@ META = {
 # the document is compared or frozen. These two strings are the ONLY
 # normalization the socket goldens get.
 PROD_SESSIONS_DIR = "/var/lib/cgprofile/sessions"
-PROD_SOCKET = "/run/cgprofile/ctl.sock"
-PROD_OBSERVER_SOCKET = "/run/cgprofile/observer/resource-observer.sock"
+PROD_SOCKET = "/run/cgprofile/control/cgprofile.sock"
+PROD_OBSERVER_SOCKET = "/run/cgprofile/observer/cgprofile.sock"
 REGEN_ENV = "CGPROFILE_REGEN_SOCKET_GOLDENS"
 # The frozen wire documents include a daemon version. Pin it here so the
 # protocol oracle does not depend on whether this checkout is tagged or an
@@ -994,139 +993,91 @@ class TestPeerCredentials:
             thread.join(timeout=5.0)
 
 
-# ── §8.1: the permissions asserted at every start ───────────────────────
+# ── §8.1: explicit self-bind mode ────────────────────────────────────────
 
 class TestSocketPermissions:
-    def _unbound(self, tmp_path, *, make_dir: bool = True, **kw):
-        """Build the server WITHOUT binding, so a test may install its
-        `os.chmod`/`os.stat`/`os.chown` doubles first — those patches hit
-        the one shared `os` module, so anything the test itself does with
-        them has to happen before they are in place."""
-        socket_dir = tmp_path / "run"
-        if make_dir:
-            socket_dir.mkdir()
-            os.chmod(socket_dir, 0o755)
-        kw.setdefault("observer_socket_path", str(socket_dir / "resource-observer.sock"))
+    def _server(self, tmp_path, **kw):
+        control_dir = tmp_path / "control"
+        observer_dir = tmp_path / "observer"
+        control_dir.mkdir(mode=0o710)
+        observer_dir.mkdir(mode=0o710)
+        os.chmod(control_dir, 0o710)
+        os.chmod(observer_dir, 0o710)
         server = serve.SessionServer(
             sessions_dir=str(tmp_path / "sessions"),
-            socket_path=str(socket_dir / "ctl.sock"), **kw,
+            socket_path=str(control_dir / "cgprofile.sock"),
+            observer_socket_path=str(observer_dir / "cgprofile.sock"), **kw,
         )
-        return server, socket_dir
+        return server, control_dir, observer_dir
 
-    def _bound(self, tmp_path, **kw):
-        server, socket_dir = self._unbound(tmp_path, **kw)
+    def test_self_bind_changes_socket_nodes_but_never_parent_directories(self, tmp_path, monkeypatch):
+        server, control_dir, observer_dir = self._server(tmp_path)
+        real_chmod = os.chmod
+        chmod_calls = []
+
+        def record_chmod(path, mode):
+            chmod_calls.append((str(path), mode))
+            real_chmod(path, mode)
+
+        monkeypatch.setattr(serve.os, "chmod", record_chmod)
+        monkeypatch.setattr(serve.os, "chown", lambda *args: pytest.fail("self-bind must not chown"))
+        before = {path: (path.stat().st_uid, path.stat().st_gid, stat.S_IMODE(path.stat().st_mode))
+                  for path in (control_dir, observer_dir)}
         server._bind()
-        return server, socket_dir
-
-    def test_directory_becomes_0770_and_the_socket_0660(self, tmp_path):
-        server, socket_dir = self._bound(tmp_path)
         try:
-            assert (os.stat(socket_dir).st_mode & 0o777) == serve.SOCKET_DIR_MODE
-            assert (os.stat(server.socket_path).st_mode & 0o777) == serve.SOCKET_MODE
+            after = {path: (path.stat().st_uid, path.stat().st_gid, stat.S_IMODE(path.stat().st_mode))
+                     for path in (control_dir, observer_dir)}
+            assert after == before
+            assert set(path for path, _mode in chmod_calls) == {
+                server.socket_path, server.observer_socket_path,
+            }
+            assert all(mode == 0o660 for _path, mode in chmod_calls)
+            assert stat.S_IMODE(os.lstat(server.socket_path).st_mode) == 0o660
+            assert stat.S_IMODE(os.lstat(server.observer_socket_path).st_mode) == 0o660
         finally:
             server._close_socket()
 
-    def test_control_socket_takes_the_directorys_own_gid(self, tmp_path, monkeypatch, capsys):
-        # The control socket inherits the group from its own runtime
-        # directory. The observer socket has a separate host-provisioned
-        # directory and is checked in test_default_observer_directory_....
-        chowns: List[tuple] = []
-        real_stat = os.stat
+    def test_self_bind_uses_the_configured_node_mode(self, tmp_path, monkeypatch):
+        server, _control_dir, _observer_dir = self._server(tmp_path)
+        original_get = server.settings.get
 
-        def fake_stat(path, *a, **k):
-            st = real_stat(path, *a, **k)
-            if str(path).endswith("/run"):
-                class _St:
-                    st_gid = 4242
-                    st_mode = st.st_mode
-                return _St()
-            return st
+        def get(key):
+            if key == "sockets.observer":
+                return {"path": server.observer_socket_path, "group": "cgprofile-observer", "mode": "0600"}
+            return original_get(key)
 
-        monkeypatch.setattr(serve.os, "stat", fake_stat)
-        monkeypatch.setattr(serve.os, "chown", lambda p, u, g: chowns.append((p, u, g)))
-        server, _socket_dir = self._bound(tmp_path)
+        monkeypatch.setattr(server.settings, "get", get)
+        server._bind()
         try:
-            assert chowns == [(server.socket_path, 0, 4242)]
-            assert "root-only" not in capsys.readouterr().err
-        finally:
-            server._close_socket()
-
-    def test_a_root_root_directory_logs_the_root_only_note(self, tmp_path, monkeypatch, capsys):
-        real_stat = os.stat
-
-        def fake_stat(path, *a, **k):
-            st = real_stat(path, *a, **k)
-            if str(path).endswith("/run"):
-                class _St:
-                    st_gid = 0
-                    st_mode = st.st_mode
-                return _St()
-            return st
-
-        monkeypatch.setattr(serve.os, "stat", fake_stat)
-        monkeypatch.setattr(serve.os, "chown", lambda p, u, g: None)
-        server, _socket_dir = self._bound(tmp_path)
-        try:
-            err = capsys.readouterr().err
-            assert "socket carrier root-only until host-setup is installed" in err
-            assert err.count("socket carrier root-only until host-setup is installed") == 1
-            assert "mdt-cgprofile.conf" in err
-            # …and the daemon is nevertheless listening: the exec carrier is
-            # unaffected, so a missing host-setup is never fatal.
-            assert server._sock is not None
+            assert stat.S_IMODE(os.lstat(server.observer_socket_path).st_mode) == 0o600
         finally:
             server._close_socket()
 
     def test_permission_failures_never_stop_the_daemon(self, tmp_path, monkeypatch, capsys):
-        server, _socket_dir = self._unbound(tmp_path)
+        server, _control_dir, _observer_dir = self._server(tmp_path)
         monkeypatch.setattr(
             serve.os, "chmod",
             lambda *a, **k: (_ for _ in ()).throw(PermissionError("read-only")),
-        )
-        monkeypatch.setattr(
-            serve.os, "chown",
-            lambda *a, **k: (_ for _ in ()).throw(PermissionError("not root")),
         )
         server._bind()
         try:
             assert server._sock is not None
             err = capsys.readouterr().err
-            assert "could not chmod" in err
-            assert "could not set" in err
+            assert "could not chmod self-bound control socket" in err
+            assert "could not chmod self-bound observer socket" in err
         finally:
             server._close_socket()
-
-    def test_an_unstattable_directory_is_survivable(self, tmp_path, monkeypatch, capsys):
-        real_stat = os.stat
-        # The directory is left for `_bind` to create (`os.makedirs` on an
-        # EXISTING directory stats it, and would trip over the double
-        # below before the code under test is reached).
-        server, _socket_dir = self._unbound(tmp_path, make_dir=False)
-
-        def fake_stat(path, *a, **k):
-            if str(path).endswith("/run"):
-                raise OSError("gone")
-            return real_stat(path, *a, **k)
-
-        monkeypatch.setattr(serve.os, "stat", fake_stat)
-        server._bind()
-        try:
-            assert server._sock is not None
-            assert "could not stat" in capsys.readouterr().err
-        finally:
-            server._close_socket()
-
 
 # ── §8.6: version.transports ────────────────────────────────────────────
 
 class TestVersionTransports:
     def test_shape_before_the_listener_is_bound(self, tmp_path):
         server = serve.SessionServer(
-            sessions_dir=str(tmp_path / "sessions"), socket_path="/run/cgprofile/ctl.sock",
+            sessions_dir=str(tmp_path / "sessions"), socket_path=serve.DEFAULT_SOCKET_PATH,
         )
         assert server.handle_version({})["transports"] == {
             "exec": False,
-            "socket": {"path": "/run/cgprofile/ctl.sock", "listening": False,
+            "socket": {"path": serve.DEFAULT_SOCKET_PATH, "listening": False,
                        "allow_uids": [], "peer_cred": True},
         }
 
