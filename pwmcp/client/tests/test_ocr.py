@@ -311,6 +311,11 @@ def test_credentials_in_the_sidecar_url_are_refused_without_echoing_them(url: st
         ocr.recognize(PNG, sidecar_url=url)
 
 
+def test_username_only_sidecar_userinfo_is_refused() -> None:
+    with pytest.raises(ocr.OcrError, match="credentials"):
+        ocr.resolve_sidecar_url("http://operator@sidecar.example:8080")
+
+
 def test_cli_refuses_credentials_in_the_url_with_exit_2(work: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert run("ocr", "--image", "screen.png", "--sidecar-url", "http://bob:s3cret@127.0.0.1:9") == 2
     err = capsys.readouterr().err

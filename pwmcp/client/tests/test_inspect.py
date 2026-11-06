@@ -630,3 +630,116 @@ def test_result_much_smaller_than_an_earlier_attempt_warns(
     err = capsys.readouterr().err
     assert "result is 4 bytes, much smaller than an earlier attempt (4000 bytes)" in err
     assert "only 4 bytes" not in err  # the shrink warning wins; --wait-for was given anyway
+
+
+def test_console_diagnostics_count_errors_but_not_warnings() -> None:
+    diagnostics = cli_module._PageDiagnostics()
+    diagnostics._console(types.SimpleNamespace(type="warning"))
+    assert diagnostics.console_errors == 0
+    diagnostics._console(types.SimpleNamespace(type="error"))
+    assert diagnostics.console_errors == 1
+
+
+def test_a_subresource_status_of_400_is_reported() -> None:
+    diagnostics = cli_module._PageDiagnostics()
+    response = types.SimpleNamespace(
+        status=400, request=types.SimpleNamespace(resource_type="script", frame=None)
+    )
+    diagnostics._response(response)
+    assert diagnostics.statuses == {400: 1}
+
+
+def test_a_main_document_status_of_400_is_reported() -> None:
+    diagnostics = cli_module._PageDiagnostics()
+    diagnostics.main_status = 400
+    assert "main document HTTP 400" in diagnostics.summary()
+
+
+def test_screenshot_is_not_retried_for_dom_stability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = _install_cli_browser(monkeypatch)
+    output = tmp_path / "page.png"
+    assert cli_module.main([
+        "inspect", "https://example.test", "--format", "screenshot", "--output", str(output), "--retries", "1"
+    ]) == 0
+    assert len(calls["goto"]) == 1
+    assert len(calls["screenshots"]) == 1
+
+
+def test_equal_half_size_is_not_reported_as_a_shrunken_result() -> None:
+    warning = cli_module._small_result_warning(types.SimpleNamespace(wait_for="body"), "x" * 1024, [2048, 1024])
+    assert warning is None
+
+
+def test_exactly_one_kibibyte_is_not_a_small_shell_result() -> None:
+    warning = cli_module._small_result_warning(types.SimpleNamespace(wait_for=None), "x" * 1024, [1024])
+    assert warning is None
+
+
+def test_the_maximum_retry_count_is_accepted(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(monkeypatch, texts=[BIG], main_status=200)
+    assert cli_module.main([
+        "inspect", "https://example.test", "--wait-for", "body", "--retries", "10"
+    ]) == 0
+    assert len(calls["goto"]) == 1
+    assert capsys.readouterr().out == BIG + "\n"
+
+
+def test_navigation_retry_warning_survives_error_log_level(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch, fail_navigations=1)
+    assert cli_module.main([
+        "inspect", "https://example.test", "--wait-for", "body", "--retries", "1", "--log-level", "error"
+    ]) == 0
+    assert "attempt 1/2 failed: navigation failed; retrying" in capsys.readouterr().err
+
+
+def test_unstable_page_retry_warning_survives_error_log_level(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch, texts=["a" * 2000, "b" * 2000, "b" * 2000])
+    assert cli_module.main([
+        "inspect", "https://example.test", "--wait-for", "body", "--retries", "1", "--log-level", "error"
+    ]) == 0
+    assert "the page was still changing; retrying" in capsys.readouterr().err
+
+
+def test_page_diagnostic_warning_survives_error_log_level(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    events = [("response", _resp(400, "script"))]
+    _install_cli_browser(monkeypatch, texts=[BIG], page_events=events, main_status=200)
+    assert cli_module.main([
+        "inspect", "https://example.test", "--log-level", "error"
+    ]) == 0
+    assert "page diagnostics: 1 failed subresources (400 x1)" in capsys.readouterr().err
+
+
+def test_storage_state_transparency_survives_quiet(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scoped = cli_module.storage_module.ScopedState({"cookies": [], "origins": []}, 2, 1)
+    monkeypatch.setattr(cli_module.storage_module, "load_scoped", lambda *_args: scoped)
+    _install_cli_browser(monkeypatch, texts=[BIG])
+    assert cli_module.main([
+        "inspect", "https://example.test", "--wait-for", "body", "--storage-state", "state.json", "--quiet"
+    ]) == 0
+    assert "storage state: 2 cookies and 1 origins applied for this host" in capsys.readouterr().err
+
+
+def test_blocked_output_refusal_warning_survives_error_log_level(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "target.txt"
+    verdict = cli_module.BlockVerdict("Cloudflare", "managed challenge", ("header:cf-mitigated=challenge",))
+    monkeypatch.setattr(cli_module, "detect_block", lambda **_kwargs: verdict)
+    _install_cli_browser(monkeypatch, texts=[BIG])
+    assert cli_module.main([
+        "inspect", "https://example.test", "--output", str(output), "--log-level", "error"
+    ]) == cli_module.EXIT_BLOCKED
+    assert f"--output {output} was not written: the result is not the target" in capsys.readouterr().err
+    assert not output.exists()

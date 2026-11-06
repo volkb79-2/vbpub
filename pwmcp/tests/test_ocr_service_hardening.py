@@ -279,6 +279,7 @@ def test_main_shuts_down_cleanly_on_sigterm_and_sigint(monkeypatch, capsys, sig)
     assert "listening on" in capsys.readouterr().out
     assert stopped.is_set() and events["closed"] is True
     assert events["shutdown_thread"] is not threading.main_thread()  # not the thread inside serve_forever
+    assert events["shutdown_thread"].daemon is True
     assert {s: signal.getsignal(s) for s in before} == before  # handlers restored
 
 
@@ -793,13 +794,28 @@ def test_rejection_drain_consumes_only_up_to_its_byte_budget(monkeypatch) -> Non
     class Reader:
         def read1(self, size: int) -> bytes:
             reads.append(size)
-            return b"x"
+            return b"x"[:size]
 
     handler.connection = Connection()
     handler.rfile = Reader()
     monkeypatch.setattr(svc.time, "monotonic", lambda: 0.0)
     handler._linger()
     assert reads == [1]
+
+
+@needs_pil
+def test_scale_one_does_not_resample_the_original_frame(monkeypatch) -> None:
+    class Frame:
+        def resize(self, size, resample):
+            pytest.fail(f"scale=1 unexpectedly resampled to {size} with {resample}")
+
+        def save(self, output, *, format: str) -> None:
+            assert format == "PNG"
+            output.write(b"normalized frame")
+
+    monkeypatch.setattr(svc, "_flatten", lambda _image: Frame())
+    prepared, width, height = svc.prepare_image(png(12, 8), svc.Params(scale=1), svc.Config())
+    assert (width, height, prepared) == (12, 8, b"normalized frame")
 
 
 @pytest.mark.parametrize(
