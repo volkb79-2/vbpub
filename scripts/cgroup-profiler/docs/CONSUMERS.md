@@ -51,10 +51,15 @@ must provide the pins, groups, and either `--enable` or `--no-enable`.
 After installation, these checks should pass:
 
 ```bash
-sudo cgpd doctor --json
+sudo /opt/cgprofile/current/venv/bin/cgpd doctor --json
 sudo cgpctl doctor --json
 sudo cgpctl status --json
 ```
+
+The service CLI stays in the active versioned venv at
+`/opt/cgprofile/current/venv/bin/cgpd`; use that path for `install`, `doctor`,
+and `uninstall`. The installer links only the client command `cgpctl` into
+`/usr/local/bin`.
 
 The control socket is `/run/cgprofile/control/cgprofile.sock`, owned by
 `root:cgprofile-control` mode `0660`. The observer socket is

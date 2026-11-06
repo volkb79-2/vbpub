@@ -74,6 +74,10 @@ zipimport bootstrap from the two pinned wheels. It accepts pins of the form
 project release base and may be an HTTPS release base or a directory holding
 both wheel files.
 
+After installation, `cgpd` remains in the active versioned venv at
+`/opt/cgprofile/current/venv/bin/cgpd`; the installer does not add a global
+`cgpd` symlink. `cgpctl` is linked into `/usr/local/bin` for client use.
+
 For an unattended install, acquire the two wheel files and run:
 
 ```bash
@@ -190,7 +194,7 @@ Copy the two pinned wheels into the VM, then verify both the TTY wizard and a
 non-interactive install using explicit flags. After install, run:
 
 ```bash
-sudo cgpd doctor --json
+sudo /opt/cgprofile/current/venv/bin/cgpd doctor --json
 sudo cgpctl doctor --json
 sudo stat -c '%n inode=%i mode=%a owner=%U:%G' \
   /run/cgprofile /run/cgprofile/control /run/cgprofile/observer \
@@ -211,20 +215,23 @@ sudo cgpctl status --json
 sudo systemctl restart cgprofile-control.socket
 sudo cgpctl status --json
 sudo systemctl restart cgprofile-observer.socket
-sudo cgpd doctor --check connect --json
+sudo /opt/cgprofile/current/venv/bin/cgpd doctor --check connect --json
 ```
 
-Also verify that a direct `cgpd run` with `LISTEN_FDS` unset and without
-`--self-bind` exits 2, while `cgpd run --self-bind` accepts explicitly
+Also verify that a direct `/opt/cgprofile/current/venv/bin/cgpd run` with
+`LISTEN_FDS` unset and without `--self-bind` exits 2, while
+`/opt/cgprofile/current/venv/bin/cgpd run --self-bind` accepts explicitly
 provisioned test paths. Create a user in `cgprofile-observer` only; that user
 must complete the observer health probe and receive `EACCES` on control, with
-`cgpd doctor` reporting control `connect` as `skip`.
+`/opt/cgprofile/current/venv/bin/cgpd doctor` reporting control `connect` as
+`skip`.
 
 On the old-layout VM, run the same install command and verify exit 2 plus the
 manual removal paths. After removing those files and runtime tree manually,
 verify install succeeds. Also verify a rollback below the socket-unit release
 fails without `--allow-downgrade`; do not run an actual rollback as part of
-this probe. Finally, run `cgpd uninstall` and assert no service, slice or
+this probe. Finally, run
+`sudo /opt/cgprofile/current/venv/bin/cgpd uninstall --yes` and assert no service, slice or
 socket unit, sysusers file, `/etc/cgprofile`, `/opt/cgprofile`, socket node,
 level directory, state directory, or failed unit remains. Confirm the groups
 and `/var/lib/cgprofile` remain by default.

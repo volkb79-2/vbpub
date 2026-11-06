@@ -76,6 +76,10 @@ for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
 | `config` | `config check` validates the config file without starting anything |
 | `reload` | signal the running daemon to reload; `--reset-overrides` also drops runtime overrides |
 
+After installation, run the service CLI from the active versioned venv at
+`/opt/cgprofile/current/venv/bin/cgpd`. The installer links the client command
+`cgpctl` into `/usr/local/bin` but does not add a global `cgpd` symlink.
+
 The daemon reads `/etc/cgprofile/cgpd.toml`, plus uid-0 runtime overrides.
 A missing file means all defaults. Unknown keys are refused. Socket settings
 are fixed and require a service restart:
