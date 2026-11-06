@@ -1142,6 +1142,93 @@ def _exec_service_cli(rest: list[str]) -> int:
         return 1 if isinstance(exc, RuntimeError) else 2
 
 
+def _run_cli(rest: list[str]) -> int:
+    """Parse the one-shot verb after the shared registry validated its tokens."""
+    if "--" in rest:
+        split = rest.index("--")
+        command_args = rest[split + 1:]
+        before_separator = rest[:split]
+        has_separator = True
+    else:
+        command_args = []
+        before_separator = rest
+        has_separator = False
+    define_root, before_separator = _extract_define_root(before_separator)
+    parser = CiuArgumentParser(prog="ciu run", add_help=False, allow_abbrev=False)
+    parser.add_argument("--profile", action="append", default=None, metavar="NAME")
+    parser.add_argument("--name", default=None, metavar="NAME")
+    parser.add_argument("--label", action="append", default=None, metavar="KEY=VALUE")
+    parser.add_argument("--env-name", action="append", default=None, metavar="NAME")
+    parser.add_argument("--extend", default=None, metavar="FILE")
+    parser.add_argument("--detach", action="store_true")
+    parser.add_argument("--events-fd", type=int, default=None, metavar="N")
+    parser.add_argument("--events-file", default=None, metavar="PATH")
+    parser.add_argument("--older-than", default=None, metavar="DURATION")
+    parser.add_argument("--owner-pid", type=int, default=None, metavar="PID")
+    parser.add_argument("--skip-hooks", action="store_true")
+    parser.add_argument("--json", dest="json_output", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--yes", action="store_true")
+    parser.add_argument("selector", nargs="?")
+    opts = parser.parse_args(before_separator)
+    if not opts.selector:
+        print("[CIU-141] `ciu run` requires a stack selector or `reap`", file=sys.stderr)
+        return 2
+    if opts.selector == "reap":
+        if has_separator or command_args:
+            print("[CIU-141] `ciu run reap` does not accept a command after `--`", file=sys.stderr)
+            return 2
+        if opts.detach or opts.json_output or opts.dry_run or opts.events_fd is not None \
+                or opts.events_file is not None or opts.name or opts.label or opts.env_name \
+                or opts.extend or opts.profile or opts.skip_hooks or opts.owner_pid is not None:
+            print("[CIU-141] launch options do not apply to `ciu run reap`", file=sys.stderr)
+            return 2
+        try:
+            from . import oneshot
+
+            _seed_selected_root_env(define_root)
+            repo_root = _resolve_repo_root_deploy(define_root)
+            return oneshot.reap_cli(
+                repo_root, older_than=opts.older_than, yes=opts.yes,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"[ERROR] {exc}", file=sys.stderr)
+            return 1 if isinstance(exc, RuntimeError) else 2
+    if not has_separator or not command_args:
+        print(
+            "[CIU-141] `ciu run <stack>[:<service>] -- ARGV...` requires `--` "
+            "and a command",
+            file=sys.stderr,
+        )
+        return 2
+    if opts.dry_run and not opts.json_output:
+        print("[CIU-141] `ciu run --dry-run` requires --json", file=sys.stderr)
+        return 2
+    if opts.detach and not opts.json_output:
+        print("[CIU-141] `ciu run --detach` requires --json", file=sys.stderr)
+        return 2
+    if opts.json_output and not opts.detach and not opts.dry_run:
+        print("[CIU-141] foreground `ciu run` uses --events-fd or --events-file, not --json",
+              file=sys.stderr)
+        return 2
+    try:
+        from . import oneshot
+
+        _seed_selected_root_env(define_root)
+        repo_root = _resolve_repo_root_deploy(define_root)
+        return oneshot.run_cli(
+            repo_root, opts.selector, command_args, profiles=opts.profile,
+            name=opts.name, labels=opts.label or [], env_names=opts.env_name or [],
+            extend=opts.extend, detach=opts.detach, json_output=opts.json_output,
+            dry_run=opts.dry_run, events_fd=opts.events_fd,
+            events_file=opts.events_file, owner_pid=opts.owner_pid,
+            skip_hooks=opts.skip_hooks,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1 if isinstance(exc, RuntimeError) else 2
+
+
 def _worktree(rest: list[str]) -> int:
     """Handle the S16 managed-worktree lifecycle."""
     import argparse as _ap
@@ -2107,6 +2194,9 @@ def _legacy_dispatch(raw: list[str]) -> None:
 
     elif verb == "exec":
         raise SystemExit(_exec_service_cli(rest))
+
+    elif verb == "run":
+        raise SystemExit(_run_cli(rest))
 
     elif verb == "capabilities":
         import argparse as _ap

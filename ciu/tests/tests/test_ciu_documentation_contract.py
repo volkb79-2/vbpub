@@ -224,6 +224,22 @@ def test_new_v7_workflows_are_explained_in_all_three_user_documents():
     assert "CIU-117" in design and "CIU-104" in design
 
 
+def test_global_only_roots_and_worktree_clean_preflight_are_documented():
+    readme, design, consumers = (
+        doc.read_text(encoding="utf-8") for doc in DOCS
+    )
+    for content in (readme, design, consumers):
+        assert "ciu.global.defaults.toml.j2" in content
+        assert "ciu.defaults.toml.j2" in content
+        assert "global-only root: nothing to clean" in content
+        assert "ciu clean --dry-run" in content
+
+    assert (
+        "docs/DESIGN-GUIDE.md#global-only-roots-and-stack-cleanup" in readme
+    )
+    assert "DESIGN-GUIDE.md#global-only-roots-and-stack-cleanup" in consumers
+
+
 def test_worktree_image_optout_example_matches_the_shipped_loader():
     consumers = (REPO_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
     blocks = [

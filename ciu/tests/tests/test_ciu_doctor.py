@@ -9,7 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import doctor  # noqa: E402
+from ciu import doctor
 
 
 class _Done:
@@ -70,6 +70,16 @@ def test_plugin_checks_report_missing_and_present(monkeypatch, probe):
     assert check(None, None).status == "ok"
     monkeypatch.setattr(doctor, "_probe", lambda _a: (0, ""))
     assert check(None, None).status == "ok"
+
+
+def test_compose_check_reports_the_compose_version(monkeypatch):
+    monkeypatch.setattr(doctor, "_probe", lambda _argv: (0, "v5.7.0"))
+
+    check = doctor._compose(None, None)
+
+    assert check.status == "ok"
+    assert check.summary == "docker compose v5.7.0"
+    assert check.details == {"version": "v5.7.0"}
 
 
 def test_git_and_ssh_checks(monkeypatch):

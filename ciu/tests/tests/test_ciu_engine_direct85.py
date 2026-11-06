@@ -43,11 +43,19 @@ def test_reset_treats_whitespace_only_orphan_listing_as_empty(monkeypatch, tmp_p
     """Docker output with no actual names must not trigger a meaningless remove call."""
 
     _write_identity_facts(tmp_path)
-    results = iter([
-        SimpleNamespace(returncode=0, stdout="", stderr=""),
-        SimpleNamespace(returncode=0, stdout=" \n\t\n", stderr=""),
-    ])
-    monkeypatch.setattr(engine.procutil, "run_cmd", lambda *_args, **_kwargs: next(results))
+    calls = []
+
+    def run_cmd(argv, **_kwargs):
+        calls.append(argv)
+        if "label=ciu.run=1" in argv:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "compose" in argv and "down" in argv:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "ps" in argv:
+            return SimpleNamespace(returncode=0, stdout=" \n\t\n", stderr="")
+        raise AssertionError(f"unexpected Docker call: {argv!r}")
+
+    monkeypatch.setattr(engine.procutil, "run_cmd", run_cmd)
 
     engine.reset_service(
         {"deploy": {"project_name": "project", "labels": {"prefix": "ciu"}}},
@@ -57,3 +65,4 @@ def test_reset_treats_whitespace_only_orphan_listing_as_empty(monkeypatch, tmp_p
     )
 
     assert "No orphaned containers found" in capsys.readouterr().out
+    assert not any(argv[:2] == ["docker", "rm"] for argv in calls)

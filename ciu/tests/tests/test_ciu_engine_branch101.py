@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from ciu import engine  # noqa: E402
+from ciu import engine
 
 
 def _write_identity_facts(root):
@@ -92,10 +92,14 @@ def test_reset_with_specs_cleans_orphans_without_fallback_secret_directory(
     config = {"deploy": {"project_name": "project", "labels": {"prefix": "ciu"}}}
     repo = tmp_path / "repo"
     repo.mkdir()
+    stack = repo / "stack"
+    stack.mkdir()
     _write_identity_facts(repo)
     events: list[str] = []
 
     def run_cmd(command, **_kwargs):
+        if "ps" in command and "label=ciu.run=1" in command:
+            return _ok()
         if "ps" in command:
             events.append("orphans")
         return _ok()
@@ -109,7 +113,7 @@ def test_reset_with_specs_cleans_orphans_without_fallback_secret_directory(
 
     engine.reset_service(
         config,
-        tmp_path,
+        stack,
         assume_yes=True,
         remove_secrets=True,
         specs=[SimpleNamespace(name="token")],

@@ -32,12 +32,18 @@ def test_reset_reports_failed_orphan_removal_without_aborting(monkeypatch, tmp_p
     """One orphan failure is visible but does not prevent reset cleanup completion."""
 
     _write_identity_facts(tmp_path)
-    results = iter([
-        SimpleNamespace(returncode=0, stdout="", stderr=""),  # compose down
-        SimpleNamespace(returncode=0, stdout="stale-api\n", stderr=""),  # ps
-        SimpleNamespace(returncode=1, stdout="", stderr="still running"),  # rm
-    ])
-    monkeypatch.setattr(engine.procutil, "run_cmd", lambda *_args, **_kwargs: next(results))
+    def run_cmd(command, **_kwargs):
+        if "label=ciu.run=1" in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "compose" in command and "down" in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:3] == ["docker", "ps", "-a"]:
+            return SimpleNamespace(returncode=0, stdout="stale-api\n", stderr="")
+        if command[:2] == ["docker", "rm"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="still running")
+        raise AssertionError(f"unexpected docker command: {command!r}")
+
+    monkeypatch.setattr(engine.procutil, "run_cmd", run_cmd)
 
     engine.reset_service(_config(), tmp_path, assume_yes=True, repo_root=tmp_path)
 
@@ -56,7 +62,7 @@ def test_reset_warns_but_completes_when_docker_unavailable_for_orphan_scan(monke
     def run_cmd(*_args, **_kwargs):
         nonlocal calls
         calls += 1
-        if calls == 1:
+        if calls <= 2:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         raise FileNotFoundError("docker")
 
