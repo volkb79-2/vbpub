@@ -240,8 +240,7 @@ class TestRealEstate:
         assert report.levels["run-gate-project"] == 2
         assert report.levels["cmru"] == 3
         assert report.levels["nyxloom"] == 1
-        assert report.levels["modern-debian-tools-python-debug"] == max(report.levels.values()) == 4
-        assert report.levels["mdt-cockpit"] == 4
+        assert report.levels["mdt-cockpit"] == max(report.levels.values()) == 4
         assert all(report.levels[name] == 0 for name in (
             "assay", "topos", "tls-edge", "tester-base",
         ))
@@ -281,9 +280,9 @@ class TestRealEstate:
             for error in report.errors
         ), report.errors
 
-    def test_removing_the_mdt_to_cli_extended_edge_fails_the_artifact_preflight(self):
+    def test_removing_the_mdt_cockpit_to_cli_extended_edge_fails_the_artifact_preflight(self):
         declared = {name: list(deps) for name, deps in self._forge().orchestration.dependencies.items()}
-        mdt = "modern-debian-tools-python-debug"
+        mdt = "mdt-cockpit"
         declared[mdt] = [dep for dep in declared[mdt] if dep != "cli-extended"]
         assert any("'cli-extended' wheel" in error for error in self._report(declared).errors)
 

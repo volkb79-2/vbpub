@@ -620,7 +620,7 @@ def test_estate_python_callers_import_only_what_cmru_exports():
     files = _estate_python_outside_cmru()
     problems = _estate_cmru_import_problems(files)
     assert not problems, "\n".join(problems)
-    mdt = REPO_ROOT / "modern-debian-tools-python-debug" / "build-push.py"
+    mdt = REPO_ROOT / "mdt-cockpit" / "build-push.py"
     if mdt.is_file():  # the consumer that the removed run_step broke
         assert mdt in files
         assert "from cmru.runner import run_step" in mdt.read_text(encoding="utf-8")

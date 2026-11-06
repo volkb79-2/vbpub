@@ -83,7 +83,7 @@ project's declared command. See [`cmru/docs/SPEC.md`](../cmru/docs/SPEC.md) *S-R
   `applications/webapp-ui-react/Dockerfile`, driven by `ciu bake`. **No cmru** — until/unless
   one of those images is published to ghcr for outside consumers, at which point that product
   gets a portable `cmru.toml` with explicit image build/push steps.
-- **modern-debian-tools-python-debug (mdt)** — the deliverable *is* the ghcr image(s). Its
+- **mdt-cockpit (successor to the retired image project)** — the deliverable *is* the GHCR image(s). Its
   explicit CMRU contract prepares one digest-verified OCI layout, commits regenerated
   manifests, and pushes it. `git_tag = false`; image identity is project-owned.
 - **ciu / cmru themselves** — Python wheels. Their project contracts explicitly compose the

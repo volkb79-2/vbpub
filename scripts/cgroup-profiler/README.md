@@ -272,7 +272,7 @@ lock, which does not serialize unrelated privileged DAMON tools
 - `scripts/damon-analysis/` — DAMON working-set analysis. The wheel vendors the
   `SysfsInterface` and `Classifier` it uses to add a hot/warm/cold breakdown
   alongside the counters.
-- `modern-debian-tools-python-debug/host-setup/` — owns the host's dev-tier
+- `mdt-cockpit/host-setup/` — owns the host's dev-tier
   slice governance (`dev-interactive`, `dev-background`, `dev-gates`,
   `dev-buildkitd`). This tool measures those tiers; it does not manage them.
   Proposals in the report are phrased as changes to *that* configuration.

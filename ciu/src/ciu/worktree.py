@@ -6983,6 +6983,51 @@ def _cleaned_roots_text(entries: list[dict[str, Any]]) -> str:
     return ", ".join(cleaned) if cleaned else "none"
 
 
+def _preflight_clean_roots(
+    sibling_roots: list[Path],
+    selected_root: Path,
+    *,
+    include_selected: bool,
+    json_output: bool = False,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Check every root's clean plan before `worktree rm` removes anything."""
+    targets = [("sibling", root) for root in sibling_roots]
+    if include_selected:
+        targets.append(("selected", selected_root))
+
+    results: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for role, root in targets:
+        entry: dict[str, Any] = {
+            "root": str(root), "role": role, "status": "failed",
+        }
+        results.append(entry)
+        try:
+            if not _ciu_root_marker_present(root):
+                raise WorktreeError(
+                    f"[CIU-138] committed CIU root {root} has no marker in "
+                    "the checkout; refusing to guess its identity"
+                )
+            rc = _clean_in(
+                root, yes=False, plan_only=True, json_output=json_output,
+            )
+        except WorktreeError as exc:
+            entry["error"] = str(exc)
+            failures.append(
+                f"{role} CIU root {root}: cleanup preflight unavailable: {exc}"
+            )
+            continue
+        if rc != 0:
+            entry["exit_code"] = rc
+            failures.append(
+                f"{role} CIU root {root}: clean preflight (`ciu clean --dry-run`) "
+                f"failed (exit {rc})"
+            )
+            continue
+        entry["status"] = "ready"
+    return results, failures
+
+
 def _sibling_committed_roots(checkout: Path, selected_root: Path) -> list[Path]:
     """CIU-138: committed CIU roots at *checkout*'s own HEAD, minus the selected one.
 
@@ -8400,16 +8445,36 @@ def remove(
         # CIU-191: the dry run also shows the cleanup plan (containers, volumes
         # and networks by name, and what is left alone) in the child's output.
         try:
-            dry_ciu_root = managed.ciu_root if managed is not None else None
-            if dry_ciu_root is not None and _ciu_root_marker_present(dry_ciu_root):
-                _clean_in(
-                    dry_ciu_root, yes=False, plan_only=True,
-                    **({"json_output": True} if _json_output else {}),
-                )
+            dry_ciu_root = (
+                managed.ciu_root if managed is not None
+                else wt.path / _ciu_root_offset(repo_root)
+            )
+            dry_marker_present = _ciu_root_marker_present(dry_ciu_root)
+            dry_sibling_roots = _sibling_committed_roots(wt.path, dry_ciu_root)
+            _preflight_entries, dry_blockers_extra = _preflight_clean_roots(
+                dry_sibling_roots,
+                dry_ciu_root,
+                include_selected=False,
+                json_output=_json_output,
+            )
+            if dry_marker_present:
+                try:
+                    selected_rc = _clean_in(
+                        dry_ciu_root, yes=False, plan_only=True,
+                        **({"json_output": True} if _json_output else {}),
+                    )
+                except WorktreeError as exc:
+                    dry_blockers_extra.append(
+                        f"cleanup plan unavailable: {exc}"
+                    )
+                else:
+                    if selected_rc != 0:
+                        dry_blockers_extra.append(
+                            f"selected CIU root {dry_ciu_root}: clean preflight "
+                            f"(`ciu clean --dry-run`) failed (exit {selected_rc})"
+                        )
         except WorktreeError as exc:
-            dry_blockers_extra = [f"cleanup plan unavailable: {exc}"]
-        else:
-            dry_blockers_extra = []
+            dry_blockers_extra = [f"clean preflight unavailable: {exc}"]
         details["branch"] = {key: value for key, value in dry_branch.items() if key != "delete"}
         details["ignored_state"] = dry_ignored
         details["uncommitted_changes"] = dry_dirty
@@ -8593,6 +8658,34 @@ def remove(
     except WorktreeError as exc:
         mark("resource_cleanup", "failed-root-discovery")
         raise fail(str(exc)) from exc
+
+    preflight_entries: list[dict[str, Any]] = []
+    preflight_failures: list[str] = []
+    if sibling_roots:
+        preflight_entries, preflight_failures = _preflight_clean_roots(
+            sibling_roots,
+            ciu_root,
+            include_selected=marker_present,
+            json_output=_json_output,
+        )
+    selected_preflight_errors = [
+        entry for entry in preflight_entries
+        if entry["role"] == "selected" and "error" in entry
+    ]
+    if selected_preflight_errors:
+        mark("resource_cleanup", "failed")
+        raise fail(
+            "selected-root clean preflight was unavailable; no CIU root was "
+            "cleaned: " + "; ".join(preflight_failures),
+            phase="resource_cleanup",
+        )
+    if preflight_failures and not force:
+        mark("resource_cleanup", "failed")
+        raise fail(
+            "CIU clean preflight failed; no CIU root was cleaned: "
+            + "; ".join(preflight_failures),
+            phase="resource_cleanup",
+        )
     sibling_failure: str | None = None
     for sibling in sibling_roots:
         entry: dict[str, Any] = {"root": str(sibling), "status": "failed"}

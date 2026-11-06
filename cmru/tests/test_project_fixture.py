@@ -287,7 +287,7 @@ RUNTIME_GUARDED = {
         r'root / "libraries" / "cli-extended" / "src"',
         "a sys.path string for a subprocess; nothing is read from it",
     ),
-    ("test_w2_integ.py", "modern-debian-tools-python-debug"): (
+    ("test_w2_integ.py", "mdt-cockpit"): (
         r"if mdt\.is_file\(\):", "the sparse fixture lacks it; the read is branch-guarded",
     ),
 }
