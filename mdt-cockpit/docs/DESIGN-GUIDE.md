@@ -416,7 +416,7 @@ The fork publishes the native and VSC image families as `mdt-cockpit` and
 `mdt-cockpit-devcontainer`, and the runtime namespace now matches: the image's
 support files live in `/usr/local/share/mdt-cockpit` and the user's overrides in
 `~/.config/mdt-cockpit`. The original project's paths
-(`modern-debian-tools-python-debug`) are not carried over. That is possible
+Predecessor-specific project customization files are not carried over. That is possible
 exactly because a fork user starts with an empty home and copies old content by
 hand ([Moving from modern-debian-tools-python-debug](HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug));
 there is no persisted file that depends on the old name, so keeping it would

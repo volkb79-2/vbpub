@@ -5,7 +5,7 @@ exit-semantics: no sys.exit in helpers).
 
 Rules
 -----
-- ``run_cmd`` is the **only** place CIU spawns child processes.
+- ``run_cmd`` and ``popen`` are the **only** places CIU spawns child processes.
 - ``run_cmd`` MUST NOT call ``sys.exit``; callers decide what to do on failure.
 - On ``check=True``, raises ``subprocess.CalledProcessError`` enriched with a
   human-readable message containing the command, returncode, and the last few
@@ -16,7 +16,7 @@ Rules
 from __future__ import annotations
 
 import subprocess
-from typing import Any
+from typing import IO, Any
 
 
 def run_cmd(
@@ -74,6 +74,7 @@ def run_cmd(
     """
     result: subprocess.CompletedProcess[str] = subprocess.run(
         cmd,
+        check=False,
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -111,3 +112,34 @@ def docker(args: list[str], **kw: Any) -> subprocess.CompletedProcess:
     (``timeout``, ``check``, ``env``, ``cwd``, ``capture``, ``input``).
     """
     return run_cmd(["docker", *args], **kw)
+
+
+def popen(
+    cmd: list[str],
+    *,
+    env: dict | None = None,
+    cwd: str | None = None,
+    stdin: int | IO | None = None,
+    stdout: int | IO | None = None,
+    stderr: int | IO | None = None,
+    text: bool = True,
+    bufsize: int = -1,
+    start_new_session: bool = False,
+) -> subprocess.Popen:
+    """Start a long-lived child whose lifecycle the caller observes.
+
+    This is the streaming companion to :func:`run_cmd`; it exists for CIU's
+    foreground one-shot lifecycle, where the controller must inspect and
+    signal a container while Compose remains attached to it.
+    """
+    return subprocess.Popen(
+        cmd,
+        env=env,
+        cwd=cwd,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        text=text,
+        bufsize=bufsize,
+        start_new_session=start_new_session,
+    )

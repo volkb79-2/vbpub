@@ -235,7 +235,7 @@ developer `run-gate-project/dist` wheel can never pass it.
 
 The authoritative order is `cmru.orchestration.toml` (`project_order` with `depends_on`): cli-extended,
 cgroup-profiler, run-gate-project, cmru, ciu, assay, topos, nyxloom, pwmcp, tls-edge,
-modern-debian-tools-python-debug, mdt-cockpit, tester-base. `cmru` declares `depends_on = ["cli-extended",
+mdt-cockpit, tester-base. `cmru` declares `depends_on = ["cli-extended",
 "run-gate-project"]` for exactly the reason below: its gate needs a published Run-Gate that the host judge and the
 selected image both carry. **Rebuild this image between run-gate-project and cmru** in that order; no node exists
 for the step (TB-09). tester-base is last and nothing depends on it, which is harmless while the consumers default

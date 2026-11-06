@@ -436,3 +436,14 @@ enough: these are tiny reads and writes, not CPU-heavy), tests marked `os_integr
 `VBPUB_REQUIRE_OS_INTEGRATION=1` so a skip is a failure, deselected in the tester-unified lanes. The
 operator's hypothesis (daemon work belongs in a VM, TUI in the container) holds for (2)-(4); the TUI and
 collector logic stay in containers.
+
+## TOP-SQUEEZE-THREADS - the squeeze restore guard holds only in a single-threaded process (OPEN 2026-11-05)
+
+`_RestoreGuard.restore` blocks the guarded signals with `pthread_sigmask` while it writes `memory.high`
+back (G-04). The mask is per thread. `topos squeeze` runs single-threaded today, so a SIGTERM stays
+pending until the unmask and fires after the bookkeeping. In a process with other threads, the kernel
+can deliver the signal to one of them, and the Python handler then runs in the main thread mid-write.
+That happened in the test suite under xdist, where the test now signals its own thread. Before squeeze
+runs inside the TUI (D-033 control submenu) or any process with worker threads, block the guarded
+signals in every thread, or run the restore in a single-threaded child. Add a test with a second live
+thread.

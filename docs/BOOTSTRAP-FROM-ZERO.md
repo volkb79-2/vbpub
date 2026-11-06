@@ -37,7 +37,7 @@ L0: cli-extended, assay, topos, test-policy, tls-edge, iogovmon, tester-base
 L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
 L2: run-gate-project
 L3: cmru
-L4: modern-debian-tools-python-debug, mdt-cockpit
+L4: mdt-cockpit
 ```
 
 Every project registered in `cmru.orchestration.toml` appears in this table,

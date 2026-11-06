@@ -12,7 +12,7 @@ one config and one installed CLI.
 | **ciu** | [`ciu/`](ciu/) | Python wheel | cmru — `ciu-v*` |
 | **assay** | [`assay/`](assay/) | Python wheel + zipapp | cmru — `assay-v*` |
 | **topos** | [`topos/`](topos/) | Python wheel | cmru — `topos-v*` |
-| **modern-debian-tools-python-debug** | [`modern-debian-tools-python-debug/`](modern-debian-tools-python-debug/) | OCI images | cmru — `modern-debian-tools-python-debug-v*` |
+| **mdt-cockpit** | [`mdt-cockpit/`](mdt-cockpit/) | OCI images | cmru |
 | **pwmcp** (Playwright-MCP service) | [`pwmcp/`](pwmcp/) | OCI image + stack bundle | cmru — `pwmcp-v<playwright>-r<N>` |
 | **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | cmru — `nyxloom-v*` |
 | **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru — `tls-edge-v*` |
@@ -21,7 +21,7 @@ one config and one installed CLI.
 | **cli-extended** | [`libraries/cli-extended/`](libraries/cli-extended/) | Shared Python CLI library (wheel) | cmru — `cli-extended-v*`; the root of the dependency graph (zero-release order: [`docs/BOOTSTRAP-FROM-ZERO.md`](docs/BOOTSTRAP-FROM-ZERO.md)) |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
-| devcontainer templates | [`modern-debian-tools-python-debug/templates/`](modern-debian-tools-python-debug/templates/) | devcontainer template | n/a |
+| devcontainer templates | [`mdt-cockpit/templates/`](mdt-cockpit/templates/) | devcontainer template | n/a |
 | **debian-install v2** | [`scripts/debian-install-v2/`](scripts/debian-install-v2/) | root-only Python installer | n/a |
 | zswap-writeback-governor | [`zswap-writeback-governor/`](zswap-writeback-governor/) | analysis, design, VM synthetic (docs and scripts only) | n/a |
 
@@ -148,7 +148,7 @@ Docker/test output too; add `--log-append` to retain prior transcripts with a di
 - **Release history:** CMRU creates each managed product's `CHANGES.md` before its
   isolated gate. No per-project opt-in is needed; see [`cmru/README.md`](cmru/README.md).
 - **Auto-released set** (`orchestration.project_order` in `cmru.orchestration.toml`): ciu, cmru,
-  assay, topos, nyxloom, modern-debian-tools-python-debug, pwmcp, tls-edge, and
+  assay, topos, nyxloom, mdt-cockpit, pwmcp, tls-edge, and
   run-gate-project. Each entry is governed by its project-local `cmru.toml`;
   an artifact may still be deliberately omitted from a project's artifact list.
   Empyrion translation remains an on-demand, delegated date-tagged asset.
@@ -160,7 +160,7 @@ Docker/test output too; add `--log-append` to retain prior transcripts with a di
 
 ```
 cmru/            cmru source (CLI, runner, hosts), SPEC, tests
-ciu/ pwmcp/ tls-edge/ modern-debian-tools-python-debug/ game_stuff/   products
+ciu/ pwmcp/ tls-edge/ mdt-cockpit/ game_stuff/   products
 nyxloom/      project-neutral workflow control-plane design/pilot
 scripts/         shared ops scripts (netcup, debian-install, …; see
                   Python dependency installs below)

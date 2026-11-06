@@ -20,7 +20,7 @@ echo "== copying config files from $HERE/files into / =="
 rm -f /etc/sysctl.d/99-memory.conf
 # /etc/docker/daemon.json is NOT copied from here (host dev-tier cgroup
 # governance rollout): it now has one owner, mdt's host-setup/ companion
-# (modern-debian-tools-python-debug/host-setup/install.sh) — see that
+# (mdt-cockpit/host-setup/install.sh) — see that
 # script's "docker daemon.json" step. Two installers each doing a wholesale
 # copy of this file would silently fight over it, last-writer-wins.
 # cp -r WITHOUT -a/--preserve: -a copies the repo checkout's user ownership and
@@ -116,7 +116,7 @@ cat <<'NEXT'
      host-setup companion (dev-interactive.slice + dev-background.slice,
      measured IO caps, the fio baseline, BFQ setup, AND /etc/docker/daemon.json —
      the sole owner of that file now, see the note above):
-       sudo <vbpub>/modern-debian-tools-python-debug/host-setup/install.sh --with-baseline
+       sudo <vbpub>/mdt-cockpit/host-setup/install.sh --with-baseline
        sudo mdt-host-check.sh
      Run the baseline while the game is STOPPED — it saturates the disk ~4 min.
 NEXT

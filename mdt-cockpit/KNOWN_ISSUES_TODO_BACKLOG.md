@@ -1386,3 +1386,11 @@ with no score, not a parse of the challenge HTML.
 **Open.**
 1. A supported refresh: for example a finalize step that merges the template's `customizations.vscode.settings` into the machine settings file (template keys win, user-only keys kept), or a `mdt` verb that does the same. It needs a source for the effective settings inside the container (the workspace `devcontainer.json` as JSONC, or the metadata label).
 2. A check that warns when a template key is missing from the machine settings file.
+
+## MDT-078 - retire modern-debian-tools-python-debug (2026-11-05)
+
+**Status:** DONE on this branch. Removed the predecessor directory and its CMRU project registration; repointed live image, install, code, and documentation references to `mdt-cockpit`. Kept runtime state paths and historical records intact.
+
+**Open items:**
+1. Build-check nyxloomd against the new `mdt-cockpit` base image.
+2. Existing GHCR packages under the retired name remain in place by operator decision.
