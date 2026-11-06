@@ -38,10 +38,13 @@ topos daemon preflight
 topos daemon status
 ```
 
-The service receives its listener from `topos-observe.socket`. The daemon
-state directory is `/run/topos/state/` and is private to root. The old socket
-path `/run/topos/topos.sock` is no longer served; upgrading a host requires a
-fresh install.
+The service receives its listener from `topos-observe.socket`. The configured
+`state_dir` is private to root (mode `0700`) and becomes the systemd runtime directory. The
+daemon writes BPF snapshots under `state_dir/bpf` and squeeze recovery records
+under `state_dir/squeeze`. `toposd run --bpf-state-dir PATH` overrides the
+BPF snapshot directory. `topos squeeze` and `topos squeeze --recover` use
+the same service config; an absent default file selects `/run/topos/state`,
+and an invalid file is reported as a config error.
 
 ## Run for development
 
@@ -69,5 +72,5 @@ topos mcp serve
 
 The client account needs permission to connect to the socket through its
 configured group. The existing `topos daemon preflight`, `install-plan`, and
-`status` commands remain available. `toposd install`, `uninstall`, and
-`doctor` are coming in the same release.
+`status` commands remain available. The `toposd install`, `uninstall`, and
+`doctor` commands are not implemented by this CLI.

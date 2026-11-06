@@ -60,6 +60,14 @@ def _run(args: argparse.Namespace, _runtime: CliRuntime) -> int:
     except ActivationError as exc:
         raise _refuse(str(exc)) from None
 
+    if listeners is not None and args.self_bind:
+        for descriptors in listeners.values():
+            for descriptor in descriptors:
+                descriptor.close()
+        raise _refuse(
+            "--self-bind cannot be combined with a systemd-passed listener when LISTEN_PID matches"
+        )
+
     listener = None
     if listeners is None:
         if not args.self_bind:
@@ -92,7 +100,9 @@ def _run(args: argparse.Namespace, _runtime: CliRuntime) -> int:
             history_size=args.history_size,
             bpf_root=Path(args.bpf_root) if args.bpf_root else None,
             bpf_interval=args.bpf_interval,
-            bpf_state_dir=Path(args.bpf_state_dir) if args.bpf_state_dir else None,
+            bpf_state_dir=(
+                Path(args.bpf_state_dir) if args.bpf_state_dir else cfg.state_dir / "bpf"
+            ),
         )
     except OSError as exc:
         if listener is not None:
@@ -221,7 +231,7 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
                 _opt("--cgroup-root", "cgroup filesystem root", metavar="PATH"),
                 _opt("--bpf-root", "BPF filesystem root", metavar="PATH"),
                 _opt("--bpf-interval", "BPF snapshot interval in seconds", metavar="S", type=float, default=30.0),
-                _opt("--bpf-state-dir", "BPF snapshot state directory (default /run/topos/state/bpf)", metavar="PATH"),
+                _opt("--bpf-state-dir", "BPF snapshot state directory (default service state_dir/bpf)", metavar="PATH"),
             ),
             handler=_run,
         )

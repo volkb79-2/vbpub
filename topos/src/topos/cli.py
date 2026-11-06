@@ -469,15 +469,23 @@ def _main_squeeze(argv: list[str]) -> int:
     from topos.actions.squeeze import (
         SqueezeConfig,
         parse_size,
+        recovery_path_for,
         render_squeeze_result,
         run_squeeze_gated,
         squeeze_result_to_jsonable,
     )
+    from topos.service.config import ConfigError as ServiceConfigError
+    from topos.service.config import load_config as load_service_config
 
     args = parse_squeeze_args(argv)
+    try:
+        recovery_dir = load_service_config().state_dir / "squeeze"
+    except ServiceConfigError as exc:
+        print_cli_error(str(exc))
+        return 2
 
     if args.recover:
-        return _main_squeeze_recover(args.target)
+        return _main_squeeze_recover(args.target, recovery_dir=recovery_dir)
     if args.target is None:
         print_cli_error("error: --target is required (unless --recover)")
         return 2
@@ -512,6 +520,7 @@ def _main_squeeze(argv: list[str]) -> int:
         audit_path=args.audit_path,
         admin=args.admin,
         confirm=args.confirm,
+        recovery_path=recovery_path_for(args.target, recovery_dir),
     )
 
     from topos.actions.squeeze import _Terminated
@@ -542,7 +551,7 @@ def _main_squeeze(argv: list[str]) -> int:
     return 0
 
 
-def _main_squeeze_recover(target: str | None) -> int:
+def _main_squeeze_recover(target: str | None, *, recovery_dir: Path) -> int:
     """``topos squeeze --recover``: restore memory.high from recovery records."""
     import os
 
@@ -551,7 +560,7 @@ def _main_squeeze_recover(target: str | None) -> int:
     if os.geteuid() != 0:
         print_cli_error("error: --recover requires root privileges")
         return 2
-    outcomes = recover_squeeze(target)
+    outcomes = recover_squeeze(target, recovery_dir=recovery_dir)
     if not outcomes:
         print("nothing to recover")
         return 0

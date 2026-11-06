@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import stat
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import call, patch
@@ -26,6 +27,27 @@ def _config(socket_path: Path, *, state_dir: Path, group: str = "ops") -> Servic
             observe=ObserveSocketConfig(path=socket_path, group=group, mode="0660")
         ),
     )
+
+
+def test_render_install_plan_text_with_warning_only_step_is_complete() -> None:
+    from topos.daemon.deploy import (
+        InstallPlanStep,
+        build_install_plan,
+        render_install_plan_text,
+    )
+
+    warning = "This step has a warning and no command."
+    plan = replace(
+        build_install_plan(),
+        steps=(InstallPlanStep(order=1, description="Review the warning", warning=warning),),
+    )
+
+    rendered = render_install_plan_text(plan)
+
+    assert "Step 1: Review the warning" in rendered
+    assert f"  note: {warning}" in rendered
+    assert "  command:" not in rendered
+    assert rendered.endswith("This is a PLAN only. No files were written and no system state was changed.")
 
 
 def test_preflight_reports_unavailable_state_group_and_socket() -> None:

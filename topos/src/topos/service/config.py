@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import tomllib
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,17 @@ def parse_config(contents: str, *, source: str = "<config>") -> ServiceConfig:
 
 
 def _absolute_path(value: str, key: str) -> Path:
+    if any(
+        char.isspace()
+        or unicodedata.category(char) == "Cc"
+        or char in {"%", chr(92)}
+        for char in value
+    ):
+        raise ConfigError(
+            f"{key} must not contain whitespace, control characters, '%', or backslashes"
+        )
+    if ".." in value.split("/"):
+        raise ConfigError(f"{key} must not contain '..' path components")
     if not value.startswith("/"):
         raise ConfigError(f"{key} must be absolute")
     return Path(os.path.normpath(value))

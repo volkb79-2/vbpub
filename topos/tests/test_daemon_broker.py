@@ -5,8 +5,11 @@ import socket
 import threading
 from pathlib import Path
 
+import pytest
+
 from conftest import fixture_frame
 from topos.daemon import FrameBroker, serve_unix_socket
+from topos.daemon.broker import BrokerUnixServer
 from topos.model import Frame
 
 
@@ -82,3 +85,41 @@ def test_daemon_socket_permissions_are_group_read_write(tmp_path: Path) -> None:
         assert (tmp_path / "topos.sock").stat().st_mode & 0o777 == 0o660
     finally:
         server.server_close()
+
+
+def test_failed_unix_bind_leaves_the_existing_socket_node_untouched(tmp_path: Path) -> None:
+    socket_path = tmp_path / "owned.sock"
+    winner = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    winner.bind(str(socket_path))
+    winner.listen()
+    before = socket_path.lstat()
+    try:
+        with pytest.raises(OSError):
+            BrokerUnixServer(socket_path, FrameBroker([]), owned_path=socket_path)
+        after = socket_path.lstat()
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        assert socket_path.is_socket()
+    finally:
+        winner.close()
+        socket_path.unlink(missing_ok=True)
+
+
+def test_server_close_preserves_a_replacement_socket_node(tmp_path: Path) -> None:
+    socket_path = tmp_path / "owned.sock"
+    server = BrokerUnixServer(socket_path, FrameBroker([]), owned_path=socket_path)
+    replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        socket_path.unlink()
+        replacement.bind(str(socket_path))
+        replacement.listen()
+        replacement_node = socket_path.lstat()
+
+        server.server_close()
+
+        after = socket_path.lstat()
+        assert (after.st_dev, after.st_ino) == (replacement_node.st_dev, replacement_node.st_ino)
+        assert socket_path.is_socket()
+    finally:
+        server.server_close()
+        replacement.close()
+        socket_path.unlink(missing_ok=True)

@@ -15,15 +15,22 @@ unchanged — see "Protocol compatibility" below.
 ## Socket
 
 The production listener is owned by the systemd socket unit
-`topos-observe.socket` at `/run/topos/observe/topos.sock`. The unit creates
-the path as `root:topos-observe`, mode `0660` by default, and passes its
+`topos-observe.socket` at `/run/topos/observe/topos.sock`. The unit creates the socket
+node as `root:topos-observe`, mode `0660` by default, and its parent directory as
+`root:root` mode `0755`. It passes its
 listening descriptor to `topos.service` with the name `observe`. Daemon state
-is kept separately under `/run/topos/state/`, mode `0700 root:root`.
+is kept under the configured `state_dir`, created as `root:root` mode
+`0700` by systemd's `RuntimeDirectory=`.
 
 `/etc/topos/toposd.toml` configures `state_dir` and the observe socket's path,
-group, and mode. If the default config file is absent, built-in defaults apply.
-The old path `/run/topos/topos.sock` is no longer served; an upgrading host
-needs a fresh install.
+group, and mode. The state directory is the base for daemon BPF snapshots
+(`state_dir/bpf`) and squeeze recovery records (`state_dir/squeeze`). The
+`toposd run --bpf-state-dir PATH` option overrides the BPF snapshot directory.
+The BPF `state_dir` in the collector's config does not select the daemon's
+snapshot directory. `topos squeeze` and `topos squeeze --recover` read this
+service config as well. If the default config file is absent, built-in defaults
+apply; an invalid file stops the command with a config error. Clients need
+membership in the configured observe group to read daemon-approved telemetry.
 
 ## Service entry point
 
@@ -32,14 +39,15 @@ without it. For tests and development, use
 `toposd run --self-bind --socket PATH`; `--socket` is valid only with
 `--self-bind`. The self-bind mode uses the configured mode, removes only a
 stale socket node, and unlinks the node it owns at shutdown. It never changes
-the parent directory's owner or mode. `topos daemon serve` has been removed.
+the parent directory's owner or mode. `--self-bind` is refused when this
+process also has a systemd-passed listener.
 
 `toposd unit print [--config PATH] [--unit NAME]` renders the socket, service,
 slice, and sysusers files from the config. `toposd unit check [--config PATH]
 [--root DIR] [--diff]` compares them with installed files. `toposd config check
 [--config PATH] [--json]` validates the service config. `toposd install`,
-`uninstall`, and `doctor` are coming in the same release. The existing `topos
-daemon preflight`, `install-plan`, and `status` commands remain available.
+`uninstall`, and `doctor` are not implemented by this CLI. The existing
+`topos daemon preflight`, `install-plan`, and `status` commands remain available.
 
 ## Protocol
 
@@ -357,32 +365,6 @@ broker captures the failure and returns a `FrameUnavailableError` to clients
 without crashing the Unix server. The daemon continues to serve cached frames
 from history.
 
-## Socket
-
-The production path is `/run/topos/observe/topos.sock`; systemd owns the
-socket node. Clients need membership in the configured observe group to read
-daemon-approved telemetry.
-
-## Protocol
-
-One JSON request per connection:
-
-```json
-{"op":"current"}
-{"op":"stream","limit":3}
-```
-
-Responses are JSON lines:
-
-```json
-{"type":"frame","frame":{...canonical Frame JSON...}}
-{"type":"end","count":1}
-```
-
-Unsupported requests return an error object. The protocol has no arbitrary file
-read, command execution, admin, Docker mutation, systemd mutation, BPF, or DAMON
-mutation verb.
-
 ## Attach Client
 
 `topos --attach SOCKET` consumes daemon frames through the same UI model used by
@@ -524,9 +506,7 @@ Before enabling the service:
 
 `unit check` and preflight are read-only. They inspect rendered files, the
 state directory, socket owner/group/mode, group membership, and local
-connectability without invoking systemd. The old path
-`/run/topos/topos.sock` is no longer served; an upgrading host needs a fresh
-install.
+connectability without invoking systemd.
 
 ## Troubleshooting Daemon Client Errors
 

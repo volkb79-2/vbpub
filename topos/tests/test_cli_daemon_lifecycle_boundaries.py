@@ -35,7 +35,18 @@ class _FakeApi:
 
 
 def _wire_one_shot_server(monkeypatch: pytest.MonkeyPatch, cli, observed: dict) -> None:
+    import topos.service.cli as service_cli
+    from topos.service.config import DEFAULTS
+
+    monkeypatch.setattr(service_cli, "load_config", lambda _path: DEFAULTS)
+
+    class FakeSocket:
+        def getsockname(self) -> str:
+            return "/virtual/topos-observe.sock"
+
     class FakeServer:
+        socket = FakeSocket()
+
         def serve_forever(self) -> None:
             raise KeyboardInterrupt
 
@@ -229,6 +240,8 @@ def test_run_daemon_adopts_passed_listener_and_keeps_shutdown_path(
             observed["history_closed"] = True
 
     class FakeServer:
+        socket = listener
+
         def serve_forever(self) -> None:
             raise KeyboardInterrupt
 
@@ -248,12 +261,16 @@ def test_run_daemon_adopts_passed_listener_and_keeps_shutdown_path(
     monkeypatch.setattr(daemon_run, "DaemonApi", _FakeApi)
     monkeypatch.setattr(daemon_run, "serve_versioned_listener", adopt)
 
+    configured_path = tmp_path / "configured.sock"
     assert daemon_run.run_daemon(
-        tmp_path / "activated.sock", listener=listener, socket_mode=0o660
+        configured_path, listener=listener, socket_mode=0o660
     ) == 0
     assert observed["closed"] is True
     assert listener.fileno() == -1
-    assert "(activated)" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert str(tmp_path / "activated.sock") in output
+    assert str(configured_path) not in output
+    assert "(activated)" in output
 
 
 @pytest.mark.parametrize("failure", ("socket-in-use", "unexpected"))

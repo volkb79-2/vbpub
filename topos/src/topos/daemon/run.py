@@ -117,7 +117,10 @@ def run_daemon(
         raise
 
     shutdown.bind_server(server)
-    print(f"serving read-only topos frames on {socket_path} ({start_mode})", flush=True)
+    print(
+        f"serving read-only topos frames on {server.socket.getsockname()} ({start_mode})",
+        flush=True,
+    )
 
     health_registry.mark_disabled("bpf_snapshot_bridge", detail="disabled by default")
     health_registry.mark_disabled("paddr_lifecycle", detail="disabled by default")

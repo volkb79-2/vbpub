@@ -481,7 +481,6 @@ def build_install_plan(
     )
 
 
-
 def install_plan_to_jsonable(plan: DaemonInstallPlan) -> dict[str, object]:
     """Convert an install plan to a JSON-serializable dict (deterministic)."""
     return {

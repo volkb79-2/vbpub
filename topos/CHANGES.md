@@ -6,8 +6,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - feat(topos/daemon): systemd owns the `observe` socket at `/run/topos/observe/topos.sock`; daemon state moves under `/run/topos/state/`
 - feat(toposd): add `run`, `unit print|check`, and `config check`, with explicit `--self-bind` for tests and development
-- fix(topos): point client defaults at the socket unit and remove `topos daemon serve`; the old socket path is no longer served
+- fix(topos): point client defaults at the socket unit and remove `topos daemon serve`
 - fix(topos/deploy): render socket, service, slice, and sysusers files from `/etc/topos/toposd.toml`; remove the tmpfiles asset
+- fix(topos): route daemon BPF snapshots and squeeze recovery records under service `state_dir`
+- fix(toposd): preserve an existing or replacement socket node when self-bind fails or closes
+- fix(toposd): reject unsafe service-config paths before rendering systemd unit text
+- fix(toposd): reject `--self-bind` with an activated listener and report the bound address
+- fix(toposd): prevent systemd restart loops for exit status 2
 
 <!-- cmru: release history -->
 

@@ -971,13 +971,19 @@ def test_daemon_enabled_bridge_uses_configured_root_and_shuts_down(
 ) -> None:
     """Exercise the enabled serve wiring without BPF privileges or a live socket."""
     import topos.daemon.run as cli
+    import topos.service.cli as service_cli
     from conftest import run_toposd_self_bind
     from topos.config import BpfSnapshotConfig, ToposConfig
+    from topos.service.config import ServiceConfig
 
     bpf_root = tmp_path / "pins"
     bpf_root.mkdir()
     cgroup_root = _make_cgroup_fixture(tmp_path)
     state_dir = tmp_path / "state"
+    service_state = Path("/run/topos/custom-service-state")
+    monkeypatch.setattr(
+        service_cli, "load_config", lambda _path: ServiceConfig(state_dir=service_state)
+    )
     socket_path = tmp_path / "topos.sock"
     config = ToposConfig(
         cgroup_root=cgroup_root,
@@ -1024,6 +1030,12 @@ def test_daemon_enabled_bridge_uses_configured_root_and_shuts_down(
     class FakeServer:
         closed = False
 
+        class FakeSocket:
+            def getsockname(self) -> str:
+                return "/virtual/topos-observe.sock"
+
+        socket = FakeSocket()
+
         def serve_forever(self) -> None:
             raise KeyboardInterrupt
 
@@ -1040,8 +1052,8 @@ def test_daemon_enabled_bridge_uses_configured_root_and_shuts_down(
     assert observed == {
         "root": bpf_root,
         "cgroup_root": cgroup_root,
-        "restored": state_dir,
-        "initial": ("topos_cgroup_skb", state_dir),
+        "restored": service_state / "bpf",
+        "initial": ("topos_cgroup_skb", service_state / "bpf"),
     }
     assert server.closed is True
 

@@ -8,11 +8,20 @@ chmodding, probing, or unlinking the socket node.
 
 ## Socket and state layout
 
-The socket lives under `/run/topos/observe/`. Systemd creates its parent and
-socket with `root`, the configured observe group, and the configured mode
-(default `0660`). The daemon's private data lives separately under
-`/run/topos/state/`, created as `root:root` mode `0700`. Keeping these paths
-separate means socket readers do not gain access to daemon state files.
+The socket lives under `/run/topos/observe/`. Systemd creates the parent
+directory as `root:root` mode `0755` through `DirectoryMode=0755`; only the
+socket node gets the configured observe group and mode (default `0660`). The
+daemon's private data lives under `state_dir`, created as `root:root` mode
+`0700` through `RuntimeDirectoryMode=0700`. Keeping these paths separate
+means socket readers do not gain access to daemon state files.
+
+The configured `state_dir` also owns the daemon's BPF snapshot directory
+(`state_dir/bpf`) and squeeze recovery directory (`state_dir/squeeze`).
+`toposd run --bpf-state-dir PATH` overrides the BPF directory. The BPF
+`state_dir` in the collector config does not select daemon output. Both
+`topos squeeze` and `topos squeeze --recover` load the service config; an
+absent default file uses the built-in `/run/topos/state`, while an invalid
+file is an error.
 
 The service uses `Requires=` and `After=` for the socket unit. It does not use
 `PartOf=`: restarting the daemon must not restart the socket unit and replace
@@ -42,8 +51,6 @@ The observe group defaults to `topos-observe` and is declared through
 `topos.sysusers`. If configuration maps the level to another existing group,
 the rendered sysusers file contains a comment and creates no group.
 
-There is no compatibility listener or client fallback. The old
-`/run/topos/topos.sock` path is no longer served, and the former BPF and squeeze
-state paths are no longer used. A host upgrading to this layout needs a fresh
-install. `toposd install`, `uninstall`, and `doctor` are coming in the same
-release and are not part of this package.
+The daemon serves the configured observe socket and adopts its systemd-passed
+listener. `toposd install`, `uninstall`, and `doctor` are not part of this
+package.

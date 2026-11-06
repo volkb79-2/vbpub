@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import select
 import signal
 import socket
 import subprocess
@@ -152,7 +153,7 @@ os.execv(sys.executable, [sys.executable, "-c", sys.argv[3], *sys.argv[4:]])
 
 def _request_hello(path: Path) -> dict[str, object]:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(0.2)
+        client.settimeout(10.0)
         client.connect(str(path))
         client.sendall(b'{"id":"service-test","op":"hello","v":1}\n')
         client.shutdown(socket.SHUT_WR)
@@ -162,19 +163,31 @@ def _request_hello(path: Path) -> dict[str, object]:
     return json.loads(data.decode("utf-8"))
 
 
-def _wait_for_hello(process: subprocess.Popen[str], path: Path) -> dict[str, object]:
+def _wait_for_hello(process: subprocess.Popen[str], path: Path) -> tuple[dict[str, object], str]:
     deadline = time.monotonic() + 10.0
-    last_error: BaseException | None = None
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
+    if process.stdout is None:
+        pytest.fail("toposd stdout is unavailable")
+    startup_line = bytearray()
+    while not startup_line.endswith(b"\n"):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            pytest.fail("toposd did not announce its bound listener before the deadline")
+        readable, _, _ = select.select([process.stdout], [], [], remaining)
+        if not readable:
+            pytest.fail("toposd did not announce its bound listener before the deadline")
+        chunk = os.read(process.stdout.fileno(), 1)
+        if not chunk:
             out, err = process.communicate()
-            pytest.fail(f"toposd exited before serving: rc={process.returncode}\nstdout={out}\nstderr={err}")
-        try:
-            return _request_hello(path)
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            last_error = exc
-            time.sleep(0.01)
-    pytest.fail(f"toposd did not answer hello before the deadline: {last_error}")
+            pytest.fail(
+                f"toposd exited before serving: rc={process.returncode}\n"
+                f"startup={startup_line.decode(errors='replace')}\nstdout={out}\nstderr={err}"
+            )
+        startup_line.extend(chunk)
+    startup_text = startup_line.decode("utf-8")
+    try:
+        return _request_hello(path), startup_text
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        pytest.fail(f"toposd announced its listener but did not answer hello: {exc}")
 
 
 def _stop_process(process: subprocess.Popen[str]) -> tuple[str, str]:
@@ -221,6 +234,11 @@ def test_named_config_read_error_is_reported(tmp_path: Path, monkeypatch: pytest
         ("[sockets.control]\npath = '/run/topos/control.sock'\n", "unknown key 'sockets.control'"),
         ("[sockets.observe]\nlegacy = ['/run/topos/topos.sock']\n", "unknown key 'sockets.observe.legacy'"),
         ("[sockets.observe]\npath = 'relative.sock'\n", "sockets.observe.path must be absolute"),
+        ("[sockets.observe]\npath = '/run/topos/observe/bad path.sock'\n", "sockets.observe.path must not contain"),
+        ("[sockets.observe]\npath = '/run/topos/observe/%n.sock'\n", "sockets.observe.path must not contain"),
+        ("[sockets.observe]\npath = '/run/topos/observe/../observe.sock'\n", "sockets.observe.path must not contain '..'"),
+        ("[sockets.observe]\npath = '/run/topos/observe/" + chr(92) + "bad.sock'\n", "sockets.observe.path must not contain"),
+        ("[sockets.observe]\npath = \"/run/topos/observe/bad" + chr(92) + "u0001.sock\"\n", "sockets.observe.path must not contain"),
         ("[sockets.observe]\npath = 7\n", "sockets.observe.path must be a string"),
         ("[sockets.observe]\npath = '/run/topos/observe/topos'\n", "sockets.observe.path must end in .sock"),
         ("[sockets.observe]\ngroup = 'Topos'\n", "sockets.observe.group must match"),
@@ -235,6 +253,11 @@ def test_named_config_read_error_is_reported(tmp_path: Path, monkeypatch: pytest
         ("state_dir = '/var/lib/topos'\n", "state_dir must lie under /run/"),
         ("state_dir = '/run'\n", "state_dir must lie under /run/"),
         ("state_dir = '/run/topos'\n", "state_dir must be neither a parent nor a child"),
+        ("state_dir = '/run/topos/state dir'\n", "state_dir must not contain"),
+        ("state_dir = '/run/topos/%n'\n", "state_dir must not contain"),
+        ("state_dir = '/run/topos/../state'\n", "state_dir must not contain '..'"),
+        ("state_dir = '/run/topos/" + chr(92) + "state'\n", "state_dir must not contain"),
+        ("state_dir = \"/run/topos/state" + chr(92) + "u0001bad\"\n", "state_dir must not contain"),
         (
             "state_dir = '/run/topos/state'\n[sockets.observe]\npath = '/run/topos/state/topos.sock'\n",
             "sockets.observe.path must not be inside state_dir",
@@ -259,6 +282,16 @@ def test_config_rejects_wrong_table_shapes() -> None:
         parse_config("[sockets]\nobserve = 'bad'\n")
 
 
+def test_config_rejects_newline_injection_in_unit_path() -> None:
+    contents = (
+        '[sockets.observe]\npath = "/run/topos/observe/topos.sock'
+        + chr(92)
+        + 'nExecStart=/tmp/attacker.sock"\n'
+    )
+    with pytest.raises(ConfigError, match="sockets.observe.path must not contain"):
+        parse_config(contents)
+
+
 def test_config_rejects_invalid_toml_with_source_name() -> None:
     with pytest.raises(ConfigError, match="service.toml: invalid TOML"):
         parse_config("[sockets.observe\n", source="service.toml")
@@ -273,6 +306,7 @@ def test_rendered_default_units_match_packaged_assets_byte_for_byte() -> None:
         "topos.sysusers": (assets_dir / "topos.sysusers").read_text(encoding="utf-8"),
     }
     assert assets == render_units(DEFAULTS)
+    assert "RestartPreventExitStatus=2\n" in assets["topos.service"]
 
 
 def test_mapped_observe_group_is_only_a_sysusers_comment() -> None:
@@ -739,6 +773,63 @@ def test_run_direct_dispatches_self_bind_and_one_activated_listener(
         listener.close()
 
 
+def test_run_uses_service_state_dir_for_bpf_snapshots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import topos.daemon.run as daemon_run
+    import topos.service.cli as service_cli
+
+    state_dir = Path("/run/topos/custom-state")
+    config_path = tmp_path / "toposd.toml"
+    config_path.write_text(
+        f'state_dir = "{state_dir}"\n\n[sockets.observe]\n'
+        'path = "/run/topos/observe/topos.sock"\n',
+        encoding="utf-8",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_run_daemon(_path: Path, **kwargs: object) -> int:
+        calls.append(kwargs)
+        return 0
+
+    monkeypatch.setattr(daemon_run, "run_daemon", fake_run_daemon)
+    monkeypatch.setattr(service_cli, "adopt_listeners", lambda _expected: None)
+
+    assert service_cli.main(["run", "--self-bind", "--config", str(config_path)]) == 0
+    assert calls[0]["bpf_state_dir"] == state_dir / "bpf"
+
+    override = tmp_path / "explicit-bpf-state"
+    assert service_cli.main(
+        ["run", "--self-bind", "--config", str(config_path), "--bpf-state-dir", str(override)]
+    ) == 0
+    assert calls[1]["bpf_state_dir"] == override
+
+
+def test_run_refuses_self_bind_when_systemd_passed_a_listener(
+    tmp_path: Path,
+) -> None:
+    config_path = _write_config(tmp_path / "toposd.toml")
+    listener = _listening_socket(tmp_path / "observe.sock")
+    process = _spawn_toposd(
+        ["run", "--self-bind", "--config", str(config_path)],
+        listeners=[listener],
+    )
+
+    try:
+        stdout, message = process.communicate(timeout=10.0)
+        assert process.returncode == 2
+        assert not stdout
+        assert "--self-bind" in message
+        assert "LISTEN_PID matches" in message
+        assert "systemd-passed listener" in message
+        assert listener.getsockname() == str(tmp_path / "observe.sock")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+        listener.close()
+
+
 def test_run_direct_closes_multiple_listeners_and_oserror_listener(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -766,16 +857,19 @@ def test_run_direct_closes_multiple_listeners_and_oserror_listener(
 
 def test_activated_run_serves_and_leaves_socket_node_on_sigterm(tmp_path: Path) -> None:
     path = tmp_path / "observe.sock"
+    configured_path = tmp_path / "configured.sock"
     listener = _listening_socket(path)
-    config_path = _write_config(tmp_path / "toposd.toml", socket_path=path)
+    config_path = _write_config(tmp_path / "toposd.toml", socket_path=configured_path)
     process = _spawn_toposd(["run", "--config", config_path], listeners=[listener])
     try:
-        response = _wait_for_hello(process, path)
+        response, startup = _wait_for_hello(process, path)
         assert response["id"] == "service-test"
         assert response["ok"] is True
         stdout, _stderr = _stop_process(process)
-        assert "serving read-only topos frames on" in stdout
-        assert "(activated)" in stdout
+        assert "serving read-only topos frames on" in startup
+        assert str(path) in startup
+        assert str(configured_path) not in startup
+        assert "(activated)" in startup
         assert path.exists()
     finally:
         if process.poll() is None:
@@ -790,12 +884,14 @@ def test_self_bind_run_serves_and_unlinks_its_socket_on_sigterm(tmp_path: Path) 
     config_path = _write_config(tmp_path / "toposd.toml", socket_path=configured_path)
     process = _spawn_toposd(["run", "--self-bind", "--socket", socket_path, "--config", config_path])
     try:
-        response = _wait_for_hello(process, socket_path)
+        response, startup = _wait_for_hello(process, socket_path)
         assert response["id"] == "service-test"
         assert response["ok"] is True
         stdout, _stderr = _stop_process(process)
-        assert "serving read-only topos frames on" in stdout
-        assert "(self-bind)" in stdout
+        assert "serving read-only topos frames on" in startup
+        assert str(socket_path) in startup
+        assert str(configured_path) not in startup
+        assert "(self-bind)" in startup
         assert not socket_path.exists()
     finally:
         if process.poll() is None:

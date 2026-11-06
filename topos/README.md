@@ -85,18 +85,20 @@ those powers in a privileged container would add an image boundary without
 meaningfully reducing host authority.  The installed `topos.service`,
 `topos-observe.socket`, `topos.slice`, and sysusers files let systemd own the
 group-readable socket at `/run/topos/observe/topos.sock`; private daemon state
-lives under `/run/topos/state/`. The daemon receives its `observe` listener
-through systemd socket activation. Its unit bounds it to 256 MiB `MemoryHigh`,
+lives under the configured `state_dir`. That directory also contains daemon
+BPF snapshots under `state_dir/bpf` and squeeze recovery records under
+`state_dir/squeeze`; the collector config's BPF `state_dir` does not choose
+the daemon output path. The daemon receives its `observe` listener through
+systemd socket activation. Its unit bounds it to 256 MiB `MemoryHigh`,
 512 MiB `MemoryMax`, 1 GiB swap, 512 tasks, and low CPU weight. See the
-[daemon design guide](docs/DESIGN-GUIDE.md) for the reasoning and
+[daemon state layout guide](docs/DESIGN-GUIDE.md#socket-and-state-layout) for the reasoning and
 [consumer guide](docs/CONSUMERS.md) for install and client examples.
 
 The `toposd` admin entry point provides `run`, `unit print`, `unit check`, and
 `config check`. `toposd run` requires the activated socket; use
-`toposd run --self-bind --socket PATH` only for tests and development. The old
-`/run/topos/topos.sock` path is no longer served, so an upgrading host needs a
-fresh install. `toposd install`, `uninstall`, and `doctor` are coming in the
-same release. The existing `topos daemon preflight`, `install-plan`, and
+`toposd run --self-bind --socket PATH` only for tests and development. The
+`toposd run --bpf-state-dir PATH` option overrides the BPF snapshot directory.
+The existing `topos daemon preflight`, `install-plan`, and
 `status` commands remain available in this package.
 
 Without a daemon, the client still works in direct mode: `topos --once`, the

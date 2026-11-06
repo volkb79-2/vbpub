@@ -96,6 +96,10 @@ def _wire_daemon(
     scenario: _BridgeScenario,
 ) -> tuple[dict[str, object], _OnePeriodicEvent]:
     """Install a hermetic daemon composition and return its observations."""
+    import topos.service.cli as service_cli
+    from topos.service.config import DEFAULTS
+
+    monkeypatch.setattr(service_cli, "load_config", lambda _path: DEFAULTS)
     observed: dict[str, object] = {"refreshes": [], "writes": []}
     frame_stop = _OnePeriodicEvent(False)
     bpf_stop = _OnePeriodicEvent(True)
@@ -131,9 +135,14 @@ def _wire_daemon(
         def __init__(self, **kwargs: object) -> None:
             observed["provider_kwargs"] = kwargs
 
+    class FakeSocket:
+        def getsockname(self) -> str:
+            return "/virtual/topos-observe.sock"
+
     class FakeServer:
         def __init__(self, broker: _FakeBroker) -> None:
             self._broker = broker
+            self.socket = FakeSocket()
 
         def serve_forever(self) -> None:
             # The synchronous worker has completed its one iteration before the
@@ -226,9 +235,10 @@ def test_daemon_cli_bpf_root_runs_one_periodic_iteration_with_bounded_failure_co
 def test_daemon_cli_uses_enabled_config_bpf_selection_when_cli_root_is_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Configured BPF settings remain the fallback when no CLI override is given."""
+    """Collector config selects BPF inputs; service config selects daemon state."""
     config_root = tmp_path / "config-pins"
     config_state = tmp_path / "config-state"
+    service_state = Path("/run/topos/custom-service-state")
     config = ToposConfig(
         cgroup_root=tmp_path / "cgroup",
         bpf_snapshot=BpfSnapshotConfig(
@@ -237,12 +247,17 @@ def test_daemon_cli_uses_enabled_config_bpf_selection_when_cli_root_is_absent(
         ),
     )
     observed, bpf_stop = _wire_daemon(monkeypatch, tmp_path, _BridgeScenario("success", None))
+    import topos.service.cli as service_cli
+    from topos.service.config import ServiceConfig
+
+    monkeypatch.setattr(service_cli, "load_config", lambda _path: ServiceConfig(state_dir=service_state))
     monkeypatch.setattr(cli, "load", lambda _path: config)
 
     from conftest import run_toposd_self_bind
     assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
 
     assert observed["bridge_root"] == config_root
-    assert observed["initial"] == ("configured_map", config_state)
+    assert config_state != service_state / "bpf"
+    assert observed["initial"] == ("configured_map", service_state / "bpf")
     assert observed["refreshes"] == ["configured_map"]
     assert bpf_stop.wait_calls == [7.0, 7.0]
