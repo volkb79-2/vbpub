@@ -731,7 +731,7 @@ There is no mapping layer and no fallback read. The migration is a one-time docu
 
 A repository test asserts that no host-setup key name, prompt or help text matches `\breserve` (word boundary, so
 "preserve" is unaffected), apart from the refusal
-message and the README rename table. The deprecated `modern-debian-tools-python-debug/` tree is not touched. The live
+message and the README rename table. The active host-setup source lives in `mdt-cockpit/host-setup/`. The live
 `/etc/mdt/host-setup.env` on each host is renamed by the operator with the README table, before the next install.
 
 ### 7.2 Derived sizing

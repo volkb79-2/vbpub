@@ -453,7 +453,7 @@ source-commit/hash manifest. Pass `release --discard logs`, `--discard artifacts
 `--discard evidence` (repeatable) to opt out of each half.
 
 ```bash
-cmru release modern-debian-tools-python-debug --show-run-details
+cmru release mdt-cockpit --show-run-details
 cmru release assay --log-append
 cmru release assay --log-prefix-time-short
 ```
