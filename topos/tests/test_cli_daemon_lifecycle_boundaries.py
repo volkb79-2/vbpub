@@ -198,3 +198,125 @@ def test_daemon_serve_exits_two_and_closes_history_when_socket_is_in_use(
     assert run_toposd_self_bind(tmp_path / "topos.sock") == 2
     assert "socket is served by another daemon" in capsys.readouterr().err
     assert closed == [True]
+
+
+def test_run_daemon_adopts_passed_listener_and_keeps_shutdown_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import socket
+
+    import topos.daemon.run as daemon_run
+    from topos.config import ToposConfig
+
+    config = ToposConfig(cgroup_root=tmp_path / "cgroup")
+    observed: dict = {}
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(tmp_path / "activated.sock"))
+    listener.listen()
+
+    class FakeCollector:
+        def __init__(self, cgroup_root, config) -> None:
+            self.cgroup_root = cgroup_root or config.cgroup_root
+            self.config = config
+            self.network_providers = ()
+            self.damon_root = tmp_path / "damon"
+
+    class FakeHistoryStore:
+        def __init__(self, _config) -> None:
+            pass
+
+        def close(self) -> None:
+            observed["history_closed"] = True
+
+    class FakeServer:
+        def serve_forever(self) -> None:
+            raise KeyboardInterrupt
+
+        def server_close(self) -> None:
+            listener.close()
+            observed["closed"] = True
+
+    def adopt(passed, _broker, _api, *, owned_path):
+        assert passed is listener
+        assert owned_path is None
+        return FakeServer()
+
+    monkeypatch.setattr(daemon_run, "load", lambda _path: config)
+    monkeypatch.setattr(daemon_run, "Collector", FakeCollector)
+    monkeypatch.setattr(daemon_run, "PersistentHistoryStore", FakeHistoryStore)
+    monkeypatch.setattr(daemon_run, "FrameBroker", _FakeBroker)
+    monkeypatch.setattr(daemon_run, "DaemonApi", _FakeApi)
+    monkeypatch.setattr(daemon_run, "serve_versioned_listener", adopt)
+
+    assert daemon_run.run_daemon(
+        tmp_path / "activated.sock", listener=listener, socket_mode=0o660
+    ) == 0
+    assert observed["closed"] is True
+    assert listener.fileno() == -1
+    assert "(activated)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("failure", ("socket-in-use", "unexpected"))
+def test_run_daemon_start_failure_closes_passed_fd_and_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failure: str,
+) -> None:
+    import socket
+    from types import SimpleNamespace
+
+    import topos.daemon.run as daemon_run
+    from topos.config import HistoryConfig, PersistConfig, ToposConfig
+    from topos.daemon.broker import SocketInUseError
+
+    config = ToposConfig(
+        cgroup_root=tmp_path / "cgroup",
+        history=HistoryConfig(
+            daemon=PersistConfig(enabled=True, dir=tmp_path / "history", compression="none")
+        ),
+    )
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    closed: list[bool] = []
+
+    class FakeCollector:
+        def __init__(self, cgroup_root, config) -> None:
+            self.cgroup_root = cgroup_root or config.cgroup_root
+            self.config = config
+            self.network_providers = ()
+
+    class FakeHistoryStore:
+        def __init__(self, _config) -> None:
+            pass
+
+        def stats(self):
+            return SimpleNamespace(degraded=False, recovery_state="empty", segment_count=0)
+
+        def close(self) -> None:
+            closed.append(True)
+
+    def fail_adoption(*_args, **_kwargs):
+        if failure == "socket-in-use":
+            raise SocketInUseError("socket is served by another daemon")
+        raise RuntimeError("adoption failed")
+
+    monkeypatch.setattr(daemon_run, "load", lambda _path: config)
+    monkeypatch.setattr(daemon_run, "Collector", FakeCollector)
+    monkeypatch.setattr(daemon_run, "PersistentHistoryStore", FakeHistoryStore)
+    monkeypatch.setattr(daemon_run, "FrameBroker", _FakeBroker)
+    monkeypatch.setattr(daemon_run, "DaemonApi", _FakeApi)
+    monkeypatch.setattr(daemon_run, "serve_versioned_listener", fail_adoption)
+
+    if failure == "socket-in-use":
+        assert daemon_run.run_daemon(
+            tmp_path / "activated.sock", listener=listener, socket_mode=0o660
+        ) == 2
+        assert "socket is served by another daemon" in capsys.readouterr().err
+    else:
+        with pytest.raises(RuntimeError, match="adoption failed"):
+            daemon_run.run_daemon(
+                tmp_path / "activated.sock", listener=listener, socket_mode=0o660
+            )
+
+    assert listener.fileno() == -1
+    assert closed == [True]

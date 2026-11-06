@@ -22,6 +22,7 @@ from topos.service.config import (
     DEFAULT_CONFIG_PATH,
     DEFAULTS,
     ConfigError,
+    defaults,
     load_config,
     parse_config,
 )
@@ -193,9 +194,24 @@ def test_missing_implicit_file_uses_defaults_and_named_missing_file_fails(tmp_pa
 
     implicit = tmp_path / "toposd.toml"
     monkeypatch.setattr(service_config, "DEFAULT_CONFIG_PATH", implicit)
+    assert defaults() == DEFAULTS
     assert load_config() == DEFAULTS
     with pytest.raises(ConfigError, match="config file .* does not exist"):
         load_config(tmp_path / "named-missing.toml")
+
+
+def test_named_config_read_error_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "unreadable.toml"
+    original_read_text = Path.read_text
+
+    def fail_named_config(path: Path, *args, **kwargs):
+        if path == config_path:
+            raise PermissionError(13, "Permission denied", str(path))
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_named_config)
+    with pytest.raises(ConfigError, match="cannot read config file .* Permission denied"):
+        load_config(config_path)
 
 
 @pytest.mark.parametrize(
@@ -205,6 +221,7 @@ def test_missing_implicit_file_uses_defaults_and_named_missing_file_fails(tmp_pa
         ("[sockets.control]\npath = '/run/topos/control.sock'\n", "unknown key 'sockets.control'"),
         ("[sockets.observe]\nlegacy = ['/run/topos/topos.sock']\n", "unknown key 'sockets.observe.legacy'"),
         ("[sockets.observe]\npath = 'relative.sock'\n", "sockets.observe.path must be absolute"),
+        ("[sockets.observe]\npath = 7\n", "sockets.observe.path must be a string"),
         ("[sockets.observe]\npath = '/run/topos/observe/topos'\n", "sockets.observe.path must end in .sock"),
         ("[sockets.observe]\ngroup = 'Topos'\n", "sockets.observe.group must match"),
         ("[sockets.observe]\ngroup = '9abc'\n", "sockets.observe.group must match"),
@@ -285,6 +302,8 @@ def test_unit_print_emits_all_files_or_one_file(tmp_path: Path, capsys: pytest.C
         assert f"# --- {name}\n" in all_output
     assert main(["unit", "print", "--config", str(config_path), "--unit", "topos-observe.socket"]) == 0
     assert capsys.readouterr().out == render_units(DEFAULTS)["topos-observe.socket"]
+    assert main(["unit", "print", "--json", "--config", str(config_path)]) == 0
+    assert json.loads(capsys.readouterr().out)["units"] == render_units(DEFAULTS)
 
 
 def test_unit_check_clean_drift_and_missing(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -313,8 +332,94 @@ def test_unit_check_clean_drift_and_missing(tmp_path: Path, capsys: pytest.Captu
     assert "@@" in drift
 
     (root / "etc" / "systemd" / "system" / "topos.slice").unlink()
-    assert main(["unit", "check", "--config", str(config_path), "--root", str(root)]) == 1
-    assert "missing:" in capsys.readouterr().out
+    assert main(["unit", "check", "--config", str(config_path), "--root", str(root), "--diff"]) == 1
+    missing = capsys.readouterr().out
+    assert "missing:" in missing
+    assert "--- /dev/null" in missing
+
+
+def test_unit_check_reports_unreadable_installed_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from topos.service.cli import main
+
+    config_path = _write_config(tmp_path / "toposd.toml")
+    root = tmp_path / "root"
+    target = root / "etc/systemd/system/topos-observe.socket"
+    target.parent.mkdir(parents=True)
+    target.write_text("", encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def fail_target(path: Path, *args, **kwargs):
+        if path == target:
+            raise PermissionError(13, "Permission denied", str(path))
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", fail_target)
+    assert main(["unit", "check", "--config", str(config_path), "--root", str(root)]) == 2
+    assert "cannot read installed file" in capsys.readouterr().err
+
+
+def test_self_bind_chmod_failure_closes_server_and_unlinks_owned_node(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import topos.daemon.api as daemon_api
+    from topos.daemon import FrameBroker
+
+    path = tmp_path / "chmod-failure.sock"
+    broker = FrameBroker([])
+
+    def fail_chmod(*_args, **_kwargs):
+        raise PermissionError("mode update denied")
+
+    monkeypatch.setattr(daemon_api.os, "chmod", fail_chmod)
+    with pytest.raises(PermissionError, match="mode update denied"):
+        daemon_api.serve_versioned_unix_socket(path, broker, daemon_api.DaemonApi(broker))
+    assert not path.exists()
+
+
+def test_passed_listener_is_adopted_without_unlinking_its_node(tmp_path: Path) -> None:
+    import topos.daemon.api as daemon_api
+    from topos.daemon import FrameBroker
+
+    path = tmp_path / "passed.sock"
+    listener = _listening_socket(path)
+    broker = FrameBroker([])
+    server = daemon_api.serve_versioned_listener(
+        listener, broker, daemon_api.DaemonApi(broker), owned_path=None
+    )
+    try:
+        assert server.socket is listener
+        assert server.server_address == str(path)
+        assert listener.get_inheritable() is False
+    finally:
+        server.server_close()
+    assert path.exists()
+
+
+def test_passed_listener_setup_failure_closes_adopted_listener(tmp_path: Path) -> None:
+    import topos.daemon.api as daemon_api
+    from topos.daemon import FrameBroker
+
+    class FailingListener:
+        closed = False
+
+        def getsockname(self) -> str:
+            return str(tmp_path / "failed-adoption.sock")
+
+        def set_inheritable(self, _value: bool) -> None:
+            raise OSError("close-on-exec denied")
+
+        def close(self) -> None:
+            self.closed = True
+
+    listener = FailingListener()
+    broker = FrameBroker([])
+    with pytest.raises(OSError, match="close-on-exec denied"):
+        daemon_api.serve_versioned_listener(
+            listener, broker, daemon_api.DaemonApi(broker), owned_path=None
+        )
+    assert listener.closed is True
 
 
 def test_adopt_listeners_accepts_listening_unix_stream_and_cleans_environment(tmp_path: Path) -> None:
@@ -339,6 +444,16 @@ def test_adopt_listeners_returns_none_without_touching_mismatched_pid() -> None:
     assert adopt_listeners({"observe"}, environ=environ, pid=lambda: 42) is None
     assert environ == before
     assert adopt_listeners({"observe"}, environ={}, pid=lambda: 42) is None
+
+
+def test_adopt_listeners_rejects_malformed_pid_and_zero_count() -> None:
+    with pytest.raises(ActivationError, match="LISTEN_PID must be an integer"):
+        adopt_listeners({"observe"}, environ={"LISTEN_PID": "bad"})
+    with pytest.raises(ActivationError, match="LISTEN_FDS must be an integer greater than or equal to 1"):
+        adopt_listeners(
+            {"observe"},
+            environ={"LISTEN_PID": str(os.getpid()), "LISTEN_FDS": "0", "LISTEN_FDNAMES": ""},
+        )
 
 
 def test_adopt_listeners_refuses_count_and_name_errors(tmp_path: Path) -> None:
@@ -409,6 +524,60 @@ def test_adopt_listeners_refuses_non_unix_stream_sockets(
         sock.close()
 
 
+def test_adopt_listeners_wraps_descriptor_and_socket_inspection_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import topos.service.activation as activation
+
+    base_environ = {
+        "LISTEN_PID": str(os.getpid()),
+        "LISTEN_FDS": "1",
+        "LISTEN_FDNAMES": "observe",
+    }
+
+    def invalid_descriptor(*, fileno: int):
+        assert fileno == 3
+        raise OSError("bad descriptor")
+
+    monkeypatch.setattr(activation.socket, "socket", invalid_descriptor)
+    with pytest.raises(ActivationError, match="fd 3 from LISTEN_FDS is not a socket"):
+        adopt_listeners({"observe"}, environ=base_environ.copy())
+
+    class FakeListener:
+        family = socket.AF_UNIX
+
+        def __init__(self, fail_at: str) -> None:
+            self.fail_at = fail_at
+            self.closed = False
+
+        def set_inheritable(self, _value: bool) -> None:
+            if self.fail_at == "inheritable":
+                raise OSError("close-on-exec denied")
+
+        def getsockopt(self, _level: int, option: int) -> int:
+            if option == socket.SO_TYPE:
+                if self.fail_at == "type":
+                    raise OSError("type query denied")
+                return socket.SOCK_STREAM
+            if option == socket.SO_ACCEPTCONN and self.fail_at == "accepting":
+                raise OSError("accept query denied")
+            return 1
+
+        def close(self) -> None:
+            self.closed = True
+
+    for fail_at, message in (
+        ("inheritable", "fd 3 could not be marked close-on-exec"),
+        ("type", "fd 3 could not be checked for SOCK_STREAM"),
+        ("accepting", "fd 3 could not be checked for listening state"),
+    ):
+        listener = FakeListener(fail_at)
+        monkeypatch.setattr(activation.socket, "socket", lambda *, fileno: listener)
+        with pytest.raises(ActivationError, match=message):
+            adopt_listeners({"observe"}, environ=base_environ.copy())
+        assert listener.closed is True
+
+
 def test_toposd_import_isolated_from_daemon_ui_and_collection() -> None:
     stdlib_paths = [
         sysconfig.get_path("stdlib"),
@@ -433,6 +602,21 @@ assert not any(name == "topos.collect" or name.startswith("topos.collect.") for 
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_toposd_module_entry_point_runs_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import runpy
+
+    config_path = _write_config(tmp_path / "toposd.toml")
+    loaded_cli = sys.modules.pop("topos.service.cli", None)
+    monkeypatch.setattr(sys, "argv", ["toposd", "config", "check", "--config", str(config_path)])
+    try:
+        with pytest.raises(SystemExit) as exc:
+            runpy.run_module("topos.service.cli", run_name="__main__")
+    finally:
+        if loaded_cli is not None:
+            sys.modules["topos.service.cli"] = loaded_cli
+    assert exc.value.code == 0
 
 
 def test_run_refuses_without_activation_or_explicit_self_bind() -> None:
@@ -501,6 +685,83 @@ def test_run_reports_missing_observe_mapping_from_activation_result(
     config_path = _write_config(tmp_path / "toposd.toml")
     assert service_cli.main(["run", "--config", str(config_path)]) == 2
     assert "no fd named observe passed; check topos-observe.socket" in capsys.readouterr().err
+
+
+def test_run_direct_refusals_report_socket_and_activation_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import topos.service.cli as service_cli
+
+    config_path = _write_config(tmp_path / "toposd.toml")
+    assert service_cli.main(["run", "--config", str(config_path), "--socket", str(tmp_path / "bad.sock")]) == 2
+    assert "--socket is accepted only with --self-bind" in capsys.readouterr().err
+
+    def activation_error(_expected: set[str]):
+        raise ActivationError("activation environment is invalid")
+
+    monkeypatch.setattr(service_cli, "adopt_listeners", activation_error)
+    assert service_cli.main(["run", "--config", str(config_path)]) == 2
+    assert "activation environment is invalid" in capsys.readouterr().err
+
+    monkeypatch.setattr(service_cli, "adopt_listeners", lambda _expected: None)
+    assert service_cli.main(["run", "--config", str(config_path)]) == 2
+    assert "toposd run needs the socket of topos-observe.socket" in capsys.readouterr().err
+
+
+def test_run_direct_dispatches_self_bind_and_one_activated_listener(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import topos.daemon.run as daemon_run
+    import topos.service.cli as service_cli
+
+    config_path = _write_config(tmp_path / "toposd.toml")
+    self_bind_path = tmp_path / "self-bind-override.sock"
+    calls: list[tuple[Path, socket.socket | None, int]] = []
+
+    def fake_run_daemon(path: Path, *, listener, socket_mode: int, **_kwargs) -> int:
+        calls.append((path, listener, socket_mode))
+        return 0
+
+    monkeypatch.setattr(daemon_run, "run_daemon", fake_run_daemon)
+    monkeypatch.setattr(service_cli, "adopt_listeners", lambda _expected: None)
+    assert service_cli.main(
+        ["run", "--self-bind", "--socket", str(self_bind_path), "--config", str(config_path)]
+    ) == 0
+    assert calls[-1] == (self_bind_path, None, 0o660)
+
+    activated_path = tmp_path / "activated.sock"
+    listener = _listening_socket(activated_path)
+    monkeypatch.setattr(service_cli, "adopt_listeners", lambda _expected: {"observe": [listener]})
+    try:
+        assert service_cli.main(["run", "--config", str(config_path)]) == 0
+        assert calls[-1] == (DEFAULTS.sockets.observe.path, listener, 0o660)
+    finally:
+        listener.close()
+
+
+def test_run_direct_closes_multiple_listeners_and_oserror_listener(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import topos.daemon.run as daemon_run
+    import topos.service.cli as service_cli
+
+    config_path = _write_config(tmp_path / "toposd.toml")
+    first, second = socket.socketpair()
+    monkeypatch.setattr(service_cli, "adopt_listeners", lambda _expected: {"observe": [first, second]})
+    assert service_cli.main(["run", "--config", str(config_path)]) == 2
+    assert first.fileno() == second.fileno() == -1
+    assert "more than one fd named observe passed" in capsys.readouterr().err
+
+    listener = _listening_socket(tmp_path / "error.sock")
+    monkeypatch.setattr(service_cli, "adopt_listeners", lambda _expected: {"observe": [listener]})
+
+    def fail_run_daemon(*_args, **_kwargs):
+        raise OSError("listener startup failed")
+
+    monkeypatch.setattr(daemon_run, "run_daemon", fail_run_daemon)
+    assert service_cli.main(["run", "--config", str(config_path)]) == 2
+    assert listener.fileno() == -1
+    assert "toposd run: listener startup failed" in capsys.readouterr().err
 
 
 def test_activated_run_serves_and_leaves_socket_node_on_sigterm(tmp_path: Path) -> None:

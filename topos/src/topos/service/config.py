@@ -125,8 +125,6 @@ def parse_config(contents: str, *, source: str = "<config>") -> ServiceConfig:
         or socket_dir.is_relative_to(state_dir)
     ):
         raise ConfigError("state_dir must be neither a parent nor a child of the socket directory")
-    if socket_path.is_relative_to(state_dir):
-        raise ConfigError("sockets.observe.path must not be inside state_dir")
 
     return ServiceConfig(
         state_dir=state_dir,
