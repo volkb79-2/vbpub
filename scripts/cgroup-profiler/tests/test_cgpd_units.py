@@ -40,6 +40,14 @@ class TestRender:
             assert "@" not in text
             assert str(PROJECT_ROOT) not in text and "/workspaces" not in text and "/home" not in text
 
+    def test_a_refusal_exit_is_never_restarted_but_a_lost_socket_is(self):
+        # exit 2 is a permanent configuration error (bad config, no activation); exit 3
+        # (control socket lost) stays restartable under Restart=on-failure
+        service = unitfiles.render()["cgpd.service"].splitlines()
+        assert "Restart=on-failure" in service
+        assert "RestartPreventExitStatus=2" in service
+        assert not any(line.startswith("RestartForceExitStatus") for line in service)
+
     def test_exec_start_follows_the_install_root_or_the_venv(self):
         assert "ExecStart=/opt/cgprofile/current/venv/bin/cgpd run\n" in unitfiles.render()["cgpd.service"]
         assert "ExecStart=/srv/cg/current/venv/bin/cgpd run\n" in unitfiles.render("/srv/cg")["cgpd.service"]

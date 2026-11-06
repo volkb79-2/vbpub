@@ -26,6 +26,7 @@ TasksMax=256
 IOWeight=50
 LimitNOFILE=4096
 Restart=on-failure
+RestartPreventExitStatus=2
 RestartSec=2s
 RestartSteps=5
 RestartMaxDelaySec=60
