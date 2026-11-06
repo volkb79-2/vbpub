@@ -34,7 +34,10 @@ also names a stack, while `ciu.install.override.toml.j2` does not. A root can
 therefore own global configuration and an identity without owning a stack.
 Keeping it in root discovery preserves the root's lifecycle identity and lets
 its global settings remain available. Direct `ciu clean` in that root is a
-successful no-op with `[INFO] global-only root: nothing to clean`. A nested CIU
+successful no-op with `[INFO] global-only root: nothing to clean`; only the
+stack, container and volume parts are skipped, so `ciu clean --vanilla` still
+removes the workspace identity network and then the generated reset files
+(the root's identity record is what names that network). A nested CIU
 root has its own identity and cleanup, even when its parent root is global-only.
 
 Worktree removal discovers roots from the target checkout's committed tree.

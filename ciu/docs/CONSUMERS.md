@@ -369,6 +369,9 @@ $ ciu clean
 [INFO] global-only root: nothing to clean
 ```
 
+`ciu clean --vanilla` in that root still removes its workspace identity
+network and the generated reset files.
+
 For a worktree with multiple committed CIU roots, removal runs a read-only
 `ciu clean --dry-run` plan for every sibling root and the selected root before
 the first cleanup. Without `--force`, a nonzero plan refuses removal before

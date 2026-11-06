@@ -45,7 +45,9 @@ an accidental runtime root.
 
 The global defaults file marks a CIU root; `ciu.defaults.toml.j2` marks a
 native stack inside it. A root that has global defaults but no stack is valid:
-`ciu clean` prints `[INFO] global-only root: nothing to clean` and exits 0.
+`ciu clean` prints `[INFO] global-only root: nothing to clean` and exits 0;
+`ciu clean --vanilla` there still removes the workspace identity network and
+the generated reset files.
 For multi-root worktrees, removal uses `ciu clean --dry-run` to plan every
 sibling and the selected root before its first cleanup; `--dry-run` reports the
 same root-plan blockers. See the

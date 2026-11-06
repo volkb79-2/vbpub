@@ -5494,7 +5494,9 @@ adopted checkout during resume.
   `ciu.global.defaults.toml.j2` marks a CIU root; `ciu.defaults.toml.j2` marks
   a native stack within that root. A root with only global defaults (and
   optional install override) is valid and has no stack cleanup: direct
-  `ciu clean` exits 0 with `[INFO] global-only root: nothing to clean`. A
+  `ciu clean` exits 0 with `[INFO] global-only root: nothing to clean`;
+  `ciu clean --vanilla` additionally removes the identity network and the
+  `VANILLA_RESET_FILES` (S6.4b). A
   shipped stack is identified by its declared `docker-compose.yml`.
 - **`[ciu.worktree].up = ["profile", ...]`** is the project's committed list
   of host profiles that a linked worktree starts as its own environment.
