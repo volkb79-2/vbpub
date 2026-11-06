@@ -266,7 +266,7 @@ WantedBy=sysinit.target
 """
 
 
-# Ported from modern-debian-tools-python-debug/host-setup/scripts/
+# Ported from mdt-cockpit/host-setup/scripts/
 # mdt-dev-governance-reconcile.sh's cgroup2-mount-flags section (the *already-fixed*
 # copy, CGROUP2_FLAGS=fix default) rather than reproduced inline in a unit's
 # ExecStart= (which would need every '$' doubled to '$$' for systemd's own

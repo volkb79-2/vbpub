@@ -2371,7 +2371,7 @@ def governance_slice_preflight(
             "own resource properties. Add a matching MemoryMin= to the slice's "
             "systemd unit (e.g. a drop-in under /etc/systemd/system/<slice>.d/, "
             "then `systemctl daemon-reload`) — a host-side companion such as "
-            "modern-debian-tools-python-debug's host-setup can provision this, "
+            "mdt-cockpit's host-setup can provision this, "
             "but CIU never depends on one being present — or lower/remove the "
             "mem_min declaration if no floor is actually required. Set "
             "ciu.exit_on = \"WARN\" to make warnings fatal, or "

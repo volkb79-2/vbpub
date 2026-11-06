@@ -476,7 +476,7 @@ slice's remaining budget. If those files are hidden or unreadable, it warns and
 continues under the other shared-infrastructure checks; it does not prove
 ancestor or whole-host headroom. Check and record those limits and current use
 before a high-memory campaign, and serialize campaigns when capacity is tight.
-See the [host sizing guidance](../modern-debian-tools-python-debug/host-setup/README.md).
+See the [host sizing guidance](../mdt-cockpit/host-setup/README.md).
 
 For daemon-backed `exec`/`bare-host` lanes, `resources.memory_max` is an
 optional placement ceiling, not a second Docker memory limit. Without it,
@@ -2262,7 +2262,7 @@ clean_tree = false
 budget = "30m"
 ```
 
-**Image-building / host-tooling projects (modern-debian-tools-python-debug,
+**Image-building / host-tooling projects (mdt-cockpit,
 tester-unified, tester-unified-go):** mostly not Python-coverage material —
 assay's R1 judge has nothing to bite. They still get lanes:
 

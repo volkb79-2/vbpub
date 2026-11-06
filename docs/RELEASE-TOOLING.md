@@ -57,7 +57,7 @@ backfill command when a tag predates this policy.
 ## Auto-released set vs. on-demand
 
 `orchestration.project_order` in `cmru.orchestration.toml` lists what `status`/`release` act on:
-**ciu, cmru, nyxloom, assay, topos, modern-debian-tools-python-debug, pwmcp, tls-edge**.
+**ciu, cmru, nyxloom, assay, topos, mdt-cockpit, pwmcp, tls-edge**.
 Empyrion translation remains delegated and on-demand:
 
 - **empyrion-translation** — portable on-demand project contract; invoke from its directory,

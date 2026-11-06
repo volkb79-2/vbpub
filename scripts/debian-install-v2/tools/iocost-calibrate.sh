@@ -4,7 +4,7 @@
 # documented inline and in the host-setup TODO).
 #
 # WHY THIS EXISTS, and why it's separate from mdt-io-baseline.py's own
-# fio benchmark (modern-debian-tools-python-debug/host-setup): that one
+# fio benchmark (mdt-cockpit/host-setup): that one
 # measures 4 SUSTAINED-CEILING numbers (max r/w iops at fixed QD, max r/w
 # bandwidth) to derive a flat percentage cap for dev.slice's io.max. This
 # one measures a MATRIX — sequential vs random x read vs write, each its

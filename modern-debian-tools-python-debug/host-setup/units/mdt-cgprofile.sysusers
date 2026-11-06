@@ -1,3 +1,0 @@
-# Dedicated read-only resource-observer socket group. Keep it separate from
-# docker, whose membership grants host-root Docker API access.
-g cgprofile-observer - - -
