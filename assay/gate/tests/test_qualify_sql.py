@@ -2197,7 +2197,7 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     # this harness), not whatever group the locally visible socket carries (the
     # fixture socket's group would be this process's effective gid).
     assert group_ids == ["994", "994"]  # verified Docker group, then the observer group
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/resource-observer.sock" in launch
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/cgprofile.sock" in launch
     assert "--cidfile" in launch
     mounts = [launch[i + 1] for i, value in enumerate(launch[:-1]) if value == "--mount"]
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in mounts
@@ -2209,7 +2209,7 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     observer_mounts = [value for value in mounts if "cgprofile-observer" in value]
     assert len(observer_mounts) == 1
     assert observer_mounts[0].endswith("target=/run/cgprofile-observer,readonly")
-    assert not any("resource-observer.sock" in value for value in mounts)
+    assert not any("cgprofile.sock" in value for value in mounts)
     assert not any(value == "-v" for value in launch)
     assert ["logs", "--follow", _FAKE_RUNNER_ID] in calls
     assert ["wait", _FAKE_RUNNER_ID] in calls

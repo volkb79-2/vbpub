@@ -535,8 +535,13 @@ caller's peer credentials and native thread ID, derive the cgroup itself,
 return a complete verified ancestry, and expose no control verbs. Run-Gate's
 `resource_observer = "cgprofile"` option mounts the separate cgprofile
 observer socket read-only, supplies its observed GID, and sets this variable.
-Never mount cgprofile's `ctl.sock`: a read-only bind does not make its
-protocol read-only. This socket supplies verified ancestry and event-counter
+The host endpoint is `/run/cgprofile/observer/cgprofile.sock`; binding the
+`observer` directory preserves the in-container endpoint
+`/run/cgprofile-observer/cgprofile.sock`. This path requires the host socket
+cutover; keep earlier Assay and Run-Gate pins on hosts still using the old
+layout. Never mount the control endpoint
+`/run/cgprofile/control/cgprofile.sock`: a read-only bind does not make its
+protocol read-only. The observer supplies verified ancestry and event-counter
 evidence; it is not a performance-profile stream.
 
 After R0/R1, B148/A-494 applies the same local-first observation rule before
@@ -607,7 +612,8 @@ separate a test failure from a process or memory limit event. After the R0/R1
 measurements and before any selected native candidate starts, Assay checks the
 same local-first reader. If a private cgroup namespace hides ancestors, a
 caller may explicitly configure a trusted observer-only socket with
-`ASSAY_RESOURCE_OBSERVER_SOCKET`; Assay consults it only after the local reader
+`ASSAY_RESOURCE_OBSERVER_SOCKET`; the Run-Gate mount supplies the new
+in-container endpoint `/run/cgprofile-observer/cgprofile.sock`. Assay consults it only after the local reader
 specifically proves that ancestors are hidden. Run-Gate's
 `resource_observer = "cgprofile"` option mounts cgprofile's separate observer
 socket read-only and supplies this setting. Do not use `--cgroupns=host` or

@@ -328,8 +328,13 @@ assay exists to close that gap mechanically, not by policy:
   `ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint, but only for that hidden-
   ancestor condition; all identity, ancestry, and attribution checks remain
   fail-closed. Run-Gate's `resource_observer = "cgprofile"` mounts a
-  separate observer-only socket, never the daemon control socket. See the
-  [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
+  separate observer-only socket at host path
+  `/run/cgprofile/observer/cgprofile.sock`, mounted in the lane as
+  `/run/cgprofile-observer/cgprofile.sock`; it never mounts the control socket
+  at `/run/cgprofile/control/cgprofile.sock`. The new paths require the host
+  socket cutover, so keep earlier Run-Gate and Assay pins on hosts that still
+  use the old layout. See the
+  [socket cutover rationale](docs/DESIGN-GUIDE.md#host-cgprofile-socket-cutover)
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
   This does not observe per-process limits such as `RLIMIT_NPROC` or
   `RLIMIT_AS`. See the

@@ -181,6 +181,7 @@ items:
   - {id: B199, title: "Cleanup-only failures after a finished measurement are ERROR, not an advisory", type: improvement, component: runner, context_estimate: small}
   - {id: B200, title: "CoW parity test lacks git status/index and has never run on a real btrfs area in CI", type: improvement, component: tests, context_estimate: small}
   - {id: B201, title: "Optional packed-object reflink path on XFS", type: improvement, component: workspace, context_estimate: small}
+  - {id: B522, title: "Move Assay observer launchers to the new per-level cgprofile socket path and check the socket-group separation", type: feature, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14316,3 +14317,7 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Proposal.** Distinguish the two causes. (a) Keep refusing a target with NO coverage entry. (b) For a target that HAS an entry with zero statements (executed and missing both empty, nothing excluded), either tolerate it as "no executable lines, contributes nothing to the floor" and record it in the verdict (`unmeasurable_targets`, so it is visible and counted neither as covered nor as missed), or, if strictness is wanted, fail at lane-load/plan time (`assay lanes`/`assay plan`, which already parse the target list and can `ast`-check a python target) with a message that names the file and the remedy ("remove it from judge.targets: it has no executable lines") instead of after the baseline. Preferred: tolerate plus record for python whole-target mode, because the estate convention is "list every shipped module" and the inventory tests in tnt/iobench/test-policy would otherwise each have to encode the exclusion rule. Needs the verdict-schema decision and a `verify.py` key-set change if the new field is recorded.
 
 **Interim in the projects.** tnt omits both files (TNT-63, with `tests/test_assay_lane_inventory.py`); the cmru lane (`src/cmru/__init__.py`, `assay.toml` lines 114 and 195) needs the same omission or this fix.
+
+## B522 — Move Assay observer launchers to the new per-level cgprofile socket path
+
+**Status: FIXED on branch `sockets-assay-20261105`, pending independent review.** The registered tester and self-qualification launchers now use `/run/cgprofile/observer/cgprofile.sock` on the host and `/run/cgprofile-observer/cgprofile.sock` in the container. The shared guard takes the host Docker GID from the `ASSAY_GATE_HOST_DOCKER_GID` override, else the owning GID of the Docker API socket (`DOCKER_HOST` `unix://` or `/var/run/docker.sock`), never a group database (this keeps the override that open item B212 proposes to drop: the controller's sockets decision binds until B212 is reconciled), requires the observer GID to differ from Docker, and reports the host cutover when the new socket is absent. README, DESIGN-GUIDE, CONSUMERS and CHANGES describe the new paths and pin requirement.

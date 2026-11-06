@@ -22,7 +22,7 @@ die() {
   exit "$exit_status"
 }
 
-RESOURCE_OBSERVER_SOURCE=/run/cgprofile/observer/resource-observer.sock
+RESOURCE_OBSERVER_SOURCE=/run/cgprofile/observer/cgprofile.sock
 # This override names Docker's host-side bind source, not a translated target
 # path. Production uses the canonical host socket; the registered gate tests
 # inject the already-mounted observer source while substituting Docker.
@@ -31,15 +31,15 @@ if [[ -v ASSAY_GATE_RESOURCE_OBSERVER_SOURCE ]]; then
 fi
 RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
 RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"
-RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"
+RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/cgprofile.sock"
 source "$(dirname "${BASH_SOURCE[0]}")/resource-observer-gid.sh"
 
 resource_observer_gid() {
   case "$RESOURCE_OBSERVER_SOURCE" in
-    /run/cgprofile/observer/resource-observer.sock|/run/cgprofile-observer/resource-observer.sock) ;;
+    /run/cgprofile/observer/cgprofile.sock|/run/cgprofile-observer/cgprofile.sock) ;;
     *) die "unsupported cgprofile observer source path: $RESOURCE_OBSERVER_SOURCE" ;;
   esac
-  assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" /run/cgprofile \
+  assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" \
     || die 'host observer group identity check failed'
 }
 
@@ -348,8 +348,8 @@ docker_bounded image inspect tester-unified:local >/dev/null 2>&1 \
 b105_memory_limit=2g
 b105_memory_reserve_bytes=2147483648
 observer_gid="$(resource_observer_gid)"
-host_docker_gid="$(assay_host_docker_gid /run/cgprofile)" \
-  || die 'could not resolve the host Docker GID from the verified host setup'
+host_docker_gid="$(assay_host_docker_gid)" \
+  || die 'could not resolve the host Docker GID from ASSAY_GATE_HOST_DOCKER_GID or the Docker API socket'
 cgroup_parent="$("$project/tools/cgroup-parent.sh" \
   --memory-reserve-bytes "$b105_memory_reserve_bytes")" \
   || die 'the host gates cgroup tier or its 2 GiB RAM headroom is absent or unverified'

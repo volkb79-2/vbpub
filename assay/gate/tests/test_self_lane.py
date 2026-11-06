@@ -111,7 +111,7 @@ def test_b105_run_gate_lanes_use_the_observer_enabled_bare_host_wrapper():
     assert "--cgroupns=host" not in wrapper
     assert 'ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET' in wrapper
     assert 'RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"' in wrapper
-    assert 'RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"' in wrapper
+    assert 'RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/cgprofile.sock"' in wrapper
     assert 'dst=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly' in wrapper
     assay_lanes = load_lane_file(SELF_LANE_FILE)
     for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):

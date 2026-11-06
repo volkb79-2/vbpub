@@ -882,6 +882,27 @@ record's outer shape. The v15 verdict shape adds B145's execution evidence
 only to native outcomes; ingested mutation reports do not claim local
 execution counters.
 
+#### Host cgprofile socket cutover
+
+Assay's tester launchers consume the observer socket from
+`/run/cgprofile/observer/cgprofile.sock` and bind its directory read-only at
+`/run/cgprofile-observer`. The host basename stays intact, so the
+`ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint is
+`/run/cgprofile-observer/cgprofile.sock`. The control endpoint stays at
+`/run/cgprofile/control/cgprofile.sock` and is never mounted for observation.
+
+Systemd owns the per-level directories as `root:root`; the socket file's GID
+grants access. The launch guard takes the host Docker GID from the
+`ASSAY_GATE_HOST_DOCKER_GID` override forwarded by the outer launcher, else from
+the owning GID of the Docker API socket the launcher uses (`DOCKER_HOST`
+`unix://` path, default `/var/run/docker.sock`), never from a group database,
+and refuses naming both sources when neither is available. It requires the
+observer GID to be non-zero and different from Docker. It does not infer a socket group from its parent directory. Run-Gate's
+host preflight also checks that the observer and control socket groups differ.
+These clients use the new paths only. A host still on the earlier layout needs
+its socket cutover before using the updated Assay or Run-Gate release, so its
+existing pins stay in place until that host is switched.
+
 #### Native R2 cgroup observation (B148/A-494)
 
 B145's full cgroup reader is the capability probe; a shallow check for a

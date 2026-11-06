@@ -819,7 +819,7 @@ if '--archive-prior-snapshot' in sys.argv:
         "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
         os.environ.get(
             "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/observer/resource-observer.sock",
+            "/run/cgprofile/observer/cgprofile.sock",
         ),
     )
     if inner_pilot_log is not None:
@@ -883,7 +883,7 @@ def launch_env(tmp_path: Path, *, mode: str):
         "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
         os.environ.get(
             "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/observer/resource-observer.sock",
+            "/run/cgprofile/observer/cgprofile.sock",
         ),
     )
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
@@ -998,7 +998,7 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
         os.environ.get(
             "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/observer/resource-observer.sock",
+            "/run/cgprofile/observer/cgprofile.sock",
         ),
     )
     expected_mounts.append(
@@ -1028,7 +1028,7 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     ).stdout.strip()
     assert f"ASSAY_B105_GATE_EXPECTED_COMMIT={source_commit}" in env
     assert f"ASSAY_B105_GATE_EXPECTED_TREE={source_tree}" in env
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/resource-observer.sock" in env
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/cgprofile.sock" in env
 
 
 @pytest.mark.parametrize(

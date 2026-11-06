@@ -35,15 +35,15 @@ bounded_docker_update_cpu_cap() {
   die "could not apply the $purpose CPU cap (bounded docker update exit $status)"
 }
 
-RESOURCE_OBSERVER_SOURCE="/run/cgprofile/observer/resource-observer.sock"
+RESOURCE_OBSERVER_SOURCE="/run/cgprofile/observer/cgprofile.sock"
 RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
 RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"
-RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"
+RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/cgprofile.sock"
 # shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/resource-observer-gid.sh"
 
 resource_observer_gid() {
-  assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" /run/cgprofile \
+  assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" \
     || die 'host observer group identity check failed'
 }
 
@@ -1511,8 +1511,8 @@ run_registered_gate() {
     *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1' ;;
   esac
   observer_gid="$(resource_observer_gid)"
-  docker_gid="$(assay_host_docker_gid /run/cgprofile)" \
-    || die 'could not resolve the host Docker GID from the verified host setup'
+  docker_gid="$(assay_host_docker_gid)" \
+    || die 'could not resolve the host Docker GID from ASSAY_GATE_HOST_DOCKER_GID or the Docker API socket'
   commit="$(assay_git -C "$worktree" rev-parse HEAD)" || die "cannot resolve HEAD of $worktree"
   tree="$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" || die "cannot resolve the tree of $worktree"
   clear_registered_gate_receipt "$worktree"
