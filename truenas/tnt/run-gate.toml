@@ -37,8 +37,9 @@ memory = "1g"
 # release gate (cmru.toml runs r0-r1 and ux-focused only); start it after R0/R1/R3 and
 # review pass, from a committed clean worktree. Acceptance command:
 #   run-gate r2 --worktree <committed worktree>     (remote-gate.py ... r2 for netcup hosts)
-# --jobs 3 equals judge.mutation.jobs_max and the lane's 3 CPUs; the budget is a
-# placeholder until a bounded pilot measures the candidate count and rate.
+# --jobs 3 equals judge.mutation.jobs_max and the lane's 3 CPUs. The measured
+# campaign estimate is about 64h; assay.toml caps each resumable attempt at 24h.
+# Run-Gate allows one extra hour for dependency installation and launch overhead.
 [lanes.r2]
 kind = "command"
 resource_observer = "cgprofile"
@@ -48,7 +49,7 @@ argv = [
   "cd {worktree}/truenas/tnt && /opt/tester-venv/bin/python3 -m pip install --no-deps setuptools==82.0.1 wheel==0.47.0 websocket-client==1.8.0 && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation -e . && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation 'truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297' && export PYTHONPATH={worktree}/assay/src:{worktree}/libraries/cowtree/src && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run tnt --file assay.toml --jobs 3 --resume --state-dir .assay/mutation-state-r2 --progress .assay/progress-r2.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = true
-budget = "12h"
+budget = "25h"
 artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
 
 [lanes.r2.resources]

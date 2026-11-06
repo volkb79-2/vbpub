@@ -22,10 +22,14 @@ argv = [
 ]
 env = { PYTHONPATH = "src:../../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-# PLACEHOLDER pending a bounded pilot (assay --pilot-jobs / run-gate pilot): the
-# 2026-11-05 release gate ran r0-r1 in under 20 minutes serially, candidate count
-# and rate are unmeasured. Re-set after `assay plan --json`.
-budget = "12h"
+# 2026-11-06 plan: 2,990 candidates; the pilot measured about 257 s/candidate
+# at one worker and about 47 candidates/hour at three workers (~64 hours total).
+# One assay invocation is capped at 24h. run-gate r2 repeats this command with
+# --resume and the same .assay/mutation-state-r2 store: completed candidates
+# persist, while a candidate interrupted by the lane deadline stays unclassified
+# and is retried. Expect about three attempts; progress appends to
+# .assay/progress-r2.jsonl.
+budget = "24h"
 allow_argv_append = false
 
 [lanes.tnt.isolation]

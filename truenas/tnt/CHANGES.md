@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+- TNT-64: tmux teardown now runs under a test-session child subreaper, waits for server and pane process groups, reaps adopted children, and treats zombies as processes that remain until `waitpid` removes them. The R2 argv continues to include `tests/test_tui_tmux.py`.
+
+### Changed
+- TNT-30: set the R2 attempt budget to 24 hours from the measured 2,990-candidate plan (~47 candidates/hour at three workers, about 64 hours total); retries resume from the same candidate state.
+
 <!-- cmru: release history -->
 
 ## [0.4.1] - 2026-11-05
