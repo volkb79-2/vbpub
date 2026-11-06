@@ -103,6 +103,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - `tools/local_baseline_facts.py` + `docs/CONSUMERS.md`: how to start the `mutation` lane outside a release (builds `CMRU_ASSAY_BASELINE_FACTS`
   from local `cmru-v*` tags; the R1 pin must equal the selected tag).
+- fix(cmru): close the 56 surviving R2 s1 mutants (KI-129), require complete Run-Gate identity evidence, add hand-discriminating regression oracles, and omit the unmeasurable package initializer from first-release Assay targets.
 <!-- cmru: pending release notes end -->
 
 ## [7.2.1] - 2026-11-04

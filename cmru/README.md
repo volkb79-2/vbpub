@@ -946,7 +946,10 @@ The installed `run-gate` wheel is the canonical test entrypoint. From the
 `cmru/` directory, `run-gate --list` discovers the declared lanes and
 `run-gate gate` runs the aggregate; definitions live in `run-gate.toml`. The
 focused `run-gate release-preconditions` lane covers the dry-run's waiver,
-image-identity, and bootstrap-version checks. The
+image-identity, and bootstrap-version checks. The focused
+`run-gate survivor-regressions` lane covers the s1 survivor oracles and keeps
+the whole-target first-release Assay inventory aligned with executable source
+modules; see the [inventory design](docs/DESIGN-GUIDE.md#whole-target-assay-inventories-list-executable-modules). The
 aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later;
 development and local build suffixes are rejected. Its preflight
 checks that `run-gate --version` agrees with the installed wheel's SemVer,
@@ -970,6 +973,9 @@ the KI-79 postponement window, checks the selected tester image's Run-Gate
 version and wheel digest, and compares the zero-release guide with the latest
 Run-Gate release before creating a candidate worktree. A failure exits 4 with
 the remedy; if Docker is unavailable, image identity is reported as `SKIPPED`.
+The image identity check requires a non-empty Run-Gate version and a valid
+wheel SHA-256 from the preflight; an incomplete identity response fails closed
+instead of inventing an `unknown` value.
 See the [dry-run precondition design](docs/DESIGN-GUIDE.md#release-dry-run-checks-gate-preconditions).
 The native-R2 `mutation` lane requests contract-2 `cgprofile` resource-event
 observation. Other tester lanes declare memory and PID ceilings but do not yet

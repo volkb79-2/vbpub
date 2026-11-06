@@ -39,7 +39,9 @@ def test_config_version_schema_rejects_ambiguous_values(raw, message):
 
 def test_config_scalar_env_rejects_nested_value_instead_of_stringifying_it(capsys):
     with pytest.raises(SystemExit) as exc:
-        config._scalar_env({"CMRU_MEMORY": {"value": "3g"}}, "env")
+        config._scalar_env(
+            {"CMRU_MEMORY": {"value": "3g"}}, "env", reject_credentials=False,
+        )
     assert exc.value.code == 2
     assert "scalar values" in capsys.readouterr().err
 
