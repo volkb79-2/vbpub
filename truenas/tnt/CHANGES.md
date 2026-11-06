@@ -2,10 +2,26 @@
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.4.1] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=59de0b23287572704bf8ae2bb8ea9d1da82047e5 -->
+
+### Fixed
+- fix(tnt): R2 lane qualifies from a tag (TNT-63): drop docstring-only init targets, private-socket tmux teardown, deadline-based TUI waits (f3aac7c4d)
+
+### Testing
+- test(tnt): let the refresh worker finish before leaving the app; BACKLOG TNT-63 detail (9d22263c0)
+- test(tnt): remaining flakes from the registered r0-r1 run (TNT-63) (6e3986b27)
+- test(tnt): wait_until tolerates Textual's 30 s flush cap on a starved host (TNT-63) (e9aed94a5)
+- test(tnt): job-progress and job-engine thread waits are deadline-based (TNT-63) (2b9feb9f7)
+- test(tnt): TUI flake fixes found by the loaded repeat runs (TNT-63) (7604e5eea)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - TNT-63: the R2 lane qualifies from a tag: the docstring-only `src/tnt/__init__.py` and `src/tnt/tui/__init__.py` are no longer `judge.targets` (an inventory test keeps the list exact); `tests/test_tui_tmux.py` runs every case on a private tmux socket and its fixture kills the server and waits for server and pane processes to be gone (no more assay `leaked-process-tree`); TUI tests wait on conditions with a 90 s deadline instead of counted short pauses, and the hung-RPC tests release the RPC themselves instead of on a 1.5-3 s timer (no host-load-dependent failures).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.4.0] - 2026-11-05
 <!-- cmru: generated -->
