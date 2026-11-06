@@ -5679,6 +5679,13 @@ adopted checkout during resume.
   runtime root. A Git family with no committed CIU root is still a valid
   generic worktree family: its ready lifecycle record has no runtime identity,
   and no CIU root is fabricated.
+  `ciu.global.defaults.toml.j2` marks a CIU root; `ciu.defaults.toml.j2` marks
+  a native stack within that root. A root with only global defaults (and
+  optional install override) is valid and has no stack cleanup: direct
+  `ciu clean` exits 0 with `[INFO] global-only root: nothing to clean`;
+  `ciu clean --vanilla` additionally removes the identity network and the
+  `VANILLA_RESET_FILES` (S6.4b). A
+  shipped stack is identified by its declared `docker-compose.yml`.
 - **`[ciu.worktree].up = ["profile", ...]`** is the project's committed list
   of host profiles that a linked worktree starts as its own environment.
   `ciu check` refuses a malformed list, duplicate name or undeclared profile
@@ -5700,19 +5707,26 @@ adopted checkout during resume.
   record with missing identity remains a refusal.
   **Every committed CIU root is cleaned (CIU-138).** The roots are discovered
   from the target checkout's own HEAD (`git ls-tree`, never the primary's and
-  never an ignored overlay). Each sibling root is verified (marker present,
-  generated identity readable) and cleaned under its own identity BEFORE the
-  selected root and before any checkout deletion; a sibling's lease is released
-  only after that sibling's clean succeeded. A discovery, identity or clean
-  failure refuses (unless `--force` for a failed clean), preserves the checkout
-  and the lifecycle record, and names the roots already cleaned; the resources
-  of those already-cleaned roots are gone (only the checkout and records are
-  preserved). Uncommitted changes that appeared since the initial inventory
-  are refused BEFORE the first sibling clean; the final ignored-state and
-  uncommitted-change recheck after the selected root's clean remains the last
-  guard. A discovered root that resolves outside the checkout (for example a
-  directory swapped for a symlink after the commit) refuses. A checkout with
-  no committed root invokes no guessed cleanup.
+  never an ignored overlay). When sibling roots exist, before the first
+  cleanup CIU verifies and runs `ciu clean --dry-run` under the identity of
+  every sibling root and of the selected root when it has a marker.
+  `worktree rm --dry-run` plans every sibling and the selected root and reports
+  failed plans as blockers. Without `--force`, a nonzero preflight result
+  refuses removal before any root is cleaned. An unavailable selected-root
+  plan always refuses. A single-root removal keeps `ciu clean`'s own
+  stack-level preflight. Once multi-root plans pass (or `--force` accepts a
+  failed result), each sibling root is cleaned before the selected root and
+  before any checkout deletion; a sibling's lease is released only after that
+  sibling's clean succeeded. A later discovery, identity or clean failure
+  preserves the checkout and lifecycle record unless `--force` accepts the
+  failure, and reports roots already cleaned; resources of those roots are
+  already gone. A later runtime failure can still follow completed cleanups
+  because multiple root cleanups are not atomic. Uncommitted changes that
+  appeared since the initial inventory are refused BEFORE the first sibling
+  clean; the final ignored-state and uncommitted-change recheck after the
+  selected root's clean remains the last guard. A discovered root that resolves
+  outside the checkout (for example a directory swapped for a symlink after the
+  commit) refuses. A checkout with no committed root invokes no guessed cleanup.
   **The order is normative.** `ciu down` preserves
   volumes, so it strands `vol-*` dirs owned by image UIDs that an unprivileged
   `rm -rf` cannot delete; and removing the checkout first destroys the rendered

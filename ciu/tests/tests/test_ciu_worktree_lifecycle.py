@@ -579,6 +579,9 @@ class TestCleanClearsTheLease:
 
     def _leased(self, root: Path) -> Path:
         _git_family(root)
+        # These lease assertions exercise the teardown path for a stack root;
+        # CIU-202 gives global-only roots an intentional no-op path.
+        (root / "ciu.defaults.toml.j2").write_text("[demo]\n", encoding="utf-8")
         path = root / worktree.WORKTREE_INSTANCE_RECORD
         path.write_text(_record_body(root), encoding="utf-8")
         worktree.acquire_own_lease(root, ttl_hours=24)
@@ -617,6 +620,7 @@ class TestCleanClearsTheLease:
         A record too malformed to parse is a pre-existing S16 defect this
         teardown neither caused nor can repair — and leaving the claim in
         place is the SAFE direction: a future reap reads it as still owned."""
+        (tmp_path / "ciu.defaults.toml.j2").write_text("[demo]\n", encoding="utf-8")
         path = tmp_path / worktree.WORKTREE_INSTANCE_RECORD
         path.write_text('{"schema_version": 1}\n', encoding="utf-8")
         self._hermetic(monkeypatch, survivors=[])
