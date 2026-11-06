@@ -2739,10 +2739,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   the known socket path but cannot list or connect. Its socket must be root-owned,
   group-connectable, and grant no access to other users. Its GID must be non-zero
   and differ from the host Docker GID and the control socket GID. The host Docker
-  GID is `$RUN_GATE_HOST_DOCKER_GID` (integer) when set, else the owning GID of the
-  Docker API socket (`$DOCKER_HOST` `unix://` path, default `/var/run/docker.sock`);
-  the cockpit's group database is never used, and with neither source the preflight
-  refuses naming both. Missing or unsafe
+  GID is `$RUN_GATE_HOST_DOCKER_GID` (a plain non-root decimal GID; set but empty or
+  malformed is an error) when set, else the owning GID of the Docker API socket
+  (`$DOCKER_HOST` `unix://` path, default `/var/run/docker.sock`); the cockpit's
+  group database is never used. With neither source, a non-`unix://` `DOCKER_HOST`,
+  or a socket owned by group 0, the preflight refuses with the override hint.
+  Collision messages print both GIDs and the Docker GID source. Missing or unsafe
   state is infrastructure ERROR; Docker must not invent a bind source. The
   lane must declare `resources.memory` and positive-integer `resources.pids`,
   which become `--memory` and `--pids-limit`; observer lanes refuse

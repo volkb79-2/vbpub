@@ -553,7 +553,10 @@ sibling cgroups. Run-Gate's launch guard takes the host Docker GID from the
 explicit `RUN_GATE_HOST_DOCKER_GID` override, else from the owning GID of the
 mounted Docker API socket (`DOCKER_HOST` `unix://` path, default
 `/var/run/docker.sock`), never from the cockpit's group database, and refuses
-naming both sources when neither is available. It requires the observer socket
+naming both sources when neither is available. The override must be a plain
+non-root decimal GID (set-but-empty or malformed is an error); a non-`unix://`
+`DOCKER_HOST` or a socket owned by group 0 is refused with the override hint,
+not guessed. It requires the observer socket
 GID to be non-zero and distinct from both the Docker GID and the control
 socket GID. Level directories are
 `root:root`, so their GIDs do not identify socket access groups.

@@ -368,6 +368,11 @@ group database. The host Docker GID comes from the explicit
 `RUN_GATE_HOST_DOCKER_GID` override, else from the owning GID of the mounted
 Docker API socket (`DOCKER_HOST` when it names a `unix://` socket, else
 `/var/run/docker.sock`); with neither, preflight refuses naming both sources.
+The override is a plain non-root decimal GID (a set but empty or malformed value
+is an error, as in Assay). A non-`unix://` `DOCKER_HOST` or a socket owned by
+group 0 is refused with the override hint rather than guessed. The override is
+the escape hatch for a proxied or relayed socket whose GID is not the host
+docker group. Collision messages print both GIDs and the Docker GID source.
 Run-Gate checks that the observer socket GID is non-zero and differs from both
 the Docker GID and the control socket GID. A directory GID cannot identify a
 socket access group in this layout. Preflight checks the new paths only and

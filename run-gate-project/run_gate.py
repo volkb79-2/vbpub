@@ -2800,12 +2800,14 @@ def socket_unreachable_cause(socket_path: str, exc: BaseException) -> str:
     if isinstance(exc, FileNotFoundError):
         if not os.path.isdir(os.path.dirname(socket_path) or "."):
             return ("socket-not-mounted: the control socket directory does not "
-                    "exist here; complete the host cgprofile socket cutover "
-                    "and bind-mount the configured control directory")
+                    "exist here (bind-mount the configured control directory, "
+                    "or the host has no cgprofile daemon runtime directory); "
+                    "if this host runs the cgprofile service, complete the "
+                    "host cgprofile socket cutover")
         return ("socket-missing: the directory exists but the socket node is "
                 "gone (the cgprofile daemon is not running, or the node was "
-                "removed); complete the host cgprofile socket cutover if this "
-                "host still uses the old layout")
+                "removed); if this host runs the cgprofile service on the old "
+                "layout, complete the host cgprofile socket cutover")
     if isinstance(exc, ConnectionRefusedError):
         return ("daemon-refusing: a socket node exists but nothing is "
                 "listening (the daemon exited, is restarting, or refuses to "
@@ -8732,37 +8734,48 @@ def extra_mount_flags() -> list[str]:
     return flags
 
 
-def host_docker_gid() -> int:
-    """The host's numeric Docker GID, from facts visible inside the cockpit.
+def host_docker_gid() -> tuple[int, str]:
+    """The host's numeric Docker GID and where it came from.
 
     Run-gate runs in a container whose group database may map `docker` to a
     different GID or omit it, so the group database is never consulted.
-    Order: (1) the explicit `RUN_GATE_HOST_DOCKER_GID` override (integer),
-    (2) the owning GID of the mounted Docker API socket (`DOCKER_HOST` when it
-    names a unix:// socket, else /var/run/docker.sock), else refuse naming
-    both sources.
+    Order: (1) the explicit `RUN_GATE_HOST_DOCKER_GID` override (a non-root
+    decimal GID; same rule as Assay's `ASSAY_GATE_HOST_DOCKER_GID`, so a set
+    but empty or malformed value is an error), (2) the owning GID of the Docker
+    API socket that `DOCKER_HOST` names (`unix://<path>`; unset means
+    /var/run/docker.sock), which must be non-root. A non-unix `DOCKER_HOST`,
+    an unreadable socket or a root-owned socket is refused with the override
+    hint: the observer-versus-Docker comparison would otherwise be vacuous or
+    read an unrelated socket.
+    Returns (gid, source) where source is the variable name or the socket path.
     """
-    override = os.environ.get(HOST_DOCKER_GID_ENV_VAR, "").strip()
-    if override:
-        try:
-            gid = int(override)
-        except ValueError:
-            gid = -1
-        if gid < 0:
-            fail_infra(f"${HOST_DOCKER_GID_ENV_VAR} must be a non-negative "
-                       f"integer GID, got {override!r}")
-        return gid
+    if HOST_DOCKER_GID_ENV_VAR in os.environ:
+        override = os.environ[HOST_DOCKER_GID_ENV_VAR]
+        if not re.fullmatch(r"[1-9][0-9]*", override, re.ASCII):
+            fail_infra(f"${HOST_DOCKER_GID_ENV_VAR} must be a verified "
+                       f"non-root numeric GID, got {override!r}")
+        return int(override), HOST_DOCKER_GID_ENV_VAR
+    hint = (f"set ${HOST_DOCKER_GID_ENV_VAR} to the host docker group's "
+            "numeric GID")
     docker_host = os.environ.get("DOCKER_HOST", "")
-    socket_path = (docker_host[len("unix://"):]
-                   if docker_host.startswith("unix://") and
-                   docker_host[len("unix://"):] else DOCKER_SOCKET_DEFAULT)
+    if not docker_host:
+        socket_path = DOCKER_SOCKET_DEFAULT
+    elif docker_host.startswith("unix://") and docker_host[len("unix://"):]:
+        socket_path = docker_host[len("unix://"):]
+    else:
+        fail_infra(f"DOCKER_HOST={docker_host!r} is not a unix:// socket, so "
+                   f"no Docker socket GID can be read; {hint}")
     try:
-        return os.stat(socket_path).st_gid
+        gid = os.stat(socket_path).st_gid
     except OSError as exc:
-        fail_infra("cannot determine the host Docker GID: set "
-                   f"${HOST_DOCKER_GID_ENV_VAR} to the host docker group's "
-                   f"numeric GID, or mount the Docker API socket at "
-                   f"{socket_path} so its owning GID can be read: {exc}")
+        fail_infra(f"cannot determine the host Docker GID: {hint}, or mount "
+                   f"the Docker API socket at {socket_path} so its owning GID "
+                   f"can be read: {exc}")
+    if gid == 0:
+        fail_infra(f"the Docker API socket {socket_path} is owned by group 0, "
+                   "which cannot identify the host docker group (the observer "
+                   f"separation check would be vacuous); {hint}")
+    return gid, socket_path
 
 
 def resource_observer_docker_flags(
@@ -8826,13 +8839,17 @@ def resource_observer_docker_flags(
                    "and not accessible to other users")
     if observed.st_gid == 0:
         fail_infra("cgprofile resource observer socket must use a non-root group")
-    docker_gid = host_docker_gid()
+    docker_gid, docker_gid_source = host_docker_gid()
     if observed.st_gid == docker_gid:
-        fail_infra("cgprofile observer must use its dedicated group, not the "
-                   "host docker group")
+        fail_infra(f"cgprofile observer socket gid {observed.st_gid} equals "
+                   f"the host docker gid {docker_gid} (from "
+                   f"{docker_gid_source}); the observer must use its "
+                   "dedicated group, not the host docker group")
     if observed.st_gid == control.st_gid:
-        fail_infra("cgprofile observer must use a group distinct from the "
-                   "control socket group")
+        fail_infra(f"cgprofile observer socket gid {observed.st_gid} equals "
+                   f"the control socket gid {control.st_gid} "
+                   f"({control_socket_path}); the observer must use a group "
+                   "distinct from the control socket group")
     return [
         "--mount",
         f"type=bind,source={directory_path},target="
@@ -16018,8 +16035,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             docker, env["image"], repo)
     if not dry_run and lane.get("resource_observer") is not None:
         resource_observer_version_preflight(
-            (profile_plan or {}).get("socket_path",
-                                     PROFILE_SOCKET_PATH_DEFAULT),
+            (profile_plan or {}).get("socket_path")
+            or PROFILE_SOCKET_PATH_DEFAULT,
         )
     # RG-NARROW: only the judged worktree + the git metadata it needs (dual,
     # RG-3), never the whole repo; the same set also reaches doctor and

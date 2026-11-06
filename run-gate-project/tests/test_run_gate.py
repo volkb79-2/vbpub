@@ -10747,8 +10747,9 @@ class TestResourceObserverLane:
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, socket_gid=995, control_gid=995)
-        with pytest.raises(run_gate.GateInfraError,
-                           match="distinct from the control socket group"):
+        with pytest.raises(
+                run_gate.GateInfraError,
+                match=r"gid 995 equals the control socket gid 995 \(.*\).*distinct from the control socket group"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
@@ -10777,8 +10778,10 @@ class TestResourceObserverLane:
         self._patch_socket_metadata(
             monkeypatch, socket_path, socket_gid=1234,
             docker_socket_missing=True)
-        monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, " 1234 ")
-        with pytest.raises(run_gate.GateInfraError, match="dedicated group"):
+        monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, "1234")
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"gid 1234 equals the host docker gid 1234 "
+                                 r"\(from RUN_GATE_HOST_DOCKER_GID\).*dedicated group"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
@@ -10787,45 +10790,104 @@ class TestResourceObserverLane:
             "kind": "assay", "environment": "tester-unified",
             "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
-    @pytest.mark.parametrize("value", ["docker", "-3", "1.5"])
-    def test_host_docker_gid_override_must_be_a_non_negative_integer(
+    @pytest.mark.parametrize(
+        "value", ["docker", "-3", "1.5", "0", "", " 994", "994 ", "+5", "1_0",
+                  "٤٥"])
+    def test_host_docker_gid_override_must_be_a_strict_non_root_integer(
             self, monkeypatch, value):
+        # Same rule as Assay's ASSAY_GATE_HOST_DOCKER_GID: a SET variable is
+        # either a plain non-root decimal GID or an error (empty included).
         monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, value)
         with pytest.raises(run_gate.GateInfraError,
-                           match="must be a non-negative integer GID"):
+                           match="must be a verified non-root numeric GID"):
             run_gate.host_docker_gid()
 
-    def test_host_docker_gid_override_zero_is_accepted(self, monkeypatch):
-        monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, "0")
-        assert run_gate.host_docker_gid() == 0
+    def test_host_docker_gid_override_is_returned_with_its_source(
+            self, monkeypatch):
+        monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, "994")
+        assert run_gate.host_docker_gid() == (
+            994, run_gate.HOST_DOCKER_GID_ENV_VAR)
 
-    def test_host_docker_gid_reads_the_configured_docker_socket_owner(
-            self, tmp_path, monkeypatch):
-        monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
-        node = tmp_path / "docker.sock"
-        node.write_text("")
-        monkeypatch.setenv("DOCKER_HOST", f"unix://{node}")
-        assert run_gate.host_docker_gid() == node.stat().st_gid
-        # A unix:// URL with no path, or a non-unix endpoint, falls back to
-        # the default socket path, which does not exist here.
+    def _proxy_stat(self, monkeypatch, gids):
+        """Replace os.stat in run_gate with a fake keyed by path; returns the
+        list of stat'ed paths."""
         seen = []
         real_os = run_gate.os
 
-        class OsProxy:
-            def __getattr__(self, name):
-                if name == "stat":
-                    return fake_stat
-                return getattr(real_os, name)
-
         def fake_stat(path):
             seen.append(str(path))
-            return SimpleNamespace(st_gid=777)
+            if str(path) not in gids:
+                raise FileNotFoundError(str(path))
+            return SimpleNamespace(st_gid=gids[str(path)])
+
+        class OsProxy:
+            def __getattr__(self, name):
+                return fake_stat if name == "stat" else getattr(real_os, name)
 
         monkeypatch.setattr(run_gate, "os", OsProxy())
-        for host in ("unix://", "tcp://127.0.0.1:2375"):
-            monkeypatch.setenv("DOCKER_HOST", host)
-            assert run_gate.host_docker_gid() == 777
-        assert seen == [run_gate.DOCKER_SOCKET_DEFAULT] * 2
+        return seen
+
+    def test_host_docker_gid_reads_the_configured_docker_socket_owner(
+            self, monkeypatch):
+        monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
+        seen = self._proxy_stat(monkeypatch, {
+            "/run/docker-api/docker.sock": 994,
+            run_gate.DOCKER_SOCKET_DEFAULT: 777})
+        monkeypatch.setenv("DOCKER_HOST", "unix:///run/docker-api/docker.sock")
+        assert run_gate.host_docker_gid() == (
+            994, "/run/docker-api/docker.sock")
+        monkeypatch.delenv("DOCKER_HOST")
+        assert run_gate.host_docker_gid() == (
+            777, run_gate.DOCKER_SOCKET_DEFAULT)
+        assert seen == ["/run/docker-api/docker.sock",
+                        run_gate.DOCKER_SOCKET_DEFAULT]
+
+    @pytest.mark.parametrize(
+        "docker_host", ["unix://", "tcp://127.0.0.1:2375", "ssh://host"])
+    def test_host_docker_gid_refuses_a_non_unix_docker_host(
+            self, monkeypatch, docker_host):
+        monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
+        seen = self._proxy_stat(
+            monkeypatch, {run_gate.DOCKER_SOCKET_DEFAULT: 777})
+        monkeypatch.setenv("DOCKER_HOST", docker_host)
+        with pytest.raises(
+                run_gate.GateInfraError,
+                match="DOCKER_HOST=.*not a unix:// socket.*RUN_GATE_HOST_DOCKER_GID"):
+            run_gate.host_docker_gid()
+        # No silent fallback to the default socket.
+        assert seen == []
+        # The explicit override still works with such a DOCKER_HOST.
+        monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, "994")
+        assert run_gate.host_docker_gid()[0] == 994
+
+    def test_host_docker_gid_refuses_a_root_group_docker_socket(
+            self, monkeypatch):
+        monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
+        monkeypatch.delenv("DOCKER_HOST", raising=False)
+        self._proxy_stat(monkeypatch, {run_gate.DOCKER_SOCKET_DEFAULT: 0})
+        with pytest.raises(
+                run_gate.GateInfraError,
+                match="/var/run/docker.sock is owned by group 0.*RUN_GATE_HOST_DOCKER_GID"):
+            run_gate.host_docker_gid()
+        # An explicit override is the way out.
+        monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, "999")
+        assert run_gate.host_docker_gid() == (
+            999, run_gate.HOST_DOCKER_GID_ENV_VAR)
+
+    def test_observer_allows_control_group_equal_to_docker_group(
+            self, tmp_path, monkeypatch):
+        # Cockpit mapping (plan D2): the control socket uses the docker group;
+        # only the observer must differ from it.
+        socket_path = tmp_path / "cgprofile.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, socket_gid=1234, control_gid=994,
+            docker_gid=994)
+        flags = run_gate.resource_observer_docker_flags({
+            "kind": "assay", "environment": "tester-unified",
+            "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+        assert flags[flags.index("--group-add") + 1] == "1234"
 
     def test_observer_refuses_extra_mounts(self, monkeypatch):
         monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, "/var/run/docker.sock=/docker.sock")
