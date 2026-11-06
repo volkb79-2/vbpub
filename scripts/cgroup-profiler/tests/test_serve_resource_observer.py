@@ -772,6 +772,69 @@ def test_activated_close_never_unlinks_systemd_socket_nodes(tmp_path, monkeypatc
     assert control.closed and observer.closed
 
 
+def _activated_server_with_real_nodes(tmp_path):
+    """An activated server whose descriptors are real bound sockets, with the
+    node identities recorded as a self-bound server would record them: the
+    unlink guards must hold on their own, not because identities were absent."""
+    listeners = {}
+    paths = {}
+    for level in ("control", "observer"):
+        directory = tmp_path / level
+        directory.mkdir()
+        paths[level] = str(directory / "cgprofile.sock")
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(paths[level])
+        listener.listen(1)
+        listeners[level] = listener
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=paths["control"],
+        observer_socket_path=paths["observer"],
+        activated_sockets=listeners,
+    )
+    server._bind()
+    control = os.lstat(paths["control"])
+    observer = os.lstat(paths["observer"])
+    server._sock_identity = (control.st_dev, control.st_ino)
+    server._observer_socket_identity = (observer.st_dev, observer.st_ino)
+    return server, paths
+
+
+def test_activated_close_leaves_both_real_socket_nodes_in_place(tmp_path):
+    server, paths = _activated_server_with_real_nodes(tmp_path)
+    assert server.socket_mode == "activated"
+    server._close_socket()
+    assert server._sock is None and server._observer_sock is None
+    for path in paths.values():
+        assert stat.S_ISSOCK(os.lstat(path).st_mode), f"{path} is systemd-owned and must survive close"
+
+
+def test_activated_observer_loop_exit_leaves_the_real_node_in_place(tmp_path):
+    server, paths = _activated_server_with_real_nodes(tmp_path)
+    server._stopping = True
+    server._observer_accept_loop()
+    assert server._observer_sock is None
+    assert stat.S_ISSOCK(os.lstat(paths["observer"]).st_mode)
+    server._close_socket()
+
+
+def test_self_bound_close_does_remove_the_nodes_it_created(tmp_path):
+    control_dir = tmp_path / "control"
+    observer_dir = tmp_path / "observer"
+    control_dir.mkdir()
+    observer_dir.mkdir()
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(control_dir / "cgprofile.sock"),
+        observer_socket_path=str(observer_dir / "cgprofile.sock"),
+    )
+    server._bind()
+    assert os.path.exists(server.socket_path) and os.path.exists(server.observer_socket_path)
+    server._close_socket()
+    assert not os.path.exists(server.socket_path)
+    assert not os.path.exists(server.observer_socket_path)
+
+
 @pytest.mark.parametrize("failure", [OSError("getsockopt"), struct.error("short credentials")])
 def test_peer_credentials_refuse_unreadable_kernel_identity(tmp_path, failure):
     class Connection:
