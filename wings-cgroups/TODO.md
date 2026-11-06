@@ -74,9 +74,9 @@ documents the flag being stripped by a runtime remount once (observed
 another occurrence (2026-08-28), and it happened again live tonight
 (restored by the same timer's self-heal at 13:07:57 CEST, mid-investigation)
 — most plausibly triggered by one of the `--privileged`/`--cgroupns=host`
-container escapes routinely used for host diagnostics on this box (see
-`modern-debian-tools-python-debug/TODO.md`'s host-escape-helper request,
-filed the same session). Whatever the trigger, the pattern recurs on a
+container escapes routinely used for host diagnostics on this box. The
+`mdt-cockpit` host-escape design documents the current helper and its limits.
+Whatever the trigger, the pattern recurs on a
 timescale of weeks, and each occurrence silently defeats every per-server
 floor on the host until the next sweep catches it.
 
@@ -134,9 +134,8 @@ produces without separately reading/testing that code path.
 _Captured 2026-09-08 from the live gstammtisch soulmask-stall investigation;
 filed by Claude per operator request. No `CHANGES.md` or managed nyxloom
 backlog exists in this project — this file mirrors the same TODO.md
-convention used for the two other same-session filings
-(`modern-debian-tools-python-debug/TODO.md`,
-`scripts/debian-install-v2/TODO.md`)._
+convention used for the other same-session filing in
+`scripts/debian-install-v2/TODO.md`._
 
 ---
 

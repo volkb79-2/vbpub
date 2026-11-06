@@ -4,6 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Removed
+- Retired the `modern-debian-tools-python-debug` predecessor project from the repository and CMRU orchestration. `mdt-cockpit` is its successor; GHCR images under the old project name are no longer built.
+
 ### Fixed
 - Devcontainer templates and vbpub's `.devcontainer/devcontainer.json`: `files.watcherExclude`, `search.exclude` and `git.repositoryScanIgnoredFolders`
   also cover `.assay` (assay's ignored isolation and scratch trees, which hold throwaway repositories), and `search.followSymlinks` is `false`. Python

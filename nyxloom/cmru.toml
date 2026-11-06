@@ -135,8 +135,8 @@ mode = "single"
 constraint = "*"
 
 [versions.targets."oci.mdt-base".oci]
-image = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-php85-vsc-devcontainer"
-tag = "trixie-py3.14-latest"
+image = "ghcr.io/volkb79-2/mdt-cockpit-devcontainer"
+tag = "trixie-py3.14-php8.5-latest"
 selection = "rolling"
 
 [versions.targets."oci.ntfy"]

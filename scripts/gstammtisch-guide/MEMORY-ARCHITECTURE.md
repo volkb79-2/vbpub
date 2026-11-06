@@ -363,7 +363,7 @@ The goal: **Soulmask always preempts dev work and is the last thing reclaimed; d
 ```
 
 The two dev tiers are installed and maintained by the **mdt host-setup**
-companion (`modern-debian-tools-python-debug/host-setup/`), not by this guide —
+companion (`mdt-cockpit/host-setup/`), not by this guide —
 see [README §Scope](README.md#scope). Their knobs, and why some of them can only
 be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 
@@ -469,7 +469,7 @@ the minimal consistent scheme; `setup-cgroups.sh` implements exactly this.
 
 ### 5.1 Applying it (files)
 - [`setup-cgroups.sh`](files/usr/local/sbin/setup-cgroups.sh) (run by [`gstammtisch-cgroups.service`](files/etc/systemd/system/gstammtisch-cgroups.service)) — applies the **game-side** knobs systemd can't: ancestor `MemoryMin` floors (protection chain), pak-slice zswap bypass, and locates the Soulmask container's scope to set `memory.min/low/high` + writeback. Re-runnable after the server restarts.
-- `interactive.slice` / `besteffort.slice` and everything that sizes them (measured IO caps, the fio baseline, BFQ setup) — **not in this guide**: `modern-debian-tools-python-debug/host-setup/`, see [README §Scope](README.md#scope).
+- `interactive.slice` / `besteffort.slice` and everything that sizes them (measured IO caps, the fio baseline, BFQ setup) — **not in this guide**: `mdt-cockpit/host-setup/`, see [README §Scope](README.md#scope).
 
 ### 5.2 Pterodactyl / Wings integration (be realistic)
 Wings creates the Soulmask container under Docker's default cgroup parent, and recreates it on updates — moving its cgroup is fragile. Use **defense in depth**:

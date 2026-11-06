@@ -359,6 +359,27 @@ a failed identity clean and strand resources.
 A markerless managed CIU record with no runtime identity is record-only and
 skips `clean`.
 
+A committed `ciu.global.defaults.toml.j2` marks a CIU root; a native stack is
+marked by its `ciu.defaults.toml.j2`. A global-only root may also contain an
+install override, but it owns no stack to clean. For example:
+
+```console
+$ cd /srv/pwmcp/standalone
+$ ciu clean
+[INFO] global-only root: nothing to clean
+```
+
+`ciu clean --vanilla` in that root still removes its workspace identity
+network and the generated reset files.
+
+For a worktree with multiple committed CIU roots, removal runs a read-only
+`ciu clean --dry-run` plan for every sibling root and the selected root before
+the first cleanup. Without `--force`, a nonzero plan refuses removal before
+any root is cleaned; `ciu worktree rm --dry-run` reports the same cleanup
+blockers. `--force` keeps its existing behavior for accepting failed cleanup
+results. See the
+[reasoning](DESIGN-GUIDE.md#global-only-roots-and-stack-cleanup).
+
 Branch deletion is conservative. A branch is deleted by default only when its
 recorded tip is proven contained in its recorded base branch (or the default
 mainline when no base branch was recorded). An unmerged or unproven branch is
@@ -1354,7 +1375,7 @@ consumer chooses its own policy. A stable, declared test environment gives
 repeatable dependencies and resource conditions. MDT's cockpit policy
 specifically requires the devcontainer to drive gates while that environment
 hosts the suite. See the
-[MDT container doctrine](../../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
+[MDT testing design](../../mdt-cockpit/docs/DESIGN-GUIDE.md#two-environments-two-claims).
 This lane sets `profile = false`: its isolated
 Docker daemon cannot inspect the outer tester container's host cgroup, while
 CMRU applies the host placement and container caps. If stronger independence
