@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -410,6 +410,43 @@ def test_reap_exited_floor_is_measured_from_finished_at(reap_world, monkeypatch)
         row, docker = action(unusable)
         assert row["action"] == "left" and "finish time" in row["reason"], unusable
         assert docker.removals() == []
+
+
+def _local(seconds_ago, hours, *, fraction=""):
+    """FinishedAt rendered in a non-UTC offset (same instant as ``_finished``)."""
+    zone = timezone(timedelta(hours=hours))
+    moment = (_NOW - timedelta(seconds=seconds_ago)).astimezone(zone)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S") + fraction + moment.strftime("%z")[:3] + ":" + (
+        moment.strftime("%z")[3:]
+    )
+
+
+@pytest.mark.parametrize(
+    ("finished", "expected"),
+    [
+        # the 300 s floor, one second either side and at the boundary
+        (_finished(299, fraction=".0"), "left"),
+        (_finished(300, fraction=".0"), "removed"),
+        # a non-UTC offset is converted, not read as UTC or ignored
+        (_local(301, 2), "removed"),
+        (_local(299, 2), "left"),
+        (_local(301, -3), "removed"),
+        (_local(299, -3), "left"),
+        # nanosecond fractions are truncated to microseconds, not milliseconds
+        (_finished(300, fraction=".000500000"), "left"),      # 299.9995 s old
+        (_finished(300, fraction=".000000999"), "removed"),   # 300.0 s after truncation
+        (_finished(301, fraction=".999999999"), "removed"),   # 300.000000001 -> 300.000001
+        (_finished(300, fraction=".999999999"), "left"),
+    ],
+)
+def test_reap_floor_boundaries_offsets_and_fraction_truncation(
+    reap_world, monkeypatch, finished, expected,
+):
+    _Docker(monkeypatch, _container(
+        reap_world.proc, working_dir=str(reap_world.root), owner_pid="999",
+        finished=finished,
+    ))
+    assert _reap(reap_world, yes=True, older_than_seconds=10**9)[0]["action"] == expected
 
 
 def test_reap_floor_uses_the_state_not_the_started_label(reap_world, monkeypatch):
