@@ -353,6 +353,41 @@ class TestRun:
         code, _out, err = cli("--config", wired.config, "run")
         assert code == 2 and "LISTEN_FDS=0" in err and StubServer.built == []
 
+    def test_run_refuses_invalid_socket_activation_by_name(self, cli, wired, monkeypatch):
+        def invalid(environ):
+            raise serve.SocketActivationError("duplicate descriptor name control")
+
+        monkeypatch.setattr(serve, "adopt_systemd_sockets", invalid)
+        code, _out, err = cli("--config", wired.config, "run")
+        assert code == 2 and "invalid systemd socket activation: duplicate descriptor name control" in err
+        assert StubServer.built == []
+
+    def test_self_bind_cannot_be_combined_with_activation_and_closes_the_descriptors(self, cli, wired, monkeypatch):
+        class Listener:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        listener = Listener()
+        monkeypatch.setattr(serve, "adopt_systemd_sockets", lambda environ: {"control": listener})
+        code, _out, err = cli("--config", wired.config, "run", "--self-bind")
+        assert code == 2 and "--self-bind cannot be combined with LISTEN_FDS" in err
+        assert listener.closed and StubServer.built == []
+
+    def test_a_failed_preflight_closes_the_adopted_descriptors(self, cli, wired, monkeypatch):
+        class Listener:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        listener = Listener()
+        monkeypatch.setattr(serve, "adopt_systemd_sockets", lambda environ: {"control": listener})
+        monkeypatch.setattr(os, "geteuid", lambda: 1000)
+        assert cli("--config", wired.config, "run")[0] == 2
+        assert listener.closed and StubServer.built == []
+
 
 # ── reload ─────────────────────────────────────────────────────────────────
 

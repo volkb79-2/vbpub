@@ -121,6 +121,12 @@ class TestPrint:
         code, _out, err = cli("unit", "print", "--install-root", "relative")
         assert code == 2 and "absolute path" in err
 
+    def test_an_invalid_config_is_exit_2_with_the_check_hint(self, cli, tmp_path):
+        config = tmp_path / "bad.toml"
+        config.write_text("bogus = 1\n")
+        code, _out, err = cli("--config", str(config), "unit", "print")
+        assert code == 2 and "bogus" in err and "cgpd config check" in err
+
 
 class TestCheck:
     @pytest.fixture()
@@ -144,6 +150,20 @@ class TestCheck:
         monkeypatch.setattr(unitfiles, "DEFAULT_UNIT_DIR", str(installed))
         monkeypatch.setattr(unitfiles, "DEFAULT_SYSUSERS_DIR", str(installed))
         assert cli("unit", "check")[0] == 0
+
+    def test_the_sysusers_file_is_recognised_by_its_installed_name(self, cli, installed):
+        code, out, _ = cli("unit", "check", "--installed", str(installed / "cgprofile.conf"))
+        assert code == 0 and "units match" in out
+
+    def test_sysusers_renders_a_line_only_for_default_named_groups(self):
+        mapped = {"sockets.control": {"path": "/run/cgprofile/control/cgprofile.sock",
+                                      "group": "ops", "mode": "0660"},
+                  "sockets.observer": {"path": "/run/cgprofile/observer/cgprofile.sock",
+                                       "group": "readers", "mode": "0660"}}
+        assert unitfiles.render(config_values=mapped)["cgprofile.sysusers"] == ""
+        only_observer = dict(mapped, **{"sockets.observer": dict(mapped["sockets.observer"],
+                                                                 group="cgprofile-observer")})
+        assert unitfiles.render(config_values=only_observer)["cgprofile.sysusers"] == "g cgprofile-observer - - -\n"
 
     def test_drift_names_the_first_differing_line(self, cli, installed):
         path = installed / "cgpd.service"

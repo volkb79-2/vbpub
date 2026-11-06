@@ -184,8 +184,9 @@ class _DamonRegistryLock:
 def prepare_registry_lock_file() -> str:
     """Create/validate the shared file before a helper bind-mounts it.
 
-    The host-setup `/run/cgprofile` directory must already exist. The helper
-    binds only this file, not the daemon control socket.
+    The lock file lives in the root-only `/run/cgprofile/state` directory,
+    which systemd creates for `cgpd.service` (mode 0700), so only the daemon
+    side calls this. The helper binds only this file, not a daemon socket.
     """
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)

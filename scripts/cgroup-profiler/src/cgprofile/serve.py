@@ -3504,7 +3504,10 @@ class SessionServer:
         listener, and rebind when it does not (the node was removed or
         replaced while the container stayed up). When it cannot be rebound,
         flag the loss so the daemon exits non-zero and the restart policy
-        recreates it, rather than serve unreachable."""
+        recreates it, rather than serve unreachable.
+
+        Runs only in explicit ``--self-bind`` mode: under socket activation
+        systemd owns the node and the daemon never rebinds or unlinks it."""
         identity = self._sock_identity
         try:
             current = os.lstat(self.socket_path)

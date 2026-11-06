@@ -163,6 +163,29 @@ class TestFile:
         with pytest.raises(dc.ConfigError, match="sockets.observer.group must not be docker"):
             dc.parse_table(text)
 
+    @pytest.mark.parametrize("table, message", [
+        ('path = "/a"\ngroup = "g"\n', "sockets.control: missing mode"),
+        ('path = "/a"\ngroup = "g"\nmode = "0660"\nextra = 1\n', "sockets.control: unknown extra"),
+        ('path = "/a"\nextra = 1\n', "sockets.control: missing group, mode; unknown extra"),
+    ])
+    def test_socket_table_must_carry_exactly_path_group_and_mode(self, table, message):
+        with pytest.raises(dc.ConfigError, match=message):
+            dc.parse_table("[sockets.control]\n" + table)
+
+    def test_sockets_must_be_a_table_of_levels(self):
+        with pytest.raises(dc.ConfigError, match="sockets must contain"):
+            dc.parse_table("sockets = 1\n")
+
+    def test_parse_table_checks_group_and_path_distinctness(self):
+        same_group = ('[sockets.control]\npath = "/a"\ngroup = "g"\nmode = "0660"\n'
+                      '[sockets.observer]\npath = "/b"\ngroup = "g"\nmode = "0660"\n')
+        with pytest.raises(dc.ConfigError, match="control.group and sockets.observer.group must differ"):
+            dc.parse_table(same_group)
+        same_path = ('[sockets.control]\npath = "/a"\ngroup = "c"\nmode = "0660"\n'
+                     '[sockets.observer]\npath = "/a"\ngroup = "o"\nmode = "0660"\n')
+        with pytest.raises(dc.ConfigError, match="control.path and sockets.observer.path must differ"):
+            dc.parse_table(same_path)
+
     def test_socket_settings_refuses_the_docker_group_for_the_observer(self):
         values = {"sockets.observer": {"path": "/run/cgprofile/observer/cgprofile.sock",
                                        "group": "docker", "mode": "0660"}}

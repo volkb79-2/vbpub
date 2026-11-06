@@ -772,6 +772,16 @@ def test_activated_close_never_unlinks_systemd_socket_nodes(tmp_path, monkeypatc
     assert control.closed and observer.closed
 
 
+def test_self_bind_mode_falls_back_to_the_default_for_unusable_settings(tmp_path, monkeypatch):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    calls = []
+    monkeypatch.setattr(serve.os, "chmod", lambda path, mode: calls.append(mode))
+    for settings in ({"mode": "not-octal"}, {}, None):
+        monkeypatch.setattr(server.settings, "get", lambda key, _settings=settings: _settings)
+        server._apply_self_bind_socket_mode("/tmp/x.sock", "control")
+    assert calls == [serve.SOCKET_MODE] * 3
+
+
 def _activated_server_with_real_nodes(tmp_path):
     """An activated server whose descriptors are real bound sockets, with the
     node identities recorded as a self-bound server would record them: the

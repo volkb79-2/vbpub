@@ -89,6 +89,48 @@ def test_unknown_and_duplicate_names_close_every_opened_descriptor(monkeypatch, 
     assert all(descriptor.closed for descriptor in descriptors.values())
 
 
+def test_a_descriptor_that_cannot_be_closed_does_not_mask_the_refusal(monkeypatch):
+    class Stubborn(FakeSocket):
+        def close(self):
+            self.closed = True
+            raise OSError("already closed")
+
+    descriptors = {3: Stubborn(3), 4: FakeSocket(4)}
+    _adopter(monkeypatch, descriptors)
+    environ = {"LISTEN_PID": "31", "LISTEN_FDS": "2", "LISTEN_FDNAMES": "control:control"}
+    with pytest.raises(serve.SocketActivationError, match="more than one"):
+        serve.adopt_systemd_sockets(environ, pid=31)
+    assert descriptors[3].closed and descriptors[4].closed
+
+
+def test_a_missing_level_descriptor_is_logged_and_the_other_level_still_binds(tmp_path, capsys):
+    control = FakeSocket(3)
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"), activated_sockets={"control": control})
+    server._bind()
+    assert server._sock is control and server._observer_sock is None
+    assert "systemd socket descriptor missing for configured level observer" in capsys.readouterr().err
+
+
+def test_an_observer_only_activated_daemon_idles_instead_of_accepting_on_control(tmp_path):
+    observer = FakeSocket(4)
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"), activated_sockets={"observer": observer},
+                                 accept_timeout=0.01)
+    ticks = []
+
+    def stop_after_idling(_seconds):
+        ticks.append(True)
+        server._stopping = True
+
+    original_sleep = serve.time.sleep
+    serve.time.sleep = stop_after_idling
+    try:
+        server._observer_accept_loop = lambda: None  # the observer thread is not under test
+        server._accept_loop()
+    finally:
+        serve.time.sleep = original_sleep
+    assert ticks == [True] and server._sock is None
+
+
 @pytest.mark.parametrize("descriptor, message", [
     (FakeSocket(3, family=socket.AF_INET), "not an AF_UNIX stream socket"),
     (FakeSocket(3, kind=socket.SOCK_DGRAM), "not an AF_UNIX stream socket"),
