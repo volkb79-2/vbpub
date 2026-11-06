@@ -920,6 +920,10 @@ class Installer:
         for user in values["observe_users"]:
             self._command(["usermod", "-a", "-G", values["observe_group"], user], timeout=30)
 
+        # A re-apply over an earlier PENDING compares against files the failed
+        # attempt already wrote, so drift is invisible: reload and restart anyway.
+        if earlier_pending:
+            resource_changed = dict.fromkeys(resource_changed, True)
         if any(resource_changed.values()) or version_drift:
             self._command([self.systemctl, "daemon-reload"], timeout=30)
 

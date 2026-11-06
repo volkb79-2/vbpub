@@ -141,8 +141,11 @@ lists the paths and groups it would remove.
 
 A failed upgrade of a finished install leaves `PENDING` next to the install
 record. Rerunning `toposd install` after fixing the cause re-applies the
-requested version; every step is idempotent. Only a first install that failed
-part way (`PENDING` without a record) is refused.
+requested version: it rewrites every resource, reloads systemd and restarts the
+running service, because the failed attempt may already have written the files.
+Only a first install that failed part way (`PENDING` without a record) is
+refused. A host where an interrupted uninstall left the record can likewise be
+reinstalled over, or the uninstall rerun.
 
 ### Manual removal of an old installation
 

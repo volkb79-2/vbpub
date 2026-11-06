@@ -810,7 +810,15 @@ def test_a_failed_upgrade_is_reapplied_by_rerunning_install(tmp_path: Path, monk
         retry.install(retry_args, _runtime(yes=True))
     assert Path(paths.pending).is_file()
 
-    subject.install(args, _runtime(yes=True))
+    # The failed attempt already wrote the units and current, so on disk nothing
+    # differs; the re-apply still reloads and restarts the running service.
+    commands = []
+    active = {"topos.service": True, "topos-observe.socket": True}
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    Installer(paths, run=_fake_run(commands, groups, active), fetch=_fake_fetch(wheels),
+              geteuid=lambda: 0).install(args, _runtime(yes=True))
+    assert ["systemctl", "daemon-reload"] in commands
+    assert ["systemctl", "restart", "topos-observe.socket"] in commands
     assert not Path(paths.pending).exists() and not Path(paths.current_new).exists()
     assert os.readlink(paths.current) == "0.7.3"
 
