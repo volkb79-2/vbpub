@@ -216,26 +216,50 @@ def _atomic_symlink(target: str, path: str, temporary: str) -> None:
             pass
 
 
+# Findings under /opt/topos come from toposd install itself (an interrupted run) or
+# from something unknown there; the old host-setup layout never wrote /opt/topos.
+_VERSION_ROOT_FINDINGS = (
+    "leftover install marker:",
+    "leftover version staging directory:",
+    "unmarked version tree:",
+    "unknown version tree MANIFEST:",
+    "cannot inspect version MANIFEST",
+    "cannot inspect version root",
+    "version tree is a symlink:",
+    "version root is not a real directory:",
+)
+
+
 def manual_removal_message(found: Iterable[str] = ()) -> str:
     details = list(found)
-    message = [
-        "toposd install refused an old or unknown installation. Remove it manually, then rerun:",
-    ]
+    version_root = [item for item in details if item.startswith(_VERSION_ROOT_FINDINGS)]
+    old_host = [item for item in details if item not in version_root]
+    message = ["toposd install refused: this host has files toposd install did not write or did not finish."]
     if details:
         message.extend(("Found:", *(f"  {item}" for item in details)))
-    message.extend(
-        (
-            "Manual removal:",
-            "  systemctl stop topos.service",
-            "  systemctl disable topos.service",
-            "  rm -f /etc/tmpfiles.d/mdt-topos.conf",
-            "  rm -f /etc/systemd/system/topos.service.d/50-mdt-socket-group.conf",
-            "  rm -f /etc/systemd/system/topos.service /etc/systemd/system/topos.slice",
-            "  systemctl daemon-reload",
-            "  rm -rf /run/topos",
-            "  recreate containers that bind-mount /run/topos",
+    if old_host or not details:
+        message.extend(
+            (
+                "Remove the old installation manually (docs/DAEMON.md, \"Manual removal of an old installation\"):",
+                "  systemctl stop topos.service",
+                "  systemctl disable topos.service",
+                "  rm -f /etc/tmpfiles.d/mdt-topos.conf",
+                "  rm -f /etc/systemd/system/topos.service.d/50-mdt-socket-group.conf",
+                "  rm -f /etc/systemd/system/topos.service /etc/systemd/system/topos.slice",
+                "  systemctl daemon-reload",
+                "  rm -rf /run/topos",
+                "  recreate containers that bind-mount /run/topos",
+            )
         )
-    )
+    if version_root:
+        message.extend(
+            (
+                "Under /opt/topos: if /opt/topos/PENDING is listed, a toposd install did not finish;",
+                "  run `toposd uninstall --yes`, which removes only what toposd install writes.",
+                "  Otherwise remove the listed paths by hand.",
+            )
+        )
+    message.append("Then rerun toposd install.")
     return "\n".join(message)
 
 
@@ -283,7 +307,12 @@ def find_foreign_rules(paths: InstallPaths) -> list[str]:
     return found
 
 
+# Owner (uid, gid) the runtime tree must have; fake-root tests set their own ids.
+RUNTIME_TREE_OWNER = (0, 0)
+
+
 def _run_tree_problems(paths: InstallPaths) -> list[str]:
+    owner_uid, owner_gid = RUNTIME_TREE_OWNER
     expected = {
         paths.runtime_root: 0o755,
         paths.observe_dir: 0o755,
@@ -299,7 +328,11 @@ def _run_tree_problems(paths: InstallPaths) -> list[str]:
             problems.append(f"cannot inspect {path}: {exc.strerror or exc}")
             continue
         actual_mode = stat.S_IMODE(info.st_mode)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or actual_mode != mode:
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or (info.st_uid, info.st_gid) != (owner_uid, owner_gid)
+            or actual_mode != mode
+        ):
             problems.append(
                 f"{path} is {info.st_uid}:{info.st_gid} {actual_mode:04o}; "
                 f"expected root:root {mode:04o}"
@@ -315,7 +348,9 @@ def old_installation_problems(paths: InstallPaths) -> list[str]:
         path = paths.at(absolute)
         if os.path.lexists(path):
             problems.append(f"old-layout path remains: {path}")
-    if not os.path.lexists(paths.install_record):
+    # Units next to PENDING come from an unfinished toposd install; PENDING itself
+    # is reported below.
+    if not os.path.lexists(paths.install_record) and not os.path.lexists(paths.pending):
         for name in ("topos.service", "topos.slice"):
             path = os.path.join(paths.unit_dir, name)
             if os.path.lexists(path):
@@ -529,7 +564,10 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     version, wheel_sha = _parse_pin(wheel, "--wheel")
     clix_version, clix_sha = _parse_pin(clix, "--cli-extended-wheel")
     lock_version, lock_sha = _parse_pin(lock_pin, "--daemon-lock")
-    version_key(version)
+    if not _is_socket_unit_version(version):
+        raise InstallError(
+            f"toposd install supports topos {SOCKET_RELEASE} and later; {version} has no toposd or daemon lock"
+        )
     if lock_version != version:
         raise InstallError(f"--daemon-lock version {lock_version} must equal topos wheel version {version}")
     return {
@@ -553,6 +591,14 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
 
 def _is_socket_unit_version(version: str) -> bool:
     return version_key(version) >= version_key(SOCKET_RELEASE)
+
+
+def _is_install_link(link: str, paths: InstallPaths) -> bool:
+    """True for a /usr/local/bin symlink that points into /opt/topos."""
+    try:
+        return os.path.islink(link) and os.readlink(link).startswith(paths.opt + os.sep)
+    except OSError:
+        return False
 
 
 def _hello(path: str, timeout: float = CONNECT_TIMEOUT) -> dict[str, Any]:
@@ -659,14 +705,16 @@ class Installer:
                 raise InstallError(f"{version_dir} is immutable and its manifest differs from the requested pins")
         elif os.path.lexists(version_dir):
             raise InstallError(f"unmarked version directory {version_dir} exists; remove it manually")
+        for link in (self.paths.client_link, self.paths.daemon_link):
+            if os.path.lexists(link) and not _is_install_link(link, self.paths):
+                raise InstallError(
+                    f"{link} exists and was not written by toposd install; move it away, then rerun"
+                )
         current = self._current_version()
         downgrade = bool(current and version_key(values["version"]) < version_key(current))
-        socket_files = (os.path.join(self.paths.unit_dir, "topos-observe.socket"),)
-        socket_installed = any(os.path.lexists(path) for path in socket_files)
-        legacy_target = not _is_socket_unit_version(values["version"])
-        if downgrade and legacy_target and socket_installed and not values["allow_downgrade"]:
+        if downgrade and not values["allow_downgrade"]:
             raise InstallError(
-                f"refusing downgrade from {current} to {values['version']} while socket units are installed; "
+                f"refusing downgrade from {current} to {values['version']}; "
                 "review the rollback and rerun with --allow-downgrade"
             )
         return downgrade, bool(current != values["version"])
@@ -681,8 +729,10 @@ class Installer:
                 raise InstallError(f"{venv}/bin/toposd is missing from an immutable version tree")
             return venv
 
+        # The stage holds only the downloads. The venv is built at its final path,
+        # because pip writes absolute interpreter paths into its console scripts;
+        # a failed build removes the version tree, and MANIFEST is written last.
         stage = tempfile.mkdtemp(prefix=".stage.", dir=self.paths.opt)
-        build_dir = os.path.join(stage, values["version"])
         wheels = os.path.join(stage, "wheels")
         os.makedirs(wheels)
         wheel_name = f"topos-{values['version']}-py3-none-any.whl"
@@ -706,9 +756,16 @@ class Installer:
                 parse_lock(Path(lock_path).read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError, LockError) as exc:
                 raise InstallError(f"daemon lock {lock_name} is invalid: {exc}") from None
-            os.makedirs(build_dir, mode=0o755)
-            self._command([self.python, "-m", "venv", os.path.join(build_dir, "venv")], timeout=120)
-            venv_python = os.path.join(build_dir, "venv", "bin", "python")
+            os.makedirs(version_dir, mode=0o755)
+        except InstallError:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise
+        except OSError as exc:
+            shutil.rmtree(stage, ignore_errors=True)
+            raise InstallError(f"cannot prepare version tree {version_dir}: {exc}") from None
+        try:
+            self._command([self.python, "-m", "venv", venv], timeout=120)
+            venv_python = os.path.join(venv, "bin", "python")
             dep_command = [venv_python, "-m", "pip", "install", "--require-hashes", "-r", lock_path]
             if os.path.isdir(values["wheel_source"]):
                 dep_command.extend(("--no-index", "--find-links", values["wheel_source"]))
@@ -733,12 +790,12 @@ class Installer:
                     "",
                 )
             )
-            _atomic_write(os.path.join(build_dir, "MANIFEST"), manifest_text)
-            os.replace(build_dir, version_dir)
-        except InstallError:
+            _atomic_write(manifest, manifest_text)
+        except BaseException as exc:
+            shutil.rmtree(version_dir, ignore_errors=True)
+            if isinstance(exc, OSError):
+                raise InstallError(f"cannot build immutable version tree {version_dir}: {exc}") from None
             raise
-        except OSError as exc:
-            raise InstallError(f"cannot build immutable version tree {version_dir}: {exc}") from None
         finally:
             shutil.rmtree(stage, ignore_errors=True)
         return venv
@@ -794,44 +851,11 @@ class Installer:
                 removed.append(name)
         return removed
 
-    def _apply_downgrade(self, values: Mapping[str, Any], resource_paths: Mapping[str, str]) -> None:
-        if not values["allow_downgrade"] or _is_socket_unit_version(values["version"]):
-            return
-        socket_unit = "topos-observe.socket"
-        if os.path.lexists(resource_paths[socket_unit]):
-            self._command([self.systemctl, "disable", "--now", socket_unit], timeout=30)
-            os.unlink(resource_paths[socket_unit])
-        try:
-            info = os.lstat(self.paths.socket_node)
-        except FileNotFoundError:
-            return
-        except OSError as exc:
-            raise InstallError(f"cannot inspect observe socket {self.paths.socket_node}: {exc}") from None
-        if stat.S_ISSOCK(info.st_mode):
-            os.unlink(self.paths.socket_node)
-        else:
-            raise InstallError(f"refusing to remove non-socket node at {self.paths.socket_node} during downgrade")
-
     def install(self, args: argparse.Namespace, runtime: CliRuntime) -> dict[str, Any]:
         values = _gather_inputs(args, runtime, self.paths)
         downgrade, version_drift = self._preflight(values, dry_run=runtime.dry_run)
-        config_text = _render_config(values["observe_group"])
-        try:
-            config = parse_config(config_text, source=self.paths.config)
-        except ConfigError as exc:
-            raise InstallError(f"rendered config refused: {exc}") from None
+        config_text, config, config_changed = self._config(values["observe_group"])
         rendered = render_units(config)
-        if not _is_socket_unit_version(values["version"]):
-            # Pre-0.7 releases have no socket activation. Keep the rollback
-            # service explicit and remove the Requires=/Sockets= relationship.
-            rendered.pop("topos-observe.socket")
-            rendered["topos.service"] = (
-                rendered["topos.service"]
-                .replace("Requires=topos-observe.socket\n", "")
-                .replace("After=network.target topos-observe.socket", "After=network.target")
-                .replace("Sockets=topos-observe.socket\n", "")
-                .replace(" run --config ", " run --self-bind --config ")
-            )
         if runtime.dry_run:
             return {
                 "ok": True,
@@ -846,218 +870,275 @@ class Installer:
         if not runtime.yes and not runtime.confirm("Install or upgrade the topos host service?"):
             raise InstallError("installation was not confirmed")
 
-        # The PENDING marker makes an interrupted mutation visible to P-11.
+        # PENDING marks an interrupted install, so the next install refuses and
+        # uninstall knows the leftovers are its own. A failed fetch, pin check or
+        # venv build has already removed its version tree, so it drops PENDING too.
         os.makedirs(self.paths.opt, mode=0o755, exist_ok=True)
         _atomic_write(self.paths.pending, values["version"] + "\n")
-        venv = self._ensure_version(values)
+        try:
+            self._ensure_version(values)
+        except InstallError:
+            os.unlink(self.paths.pending)
+            raise
         resource_paths = self._resource_paths()
         socket_name = "topos-observe.socket"
-        try:
-            self._apply_downgrade(values, resource_paths)
-            config_changed = True
+        # From here on a failure leaves PENDING in place: the next install refuses
+        # and points at `toposd uninstall`, which accepts a PENDING-marked host.
+        resource_changed: dict[str, bool] = {}
+        for name, content in rendered.items():
             try:
-                config_changed = Path(self.paths.config).read_text(encoding="utf-8") != config_text
+                resource_changed[name] = Path(resource_paths[name]).read_text(encoding="utf-8") != content
             except OSError:
-                pass
-            resource_changed: dict[str, bool] = {}
-            for name, content in rendered.items():
-                try:
-                    resource_changed[name] = Path(resource_paths[name]).read_text(encoding="utf-8") != content
-                except OSError:
-                    resource_changed[name] = True
+                resource_changed[name] = True
 
-            was_active = self._is_active("topos.service")
-            socket_was_active = self._is_active(socket_name) if _is_socket_unit_version(values["version"]) else False
-            if self.geteuid() != 0:
-                raise InstallError("toposd install needs root")
+        was_active = self._is_active("topos.service")
+        socket_was_active = self._is_active(socket_name)
 
+        if config_changed:
             _atomic_write(self.paths.config, config_text)
-            for name, content in rendered.items():
-                _atomic_write(resource_paths[name], content)
-            link_target = values["version"]
-            os.symlink(link_target, self.paths.current_new)
-            os.replace(self.paths.current_new, self.paths.current)
+        for name, content in rendered.items():
+            _atomic_write(resource_paths[name], content)
+        os.symlink(values["version"], self.paths.current_new)
+        os.replace(self.paths.current_new, self.paths.current)
 
-            group_missing_before = _group_gid(values["observe_group"]) is None
-            if rendered["topos.sysusers"].startswith("g "):
-                self._command(["systemd-sysusers", resource_paths["topos.sysusers"]], timeout=30)
-                if group_missing_before and _group_gid(values["observe_group"]) is None:
-                    raise InstallError(f"systemd-sysusers did not create configured group {values['observe_group']!r}")
-            for user in values["observe_users"]:
-                self._command(["usermod", "-a", "-G", values["observe_group"], user], timeout=30)
+        group_missing_before = _group_gid(values["observe_group"]) is None
+        if rendered["topos.sysusers"].startswith("g "):
+            self._command(["systemd-sysusers", resource_paths["topos.sysusers"]], timeout=30)
+            if group_missing_before and _group_gid(values["observe_group"]) is None:
+                raise InstallError(f"systemd-sysusers did not create configured group {values['observe_group']!r}")
+        for user in values["observe_users"]:
+            self._command(["usermod", "-a", "-G", values["observe_group"], user], timeout=30)
 
-            units_changed = any(resource_changed.values())
-            if units_changed or version_drift:
-                self._command([self.systemctl, "daemon-reload"], timeout=30)
+        if any(resource_changed.values()) or version_drift:
+            self._command([self.systemctl, "daemon-reload"], timeout=30)
 
-            _atomic_symlink(self.paths.at("/opt/topos/current/venv/bin/topos"), self.paths.client_link,
-                            self.paths.client_link + ".topos-new")
-            _atomic_symlink(self.paths.at("/opt/topos/current/venv/bin/toposd"), self.paths.daemon_link,
-                            self.paths.daemon_link + ".toposd-new")
+        _atomic_symlink(self.paths.at("/opt/topos/current/venv/bin/topos"), self.paths.client_link,
+                        self.paths.client_link + ".topos-new")
+        _atomic_symlink(self.paths.at("/opt/topos/current/venv/bin/toposd"), self.paths.daemon_link,
+                        self.paths.daemon_link + ".toposd-new")
 
-            enabled_now = values["enable_now"]
-            legacy = not _is_socket_unit_version(values["version"])
-            managed_units = ["topos.service"] + ([] if legacy else [socket_name])
-            if enabled_now:
-                self._command([self.systemctl, "enable", *managed_units], timeout=60)
-                if not legacy and not socket_was_active:
-                    self._command([self.systemctl, "start", socket_name], timeout=30)
-                if not was_active:
-                    self._command([self.systemctl, "start", "topos.service"], timeout=60)
-            if was_active:
-                if not legacy and resource_changed.get(socket_name, False) and socket_was_active:
-                    self._command([self.systemctl, "restart", socket_name], timeout=60)
-                elif config_changed or version_drift or resource_changed.get("topos.service", False):
-                    self._command([self.systemctl, "restart", "topos.service"], timeout=60)
+        enabled_now = values["enable_now"]
+        if enabled_now:
+            self._command([self.systemctl, "enable", "topos.service", socket_name], timeout=60)
+            if not socket_was_active:
+                self._command([self.systemctl, "start", socket_name], timeout=30)
+            if not was_active:
+                self._command([self.systemctl, "start", "topos.service"], timeout=60)
+        if was_active:
+            # A socket restart restarts the service through Requires=.
+            if resource_changed.get(socket_name, False) and socket_was_active:
+                self._command([self.systemctl, "restart", socket_name], timeout=60)
+            elif config_changed or version_drift or resource_changed.get("topos.service", False):
+                self._command([self.systemctl, "restart", "topos.service"], timeout=60)
 
-            if was_active or enabled_now:
-                self._wait_ready(self.paths.at(config.sockets.observe.path.as_posix()), values["version"])
+        if was_active or enabled_now:
+            self._wait_ready(self.paths.at(config.sockets.observe.path.as_posix()), values["version"])
 
-            created_groups = list(values["prior_created_groups"])
-            if group_missing_before and values["observe_group"] not in created_groups:
-                created_groups.append(values["observe_group"])
-            removed = self._prune_versions(values["version"])
-            record = {
-                "wheel": values["wheel"],
-                "cli_extended_wheel": values["cli_extended_wheel"],
-                "daemon_lock": values["daemon_lock"],
-                "wheel_source": values["wheel_source"],
-                "observe_group": values["observe_group"],
-                "observe_users": values["observe_users"],
-                "enable_now": values["enable_now"],
-                "created_groups": created_groups,
-            }
-            _atomic_write(self.paths.install_record, _render_record(record))
-            os.unlink(self.paths.pending)
-            return {
-                "ok": True,
-                "dry_run": False,
-                "version": values["version"],
-                "config_changed": config_changed,
-                "resources_changed": sorted(name for name, changed in resource_changed.items() if changed),
-                "pruned": removed,
-                "enabled": values["enable_now"],
-                "downgrade": downgrade,
-            }
-        except BaseException:
-            # Leave PENDING in place after any partial apply; the next install
-            # must require manual inspection rather than guessing what landed.
-            raise
+        created_groups = list(values["prior_created_groups"])
+        if group_missing_before and values["observe_group"] not in created_groups:
+            created_groups.append(values["observe_group"])
+        removed = self._prune_versions(values["version"])
+        record = {
+            "wheel": values["wheel"],
+            "cli_extended_wheel": values["cli_extended_wheel"],
+            "daemon_lock": values["daemon_lock"],
+            "wheel_source": values["wheel_source"],
+            "observe_group": values["observe_group"],
+            "observe_users": values["observe_users"],
+            "enable_now": values["enable_now"],
+            "created_groups": created_groups,
+        }
+        _atomic_write(self.paths.install_record, _render_record(record))
+        os.unlink(self.paths.pending)
+        return {
+            "ok": True,
+            "dry_run": False,
+            "version": values["version"],
+            "config_changed": config_changed,
+            "resources_changed": sorted(name for name, changed in resource_changed.items() if changed),
+            "pruned": removed,
+            "enabled": values["enable_now"],
+            "downgrade": downgrade,
+        }
+
+    def _config(self, group: str) -> tuple[str, ServiceConfig, bool]:
+        """Return the config text, its parse, and whether the file is new.
+
+        An existing file is the operator's: it is kept as written, and its
+        observe group must match the requested one.
+        """
+        try:
+            existing: str | None = Path(self.paths.config).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            existing = None
+        except (OSError, UnicodeDecodeError) as exc:
+            raise InstallError(f"cannot read {self.paths.config}: {exc}") from None
+        text = _render_config(group) if existing is None else existing
+        try:
+            config = parse_config(text, source=self.paths.config)
+        except ConfigError as exc:
+            raise InstallError(f"{self.paths.config} is invalid: {exc}; fix or remove it, then rerun") from None
+        if existing is not None and config.sockets.observe.group != group:
+            raise InstallError(
+                f"{self.paths.config} sets observe group {config.sockets.observe.group!r}, not {group!r}; "
+                f"edit the file or pass --observe-group {config.sockets.observe.group}"
+            )
+        return text, config, existing is None
+
+    def _uninstall_targets(self) -> list[str] | None:
+        """Refuse before any change unless toposd install owns this host.
+
+        Returns the existing paths uninstall would remove, or None when nothing
+        toposd install writes is present.
+        """
+        paths = self.paths
+        owned = os.path.lexists(paths.install_record) or os.path.lexists(paths.pending)
+        # The plan has uninstall remove host-setup's socket-group drop-in so a role can
+        # leave cleanly; every other foreign rule or old-layout path is refused.
+        mdt_dropin = os.path.join(paths.service_dropins, "50-mdt-socket-group.conf")
+        problems = [
+            item for item in old_installation_problems(paths)
+            if item != f"foreign rule or drop-in: {mdt_dropin}"
+            and not (owned and item.startswith(_VERSION_ROOT_FINDINGS[:3]))
+        ]
+        for directory, allowed in (
+            (paths.runtime_root, {"observe", "state"}),
+            (paths.observe_dir, {"topos.sock"}),
+        ):
+            for name in _directory_entries(directory, problems, "runtime"):
+                if name not in allowed:
+                    problems.append(f"unknown path under the runtime tree: {os.path.join(directory, name)}")
+        for name in _directory_entries(paths.opt, problems, "version root"):
+            path = os.path.join(paths.opt, name)
+            known = name in {"current", "current.new", "PENDING"} or name.startswith(".stage.")
+            if not known and not (VERSION_RE.fullmatch(name) and os.path.isdir(path) and not os.path.islink(path)):
+                problems.append(f"unknown path under the version root: {path}")
+        if os.path.lexists(paths.socket_node) and not stat.S_ISSOCK(os.lstat(paths.socket_node).st_mode):
+            problems.append(f"{paths.socket_node} is not a socket")
+        if problems:
+            raise InstallError(manual_removal_message(problems).replace("toposd install refused", "toposd uninstall refused"))
+        if not owned:
+            return None
+        candidates = [
+            *(os.path.join(paths.unit_dir, unit) for unit in ("topos-observe.socket", "topos.service", "topos.slice")),
+            paths.sysusers,
+            mdt_dropin,
+            *(link for link in (paths.client_link, paths.daemon_link) if _is_install_link(link, paths)),
+            paths.socket_node,
+            paths.observe_dir,
+            paths.state_dir,
+            paths.runtime_root,
+            paths.opt,
+            paths.config,
+            paths.install_record,
+        ]
+        return [path for path in candidates if os.path.lexists(path)]
 
     def uninstall(self, args: argparse.Namespace, runtime: CliRuntime) -> dict[str, Any]:
         record = _read_record(self.paths.install_record)
         created_groups = _record_created_groups(record)
+        remove_groups = bool(getattr(args, "remove_groups", False))
+        targets = self._uninstall_targets()
+        if targets is None:
+            return {"ok": True, "dry_run": runtime.dry_run, "removed": [], "groups_removed": [],
+                    "message": "nothing installed by toposd install"}
         if runtime.dry_run:
             return {
                 "ok": True,
                 "dry_run": True,
-                "units": ["topos.service", "topos-observe.socket", "topos.slice"],
-                "remove_groups": bool(getattr(args, "remove_groups", False)),
+                "removed": targets,
+                "groups_removed": created_groups if remove_groups else [],
             }
         if self.geteuid() != 0:
             raise InstallError("toposd uninstall needs root")
         if not runtime.yes and not runtime.confirm("Stop and remove the topos host service?"):
             raise InstallError("uninstallation was not confirmed")
 
-        units = ("topos.service", "topos-observe.socket")
-        unit_paths = self._resource_paths()
-        installed_units = [unit for unit in units if os.path.lexists(os.path.join(self.paths.unit_dir, unit))]
+        paths = self.paths
+        # The socket goes first, so a connection during the stop cannot
+        # re-activate the service.
+        installed_units = [
+            unit for unit in ("topos-observe.socket", "topos.service")
+            if os.path.lexists(os.path.join(paths.unit_dir, unit))
+        ]
         if installed_units:
             self._command([self.systemctl, "disable", "--now", *installed_units], timeout=60)
-        for unit in units + ("topos.slice",):
-            try:
-                os.unlink(os.path.join(self.paths.unit_dir, unit))
-            except FileNotFoundError:
-                pass
-        try:
-            os.unlink(self.paths.sysusers)
-        except FileNotFoundError:
-            pass
-
-        legacy_dropin = os.path.join(self.paths.service_dropins, "50-mdt-socket-group.conf")
-        try:
-            os.unlink(legacy_dropin)
-        except FileNotFoundError:
-            pass
-        try:
-            os.rmdir(self.paths.service_dropins)
-        except OSError:
-            pass
-
-        for path in (self.paths.config, self.paths.install_record):
+        # A /usr/local/bin entry that is not ours stays, and is reported as kept.
+        kept = [link for link in (paths.client_link, paths.daemon_link)
+                if os.path.lexists(link) and not _is_install_link(link, paths)]
+        for path in (
+            *(os.path.join(paths.unit_dir, unit) for unit in ("topos-observe.socket", "topos.service", "topos.slice")),
+            paths.sysusers,
+            os.path.join(paths.service_dropins, "50-mdt-socket-group.conf"),
+            *(link for link in (paths.client_link, paths.daemon_link) if link not in kept),
+            paths.socket_node,
+        ):
             try:
                 os.unlink(path)
             except FileNotFoundError:
                 pass
-        try:
-            os.rmdir(os.path.dirname(self.paths.config))
-        except OSError:
-            pass
-
-        for link in (self.paths.client_link, self.paths.daemon_link):
-            try:
-            if os.path.islink(link) and os.readlink(link).startswith(self.paths.opt + os.sep):
-                    os.unlink(link)
-            except FileNotFoundError:
-                pass
-
-        for socket_path in (self.paths.socket_node, self.paths.at("/run/topos/topos.sock")):
-            try:
-                info = os.lstat(socket_path)
-            except FileNotFoundError:
-                continue
-            if stat.S_ISSOCK(info.st_mode):
-                os.unlink(socket_path)
-            else:
-                raise InstallError(f"refusing to remove non-socket node at {socket_path}")
-        for directory in (self.paths.observe_dir,):
+        for directory in (paths.service_dropins, paths.observe_dir):
             try:
                 os.rmdir(directory)
-            except FileNotFoundError:
+            except OSError:
                 pass
-            except OSError as exc:
-                raise InstallError(f"cannot remove runtime directory {directory}: {exc}") from None
-        if os.path.islink(self.paths.state_dir):
-            os.unlink(self.paths.state_dir)
-        elif os.path.isdir(self.paths.state_dir):
-            shutil.rmtree(self.paths.state_dir)
-        try:
-            os.rmdir(self.paths.runtime_root)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            if os.path.islink(self.paths.runtime_root):
-                os.unlink(self.paths.runtime_root)
-            elif os.listdir(self.paths.runtime_root):
-                raise InstallError(f"cannot remove non-empty runtime directory {self.paths.runtime_root}: {exc}") from None
-
-        for tree in (self.paths.opt, os.path.dirname(self.paths.config)):
+        shutil.rmtree(paths.state_dir, ignore_errors=True)
+        for tree in (paths.opt,):
             try:
                 shutil.rmtree(tree)
             except FileNotFoundError:
                 pass
             except OSError as exc:
                 raise InstallError(f"cannot remove {tree}: {exc}") from None
+        try:
+            os.rmdir(paths.runtime_root)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise InstallError(f"cannot remove runtime directory {paths.runtime_root}: {exc}") from None
 
         removed_groups: list[str] = []
-        if getattr(args, "remove_groups", False):
+        if remove_groups:
             for group in created_groups:
                 self._command(["groupdel", group], timeout=30)
                 removed_groups.append(group)
         self._command([self.systemctl, "daemon-reload"], timeout=30)
         self._command([self.systemctl, "reset-failed", "topos.service", "topos-observe.socket", "topos.slice"],
                       check=False, timeout=30)
+        # The record goes last, so an interrupted uninstall can be rerun.
+        for path in (paths.config, paths.install_record):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        try:
+            os.rmdir(os.path.dirname(paths.config))
+        except FileNotFoundError:
+            pass
+        except OSError:
+            kept.append(os.path.dirname(paths.config))
         return {
             "ok": True,
             "dry_run": False,
-            "units_removed": ["topos.service", "topos-observe.socket", "topos.slice"],
+            "removed": targets,
             "groups_removed": removed_groups,
+            "kept": kept,
         }
 
 
+def _handler_paths(args: argparse.Namespace, runtime: CliRuntime) -> InstallPaths:
+    root = getattr(args, "root", "/")
+    # systemctl, systemd-sysusers and usermod always act on the live host, so a
+    # staging root is only safe for a dry run.
+    if os.fspath(root) != "/" and not runtime.dry_run:
+        raise CliFailure("--root is only valid with --dry-run", exit_code=2)
+    return InstallPaths(root)
+
+
 def _install_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
+    paths = _handler_paths(args, runtime)
     try:
-        body = Installer(InstallPaths(getattr(args, "root", "/"))).install(args, runtime)
+        body = Installer(paths).install(args, runtime)
     except InstallError as exc:
         raise CliFailure(str(exc), exit_code=exc.exit_code) from None
     runtime.output.primary(body if runtime.json_mode else _install_summary(body))
@@ -1065,8 +1146,9 @@ def _install_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
 
 
 def _uninstall_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
+    paths = _handler_paths(args, runtime)
     try:
-        body = Installer(InstallPaths(getattr(args, "root", "/"))).uninstall(args, runtime)
+        body = Installer(paths).uninstall(args, runtime)
     except InstallError as exc:
         raise CliFailure(str(exc), exit_code=exc.exit_code) from None
     runtime.output.primary(body if runtime.json_mode else _uninstall_summary(body))
@@ -1081,9 +1163,14 @@ def _install_summary(body: Mapping[str, Any]) -> str:
 
 
 def _uninstall_summary(body: Mapping[str, Any]) -> str:
-    if body.get("dry_run"):
-        return "dry run: topos service, units and install files would be removed"
-    return "topos service, units and install files removed"
+    if "message" in body:
+        return str(body["message"])
+    verb = "would remove" if body.get("dry_run") else "removed"
+    lines = [f"{verb}: {path}" for path in body.get("removed", [])]
+    lines.extend(f"{'would remove' if body.get('dry_run') else 'removed'} group: {group}"
+                 for group in body.get("groups_removed", []))
+    lines.extend(f"kept (not written by toposd install): {path}" for path in body.get("kept", []))
+    return "\n".join(lines) if lines else "nothing to remove"
 
 
 def register_install(registry: CliRegistry) -> None:
@@ -1102,10 +1189,10 @@ def register_install(registry: CliRegistry) -> None:
                    parser_kwargs={"action": "store_true"}),
         OptionSpec(("--no-enable",), "install resources without enabling or starting topos", group="SERVICE",
                    parser_kwargs={"action": "store_true"}),
-        OptionSpec(("--allow-downgrade",), "allow rollback below the socket-unit release", group="SERVICE",
+        OptionSpec(("--allow-downgrade",), "allow installing a version older than the current one", group="SERVICE",
                    parser_kwargs={"action": "store_true"}),
-        OptionSpec(("--root",), "installation root for staging and tests (default /)", group="TESTING", metavar="DIR",
-                   parser_kwargs={"default": "/"}),
+        OptionSpec(("--root",), "installation root for dry runs and tests (default /)", group="TESTING", metavar="DIR",
+                   parser_kwargs={"default": "/"}, hidden=True),
     )
     registry.register(
         VerbSpec(
@@ -1134,8 +1221,8 @@ def register_install(registry: CliRegistry) -> None:
             options=(
                 OptionSpec(("--remove-groups",), "remove only groups recorded as created by toposd install",
                            group="REMOVE", parser_kwargs={"action": "store_true"}),
-                OptionSpec(("--root",), "installation root for staging and tests (default /)", group="TESTING",
-                           metavar="DIR", parser_kwargs={"default": "/"}),
+                OptionSpec(("--root",), "installation root for dry runs and tests (default /)", group="TESTING",
+                           metavar="DIR", parser_kwargs={"default": "/"}, hidden=True),
             ),
             handler=_uninstall_handler,
             examples=("toposd uninstall --dry-run", "toposd uninstall --remove-groups --yes"),

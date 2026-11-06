@@ -78,6 +78,17 @@ creates. A mapped group must already exist; mapping to `docker` is supported.
 `--observe-users` adds existing users to the chosen group. `--no-enable` writes
 the service files without enabling or starting the socket/service.
 
+`toposd install` supports topos 0.7.0 and later; older releases have no
+`toposd` or daemon lock. Installing a version older than the current one needs
+`--allow-downgrade`.
+
+`/etc/topos/toposd.toml` is written only when it is absent. An existing file is
+kept as written, so later edits survive an upgrade; its observe group must match
+the requested `--observe-group`, and the units are rendered from it.
+
+The installer refuses an entry in `/usr/local/bin/topos` or `toposd` that is not
+its own symlink into `/opt/topos`. Move such a file away before installing.
+
 The installer resolves missing pins in this order: command-line flag, saved
 `/etc/topos/install.toml`, interactive TTY prompt, then an error naming the
 missing flag. Dry runs never prompt. The install record stores the three pins,
@@ -90,6 +101,12 @@ runtime directory ownership and modes, systemd files without an install
 record, version manifests, and interrupted-install markers before changing
 anything. It refuses an old or unknown installation and prints the manual
 removal commands. It never migrates, repairs, or chmods old state.
+
+`/opt/topos/PENDING` marks an install in progress. A failed download, pin check
+or venv build removes its version tree and the marker, so a retry starts clean.
+A failure after that point, while units, links and services change, leaves
+`PENDING` in place: the next install refuses, and `toposd uninstall --yes`
+clears the unfinished install.
 
 `toposd doctor [--check NAME] [--json]` runs `config-valid`, `units-current`,
 `groups`, `socket-units`, `socket-nodes`, `socket-dirs`, `state-dir`,
@@ -107,6 +124,18 @@ sudo toposd uninstall --remove-groups --yes
 
 Uninstall keeps groups and memberships by default. `--remove-groups` removes
 only groups that the install record says `toposd install` created.
+
+Uninstall acts only on a host where `toposd install` left its record
+(`/etc/topos/install.toml`) or its `PENDING` marker; otherwise it reports that
+nothing is installed. It checks everything before the first change and refuses,
+with the manual removal steps, when it finds old-layout or unknown paths under
+`/run/topos` or `/opt/topos`. It removes the socket and service units (socket
+first), the slice, the sysusers file, its own `/usr/local/bin` links, the runtime
+tree, `/opt/topos`, and the leftover host-setup drop-in
+`topos.service.d/50-mdt-socket-group.conf`. Other files in `/usr/local/bin` or
+`/etc/topos` are kept and listed. The install record is removed last, so an
+interrupted uninstall can be rerun. `--dry-run` lists the paths and groups it
+would remove.
 
 ### Manual removal of an old installation
 
@@ -136,9 +165,10 @@ sudo rm -rf /run/topos
   not apply cgprofile's P-5 refusal for that group.
 - Readiness uses a bounded hello request on the configured observe socket and
   requires the reply to report the expected topos version.
-- The explicitly authorized downgrade path below 0.7.0 removes the socket unit
-  and renders the older self-binding service form because those releases do
-  not support socket activation.
+- There is no downgrade below the socket-unit release: topos before 0.7.0 has
+  no `toposd` or daemon lock, so `toposd install` refuses those versions.
+  `--allow-downgrade` covers rollbacks between 0.7.0 and later releases, which
+  all use the same socket units.
 
 ## Protocol
 
@@ -498,16 +528,19 @@ collection.
 
 ## Daemon Status Command
 
-`topos daemon status --socket PATH --group NAME [--json] [--pretty-json]`
-checks the socket node's owner, group and mode, then sends hello and current
-requests to verify client access and the topos frame protocol. Use
-`toposd doctor` for host-wide install checks.
+`topos daemon status [--socket PATH] [--group NAME] [--json] [--pretty-json]`
+checks that the socket node is a socket owned by root with mode `0660`, then
+sends hello and current requests to verify client access and the topos frame
+protocol. Any socket group is accepted unless `--group` names one: a container
+usually cannot resolve the host's group names, and mdt hosts map observe access
+to `docker`. Use `toposd doctor` for host-wide install checks.
 
 ```bash
-topos daemon status                              # default socket and group
+topos daemon status                              # default socket, any group
 topos daemon status --json                       # JSON output
 topos daemon status --pretty-json                # indented JSON
-topos daemon status --socket /custom/path.sock --group mygroup
+topos daemon status --group docker               # also require the socket group
+topos daemon status --socket /custom/path.sock
 ```
 
 Exit codes:
@@ -515,8 +548,8 @@ Exit codes:
 - `1` when socket metadata or protocol check fails (with guidance in the output).
 - `2` for argument/usage errors.
 
-The command is read-only: it inspects filesystem metadata, group membership,
-and makes one `current` request over the existing P16 daemon protocol. It
+The command is read-only: it inspects filesystem metadata and makes one
+`hello` and one `current` request over the daemon protocol. It
 never runs systemd, mutates files, or changes ownership/modes.
 
 Current slice limitations:
@@ -593,8 +626,8 @@ the original error followed by actionable guidance:
 ```
 cannot connect to /run/topos/observe/topos.sock: No such file or directory
 
-Try: toposd doctor --check socket-units
-If the daemon is not installed: toposd install --dry-run --wheel PIN --cli-extended-wheel PIN --daemon-lock PIN
+Try: toposd doctor --check connect
+If the daemon is not installed: toposd install --dry-run
 ```
 
 ### Custom socket
@@ -602,7 +635,7 @@ If the daemon is not installed: toposd install --dry-run --wheel PIN --cli-exten
 ```
 cannot connect to /tmp/custom.sock: Connection refused
 
-Check the mounted socket path and run: toposd doctor --check connect
+Try: topos daemon status --socket /tmp/custom.sock
 ```
 
 ### Protocol/response errors

@@ -6,7 +6,6 @@ import argparse
 import grp
 import json
 import os
-import socket
 import stat
 import subprocess
 from pathlib import Path
@@ -16,7 +15,14 @@ from cli_extended import CliRegistry, CliRuntime, register_doctor
 from cli_extended.doctor import CheckResult, DoctorCheck
 
 from .config import ConfigError, ServiceConfig, load_config
-from .install import InstallError, InstallPaths, manual_removal_message, old_installation_problems, version_key
+from .install import (
+    InstallError,
+    InstallPaths,
+    _hello,
+    manual_removal_message,
+    old_installation_problems,
+    version_key,
+)
 from .lock import LockError, parse_pin
 from .units import render_units
 
@@ -106,7 +112,8 @@ def _check_groups(_runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
         gid = grp.getgrnam(name).gr_gid
     except KeyError:
         return CheckResult("fail", f"observe group {name!r} does not exist",
-                           remedy="create the configured group or map observe to an existing group, then rerun toposd install")
+                           remedy=f"create group {name!r} or map observe to an existing group "
+                                  "(toposd install --observe-group GROUP), then rerun toposd install")
     return CheckResult("ok", f"observe group {name} exists", details={"group": name, "gid": gid})
 
 
@@ -134,8 +141,11 @@ def _configured_socket_path(config: ServiceConfig, paths: InstallPaths) -> str:
 
 
 def _expected_socket_problem(path: str, group: str, mode: str) -> str | None:
+    """Return what is wrong with the socket node; PermissionError propagates."""
     try:
         info = os.lstat(path)
+    except PermissionError:
+        raise
     except OSError as exc:
         return f"{path}: {exc.strerror or type(exc).__name__}"
     if not stat.S_ISSOCK(info.st_mode):
@@ -159,10 +169,13 @@ def _check_socket_nodes(_runtime: CliRuntime, args: argparse.Namespace) -> Check
     paths = _paths(args)
     socket_cfg = config.sockets.observe
     path = _configured_socket_path(config, paths)
-    problem = _expected_socket_problem(path, socket_cfg.group, socket_cfg.mode)
-    if problem:
-        if os.geteuid() != 0 and ("Permission denied" in problem or "permission denied" in problem):
+    try:
+        problem = _expected_socket_problem(path, socket_cfg.group, socket_cfg.mode)
+    except PermissionError as exc:
+        if os.geteuid() != 0:
             return CheckResult("skip", "socket node is unreadable; run as root")
+        problem = f"{path}: {exc.strerror or type(exc).__name__}"
+    if problem:
         return CheckResult("fail", problem, remedy="restart topos-observe.socket")
     return CheckResult("ok", f"{path} is a socket owned by root with the configured group and mode")
 
@@ -337,7 +350,9 @@ def _check_connect(_runtime: CliRuntime, args: argparse.Namespace) -> CheckResul
 def _check_foreign_rules(_runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
     paths = _paths(args)
     found = old_installation_problems(paths)
-    if os.geteuid() != 0 and any(item.startswith("cannot inspect ") for item in found):
+    # Unreadable entries appear both as "cannot inspect DIR" and as
+    # "foreign rule or drop-in: PATH (cannot inspect: ...)".
+    if os.geteuid() != 0 and any("cannot inspect" in item for item in found):
         return CheckResult("skip", "foreign service files are unreadable; run as root")
     if found:
         return CheckResult("fail", "old or foreign files conflict with the topos host service",

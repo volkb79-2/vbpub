@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import grp
-import os
 import stat
 import time
 from collections.abc import Callable
@@ -62,7 +61,7 @@ class DaemonStatusReport:
     """Combined socket-node and protocol status for a client account."""
 
     socket_path: Path
-    group_name: str
+    group_name: str | None  # required group, or None when any group is accepted
     socket_node: SocketNodeStatus
     protocol: ProtocolStatus
 
@@ -82,7 +81,7 @@ class DaemonStatusReport:
     def to_text(self) -> str:
         lines = [
             f"topos daemon status: {self.socket_path}",
-            f"Group: {self.group_name}",
+            f"Required group: {self.group_name or 'any'}",
             "",
             "--- Socket node ---",
             f"  {'OK' if self.socket_node.ok else 'FAIL'}: {self.socket_node.message}",
@@ -103,26 +102,42 @@ class DaemonStatusReport:
 STALE_FRAME_INTERVALS = 3
 
 
-def _check_socket_node(socket_path: Path, group_name: str) -> SocketNodeStatus:
+def _group_label(gid: int) -> str:
+    try:
+        return grp.getgrgid(gid).gr_name
+    except KeyError:
+        return str(gid)
+
+
+def _check_socket_node(socket_path: Path, group_name: str | None) -> SocketNodeStatus:
+    """Check type, owner and mode; the group only when one is required.
+
+    A container usually cannot resolve the host's group names, and mdt hosts map
+    observe access to docker, so the group name is checked only on request.
+    """
     try:
         info = socket_path.lstat()
     except OSError as exc:
         return SocketNodeStatus(False, f"{socket_path}: {exc.strerror or type(exc).__name__}")
     if not stat.S_ISSOCK(info.st_mode):
         return SocketNodeStatus(False, f"{socket_path}: not a Unix socket")
-    try:
-        expected_gid = grp.getgrnam(group_name).gr_gid
-    except KeyError:
-        return SocketNodeStatus(False, f"configured group {group_name!r} does not exist")
     mode = stat.S_IMODE(info.st_mode)
     expected_mode = int(DEFAULT_SOCKET_MODE, 8)
-    if info.st_uid != 0 or info.st_gid != expected_gid or mode != expected_mode:
+    group = _group_label(info.st_gid)
+    if info.st_uid != 0 or mode != expected_mode:
         return SocketNodeStatus(
             False,
-            f"{socket_path}: {info.st_uid}:{info.st_gid} {mode:04o}, expected "
-            f"root:{group_name} {expected_mode:04o}",
+            f"{socket_path}: owner {info.st_uid} group {group} mode {mode:04o}, expected "
+            f"owner root mode {expected_mode:04o}",
         )
-    return SocketNodeStatus(True, f"{socket_path} is a socket owned by root:{group_name} mode {mode:04o}")
+    if group_name is not None:
+        try:
+            expected_gid = grp.getgrnam(group_name).gr_gid
+        except KeyError:
+            return SocketNodeStatus(False, f"required group {group_name!r} does not exist here")
+        if info.st_gid != expected_gid:
+            return SocketNodeStatus(False, f"{socket_path}: group {group}, expected {group_name}")
+    return SocketNodeStatus(True, f"{socket_path} is a socket owned by root, group {group}, mode {mode:04o}")
 
 
 def _check_protocol(socket_path: Path, *, now: Callable[[], float] = time.time) -> ProtocolStatus:
@@ -172,11 +187,10 @@ def build_daemon_status(
 ) -> DaemonStatusReport:
     """Read socket metadata and exercise the same hello used by service doctor."""
     path = Path(socket_path)
-    group = group_name if group_name is not None else DEFAULT_DAEMON_GROUP
     return DaemonStatusReport(
         socket_path=path,
-        group_name=group,
-        socket_node=_check_socket_node(path, group),
+        group_name=group_name,
+        socket_node=_check_socket_node(path, group_name),
         protocol=_check_protocol(path),
     )
 

@@ -22,7 +22,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from conftest import fixture_frame
-from topos.daemon import FrameBroker, serve_unix_socket
+from topos.daemon import FrameBroker
+from topos.daemon.api import DaemonApi, serve_versioned_unix_socket
+from topos.daemon.component_health import ComponentHealthRegistry
 
 
 def _current_group_name() -> str:
@@ -68,11 +70,12 @@ def _mock_systemd_metadata(monkeypatch, socket_path: Path, group_name: str) -> N
 
 
 def _start_socket(socket_path: Path):
+    # The versioned server, as toposd runs it: status sends hello before current.
     # A live daemon serves a recent frame; the fixture's ts=100.0 would now be
     # (correctly) flagged stale by the status check.
-    server = serve_unix_socket(
-        socket_path, FrameBroker([dataclasses.replace(fixture_frame(), ts=time.time())])
-    )
+    broker = FrameBroker([dataclasses.replace(fixture_frame(), ts=time.time())])
+    api = DaemonApi(broker, health_registry=ComponentHealthRegistry())
+    server = serve_versioned_unix_socket(socket_path, broker, api)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server

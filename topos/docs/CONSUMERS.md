@@ -88,7 +88,9 @@ topos mcp serve
 
 The client account needs permission to connect to the socket through its
 configured group. Use `toposd doctor --check NAME` for a focused host check and
-`topos daemon status` for client-side socket and protocol status. Uninstall
+`topos daemon status` for client-side socket and protocol status. Inside a
+container it accepts any socket group, because the host's group names usually do
+not resolve there; `--group docker` also requires the group on an mdt host. Uninstall
 without removing group memberships by default:
 
 ```bash

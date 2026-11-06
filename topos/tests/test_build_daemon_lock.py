@@ -3,21 +3,21 @@
 from __future__ import annotations
 
 import hashlib
-import subprocess
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from topos.tools import build_daemon_lock as lock_builder
+from tools import build_daemon_lock as lock_builder
 
 
 def _wheel(path: Path, name: str, version: str, requires: tuple[str, ...] = ()) -> Path:
     dist = name.replace("-", "_")
-    metadata = ["Metadata-Version: 2.1", f"Name: {name}", f"Version: {version}", ""]
+    # Headers first; the blank line ends them, as in a real METADATA file.
+    metadata = ["Metadata-Version: 2.1", f"Name: {name}", f"Version: {version}"]
     metadata.extend(f"Requires-Dist: {requirement}" for requirement in requires)
-    metadata.append("")
+    metadata.extend(("", ""))
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(f"{dist}-{version}.dist-info/METADATA", "\n".join(metadata))
     return path

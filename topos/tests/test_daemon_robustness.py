@@ -14,6 +14,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -175,6 +176,9 @@ def test_status_flags_a_frame_older_than_three_intervals_as_stale() -> None:
         def __init__(self, _path) -> None:
             pass
 
+        def request_hello(self):
+            return SimpleNamespace(identity={"version": "9.9.9"})
+
         def current_frame(self):
             return frame
 
@@ -185,7 +189,7 @@ def test_status_flags_a_frame_older_than_three_intervals_as_stale() -> None:
     assert stale.ok is False and "Stale frame" in stale.message
     assert fresh == ProtocolStatus(
         ok=True,
-        message="Current frame retrieved successfully.",
+        message="Hello from topos 9.9.9; current frame retrieved successfully.",
         schema_version=frame.schema_version,
         frame_ts=1000.0,
         entity_count=len(frame.entities),

@@ -135,7 +135,10 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
         "--group",
         type=str,
         default=None,
-        help=f"expected daemon group (default: {DEFAULT_DAEMON_GROUP})",
+        help=(
+            "require this socket group (for example docker on mdt hosts); by default any group is "
+            "accepted, because a container may not know the host's group names"
+        ),
     )
     status.add_argument("--json", action="store_true", help="emit JSON instead of text")
     status.add_argument("--pretty-json", action="store_true", help="pretty-print JSON output")

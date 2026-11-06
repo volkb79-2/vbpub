@@ -927,9 +927,12 @@ def test_topos_daemon_serve_is_an_argparse_error(capsys: pytest.CaptureFixture[s
 
 def test_source_contains_no_retired_runtime_paths() -> None:
     retired_paths = ("/run/topos/topos.sock", "/run/topos/bpf", "/run/topos/squeeze")
+    # service/install.py names them only to detect and refuse an old layout (P-11).
+    detector = TOPOS_SRC / "topos" / "service" / "install.py"
     sources = [
         path for path in TOPOS_SRC.rglob("*")
         if path.is_file() and path.suffix in {".py", ".toml", ".service", ".socket", ".sysusers"}
+        and path != detector
     ]
     for path in sources:
         contents = path.read_text(encoding="utf-8")
