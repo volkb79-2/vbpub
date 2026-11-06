@@ -142,7 +142,7 @@ existing caps in both paths, `replace` to let full installs reconcile too, or
 `off` to leave the cap unmanaged. `ADMISSION_MAX_CONCURRENT` pins the desired
 number over the computed formula. The checker fails on a missing cap, warns on
 a difference from the computed value, and fails when a pinned value disagrees.
-The [design guide](DESIGN-GUIDE.md#mdt-076-admission-cap-publication-policy)
+The [design guide](DESIGN-GUIDE.md#mdt-077-admission-cap-publication-policy)
 explains why full installs preserve a manual cap.
 
 ### cgprofile resource-observer host setup

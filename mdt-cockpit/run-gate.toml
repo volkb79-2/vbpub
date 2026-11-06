@@ -18,17 +18,6 @@ schema_version = 1
 # `regctl`, which tester-unified (built on tester-base) deliberately does not carry. They are
 # DESELECTED here, explicitly, so no skip hides them; their only coverage is the `oci-push` lane below,
 # in the mdt-cockpit image, where they are required (T6/R6).
-[lanes.host-setup-admission]
-kind = "command"
-environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && /opt/tester-venv/bin/pytest -p no:cacheprovider host-setup/tests/test_admission.py host-setup/tests/test_hs02.py host-setup/tests/test_env_example_allowed_values.py host-setup/tests/test_wizard_flow.py host-setup/tests/test_install_runtime_blocks.py host-setup/tests/test_excluded_capacity.py -q"]
-budget = "4m"
-
-[lanes.host-setup-admission.resources]
-cpus = "2"
-memory = "1g"
-memory_swap = "2g"
-
 [lanes.smoke]
 kind = "command"
 environment = "tester-unified"
@@ -38,6 +27,17 @@ argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQU
 budget = "6m"
 
 [lanes.smoke.resources]
+memory = "1g"
+memory_swap = "2g"
+
+[lanes.host-setup-admission]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && /opt/tester-venv/bin/pytest -p no:cacheprovider host-setup/tests/test_admission.py host-setup/tests/test_hs02.py host-setup/tests/test_env_example_allowed_values.py host-setup/tests/test_wizard_flow.py host-setup/tests/test_install_runtime_blocks.py host-setup/tests/test_excluded_capacity.py -q"]
+budget = "4m"
+
+[lanes.host-setup-admission.resources]
+cpus = "2"
 memory = "1g"
 memory_swap = "2g"
 

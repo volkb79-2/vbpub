@@ -505,8 +505,8 @@ image, so it lives in two places that must agree:
   containers, and `dev-background.slice` for long-running stacks plus the Docker daemon-wide
   fallback via `/etc/docker/daemon.json`, all under one shared `dev.slice` IOPS/bandwidth
   ceiling and a health check. It also publishes the run-gate gates admission cap from the effective
-  host CPU and memory limits. Read the [host setup guide](host-setup/README.md#run-gate-gates-admission-cap-mdt-076),
-  the [publication policy rationale](docs/DESIGN-GUIDE.md#mdt-076-admission-cap-publication-policy),
+  host CPU and memory limits. Read the [host setup guide](host-setup/README.md#run-gate-gates-admission-cap-mdt-077),
+  the [publication policy rationale](docs/DESIGN-GUIDE.md#mdt-077-admission-cap-publication-policy),
   and the [operator steps](docs/CONSUMERS.md#run-gate-admission-cap). Run this part from the Docker host shell only;
   the installer, wizard, and baseline benchmark refuse a devcontainer because container
   root cannot modify the host's `/etc`, systemd, or cgroup tree.

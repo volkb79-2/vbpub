@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -490,6 +491,20 @@ class CheckTests(unittest.TestCase):
         pinned = adm.parse_settings({"ADMISSION_TICKET_IMAGE": "t:1", "ADMISSION_MAX_CONCURRENT": "2"})
         self.assertTrue(self.lines(pinned, host, adm.Derivation(2, "pin", "pin", "refuse"))[0].startswith("FAIL "))
 
+    def test_pinned_mismatch_advice_matches_the_publish_mode(self) -> None:
+        published = FakeHost(published=adm.Published(4, "refuse", 1))
+        derivation = adm.Derivation(2, "pin", "pin", "refuse")
+        auto = self.lines(adm.parse_settings({"ADMISSION_TICKET_IMAGE": "t:1", "ADMISSION_PUBLISH": "auto",
+                                               "ADMISSION_MAX_CONCURRENT": "2"}),
+                          published, derivation)[0]
+        self.assertIn("--admission-only", auto)
+        missing = self.lines(adm.parse_settings({"ADMISSION_TICKET_IMAGE": "t:1", "ADMISSION_PUBLISH": "missing",
+                                                  "ADMISSION_MAX_CONCURRENT": "2"}),
+                             published, derivation)[0]
+        self.assertIn("ADMISSION_PUBLISH=replace", missing)
+        self.assertIn("sudo ./host-setup/install.sh`", missing)
+        self.assertNotIn("--admission-only", missing)
+
     def test_a_policy_mismatch_is_reported(self) -> None:
         host = FakeHost(published=adm.Published(2, "unbudgeted", 1))
         out = self.lines(HOST_SETTINGS, host)
@@ -737,9 +752,59 @@ class WiringTests(unittest.TestCase):
         self.assertRegex(calls.read_text(), r"run-gate admission set --max-concurrent 2 --unreadable-policy refuse --replace")
         self.assertIn("max_concurrent=2", state.read_text())
 
+    def test_admission_only_action_reconciles_with_fake_run_gate_on_path(self) -> None:
+        publish_function = re.search(r"(?ms)^publish_admission\(\) \{\n.*?^\}", self.install)
+        only_function = re.search(r"(?ms)^admission_only\(\) \{\n.*?^\}", self.install)
+        self.assertIsNotNone(publish_function, "install.sh exposes the admission publisher as a testable function")
+        self.assertIsNotNone(only_function, "install.sh exposes the --admission-only action as a testable function")
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        fake_bin = tmp / "bin"
+        fake_bin.mkdir()
+        calls = tmp / "calls.log"
+        state = tmp / "published.txt"
+        state.write_text("run-gate admission: ciu-admission-1 generation=1 max_concurrent=4 unreadable_policy=refuse state=created\n")
+        config = tmp / "host-setup.env"
+        config.write_text("HOST_ROLE=dedicated-dev\nDEV_HOST_MEMORY_KEEP=1G\nADMISSION_TICKET_IMAGE=ticket:local\n")
+        meminfo = tmp / "meminfo"
+        meminfo.write_text("MemTotal:        8388608 kB\nSwapTotal:             0 kB\n")
+        python = fake_bin / "python3"
+        python.write_text(
+            "#!/bin/sh\n"
+            "case \"$1\" in *mdt-host-setup-wizard.py) exit 0;; esac\n"
+            "exec \"$REAL_PYTHON\" \"$@\"\n"
+        )
+        python.chmod(0o755)
+        docker = fake_bin / "docker"
+        docker.write_text("#!/bin/sh\nprintf 'docker %s\\n' \"$*\" >> \"$CALLS\"\n[ \"$1 $2\" = 'image inspect' ]\n")
+        docker.chmod(0o755)
+        run_gate = fake_bin / "run-gate"
+        run_gate.write_text(
+            "#!/bin/sh\n"
+            "printf 'run-gate %s\\n' \"$*\" >> \"$CALLS\"\n"
+            "[ \"$1 $2\" = 'admission show' ] || [ \"$1 $2\" = 'admission set' ] || exit 64\n"
+            "if [ \"$2\" = show ]; then cat \"$STATE\"; exit 0; fi\n"
+            "replace=0; n=; policy=\n"
+            "for arg in \"$@\"; do [ \"$arg\" = --replace ] && replace=1; done\n"
+            "[ \"$replace\" -eq 1 ] || { echo 'operator reconcile must pass --replace' >&2; exit 2; }\n"
+            "while [ \"$#\" -gt 0 ]; do case \"$1\" in --max-concurrent) n=$2; shift 2;; --unreadable-policy) policy=$2; shift 2;; *) shift;; esac; done\n"
+            "printf 'run-gate admission: ciu-admission-2 generation=2 max_concurrent=%s unreadable_policy=%s state=created\\n' \"$n\" \"$policy\" > \"$STATE\"\n"
+        )
+        run_gate.chmod(0o755)
+        shell = (publish_function.group(0) + "\n" + only_function.group(0)
+                 + '\nadmission_only "$CONFIG" "$MEMINFO" 4\n')
+        env = dict(os.environ, PATH=f"{fake_bin}:{os.environ.get('PATH', '')}", HERE=str(ROOT),
+                   CONFIG=str(config), MEMINFO=str(meminfo), CALLS=str(calls), STATE=str(state),
+                   REAL_PYTHON=sys.executable)
+        done = subprocess.run(["bash", "-c", shell], capture_output=True, text=True, env=env, check=False)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertRegex(calls.read_text(), r"run-gate admission set --max-concurrent 2 --unreadable-policy refuse --replace")
+        self.assertIn("max_concurrent=2", state.read_text())
+
     def test_full_and_explicit_install_paths_select_their_publish_policy(self) -> None:
         self.assertRegex(self.install, r"publish_admission full \"\$CONFIG_PATH\"")
-        self.assertRegex(self.install, r"publish_admission operator /etc/mdt/host-setup\.env")
+        self.assertRegex(self.install, r"admission_only /etc/mdt/host-setup\.env /proc/meminfo")
+        self.assertRegex(self.install, r'publish_admission operator "\$config_path"')
 
     def test_publication_modes_and_cross_document_links_stay_in_sync(self) -> None:
         for mode in adm.PUBLISH_MODES:
@@ -751,10 +816,58 @@ class WiringTests(unittest.TestCase):
         self.assertIn("ADMISSION_MAX_CONCURRENT", self.consumers)
         self.assertIn("sudo ./host-setup/install.sh --admission-only", self.readme)
         self.assertIn("sudo ./host-setup/install.sh --admission-only", self.consumers)
-        self.assertIn("#mdt-076-admission-cap-publication-policy", self.readme)
+        self.assertIn("#mdt-077-admission-cap-publication-policy", self.readme)
         self.assertIn("## MDT-077 admission-cap publication policy", self.design)
         self.assertIn("#run-gate-admission-cap", self.readme)
         self.assertIn("### Run-Gate admission cap", self.consumers)
+
+    def test_every_local_anchor_link_in_the_project_guides_resolves_to_a_heading(self) -> None:
+        sources = (
+            ROOT.parent / "README.md",
+            ROOT.parent / "docs" / "CONSUMERS.md",
+            ROOT.parent / "docs" / "DESIGN-GUIDE.md",
+            ROOT / "README.md",
+        )
+        for source in sources:
+            text = source.read_text()
+            links = re.findall(r"\]\(([^)]+)\)", text)
+            links.extend(re.findall(r"(?m)^\[[^\]]+\]:\s*(<[^>]+>|\S+)", text))
+            for raw in links:
+                target_text = raw.strip().split(maxsplit=1)[0].strip("<>")
+                parsed = urlsplit(target_text)
+                if not parsed.fragment or parsed.scheme or parsed.netloc:
+                    continue
+                fragment = unquote(parsed.fragment)
+                target = (source.parent / unquote(parsed.path)).resolve() if parsed.path else source.resolve()
+                with self.subTest(source=source.relative_to(ROOT.parent), target=target_text):
+                    self.assertEqual(target.suffix.lower(), ".md", "anchor target must be a Markdown document")
+                    self.assertTrue(target.is_file(), f"anchor target does not exist: {target}")
+                    slugs = self._markdown_heading_slugs(target.read_text())
+                    self.assertIn(fragment, slugs, f"{target_text} does not match a heading in {target}")
+
+    @staticmethod
+    def _markdown_heading_slugs(text: str) -> set[str]:
+        counts: dict[str, int] = {}
+        slugs: set[str] = set()
+        in_fence = False
+        for line in text.splitlines():
+            if re.match(r"^\s*(`{3,}|~{3,})", line):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            match = re.match(r"^#{1,6}\s+(.+?)\s*#*\s*$", line)
+            if match is None:
+                continue
+            heading = re.sub(r"<[^>]*>", "", match.group(1))
+            heading = re.sub(r"!?\[([^]]+)\]\([^)]*\)", r"\1", heading)
+            heading = re.sub(r"`+", "", heading).lower()
+            base = re.sub(r"[^\w -]", "", heading, flags=re.UNICODE)
+            base = base.strip().replace(" ", "-")
+            count = counts.get(base, 0)
+            counts[base] = count + 1
+            slugs.add(base if count == 0 else f"{base}-{count}")
+        return slugs
 
     def test_focused_host_setup_gate_is_declared_and_discoverable(self) -> None:
         gate = (ROOT.parent / "run-gate.toml").read_text()

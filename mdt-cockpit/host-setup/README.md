@@ -816,7 +816,7 @@ planning figures, not limits (the tier is overcommitted by design and PSI is wha
 lane. Examples: a 4 vCPU / 8 GB dedicated-dev host (v1001, r1002) gives 2, an 8 vCPU / 16 GB one gives 4, a
 shared-prod host with the example's `DEV_GATES_MEMORY_HIGH=800M` gives the minimum 1. A host that should run more
 (r1002 was hand-raised to 4 for a dstdns campaign) says so in `host-setup.env`: `ADMISSION_MAX_CONCURRENT=4`, or
-`ADMISSION_CPUS_PER_GATE=1` and `ADMISSION_MEMORY_PER_GATE=1G` to keep the formula. See the [publication policy rationale](../docs/DESIGN-GUIDE.md#mdt-076-admission-cap-publication-policy)
+`ADMISSION_CPUS_PER_GATE=1` and `ADMISSION_MEMORY_PER_GATE=1G` to keep the formula. See the [publication policy rationale](../docs/DESIGN-GUIDE.md#mdt-077-admission-cap-publication-policy)
 and [pasteable operator steps](../docs/CONSUMERS.md#run-gate-admission-cap).
 `python3 mdt_admission.py derive /etc/mdt/host-setup.env` prints the number and the arithmetic behind it without
 touching anything.

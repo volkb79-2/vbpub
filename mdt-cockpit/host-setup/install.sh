@@ -46,6 +46,14 @@ publish_admission() {
   python3 "$HERE/mdt_admission.py" "${args[@]}"
 }
 
+admission_only() {
+  local config_path="$1" meminfo_path="$2" host_nproc="$3"
+  python3 "$HERE/mdt-host-setup-wizard.py" --validate-config "$config_path" \
+    --example "$HERE/host-setup.env.example" --meminfo-path "$meminfo_path" \
+    || { echo "ERROR: $config_path failed strict validation; nothing was changed" >&2; return 2; }
+  publish_admission operator "$config_path" --meminfo "$meminfo_path" --nproc "$host_nproc"
+}
+
 usage() {
   cat <<'EOF'
 mdt host-setup installer
@@ -421,10 +429,7 @@ if [ "$ADMISSION_ONLY" = 1 ]; then
   fi
   [ -f /etc/mdt/host-setup.env ] \
     || { echo "ERROR: --admission-only needs an installed /etc/mdt/host-setup.env (run the full install first)" >&2; exit 2; }
-  python3 "$HERE/mdt-host-setup-wizard.py" --validate-config /etc/mdt/host-setup.env \
-    --example "$HERE/host-setup.env.example" --meminfo-path /proc/meminfo \
-    || { echo "ERROR: /etc/mdt/host-setup.env failed strict validation; nothing was changed" >&2; exit 2; }
-  if publish_admission operator /etc/mdt/host-setup.env --meminfo /proc/meminfo --nproc "$(nproc)"; then
+  if admission_only /etc/mdt/host-setup.env /proc/meminfo "$(nproc)"; then
     exit 0
   else
     exit $?

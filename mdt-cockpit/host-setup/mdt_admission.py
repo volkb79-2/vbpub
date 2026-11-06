@@ -437,6 +437,13 @@ def skip_advice(settings: Settings) -> str:
             "(host-setup.env: ADMISSION_COCKPIT / ADMISSION_RUN_GATE / ADMISSION_TICKET_IMAGE)")
 
 
+def pinned_mismatch_advice(settings: Settings) -> str:
+    if settings.publish == "missing":
+        return ("set ADMISSION_PUBLISH=replace in /etc/mdt/host-setup.env and run "
+                "`sudo ./host-setup/install.sh` to reconcile the published cap")
+    return "run `sudo ./host-setup/install.sh --admission-only` to reconcile the published cap"
+
+
 def publish(settings: Settings, derivation: Derivation, *, run: RunFn, which: WhichFn,
             log: Callable[[str], None], operator_reconcile: bool = False) -> str:
     """Make the daemon publish ``derivation``; returns published | replaced | unchanged | kept | skipped.
@@ -519,7 +526,7 @@ def check(settings: Settings, derivation: Derivation, *, run: RunFn, which: Whic
         return [f"OK run-gate gates cap {published} matches the host policy ({derivation.basis})"]
     differs = f"published gates cap {published}, host policy says {expected} ({derivation.basis})"
     if settings.pinned:
-        return [f"FAIL {differs}; run `sudo ./host-setup/install.sh --admission-only`"]
+        return [f"FAIL {differs}; {pinned_mismatch_advice(settings)}"]
     return [f"WARN {differs}; run `sudo ./host-setup/install.sh --admission-only` to reconcile it, "
             "or pin the value with ADMISSION_MAX_CONCURRENT"]
 

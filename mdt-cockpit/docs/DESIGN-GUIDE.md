@@ -777,7 +777,7 @@ pin disagrees or when the cap is missing.
 The full-install path does not silently lower a manual cap because that
 workflow also applies unrelated host policy. Operators can choose the narrower
 reconcile command when they intend to apply the current formula or pin. The
-[host guide](../host-setup/README.md#run-gate-gates-admission-cap-mdt-076)
+[host guide](../host-setup/README.md#run-gate-gates-admission-cap-mdt-077)
 describes the behavior, and the [consumer steps](CONSUMERS.md#run-gate-admission-cap)
 show the command to paste.
 
