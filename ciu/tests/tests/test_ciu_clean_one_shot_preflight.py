@@ -96,8 +96,9 @@ def test_foreign_one_shot_dry_run_reports_the_refusal(monkeypatch, tmp_path, cap
         plan_only=True,
     )
 
+    out = capsys.readouterr()
     assert rc == 1
-    assert "plan: clean would refuse: stack-a:" in (lambda o: o.err + o.out)(capsys.readouterr())
+    assert "plan: clean would refuse: stack-a:" in out.err + out.out
     assert ["reset"] not in calls
 
 

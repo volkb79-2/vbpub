@@ -2290,7 +2290,10 @@ non-reserved container label. A typed `--extend FILE` may add per-run resource
 limits, supplementary groups, non-colliding mounts, literal environment
 entries, labels, or `init`; CIU refuses ambiguous merge collisions and
 extension keys outside that allowlist (including `cap_add` and `security_opt`),
-and bind sources of `/` or a Docker socket. A `--name` that is already held by
+and bind sources of `/`, a Docker/containerd/podman socket (or its parent
+directory), or anything inside `/etc`, `/proc`, `/var/lib/docker` or
+`/var/lib/containerd`. That list is a narrow safety net, not a sandbox: the
+extension file is operator-trusted input and other host paths are not refused. A `--name` that is already held by
 any container (for example a persistent `test-runner`) is refused before
 anything is created and that container is never touched; a name made only of
 hex characters is refused because Docker would read it as a container ID.
@@ -2301,7 +2304,9 @@ their effects. A detached supervisor MUST pass its own PID with `--owner-pid`
 so `ciu run reap` tracks that supervisor's lifetime. Without it CIU records its
 parent process, which is the owner only when the parent is the long-lived
 controller; behind a short-lived wrapper shell the owner is dead at once and
-`ciu run reap --yes` may remove the run after it exits.
+`ciu run reap --yes` may remove the run 300 seconds after it exits (or once it
+has run past the reap age bound). Collect the exit status and remove your own
+container well inside that window.
 
 Foreground runs inherit stdout and stderr. CIU allocates a terminal and
 forwards stdin only when both stdin and stdout are terminals (a piped
@@ -2323,7 +2328,9 @@ $ ciu run --dry-run --json tools/test-runner:test-runner -- pytest -q
 ```
 
 The preview runs the same read-only checks as a launch (network ownership,
-name availability) and fails where the launch would. It reports the effective
+name availability) and fails where the launch would. It is not side-effect
+free: stack preparation still runs first (hooks unless `--skip-hooks`, secret
+materialisation, rendered files); only the container is not started. It reports the effective
 container name (generated when you give none), the `ciu.run.*` runtime labels
 (run ID and start time are placeholders), the injected variables
 (`CIU_RUN_CONTAINER_NAME`, `CIU_RUN_ID`, `CIU_RUN_CGROUP_PARENT`) and the
@@ -2339,11 +2346,13 @@ $ ciu run --detach --json --name lane-123 tools/test-runner:test-runner -- pytes
 The JSON response contains the exact full container ID and name. Detached
 containers are not auto-removed, including commands that exit immediately.
 `ciu run reap` first surveys abandoned CIU one-shots; add `--yes` to remove
-eligible ones. By default it requires a dead controller and leaves a running
-container younger than one hour alone. `ciu down` leaves one-shots running.
-`ciu clean` removes one-shots owned by the selected checkout and stack; it
-refuses before Compose teardown if another or unknown checkout owns a matching
-one-shot.
+eligible ones. It requires a dead controller; an exited run is removed (without
+force) only 300 seconds after its `State.FinishedAt`, whatever `--older-than`
+says, and a running one only once it is older than the bound (one hour by
+default). `ciu down` leaves one-shots running. `ciu clean` removes one-shots
+owned by the selected checkout and stack; before it removes anything it checks
+every selected stack and refuses (also under `--dry-run`) if another or unknown
+checkout owns a matching one-shot.
 
 See the [lifecycle rationale](DESIGN-GUIDE.md#why-ciu-run-uses-a-fresh-one-shot-service-container)
 and the normative contract in [SPEC S8.9](SPEC.md#s89-one-shot-compose-runs-ciu-run-ciu-141).

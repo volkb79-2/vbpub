@@ -154,8 +154,12 @@ def test_started_at_parsing():
 # ---------------------------------------------------------------------------
 
 
+_LONG_AGO = "2026-11-05T09:00:00.123456789Z"
+
+
 def _container(proc, *, project="demo", oneoff="True", run="1", status="exited",
-               started=None, working_dir="/root", owner_pid="7", **labels):
+               started=None, working_dir="/root", owner_pid="7", finished=_LONG_AGO,
+               **labels):
     namespace = (proc / "self" / "ns" / "pid").stat().st_ino
     document_labels = {
         "com.docker.compose.project": project,
@@ -171,7 +175,7 @@ def _container(proc, *, project="demo", oneoff="True", run="1", status="exited",
     return {
         "Id": _ID, "Name": "/one-shot",
         "Config": {"Labels": document_labels},
-        "State": {"Status": status},
+        "State": {"Status": status, "FinishedAt": finished},
     }
 
 
@@ -204,14 +208,14 @@ class _Docker:
             if stdout is None:
                 stdout = json.dumps([self.document])
             return subprocess.CompletedProcess(argv, self.inspect_rc, stdout, "")
-        if argv[:3] == ["docker", "rm", "-f"]:
+        if argv[:2] == ["docker", "rm"]:
             if self.rm_raises:
                 raise self.rm_raises
             return subprocess.CompletedProcess(argv, self.rm_rc, "", "")
         raise AssertionError(argv)
 
     def removals(self):
-        return [argv for argv in self.calls if argv[:3] == ["docker", "rm", "-f"]]
+        return [argv for argv in self.calls if argv[:2] == ["docker", "rm"]]
 
 
 @pytest.fixture
@@ -340,7 +344,9 @@ def test_reap_actions_by_owner_age_and_status(reap_world, monkeypatch):
     assert survey[0]["action"] == "would-remove" and docker.removals() == []
     removed, docker = rows(_container(reap_world.proc, **base), yes=True)
     assert removed[0]["action"] == "removed"
-    assert docker.removals() == [["docker", "rm", "-f", _ID]]
+    # An exited container is removed WITHOUT -f: one that is unexpectedly
+    # running at removal time must not be killed by the exited path.
+    assert docker.removals() == [["docker", "rm", _ID]]
 
     # dead owner, running, recent or unknown start: left alone
     for started in (recent, None):
@@ -354,16 +360,65 @@ def test_reap_actions_by_owner_age_and_status(reap_world, monkeypatch):
         _container(reap_world.proc, status="running", started=old, **base), yes=True,
     )
     assert stale[0]["action"] == "removed"
+    assert docker.removals() == [["docker", "rm", "-f", _ID]]  # only an aged running one is forced
 
     # a failed removal is reported, not hidden
     document = _container(reap_world.proc, **base)
     docker = _Docker(monkeypatch, document)
     docker.rm_rc = 1
     failed = _reap(reap_world, yes=True)
-    assert failed[0]["action"] == "failed" and failed[0]["reason"] == "docker rm -f failed"
+    assert failed[0]["action"] == "failed" and failed[0]["reason"] == "docker rm failed"
     docker.rm_raises = FileNotFoundError("docker")
     with pytest.raises(RuntimeError, match="Docker unavailable while removing"):
         _reap(reap_world, yes=True)
+
+
+def _finished(seconds_ago, *, fraction=".987654321", zone="Z"):
+    moment = _NOW - timedelta(seconds=seconds_ago)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S") + fraction + zone
+
+
+def test_reap_exited_floor_is_measured_from_finished_at(reap_world, monkeypatch):
+    """A just-finished run is never reaped, however old it started or small --older-than is."""
+    base = {"working_dir": str(reap_world.root), "owner_pid": "999"}  # dead owner
+    long_ago = (_NOW - timedelta(hours=5)).isoformat().replace("+00:00", "Z")
+
+    def action(finished, **kwargs):
+        docker = _Docker(monkeypatch, _container(
+            reap_world.proc, started=long_ago, finished=finished, **base,
+        ))
+        rows = _reap(reap_world, yes=True, **kwargs)
+        return rows[0], docker
+
+    just_now, docker = action(_finished(0), older_than_seconds=1)
+    assert just_now["action"] == "left" and "finished" in just_now["reason"]
+    assert docker.removals() == []
+    near, docker = action(_finished(299), older_than_seconds=1)
+    assert near["action"] == "left" and docker.removals() == []
+    reaped, docker = action(_finished(301), older_than_seconds=10**9)
+    assert reaped["action"] == "removed"  # independent of --older-than
+    assert docker.removals() == [["docker", "rm", _ID]]
+    exactly, docker = action(_finished(300, fraction=".0"))
+    assert exactly["action"] == "removed"
+    offset, docker = action(_finished(301, fraction="", zone="+00:00"))
+    assert offset["action"] == "removed"
+    survey = _reap(reap_world)  # survey mode with the last fake docker
+    assert survey[0]["action"] == "would-remove"
+
+    for unusable in ("", None, "0001-01-01T00:00:00Z", "garbage", "2026-11-05T09:00:00",
+                     "2026-13-45T99:00:00Z", 5):
+        row, docker = action(unusable)
+        assert row["action"] == "left" and "finish time" in row["reason"], unusable
+        assert docker.removals() == []
+
+
+def test_reap_floor_uses_the_state_not_the_started_label(reap_world, monkeypatch):
+    docker = _Docker(monkeypatch, _container(
+        reap_world.proc, working_dir=str(reap_world.root), owner_pid="999", started=None,
+        finished=_finished(1000),
+    ))
+    assert _reap(reap_world, yes=True)[0]["action"] == "removed"
+    assert docker.removals() == [["docker", "rm", _ID]]
 
 
 # ---------------------------------------------------------------------------

@@ -53,7 +53,11 @@ def _container(container_id, *, owner_pid, owner_start, boot, pidns, status,
             "ciu.instance": instance,
             "ciu.repo-root": str(repo_root),
         }},
-        "State": {"Status": status, "ExitCode": 0},
+        "State": {
+            "Status": status, "ExitCode": 0,
+            # long finished: the exited-container floor (300 s from FinishedAt) is met
+            "FinishedAt": "2026-11-05T08:00:00.5Z",
+        },
     }
 
 
@@ -97,7 +101,7 @@ def test_reap_removes_only_dead_owned_one_shots_by_full_id(tmp_path, monkeypatch
             return subprocess.CompletedProcess(argv, 0, "\n".join(ids) + "\n", "")
         if argv[:2] == ["docker", "inspect"]:
             return subprocess.CompletedProcess(argv, 0, json.dumps([documents[argv[-1]]]), "")
-        if argv[:3] == ["docker", "rm", "-f"]:
+        if argv[:2] == ["docker", "rm"]:
             return subprocess.CompletedProcess(argv, 0, argv[-1] + "\n", "")
         raise AssertionError(f"unexpected command: {argv!r}")
 
@@ -118,8 +122,9 @@ def test_reap_removes_only_dead_owned_one_shots_by_full_id(tmp_path, monkeypatch
         ids[0]: "removed", ids[1]: "removed", ids[2]: "left",
         ids[3]: "left", ids[4]: "left", ids[5]: "left",
     }
-    removals = [argv for argv in calls if argv[:3] == ["docker", "rm", "-f"]]
-    assert removals == [["docker", "rm", "-f", ids[0]], ["docker", "rm", "-f", ids[1]]]
+    removals = [argv for argv in calls if argv[:2] == ["docker", "rm"]]
+    # the exited one is removed without -f; only the aged running one is forced
+    assert removals == [["docker", "rm", ids[0]], ["docker", "rm", "-f", ids[1]]]
     query = next(argv for argv in calls if argv[:3] == ["docker", "ps", "-a"])
     assert "--no-trunc" in query
     assert "--filter" in query
@@ -182,6 +187,6 @@ def test_reap_without_yes_is_a_survey_and_reap_cli_discovers_current_projects(
     result = oneshot.reap_cli(root, older_than="30m", yes=False)
 
     assert result == 0
-    assert not any(argv[:3] == ["docker", "rm", "-f"] for argv in calls)
+    assert not any(argv[:2] == ["docker", "rm"] for argv in calls)
     assert "would remove" in capsys.readouterr().out
 

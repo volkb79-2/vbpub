@@ -878,9 +878,13 @@ The per-run extension is a narrow YAML fragment, not an alternate service
 definition. CIU validates its keys and rejects mount-target or append-field
 collisions before Compose runs. Compose appends `group_add`; other accepted
 settings merge by their normal Compose rules. `cap_add` and `security_opt` are
-not accepted at all, and a bind source of `/` or of a Docker socket (or a
-symlink to one) is refused: a per-run fragment must not be able to widen the
-container's privileges or hand it the daemon. That explicit boundary lets a
+not accepted at all, and a bind source of `/`, of a container-daemon socket
+(or its parent directory), or inside `/etc`, `/proc`, `/var/lib/docker` or
+`/var/lib/containerd` (also through a symlink) is refused: a per-run fragment
+should not casually widen the container's privileges or hand it the daemon.
+This is a safety net against the common mistakes, not a sandbox; the extension
+file is operator-trusted and symlinks resolve in the controller's own mount
+namespace only. That explicit boundary lets a
 gate add measured resource limits and a read-only observer mount while leaving
 the rendered service authoritative.
 

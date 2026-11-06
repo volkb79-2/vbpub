@@ -1757,9 +1757,16 @@ variable names, and mount targets; mount targets are compared after
 normalisation (`//`, `/./` and trailing `/` collapse), and are stored
 normalised. Extension bind sources must be absolute, contain no `..`, and
 disable host-path auto-creation. A bind source MUST be refused when it, after
-normalisation or symlink resolution, is `/`, a Docker socket
-(`/var/run/docker.sock`, `/run/docker.sock`, any `docker.sock`) or a parent
-directory of one. Extension values and the projected dry-run plan MUST not
+normalisation or symlink resolution, is `/`, a container-daemon socket
+(`/var/run/docker.sock`, `/run/docker.sock`, `/run/containerd/containerd.sock`,
+`/run/podman/podman.sock`, any `docker.sock`/`containerd.sock`/`podman.sock`)
+or a parent directory of one, or is or lies inside `/etc`, `/proc`,
+`/var/lib/docker` or `/var/lib/containerd`. This list is a narrow safety net
+against the common daemon-control and host-state mounts, NOT a sandbox: the
+`--extend` file is operator-trusted input, other host paths (for example
+`/sys`, `/dev`, `/root`, rootless-runtime sockets under `/run/user`) are not
+refused, and symlinks are resolved in the controller's own mount namespace
+only. Extension values and the projected dry-run plan MUST not
 disclose CIU secret values. Unknown keys, reserved `ciu.`/`com.docker.` label
 keys and malformed values MUST be refused before launch.
 
@@ -1819,27 +1826,36 @@ used verbatim after name validation; CIU otherwise generates a unique name.
 The detached owner defaults to the parent process of `ciu`. A caller that
 starts `ciu` through a short-lived wrapper MUST pass `--owner-pid` naming the
 long-lived controller, otherwise the owner is dead as soon as the wrapper exits
-and `ciu run reap --yes` may remove the run once it has exited.
+and `ciu run reap --yes` may remove the run 300 seconds after it has exited (or
+once it has run longer than the reap age bound).
 `ciu run --dry-run --json` runs the same read-only checks as a real launch (the
 network ownership check and the name-availability check) and reports the
 effective name (generated when none is given), the `ciu.run.*` labels (run ID
 and start time as placeholders), injected environment and forwarded variable
 names (never values), mode and argv length, so it refuses wherever a real run
-would.
+would. It is not side-effect free: it still performs stack preparation (the
+`pre_secrets`/`pre_compose` hooks unless `--skip-hooks`, secret materialisation
+and the rendered files) before those checks; it only starts no container.
 `ciu run reap [--root-folder P] [--older-than DUR] [--yes]` surveys only
 containers matching the exact Compose project, `com.docker.compose.oneoff=True`
 and `ciu.run=1` labels, then inspects and removes by full ID only. It removes
-only runs whose controller identity is dead and which are exited or meet the
-age bound (one hour by default); uncertain ownership and live owners are left
-alone. A managed worktree additionally requires matching `ciu.instance` and
+only runs whose controller identity is dead and which are either exited for at
+least 300 seconds, measured from the container's `State.FinishedAt` (a fixed
+floor independent of `--older-than` and of the `ciu.run.started` label; an
+unreadable or zero finish time leaves the run alone), or still running and older
+than the age bound (one hour by default, from `ciu.run.started`). An exited
+run is removed with `docker rm <id>`; only an aged running one is removed with
+`-f`. Uncertain ownership and live owners are left alone. A managed worktree additionally requires matching `ciu.instance` and
 `ciu.repo-root` labels. A primary checkout uses the exact Compose working
 directory as its root proof.
 
 Plain `ciu down` does not stop these one-shots. `ciu clean` invokes Compose
 `down --remove-orphans`, which can stop one-shots in that stack's Compose
-project. Before that command, CIU MUST inspect every matching one-shot and
-refuse without teardown if any is owned by another checkout or stack or its
-ownership cannot be proved. One-shots owned by the selected checkout and
+project. Before ANY removal (before clean's container pass, in the same
+pre-validation step as the reset-config check, and again inside the reset), CIU
+MUST inspect every matching one-shot of every selected stack and refuse with
+nothing removed if any is owned by another checkout or stack or its ownership
+cannot be proved; `--dry-run` reports the same refusal. One-shots owned by the selected checkout and
 stack are eligible for clean's ordinary removal.
 
 The run launch and foreground event contract is not an observer readiness

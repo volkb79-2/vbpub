@@ -43,7 +43,15 @@ _HEX_LOOKALIKE_RE = re.compile(r"^[0-9a-f]{1,64}$")
 # Docker resolves a hex string as a container ID (prefix) before a name, so a
 # hex-only --name could address another container. Sockets that give control
 # of the daemon may never be bind-mounted through --extend.
-_DOCKER_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock")
+_DAEMON_SOCKETS = (
+    "/var/run/docker.sock", "/run/docker.sock",
+    "/run/containerd/containerd.sock", "/run/podman/podman.sock",
+)
+_DAEMON_SOCKET_NAMES = frozenset({"docker.sock", "containerd.sock", "podman.sock"})
+# Host state that gives control of the host or of other containers. This list
+# and the socket checks are a narrow safety net against the common mistakes;
+# the --extend file is operator-trusted input and this is NOT a sandbox.
+_DENIED_TREES = ("/etc", "/proc", "/var/lib/docker", "/var/lib/containerd")
 _RUN_ID_LABEL = "ciu.run.id"
 _PLACEHOLDER_AT_LAUNCH = "<assigned at launch>"
 _ALLOWED_EXTENSION_ROOT_KEYS = frozenset({"services", "x-ciu-run"})
@@ -54,6 +62,7 @@ _FOREGROUND_INSPECT_TIMEOUT = 30.0
 _SIGNAL_GRACE_SECONDS = 10.0
 _PROC_ROOT = Path("/proc")
 _DEFAULT_REAP_AGE_SECONDS = 3600.0
+_REAP_EXITED_FLOOR_SECONDS = 300.0
 
 
 def validate_container_name(name: str) -> str:
@@ -158,11 +167,14 @@ def _bind_source_refusal(source: str) -> str | None:
     for candidate in sorted(candidates):
         if candidate == "/":
             return "the host root"
-        if posixpath.basename(candidate) == "docker.sock":
-            return "a Docker socket"
-        for socket_path in _DOCKER_SOCKETS:
+        if posixpath.basename(candidate) in _DAEMON_SOCKET_NAMES:
+            return "a container-daemon socket"
+        for socket_path in _DAEMON_SOCKETS:
             if candidate == socket_path or socket_path.startswith(candidate + "/"):
-                return "a Docker socket or one of its parent directories"
+                return "a container-daemon socket or one of its parent directories"
+        for tree in _DENIED_TREES:
+            if candidate == tree or candidate.startswith(tree + "/"):
+                return f"inside the host-state tree {tree}"
     return None
 
 
@@ -1414,6 +1426,25 @@ def _started_at(labels: Mapping[str, str]) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+_FINISHED_AT_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$"
+)
+
+
+def _finished_at(state: Any) -> datetime | None:
+    """Parse Docker's ``State.FinishedAt`` (nanosecond RFC 3339); None if unusable."""
+    raw = state.get("FinishedAt") if isinstance(state, Mapping) else None
+    match = _FINISHED_AT_RE.fullmatch(raw) if isinstance(raw, str) else None
+    if match is None or match.group(1).startswith("0001-"):
+        return None
+    zone = "+00:00" if match.group(3) == "Z" else match.group(3)
+    fraction = (match.group(2) or "0")[:6].ljust(6, "0")
+    try:
+        return datetime.fromisoformat(f"{match.group(1)}.{fraction}{zone}").astimezone(UTC)
+    except ValueError:
+        return None
+
+
 def reap_project(
     repo_root: Path,
     project: str,
@@ -1506,30 +1537,57 @@ def reap_project(
                 "reason": owner_reason,
             })
             continue
-        started = _started_at(labels)
-        age = (instant - started).total_seconds() if started is not None else None
-        if status != "exited" and (age is None or age < older_than_seconds):
-            rows.append({
-                "id": container_id, "name": name, "action": "left",
-                "reason": "dead owner, but container is not exited and is not older than the bound",
-            })
-            continue
+        exited = status == "exited"
+        if exited:
+            # An exited run is eligible only a fixed time after it FINISHED
+            # (State.FinishedAt, independent of --older-than and of the
+            # caller-influenced ciu.run.started label): a wrapper-shell owner
+            # is dead the moment the wrapper exits, and the controller must be
+            # able to collect the status first. No usable finish time: leave.
+            finished = _finished_at(state)
+            if finished is None:
+                rows.append({
+                    "id": container_id, "name": name, "action": "left",
+                    "reason": "dead owner, but the container's finish time is unavailable",
+                })
+                continue
+            if (instant - finished).total_seconds() < _REAP_EXITED_FLOOR_SECONDS:
+                rows.append({
+                    "id": container_id, "name": name, "action": "left",
+                    "reason": (
+                        "dead owner, but the container finished less than "
+                        f"{int(_REAP_EXITED_FLOOR_SECONDS)} seconds ago"
+                    ),
+                })
+                continue
+        else:
+            started = _started_at(labels)
+            age = (instant - started).total_seconds() if started is not None else None
+            if age is None or age < older_than_seconds:
+                rows.append({
+                    "id": container_id, "name": name, "action": "left",
+                    "reason": "dead owner, but container is not exited and is not older than the bound",
+                })
+                continue
         if not yes:
             rows.append({
                 "id": container_id, "name": name, "action": "would-remove",
                 "reason": owner_reason,
             })
             continue
+        # Only an aged, still-running run needs force; an exited one must not
+        # be killed if it is unexpectedly running again at removal time.
+        remove_command = ["docker", "rm", container_id] if exited else [
+            "docker", "rm", "-f", container_id,
+        ]
         try:
-            removed = procutil.run_cmd(
-                ["docker", "rm", "-f", container_id], check=False, capture=True,
-            )
+            removed = procutil.run_cmd(remove_command, check=False, capture=True)
         except OSError as exc:
             raise RuntimeError(f"[CIU-141] Docker unavailable while removing {container_id}") from exc
         rows.append({
             "id": container_id, "name": name,
             "action": "removed" if removed.returncode == 0 else "failed",
-            "reason": owner_reason if removed.returncode == 0 else "docker rm -f failed",
+            "reason": owner_reason if removed.returncode == 0 else "docker rm failed",
         })
     return rows
 

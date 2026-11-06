@@ -64,6 +64,37 @@ def test_bind_sources_that_expose_the_host_or_the_docker_socket_are_refused(sour
         _validate(_bind(source))
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "/etc", "/etc/", "/etc/shadow", "//etc//ssh", "/etc/./passwd",
+        "/var/lib/docker", "/var/lib/docker/volumes", "/var/lib/containerd",
+        "/var/lib/containerd/io.containerd.content.v1.content",
+        "/run/containerd/containerd.sock", "/run/containerd",
+        "/run/podman/podman.sock", "/run/user/1000/podman/podman.sock",
+        "/srv/x/containerd.sock", "/srv/x/podman.sock",
+        "/proc", "/proc/1/root", "/proc/self/root/etc", "/proc/12345/root",
+    ],
+)
+def test_bind_sources_for_other_daemon_sockets_and_host_state_are_refused(source):
+    with pytest.raises(ValueError, match="bind source"):
+        _validate(_bind(source))
+
+
+@pytest.mark.parametrize("source", ["/var/lib/dockerish", "/etcetera", "/procs", "/srv/etc"])
+def test_deny_list_matches_whole_path_components_only(source):
+    assert _validate(_bind(source))
+
+
+def test_proc_root_through_a_symlink_is_refused_by_realpath(tmp_path):
+    link = tmp_path / "rootlink"
+    link.symlink_to("/proc/self/root")
+    # realpath resolves in the controller's own mount namespace: this is a
+    # safety net, not a sandbox (see SPEC S8.9).
+    with pytest.raises(ValueError, match="bind source"):
+        _validate(_bind(str(link)))
+
+
 def test_bind_source_dotdot_is_refused_before_normalisation():
     with pytest.raises(ValueError, match="may not contain '..'"):
         _validate(_bind("/safe/../var/run/docker.sock"))
