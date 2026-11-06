@@ -1426,3 +1426,20 @@ with no score, not a parse of the challenge HTML.
 
 **Status:** DONE on branch `mdt-render-dev-cache-20261105`. Root cause: the AD2-2 templates (`dev-cache.slice.in`, tree mounts, GC units) are rendered live by `mdt_tree_cache.py`, but `tests/test-render.sh` pushed every `units/*.in` through install.sh's bash `render()`, whose `RENDER_VARS` does not (and must not) carry their keys. Fix: `mdt_tree_cache.OWNED_TEMPLATES` is the single list; `test-render.sh` skips those in the bash loop and renders them with `mdt_tree_cache.py render` (the installer's own code path) from the shipped example, failing on any `@X@`; `_render()` now raises on a token it was not given, so the live install also refuses to ship one. `tests/test_tree_cache.py::TemplateWiringTests` asserts every template is wired to exactly one renderer. No behaviour change on a host (empty `DEV_CACHE_MEMORY_LOW` still drops the `MemoryLow=` line, `DEV_CACHE_ZSWAP_WRITEBACK` defaults to yes).
 **Open.** None. Hosts need no re-run for this fix (test-only plus an install-time guard).
+
+## MDT-076 - template VS Code settings never reach a persisted home's machine settings (2026-11-05)
+
+**Status:** OPEN; documented on branch `mdt-vscode-excludes-20261105` (template comments, `templates/vscode/README.md` "Template settings and the persisted home", host-setup README "inotify watch budget"); the same branch adds `.assay` to the excludes and `search.followSymlinks: false`.
+**Observed.** Container `mdt-cockpit-vb-vbpub`, created 2026-11-03, carried `files.watcherExclude`, `search.exclude` and `git.repositoryScanIgnoredFolders` (added by `68a4cb487`, 2026-10-26) in its `devcontainer.metadata` label. `~/.vscode-server/data/Machine/settings.json`, last written 2026-10-23, held only `python.defaultInterpreterPath`, so none of the MDT-003 excludes were active: the VS Code file watcher used 920 MiB RSS, and Python Environments 1.42.0's per-event whole-workspace rescans piled up to 192 concurrent `rg` processes.
+**Cause.** Since MDT-004 the home (with `~/.vscode-server`) persists across rebuilds, and a rebuild does not rewrite an existing machine settings file.
+**Open.**
+1. A supported refresh: for example a finalize step that merges the template's `customizations.vscode.settings` into the machine settings file (template keys win, user-only keys kept), or a `mdt` verb that does the same. It needs a source for the effective settings inside the container (the workspace `devcontainer.json` as JSONC, or the metadata label).
+2. A check that warns when a template key is missing from the machine settings file.
+
+## MDT-078 - retire modern-debian-tools-python-debug (2026-11-05)
+
+**Status:** DONE on this branch. Removed the predecessor directory and its CMRU project registration; repointed live image, install, code, and documentation references to `mdt-cockpit`. Kept runtime state paths and historical records intact.
+
+**Open items:**
+1. Build-check nyxloomd against the new `mdt-cockpit` base image.
+2. Existing GHCR packages under the retired name remain in place by operator decision.

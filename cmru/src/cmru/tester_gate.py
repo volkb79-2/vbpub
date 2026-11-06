@@ -412,7 +412,7 @@ def check_slice_unit(
             "TRANSIENT slice, the fail-open signature Docker leaves behind for a typo'd "
             "or never-installed name (systemd auto-vivifies .slice units for any name, "
             "hands this one an unlimited cgroup, and the container starts normally). "
-            "Install the tier (modern-debian-tools-python-debug/host-setup/install.sh) "
+            "Install the tier (mdt-cockpit/host-setup/install.sh) "
             "or pass a slice that exists."
         )
     if load_state:
@@ -745,7 +745,7 @@ def build_docker_command(
     its Docker CLI at the sidecar's nested daemon — a deliberate, per-invocation
     opt-in, never a default: only a project step that actually needs Docker
     (currently: MDT's OCI-layout push tests,
-    modern-debian-tools-python-debug/scripts/test_oci_layout_push.py) should
+    mdt-cockpit/scripts/test_oci_layout_push.py) should
     request it. Every other project's gate is unaffected.
 
     ``memory``/``memory_swap``/``cpus``/``pids_limit`` are required (see

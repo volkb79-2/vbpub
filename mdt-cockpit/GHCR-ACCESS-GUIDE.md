@@ -44,8 +44,8 @@ document, a devcontainer image, or a committed `.env` file.
 - `denied: permission_denied`: authenticate the host Docker client and check
   that the token has `read:packages`.
 - `manifest unknown`: verify the package family and tag against the published
-  package page. A tag from the original `modern-debian-tools-python-debug`
-  family is not automatically available under the fork's package names.
+  package page. A tag from the retired predecessor's family is not automatically
+  available under the successor's package names.
 
 Package pages:
 

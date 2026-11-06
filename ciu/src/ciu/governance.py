@@ -151,7 +151,7 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     # resource properties — a declared mem_min only means anything once the
     # slice unit itself carries a matching MemoryMin=, provisioned host-side
     # (a static .slice unit, or an optional companion such as
-    # modern-debian-tools-python-debug's host-setup — never a CIU dependency).
+    # mdt-cockpit's host-setup — never a CIU dependency).
     # UPDATED (S15.23, CIU-94): "never injected into the overlay" is still
     # exactly true, but "CIU makes no mem_min-related host write at all" is
     # no longer true. Once a container is actually running, CIU applies the

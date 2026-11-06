@@ -11,6 +11,11 @@ from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea, T
 
 from dataclasses import replace
 
+from helpers import wait_until, wait_until_sync
+
+# A deliberately hung RPC is released by the test itself (in its finally), never by a short timer
+# racing the event loop under host load; this ceiling only keeps a broken test from hanging forever.
+HUNG_RPC_CEILING = 90.0
 from tnt.actions import Action, Kind, PlanExecutionError, RpcCall, apply_plan, make_plan
 from tnt.cli import build_cli
 from tnt.errors import Refused, TntError, TransportError
@@ -350,7 +355,12 @@ def test_update_apply_binds_target_and_emits_job_progress():
             progress = []
             apply_plan(plan, session.rpc, allow_write=True, typed_confirmation=plan.action.confirm_target,
                        job_progress=lambda job: progress.append(job.get("progress", {}).get("percent")))
-            assert progress == [25, 75, 100]
+            # Progress callbacks run on the client's callback thread and are advisory: the final
+            # 100% event may land just after the job result is returned, so wait for it.
+            wait_until_sync(lambda: 100 in progress, what="final job progress event")
+            # Intermediate events are coalesced or reordered by the callback thread ([25, 100, 100] and
+            # [25, 75] were both observed under load): require only valid, non-decreasing percentages.
+            assert progress and set(progress) <= {25, 75, 100} and progress == sorted(progress)
             request = next(row for row in server.requests if row["method"] == "update.run")
             assert request["params"] == [{"dataset_name": None, "resume": False,
                                          "train": "TrueNAS-SCALE-27-NEXT",
@@ -583,22 +593,10 @@ def _select_key(app, key):
     tree.select_node(found)
 
 
-async def _wait_for(pilot, predicate, *, count=100):
-    # A view may not be mounted yet when polled (NoMatches under load); that
-    # means "not ready", not failure, so keep waiting within the bound.
-    from textual.css.query import NoMatches
-
-    def ready():
-        try:
-            return predicate()
-        except NoMatches:
-            return False
-
-    for _ in range(count):
-        await pilot.pause(0.05)
-        if ready():
-            return
-    assert ready(), "condition did not become true before the bounded UI wait ended"
+async def _wait_for(pilot, predicate, *, count=None):
+    # ``count`` is accepted for old call sites and ignored: waits are deadline-based (helpers.wait_until,
+    # which also treats a not-yet-mounted view, NoMatches, as "not ready").
+    await wait_until(pilot, predicate)
 
 
 def test_system_update_tui_uses_reviewed_plan_and_shows_job_progress():
@@ -617,24 +615,15 @@ def test_system_update_tui_uses_reviewed_plan_and_shows_job_progress():
             app = TntApp(session, session_opener=reconnect, reconnect_delays=(0, 0))
             async with app.run_test(size=(160, 50)) as pilot:
                 _select_key(app, "update")
-                for _ in range(80):
-                    await pilot.pause(0.05)
-                    if "Update available" in str(app.query_one("#system-update-note", Static).render()):
-                        break
+                await wait_until(pilot, lambda: "Update available" in str(
+                    app.query_one("#system-update-note", Static).render()), what="update availability note")
                 details = str(app.query_one("#system-update-details", Static).render())
                 assert "TrueNAS-27.0.0-RC.2" in details and "maintenance release" in details
                 await pilot.click("#system-update-plan")
-                for _ in range(40):
-                    await pilot.pause(0.05)
-                    if isinstance(app.screen, PlanReview):
-                        break
-                assert isinstance(app.screen, PlanReview)
+                await wait_until(pilot, lambda: isinstance(app.screen, PlanReview), what="plan review")
                 app.screen.query_one("#plan-confirm", Input).value = "TrueNAS-27.0.0-RC.2"
                 await pilot.click("#plan-apply")
-                for _ in range(80):
-                    await pilot.pause(0.05)
-                    if not isinstance(app.screen, PlanReview):
-                        break
+                await wait_until(pilot, lambda: not isinstance(app.screen, PlanReview), what="plan review closing")
                 assert "Update job completed" in str(app.query_one("#system-update-note", Static).render())
                 assert '"job_id": "1"' in str(app.query_one("#system-update-note", Static).render())
                 assert "update.run" in server.called()
@@ -666,18 +655,16 @@ def test_reboot_tui_reconnects_after_fake_disconnect_with_bounded_attempts():
                 app.screen.query_one("#system-power-delay", Input).value = "0"
                 await pilot.pause(0.05)
                 await pilot.click("#system-power-plan")
-                for _ in range(120):
-                    await pilot.pause(0.05)
-                    if isinstance(app.screen, PlanReview):
-                        break
-                assert isinstance(app.screen, PlanReview), f"plan review did not open; current screen: {type(app.screen).__name__}"
+                await wait_until(pilot, lambda: isinstance(app.screen, PlanReview), what="plan review opening")
                 app.screen.query_one("#plan-confirm", Input).value = "test"
                 await pilot.click("#plan-apply")
-                for _ in range(120):
-                    await pilot.pause(0.05)
-                    note = str(app.screen.query_one("#system-power-note", Static).render())
-                    if "returned to READY" in note or "reconnect stopped" in note:
-                        break
+
+                def power_note():
+                    return str(app.screen.query_one("#system-power-note", Static).render())
+
+                await wait_until(pilot, lambda: "returned to READY" in power_note() or "reconnect stopped" in power_note(),
+                                 what="reboot reconnect outcome")
+                note = power_note()
                 assert "returned to READY" in note, note
                 outcome = str(app.screen.query_one("#system-power-job", Static).render())
                 assert '"method": "system.reboot"' in outcome and '"job_id": "1"' in outcome
@@ -785,7 +772,7 @@ def test_hung_system_preflight_rpc_does_not_block_tui_event_loop():
         def blocked_call(method, *params, **kwargs):
             if method == "system.info" and not entered.is_set():
                 entered.set()
-                released.wait(2)
+                released.wait(HUNG_RPC_CEILING)
                 value = original_call(method, *params, **kwargs)
                 returned.set()
                 return value
@@ -802,17 +789,13 @@ def test_hung_system_preflight_rpc_does_not_block_tui_event_loop():
                                 and app.query_one("#system-power-plan", Button).is_attached, count=40)
                 ticked = asyncio.Event()
                 asyncio.get_running_loop().call_later(0.05, ticked.set)
-                watchdog = threading.Timer(3.0, released.set)
+                watchdog = threading.Timer(HUNG_RPC_CEILING, released.set)
                 watchdog.start()
                 try:
                     view = app.query_one("#view-system-reboot", SystemPowerView)
                     view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="system-power-plan")))
-                    await asyncio.wait_for(ticked.wait(), timeout=1.5)
-                    for _ in range(20):
-                        if entered.is_set():
-                            break
-                        await pilot.pause(0.025)
-                    assert entered.is_set(), "system preflight should start after the click"
+                    await asyncio.wait_for(ticked.wait(), timeout=HUNG_RPC_CEILING)
+                    await wait_until(pilot, entered.is_set, what="system preflight start after the click")
                     assert not returned.is_set(), "the UI event loop must run while the RPC is still hung"
                     assert "Checking current host state" in str(
                         app.query_one("#system-power-note", Static).render())
@@ -904,7 +887,7 @@ def test_hung_workflow_lookup_does_not_block_tui_event_loop(view_key, rpc_method
         def blocked_call(method, *params, **kwargs):
             if method == rpc_method and not entered.is_set():
                 entered.set()
-                released.wait(2)
+                released.wait(HUNG_RPC_CEILING)
                 returned.set()
             return original_call(method, *params, **kwargs)
 
@@ -923,16 +906,12 @@ def test_hung_workflow_lookup_does_not_block_tui_event_loop(view_key, rpc_method
                 session.rpc.call = blocked_call
                 ticked = asyncio.Event()
                 asyncio.get_running_loop().call_later(0.05, ticked.set)
-                watchdog = threading.Timer(1.5, released.set)
+                watchdog = threading.Timer(HUNG_RPC_CEILING, released.set)
                 watchdog.start()
                 try:
                     view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="workflow-plan")))
-                    await asyncio.wait_for(ticked.wait(), timeout=0.5)
-                    for _ in range(20):
-                        if entered.is_set():
-                            break
-                        await pilot.pause(0.025)
-                    assert entered.is_set(), f"{rpc_method} should start after the plan click"
+                    await asyncio.wait_for(ticked.wait(), timeout=HUNG_RPC_CEILING)
+                    await wait_until(pilot, entered.is_set, what=f"{rpc_method} start after the plan click")
                     assert not returned.is_set(), "the UI event loop must run while the lookup RPC is still hung"
                     assert view.query_one("#workflow-plan", Button).disabled
                     assert "Checking current host state" in str(view.query_one("#workflow-note", Static).render())
@@ -965,7 +944,7 @@ def test_hung_api_key_plan_lookup_does_not_block_tui_event_loop():
         def blocked_call(method, *params, **kwargs):
             if method == "api_key.query" and not entered.is_set():
                 entered.set()
-                released.wait(2)
+                released.wait(HUNG_RPC_CEILING)
                 returned.set()
             return original_call(method, *params, **kwargs)
 
@@ -983,16 +962,12 @@ def test_hung_api_key_plan_lookup_does_not_block_tui_event_loop():
                 session.rpc.call = blocked_call
                 ticked = asyncio.Event()
                 asyncio.get_running_loop().call_later(0.05, ticked.set)
-                watchdog = threading.Timer(1.5, released.set)
+                watchdog = threading.Timer(HUNG_RPC_CEILING, released.set)
                 watchdog.start()
                 try:
                     view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="apikey-plan")))
-                    await asyncio.wait_for(ticked.wait(), timeout=0.5)
-                    for _ in range(20):
-                        if entered.is_set():
-                            break
-                        await pilot.pause(0.025)
-                    assert entered.is_set(), "api_key.query should start after the plan click"
+                    await asyncio.wait_for(ticked.wait(), timeout=HUNG_RPC_CEILING)
+                    await wait_until(pilot, entered.is_set, what="api_key.query start after the plan click")
                     assert not returned.is_set(), "the UI event loop must run while the lookup RPC is still hung"
                     assert view.query_one("#apikey-plan", Button).disabled
                     assert "Checking current host state" in str(view.query_one("#apikey-note", Static).render())
@@ -1077,9 +1052,10 @@ def test_reboot_reconnect_worker_stops_when_host_transition_cancels_backoff():
                 transition = app.session_controller.begin_disconnect()
                 assert len(transition.workers) == 1
                 lease = transition.workers[0]
-                drained = await asyncio.wait_for(asyncio.to_thread(lease.finished.wait, 1), timeout=1.5)
+                drained = await asyncio.wait_for(asyncio.to_thread(lease.finished.wait, HUNG_RPC_CEILING),
+                                                 timeout=HUNG_RPC_CEILING + 5)
                 assert drained and lease.cancelled.is_set()
-                app.session_controller.finish_switch(transition, timeout=1)
+                app.session_controller.finish_switch(transition, timeout=HUNG_RPC_CEILING)
 
         try:
             asyncio.run(go())
@@ -1128,7 +1104,7 @@ def test_system_update_tui_handles_check_failure_no_update_bad_target_and_cancel
             app = TntApp(session)
             async with app.run_test(size=(160, 50)) as pilot:
                 _select_key(app, "update")
-                await pilot.pause(0.1)
+                await wait_until(pilot, lambda: len(app.query(SystemUpdateView)) == 1, what="update view mounted")
                 app.query_one(SystemUpdateView).on_button_pressed(
                     SimpleNamespace(button=SimpleNamespace(id="unrelated")))
                 await _wait_for(pilot, lambda: "Update check failed" in str(
@@ -1168,7 +1144,7 @@ def test_system_general_tui_exports_config_and_handles_invalid_result_and_lost_p
             app = TntApp(session)
             async with app.run_test(size=(160, 50)) as pilot:
                 _select_key(app, "general")
-                await pilot.pause(0.1)
+                await wait_until(pilot, lambda: len(app.query(SystemGeneralView)) == 1, what="general view mounted")
                 view = app.query_one(SystemGeneralView)
                 view.on_button_pressed(SimpleNamespace(button=SimpleNamespace(id="unrelated")))
                 view._plan_failed("synthetic export preflight refusal")
@@ -1288,10 +1264,10 @@ def test_reboot_tui_bounds_reconnect_and_stops_on_non_connection_failures(mode, 
                     except Exception:
                         return False
 
-                for _ in range(300):
-                    await pilot.pause(0.05)
-                    if power_result_visible():
-                        break
+                try:
+                    await wait_until(pilot, power_result_visible, what="power result note")
+                except AssertionError:
+                    pass
                 try:
                     current_note = str(app.screen.query_one("#system-power-note", Static).render())
                 except Exception:
@@ -1358,10 +1334,10 @@ def test_power_action_call_error_is_uncertain_and_never_resubmitted(operation, r
                         return "Host is reachable and READY" in note or "automatic reconnect stopped" in note
                     return "outcome is uncertain" in note
 
-                for _ in range(300):
-                    await pilot.pause(0.05)
-                    if final_note_visible():
-                        break
+                try:
+                    await wait_until(pilot, final_note_visible, what="final power note")
+                except AssertionError:
+                    pass
                 if isinstance(app.screen, PlanReview):
                     current_note = str(app.screen.query_one("#plan-progress", Static).render())
                 else:

@@ -786,7 +786,7 @@ cockpit, in which case the suite runs there. A stable, declared test
 environment makes dependencies and resource conditions repeatable. The MDT
 cockpit policy requires the devcontainer to drive gates while that environment
 hosts the suite; see the
-[MDT container doctrine](../../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
+[MDT testing design](../../mdt-cockpit/docs/DESIGN-GUIDE.md#two-environments-two-claims).
 This CIU path chooses a stable tester image so package versions and the test
 environment are declared.
 This lane sets `profile = false` because the tester container's Docker view is

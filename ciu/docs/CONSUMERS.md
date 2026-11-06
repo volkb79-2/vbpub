@@ -1372,7 +1372,7 @@ consumer chooses its own policy. A stable, declared test environment gives
 repeatable dependencies and resource conditions. MDT's cockpit policy
 specifically requires the devcontainer to drive gates while that environment
 hosts the suite. See the
-[MDT container doctrine](../../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
+[MDT testing design](../../mdt-cockpit/docs/DESIGN-GUIDE.md#two-environments-two-claims).
 This lane sets `profile = false`: its isolated
 Docker daemon cannot inspect the outer tester container's host cgroup, while
 CMRU applies the host placement and container caps. If stronger independence

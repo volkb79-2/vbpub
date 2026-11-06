@@ -4380,7 +4380,7 @@ own (no `MemoryMax`, `IOWeight`, `CPUWeight`, etc.). In that case
 `cgroup_parent = "dev-background.slice"` still groups the stack's containers
 together under that name, but the host-level ceiling the operator intended
 (defined in a real slice unit, provisioned out-of-band — see
-`modern-debian-tools-python-debug/host-setup/` for a worked example of
+`mdt-cockpit/host-setup/` for a worked example of
 authoring such units) silently does not apply: the containers run
 **unconfined** at the slice level even though the compose file "looks"
 governed. This is a
@@ -4781,7 +4781,7 @@ explicit-opt-in-only.
 > simulation.
 >
 > **This is not hypothetical — it is this project's OWN default state.**
-> `modern-debian-tools-python-debug/host-setup/units/dev.slice.in` (the
+> `mdt-cockpit/host-setup/units/dev.slice.in` (the
 > parent of both dev-tier slices) sets ONLY IO ceilings — no
 > `MemoryMin`/`MemoryLow` at all. `dev-background.slice.in` sets
 > `MemoryHigh`/`MemoryMax`/`MemorySwapMax` but **no `MemoryMin` and no
@@ -4882,7 +4882,7 @@ The abort message is deliberately explicit about WHO can fix this and how:
 add a matching `MemoryMin=` to the slice's systemd unit (a drop-in under
 `/etc/systemd/system/<slice>.d/`, then `systemctl daemon-reload`), or lower/
 remove the `mem_min` declaration if no floor is actually required. A
-host-side companion — e.g. `modern-debian-tools-python-debug`'s
+host-side companion — e.g. `mdt-cockpit`'s
 `host-setup`, which already provisions parameterized dev-tier slice units —
 can automate this provisioning, but **CIU never depends on one being
 present**: `mem_min` is meaningless (and silently un-preflighted, same as

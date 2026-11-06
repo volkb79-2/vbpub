@@ -3,6 +3,7 @@ import json
 
 from textual.widgets import Static, Tree
 
+from helpers import wait_until
 from tnt.cli import build_cli
 from tnt.errors import Refused
 from tnt.session import open_session
@@ -66,11 +67,8 @@ def test_network_tui_loads_the_read_only_view(config):
                 find(tree.root)
                 assert target is not None
                 tree.select_node(target)
-                for _ in range(40):
-                    await pilot.pause(0.05)
-                    note = str(app.query_one("#network-note", Static).render())
-                    if "loaded" in note:
-                        break
+                await wait_until(pilot, lambda: "loaded" in str(app.query_one("#network-note", Static).render()))
+                note = str(app.query_one("#network-note", Static).render())
                 assert "read-only" in note.casefold()
                 output = str(app.query_one("#network-output", Static).render())
                 assert "192.0.2.10/24" in output and "192.0.2.53" in output and "192.0.2.1" in output
