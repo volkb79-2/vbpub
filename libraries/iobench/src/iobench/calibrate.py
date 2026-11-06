@@ -695,7 +695,8 @@ class Calibrator(Runner):
         rate_status = "pass"
         if self.vq:
             wl = a["writes"][-1]
-            p19 = plausibility.pla_19(self.cell_bps("read", "seq", plan.VQ_SEQ_BS), self.cell_bps("write", "seq", plan.VQ_SEQ_BS))
+            p19 = plausibility.pla_19(self.cell_bps("read", "seq", plan.VQ_SEQ_BS), self.cell_bps("write", "seq", plan.VQ_SEQ_BS),
+                                      cache_state=state.state)
             self.checks.append(p19)
             rate_status = p19.status
             cal["coarse_model"] = self.coarse_model()

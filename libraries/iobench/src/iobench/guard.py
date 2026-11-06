@@ -26,11 +26,22 @@ SIDECAR_SUFFIX = ".iobench-target"
 ROOT_TARGET_FREE_SHARE = 0.10
 WORKDIR_MARK = ".iobench-workdir"
 MIN_WORKDIR_FREE = 4 * GIB
-PLACEHOLDER_DISK_IDENTIFIERS = frozenset({
-    "", "0", "qm00001", "qemu harddisk", "unknown", "none", "null", "n/a", "na", "not available",
-    "not specified", "not set", "not provided", "unspecified", "default", "placeholder", "tbd", "serial number",
-    "system serial number", "0123456789", "1234567890", "to be filled by o.e.m.",
-})
+# These virtual-device serials encode generated IDs or slots, not hardware identity; keep their full families together.
+PLACEHOLDER_DISK_IDENTIFIER_PATTERN = re.compile(
+    r"""
+    (?:
+        | 0
+      | qm\d{5}
+      | qemu\x20harddisk
+      | unknown|none|null|n/a|na|not\x20available|not\x20specified|not\x20set|not\x20provided
+      | unspecified|default|placeholder|tbd|serial\x20number|system\x20serial\x20number
+      | 0123456789|1234567890|to\x20be\x20filled\x20by\x20o\.e\.m\.
+      | vb[0-9a-f]{8}-[0-9a-f]{8}
+      | vdisk\d+
+    )
+    """,
+    re.IGNORECASE | re.ASCII | re.VERBOSE,
+)
 
 
 # -- low-level facts ------------------------------------------------------------
@@ -107,7 +118,7 @@ def _disk_identifier(value: str | None) -> str | None:
     repeated_pattern = any(len(compact) >= 4 and len(compact) % period == 0
                           and compact == compact[:period] * (len(compact) // period)
                           for period in range(1, len(compact) // 2 + 1))
-    if normalized in PLACEHOLDER_DISK_IDENTIFIERS or repeated_pattern:
+    if PLACEHOLDER_DISK_IDENTIFIER_PATTERN.fullmatch(normalized) or repeated_pattern:
         return None
     return clean or None
 
@@ -130,7 +141,7 @@ def disk_facts(host: Host, name: str) -> DiskFacts:
     """Facts of the whole disk ``name`` (a ``/sys/class/block`` entry that is not a partition)."""
     base = f"/sys/class/block/{name}"
     return DiskFacts(name, host.read_text(base + "/dev").strip(), int(host.read_text(base + "/size")) * 512,
-                     disk_attr(host, name, "device/model"), _disk_identifier(disk_attr(host, name, "device/serial")),
+                     _disk_identifier(disk_attr(host, name, "device/model")), _disk_identifier(disk_attr(host, name, "device/serial")),
                      _disk_identifier(disk_attr(host, name, "wwid")),
                      disk_attr(host, name, "queue/scheduler"), disk_attr(host, name, "queue/rotational"))
 
@@ -141,8 +152,8 @@ def find_disk(host: Host, *, model: str | None, serial: str | None, wwn: str | N
 
     Every stored non-null field must match and the size always must.  ``/sys/block`` lists whole disks only.  Several matches
     (two identical strong identities) are resolved by the remembered name; a tie that cannot be broken is ``None``, never a guess.
-    A weak stored scope needs its remembered name, a matching machine id, an equal model, and a weak candidate; size alone never
-    identifies it."""
+    A weak stored scope needs its remembered name, caller-confirmed machine-id binding (a null stored hash binds no host), an
+    equal model, and a weak candidate; size alone never identifies it."""
     weak_scope = serial is None and wwn is None
     if weak_scope and (hint is None or not machine_id_matches):
         return None

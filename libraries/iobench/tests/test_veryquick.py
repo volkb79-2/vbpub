@@ -224,6 +224,16 @@ def test_prf_03_a_cache_inflated_disk_fails_the_plausibility_verdict():
     assert all(v["status"] != "proven" for s in ("caps", "iocost_model") for v in values(out, s).values())
 
 
+def test_prf_03_a_hit_like_probe_makes_the_ratio_check_match_the_fail_verdict():
+    read = dict(iops_max=1_000_000, lat_us=60, bps_cap_seq=1e9, bps_cap_rand=1e9)
+    write = dict(iops_max=4000, lat_us=440, bps_cap_seq=25e6, bps_cap_rand=25e6)
+    _, out, _ = vq(make_host(cache=None, read=read, write=write))
+    assert verdict_of(out) == {"verdict": "fail", "cache_state": "cold_hit_like"}
+    check = next(c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-19")
+    assert check["status"] == "fail" and 20 < check["value"] <= 100
+    assert "cold probe is hit-like" in check["detail"] and "cache inflation is corroborated" in check["detail"]
+
+
 def test_prf_03_a_measured_cold_region_passes_and_an_undecidable_one_is_inconclusive():
     small = dict(capacity_gib=5, hit_iops=92000, write_allocate=True)  # the last GiB written is cached, the cold tenth is not
     _, out, _ = vq(make_host(cache=small))
@@ -251,6 +261,7 @@ def test_pla_19_boundaries():
     assert plausibility.pla_19(15.0, 1.0).status == "pass"
     assert plausibility.pla_19(50.0, 1.0).status == "info"
     assert plausibility.pla_19(100.0, 1.0).status == "info"
+    assert plausibility.pla_19(50.0, 1.0, cache_state="cold_hit_like").status == "fail"
     assert plausibility.pla_19(150.0, 1.0).status == "fail"
     assert plausibility.pla_19(1.0, 20.0).status == "pass"  # a write faster than the read is no sign of a read cache
     assert plausibility.pla_19(10.0, 1.0).value == 10.0

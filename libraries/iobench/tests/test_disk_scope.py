@@ -70,7 +70,7 @@ def test_cei_06_a_strong_disk_is_keyed_by_model_serial_wwn_and_size_alone():
     host.put(VDA + "device/serial", "SER-1\n")
     host.put(VDA + "device/model", "QEMU HARDDISK\n")
     scope = calibrate(host).result["identity"]["disk_scope"]
-    assert (scope["strength"], scope["serial"], scope["model"], scope["machine_id_hash"]) == ("strong", "SER-1", "QEMU HARDDISK", None)
+    assert (scope["strength"], scope["serial"], scope["model"], scope["machine_id_hash"]) == ("strong", "SER-1", None, None)
     other_host = make_host(cache=None)
     other_host.put(VDA + "device/serial", "SER-1\n")
     other_host.put(VDA + "device/model", "QEMU HARDDISK\n")
@@ -82,12 +82,17 @@ def test_cei_06_a_strong_disk_is_keyed_by_model_serial_wwn_and_size_alone():
 
 
 def test_cei_06_placeholder_serials_are_weak_and_use_the_machine_id():
-    for serial in ("QM00001", "QEMU HARDDISK", "000000000000", "AAAAAAAA", "ABABABAB", "0", "", "UNKNOWN", "N/A"):
+    for serial in ("QM00001", "QM00002", "QM99999", "VB0123abcd-5678ef90", "VDISK17",
+                   "QEMU HARDDISK", "000000000000", "AAAAAAAA", "ABABABAB", "0", "", "UNKNOWN", "N/A"):
         host = make_host(cache=None)
         host.put(VDA + "device/serial", serial + "\n")
         scope = res.disk_scope(host, guard.disk_facts(host, "vda"))
         assert scope["serial"] is None and scope["strength"] == "weak", serial
         assert scope["machine_id_hash"] == res.machine_id_hash(host) and scope["key"] == ceilings.scope_key(scope)
+    model_only = make_host(cache=None)
+    model_only.put(VDA + "device/model", "QEMU HARDDISK\n")
+    scope = res.disk_scope(model_only, guard.disk_facts(model_only, "vda"))
+    assert scope["model"] is None and scope["strength"] == "weak"
     host = make_host(cache=None)
     host.put(VDA + "device/serial", "SERIAL-123\n")
     assert guard.disk_facts(host, "vda").serial == "SERIAL-123"
@@ -115,6 +120,47 @@ def test_cei_06_a_serialless_disk_is_bound_to_its_host_and_an_unusable_machine_i
     next_calibration = calibrate(first)
     assert next_calibration.status == "complete"
     assert next_calibration.result["evidence"]["history_rotated"].startswith(f"{HIST}.superseded-")
+
+
+def test_res_03_a_chroot_weak_record_survives_first_boot_after_its_partition_is_deleted():
+    host = make_host(cache=None)
+    host.put("/etc/machine-id", "uninitialized\n")
+    assert calibrate(host).status == "complete"
+    stored = read_json(host, f"{STATE}/result.json")["identity"]
+    assert stored["disk_scope"]["machine_id_hash"] is None
+
+    host.put("/etc/machine-id", "0123456789abcdef0123456789abcdef\n")
+    host.devices.pop("/dev/vda7")
+    for link in ("/sys/dev/block/254:7", "/sys/class/block/vda7"):
+        host.symlinks.pop(link, None)
+
+    live = res.live_identity(host, stored)
+    assert live is not None and live["target"] is None
+    assert res.identity_differs(stored, live) is False
+    assert res.target_changed(stored, live) is True
+    current = check(host)
+    assert current.state in ("current", "current_unproven") and "target_changed" in current.warnings
+
+
+@pytest.mark.parametrize("live_machine_id", ("missing", "uninitialized"))
+@pytest.mark.parametrize("partition_gone", (False, True))
+def test_res_03_a_known_weak_host_id_must_still_be_present_and_equal(live_machine_id, partition_gone):
+    host = make_host(cache=None)
+    assert calibrate(host).status == "complete"
+    stored = read_json(host, f"{STATE}/result.json")["identity"]
+    assert stored["disk_scope"]["machine_id_hash"] is not None
+
+    if live_machine_id == "missing":
+        host.files.pop("/etc/machine-id", None)
+    else:
+        host.put("/etc/machine-id", "uninitialized\n")
+    if partition_gone:
+        host.devices.pop("/dev/vda7")
+        for link in ("/sys/dev/block/254:7", "/sys/class/block/vda7"):
+            host.symlinks.pop(link, None)
+
+    current = check(host)
+    assert (current.state, current.exit_code) == ("stale", 3)
 
 
 # -- raw, file and probe evidence join one history ---------------------------------------------------------------

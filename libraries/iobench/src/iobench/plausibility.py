@@ -1,4 +1,4 @@
-"""Reference cells and the runtime plausibility checks (IOB-REF-01/02, IOB-PLA-01..18).
+"""Reference cells and the runtime plausibility checks (IOB-REF-01/02, IOB-PLA-01..19).
 
 A check's ``fail`` degrades only the proposal groups it lists, through proposal statuses.  Data-integrity
 checks (PLA-14, -15, -16) fail the whole run instead: they are raised as exceptions by the stages and surface
@@ -133,7 +133,7 @@ READ_OVER_WRITE_WARN = 20.0  # [I] inferred: above this, flag the ratio for revi
 READ_OVER_WRITE_FAIL = 100.0  # [I] inferred: a gross mismatch fails without corroboration
 
 
-def pla_19(read_bps: float | None, write_bps: float | None) -> Check:
+def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str | None = None) -> Check:
     """veryquick only: an inferred gross cache-inflation check, calibrated against the cold probe when possible.
 
     The thresholds are provisional [I] values; IOB-ACC-01 must calibrate them on the VM and a known cached device."""
@@ -144,6 +144,9 @@ def pla_19(read_bps: float | None, write_bps: float | None) -> Check:
         return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.0f}x the sequential write (> {READ_OVER_WRITE_FAIL:.0f}x): a cache is serving the reads; inferred threshold, calibrate with IOB-ACC-01",
                      value=round(ratio, 1))
     if ratio > READ_OVER_WRITE_WARN:
+        if cache_state == "cold_hit_like":
+            return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x) and the cold probe is hit-like: cache inflation is corroborated; inferred threshold, calibrate with IOB-ACC-01",
+                         value=round(ratio, 1))
         return Check("IOB-PLA-19", "info", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x): inconclusive without a hit-like cold probe; inferred threshold, calibrate with IOB-ACC-01",
                      value=round(ratio, 1))
     return Check("IOB-PLA-19", "pass", f"sequential read is {ratio:.1f}x the sequential write (within the inferred {READ_OVER_WRITE_WARN:.0f}x band)", value=round(ratio, 1))

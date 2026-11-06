@@ -163,8 +163,9 @@ def live_identity(host: Host, stored: Mapping[str, Any]) -> dict[str, Any] | Non
 
     The target is read first (it still carries the partition facts). A target that is gone (a throwaway partition, a
     formatted data partition, a deleted file) is not a changed identity when its disk can still be identified (IOB-CEI-06).
-    Strong scopes use stored identifiers and size; weak scopes also require the remembered device name, matching machine-id,
-    equal model, and a candidate that remains weak. Only a disk that cannot be found, or that differs, is stale."""
+    Strong scopes use stored identifiers and size; weak scopes require the remembered device name, equal model and size, and a
+    candidate that remains weak. A known stored machine-id hash must match a live non-null hash; a null stored hash binds no host.
+    Only a disk that cannot be found, or that differs, is stale."""
     path = stored["target"]["path"]
     wd = stored.get("workdir_fs")
     wd_path = wd["path"] if wd else None
@@ -181,10 +182,12 @@ def live_identity(host: Host, stored: Mapping[str, Any]) -> dict[str, Any] | Non
     stored_scope = stored.get("disk_scope")
     if stored_scope is None:
         return None  # a record from before the disk scope: nothing to find the disk with
+    stored_machine_id_hash = stored_scope.get("machine_id_hash")
+    live_machine_id_hash = machine_id_hash(host)
     facts = guard.find_disk(host, model=stored_scope["model"], serial=stored_scope["serial"], wwn=stored_scope["wwn"],
                             size_bytes=stored_scope["size_bytes"], hint=stored_scope.get("name"),
-                            machine_id_matches=(stored_scope.get("machine_id_hash") is not None
-                                                and stored_scope["machine_id_hash"] == machine_id_hash(host)))
+                            machine_id_matches=(stored_machine_id_hash is None
+                                                or stored_machine_id_hash == live_machine_id_hash))
     if facts is None:
         return None
     disk = {"devno": None, "model": facts.model, "serial": facts.serial, "wwn": facts.wwn, "partuuid": None, "size_bytes": None,
@@ -206,8 +209,13 @@ def identity_differs(stored: Mapping[str, Any], live: Mapping[str, Any] | None) 
         return True
     if ss["strength"] == "weak" and ls["strength"] == "strong":
         return True
-    # A serial-less disk is bound to its host; an unknown installer-chroot id remains unbound until first boot.
-    return ss["strength"] == "weak" and ls["strength"] == "weak" and ss.get("machine_id_hash") is not None and ss["machine_id_hash"] != ls["machine_id_hash"]
+    if ss["strength"] != "weak" or ls["strength"] != "weak":
+        return False
+    # A null stored hash binds no host, including after a chroot's first boot. A known stored hash requires
+    # the live host to have the same known id; missing or uninitialized now means stale.
+    stored_machine_id_hash = ss.get("machine_id_hash")
+    live_machine_id_hash = ls.get("machine_id_hash")
+    return stored_machine_id_hash is not None and stored_machine_id_hash != live_machine_id_hash
 
 
 def target_changed(stored: Mapping[str, Any], live: Mapping[str, Any]) -> bool:
