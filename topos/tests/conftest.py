@@ -52,6 +52,16 @@ def requires_mcp(func):
         not _mcp_extra_installed(), reason="topos[mcp] extra not installed"
     )(func)
 
+@pytest.fixture(autouse=True)
+def _absent_service_config(monkeypatch, tmp_path):
+    """No test reads the host's /etc/topos/toposd.toml: the implicit service config
+    is an absent file, so its defaults apply. A test that needs a file sets
+    ``topos.service.config.DEFAULT_CONFIG_PATH`` itself."""
+    import topos.service.config as service_config
+
+    monkeypatch.setattr(service_config, "DEFAULT_CONFIG_PATH", tmp_path / "absent-toposd.toml")
+
+
 @pytest.fixture
 def real_docker_inspect():
     """Request this fixture to opt out of ``_standalone_docker_inspect``."""

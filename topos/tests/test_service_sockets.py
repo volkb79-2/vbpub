@@ -850,7 +850,8 @@ def test_run_direct_closes_multiple_listeners_and_oserror_listener(
         raise OSError("listener startup failed")
 
     monkeypatch.setattr(daemon_run, "run_daemon", fail_run_daemon)
-    assert service_cli.main(["run", "--config", str(config_path)]) == 2
+    # A runtime OSError exits 1 so systemd still restarts (RestartPreventExitStatus=2).
+    assert service_cli.main(["run", "--config", str(config_path)]) == 1
     assert listener.fileno() == -1
     assert "toposd run: listener startup failed" in capsys.readouterr().err
 

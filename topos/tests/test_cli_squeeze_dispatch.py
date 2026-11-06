@@ -9,15 +9,6 @@ from topos.actions.squeeze import SqueezeConfig, SqueezeResult
 from topos.cli import _main_squeeze
 
 
-@pytest.fixture(autouse=True)
-def _missing_service_config(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    import topos.service.config as service_config
-
-    monkeypatch.setattr(service_config, "DEFAULT_CONFIG_PATH", tmp_path / "absent-toposd.toml")
-
-
 def _config(tmp_path: Path, *, target: str = "/test.scope") -> SqueezeConfig:
     return SqueezeConfig(
         target=target,

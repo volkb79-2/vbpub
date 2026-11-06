@@ -117,10 +117,10 @@ def run_daemon(
         raise
 
     shutdown.bind_server(server)
-    print(
-        f"serving read-only topos frames on {server.socket.getsockname()} ({start_mode})",
-        flush=True,
-    )
+    # The real address: systemd's socket path when activated (which may differ from the
+    # configured one), else the path this process just bound.
+    bound_address = listener.getsockname() if listener is not None else str(socket_path)
+    print(f"serving read-only topos frames on {bound_address} ({start_mode})", flush=True)
 
     health_registry.mark_disabled("bpf_snapshot_bridge", detail="disabled by default")
     health_registry.mark_disabled("paddr_lifecycle", detail="disabled by default")

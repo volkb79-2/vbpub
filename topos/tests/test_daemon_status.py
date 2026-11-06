@@ -48,10 +48,14 @@ def _mock_systemd_metadata(monkeypatch, socket_path: Path, group_name: str) -> N
     def lstat_path(path: Path, *args, **kwargs):
         if path == socket_path:
             actual = original_lstat(path, *args, **kwargs)
+            # Only ownership is faked; device and inode stay real so the server's
+            # owned-node check on close still sees its own socket.
             return SimpleNamespace(
                 st_uid=0,
                 st_gid=group_id,
                 st_mode=stat.S_IFSOCK | stat.S_IMODE(actual.st_mode),
+                st_dev=actual.st_dev,
+                st_ino=actual.st_ino,
             )
         return original_lstat(path, *args, **kwargs)
 

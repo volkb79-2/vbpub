@@ -72,5 +72,6 @@ topos mcp serve
 
 The client account needs permission to connect to the socket through its
 configured group. The existing `topos daemon preflight`, `install-plan`, and
-`status` commands remain available. The `toposd install`, `uninstall`, and
-`doctor` commands are not implemented by this CLI.
+`status` commands remain available. `toposd install`, `uninstall`, and
+`doctor` are coming in the same release. The old path `/run/topos/topos.sock`
+is no longer served.

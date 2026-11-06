@@ -46,8 +46,11 @@ process also has a systemd-passed listener.
 slice, and sysusers files from the config. `toposd unit check [--config PATH]
 [--root DIR] [--diff]` compares them with installed files. `toposd config check
 [--config PATH] [--json]` validates the service config. `toposd install`,
-`uninstall`, and `doctor` are not implemented by this CLI. The existing
+`uninstall`, and `doctor` are coming in the same release. The existing
 `topos daemon preflight`, `install-plan`, and `status` commands remain available.
+
+The old path `/run/topos/topos.sock` is no longer served, and `topos daemon
+serve` has been removed; an upgrading host needs a fresh install.
 
 ## Protocol
 

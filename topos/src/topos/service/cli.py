@@ -107,7 +107,9 @@ def _run(args: argparse.Namespace, _runtime: CliRuntime) -> int:
     except OSError as exc:
         if listener is not None:
             listener.close()
-        raise _refuse(f"toposd run: {exc}") from None
+        # Exit 1, not 2: a runtime OSError (ENOSPC, EMFILE, ...) may be transient, and
+        # topos.service sets RestartPreventExitStatus=2 for usage and config errors only.
+        raise _refuse(f"toposd run: {exc}", exit_code=1) from None
 
 
 def _config_check(args: argparse.Namespace, runtime: CliRuntime) -> int:
