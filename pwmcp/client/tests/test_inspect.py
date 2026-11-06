@@ -652,7 +652,9 @@ def test_a_subresource_status_of_400_is_reported() -> None:
 def test_a_main_document_status_of_400_is_reported() -> None:
     diagnostics = cli_module._PageDiagnostics()
     diagnostics.main_status = 400
-    assert "main document HTTP 400" in diagnostics.summary()
+    summary = diagnostics.summary()
+    assert summary is not None
+    assert "main document HTTP 400" in summary
 
 
 def test_screenshot_is_not_retried_for_dom_stability(
