@@ -52,6 +52,7 @@ def requires_mcp(func):
         not _mcp_extra_installed(), reason="topos[mcp] extra not installed"
     )(func)
 
+
 @pytest.fixture(autouse=True)
 def _absent_service_config(monkeypatch, tmp_path):
     """No test reads the host's /etc/topos/toposd.toml: the implicit service config

@@ -830,6 +830,19 @@ def test_run_refuses_self_bind_when_systemd_passed_a_listener(
         listener.close()
 
 
+def test_run_direct_refuses_self_bind_with_activated_listener_and_closes_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import topos.service.cli as service_cli
+
+    config_path = _write_config(tmp_path / "toposd.toml")
+    listener = _listening_socket(tmp_path / "passed.sock")
+    monkeypatch.setattr(service_cli, "adopt_listeners", lambda _expected: {"observe": [listener]})
+    assert service_cli.main(["run", "--config", str(config_path), "--self-bind"]) == 2
+    assert listener.fileno() == -1
+    assert "--self-bind cannot be combined with a systemd-passed listener" in capsys.readouterr().err
+
+
 def test_run_direct_closes_multiple_listeners_and_oserror_listener(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
