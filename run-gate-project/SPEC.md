@@ -2396,7 +2396,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `R-09`'s rule): `enabled` (bool, default true), `interval` (the `budget`
     grammar, default `"1s"`), `damon` (bool, default true),
     `socket_path` (absolute Unix-socket path, default
-    `/run/cgprofile/ctl.sock`), and `admission_wait` (the
+    `/run/cgprofile/control/cgprofile.sock`), and `admission_wait` (the
     `budget` grammar, default `"10m"`). Per lane: `profile = false` (opt out
     entirely — `profile = true` is REFUSED by name, a no-op typo for "delete
     this key") or a table `[lanes.<n>.profile] { enabled, damon }` overriding
@@ -2492,7 +2492,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 - **`R-43j` Socket-only carrier (RG-55/P5 C2, RG-156).** Run-gate reaches
   the profiler daemon only through its control socket, `socket_path` of the
-  `[profile]` table (default `/run/cgprofile/ctl.sock`). There is no
+  `[profile]` table (default `/run/cgprofile/control/cgprofile.sock`). There is no
   `docker exec` carrier, no `transport` or `daemon` key and no
   `RUN_GATE_PROFILE_TRANSPORT`; each is refused by name at load. An
   unreachable socket carries its CP-31 cause tag in the one warning
@@ -2734,19 +2734,30 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   read-only query bound to the command's own peer. Before launching the lane,
   Run-Gate queries the daemon's control version response and requires observer
   contract 2, the fixed socket path, and `listening = true`. Before building Docker argv, Run-Gate
-  validates `/run/cgprofile/observer` as a root-owned directory with no group
+  validates `/run/cgprofile/observer` as a `root:root` directory with no group
   or world write access and group search permission; other users may traverse
-  the known socket path but cannot list or connect. Its socket must be root-owned, match the directory GID, be
-  group-connectable, and grant no access to other users. Missing or unsafe
+  the known socket path but cannot list or connect. Its socket must be root-owned,
+  group-connectable, and grant no access to other users. Its GID must be non-zero
+  and differ from the host Docker GID and the control socket GID. The host Docker
+  GID is `$RUN_GATE_HOST_DOCKER_GID` (integer) when set, else the owning GID of the
+  Docker API socket (`$DOCKER_HOST` `unix://` path, default `/var/run/docker.sock`);
+  the cockpit's group database is never used, and with neither source the preflight
+  refuses naming both. Missing or unsafe
   state is infrastructure ERROR; Docker must not invent a bind source. The
   lane must declare `resources.memory` and positive-integer `resources.pids`,
   which become `--memory` and `--pids-limit`; observer lanes refuse
   `RUN_GATE_EXTRA_MOUNTS`. The container receives that observer directory at
-  `/run/cgprofile-observer` via a read-only directory bind; Run-Gate supplies
-  the dedicated directory GID as a supplementary group and sets
+  `/run/cgprofile-observer` via a read-only directory bind; the host socket is
+  `/run/cgprofile/observer/cgprofile.sock`, so the in-lane endpoint is
+  `/run/cgprofile-observer/cgprofile.sock`. Run-Gate supplies the observer
+  socket GID as a supplementary group and sets
   `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container socket path. It does
-  not mount `ctl.sock`, grant the Docker socket, or change the container's
+  not mount `/run/cgprofile/control/cgprofile.sock`, grant the Docker socket,
+  or change the container's
   private PID/cgroup/network namespaces.
+  This release requires the new host socket layout. On a host still using the
+  old layout, preflight reports that the host socket cutover is required;
+  keep the earlier Run-Gate and Assay pins there until cutover.
   - The observer listener belongs to the existing cgprofile daemon and accepts
     exactly one `resource-limits` request with a positive native thread ID.
     It has no `start`, `stop`, `place`, or other control verbs. The daemon

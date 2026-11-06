@@ -352,6 +352,28 @@ is implied (RG-56 remains separate). This ordering honors explicit placement
 without turning host contention, profiler availability, or measurement data
 into a functional or mutation result.
 
+## Host service sockets use a per-level layout
+
+Run-Gate uses cgprofile's control endpoint at
+`/run/cgprofile/control/cgprofile.sock`. Observer lanes use the separate host
+endpoint `/run/cgprofile/observer/cgprofile.sock`, mounted read-only into the
+lane at `/run/cgprofile-observer/cgprofile.sock`. Binding each level directory
+keeps the consumer's mount scoped to the access it needs and preserves the
+socket basename inside the lane.
+
+The level directories are `root:root` with mode `0755`; the socket inode's
+group grants access. Run-Gate runs inside the cockpit container, whose group
+database may map `docker` to another GID or omit it, so it never consults the
+group database. The host Docker GID comes from the explicit
+`RUN_GATE_HOST_DOCKER_GID` override, else from the owning GID of the mounted
+Docker API socket (`DOCKER_HOST` when it names a `unix://` socket, else
+`/var/run/docker.sock`); with neither, preflight refuses naming both sources.
+Run-Gate checks that the observer socket GID is non-zero and differs from both
+the Docker GID and the control socket GID. A directory GID cannot identify a
+socket access group in this layout. Preflight checks the new paths only and
+names the required host socket cutover when an old layout is still installed.
+Hosts keep their earlier Run-Gate and Assay pins until that cutover.
+
 ## Private-namespace R2 uses a read-only cgroup observer
 
 Assay B145 must see every enforcing ancestor of a mutation worker. A private
@@ -365,7 +387,7 @@ read-only counter query.
 The existing cgprofile daemon already has the host proc and cgroup view
 required for its measurement and placement duties. Run-Gate's explicit
 resource_observer = "cgprofile" lane setting mounts a separate
-observer-only Unix socket, not ctl.sock, into the opted-in tester container.
+observer-only Unix socket, not the control socket, into the opted-in tester container.
 It is supported on native Assay lanes and command lanes whose resolved
 environment has `mode = "ephemeral"`. Its intended command use is a wrapper that
 launches an Assay campaign (such as Assay's B105 self-qualification driver).
@@ -401,15 +423,15 @@ path, sibling cgroup, or control operation. The explicit lane declaration is
 the grant; the command process is trusted with the same narrow query
 capability whether or not it passes the endpoint onward to Assay.
 The observer accepts only a resource-counter request; filesystem read-only
-alone would not constrain the existing control socket's verbs. Docker also
-receives the socket's observed GID as a supplementary group, and the socket
-path, type, owner, group, and mode are checked before launch. Missing service
-or unsafe socket state is an infrastructure refusal, never a reason to
-silently run without B145. To reject a socket that uses Docker's powerful
-group, Run-Gate reads the numeric GID from the root-owned `/run/cgprofile`
-control directory provisioned as `root:docker` by host setup. It does not use
-`getgrnam("docker")` from the devcontainer's potentially different group
-table, and it refuses when that host path cannot be verified.
+alone would not constrain the control socket's verbs. Docker also receives
+the socket's observed GID as a supplementary group, and the socket path, type,
+owner, group, and mode are checked before launch. Missing service or unsafe
+socket state is an infrastructure refusal, never a reason to silently run
+without B145. To reject a socket that uses Docker's powerful group, Run-Gate
+takes the Docker GID from `RUN_GATE_HOST_DOCKER_GID` or the Docker API
+socket's owning GID, never the group database. The observer group must
+also differ from the control socket group, which keeps the two APIs separately
+granted.
 
 The client sends only its native thread ID. The daemon binds that request to
 SO_PEERCRED, checks the thread's host/namespace PID mapping, verifies that

@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Changed
+- Run-Gate's default cgprofile control socket and observer lane endpoint use the new per-level layout, with no old-path fallback. Observer preflight checks the root-owned level directory and requires the observer socket GID to differ from the host Docker and control socket GIDs; the host Docker GID is `RUN_GATE_HOST_DOCKER_GID` or else the owning GID of the Docker API socket, not the cockpit's group database. A host still on the old layout receives a cutover message; keep its earlier Run-Gate and Assay pins until the host is cut over.
+
 <!-- cmru: release history -->
 
 ## [25.2.0] - 2026-11-05

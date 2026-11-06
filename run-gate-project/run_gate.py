@@ -144,7 +144,6 @@ import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import fcntl
-import grp
 import hashlib
 import importlib.metadata as importlib_metadata
 import io
@@ -505,11 +504,11 @@ class RunGateArgumentParser(argparse.ArgumentParser):
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
 CGPROFILE_RESOURCE_OBSERVER_DIRECTORY = "/run/cgprofile/observer"
 CGPROFILE_RESOURCE_OBSERVER_SOURCE = (
-    f"{CGPROFILE_RESOURCE_OBSERVER_DIRECTORY}/resource-observer.sock"
+    f"{CGPROFILE_RESOURCE_OBSERVER_DIRECTORY}/cgprofile.sock"
 )
 CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY = "/run/cgprofile-observer"
 CGPROFILE_RESOURCE_OBSERVER_TARGET = (
-    f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY}/resource-observer.sock"
+    f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY}/cgprofile.sock"
 )
 ASSAY_RESOURCE_OBSERVER_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
 # `host` (default) and `bare-host` (opt-out) swapped roles in the
@@ -530,6 +529,8 @@ HOST_IMAGE_ENV_VAR = "RUN_GATE_HOST_IMAGE"
 ENV_USER_INVOKER = "invoker"
 DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest"
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
+HOST_DOCKER_GID_ENV_VAR = "RUN_GATE_HOST_DOCKER_GID"
+DOCKER_SOCKET_DEFAULT = "/var/run/docker.sock"
 MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
 # RG-NARROW: a container lane sees only the judged worktree + the git metadata
 # it needs. The plain (main) checkout has no narrower view, so it is refused
@@ -724,7 +725,7 @@ PROFILE_REMOVED_KEYS = {
     "daemon": "run-gate no longer execs into a daemon container; delete the "
               "key (the daemon is reached through 'socket_path')",
 }
-PROFILE_SOCKET_PATH_DEFAULT = "/run/cgprofile/ctl.sock"
+PROFILE_SOCKET_PATH_DEFAULT = "/run/cgprofile/control/cgprofile.sock"
 PROFILE_ADMISSION_WAIT_DEFAULT = "10m"
 # Self-target discovery is optional profiling preflight, so neither Docker
 # identity probe may hold a lane longer than the ctl status/version probes.
@@ -2798,12 +2799,13 @@ def socket_unreachable_cause(socket_path: str, exc: BaseException) -> str:
     because there is nobody to answer). Empty for any other failure."""
     if isinstance(exc, FileNotFoundError):
         if not os.path.isdir(os.path.dirname(socket_path) or "."):
-            return ("socket-not-mounted: the socket directory does not exist "
-                    "here (bind-mount /run/cgprofile into the lane, or the "
-                    "host has no cgprofile daemon runtime directory)")
+            return ("socket-not-mounted: the control socket directory does not "
+                    "exist here; complete the host cgprofile socket cutover "
+                    "and bind-mount the configured control directory")
         return ("socket-missing: the directory exists but the socket node is "
                 "gone (the cgprofile daemon is not running, or the node was "
-                "removed)")
+                "removed); complete the host cgprofile socket cutover if this "
+                "host still uses the old layout")
     if isinstance(exc, ConnectionRefusedError):
         return ("daemon-refusing: a socket node exists but nothing is "
                 "listening (the daemon exited, is restarting, or refuses to "
@@ -8730,7 +8732,42 @@ def extra_mount_flags() -> list[str]:
     return flags
 
 
-def resource_observer_docker_flags(lane: dict, environment: dict) -> list[str]:
+def host_docker_gid() -> int:
+    """The host's numeric Docker GID, from facts visible inside the cockpit.
+
+    Run-gate runs in a container whose group database may map `docker` to a
+    different GID or omit it, so the group database is never consulted.
+    Order: (1) the explicit `RUN_GATE_HOST_DOCKER_GID` override (integer),
+    (2) the owning GID of the mounted Docker API socket (`DOCKER_HOST` when it
+    names a unix:// socket, else /var/run/docker.sock), else refuse naming
+    both sources.
+    """
+    override = os.environ.get(HOST_DOCKER_GID_ENV_VAR, "").strip()
+    if override:
+        try:
+            gid = int(override)
+        except ValueError:
+            gid = -1
+        if gid < 0:
+            fail_infra(f"${HOST_DOCKER_GID_ENV_VAR} must be a non-negative "
+                       f"integer GID, got {override!r}")
+        return gid
+    docker_host = os.environ.get("DOCKER_HOST", "")
+    socket_path = (docker_host[len("unix://"):]
+                   if docker_host.startswith("unix://") and
+                   docker_host[len("unix://"):] else DOCKER_SOCKET_DEFAULT)
+    try:
+        return os.stat(socket_path).st_gid
+    except OSError as exc:
+        fail_infra("cannot determine the host Docker GID: set "
+                   f"${HOST_DOCKER_GID_ENV_VAR} to the host docker group's "
+                   f"numeric GID, or mount the Docker API socket at "
+                   f"{socket_path} so its owning GID can be read: {exc}")
+
+
+def resource_observer_docker_flags(
+        lane: dict, environment: dict,
+        control_socket_path: str | None = None) -> list[str]:
     """Mount only cgprofile's read-only resource-observer socket.
 
     The observer protocol is a separate daemon listener; never mount the
@@ -8752,54 +8789,50 @@ def resource_observer_docker_flags(lane: dict, environment: dict) -> list[str]:
                    "extra mounts could expose host control interfaces")
     socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
     directory_path = socket_path.parent
-    docker_group_directory = directory_path.parent
+    control_socket_path = control_socket_path or PROFILE_SOCKET_PATH_DEFAULT
     try:
         parent = os.lstat(directory_path)
         observed = os.lstat(socket_path)
     except OSError as exc:
         fail_infra(f"cgprofile resource observer directory or socket is unavailable: "
-                   f"{directory_path}, {socket_path}: {exc}")
+                   f"{directory_path}, {socket_path}: {exc}; complete the host "
+                   "cgprofile socket cutover and verify the service is installed")
     try:
-        docker_group_source = os.lstat(docker_group_directory)
+        control = os.lstat(control_socket_path)
     except OSError as exc:
-        fail_infra("cannot inspect the host Docker group source "
-                   f"{docker_group_directory}: {exc}")
+        fail_infra("cannot inspect cgprofile control socket "
+                   f"{control_socket_path}: {exc}; complete the host cgprofile "
+                   "socket cutover and verify the service is installed")
     if (
         not stat.S_ISDIR(parent.st_mode)
         or parent.st_uid != 0
+        or parent.st_gid != 0
         or parent.st_mode & 0o022
         or not parent.st_mode & 0o010
     ):
         fail_infra(f"cgprofile resource observer directory is not a safe "
-                   f"root-owned, group-searchable directory: {directory_path}")
+                   f"root-owned (root:root), group-searchable directory: "
+                   f"{directory_path}")
     if not stat.S_ISSOCK(observed.st_mode):
         fail_infra(f"cgprofile resource observer path is not a Unix socket: "
                    f"{socket_path}")
-    if observed.st_uid != 0 or observed.st_gid != parent.st_gid:
-        fail_infra("cgprofile resource observer socket ownership does not "
-                   "match its root-owned socket directory")
-    if (
-        not stat.S_ISDIR(docker_group_source.st_mode)
-        or docker_group_source.st_uid != 0
-    ):
-        fail_infra("cannot determine the host Docker group from the root-owned "
-                   f"cgprofile control directory: {docker_group_directory}")
-    if (
-        docker_group_source.st_gid == 0
-        or stat.S_IMODE(docker_group_source.st_mode) != 0o770
-    ):
-        fail_infra("host Docker group source must be root-owned, have a "
-                   "non-root group, and mode 0770: "
-                   f"{docker_group_directory}")
+    if observed.st_uid != 0:
+        fail_infra("cgprofile resource observer socket must be root-owned")
+    if not stat.S_ISSOCK(control.st_mode):
+        fail_infra(f"cgprofile control path is not a Unix socket: "
+                   f"{control_socket_path}")
     if observed.st_mode & 0o007 or not observed.st_mode & 0o020:
         fail_infra("cgprofile resource observer socket must be group-connectable "
                    "and not accessible to other users")
-    # `/run/cgprofile` is provisioned root:docker by the host setup unit, so
-    # its numeric GID is the host fact. `grp.getgrnam()` reads this container's
-    # group table, which can map the name to another numeric GID or omit it.
-    if observed.st_gid == docker_group_source.st_gid:
+    if observed.st_gid == 0:
+        fail_infra("cgprofile resource observer socket must use a non-root group")
+    docker_gid = host_docker_gid()
+    if observed.st_gid == docker_gid:
         fail_infra("cgprofile observer must use its dedicated group, not the "
                    "host docker group")
+    if observed.st_gid == control.st_gid:
+        fail_infra("cgprofile observer must use a group distinct from the "
+                   "control socket group")
     return [
         "--mount",
         f"type=bind,source={directory_path},target="
@@ -15998,7 +16031,10 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         *extra_flags,
         *cowtree_mount_flags(resource_settings, "ephemeral"),
         *preload_flags,
-        *resource_observer_docker_flags(lane, env)]
+        *resource_observer_docker_flags(
+            lane, env,
+            (profile_plan or {}).get("socket_path")
+            or PROFILE_SOCKET_PATH_DEFAULT)]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
@@ -17704,7 +17740,8 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "",
         "profiling (RG-55/P5) — optional resource telemetry, never judgment:",
         "  [profile]   enabled, interval, damon, socket_path (default",
-        "              /run/cgprofile/ctl.sock; the only carrier), and bounded",
+        "              /run/cgprofile/control/cgprofile.sock; the only carrier),",
+        "              and bounded",
         "              admission_wait (default 10m); 'daemon' and 'transport' were",
         "              removed (RG-156)",
         "  watch       one daemon reader per session records readings/verdicts;",

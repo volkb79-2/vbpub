@@ -75,14 +75,19 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    answers, every time, unless
    `[profile] enabled = false` or `RUN_GATE_PROFILE=off`. For the PRECISE
    path (exact `memory.peak`, DAMON hot-set), the **cgroup-profiler daemon
-   is host infrastructure, started once from the vbpub checkout** — `cd
-   scripts/cgroup-profiler && ciu up` — never per-project, and never
-   something a consumer's own gate config starts or stops. A runner
+   is host infrastructure**, installed through its `cgpd install` verb or
+   the host-setup consumer; see the [native deployment guide](../scripts/cgroup-profiler/docs/NATIVE-DEPLOYMENT.md).
+   It is never per-project, and never something a consumer's own gate config
+   starts or stops. A runner
    without access to the daemon's control socket (a locked-down CI box, a
    sandboxed agent) should set `RUN_GATE_PROFILE=off`; run-gate reaches the
-   daemon only through `/run/cgprofile/ctl.sock` (RG-156: no `docker exec`
-   carrier, no `transport`/`daemon` keys), so a lane needs that directory
-   bind-mounted and the socket's group. `doctor`'s "profiler" check reports
+   daemon only through `/run/cgprofile/control/cgprofile.sock` (RG-156: no `docker exec`
+   carrier, no `transport`/`daemon` keys), so a lane needs the control level
+   directory `/run/cgprofile/control` bind-mounted and the socket's group.
+   A Run-Gate or Assay release using these paths requires the
+   host socket cutover; retain the earlier pins on a host still using the
+   old layout.
+   `doctor`'s "profiler" check reports
    the socket's reachability; an unreachable socket is named by its cause tag
    (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
    `socket-permission`), never as a guess. On the bare-host daemon path,
@@ -141,7 +146,7 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    damon = true                   # default true; DAMON hot-set classification
                                   # when the daemon supports it (basic-path
                                   # sampling never has DAMON data either way)
-   socket_path = "/run/cgprofile/ctl.sock"  # the only carrier (RG-156)
+   socket_path = "/run/cgprofile/control/cgprofile.sock"  # the only carrier (RG-156)
    admission_wait = "10m"          # wait bound; then proceed with one warning
 
    # run-gate.toml or run-gate.root.toml — [footprint]: same whole-table
@@ -529,23 +534,29 @@ pids = 8192
 
 Before starting the lane, Run-Gate queries cgprofile's control `version`
 response and requires observer contract 2, the fixed observer socket path,
-and `listening = true`. It checks the root-owned, non-writable observer
-directory and mounts that directory read-only at `/run/cgprofile-observer`.
-The daemon owns only the socket name inside this host-setup-owned directory,
-so a daemon restart rebinds a path an already-running lane can still resolve.
-Run-Gate grants the dedicated observer GID and sets
+and `listening = true`. It checks that the observer directory is owned by
+`root:root` and is not writable by group or other users, then mounts it
+read-only at `/run/cgprofile-observer`.
+The host path is `/run/cgprofile/observer/cgprofile.sock`, and the directory
+bind keeps the basename in the lane as
+`/run/cgprofile-observer/cgprofile.sock`. Run-Gate grants the dedicated
+observer socket GID and sets
 `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container socket path. Observer
 lanes require explicit per-container `resources.memory` and `resources.pids`
 ceilings so candidate-local `memory.events` and `pids.events` can support
 attribution. `RUN_GATE_EXTRA_MOUNTS` is refused for these lanes. It does not mount
-`/run/cgprofile/ctl.sock`, the Docker socket, or any host namespace. The
+`/run/cgprofile/control/cgprofile.sock`, the Docker socket, or any host namespace. The
 existing daemon's separate observer listener accepts only a resource-limit
 query bound to the caller's peer credentials and native thread ID; it returns
 the caller cgroup's ancestry under the configured gates slice, without PIDs or
-sibling cgroups. The launch guard compares the observer GID with the numeric
-GID of the root-owned `/run/cgprofile` control directory (provisioned as
-`root:docker` by host setup); it does not trust the devcontainer's group-name
-table and refuses when that host path is unavailable.
+sibling cgroups. Run-Gate's launch guard takes the host Docker GID from the
+explicit `RUN_GATE_HOST_DOCKER_GID` override, else from the owning GID of the
+mounted Docker API socket (`DOCKER_HOST` `unix://` path, default
+`/var/run/docker.sock`), never from the cockpit's group database, and refuses
+naming both sources when neither is available. It requires the observer socket
+GID to be non-zero and distinct from both the Docker GID and the control
+socket GID. Level directories are
+`root:root`, so their GIDs do not identify socket access groups.
 
 Assay uses local counters when its own hierarchy view is complete. Remote
 observation is used only when the local error specifically indicates hidden
