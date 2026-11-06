@@ -32,7 +32,7 @@ jobs:
       - name: Check MCR tag matrix
         run: |
           mkdir -p .cache/current
-          python3 modern-debian-tools-python-debug/check-mcr-devcontainer-tags.py \
+          python3 mdt-cockpit/check-mcr-devcontainer-tags.py \
             --json-out .cache/current/mcr-tags.json \
             --table-out .cache/current/mcr-tags.txt
 

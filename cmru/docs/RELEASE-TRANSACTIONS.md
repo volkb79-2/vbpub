@@ -293,7 +293,7 @@ Every changed project releases **one after another** — its own prepare, gate,
 tag, build, publish, and promote all finish before the next project's cycle
 begins. This is what lets a later project resolve an earlier project's
 brand-new release within the *same* `cmru release` run (an OCI image project
-like `modern-debian-tools-python-debug` picking up a wheel project's
+like `mdt-cockpit` picking up a wheel project's
 just-published version, for example) instead of always trailing one run behind.
 
 ```text
@@ -554,16 +554,18 @@ A failed feature-source (`--from-worktree`) candidate is abandonable again (KI-8
 source record is compared with the transaction's recorded base commit, not with the
 worktree's current HEAD, which moves with the first prepare commit.
 
-### Worked example: releasing ciu, nyxloom, and modern-debian-tools-python-debug together
+### Worked example: releasing ciu, nyxloom, and mdt-cockpit together
+
+The former image project retired on 2026-11-05; this example uses its successor.
 
 Suppose only these three have real changes this run (`project_order` puts
 `ciu` and `nyxloom` — both wheel projects — ahead of the OCI image project
-`modern-debian-tools-python-debug`, which resolves their wheels at build time).
+`mdt-cockpit`, which resolves their wheels at build time).
 
 **Happy path**
 
 ```
-[INFO] Release plan: 3/7 project(s) changed — releasing in order: ciu, nyxloom, modern-debian-tools-python-debug
+[INFO] Release plan: 3/7 project(s) changed — releasing in order: ciu, nyxloom, mdt-cockpit
 [INFO] Unchanged, skipping: cmru (no commits under cmru/ since cmru-v2.0.0 @ 1a2b3c4d)
 [INFO] Unchanged, skipping: pwmcp (no commits under pwmcp/ since pwmcp-v1.4.2 @ 2b3c4d5e)
 [INFO] Unchanged, skipping: tls-edge (no commits under tls-edge/ since tls-edge-v0.3.1 @ 3c4d5e6f)
@@ -584,20 +586,20 @@ Suppose only these three have real changes this run (`project_order` puts
 [INFO] Building + publishing nyxloom (nyxloom-v0.2.0)   # wheel + 2 OCI images published
 [INFO] nyxloom: promoted release candidate to origin/main  # exact <sha B>
 
-=== modern-debian-tools-python-debug: releasing ===
-[INFO] modern-debian-tools-python-debug: preparing release inputs   # build-push.py --build:
+=== mdt-cockpit: releasing ===
+[INFO] mdt-cockpit: preparing release inputs   # build-push.py --build:
                                                                      #   resolves ciu-v4.9.0 / nyxloom-v0.2.0
                                                                      #   LIVE — they're already published
-[INFO] modern-debian-tools-python-debug: committed prepared release inputs   # package-manifests-versioned/ diff
-[INFO] modern-debian-tools-python-debug: running required release gate
-[INFO] Building + pushing modern-debian-tools-python-debug (oci-image — registry, no tag)   # image pushed to ghcr
-[INFO] modern-debian-tools-python-debug: promoted release candidate to origin/main  # exact <sha C>
+[INFO] mdt-cockpit: committed prepared release inputs   # package-manifests-versioned/ diff
+[INFO] mdt-cockpit: running required release gate
+[INFO] Building + pushing mdt-cockpit (oci-image — registry, no tag)   # image pushed to ghcr
+[INFO] mdt-cockpit: promoted release candidate to origin/main  # exact <sha C>
 
-[INFO] Released: ciu (ciu-v4.9.0), nyxloom (nyxloom-v0.2.0), modern-debian-tools-python-debug (image)
+[INFO] Released: ciu (ciu-v4.9.0), nyxloom (nyxloom-v0.2.0), mdt-cockpit (image)
 ```
 
 End state: `origin/main` is at `<sha C>`; `ciu-v4.9.0` and `nyxloom-v0.2.0` are
-real GitHub Releases with wheels attached; the mdt image on ghcr was built
+real GitHub Releases with wheels attached; the mdt-cockpit image on GHCR was built
 against those exact wheel versions. The `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>`
 branch/worktree and its origin candidate branch are removed; your local `main` is synced to `<sha C>`.
 That removal is real here because this run actually pushed the backup once at least one
@@ -629,13 +631,13 @@ nyxloom and mdt are attempted again.
 If `origin/main` merely advanced during the gate without touching the project's paths,
 promotion merges it into the candidate and succeeds (REL-04). The case below is the one that
 stops: the concurrent update touched the project's own paths (or conflicted, or kept moving).
-mdt's `prepare` succeeds, its image is built and pushed, but the final candidate
+mdt-cockpit's `prepare` succeeds, its image is built and pushed, but the final candidate
 promotion stops:
 
 ```
-=== modern-debian-tools-python-debug: releasing ===
-[INFO] modern-debian-tools-python-debug: committed prepared release inputs
-[INFO] Building + pushing modern-debian-tools-python-debug (oci-image — registry, no tag)
+=== mdt-cockpit: releasing ===
+[INFO] mdt-cockpit: committed prepared release inputs
+[INFO] Building + pushing mdt-cockpit (oci-image — registry, no tag)
 [INFO] ... ghcr push succeeded ...
 [ERROR] release candidate was not promoted to origin/main; the candidate branch was retained
 [ERROR] Release transaction failed; retained .../cmru-release-20260818_195012-all-abc123 on branch

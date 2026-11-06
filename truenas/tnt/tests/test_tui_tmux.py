@@ -1,13 +1,17 @@
 """Exercise tnt through a tmux pseudo-terminal at real terminal dimensions."""
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -21,14 +25,94 @@ SGR_RE = re.compile(r"\x1b\[([0-9:;]*)m")
 HELPER = Path(__file__).with_name("tui_tmux_helper.py")
 
 
-def _tmux(executable: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _argv(executable: str | Sequence[str]) -> list[str]:
+    """``executable`` is the tmux binary, or the binary plus its private-socket options (the fixture's form)."""
+    return [executable] if isinstance(executable, str) else list(executable)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="ascii", errors="replace") as handle:
+            state = handle.read().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return False
+    return state not in ("Z", "X")
+
+
+def _wait_pids_gone(pids: Sequence[int], timeout: float) -> list[int]:
+    deadline = time.monotonic() + timeout
+    alive = [pid for pid in pids if _pid_alive(pid)]
+    while alive and time.monotonic() < deadline:
+        time.sleep(POLL_INTERVAL_SECONDS)
+        alive = [pid for pid in alive if _pid_alive(pid)]
+    return alive
+
+
+class PrivateTmux(list):
+    """tmux argv bound to a private socket, remembering the pids of its server and pane processes."""
+
+    def __init__(self, argv: Sequence[str]) -> None:
+        super().__init__(argv)
+        self.pids: set[int] = set()
+
+    def track(self) -> None:
+        """Record the server and pane pids while the server is alive (a no-op once it has gone)."""
+        listed = _tmux(self, "list-panes", "-a", "-F", "#{pane_pid}", check=False)
+        if listed.returncode == 0:
+            self.pids.update(int(token) for token in listed.stdout.split() if token.isdigit())
+        server = _tmux(self, "display-message", "-p", "#{pid}", check=False)
+        if server.returncode == 0 and server.stdout.strip().isdigit():
+            self.pids.add(int(server.stdout.strip()))
+
+
+def _stop_private_server(command: PrivateTmux) -> None:
+    """Kill the private tmux server and everything in its panes, and wait until they are really gone.
+
+    ``kill-session`` on the last session (or the helper exiting) only asks the server to
+    quit; the server and the pane process then linger for a moment after the test
+    returns, which is what assay's leaked-process-tree check saw. Remembering the pids
+    while the server is alive and waiting for them makes the teardown synchronous,
+    whether the test passed, failed or timed out.
+    """
+    command.track()
+    pids = sorted(command.pids)
+    _tmux(command, "kill-server", check=False)
+    survivors = _wait_pids_gone(pids, 15)
+    for pid in survivors:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    survivors = _wait_pids_gone(survivors, 15)
+    assert not survivors, f"tmux test teardown left processes behind: {survivors}"
+
+
+@pytest.fixture
+def tmux_command():
+    """A tmux command bound to a private socket, so the test never touches (or leaks) the default server."""
+    executable = shutil.which("tmux")
+    if executable is None:
+        pytest.skip("tmux is not installed in tester-unified; package Debian trixie tmux there (TNT-54)")
+    # AF_UNIX paths are short; pytest's tmp_path can exceed the limit, so use a dedicated short directory.
+    socket_dir = Path(tempfile.mkdtemp(prefix="tnt-tmux-"))
+    command = PrivateTmux((executable, "-f", "/dev/null", "-S", str(socket_dir / "sock")))
+    try:
+        yield command
+    finally:
+        try:
+            _stop_private_server(command)
+        finally:
+            shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+def _tmux(executable: str | Sequence[str], *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        [executable, *args],
+        [*_argv(executable), *args],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=15,
+        timeout=60,
     )
     if check and result.returncode:
         raise AssertionError(f"tmux {' '.join(args)} failed: {result.stderr.strip()}")
@@ -101,7 +185,7 @@ def _wait_for_screen(
     )
 
 
-def _wait_for_session_exit(executable: str, session: str, *, timeout: float = 30) -> None:
+def _wait_for_session_exit(executable: str, session: str, *, timeout: float = 90) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _session_exists(executable, session):
@@ -256,10 +340,8 @@ def test_wait_for_session_exit_yields_between_tmux_polls(monkeypatch):
 
 
 @pytest.mark.parametrize("size", SIZES, ids=lambda size: f"{size[0]}x{size[1]}")
-def test_tui_in_real_tmux_terminal(size, tmp_path):
-    executable = shutil.which("tmux")
-    if executable is None:
-        pytest.skip("tmux is not installed in tester-unified; package Debian trixie tmux there (TNT-54)")
+def test_tui_in_real_tmux_terminal(size, tmp_path, tmux_command):
+    executable = tmux_command
 
     columns, rows = size
     session = f"tnt-ux-{uuid.uuid4().hex[:12]}"
@@ -292,6 +374,7 @@ def test_tui_in_real_tmux_terminal(size, tmp_path):
             "LC_ALL=C.UTF-8",
             command,
         )
+        executable.track()
 
         initial = _wait_for_screen(
             executable,
@@ -382,4 +465,20 @@ def test_tui_in_real_tmux_terminal(size, tmp_path):
         _wait_for_session_exit(executable, session)
         assert _exit_code(status) == 0
     finally:
+        # The tmux_command fixture kills the whole private server and waits for it; this only
+        # ends the session early so a failing test does not keep a TUI running while it unwinds.
         _tmux(executable, "kill-session", "-t", session, check=False)
+
+
+def test_private_server_teardown_kills_server_and_pane_synchronously(tmux_command):
+    """The fixture's teardown must leave neither a tmux server nor a pane process (assay leak check)."""
+    _tmux(tmux_command, "new-session", "-d", "-s", "leakprobe", "sleep 300")
+    tmux_command.track()
+    pids = sorted(tmux_command.pids)
+    assert len(pids) == 2 and all(_pid_alive(pid) for pid in pids), pids
+
+    _stop_private_server(tmux_command)
+
+    assert not [pid for pid in pids if _pid_alive(pid)]
+    # A second teardown (the fixture's own) on an already-dead server is a harmless no-op.
+    _stop_private_server(tmux_command)

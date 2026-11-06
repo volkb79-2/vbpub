@@ -14,7 +14,7 @@ the same host are owned elsewhere, and nothing here should duplicate them:
 | Concern | Owner |
 |---|---|
 | Per-server game slices (`wings-<uuid>.slice`, memory floors, CPU/IO weight) | Wings itself — patch stack in [`../../wings-cgroups/`](../../wings-cgroups/). Rollout on this node: [WINGS-CGROUPS-ROLLOUT.md](WINGS-CGROUPS-ROLLOUT.md) |
-| Dev tiers: `dev-interactive.slice` (devcontainers), `dev-background.slice` (long-running/build stacks), and `dev-gates.slice` (disposable test/gate lanes), their measured IO caps, the fio baseline, BFQ setup, **and `/etc/docker/daemon.json`** | [`../../modern-debian-tools-python-debug/host-setup/`](../../modern-debian-tools-python-debug/host-setup/) — `sudo host-setup/install.sh --with-baseline` |
+| Dev tiers: `dev-interactive.slice` (devcontainers), `dev-background.slice` (long-running/build stacks), and `dev-gates.slice` (disposable test/gate lanes), their measured IO caps, the fio baseline, BFQ setup, **and `/etc/docker/daemon.json`** | [`../../mdt-cockpit/host-setup/`](../../mdt-cockpit/host-setup/) — `sudo host-setup/install.sh --with-baseline` |
 
 `setup-cgroups.sh` here is therefore **game-side only** — and RETIRED as of
 the host dev-tier cgroup governance rollout: patched Wings now places and
@@ -106,7 +106,7 @@ sudo scripts/partition-editor.py --disk /dev/vda add-swap --count 2 --size fill 
 # 4) priorities
 #    - Pterodactyl panel: set Soulmask memory/CPU/IO limits.
 #    - dev/test/build containers: governed by mdt host-setup, not this guide —
-#      sudo <vbpub>/modern-debian-tools-python-debug/host-setup/install.sh --with-baseline
+#      sudo <vbpub>/mdt-cockpit/host-setup/install.sh --with-baseline
 
 # 5) RCON + verify
 docker pull itzg/rcon-cli

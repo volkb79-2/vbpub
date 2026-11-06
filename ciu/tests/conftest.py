@@ -295,6 +295,28 @@ def pytest_configure(config: pytest.Config) -> None:
         f"{_NO_AUTO_CIU_ROOT_MARK}: this test intentionally exercises a "
         "temporary tree without the default CIU root marker.",
     )
+    config.addinivalue_line(
+        "markers",
+        "os_integration: requires the registered tester-unified lane and its isolated Docker daemon.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_clean_guard: keep the real engine.guard_clean_stack (CIU-141); every other "
+        "test gets a no-op so `ciu clean` unit tests never query a real Docker daemon.",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_docker_in_clean_one_shot_guard(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`action_clean` evaluates the one-shot guard before removing anything; its
+    `docker ps` query must not reach a real daemon from unit tests."""
+    if request.node.get_closest_marker("real_clean_guard") is not None:
+        return
+    from ciu import engine
+
+    monkeypatch.setattr(engine, "guard_clean_stack", lambda *_a, **_k: None)
 
 
 @pytest.fixture(autouse=True)

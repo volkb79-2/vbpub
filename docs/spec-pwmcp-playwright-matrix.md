@@ -44,7 +44,7 @@ pypi.org/pypi/playwright/json ; registry.npmjs.org/playwright/latest.
 - `docker-bake.hcl:37-40` pushes three tags: `:<pw>-r<N>` (immutable), `:<pw>` (floating),
   `:latest` (global). Today `:latest` tracks the **npm** version — the bug.
 - cmru drives it via `strategy="delegated"` + `build-push.py` (`vbpub/cmru.toml`); the matrix is
-  owned by the project, exactly like `vbpub/modern-debian-tools-python-debug` (static named bake
+  owned by the project, exactly like `vbpub/mdt-cockpit` (static named bake
   targets per base version, tags `<base>-<own>`). **cmru needs no extension** for a pwmcp matrix.
 
 ## 3. Tasks
@@ -58,7 +58,7 @@ pypi.org/pypi/playwright/json ; registry.npmjs.org/playwright/latest.
   (outward-facing). Record both the local-build and the (gated) publish steps.
 
 ### Task B — Multi-version matrix + correct `:latest` semantics (the durable fix)
-Model on `modern-debian-tools-python-debug`'s static-bake-target pattern. In `vbpub/pwmcp/`:
+Model on `mdt-cockpit`'s static-bake-target pattern. In `vbpub/pwmcp/`:
 - `resolve-playwright-version.py`: also query PyPI (`pypi.org/pypi/playwright/json` → `info.version`)
   and emit BOTH `PLAYWRIGHT_VERSION_NPM` and `PLAYWRIGHT_VERSION_PYPI` to `cmru.vars`.
 - `docker-bake.hcl`: add two targets sharing the Dockerfile:

@@ -33,6 +33,15 @@ About 60 fixes from the deep review are in topos 0.6.0.
    r1002 or v1001 without coordinating with the agent that controls them (D-034).
 6. Build and release: Rust image pinned in the build, a `cmru` step for a static
    musl binary, a run-gate lane. Containers only; no toolchain in the cockpit.
+7. Protocol: stays JSON for now. Decoding the view's reply takes about 1 ms a tick
+   in either language, and `fields` with `compact` already cut the reply from over
+   500 KB to about 90 KB (Evidence). In the Python view, converting the decoded
+   reply costs more than decoding it, so trim that first. Making the reply smaller
+   still needs protocol additions, because each `current` reply is complete on its
+   own: a baseline token before unchanged limits can be left out, and a per-metric
+   default before zeros can be left out (today a missing metric reads `n/a`).
+   Columnar arrays, through a new request field, only if ticks get faster or the
+   view reads remote hosts.
 
 ### Stream B: the screen
 
@@ -116,7 +125,9 @@ Measured on 2026-11-05.
 | Lean Python yardstick at 1 Hz, r1002 | 2.03% of a core, 74.7 MB (a compact ring was put near 17 MB; no recorded run) |
 | Full view on live r1002 data, 170x48 | Textual 72-77 ms, ratatui 0.84 ms per frame |
 | Full view on live r1002 data, 260x60 | Textual 88 ms, ratatui 1.69 ms per frame |
-| `current` reply, r1002 | 564 KB; 37 KB with `fields` and `compact` |
+| `current` reply, r1002, about 100 entities | 527 KB in full (564 KB in an earlier capture); with `compact` and the view's `fields`, 87 KB (ratatui list) or 90 KB (Python list), of which 8-9 KB is the process list |
+| Decoding that 90 KB reply and summing every value | Rust 0.64 ms (in a container); Python `json` 1.1-1.4 ms, `orjson` 0.6-0.7 ms |
+| Python view converting the decoded reply (separate profile) | 5.5 ms |
 
 The frame benchmarks measure the table only with no terminal writes, so treat them
 as ratios. The controller was under load during the Textual runs.

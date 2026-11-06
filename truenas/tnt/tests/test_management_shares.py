@@ -6,6 +6,7 @@ import json
 import pytest
 from textual.widgets import DataTable, Static, Tree
 
+from helpers import wait_until
 from tnt.actions import apply_plan, make_plan
 from tnt.cli import build_cli
 from tnt.errors import Refused
@@ -105,10 +106,7 @@ def test_shares_tui_leaf_loads_shared_smb_and_nfs_queries(config):
                 find(tree.root)
                 assert target is not None
                 tree.select_node(target)
-                for _ in range(40):
-                    await pilot.pause(0.05)
-                    if "loaded." in str(app.query_one("#workflow-note", Static).render()):
-                        break
+                await wait_until(pilot, lambda: "loaded." in str(app.query_one("#workflow-note", Static).render()))
                 assert "Create SMB share" in str(app.query_one("#workflow-actions", Static).render())
                 assert "sharing.smb.query" in server.called() and "sharing.nfs.query" in server.called()
                 assert app.query_one("#workflow-table", DataTable).row_count == 0

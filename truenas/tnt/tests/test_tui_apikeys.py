@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from textual.widgets import Button, DataTable, Input, Select, Static
 
+from helpers import UI_WAIT_DEADLINE, wait_until
 from tnt.actions import Action, Kind, Plan, RpcCall
 from tnt.host_store import load_host_store
 from tnt.menu import MENU
@@ -15,12 +16,9 @@ from tnt.tui.apikeys import ApiKeysView
 from tnt.tui.app import TntApp
 
 
-async def _wait_for(pilot, predicate, *, count=120):
-    for _ in range(count):
-        await pilot.pause(0.05)
-        if predicate():
-            return
-    assert predicate(), "API-key view did not settle before the bounded wait ended"
+async def _wait_for(pilot, predicate, *, count=None):
+    # ``count`` is accepted for old call sites and ignored: waits are deadline-based (helpers.wait_until).
+    await wait_until(pilot, predicate, what="API-key view settling")
 
 
 def _create_plan():
@@ -48,7 +46,7 @@ def test_remote_api_key_names_render_brackets_literally(config, opener):
             rendered_cells = [table._get_row_renderables(index)[1][1] for index in range(len(names))]
             assert [table.get_cell_at((index, 1)) for index in range(len(names))] == list(names)
             assert [cell.plain for cell in rendered_cells] == list(names)
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -101,7 +99,7 @@ def test_api_key_output_is_saved_privately_and_only_the_path_is_shown(config, op
             note = str(view.query_one("#apikey-note", Static).render())
             assert "could not be saved (OSError)" in note and one_time_key not in note
             assert view.pending_key_path is None
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())
 
@@ -159,6 +157,6 @@ def test_api_key_form_refusals_selection_failure_and_action_completion(config, o
             view._plan_applied(_create_plan(), [{"key": "1-password-auth-placeholder"}])
             assert "uses password auth" in str(view.query_one("#apikey-note", Static).render())
             assert password_key_path.exists()
-            app.session_controller.close()
+            app.session_controller.close(timeout=UI_WAIT_DEADLINE)
 
     asyncio.run(go())

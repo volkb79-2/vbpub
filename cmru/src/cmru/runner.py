@@ -656,7 +656,7 @@ def prepare_project_environment(project_config_path: Path) -> None:
 def run_step(project_config_path: Path, step_name: str) -> None:
     """Run one named step from the strict project-local ``cmru.toml``.
 
-    Supported Python API (consumed by ``modern-debian-tools-python-debug/build-push.py``).
+    Supported Python API (consumed by ``mdt-cockpit/build-push.py``).
     This is intentionally a thin direct entry point over the same parser and
     executor as orchestration.  There is no standalone runner configuration,
     shell-evaluation adapter, or inferred release config to drift from it.

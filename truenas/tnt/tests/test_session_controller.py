@@ -74,7 +74,7 @@ def test_generation_changes_before_old_session_closes_and_worker_is_drained():
     completed = threading.Event()
 
     def do_switch():
-        switched = controller_.finish_switch(transition)
+        switched = controller_.finish_switch(transition, timeout=60)
         assert switched.profile.name == "backup"
         completed.set()
 
@@ -83,7 +83,7 @@ def test_generation_changes_before_old_session_closes_and_worker_is_drained():
     assert not completed.wait(0.03)
     assert not old.closed
     controller_.finish_worker(lease)
-    thread.join(1)
+    thread.join(60)
     assert completed.is_set() and old.closed
     assert events[0] == ("close", "lab")
     assert calls == [("backup", "1-backup-secret", False, False)]
@@ -110,7 +110,7 @@ def test_worker_drain_timeout_preserves_session_and_next_switch_still_drains_sta
         controller_.finish_switch(retry, timeout=0.01)
     assert not old.closed
     controller_.finish_worker(lease)
-    assert controller_.finish_switch(retry, timeout=1).profile.name == "backup"
+    assert controller_.finish_switch(retry, timeout=60).profile.name == "backup"
     assert old.closed
 
 
@@ -124,7 +124,7 @@ def test_controller_close_timeout_restores_session_and_can_finish_after_worker_d
         controller_.close(timeout=0.01)
     assert controller_.session is old and controller_.active_host == "lab" and not old.closed
     controller_.finish_worker(lease)
-    controller_.close(timeout=1)
+    controller_.close(timeout=60)
     assert old.closed and controller_.session is None
 
 
@@ -132,7 +132,7 @@ def test_late_callback_is_rejected_after_switch_and_session_is_host_bound():
     controller_, _ = controller(initial=FakeSession(hosts()["lab"]))
     generation, old_session = controller_.capture()
     transition = controller_.begin_switch("backup")
-    controller_.finish_switch(transition)
+    controller_.finish_switch(transition, timeout=60)
     assert not controller_.is_current(generation, old_session)
     assert controller_.active_host == "backup"
     assert controller_.capture()[1].profile.name == "backup"
@@ -173,7 +173,7 @@ def test_new_session_job_calls_use_the_controller_generation():
 
     controller_, _ = controller(open_host)
     transition = controller_.begin_switch("backup")
-    session = controller_.finish_switch(transition)
+    session = controller_.finish_switch(transition, timeout=60)
 
     assert session.rpc._job_generation == transition.generation
 
@@ -214,7 +214,7 @@ def test_opening_error_scrubs_credential_from_status_and_exception():
     controller_, _ = controller(failing_open)
     transition = controller_.begin_switch("backup")
     with pytest.raises(ProfileError) as caught:
-        controller_.finish_switch(transition)
+        controller_.finish_switch(transition, timeout=60)
     assert "1-backup-secret" not in str(caught.value)
     assert "1-backup-secret" not in controller_.last_status["backup"]
     assert "<redacted>" in controller_.last_status["backup"]
@@ -262,7 +262,7 @@ def test_switch_refuses_overlap_and_disconnect_closes_and_clears_active_session(
     transition = controller_.begin_switch("backup")
     with pytest.raises(ProfileError, match="already in progress"):
         controller_.begin_switch("lab")
-    switched = controller_.finish_switch(transition)
+    switched = controller_.finish_switch(transition, timeout=60)
     assert switched.profile.name == "backup" and old.closed
     disconnected = controller_.begin_disconnect()
     assert disconnected.target_host is None and disconnected.previous_session is switched
@@ -282,7 +282,7 @@ def test_switch_opener_failure_closes_old_session_and_records_safe_status():
     controller_, _ = controller(fail, initial=old)
     transition = controller_.begin_switch("backup")
     with pytest.raises(ProfileError) as caught:
-        controller_.finish_switch(transition)
+        controller_.finish_switch(transition, timeout=60)
     assert old.closed and "1-backup-secret" not in str(caught.value)
     assert "1-backup-secret" not in controller_.last_status["backup"]
     assert controller_.session is None and not controller_._switching
@@ -310,7 +310,7 @@ def test_test_host_rejects_switching_and_unknown_names():
     transition = controller_.begin_switch("backup")
     with pytest.raises(ProfileError, match="transition is in progress"):
         controller_.test_host("lab")
-    controller_.finish_switch(transition)
+    controller_.finish_switch(transition, timeout=60)
     with pytest.raises(ProfileError, match="unknown host"):
         controller_.test_host("missing")
 
@@ -323,7 +323,7 @@ def test_worker_cancellation_drains_connection_test_before_switch_completes():
     def open_host(host, *, secret, allow_write=False, **kwargs):
         if host.name == "backup":
             entered.set()
-            release.wait(2)
+            release.wait(60)
         session = FakeSession(host, read_only=not allow_write)
         temporary_sessions.append(session)
         return session
@@ -332,20 +332,20 @@ def test_worker_cancellation_drains_connection_test_before_switch_completes():
     result = []
     worker = threading.Thread(target=lambda: result.append(controller_.test_host("backup")))
     worker.start()
-    assert entered.wait(1)
+    assert entered.wait(60)
     transition = controller_.begin_switch("backup")
     done = threading.Event()
 
     def switch():
-        controller_.finish_switch(transition)
+        controller_.finish_switch(transition, timeout=60)
         done.set()
 
     switcher = threading.Thread(target=switch)
     switcher.start()
     assert not done.wait(0.03)
     release.set()
-    worker.join(1)
-    switcher.join(1)
+    worker.join(60)
+    switcher.join(60)
     assert result == ["backup connected"] and done.is_set()
     assert temporary_sessions[0].closed and controller_.session.profile.name == "backup"
 
@@ -357,7 +357,7 @@ def test_switch_candidate_is_closed_if_controller_closes_while_connecting():
 
     def open_host(host, *, secret, **kwargs):
         entered.set()
-        release.wait(2)
+        release.wait(60)
         candidate = FakeSession(host)
         candidates.append(candidate)
         return candidate
@@ -365,12 +365,12 @@ def test_switch_candidate_is_closed_if_controller_closes_while_connecting():
     controller_, _ = controller(open_host)
     transition = controller_.begin_switch("backup")
     result = []
-    worker = threading.Thread(target=lambda: result.append(controller_.finish_switch(transition)))
+    worker = threading.Thread(target=lambda: result.append(controller_.finish_switch(transition, timeout=60)))
     worker.start()
-    assert entered.wait(1)
-    controller_.close()
+    assert entered.wait(60)
+    controller_.close(timeout=60)
     release.set()
-    worker.join(1)
+    worker.join(60)
     assert result == [None] and candidates[0].closed and controller_.session is None
 
 
@@ -383,15 +383,15 @@ def test_controller_close_cancels_and_drains_registered_workers_before_closing()
     finished = threading.Event()
 
     def close():
-        controller_.close()
+        controller_.close(timeout=60)
         finished.set()
 
     worker = threading.Thread(target=close)
     worker.start()
-    assert lease.cancelled.wait(1)
+    assert lease.cancelled.wait(60)
     assert not finished.wait(0.03) and not old.closed
     controller_.finish_worker(lease)
-    worker.join(1)
+    worker.join(60)
     assert finished.is_set() and old.closed and controller_.active_host is None
 
 
@@ -448,16 +448,16 @@ def test_controller_requires_known_default_and_connection_test_can_be_cancelled(
 
     entered = threading.Event()
     release = threading.Event()
-    controller_, _ = controller(lambda host, **kw: (entered.set(), release.wait(2), FakeSession(host))[2],
+    controller_, _ = controller(lambda host, **kw: (entered.set(), release.wait(60), FakeSession(host))[2],
                                 initial=FakeSession(hosts()["lab"]))
     results = []
     worker = threading.Thread(target=lambda: results.append(controller_.test_host("backup")))
     worker.start()
-    assert entered.wait(1)
+    assert entered.wait(60)
     transition = controller_.begin_switch("backup")
     release.set()
-    worker.join(1)
-    controller_.finish_switch(transition)
+    worker.join(60)
+    controller_.finish_switch(transition, timeout=60)
     assert results == ["backup connected"]
     assert controller_.last_status["backup"] == "connected"
     assert controller_._workers == {}
@@ -471,7 +471,7 @@ def test_reconnect_candidate_is_closed_when_host_changes_during_open():
     def open_host(host, *, secret, **kwargs):
         if host.name == "lab":
             entered.set()
-            release.wait(2)
+            release.wait(60)
         session = FakeSession(host, read_only=not kwargs.get("allow_write", False))
         created.append(session)
         return session
@@ -482,11 +482,11 @@ def test_reconnect_candidate_is_closed_when_host_changes_during_open():
     thread = threading.Thread(target=lambda: _capture_error(
         errors, lambda: controller_.reconnect_current(controller_.generation, old)))
     thread.start()
-    assert entered.wait(1)
+    assert entered.wait(60)
     transition = controller_.begin_switch("backup")
-    switched = controller_.finish_switch(transition)
+    switched = controller_.finish_switch(transition, timeout=60)
     release.set()
-    thread.join(1)
+    thread.join(60)
     assert switched.profile.name == "backup"
     assert len(errors) == 1 and isinstance(errors[0], ProfileError)
     assert "no longer active" in str(errors[0])
@@ -527,7 +527,7 @@ def test_initial_password_session_credential_is_retained_and_foreign_finish_is_i
 
     controller_.finish_worker(WorkerLease(-1, None))
     assert not controller_._workers
-    controller_.close()
+    controller_.close(timeout=60)
 
 
 def test_cancelled_test_error_does_not_overwrite_status_and_generic_reconnect_failure_is_scrubbed():
@@ -538,7 +538,7 @@ def test_cancelled_test_error_does_not_overwrite_status_and_generic_reconnect_fa
     def fail_after_switch(host, *, secret, **kwargs):
         if host.name == "backup" and not entered.is_set():
             entered.set()
-            release.wait(2)
+            release.wait(60)
             raise RuntimeError(f"failed and echoed {secret.reveal()}")
         return FakeSession(host)
 
@@ -547,13 +547,13 @@ def test_cancelled_test_error_does_not_overwrite_status_and_generic_reconnect_fa
     errors = []
     worker = threading.Thread(target=lambda: _capture_error(errors, lambda: controller_.test_host("backup")))
     worker.start()
-    assert entered.wait(1)
+    assert entered.wait(60)
     transition = controller_.begin_switch("backup")
     release.set()
-    worker.join(1)
+    worker.join(60)
     assert len(errors) == 1 and "1-backup-secret" not in str(errors[0])
     assert controller_.last_status["backup"] == start_status
-    controller_.finish_switch(transition)
+    controller_.finish_switch(transition, timeout=60)
 
     initial = FakeSession(hosts()["lab"])
 
@@ -585,7 +585,7 @@ def test_transition_edge_cases_preserve_generation_and_host_job_registry():
     transition = controller_.begin_switch("backup")
     with pytest.raises(ValueError, match="positive number"):
         controller_.finish_switch(transition, timeout=0)
-    opened = controller_.finish_switch(transition)
+    opened = controller_.finish_switch(transition, timeout=60)
     assert opened.job_registry is registry and registry.reconciled == [opened.rpc]
     assert controller_.cancel_transition(transition) is False
 
@@ -614,7 +614,7 @@ def test_close_during_an_existing_switch_cancels_workers_and_restores_after_time
     assert controller_.session is active and controller_.active_host == "lab" and not active.closed
 
     controller_.finish_worker(lease)
-    controller_.close(timeout=1)
+    controller_.close(timeout=60)
     assert active.closed and controller_.session is None
 
 

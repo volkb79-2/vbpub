@@ -617,9 +617,11 @@ echo "<major>:<minor> enable=1 ctrl=user \
 wraps the shared Linux-derived `iocost_coef_gen.py` copy in
 `scripts/debian-install-v2/tools/`. That copy has local LVM and file-target
 changes. The pristine copy and partition patch in
-`debian_install_v2/vendor/` are not the runtime source yet; see the
-generator follow-up in `modern-debian-tools-python-debug/TODO.md`. It has
-produced two live runs on this host (`/root/iocost-results/`). The
+`debian_install_v2/vendor/` are not the runtime source yet. The generated
+copy and its drift check live in `scripts/debian-install-v2/tools/`; see
+`mdt-cockpit/host-setup/plan-iocost-integration.md` for the shared-generator
+design. This wrapper has produced two live runs on this host
+(`/root/iocost-results/`). The
 `rlat`/`wlat` half has **not** — those are a latency baseline this host's own
 device has never had measured (virtio here, but potentially NVMe or spinning
 disk underneath depending on host; `mdt-io-baseline.py`'s existing 4-point
