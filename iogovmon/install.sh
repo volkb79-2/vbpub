@@ -121,6 +121,7 @@ ensure_dir 700 "$USER_NAME:$USER_NAME" "$SCRATCH_DIR"
 say "== 3. root-owned copy of the package in $LIB_DIR"
 mkdir -p "$TMP/pkg/iogovmon"
 cp "$SRC_PARENT"/iogovmon/*.py "$HERE/iogovmon.toml.example" "$HERE/README.md" "$TMP/pkg/iogovmon/"
+PYTHONDONTWRITEBYTECODE=1 "$PYBIN" -B "$HERE/tools/write_installed_version.py" --project-root "$HERE" --output "$TMP/pkg/iogovmon/_version_installed.py"
 chmod 644 "$TMP/pkg/iogovmon"/* ; chmod 755 "$TMP/pkg" "$TMP/pkg/iogovmon"
 DEST=$(t "$LIB_DIR")
 # recover from an interrupted earlier swap: a stale iogovmon.old.* is the previous package (restored if iogovmon is missing, else removed)

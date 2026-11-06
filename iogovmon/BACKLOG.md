@@ -129,3 +129,9 @@ the test (never skips) unless `IOGOVMON_ALLOW_MISSING_TEST_DEPS=1`.
 `iogovmonctl` for the operator and inspection commands. The old `iogovmon` console script is removed without an alias; `python -m iogovmon` stays
 as a combined developer entry point. Systemd uses `iogovmond.service`, `iogovmond-tick.*`, and `iogovmond-bench.*`; the package, config, user,
 environment variables, and `iogovmon.slice` keep their existing names.
+
+## IGM-14 - source-install version provenance (review M1/M2)
+
+**Status:** CLOSED. `__version__` checks installed wheel metadata, then `iogovmon/_version_installed.py`, then `0+source`. The source installer generates the marker from
+`[tool.iogovmon.install].version` in `pyproject.toml`, adding `+g<short-sha>` when Git can resolve the checkout. Tests cover all resolution paths and the installer's
+`--destdir` staging output. M2's source-install version policy is resolved.

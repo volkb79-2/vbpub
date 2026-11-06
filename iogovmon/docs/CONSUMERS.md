@@ -15,6 +15,10 @@ iogovmonctl --version
 iogovmonctl preflight
 ```
 
+The version commands report installed wheel metadata. `install.sh` stamps the source version from `pyproject.toml` and, when Git can resolve the
+checkout, its short commit id into the root-owned package copy. The journal records the same version on each run; see the
+[version provenance decision](DESIGN-GUIDE.md#version-provenance).
+
 To check the configured disks and the read-only plan:
 
 ```sh

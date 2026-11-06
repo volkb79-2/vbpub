@@ -19,7 +19,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
   `python -m iogovmon` remains the combined developer entry point; it is not a console-script alias.
 - `governed_cgroups` now defaults to an empty list (it was `["/sys/fs/cgroup/dev.slice"]`, a host-specific assumption). With none governed the governed series are empty and the gates see an unknown governed write rate.
-- `__version__` is read from the installed wheel's metadata; a source-tree run reports `0+source` instead of the former hardcoded `1.0.0`.
+- `__version__` resolves from installed wheel metadata, the source install's generated version file, then `0+source` for an unstamped source tree. `install.sh` stamps the pyproject source version and adds the Git short SHA when available.
 - `iogovmon.slice` documents that its `IOWeight` is advisory (it only takes effect with io.cost or bfq); the PSI gating and the byte budgets are the budget control.
 
 ### Not yet released

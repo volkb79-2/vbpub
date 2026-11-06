@@ -4,12 +4,16 @@ It measures with tiny bounded probes, journals what it saw, and recognises slow 
 It never changes a cap, a model, a queue setting or any cgroup file. See docs/DESIGN-GUIDE.md.
 """
 
-from importlib.metadata import PackageNotFoundError, version as _dist_version
+from importlib import metadata as _metadata
 
-# The release version comes from the git tag `iogovmon-vX.Y.Z` (setuptools_scm) and is read from the installed wheel's metadata.
-# A source-tree run (PYTHONPATH=src, the systemd units of `install.sh`) has no metadata: it reports "0+source", never a made-up release.
+# Prefer the installed wheel's version; source installs write the version resolved by install.sh into this root-owned package copy.
 try:
-    __version__ = _dist_version("iogovmon")
-except PackageNotFoundError:  # pragma: no cover - depends on how the test process was started
-    __version__ = "0+source"
+    __version__ = _metadata.version("iogovmon")
+except _metadata.PackageNotFoundError:
+    try:
+        from ._version_installed import __version__
+    except ModuleNotFoundError as exc:
+        if exc.name != f"{__name__}._version_installed":
+            raise
+        __version__ = "0+source"
 SCHEMA_VERSION = 1

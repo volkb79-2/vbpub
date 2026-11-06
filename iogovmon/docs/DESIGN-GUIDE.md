@@ -257,6 +257,14 @@ Pure function of the journal (`recognize(records, cfg)`), folded in incrementall
 `<state_dir>/journal/journal-YYYY-MM.jsonl`, one object per line, one `write(2)` per record (`O_APPEND`), never rewritten. Common: `v`
 (schema version, 1), `ts` (UTC ISO-8601), `t` (epoch s), `type`, `run` (random run id). Readers skip torn lines and other versions and count them.
 
+### Version provenance
+
+`run_start.version` identifies the code that produced a run. Resolution order is installed wheel metadata, the generated
+`iogovmon/_version_installed.py` written by `install.sh`, then `0+source`. The source installer reads the source version from
+`[tool.iogovmon.install].version` in `pyproject.toml` and appends `+g<short-sha>` when Git can resolve the checkout; outside Git it writes the source
+version alone. Wheel metadata stays authoritative for wheel installs, and the source installer needs no packaging dependency on the host. The explicit
+`0+source` value is reserved for uninstalled source trees without distribution metadata or an installer-generated version file.
+
 | type | required fields (besides common) |
 |---|---|
 | `run_start` | `kind` (tick/bench), `version`, `mode`, `settings_epoch`, `full`; `settings`, `devices`, `notes`, `covariates` only when `full` (settings epoch changed, or hourly): ~2.2 KB per tick, ~0.65 MB/day |

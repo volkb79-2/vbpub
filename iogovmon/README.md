@@ -1,12 +1,12 @@
 # iogovmon: recommend-only recorder of long-term virtual-disk capability shifts
 
 Standalone background service for ANY Linux host with systemd and cgroup v2: no mdt-cockpit, no host-tuning, no iobench, no docker. Extracted from
-`mdt-cockpit/iogov` (WP-IGM-a of the host-tuning program: a pure move and rename, no behaviour change except the empty `governed_cgroups` default).
+`mdt-cockpit/iogov` (WP-IGM-a of the host-tuning program: a move and rename, with the reviewed empty `governed_cgroups` default and version provenance fixes).
 Design and decisions: [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md). Adopter examples: [docs/CONSUMERS.md](docs/CONSUMERS.md). Background and the blind opinions (they stay with mdt-cockpit):
 [../mdt-cockpit/docs/IO-GOVERNOR-SECOND-OPINION-2026-10-27.md](../mdt-cockpit/docs/IO-GOVERNOR-SECOND-OPINION-2026-10-27.md).
 
-**Status: unreleased, never installed anywhere.** The first release is gated on the live acceptance WP-IGM-ACC (real install, 48 h of ticks, journal and
-budget verification, raw-read ACL review, kill switches); until that evidence is recorded no consumer installs it by default. Open work is in
+**Status: unreleased.** The extracted project has not been installed by repository automation. The first release is gated on the live acceptance WP-IGM-ACC
+(real install, 48 h of ticks, journal and budget verification, raw-read ACL review, kill switches); until that evidence is recorded no consumer installs it by default. Open work is in
 [BACKLOG.md](BACKLOG.md).
 
 **Nothing in this package changes a cap, an io.cost model or QoS value, a queue setting or any cgroup file.** It measures with
@@ -18,7 +18,7 @@ budget control is the PSI gating of the bench (it starts only below the io-press
 
 ```
 iogovmon/
-  pyproject.toml cmru.toml run-gate.toml assay.toml   packaging (`iogovmond` + `iogovmonctl`) and the release/gate contracts
+  pyproject.toml cmru.toml run-gate.toml             packaging (`iogovmond` + `iogovmonctl`) and the release/gate contracts
   src/iogovmon/
     cli.py runner.py      commands, one tick / one bench, dry-run plan
     rawread.py            read-only raw-disk reads (O_DIRECT), coprime whole-device walk, witness blocks
@@ -33,6 +33,7 @@ iogovmon/
     journal.py report.py state.py  append-only JSONL (schema v1), validated state; `analyze`, `status`
     experiment.py         `quiet-experiment`: plan printer only
   install.sh            idempotent installer helper (--dry-run prints every action); becomes the `install` verb in WP-IGM-b
+  tools/write_installed_version.py  stamps source-install version provenance
   units/*.in            systemd unit / slice / udev templates (rendered by install.sh, never installed as they are)
   iogovmon.toml.example configuration
   docs/DESIGN-GUIDE.md  the v1 design note
@@ -74,6 +75,8 @@ iogovmonctl config                # effective configuration
 ```
 
 The systemd units run `/usr/local/bin/iogovmond` from the root-owned package copy (`install.sh`); the wheel installs the same daemon and control entry points.
+`--version` and each `run_start.version` use wheel metadata first, then the source-installer's generated version file, then `0+source`. The source version comes
+from `pyproject.toml` and adds `+g<short-sha>` when Git can identify the checkout; see [the versioning decision](docs/DESIGN-GUIDE.md#version-provenance).
 
 Config: `--config FILE`, `$IOGOVMON_CONFIG`, `/etc/iogovmon/iogovmon.toml`, else defaults. Flat TOML; an unknown key or a wrong type is an
 error; a value beyond the hard limits in `config.py` is clamped to the limit (the clamps are printed by `plan` and `config`). Minimum
@@ -211,4 +214,27 @@ The scratch directory must be on the filesystem of the data disks (otherwise the
 | scratch files `iogov-scratch-*` | `iogovmon-scratch-*` |
 | default `governed_cgroups = ["/sys/fs/cgroup/dev.slice"]` | `[]` |
 
-Nothing was ever installed under the old names, so there is no migration.
+## Migrating from the old mdt iogov install
+
+Nothing in this repository installed the old `mdt-cockpit/iogov` project on a host. Only hosts where an operator ran its `install.sh` by hand are
+affected. That script created the `iogov` system user, `/etc/iogov`, `/var/lib/iogov` and `/usr/local/lib/iogov-pkg/iogov`; installed
+`iogov-probe.slice`, `iogov-tick.service`, `iogov-tick.timer`, `iogov-watch.service`, `iogov-bench.service`, and `iogov-bench.timer`; and installed
+`/etc/udev/rules.d/99-iogov-raw-read.rules`, which granted that user read access to the configured whole-disk node.
+
+The cleanup removes the old config and journal; archive `/var/lib/iogov` first if that history is needed. If the old script was run with `--user` or
+`--lib-dir`, substitute those overrides in the commands. Remove the ACL from the same whole-disk node selected by the old configuration, then remove the old files and user:
+
+```sh
+sudo systemctl disable --now iogov-tick.timer iogov-bench.timer
+sudo systemctl stop iogov-tick.service iogov-watch.service iogov-bench.service
+sudo rm -f /etc/systemd/system/iogov-probe.slice /etc/systemd/system/iogov-tick.service /etc/systemd/system/iogov-tick.timer /etc/systemd/system/iogov-watch.service /etc/systemd/system/iogov-bench.service /etc/systemd/system/iogov-bench.timer
+sudo systemctl daemon-reload
+sudo rm -f /etc/udev/rules.d/99-iogov-raw-read.rules
+sudo udevadm control --reload-rules
+sudo setfacl -x u:iogov /dev/<old-whole-disk-node>
+sudo userdel iogov
+sudo rm -rf /etc/iogov /var/lib/iogov /usr/local/lib/iogov-pkg/iogov
+sudo rmdir /usr/local/lib/iogov-pkg
+```
+
+Replace `/dev/<old-whole-disk-node>` with the exact device node selected by the old install. These commands are documentation only; they have not been run.

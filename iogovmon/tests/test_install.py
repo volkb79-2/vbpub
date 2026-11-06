@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,16 @@ def test_real_staging_run_lays_out_everything_rendered_and_is_idempotent(tmp_pat
     assert p.returncode == 0, p.stdout + p.stderr
     pkg = tmp_path / "usr/local/lib/iogovmon-pkg/iogovmon"
     assert (pkg / "devices.py").is_file() and (pkg / "hostcheck.py").is_file() and not (pkg / "tests").exists()
+    version_file = pkg / "_version_installed.py"
+    project_version = tomllib.loads((SCRIPT.parent / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["iogovmon"]["install"]["version"]
+    source_sha = subprocess.run(
+        ["git", "-C", str(SCRIPT.parent), "rev-parse", "--short=7", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=20,
+    ).stdout.strip()
+    assert version_file.read_text(encoding="utf-8") == f'__version__ = "{project_version}+g{source_sha}"\n'
     assert oct(pkg.stat().st_mode & 0o777) == "0o755" and oct((pkg / "cli.py").stat().st_mode & 0o777) == "0o644"
     assert oct((tmp_path / "var/lib/iogovmon").stat().st_mode & 0o777) == "0o700"
     unit_dir = tmp_path / "etc/systemd/system"

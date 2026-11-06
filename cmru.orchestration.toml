@@ -33,8 +33,6 @@ registry = ["ghcr.io"]
 #   test-policy <- none  (declared release order)
 #   tls-edge <- none  (declared release order)
 #   iogovmon <- none  (declared release order)
-#   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
-#     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
 #   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom, run-gate-project, cgroup-profiler  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, run-gate-project, cgroup-profiler, nyxloom
 #   tester-base <- none  (declared release order)
@@ -54,7 +52,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "iogovmon", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "iogovmon", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
