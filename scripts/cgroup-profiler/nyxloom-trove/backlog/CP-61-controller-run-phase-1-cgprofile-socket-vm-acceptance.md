@@ -32,4 +32,13 @@ Use the existing `scripts/debian-install-v2/testing/vm` harness (do not add a ne
 - Downgrade below the socket-unit release exits 2 without `--allow-downgrade`.
 - Uninstall removes all cgpd units, sysusers/config/version files, socket nodes and runtime directories; groups and `/var/lib/cgprofile` remain by default, and removed units have no failed state.
 
+Added by the review fix round (guest-side script `tools/vm-socket-acceptance.sh`, run through the existing harness with `copy` and `ssh`):
+
+- `stat` of `/run/cgprofile` shows root:root 0755 after the service started, i.e. the nested `RuntimeDirectory=cgprofile/state` did not turn the parent 0700 (reasoned, not yet run).
+- `systemctl show -p ActiveState cgprofile.slice` is not `active` after uninstall.
+- Uninstall run from `/opt/cgprofile/current/venv/bin/cgpd` (the version tree it runs from is removed after the result is printed) and again through the zipimport route; a second uninstall is a no-op; uninstall on the mdt-style guest exits 2 and changes nothing.
+- `cgpd install --yes` with no other flag over an `install.toml` that lists users succeeds and keeps an operator edit in `cgpd.toml`.
+- `systemctl enable cgprofile.slice` (a slice without `[Install]`) returns 0.
+- With `OLD_WHEEL_PIN` set, the real `--allow-downgrade` rollback removes the socket units and a roll-forward works.
+
 The exact controller sequence is also listed in `docs/NATIVE-DEPLOYMENT.md`. Record the guest image, wheel pins, commands, doctor JSON, inode observations, access-denial result, refusal output, and uninstall residue check before closing this item.

@@ -1,0 +1,225 @@
+#!/usr/bin/env bash
+# Guest-side acceptance for the cgprofile socket-activated host service (plan 7, CP-61).
+#
+# Runs INSIDE a disposable QEMU guest started by the existing Debian VM harness
+# (scripts/debian-install-v2/testing/vm/run-vm-harness.sh), as root. It is never run on a
+# cockpit host: it installs and uninstalls the whole service and creates test users.
+#
+#   run-vm-harness.sh copy  RUN scripts/cgroup-profiler/tools  /root/tools
+#   run-vm-harness.sh copy  RUN <wheel directory>              /root/wheels
+#   run-vm-harness.sh ssh   RUN -- sudo env CGPROFILE_PIN=... CLI_EXTENDED_PIN=... \
+#       bash /root/tools/vm-socket-acceptance.sh clean-guest
+#   (on the SECOND guest, seeded by `seed-old-layout` below)
+#   run-vm-harness.sh ssh   RUN2 -- sudo env CGPROFILE_PIN=... CLI_EXTENDED_PIN=... \
+#       bash /root/tools/vm-socket-acceptance.sh old-layout-guest
+#
+# Required environment: CGPROFILE_PIN and CLI_EXTENDED_PIN (<version>@sha256:<hex>).
+# Optional: WHEELS (default /root/wheels), OLD_WHEEL_PIN (an older cgprofile pin that exists
+# in WHEELS, for the real --allow-downgrade rollback), CONTROL_USER (default root).
+#
+# The TTY wizard install is not automated (questionary needs a pty and key input): run
+# `cgpd install` without flags once by hand on a TTY on the clean guest, and finish it with
+# `cgpd doctor --json`. Everything else below is.
+set -u
+
+WHEELS="${WHEELS:-/root/wheels}"
+CONTROL_USER="${CONTROL_USER:-root}"
+FAILED=0
+CASE=""
+
+pass() { printf 'PASS  [%s] %s\n' "$CASE" "$1"; }
+fail() { printf 'FAIL  [%s] %s\n' "$CASE" "$1"; FAILED=$((FAILED + 1)); }
+check() {  # check "description" command...
+    local description="$1"; shift
+    if "$@" >/tmp/vm-accept.out 2>&1; then pass "$description"; else fail "$description"; sed 's/^/        /' /tmp/vm-accept.out; fi
+}
+expect_exit() {  # expect_exit CODE "description" command...
+    local want="$1" description="$2"; shift 2
+    "$@" >/tmp/vm-accept.out 2>&1
+    local got=$?
+    if [ "$got" -eq "$want" ]; then pass "$description (exit $got)"; else fail "$description (exit $got, wanted $want)"; sed 's/^/        /' /tmp/vm-accept.out; fi
+}
+inode() { stat -c %i "$1"; }
+
+need_guest() {
+    [ "$(id -u)" -eq 0 ] || { echo "run as root inside the guest" >&2; exit 2; }
+    systemd-detect-virt --vm >/dev/null 2>&1 || { echo "refusing to run outside a VM" >&2; exit 2; }
+    : "${CGPROFILE_PIN:?set CGPROFILE_PIN}" "${CLI_EXTENDED_PIN:?set CLI_EXTENDED_PIN}"
+}
+
+# The bootstrap route: the two pinned wheels on PYTHONPATH, no venv needed yet.
+bootstrap() {
+    local cgprofile_wheel clix_wheel
+    cgprofile_wheel="$(ls "$WHEELS"/cgprofile-*-py3-none-any.whl | head -n1)"
+    clix_wheel="$(ls "$WHEELS"/cli_extended-*-py3-none-any.whl | head -n1)"
+    PYTHONPATH="$cgprofile_wheel:$clix_wheel" python3 -m cgprofile.cli.cgpd "$@"
+}
+CGPD=/opt/cgprofile/current/venv/bin/cgpd
+CGPCTL=/opt/cgprofile/current/venv/bin/cgpctl
+CONTROL=/run/cgprofile/control/cgprofile.sock
+OBSERVER=/run/cgprofile/observer/cgprofile.sock
+
+install_flags=(--wheel "${CGPROFILE_PIN:-}" --cli-extended-wheel "${CLI_EXTENDED_PIN:-}" --wheel-source "$WHEELS"
+               --control-group cgprofile-control --observer-group cgprofile-observer --enable --yes)
+
+clean_guest() {
+    CASE="1 install + doctor"
+    expect_exit 0 "unattended pinned install" bootstrap install "${install_flags[@]}" --control-users "$CONTROL_USER"
+    check "cgpd doctor --json is green" bash -c "$CGPD doctor --json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if all(c[\"status\"] in (\"ok\",\"skip\") for c in d[\"checks\"]) else 1)'"
+    check "cgpctl doctor --json runs" bash -c "$CGPCTL doctor --json >/dev/null"
+
+    CASE="2 layout + systemd verify"
+    for path in /run/cgprofile /run/cgprofile/control /run/cgprofile/observer; do
+        check "$path is root:root 0755" bash -c "[ \"\$(stat -c '%U:%G %a' $path)\" = 'root:root 755' ]"
+    done
+    check "/run/cgprofile/state is root:root 0700 (nested RuntimeDirectory leaves the parent 0755)" \
+        bash -c "[ \"\$(stat -c '%U:%G %a' /run/cgprofile/state)\" = 'root:root 700' ] && [ \"\$(stat -c '%U:%G %a' /run/cgprofile)\" = 'root:root 755' ]"
+    check "control node root:cgprofile-control 0660" bash -c "[ \"\$(stat -c '%U:%G %a' $CONTROL)\" = 'root:cgprofile-control 660' ]"
+    check "observer node root:cgprofile-observer 0660" bash -c "[ \"\$(stat -c '%U:%G %a' $OBSERVER)\" = 'root:cgprofile-observer 660' ]"
+    check "systemd-analyze verify" systemd-analyze verify /etc/systemd/system/cgpd.service \
+        /etc/systemd/system/cgprofile-control.socket /etc/systemd/system/cgprofile-observer.socket
+    for unit in control observer; do
+        check "cgprofile-$unit.socket has exactly one ListenStream" \
+            bash -c "[ \"\$(grep -c '^ListenStream=' /etc/systemd/system/cgprofile-$unit.socket)\" = 1 ]"
+    done
+    check "old-layout nodes are absent" bash -c "[ ! -e /run/cgprofile/ctl.sock ] && [ ! -e /run/cgprofile/observer/resource-observer.sock ]"
+
+    CASE="3 restarts keep or change the inode as designed"
+    local control_before observer_before
+    control_before="$(inode $CONTROL)"; observer_before="$(inode $OBSERVER)"
+    check "restart cgpd.service" systemctl restart cgpd.service
+    [ "$(inode $CONTROL)" = "$control_before" ] && [ "$(inode $OBSERVER)" = "$observer_before" ] \
+        && pass "service restart keeps both inodes" || fail "service restart changed an inode"
+    check "both levels answer after the service restart" bash -c "$CGPCTL status --json >/dev/null && $CGPD doctor --check connect --json >/dev/null"
+    local service_pid
+    service_pid="$(systemctl show -p MainPID --value cgpd.service)"
+    check "restart cgprofile-control.socket" systemctl restart cgprofile-control.socket
+    [ "$(inode $CONTROL)" != "$control_before" ] && pass "control socket restart gives a new inode" || fail "control inode unchanged"
+    sleep 1
+    check "the service restarted through Requires=" bash -c "[ \"\$(systemctl show -p MainPID --value cgpd.service)\" != '$service_pid' ]"
+    check "control answers on the new inode" bash -c "$CGPCTL status --json >/dev/null"
+    check "restart cgprofile-observer.socket" systemctl restart cgprofile-observer.socket
+    check "observer answers on its new inode" bash -c "$CGPD doctor --check connect --json >/dev/null"
+
+    CASE="4 activation contract"
+    expect_exit 2 "cgpd run without LISTEN_FDS and without --self-bind refuses" env -u LISTEN_FDS -u LISTEN_PID "$CGPD" run
+    local cfg=/tmp/cgp-selfbind.toml dir=/tmp/cgp-selfbind
+    mkdir -p "$dir/control" "$dir/observer" "$dir/sessions"
+    cat >"$cfg" <<EOF
+sessions_dir = "$dir/sessions"
+
+[sockets.control]
+path = "$dir/control/cgprofile.sock"
+group = "root"
+mode = "0600"
+
+[sockets.observer]
+path = "$dir/observer/cgprofile.sock"
+group = "root"
+mode = "0600"
+EOF
+    systemd-run --quiet --unit cgp-selfbind-test --collect "$CGPD" --config "$cfg" run --self-bind
+    sleep 3
+    check "--self-bind serves explicit test paths" test -S "$dir/control/cgprofile.sock"
+    systemctl stop cgp-selfbind-test.service >/dev/null 2>&1 || true
+
+    CASE="5 observer-only user"
+    id cgptest-obs >/dev/null 2>&1 || useradd --no-create-home --shell /usr/sbin/nologin cgptest-obs
+    usermod -a -G cgprofile-observer cgptest-obs
+    check "observer endpoint answers for the observer-only user" runuser -u cgptest-obs -- python3 - <<EOF
+import json, socket
+s = socket.socket(socket.AF_UNIX); s.connect("$OBSERVER"); s.sendall(b'{"verb":"host","args":{},"contract":1}\n')
+assert json.loads(s.makefile().readline())["ok"] is True
+EOF
+    check "control is EACCES for the observer-only user" runuser -u cgptest-obs -- python3 - <<EOF
+import socket
+s = socket.socket(socket.AF_UNIX)
+try:
+    s.connect("$CONTROL")
+except PermissionError:
+    raise SystemExit(0)
+raise SystemExit(1)
+EOF
+    check "doctor reports control connect as skip for that caller" bash -c \
+        "runuser -u cgptest-obs -- $CGPD doctor --check connect --json | grep -q 'skipped expected access for control'"
+
+    CASE="7 downgrade refusal"
+    expect_exit 2 "an older pin is refused without --allow-downgrade (before any fetch)" \
+        bootstrap install --wheel "2.1.0@sha256:$(printf '0%.0s' $(seq 64))" --cli-extended-wheel "$CLI_EXTENDED_PIN" \
+        --wheel-source "$WHEELS" --control-group cgprofile-control --observer-group cgprofile-observer --enable --yes
+    if [ -n "${OLD_WHEEL_PIN:-}" ]; then
+        expect_exit 0 "--allow-downgrade rolls back and removes the socket units" \
+            bootstrap install --wheel "$OLD_WHEEL_PIN" --cli-extended-wheel "$CLI_EXTENDED_PIN" --wheel-source "$WHEELS" \
+            --control-group cgprofile-control --observer-group cgprofile-observer --enable --yes --allow-downgrade
+        check "socket units are gone after the rollback" bash -c "[ ! -e /etc/systemd/system/cgprofile-control.socket ]"
+        expect_exit 0 "rolling forward again works" bootstrap install "${install_flags[@]}"
+    fi
+
+    CASE="9 enable of a slice without [Install]"
+    check "systemctl enable cgprofile.slice returns 0" systemctl enable cgprofile.slice
+
+    CASE="10 rerun with a saved record that lists users (H2)"
+    expect_exit 0 "cgpd install --yes with no other flag reapplies the recorded inputs" "$CGPD" install --yes
+    check "install.toml still lists the control user" grep -q "control_users = \[\"$CONTROL_USER\"\]" /etc/cgprofile/install.toml
+    check "a config edit survives the rerun" bash -c "echo '# kept' >> /etc/cgprofile/cgpd.toml && $CGPD install --yes && grep -q '^# kept' /etc/cgprofile/cgpd.toml"
+
+    CASE="8 uninstall contract (venv route, twice)"
+    uninstall_checks "$CGPD"
+
+    CASE="8 uninstall contract (zipimport route)"
+    expect_exit 0 "reinstall" bootstrap install "${install_flags[@]}"
+    uninstall_checks "bootstrap"
+}
+
+uninstall_checks() {  # uninstall_checks "<command words>"
+    local runner="$1"
+    local slice_before
+    slice_before="$(systemctl show -p ActiveState --value cgprofile.slice)"
+    [ "$slice_before" = active ] && pass "cgprofile.slice is active before uninstall" || fail "slice state before: $slice_before"
+    expect_exit 0 "uninstall --yes" $runner uninstall --yes
+    check "cgprofile.slice is not active after uninstall (and not merely unloaded)" \
+        bash -c "[ \"\$(systemctl show -p ActiveState --value cgprofile.slice)\" != active ]"
+    for leftover in /etc/systemd/system/cgpd.service /etc/systemd/system/cgprofile.slice \
+        /etc/systemd/system/cgprofile-control.socket /etc/systemd/system/cgprofile-observer.socket \
+        /etc/sysusers.d/cgprofile.conf /etc/cgprofile /opt/cgprofile /run/cgprofile /usr/local/bin/cgpctl; do
+        check "$leftover is gone" bash -c "[ ! -e $leftover ] && [ ! -L $leftover ]"
+    done
+    check "no failed cgprofile unit remains" bash -c "! systemctl --failed --no-legend | grep -q cgp"
+    check "groups and /var/lib/cgprofile remain by default" bash -c "getent group cgprofile-control >/dev/null && getent group cgprofile-observer >/dev/null && [ -d /var/lib/cgprofile ]"
+    expect_exit 0 "a second uninstall is a clean no-op" bootstrap uninstall --yes
+}
+
+old_layout_guest() {
+    CASE="6 P-11 old-layout refusal"
+    seed_old_layout
+    expect_exit 2 "install refuses the seeded host-setup state" bootstrap install "${install_flags[@]}"
+    grep -q 'mdt-cgprofile.conf' /tmp/vm-accept.out && pass "the refusal names the tmpfiles rule" || fail "refusal text lacks the tmpfiles rule"
+    CASE="8 uninstall on an mdt-style install"
+    expect_exit 2 "uninstall refuses before changing anything" bootstrap uninstall --yes
+    check "the seeded files are untouched" bash -c "[ -f /etc/tmpfiles.d/mdt-cgprofile.conf ] && [ -f /opt/cgprofile/2.1.0/MANIFEST ]"
+    CASE="6 P-11 after manual removal"
+    rm -f /etc/tmpfiles.d/mdt-cgprofile.conf /etc/tmpfiles.d/mdt-cgprofile-observer.conf \
+        /etc/sysusers.d/mdt-cgprofile.conf /etc/systemd/system/cgpd.service /etc/systemd/system/cgprofile.slice
+    rm -rf /opt/cgprofile /run/cgprofile /etc/cgprofile /etc/systemd/system/cgpd.service.d
+    systemctl daemon-reload
+    expect_exit 0 "fresh install succeeds once the old files are removed" bootstrap install "${install_flags[@]}"
+}
+
+seed_old_layout() {
+    mkdir -p /etc/tmpfiles.d /etc/sysusers.d /etc/cgprofile /opt/cgprofile/2.1.0 /run/cgprofile/observer
+    printf 'd /run/cgprofile 0770 root docker -\n' >/etc/tmpfiles.d/mdt-cgprofile.conf
+    printf 'd /run/cgprofile/observer 0751 root cgprofile-observer -\n' >/etc/tmpfiles.d/mdt-cgprofile-observer.conf
+    printf 'g cgprofile-observer - - -\n' >/etc/sysusers.d/mdt-cgprofile.conf
+    printf 'ctl_socket = "/run/cgprofile/ctl.sock"\n' >/etc/cgprofile/cgpd.toml
+    printf 'installer=mdt host-setup (MDT-055)\n' >/opt/cgprofile/2.1.0/MANIFEST
+    chmod 0770 /run/cgprofile
+}
+
+mode="${1:-}"
+case "$mode" in
+    clean-guest) need_guest; clean_guest ;;
+    old-layout-guest) need_guest; old_layout_guest ;;
+    *) echo "usage: $0 clean-guest | old-layout-guest" >&2; exit 2 ;;
+esac
+echo
+if [ "$FAILED" -eq 0 ]; then echo "ALL PASS"; else echo "$FAILED FAILED"; exit 1; fi

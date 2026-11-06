@@ -228,6 +228,16 @@ export MDT_VM_SOURCE_DIR="$REPO_ROOT"
 ./run-vm-harness.sh wait cgprofile-sockets
 ```
 
+`tools/vm-socket-acceptance.sh` automates the cases below inside the guest
+(`clean-guest` on the fresh VM, `old-layout-guest` on the seeded one); the TTY
+wizard install stays a manual step. Its header lists the exact `run-vm-harness.sh
+copy` and `ssh` commands. The extra cases beyond the commands in this section:
+`ActiveState` of `cgprofile.slice` after uninstall, uninstall run from
+`/opt/cgprofile/current/venv/bin/cgpd` and again through the zipimport route,
+a second uninstall as a no-op, uninstall refusing an mdt-style install, a
+rerun of `cgpd install --yes` over a record that lists users, and
+`systemctl enable cgprofile.slice` for a slice without `[Install]`.
+
 Copy the two pinned wheels into the VM, then verify both the TTY wizard and a
 non-interactive install using explicit flags. After install, run:
 
