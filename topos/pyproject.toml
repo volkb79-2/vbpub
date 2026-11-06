@@ -19,7 +19,7 @@ zstandard = ["zstandard>=0.22"]
 mcp = ["mcp>=1.28.0,<2.0.0"]  # mcp 2.0.0 renamed mcp.server.fastmcp.FastMCP -> mcp.server.mcpserver.MCPServer
 # pytest>=8.0: no known minimum: tested floor.
 # pytest-cov>=5.0: the gate lane runs `--cov --cov-branch`; no known minimum: tested floor.
-# pytest-xdist>=3.6: some developer workflows use xdist; no known minimum: tested floor.
+# pytest-xdist>=3.6: lane and cmru.toml run `pytest -n auto`; no known minimum: tested floor.
 dev = [
     "topos[zstandard]",
     "topos[mcp]",
