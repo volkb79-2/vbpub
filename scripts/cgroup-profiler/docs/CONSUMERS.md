@@ -81,14 +81,19 @@ for the exact list.
 
 For an upgrade, `cgpd install` compares the pinned version, config, and each
 rendered unit. If a restart is needed, it waits for live sessions to drain.
-A drain timeout exits 3 and records `PENDING`; review the state, remove the
-marker manually, then retry. `--force-restart` is explicit and reports the
+A drain timeout exits 3 and leaves `PENDING`; once the sessions have ended,
+rerun `cgpd install` (with an install record it re-applies). It leaves an
+existing `cgpd.toml` as written and merges only the socket groups and the
+keys passed as flags. `--force-restart` is explicit and reports the
 sessions it may abort. `--allow-downgrade` is required for an older pin;
 rolling back below the socket-unit release removes the socket units first.
 
-`cgpd uninstall` removes service resources and socket nodes. Groups remain
-unless `--remove-groups` is requested; `/var/lib/cgprofile` remains unless
-`--purge-data` is requested. See the
+`cgpd uninstall` removes service resources and socket nodes, but only on a host
+that `cgpd install` owns (`install.toml` or `PENDING`); on an old host-setup
+install it refuses before changing anything. It stops `cgprofile.slice`, and
+the ownership markers go last so an interrupted uninstall can be rerun. Groups
+remain unless `--remove-groups` is requested; `/var/lib/cgprofile` remains
+unless `--purge-data` is requested. See the
 [deployment contract](NATIVE-DEPLOYMENT.md#4-uninstall-and-doctor).
 
 ### Preview the GitHub Release body

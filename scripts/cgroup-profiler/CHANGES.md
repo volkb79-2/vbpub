@@ -14,6 +14,10 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 ### Changed
 - breaking(cgprofile): socket defaults move to `/run/cgprofile/control/cgprofile.sock` and `/run/cgprofile/observer/cgprofile.sock`; old config keys are refused and clients have no legacy-path fallback
 - docs(cgprofile): document P-11 manual cleanup, phase-1 rollout boundary, and systemd socket ownership
+- fix(cgprofile): `cgpd install` reruns with a saved `install.toml` that lists users, keeps an existing `cgpd.toml` (merging only socket groups and flag keys), refuses a foreign `/usr/local/bin/cgpctl`, and confirms unless `--yes`; `PENDING` is written first and removed last
+- fix(cgprofile): `cgpd uninstall` needs `install.toml` or `PENDING` and refuses unknown or old-layout paths before any change, stops `cgprofile.slice`, reloads systemd right after the unit files, skips groups that no longer resolve, and removes `PENDING` then `install.toml` last so an interrupted run can be rerun
+- fix(cgprofile): `cgpd.service` has `RestartPreventExitStatus=2`, so a refusal exit is not restarted; a failed self-bind observer setup no longer leaves a closed socket assigned
+- fix(cgprofile): `cgpd doctor` skips unreadable paths for non-root callers and `foreign-rules` runs the whole old-installation scan
 
 ### Tests
 - tests(cgprofile): kill the four 2.1.0 R2 survivors in machine.py/metrics.py (CP-60)

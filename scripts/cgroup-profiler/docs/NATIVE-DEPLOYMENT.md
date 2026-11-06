@@ -96,15 +96,30 @@ PYTHONPATH="$CGPROFILE_WHEEL:$CLI_EXTENDED_WHEEL" \
   --enable --yes
 ```
 
-Replace both example pins with the release's verified values. For a TTY run,
-`cgpd install` prompts for missing pins, group creation or mapping, users, and
-whether to enable the service. A non-interactive run must provide each
-required value explicitly; use `--no-enable` for an install that should not
-start the service.
+Replace both example pins with the release's verified values. Each input comes
+from its flag, else from `/etc/cgprofile/install.toml` written by the previous
+run, else (on a TTY only) from a prompt: `cgpd install` asks for missing pins,
+group creation or mapping, users, and whether to enable the service. A
+non-interactive run must provide each required value explicitly; use
+`--no-enable` for an install that should not start the service. A rerun with no
+flags therefore reapplies the recorded inputs, users included. `install` and
+`uninstall` ask for confirmation; `--yes` accepts it, and a pipe without
+`--yes` is refused.
+
+`/etc/cgprofile/cgpd.toml` is the operator's file once it exists. The
+installer creates it only when it is absent. On a rerun it keeps the file as
+written (comments and every other key included) and merges only the socket
+groups and the keys passed as flags on that run (`--gates-slice`,
+`--observe-slices`, `--allow-uids`); the install output lists what it merged
+as `config_changes`. The socket paths are fixed by the layout, so a file that
+sets another path is refused. `--config` is not supported for `install` and
+`uninstall`: they manage `/etc/cgprofile/cgpd.toml` only.
 
 The installer performs these steps:
 
-1. Validate both pins and the old-installation preflight.
+1. Validate both pins and the old-installation preflight, including that an
+   existing `/usr/local/bin/cgpctl` is the installer's own link (anything else
+   is refused, never replaced). `/opt/cgprofile/PENDING` is written now.
 2. Fetch both wheels, verify SHA-256 before unpacking, and create an immutable
    `/opt/cgprofile/<version>/venv` with a `MANIFEST` recording both digests and
    `installer=cgpd install <version>`.
@@ -112,14 +127,19 @@ The installer performs these steps:
    and sysusers resources with `cgpd unit print`.
 4. Compare version, config and each resource with the installation. If a
    restart is needed, poll live sessions until drained or the requested
-   deadline. A timeout exits 3 and records `PENDING`; inspect the sessions,
-   remove that marker manually, and retry. `--force-restart` requires explicit
-   confirmation and reports the sessions it may abort.
+   deadline. A timeout exits 3 and leaves `PENDING`; rerun `cgpd install` when
+   the sessions have ended. `--force-restart` requires explicit confirmation
+   and reports the sessions it may abort. A failure up to this point (fetch,
+   pin, config check) removes `PENDING` again, because nothing on the host
+   has changed yet.
 5. Atomically write config and resources, update `current`, run
    `systemd-sysusers`, reload systemd, and restart only the changed socket
-   units or service as required.
-6. Wait for the selected daemon version and clean config status, record the
-   install inputs, and prune older version directories.
+   units or service as required. From here a failure leaves `PENDING` in
+   place; with an install record the next `cgpd install` re-applies (it
+   reloads and restarts unconditionally), otherwise it refuses and points to
+   `cgpd uninstall --yes`.
+6. Wait for the selected daemon version and clean config status, prune older
+   version directories, write `install.toml`, and remove `PENDING` last.
 
 A downgrade is refused unless `--allow-downgrade` is supplied. When rolling
 back below the socket-unit release, the installer disables and removes the
@@ -133,10 +153,15 @@ fall back to old paths.
 `observer_socket` in the config; tmpfiles rules or service drop-ins outside
 cgprofile that claim the service; `/run/cgprofile` or its expected level/state
 directories with the wrong type, owner or mode; a version `MANIFEST` naming
-`installer=mdt host-setup (MDT-055)`; or leftover `/opt/cgprofile/PENDING` or
-`current.new`, or an old-layout socket node at `/run/cgprofile/ctl.sock` or
+any `installer=mdt...` installer, or an `/opt/cgprofile/<version>` tree without
+a cgpd `MANIFEST`; cgpd or cgprofile units without an install record; leftover
+`/opt/cgprofile/PENDING`, `current.new` or a staging directory (with an
+install record, `PENDING` and `current.new` mean "re-apply" and are accepted);
+or an old-layout socket node at `/run/cgprofile/ctl.sock` or
 `/run/cgprofile/observer/resource-observer.sock`. It does not chmod, chown,
-migrate, or delete those findings.
+migrate, or delete those findings. Leftovers under `/opt/cgprofile` that come
+from an unfinished cgpd install get their own message: review them and rerun,
+or run `cgpd uninstall --yes`.
 The refusal prints the matching paths and this manual cleanup list:
 
 - Remove `/etc/tmpfiles.d/mdt-cgprofile.conf` and
@@ -157,13 +182,26 @@ install fresh from the pinned wheels.
 
 ## 4. Uninstall and doctor
 
-`cgpd uninstall` stops and disables the service and both socket units, then
-removes the service, slice and socket unit files, sysusers file, config and
-install record, `/opt/cgprofile`, the owned `/usr/local/bin/cgpctl` link,
-socket nodes, level directories, and `/run/cgprofile/state`. It reloads
-systemd and resets failed unit state. Groups and memberships remain unless
-`--remove-groups` is given; `/var/lib/cgprofile` sessions and overrides remain
-unless `--purge-data` is given. `cgpd uninstall --dry-run` prints the plan.
+`cgpd uninstall` only touches a host that cgpd install owns: it needs
+`/etc/cgprofile/install.toml` or `/opt/cgprofile/PENDING`. On any other host
+it either reports "nothing installed by cgpd install" or, when it finds an old
+host-setup install, unknown files under `/opt/cgprofile` or `/run/cgprofile`,
+or an old-layout path, refuses before changing anything and prints the manual
+removal list. On an owned host it stops and disables both socket units and the
+service, stops `cgprofile.slice`, removes the service, slice and socket unit
+files, sysusers file, a leftover mdt drop-in, the owned `/usr/local/bin/cgpctl`
+link, socket nodes, level directories and `/run/cgprofile/state`, then runs
+`daemon-reload` and `reset-failed`. Then it removes groups created by the
+install (`--remove-groups`; a group that no longer resolves is skipped), the
+data directory (`--purge-data`), the config, `/opt/cgprofile` and finally the
+ownership markers `PENDING` and `install.toml`, so an interrupted uninstall can
+be rerun and still knows which groups it created. The version tree the command
+runs from (`/opt/cgprofile/current/venv/bin/cgpd uninstall --yes`) is removed
+after the result was printed, and its markers last. Groups and memberships remain
+unless `--remove-groups` is given; `/var/lib/cgprofile` sessions and overrides
+remain unless `--purge-data` is given. `cgpd uninstall --dry-run` prints the
+plan; a `/usr/local/bin/cgpctl` that is not the installer's link is kept and
+reported.
 
 `cgpd doctor` reports the following checks, each with a remedy on failure:
 
