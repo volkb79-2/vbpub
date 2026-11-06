@@ -1021,6 +1021,36 @@ def reset_refusal(config: dict) -> Optional[str]:
     return None
 
 
+def reset_compose_project(
+    config: dict, stack_dir: Path, repo_root: Optional[Path],
+) -> str:
+    """The compose project ``reset_service`` runs ``down`` under (S8.7 / CIU-46)."""
+    try:
+        return compose_project_name(config, stack_dir)
+    except ValueError:
+        if repo_root is None:
+            raise ValueError(
+                "[S8.7] deploy.project_name/environment_tag not set and no "
+                "repo_root was provided to derive the workspace-identity "
+                "compose project; set both tags or pass repo_root."
+            )
+        return identity_compose_project_name(Path(repo_root), stack_dir)
+
+
+def guard_clean_stack(config: dict, stack_dir: Path, *, repo_root: Path) -> None:
+    """Run the clean one-shot guard for one stack exactly as ``reset_service`` will.
+
+    ``ciu clean`` calls this for every selected stack BEFORE it removes
+    anything, so a refusal leaves the checkout untouched; ``reset_service``
+    keeps its own call as the second line of defence.
+    """
+    stack = Path(stack_dir).resolve()
+    guard_clean_one_shots(
+        reset_compose_project(config, stack, repo_root),
+        repo_root=Path(repo_root), stack_dir=stack,
+    )
+
+
 def guard_clean_one_shots(
     project: str, *, repo_root: Path, stack_dir: Path,
 ) -> None:
@@ -1176,16 +1206,7 @@ def reset_service(
     # clean and collided across checkouts.
     # S8.7 / CIU-46 cutover: ONE compose project name drives the down `-p`
     # AND step 4's orphan-sweep scope — they can never disagree.
-    try:
-        compose_project = compose_project_name(config, stack_dir)
-    except ValueError:
-        if repo_root is None:
-            raise ValueError(
-                "[S8.7] deploy.project_name/environment_tag not set and no "
-                "repo_root was provided to derive the workspace-identity "
-                "compose project; set both tags or pass repo_root."
-            )
-        compose_project = identity_compose_project_name(Path(repo_root), stack_dir)
+    compose_project = reset_compose_project(config, stack_dir, repo_root)
     # CIU-71: --project-directory is required unconditionally, independent of
     # which branch above resolved compose_project — down's relative paths
     # (e.g. a build.context restated by an overlay) must resolve against the

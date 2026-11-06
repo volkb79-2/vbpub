@@ -5870,13 +5870,30 @@ def action_clean(
         ciu_context=profiles_pkg.render_ciu_context(profile, selection),
     )
     reset_refusals: list[str] = []
+    one_shot_refusals: list[str] = []
     for entry in selection:
         rel = entry["path"]
         if rel not in rendered or not (repo_root / rel).resolve().is_dir():
             continue
-        reason = engine.reset_refusal(config_model.deep_merge(config, rendered[rel]))
+        merged_config = config_model.deep_merge(config, rendered[rel])
+        reason = engine.reset_refusal(merged_config)
         if reason:
             reset_refusals.append(f"{rel}: {reason}")
+            continue
+        if phases_pkg.service_shipped(entry.get("service", {})):
+            continue  # shipped stacks never reach reset_service (step 2)
+        # CIU-141: `down --remove-orphans` would stop another checkout's or
+        # stack's `ciu run` one-shots in this Compose project. reset_service
+        # refuses then, but only after step 1 has already removed containers,
+        # so evaluate the same guard here, before anything is removed.
+        try:
+            engine.guard_clean_stack(
+                merged_config, (repo_root / rel).resolve(), repo_root=repo_root,
+            )
+        except engine.ComposeError as exc:
+            one_shot_refusals.append(f"{rel}: {exc}")
+        except FileNotFoundError:
+            pass  # no docker: the removal steps below report it (CIU-137)
     if plan_only:
         # `--dry-run`: print the plan and stop. The destructive passes below
         # never run, and the real clean does not re-print it (the plan is the
@@ -5887,10 +5904,14 @@ def action_clean(
         )
         for message in reset_refusals:
             error(f"plan: clean would refuse to reset {message}")
-        return 1 if reset_refusals else plan_rc
-    if reset_refusals and not ignore_errors:
+        for message in one_shot_refusals:
+            error(f"plan: clean would refuse: {message}")
+        return 1 if (reset_refusals or one_shot_refusals) else plan_rc
+    if (reset_refusals or one_shot_refusals) and not ignore_errors:
         for message in reset_refusals:
             error(f"[CIU-200] clean refuses to reset {message}; nothing was removed")
+        for message in one_shot_refusals:
+            error(f"[CIU-141] clean refuses: {message}; nothing was removed")
         return 1
 
     # Step 1: stop + remove project containers. all_states=True so an exited
