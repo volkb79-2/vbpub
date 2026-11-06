@@ -609,9 +609,10 @@ def test_uninstall_removes_owned_files_and_preserves_foreign_links_and_groups_by
     assert "kept (not written by toposd install): " + paths.daemon_link in install._uninstall_summary(body)
 
 
-def test_uninstall_removes_only_recorded_groups_when_requested(tmp_path: Path) -> None:
+def test_uninstall_removes_only_recorded_groups_when_requested(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
     _owned_host(paths)
+    _groups(monkeypatch, {"topos-observe": 9101})
     commands = []
     subject = Installer(paths, run=_fake_run(commands), geteuid=lambda: 0)
     body = subject.uninstall(_args(remove_groups=True), _runtime(yes=True))
@@ -739,12 +740,97 @@ def test_uninstall_reports_an_unremovable_runtime_root(tmp_path: Path, monkeypat
 def test_uninstall_reports_an_unremovable_version_root(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
     _owned_host(paths)
-    Path(paths.opt).mkdir(parents=True)
-    monkeypatch.setattr(install.shutil, "rmtree",
-                        lambda path, *a, **k: (_ for _ in ()).throw(OSError(30, "Read-only file system"))
-                        if str(path) == paths.opt else None)
-    with pytest.raises(InstallError, match="cannot remove .*opt/topos.*Read-only"):
+    version = Path(paths.opt, "0.7.3")
+    version.mkdir(parents=True)
+    Path(paths.pending).write_text("0.7.4\n", encoding="utf-8")
+    original = install.shutil.rmtree
+
+    def rmtree(path, *a, **k):
+        if str(path) == str(version):
+            raise OSError(30, "Read-only file system", str(version))
+        return original(path, *a, **k)
+
+    monkeypatch.setattr(install.shutil, "rmtree", rmtree)
+    with pytest.raises(InstallError, match="cannot remove .*opt/topos/0.7.3.*Read-only"):
         Installer(paths, run=_fake_run([]), geteuid=lambda: 0).uninstall(_args(), _runtime(yes=True))
+    # Both ownership markers survive, so the uninstall can be rerun.
+    assert Path(paths.pending).is_file() and Path(paths.install_record).is_file()
+
+
+def test_pending_only_host_keeps_its_marker_until_the_end(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    Path(paths.opt).mkdir(parents=True)
+    Path(paths.pending).write_text("0.7.3\n", encoding="utf-8")
+    Path(paths.runtime_root).mkdir(parents=True)
+    original = install.os.rmdir
+
+    def rmdir(path, *a, **k):
+        if str(path) == paths.runtime_root:
+            raise OSError(16, "Device or resource busy")
+        return original(path, *a, **k)
+
+    monkeypatch.setattr(install.os, "rmdir", rmdir)
+    with pytest.raises(InstallError, match="cannot remove runtime directory"):
+        Installer(paths, run=_fake_run([]), geteuid=lambda: 0).uninstall(_args(), _runtime(yes=True))
+    assert Path(paths.pending).is_file()
+    monkeypatch.setattr(install.os, "rmdir", original)
+    Installer(paths, run=_fake_run([]), geteuid=lambda: 0).uninstall(_args(), _runtime(yes=True))
+    assert not Path(paths.opt).exists() and not Path(paths.runtime_root).exists()
+
+
+def test_remove_groups_rerun_skips_groups_already_gone(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    _record(paths, 'created_groups = ["topos-observe", "topos-extra"]\n')
+    _groups(monkeypatch, {"topos-extra": 9102})
+    commands = []
+    body = Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).uninstall(
+        _args(remove_groups=True), _runtime(yes=True)
+    )
+    assert body["groups_removed"] == ["topos-extra"]
+    assert ["groupdel", "topos-observe"] not in commands
+
+
+def test_a_failed_upgrade_is_reapplied_by_rerunning_install(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args(enable=False)
+    groups = _groups(monkeypatch)
+    subject = Installer(paths, run=_fake_run([], groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    subject.install(args, _runtime(yes=True))
+    # An upgrade died after the PENDING write and the current.new link.
+    Path(paths.pending).write_text("0.7.3\n", encoding="utf-8")
+    Path(paths.current_new).symlink_to("0.7.3")
+    # A doctor-style scan still reports the unfinished apply.
+    assert any("leftover install marker" in item for item in install.old_installation_problems(paths))
+
+    # A retry whose pin is wrong fails before applying and keeps the earlier marker.
+    retry_args, retry_wheels = _install_args(version="0.7.4", enable=False)
+    retry_args.wheel = "0.7.4@sha256:" + "f" * 64
+    retry = Installer(paths, run=_fake_run([], groups), fetch=_fake_fetch(retry_wheels), geteuid=lambda: 0)
+    with pytest.raises(InstallError, match="refusing before unpack"):
+        retry.install(retry_args, _runtime(yes=True))
+    assert Path(paths.pending).is_file()
+
+    subject.install(args, _runtime(yes=True))
+    assert not Path(paths.pending).exists() and not Path(paths.current_new).exists()
+    assert os.readlink(paths.current) == "0.7.3"
+
+
+def test_a_kept_config_must_keep_the_fixed_layout(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    Path(paths.config).parent.mkdir(parents=True)
+    subject = Installer(paths, geteuid=lambda: 0)
+    for key_line, key in (
+        ('state_dir = "/run/topos/elsewhere"\n', "state_dir"),
+        ('[sockets.observe]\npath = "/run/topos/observe/x.sock"\n', "sockets.observe.path"),
+    ):
+        Path(paths.config).write_text(key_line, encoding="utf-8")
+        with pytest.raises(InstallError, match=f"sets {key} = .*fixed path"):
+            subject._config("topos-observe")
+
+
+def test_release_candidates_of_the_socket_release_are_supported() -> None:
+    assert install._is_socket_unit_version("0.7.0rc1")
+    assert not install._is_socket_unit_version("0.6.9")
 
 
 def test_root_option_is_only_valid_for_dry_runs(tmp_path: Path) -> None:

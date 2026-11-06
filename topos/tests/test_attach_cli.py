@@ -238,7 +238,7 @@ def test_default_socket_attach_error_guidance(tmp_path: Path) -> None:
     msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
     assert f"cannot connect to {DEFAULT_DAEMON_SOCKET}" in msg
     assert "Try: toposd doctor --check connect" in msg
-    assert "toposd install --dry-run" in msg
+    assert "see toposd install --help" in msg
 
 
 def test_custom_socket_attach_error_guidance(tmp_path: Path) -> None:
@@ -315,5 +315,5 @@ def test_attach_default_missing_socket_guidance_via_cli(tmp_path: Path, monkeypa
     assert code == 2
     assert f"cannot connect to {missing_default}" in stderr
     assert "Try: toposd doctor --check connect" in stderr
-    assert "toposd install --dry-run" in stderr
+    assert "see toposd install --help" in stderr
     assert output.getvalue() == ""

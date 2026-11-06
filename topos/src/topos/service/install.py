@@ -31,7 +31,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from cli_extended import CliFailure, CliRegistry, CliRuntime, OptionSpec, VerbGroup, VerbSpec
 from cli_extended.prompts import PromptCancelled
 
-from .config import ConfigError, ServiceConfig, parse_config
+from .config import DEFAULTS, ConfigError, ServiceConfig, parse_config
 from .lock import LockError, parse_lock, parse_pin
 from .units import render_units
 
@@ -254,9 +254,9 @@ def manual_removal_message(found: Iterable[str] = ()) -> str:
     if version_root:
         message.extend(
             (
-                "Under /opt/topos: if /opt/topos/PENDING is listed, a toposd install did not finish;",
-                "  run `toposd uninstall --yes`, which removes only what toposd install writes.",
-                "  Otherwise remove the listed paths by hand.",
+                "Under /opt/topos: these are leftovers of a toposd install that did not finish.",
+                "  Remove the listed paths and rerun, or run `toposd uninstall --yes` to remove the",
+                "  whole install (it removes only what toposd install writes).",
             )
         )
     message.append("Then rerun toposd install.")
@@ -367,7 +367,7 @@ def old_installation_problems(paths: InstallPaths) -> list[str]:
             problems.append(f"cannot inspect version root {paths.opt}: {exc.strerror or exc}")
             entries = []
         for name in entries:
-            if name == "current":
+            if name in ("current", "current.new"):  # current.new is reported as a marker above
                 continue
             version_dir = os.path.join(paths.opt, name)
             if name.startswith(".stage."):
@@ -590,7 +590,8 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
 
 
 def _is_socket_unit_version(version: str) -> bool:
-    return version_key(version) >= version_key(SOCKET_RELEASE)
+    # Release candidates of 0.7.0 already carry toposd, so compare the release part only.
+    return version_key(version)[:3] >= version_key(SOCKET_RELEASE)[:3]
 
 
 def _is_install_link(link: str, paths: InstallPaths) -> bool:
@@ -682,6 +683,11 @@ class Installer:
         if not dry_run and self.geteuid() != 0:
             raise InstallError("toposd install needs root")
         problems = old_installation_problems(self.paths)
+        if os.path.lexists(self.paths.install_record):
+            # A failed upgrade of a finished install: every apply step is
+            # idempotent, so a rerun re-applies instead of needing an uninstall.
+            reapply = {f"leftover install marker: {marker}" for marker in (self.paths.pending, self.paths.current_new)}
+            problems = [item for item in problems if item not in reapply]
         if problems:
             raise InstallError(manual_removal_message(problems))
         version_dir = os.path.join(self.paths.opt, values["version"])
@@ -874,11 +880,14 @@ class Installer:
         # uninstall knows the leftovers are its own. A failed fetch, pin check or
         # venv build has already removed its version tree, so it drops PENDING too.
         os.makedirs(self.paths.opt, mode=0o755, exist_ok=True)
+        # A PENDING left by an earlier failed upgrade still marks that partial apply.
+        earlier_pending = os.path.lexists(self.paths.pending)
         _atomic_write(self.paths.pending, values["version"] + "\n")
         try:
             self._ensure_version(values)
         except InstallError:
-            os.unlink(self.paths.pending)
+            if not earlier_pending:
+                os.unlink(self.paths.pending)
             raise
         resource_paths = self._resource_paths()
         socket_name = "topos-observe.socket"
@@ -898,6 +907,8 @@ class Installer:
             _atomic_write(self.paths.config, config_text)
         for name, content in rendered.items():
             _atomic_write(resource_paths[name], content)
+        if os.path.lexists(self.paths.current_new):  # left by a failed upgrade being re-applied
+            os.unlink(self.paths.current_new)
         os.symlink(values["version"], self.paths.current_new)
         os.replace(self.paths.current_new, self.paths.current)
 
@@ -983,6 +994,17 @@ class Installer:
                 f"{self.paths.config} sets observe group {config.sockets.observe.group!r}, not {group!r}; "
                 f"edit the file or pass --observe-group {config.sockets.observe.group}"
             )
+        # The layout is fixed (plan 3.1): the old-layout scan, doctor and uninstall
+        # all rely on it, so a kept config may change the group and mode only.
+        for key, value, fixed in (
+            ("state_dir", config.state_dir, DEFAULTS.state_dir),
+            ("sockets.observe.path", config.sockets.observe.path, DEFAULTS.sockets.observe.path),
+        ):
+            if value != fixed:
+                raise InstallError(
+                    f"{self.paths.config} sets {key} = {value.as_posix()!r}; topos uses the fixed path "
+                    f"{fixed.as_posix()!r}, so remove the key or restore that value"
+                )
         return text, config, existing is None
 
     def _uninstall_targets(self) -> list[str] | None:
@@ -1082,35 +1104,50 @@ class Installer:
                 os.rmdir(directory)
             except OSError:
                 pass
-        shutil.rmtree(paths.state_dir, ignore_errors=True)
-        for tree in (paths.opt,):
+        for remove, directory in ((shutil.rmtree, paths.state_dir), (os.rmdir, paths.runtime_root)):
             try:
-                shutil.rmtree(tree)
+                remove(directory)
             except FileNotFoundError:
                 pass
             except OSError as exc:
-                raise InstallError(f"cannot remove {tree}: {exc}") from None
-        try:
-            os.rmdir(paths.runtime_root)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise InstallError(f"cannot remove runtime directory {paths.runtime_root}: {exc}") from None
+                raise InstallError(f"cannot remove runtime directory {directory}: {exc}") from None
 
         removed_groups: list[str] = []
         if remove_groups:
             for group in created_groups:
+                # A rerun after a partial uninstall finds some groups already gone.
+                if _group_gid(group) is None:
+                    continue
                 self._command(["groupdel", group], timeout=30)
                 removed_groups.append(group)
         self._command([self.systemctl, "daemon-reload"], timeout=30)
         self._command([self.systemctl, "reset-failed", "topos.service", "topos-observe.socket", "topos.slice"],
                       check=False, timeout=30)
-        # The record goes last, so an interrupted uninstall can be rerun.
-        for path in (paths.config, paths.install_record):
+        try:
+            os.unlink(paths.config)
+        except FileNotFoundError:
+            pass
+        # The ownership markers go last, so an interrupted uninstall can be rerun:
+        # everything in /opt/topos except PENDING, then PENDING, then the record.
+        if os.path.isdir(paths.opt):
             try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
+                for name in sorted(os.listdir(paths.opt)):
+                    if name == "PENDING":
+                        continue
+                    path = os.path.join(paths.opt, name)
+                    if os.path.isdir(path) and not os.path.islink(path):
+                        shutil.rmtree(path)
+                    else:
+                        os.unlink(path)
+                if os.path.lexists(paths.pending):
+                    os.unlink(paths.pending)
+                os.rmdir(paths.opt)
+            except OSError as exc:
+                raise InstallError(f"cannot remove {exc.filename or paths.opt}: {exc}") from None
+        try:
+            os.unlink(paths.install_record)
+        except FileNotFoundError:
+            pass
         try:
             os.rmdir(os.path.dirname(paths.config))
         except FileNotFoundError:

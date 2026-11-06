@@ -296,7 +296,7 @@ def _format_daemon_error(exc: DaemonClientError, socket_path: Path) -> str:
         lines.append("")
         if socket_path == DEFAULT_DAEMON_SOCKET:
             lines.append("Try: toposd doctor --check connect")
-            lines.append("If the daemon is not installed: toposd install --dry-run")
+            lines.append("If the daemon is not installed: see toposd install --help (docs/DAEMON.md)")
         else:
             lines.append(f"Try: topos daemon status --socket {socket_path}")
     elif isinstance(exc, (DaemonProtocolError, DaemonResponseError)):

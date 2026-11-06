@@ -84,7 +84,9 @@ the service files without enabling or starting the socket/service.
 
 `/etc/topos/toposd.toml` is written only when it is absent. An existing file is
 kept as written, so later edits survive an upgrade; its observe group must match
-the requested `--observe-group`, and the units are rendered from it.
+the requested `--observe-group`, and the units are rendered from it. Its
+`state_dir` and socket `path` must keep the fixed layout (`/run/topos/state`,
+`/run/topos/observe/topos.sock`); only the group and mode are host choices.
 
 The installer refuses an entry in `/usr/local/bin/topos` or `toposd` that is not
 its own symlink into `/opt/topos`. Move such a file away before installing.
@@ -105,8 +107,7 @@ removal commands. It never migrates, repairs, or chmods old state.
 `/opt/topos/PENDING` marks an install in progress. A failed download, pin check
 or venv build removes its version tree and the marker, so a retry starts clean.
 A failure after that point, while units, links and services change, leaves
-`PENDING` in place: the next install refuses, and `toposd uninstall --yes`
-clears the unfinished install.
+`PENDING` in place (see below for how a rerun treats it).
 
 `toposd doctor [--check NAME] [--json]` runs `config-valid`, `units-current`,
 `groups`, `socket-units`, `socket-nodes`, `socket-dirs`, `state-dir`,
@@ -133,9 +134,15 @@ with the manual removal steps, when it finds old-layout or unknown paths under
 first), the slice, the sysusers file, its own `/usr/local/bin` links, the runtime
 tree, `/opt/topos`, and the leftover host-setup drop-in
 `topos.service.d/50-mdt-socket-group.conf`. Other files in `/usr/local/bin` or
-`/etc/topos` are kept and listed. The install record is removed last, so an
-interrupted uninstall can be rerun. `--dry-run` lists the paths and groups it
-would remove.
+`/etc/topos` are kept and listed; `/etc/topos/toposd.toml` is removed even when
+it predates the install. The ownership markers (`PENDING`, then the install
+record) are removed last, so an interrupted uninstall can be rerun. `--dry-run`
+lists the paths and groups it would remove.
+
+A failed upgrade of a finished install leaves `PENDING` next to the install
+record. Rerunning `toposd install` after fixing the cause re-applies the
+requested version; every step is idempotent. Only a first install that failed
+part way (`PENDING` without a record) is refused.
 
 ### Manual removal of an old installation
 
@@ -627,7 +634,7 @@ the original error followed by actionable guidance:
 cannot connect to /run/topos/observe/topos.sock: No such file or directory
 
 Try: toposd doctor --check connect
-If the daemon is not installed: toposd install --dry-run
+If the daemon is not installed: see toposd install --help (docs/DAEMON.md)
 ```
 
 ### Custom socket
