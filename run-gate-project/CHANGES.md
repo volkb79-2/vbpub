@@ -11,6 +11,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Changed
 - Run-Gate's default cgprofile control socket and observer lane endpoint use the new per-level layout, with no old-path fallback. Observer preflight checks the root-owned level directory and requires the observer socket GID to differ from the host Docker and control socket GIDs; the host Docker GID is `RUN_GATE_HOST_DOCKER_GID` or else the owning GID of the Docker API socket, not the cockpit's group database. A host still on the old layout receives a cutover message; keep its earlier Run-Gate and Assay pins until the host is cut over.
+- `DEFAULT_HOST_IMAGE` (the host image when `RUN_GATE_HOST_IMAGE` is unset) is now
+  `ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest`. The previous
+  default, `modern-debian-tools-python-debug-vsc-devcontainer`, belongs to the retired
+  predecessor project and is no longer built; `mdt-cockpit` is its successor.
 
 <!-- cmru: release history -->
 

@@ -344,7 +344,7 @@ slice name:
 - `$CGROUP_PARENT_DEV_GATES` (RG-55 D-19/D-24, 2026-09-12) — the admission
   capacity object for gate/lane containers and placed lane leaves
   `rg-<token>` specifically, a SIBLING of `$CGROUP_PARENT_DEV_BACKGROUND`'s
-  tier rather than a child of it; see `modern-debian-tools-python-debug/
+  tier rather than a child of it; see `mdt-cockpit/
   host-setup/README.md` "dev-gates: why". Gate spawners resolve this
   variable: `run-gate`, cmru's `tester-gate`, assay's gate driver,
   tester-unified, srdm's gate scripts, and the debian-install-v2 VM runner.
@@ -373,7 +373,7 @@ narrowly-scoped live acceptance probe that the registered lane cannot express;
 it is not a substitute for registered gate evidence. Adopted estate-wide
 2026-08-22 (ciu, cmru, assay, nyxloom, topos, pwmcp,
 shared-ramdisk-depot-manager, plesk-mailbox-create,
-modern-debian-tools-python-debug); projects without an executable test
+mdt-cockpit); projects without an executable test
 surface declare no lane by decision, recorded in the adoption commit.
 
 Gates are normally launched by nyxloomd or `cmru tester-gate`, which handle all
