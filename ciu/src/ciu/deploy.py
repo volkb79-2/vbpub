@@ -66,6 +66,8 @@ from .config_constants import (
     GLOBAL_CONFIG_INSTANCE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
     INSTANCE_GENERATED_FACTS,
+    SHIPPED_COMPOSE,
+    STACK_CONFIG_DEFAULTS,
     STACK_CONFIG_RENDERED,
     WORKSPACE_ENV,
 )
@@ -5635,6 +5637,117 @@ def _print_clean_plan(
     return rc
 
 
+def _root_has_cleanable_stack(repo_root: Path) -> bool:
+    """Whether this CIU root owns a native or shipped stack to clean.
+
+    A global defaults marker defines a CIU root, while a stack defaults marker
+    defines a native stack. Nested CIU roots are separate owners and are not
+    counted here; worktree removal discovers and cleans each one separately.
+    The shipped compose filename is included because shipped stacks do not
+    have a CIU stack defaults template.
+    """
+    root = Path(repo_root).resolve()
+    ignored_directories = {
+        ".assay", ".git", ".run-gate", ".worktrees", "__pycache__",
+        "artifacts", "node_modules",
+    }
+
+    def raise_walk_error(exc: OSError) -> None:
+        raise exc
+
+    for current, directories, files in os.walk(
+        root, topdown=True, onerror=raise_walk_error, followlinks=False,
+    ):
+        current_path = Path(current)
+        if current_path != root and GLOBAL_CONFIG_DEFAULTS in files:
+            directories[:] = []
+            continue
+        if STACK_CONFIG_DEFAULTS in files or SHIPPED_COMPOSE in files:
+            return True
+        directories[:] = [
+            name for name in directories
+            if name not in ignored_directories
+            and not name.startswith("vol-")
+            and not (current_path / name).is_symlink()
+        ]
+    return False
+
+
+def _clean_global_only_root(
+    repo_root: Path,
+    config: dict,
+    *,
+    vanilla: bool,
+    plan_only: bool,
+) -> int:
+    """``ciu clean`` for a global-only CIU root (CIU-202).
+
+    Such a root owns no stack, so the container, volume and per-stack reset
+    passes have nothing to do and plain ``clean`` is a successful no-op. The
+    workspace-level state is still this root's, though: ``--vanilla`` is a
+    reset to freshly-cloned state and must still remove
+    :data:`VANILLA_RESET_FILES`, and since ``ciu.instance.generated.toml`` is
+    the only record naming the workspace identity network, that network is
+    removed first (same instance-vs-main keep rule as a full clean), and the
+    files are only removed when the network removal succeeded.
+    """
+    if not vanilla:
+        info("global-only root: nothing to clean")
+        return 0
+    info("global-only root: no stacks to clean")
+    targets, keeps, errors, _identity = _clean_network_targets(
+        repo_root, config, [], tagged=False,
+    )
+    if plan_only:
+        info(f"  networks to remove ({len(targets)}): {', '.join(targets) or '-'}")
+        for net, reason in keeps.items():
+            info(f"  NOT touching network {net}: {reason}")
+        present = [name for name in VANILLA_RESET_FILES if (repo_root / name).exists()]
+        info(f"  --vanilla would remove: {', '.join(present) or '-'}")
+        for message in errors:
+            error(f"plan: {message}")
+        return 1 if errors else 0
+    rc = 0
+    for message in errors:
+        error(message)
+        rc = 1
+    removed, blocked = _remove_identity_networks(targets)
+    if removed:
+        info(f"Removed {len(removed)} network(s): {', '.join(removed)}")
+    for net, reason in keeps.items():
+        try:
+            if _network_exists(net):
+                info(f"kept: {net} ({reason})")
+        except ValueError as exc:
+            warn(f"kept-network check failed for {net!r}: {exc}")
+    for net in targets:
+        try:
+            still_there = _network_exists(net)
+        except ValueError as exc:
+            error(
+                f"post-clean invariant unverifiable (S6.4a): network {net!r} "
+                f"could not be checked — {exc}"
+            )
+            rc = 1
+            continue
+        if still_there:
+            reason = next((r for n, r in blocked if n == net), "survived removal")
+            error(f"post-clean invariant violated (S6.4a): network {net!r} remains — {reason}")
+            rc = 1
+    if rc == 0:
+        rc = _remove_vanilla_reset_files(repo_root) or rc
+    else:
+        warn(
+            "--vanilla skipped: the teardown above did not complete, so "
+            f"{', '.join(VANILLA_RESET_FILES)} are kept for the retry"
+        )
+    if rc == 0:
+        success("clean complete")
+    else:
+        error("clean completed with errors")
+    return rc
+
+
 def action_clean(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -5687,6 +5800,15 @@ def action_clean(
     half-torn-down workspace would take away the very record naming what is
     still standing.
     """
+    root_path = Path(repo_root).resolve()
+    if (
+        (root_path / GLOBAL_CONFIG_DEFAULTS).is_file()
+        and not _root_has_cleanable_stack(root_path)
+    ):
+        return _clean_global_only_root(
+            root_path, profile.config, vanilla=vanilla, plan_only=plan_only,
+        )
+
     info("=" * 60)
     info("CLEAN: removing containers, volumes, and rendered artifacts")
     info("=" * 60)
