@@ -182,6 +182,73 @@ def test_missing_docker_does_not_pre_refuse_and_shipped_or_refused_stacks_skip_t
     assert guarded == []
 
 
+def _undetermined_project():
+    raise ValueError("[S8.7] deploy.project_name set but declares no repo_name/instance_id")
+
+
+@pytest.mark.parametrize("mode", ["clean", "dry-run", "ignore-errors"])
+def test_undeterminable_project_is_reported_not_a_traceback(monkeypatch, tmp_path, capsys, mode):
+    """project_name without environment_tag or identity facts: ValueError, not ComposeError."""
+    calls: list = []
+    _stub(monkeypatch, {"stack-a": {}}, calls, guard=_undetermined_project)
+    if mode == "ignore-errors":
+        monkeypatch.setattr(
+            deploy.engine, "reset_service",
+            lambda *a, **k: (_ for _ in ()).throw(ValueError("reset: no identity")),
+        )
+
+    rc = deploy.action_clean(
+        tmp_path, _profile({"project_name": "p"}), _selection(tmp_path, "stack-a"),
+        ignore_errors=mode == "ignore-errors", plan_only=mode == "dry-run",
+    )
+
+    out = capsys.readouterr()
+    text = out.err + out.out
+    assert rc == 1
+    assert "Traceback" not in text
+    if mode != "ignore-errors":
+        assert "no repo_name/instance_id" in text
+    if mode == "ignore-errors":
+        assert "reset failed for stack-a" in text  # the old best-effort message path
+        assert any(call[:2] == ["rm", "-f"] for call in calls)
+    elif mode == "dry-run":
+        assert "plan: clean would refuse: stack-a:" in text
+        assert calls == []
+    else:
+        assert "nothing was removed" in text
+        assert calls == []
+
+
+@pytest.mark.real_clean_guard
+@pytest.mark.parametrize("mode", ["clean", "dry-run", "ignore-errors"])
+def test_real_guard_with_undeterminable_project_does_not_escape(
+    monkeypatch, tmp_path, capsys, mode,
+):
+    calls: list = []
+    real_guard = engine.guard_clean_stack  # marker: conftest left the real function
+    _stub(monkeypatch, {"stack-a": {}}, calls)
+    monkeypatch.setattr(engine, "guard_clean_stack", real_guard)
+    monkeypatch.setattr(
+        engine, "identity_compose_project_name",
+        lambda root, stack_dir: (_ for _ in ()).throw(ValueError("no repo_name/instance_id")),
+    )
+    if mode == "ignore-errors":
+        monkeypatch.setattr(
+            deploy.engine, "reset_service",
+            lambda *a, **k: (_ for _ in ()).throw(ValueError("reset: no identity")),
+        )
+
+    rc = deploy.action_clean(
+        tmp_path, _profile({"project_name": "p"}), _selection(tmp_path, "stack-a"),
+        ignore_errors=mode == "ignore-errors", plan_only=mode == "dry-run",
+    )
+
+    out = capsys.readouterr()
+    assert rc == 1
+    expected = "reset failed for stack-a" if mode == "ignore-errors" else "no repo_name/instance_id"
+    assert expected in out.err + out.out
+
+
 @pytest.mark.real_clean_guard
 def test_guard_clean_stack_derives_the_project_reset_service_uses(monkeypatch, tmp_path):
     seen = []

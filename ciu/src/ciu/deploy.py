@@ -5890,7 +5890,11 @@ def action_clean(
             engine.guard_clean_stack(
                 merged_config, (repo_root / rel).resolve(), repo_root=repo_root,
             )
-        except engine.ComposeError as exc:
+        except (engine.ComposeError, ValueError) as exc:
+            # ValueError: the compose project cannot be determined (project_name
+            # without environment_tag or identity facts). It is a refusal found
+            # before anything is removed; --ignore-errors still falls through to
+            # step 2, whose "reset failed" report is the old best-effort path.
             one_shot_refusals.append(f"{rel}: {exc}")
         except FileNotFoundError:
             pass  # no docker: the removal steps below report it (CIU-137)
