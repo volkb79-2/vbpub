@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -854,22 +855,22 @@ def test_observer_dir_check(monkeypatch, tmp_path):
     observer_gid = 4243
     real_lstat = os.lstat
 
-    def fake_lstat(path):
+    def fake_lstat(path, *args, **kwargs):
         if str(path) == str(observer):
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0)
         if str(path) == str(observer / "cgprofile.sock"):
             return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=observer_gid)
-        return real_lstat(path)
+        return real_lstat(path, *args, **kwargs)
 
     monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
     monkeypatch.setattr(cgpctl, "socket_group", lambda path: {"group": "control", "gid": control_gid})
     monkeypatch.setattr(cgpctl.grp, "getgrgid", lambda gid: SimpleNamespace(gr_name="cgprofile-observer"))
     assert _check("observer-dir", ns).status == "ok"
 
-    def invalid_directory(path):
+    def invalid_directory(path, *args, **kwargs):
         if str(path) == str(observer):
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=0)
-        return fake_lstat(path)
+        return fake_lstat(path, *args, **kwargs)
 
     monkeypatch.setattr(cgpctl.os, "lstat", invalid_directory)
     assert "0751" in _check("observer-dir", ns).summary
@@ -896,12 +897,12 @@ def test_observer_dir_check_uses_configured_path_group_and_mode(monkeypatch, tmp
     monkeypatch.setattr(cgpctl, "_probe", lambda _args: probe)
     real_lstat = os.lstat
 
-    def fake_lstat(target):
+    def fake_lstat(target, *args, **kwargs):
         if str(target) == str(observer):
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0)
         if str(target) == str(path):
             return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o600, st_uid=0, st_gid=observer_gid)
-        return real_lstat(target)
+        return real_lstat(target, *args, **kwargs)
 
     monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
     monkeypatch.setattr(cgpctl, "socket_group", lambda _path: {"group": "control", "gid": control_gid})

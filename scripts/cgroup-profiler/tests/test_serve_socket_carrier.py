@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import stat
 import struct
 import sys
 import threading

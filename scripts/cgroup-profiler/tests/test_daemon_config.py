@@ -144,15 +144,30 @@ class TestFile:
 
     @pytest.mark.parametrize("control,observer,needle", [
         ({"path": "/control", "group": "same", "mode": "0660"},
-         {"path": "/observer", "group": "same", "mode": "0660"}, "groups must differ"),
+         {"path": "/observer", "group": "same", "mode": "0660"}, "sockets.control.group and sockets.observer.group must differ"),
         ({"path": "/same", "group": "control", "mode": "0660"},
-         {"path": "/same", "group": "observer", "mode": "0660"}, "paths must differ"),
+         {"path": "/same", "group": "observer", "mode": "0660"}, "sockets.control.path and sockets.observer.path must differ"),
         ({"path": "/control", "group": "control", "mode": "0660"},
          {"path": "/observer", "group": "docker", "mode": "0660"}, "must not be docker"),
     ])
     def test_socket_table_cross_validation(self, control, observer, needle):
         with pytest.raises(dc.ConfigError, match=needle):
             dc.render_config({"sockets.control": control, "sockets.observer": observer})
+
+    def test_parse_table_refuses_the_docker_group_for_the_observer(self):
+        # the observer socket is for unprivileged readers: docker is root-equivalent
+        text = ('[sockets.control]\npath = "/run/cgprofile/control/cgprofile.sock"\n'
+                'group = "cgprofile-control"\nmode = "0660"\n\n'
+                '[sockets.observer]\npath = "/run/cgprofile/observer/cgprofile.sock"\n'
+                'group = "docker"\nmode = "0660"\n')
+        with pytest.raises(dc.ConfigError, match="sockets.observer.group must not be docker"):
+            dc.parse_table(text)
+
+    def test_socket_settings_refuses_the_docker_group_for_the_observer(self):
+        values = {"sockets.observer": {"path": "/run/cgprofile/observer/cgprofile.sock",
+                                       "group": "docker", "mode": "0660"}}
+        with pytest.raises(dc.ConfigError, match="sockets.observer.group must not be docker"):
+            dc.socket_settings(values)
 
 
 class TestStaleEnv:

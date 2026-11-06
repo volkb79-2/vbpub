@@ -3392,9 +3392,11 @@ class SessionServer:
             owned_identity = (bound.st_dev, bound.st_ino)
             sock.listen(16)
             sock.settimeout(self.accept_timeout)
+            # Apply the node mode before publishing the socket, so a failure
+            # here never leaves a closed socket assigned to ``_observer_sock``.
+            self._apply_self_bind_socket_mode(self.observer_socket_path, "observer")
             self._observer_sock = sock
             self._observer_socket_identity = owned_identity
-            self._apply_self_bind_socket_mode(self.observer_socket_path, "observer")
         except Exception:
             sock.close()
             self._unlink_observer_socket_if_owned(owned_identity)

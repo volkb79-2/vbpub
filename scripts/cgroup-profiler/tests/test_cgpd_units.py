@@ -119,6 +119,8 @@ class TestCheck:
     def installed(self, tmp_path):
         for name, text in unitfiles.render().items():
             (tmp_path / name).write_text(text)
+        # the sysusers resource is installed as cgprofile.conf
+        (tmp_path / "cgprofile.conf").write_text(unitfiles.render()["cgprofile.sysusers"])
         return tmp_path
 
     def test_matching_files(self, cli, installed):
@@ -155,7 +157,7 @@ class TestCheck:
 
     def test_a_foreign_file_name_is_refused(self, cli, installed):
         code, _out, err = cli("unit", "check", "--installed", str(installed / "other.service"))
-        assert code == 2 and "not a cgprofile unit file" in err
+        assert code == 2 and "not a cgprofile resource" in err
 
     def test_check_renders_with_the_given_venv(self, cli, installed):
         code, _out, err = cli("unit", "check", "--wheel-venv", "/srv/other/venv", "--installed",

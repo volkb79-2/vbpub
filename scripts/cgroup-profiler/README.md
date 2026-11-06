@@ -68,7 +68,7 @@ for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
 
 | verb | what |
 |---|---|
-| `run` | serve systemd-passed sockets; `--self-bind` is for tests and development |
+| `run` | explicit service entrypoint: serve systemd-passed sockets; `--self-bind` is for tests and development |
 | `install` | fetch pinned wheels, render config and systemd resources, drain before restart; `--enable`, `--no-enable`, `--allow-downgrade` |
 | `uninstall` | stop and remove the service; `--remove-groups` and `--purge-data` are opt-in |
 | `doctor` | check config, units, groups, socket nodes, state, service, access and foreign rules |
@@ -108,13 +108,43 @@ are fixed and require a service restart:
 
 | socket | owner and access | speaks |
 |---|---|---|
-| `/run/cgprofile/control/cgprofile.sock` | socket `root:cgprofile-control` mode `0660`; parent `root:root` mode `0755` | control protocol contracts 1 and 2 ([`docs/PROTOCOL.md`](docs/PROTOCOL.md)) |
-| `/run/cgprofile/observer/cgprofile.sock` | socket `root:cgprofile-observer` mode `0660`; parent `root:root` mode `0755` | observer contracts 2 and 3: resource counters and measurement windows ([`docs/PROTOCOL.md`](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)) |
+| `/run/cgprofile/control/cgprofile.sock` | parent `0755 root:root`; socket mode `0660`, group `root:cgprofile-control` | control protocol contracts 1 and 2 ([`docs/PROTOCOL.md`](docs/PROTOCOL.md)) |
+| `/run/cgprofile/observer/cgprofile.sock` | parent `0755 root:root`; socket mode `0660`, group `root:cgprofile-observer` | observer contracts 2 and 3: resource counters and measurement windows ([`docs/PROTOCOL.md`](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)) |
 
 Each systemd socket unit has one `ListenStream` and passes one named fd to
 `cgpd.service`. Systemd owns the socket nodes across daemon restarts. The
 control group grants control access; observer group membership grants only
 read-only observer access. `allow_uids` can further narrow control access.
+
+The control socket is one carrier: there is no `exec` carrier. A version reply
+looks like this (the `cgprofile` field is the installed version):
+
+```json
+{
+  "ok": true,
+  "contract": 1,
+  "cgprofile": "2.2.0",
+  "daemon": {
+    "name": "cgprofile-host-daemon",
+    "started_at": "2026-09-12T10:15:00Z",
+    "damon": "available",
+    "damon_default": "on",
+    "sessions_live": 0,
+    "max_sessions": 16
+  },
+  "resource_observer": {
+    "contract": 2,
+    "contracts": [2, 3],
+    "path": "/run/cgprofile/observer/cgprofile.sock",
+    "listening": true
+  }
+}
+```
+
+`damon: "available"` is a capability probe, not proof that the kernel accepted
+a monitoring context; see the
+[design guide](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness)
+and the [troubleshooting note](docs/CONSUMERS.md#host-damon_stat-exclusivity).
 
 The config and client defaults use only these new paths. Install refuses old
 config keys, foreign host-setup rules, mismatched runtime directories, old
@@ -127,7 +157,8 @@ reasoning is in the
 
 * **Run-Gate** starts, watches and stops sessions over the control socket and
   mounts only the observer level directory into a native-R2 tester container.
-  See the [rationale](docs/DESIGN-GUIDE.md#run-gate-is-an-installed-semver-consumer)
+  Integrations use the installed Run-Gate wheel and its SemVer identity;
+  copied `run-gate.py` scripts are not a supported consumer. See the [rationale](docs/DESIGN-GUIDE.md#run-gate-is-an-installed-semver-consumer)
   and [adoption steps](docs/CONSUMERS.md#attach-a-run-gate-lane).
 * **Assay** reads event counters through the observer socket
   ([adoption](docs/CONSUMERS.md#native-r2-resource-observer)).
@@ -168,6 +199,18 @@ explicit flags for unattended installation. Install and uninstall steps,
 manual cleanup for an old host-setup install, doctor checks and VM acceptance
 are in [`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md). The design
 choices are in the [socket activation guide](docs/DESIGN-GUIDE.md#systemd-owns-the-service-sockets).
+Release identity (wheel version, tag, checksum) is described in the
+[release identity design](docs/DESIGN-GUIDE.md#release-identity).
+
+A CMRU release also publishes a **GitHub Release body** for `cgprofile-v<version>`: it
+carries that version's dated section of `CHANGES.md`, including any pending
+`[Unreleased]` and migration notes, which CMRU folds into the tagged candidate. From 2.0.0 the
+release is the wheel only (the OCI image is no longer published): the body is written by
+`cmru handler wheel-publish`, the only command of the push step, which uploads the wheel,
+its sha256 sidecar and `latest.json`. `cmru release --dry-run` previews that exact body, and
+CMRU refuses a second release-body handler before any release side effect. See the
+[design](docs/DESIGN-GUIDE.md#the-github-release-body-for-the-published-wheel) and the
+[pasteable preview](docs/CONSUMERS.md#preview-the-github-release-body).
 
 ## Where to read next
 

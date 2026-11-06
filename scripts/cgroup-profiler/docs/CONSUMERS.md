@@ -89,7 +89,7 @@ rolling back below the socket-unit release removes the socket units first.
 `cgpd uninstall` removes service resources and socket nodes. Groups remain
 unless `--remove-groups` is requested; `/var/lib/cgprofile` remains unless
 `--purge-data` is requested. See the
-[deployment contract](NATIVE-DEPLOYMENT.md#uninstall-and-doctor).
+[deployment contract](NATIVE-DEPLOYMENT.md#4-uninstall-and-doctor).
 
 ### Preview the GitHub Release body
 

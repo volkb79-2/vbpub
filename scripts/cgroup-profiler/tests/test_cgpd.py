@@ -231,15 +231,6 @@ class TestPreflight:
             host.preflight()
         assert "is not writable" in str(caught.value)
 
-    def test_6_another_daemon_is_a_refusal_naming_version_and_pid(self, host):
-        daemon = _fakectl.FakeDaemon(host.socket, {"version": lambda a, c: dict(_fakectl.V2_VERSION)})
-        try:
-            with pytest.raises(cgpd.CliFailure) as caught:
-                host.preflight()
-        finally:
-            daemon.close()
-        assert f"another daemon already serves {host.socket} (version 2.0.0, pid {os.getpid()})" in str(caught.value)
-
     def test_6_socket_path_is_not_probed_by_preflight(self, host):
         host.config = write_config(
             host.sockdir,
@@ -318,8 +309,11 @@ class TestRun:
         assert os.environ["CGPROFILE_BUSCTL"] == "busctl"
 
     def test_allow_uids_come_from_the_config_not_the_environment(self, cli, wired):
-        with open(wired.config, "a") as fh:
-            fh.write("allow_uids = [0, 1000]\n")
+        # a top-level key must precede the [sockets.*] tables of the fixture config
+        with open(wired.config) as fh:
+            existing = fh.read()
+        with open(wired.config, "w") as fh:
+            fh.write("allow_uids = [0, 1000]\n" + existing)
         assert cli("--config", wired.config, "run", "--self-bind")[0] == 0
         assert StubServer.built[0].kwargs["settings"].get("allow_uids") == [0, 1000]
 
