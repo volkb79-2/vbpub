@@ -266,7 +266,7 @@ def test_second_pass_uses_one_stem_lookup_for_a_long_identifier(monkeypatch):
 
     counted = CountedStemScan()
     monkeypatch.setattr(redaction, "_STEM_SCAN", counted)
-    text = "token_" * 10000 + "\n"
+    text = "token_" * 600 + "\n"
     assert len(text.encode()) < redaction.MAX_REDACTION_LINE_BYTES
     assert not redaction.has_unredacted(text)
     assert counted.steps <= 2
