@@ -113,7 +113,16 @@ def _run(args: argparse.Namespace, _runtime: CliRuntime) -> int:
 
 
 def _config_check(args: argparse.Namespace, runtime: CliRuntime) -> int:
+    from .install import _group_gid, unsafe_group_reason
+
     cfg = _config_or_refuse(args.config)
+    # The GID checks run where the group exists (plan 3.2): a root-equivalent group is
+    # an error here, so `toposd -t` as an ExecStartPre stops a start that would expose it.
+    group = cfg.sockets.observe.group
+    gid = _group_gid(group)
+    reason = None if gid is None else unsafe_group_reason(gid)
+    if reason is not None:
+        raise _refuse(f"sockets.observe.group {group!r} has {reason}; use a dedicated group")
     if runtime.json_mode:
         runtime.output.primary(
             {

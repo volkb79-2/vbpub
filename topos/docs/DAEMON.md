@@ -83,12 +83,16 @@ no override, when it is named `docker`, has GID 0, or has the docker group's GID
 the flag, the install record, `toposd.toml` and the prompt answer are all
 checked before anything changes (its membership would be root-equivalent). Put
 operator accounts into `topos-observe` with `--add-user observe=USER`, or map
-another dedicated group. A `toposd.toml` that already names a refused group is
-refused even when `--observe-group` is given, so change that line by hand first.
+another dedicated group. A `toposd.toml` that names `docker` is refused even when
+`--observe-group` is given, so change that line by hand first; one that names a
+group with GID 0 or the docker GID is replaced by the flag's group. `toposd config
+check` and `toposd -t` refuse such a group on the host too.
 `--add-user observe=USER` (repeatable; `observe` is topos's only level) adds an
 existing user to the observe group with `gpasswd -a` after the group exists.
 Members are only ever added: a rerun without the flag keeps every recorded user,
 a further flag adds to them, and neither install nor uninstall removes a member.
+A recorded user who no longer exists is dropped from the record and reported
+instead of blocking the install; a user named on the command line must exist.
 The result names the users added; a new membership applies to the user's next
 login session or after a service restart, not to running sessions.
 `--no-enable` writes the service files without enabling or starting the

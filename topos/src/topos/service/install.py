@@ -150,7 +150,8 @@ def _parse_words(value: str | None) -> list[str]:
     return [word.strip() for word in value.split(",") if word.strip()]
 
 
-def _validate_users(users: Sequence[str]) -> list[str]:
+def _validate_users(users: Sequence[str], forgotten: list[str] | None = None) -> list[str]:
+    """Validate user names; with ``forgotten``, users that no longer exist are collected there, not refused."""
     result: list[str] = []
     for user in users:
         if not USER_RE.fullmatch(user):
@@ -158,7 +159,10 @@ def _validate_users(users: Sequence[str]) -> list[str]:
         try:
             pwd.getpwnam(user)
         except KeyError:
-            raise InstallError(f"user {user!r} does not exist") from None
+            if forgotten is None:
+                raise InstallError(f"user {user!r} does not exist") from None
+            forgotten.append(user)
+            continue
         if user not in result:
             result.append(user)
     return result
@@ -176,7 +180,7 @@ def unsafe_group_reason(gid: int) -> str | None:
     if gid == 0:
         return "GID 0"
     if gid == _group_gid("docker"):
-        return "the docker group's GID"
+        return f"the docker group's GID {gid}"
     return None
 
 
@@ -185,8 +189,7 @@ def _refuse_unsafe_group(group: str) -> None:
     reason = None if gid is None else unsafe_group_reason(gid)
     if reason is not None:
         raise InstallError(
-            f"the observe group {group!r} has {reason} ({gid}); "
-            f"use a dedicated group such as {DEFAULT_OBSERVE_GROUP}"
+            f"the observe group {group!r} has {reason}; use a dedicated group such as {DEFAULT_OBSERVE_GROUP}"
         )
 
 
@@ -720,7 +723,12 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         raw_users = users_raw
     else:
         raw_users = _parse_words(str(users_raw or ""))
-    users = _validate_users([*raw_users, *flag_users])
+    # A recorded user who has since been deleted is forgotten (and reported), so a stale
+    # record cannot block every later install; a user named on the command line must exist.
+    forgotten: list[str] = []
+    users = _validate_users(
+        [*_validate_users(raw_users, forgotten), *_validate_users(flag_users)]
+    )
 
     if getattr(args, "enable", False) and getattr(args, "no_enable", False):
         raise InstallError("choose only one of --enable and --no-enable")
@@ -759,6 +767,7 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         "wheel_source": str(source),
         "observe_group": group,
         "observe_users": users,
+        "users_forgotten": forgotten,
         "enable_now": bool(enable_now),
         "allow_downgrade": bool(getattr(args, "allow_downgrade", False)),
         "prior_created_groups": created_groups,
@@ -1093,6 +1102,7 @@ class Installer:
                 "observe_group": values["observe_group"],
                 "config_changes": config_changes,
                 "users_to_add": values["observe_users"],
+                "users_forgotten": values["users_forgotten"],
                 "resources": sorted(rendered),
                 "downgrade": downgrade,
                 "enabled": values["enable_now"],
@@ -1204,6 +1214,7 @@ class Installer:
             "config_changes": config_changes,
             "config_changed": config_changed,
             "users_added": values["observe_users"],
+            "users_forgotten": values["users_forgotten"],
             "resources_changed": sorted(name for name, changed in resource_changed.items() if changed),
             "pruned": removed,
             "enabled": values["enable_now"],
@@ -1541,6 +1552,8 @@ def _install_summary(body: Mapping[str, Any]) -> str:
         summary += f"; set sockets.observe.group = {body['observe_group']} in {body['config']}"
     if body.get("dry_run") and body.get("users_to_add"):
         summary += f"; would add to {body['observe_group']}: {', '.join(body['users_to_add'])}"
+    if body.get("users_forgotten"):
+        summary += f"; dropped recorded users that no longer exist: {', '.join(body['users_forgotten'])}"
     if body.get("users_added"):
         summary += (
             f"; added to {body['observe_group']}: {', '.join(body['users_added'])} "

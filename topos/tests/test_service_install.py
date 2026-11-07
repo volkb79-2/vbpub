@@ -433,6 +433,52 @@ def test_a_group_with_gid_zero_or_the_docker_gid_is_refused_on_every_path(
     assert commands == [] and not Path(paths.pending).exists() and not os.path.lexists(paths.opt)
 
 
+def test_install_rechecks_the_group_gid_before_writing_anything(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    args, _wheels = _install_args(observe_group="ops", enable=False)
+    calls = []
+
+    def gid(group: str) -> int | None:
+        if group == "docker":
+            return None
+        calls.append(None)
+        # _gather_inputs sees a harmless GID; by the recheck the group has become GID 0.
+        return 991 if len(calls) <= 2 else 0
+
+    monkeypatch.setattr(install, "_group_gid", gid)
+
+    with pytest.raises(InstallError, match="observe group 'ops' has GID 0"):
+        Installer(paths, run=_fake_run([]), geteuid=lambda: 0).install(args, _runtime(yes=True))
+
+    assert not Path(paths.config).exists() and not Path(paths.opt).exists()
+
+
+def test_a_deleted_recorded_user_is_forgotten_not_fatal_but_a_flag_user_must_exist(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args(add_user=["observe=alice"])
+    groups = _groups(monkeypatch)
+    monkeypatch.setattr(install.pwd, "getpwnam", lambda name: (_ for _ in ()).throw(KeyError(name))
+                        if name == "ghost" else SimpleNamespace(pw_name=name))
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    Path(paths.install_record).parent.mkdir(parents=True)
+    Path(paths.install_record).write_text('observe_users = ["ghost", "bob"]\n', encoding="utf-8")
+    commands = []
+    subject = Installer(paths, run=_fake_run(commands, groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+
+    body = subject.install(args, _runtime(yes=True))
+
+    assert body["users_forgotten"] == ["ghost"] and body["users_added"] == ["bob", "alice"]
+    assert "dropped recorded users that no longer exist: ghost" in install._install_summary(body)
+    assert 'observe_users = ["bob", "alice"]' in Path(paths.install_record).read_text(encoding="utf-8")
+    assert not any(c[:3] == ["gpasswd", "-a", "ghost"] for c in commands)
+
+    bad, _wheels = _install_args(add_user=["observe=ghost"])
+    with pytest.raises(InstallError, match="user 'ghost' does not exist"):
+        subject.install(bad, _runtime(yes=True))
+
+
 def test_a_group_with_the_docker_gid_typed_at_the_prompt_is_refused(tmp_path: Path, monkeypatch) -> None:
     class Prompts:
         def select(self, _message, choices, **_kwargs):

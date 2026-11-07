@@ -162,6 +162,12 @@ def test_groups_check_lists_members_and_warns_about_recorded_users_that_are_not_
     result = doctor._check_groups(_runtime(), _args(tmp_path))
     assert result.status == "ok" and result.details["recorded_users"] == []
 
+    # A record whose user list is not a list compares nothing.
+    for text in ('observe_users = "alice"\n', "observe_users = 5\n"):
+        Path(paths.install_record).write_text(text, encoding="utf-8")
+        result = doctor._check_groups(_runtime(), _args(tmp_path))
+        assert result.status == "ok" and result.details["recorded_users"] == []
+
     # A group with no members says so.
     _group(monkeypatch, {"ops": 991})
     Path(paths.install_record).unlink()

@@ -120,7 +120,7 @@ def _check_groups(_runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
     gid = entry.gr_gid
     reason = unsafe_group_reason(gid)
     if reason is not None:
-        return CheckResult("fail", f"observe group {name!r} has {reason} ({gid})",
+        return CheckResult("fail", f"observe group {name!r} has {reason}",
                            remedy="map observe to a dedicated group (toposd install --observe-group GROUP, "
                                   "default topos-observe), then rerun toposd install")
     members = sorted(entry.gr_mem)
@@ -130,6 +130,8 @@ def _check_groups(_runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
     try:
         recorded = _read_record(_paths(args).install_record).get("observe_users", [])
     except InstallError:
+        recorded = []
+    if not isinstance(recorded, list):  # a damaged record compares nothing
         recorded = []
     missing = [user for user in recorded if isinstance(user, str) and user not in members
                and not _has_primary_group(user, gid)]
@@ -429,7 +431,7 @@ def _check_caller_access(_runtime: CliRuntime, args: argparse.Namespace) -> Chec
 SERVICE_DOCTOR_CHECKS = (
     DoctorCheck("config-valid", "service config parses and validates", _check_config_valid),
     DoctorCheck("units-current", "installed units match their rendered config", _check_units_current),
-    DoctorCheck("groups", "the configured observe group exists", _check_groups),
+    DoctorCheck("groups", "the observe group exists, is not GID 0 or docker's, and its members", _check_groups),
     DoctorCheck("socket-units", "the observe socket unit is enabled and active", _check_socket_units),
     DoctorCheck("socket-nodes", "the observe socket has the configured owner, group and mode", _check_socket_nodes),
     DoctorCheck("socket-dirs", "socket directories are root-owned and not writable by group or others", _check_socket_dirs),

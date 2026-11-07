@@ -352,6 +352,26 @@ def test_dash_t_tests_the_config_like_config_check(tmp_path: Path, capsys: pytes
     assert main(["-t", "run"]) == 2
 
 
+@pytest.mark.parametrize(("gids", "reason"), (({"root": 0}, "GID 0"), ({"root": 994, "docker": 994}, "the docker group's GID 994")))
+def test_config_check_and_dash_t_refuse_a_root_equivalent_group_where_it_exists(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str], gids, reason
+) -> None:
+    from topos.service import install
+    from topos.service.cli import main
+
+    config_path = tmp_path / "toposd.toml"
+    config_path.write_text('[sockets.observe]\ngroup = "root"\n', encoding="utf-8")
+    monkeypatch.setattr(install, "_group_gid", lambda name: gids.get(name))
+
+    for argv in (["config", "check", "--config", str(config_path)], ["-t", "--config", str(config_path)]):
+        assert main(argv) == 2
+        assert f"has {reason}" in capsys.readouterr().err
+
+    # A group that does not exist yet (sysusers will create it) passes.
+    monkeypatch.setattr(install, "_group_gid", lambda name: None)
+    assert main(["-t", "--config", str(config_path)]) == 0
+
+
 def test_unit_print_emits_all_files_or_one_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from topos.service.cli import main
 
