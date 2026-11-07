@@ -791,8 +791,12 @@ def test_rejection_drain_consumes_only_up_to_its_byte_budget(monkeypatch) -> Non
         def settimeout(self, _seconds) -> None:
             pass
 
+    max_reads = 8
+
     class Reader:
         def read1(self, size: int) -> bytes:
+            if len(reads) >= max_reads:
+                pytest.fail(f"rejection drain exceeded the test reader's {max_reads}-read safety cap")
             reads.append(size)
             return b"x"[:size]
 

@@ -60,6 +60,17 @@ def test_default_ports_are_normalised_and_explicit_ports_must_match(tmp_path: Pa
     assert ss.load_scoped(path, "http://browser.geekbench.com/").origins == 1
 
 
+def test_hostless_origin_with_out_of_range_port_is_ignored(tmp_path: Path) -> None:
+    data = {
+        "cookies": [{"name": "sid", "value": SECRET, "domain": "browser.geekbench.com"}],
+        "origins": [{"origin": "https://:99999"}],
+    }
+    scoped = ss.load_scoped(_write(tmp_path, data), "https://browser.geekbench.com/")
+    assert scoped.cookies == 1
+    assert scoped.origins == 0
+    assert scoped.state["origins"] == []
+
+
 def test_scoped_state_cannot_be_reassigned() -> None:
     scoped = ss.ScopedState({}, 0, 0)
     with pytest.raises(FrozenInstanceError):
