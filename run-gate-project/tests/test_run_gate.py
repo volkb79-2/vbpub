@@ -17789,20 +17789,14 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             # there too would hang the very path a stall depends on.
             case "$*" in
               *-f*)
-                __sleep_pid=""
                 __stop_logs() {{
-                  if [ -n "$__sleep_pid" ]; then
-                    kill "$__sleep_pid" 2>/dev/null || :
-                    wait "$__sleep_pid" 2>/dev/null || :
-                  fi
                   exit 143
                 }}
                 trap '__stop_logs' TERM INT
                 while [ -f "$S/.hang" ]; do
-                  sleep 0.2 &
-                  __sleep_pid=$!
-                  wait "$__sleep_pid"
-                  __sleep_pid=""
+                  # Foreground polling keeps the shell responsible for
+                  # reaping sleep before its TERM trap exits.
+                  sleep 0.2
                 done
                 trap - TERM INT
                 ;;
@@ -32937,6 +32931,16 @@ class TestUserDocumentationOracles:
         RUN_GATE_DIR.parent / "libraries" / "iobench" / "docs" / "CONSUMERS.md",
         RUN_GATE_DIR.parent / "libraries" / "iobench" / "docs" / "DESIGN-GUIDE.md",
     )
+
+    def test_cgroup_profiler_contract_mirror_when_monorepo_is_present(self):
+        cgp_copy = (RUN_GATE_DIR.parent / "scripts" / "cgroup-profiler" /
+                    "docs" / "RG55-INTERFACE-CONTRACT.md")
+        if not cgp_copy.is_file():
+            # testdeps-exception: the sibling contract is monorepo-only.
+            pytest.skip("cgroup-profiler sibling is absent outside the monorepo")
+        run_gate_copy = (RUN_GATE_DIR / "nyxloom-trove" /
+                         "RG55-INTERFACE-CONTRACT.md")
+        assert cgp_copy.read_bytes() == run_gate_copy.read_bytes()
 
     @staticmethod
     def _toml_fences(path: Path):

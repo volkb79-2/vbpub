@@ -1066,10 +1066,11 @@ class SessionServer:
                 "sessions_live": live,
                 "max_sessions": self.max_sessions,
             },
-            # §8.6, additive under `contract: 1`: which carriers this daemon
-            # answers on. `exec` is permanent (§8.1 rule 5) so it is a
-            # literal `True`, not a probe; the socket half reports the real
-            # listener state, the effective uid allowlist (`[]` = none
+            # §8.6, additive under control contract 1: which carriers this
+            # daemon answers on. No exec carrier exists; keep the false key
+            # for contract-1 readers and drop it from contract-2 replies. The
+            # socket half reports the real listener state, the effective
+            # uid allowlist (`[]` = none
             # configured, so the dedicated socket group controls access) and
             # that SO_PEERCRED is enforced on every accepted connection.
             "transports": {
@@ -3467,9 +3468,8 @@ class SessionServer:
         return (pid, uid, gid)
 
     def _peer_allowed(self, uid: Optional[int]) -> bool:
-        """§8.1's authorisation rule. uid 0 is ALWAYS allowed (that is how
-        the exec carrier arrives — `docker exec` runs as root inside the
-        daemon, D-30). With no allowlist configured, any peer permitted by the
+        """§8.1's authorisation rule. uid 0 is ALWAYS allowed by policy.
+        With no allowlist configured, any peer permitted by the
         dedicated socket group's mode is allowed. With an allowlist, only
         those uids are allowed. An unreadable peer credential is refused in
         that case, because failing open would quietly void the one control the

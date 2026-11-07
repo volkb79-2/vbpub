@@ -52,10 +52,9 @@ budget = "20m"
 
 # Focused regression work uses the requested partial CLI-case check. The
 # coverage-partial lane exercises the suite with the same option while
-# retaining the repository's 100% line and branch coverage threshold. Its one
-# exclusion is a pre-existing cross-project byte-mirror failure: the cgp copy
-# has newer protocol details than run-gate-project's canonical copy, which is
-# outside this task's scope. The release lane below remains strict.
+# retaining the repository's 100% line and branch coverage threshold. It
+# deselects the cross-project byte-mirror assertion; the release lane below
+# runs it, as does Run-Gate's selftest when the monorepo sibling is present.
 [lanes.focused]
 kind = "command"
 environment = "tester-unified"

@@ -100,10 +100,10 @@ __revision__ = 68  # rev 68: pin worktree Git pointers and harden host Git reade
 # hot-set), CPU cores and memory-full stall now ride alongside duration in
 # history schema 2 (`resources`/`profile_error`/`profile_ref` per entry,
 # five new `series_stats` series -- median, never mean, same RG-27 reasoning
-# `duration_stats` already used). Precisely from the daemon
-# (`cgprofile-host-daemon`, `docker exec ... cgprofile ctl ...`,
-# `ProfilerClient`; since RG-156 the control socket only) when reachable, or a coarser in-lane `docker exec`
-# cgroup sample (`method: "basic"`, `BasicSampler`/`ResourceAccumulator`,
+# `duration_stats` already used). Precisely from native `cgpd` over the
+# control socket (`ProfilerClient`) when reachable, or a coarser in-lane
+# `docker exec` cgroup sample (`method: "basic"`,
+# `BasicSampler`/`ResourceAccumulator`,
 # the three cgroupfs parsers ported verbatim from
 # scripts/cgroup-profiler/lib/util.py) when it is not -- never nothing,
 # short of `RUN_GATE_PROFILE=off`/`[profile] enabled = false`/a lane's own
@@ -571,8 +571,8 @@ PROC_ROOT_ENV_VAR = "RUN_GATE_PROC_ROOT"  # tests / hidden /proc mounts (RG-55 h
 # the CONTRACT default, so every one of this file's ~800 pre-existing
 # lane-execution tests -- none of which declare `[profile]` at all, and
 # every one of which pins an EXACT docker call log, argv list, or
-# stdout/stderr -- would silently pick up a new `docker exec <daemon>
-# cgprofile ctl version` probe, very likely a further basic-path fallback
+# stdout/stderr -- would silently pick up a new profiler control-socket
+# version probe, very likely a further basic-path fallback
 # `docker exec` (no real daemon is ever running in these fixtures), a new
 # `-e RUN_GATE_PROFILE_SESSION=` argv flag, and new disclosure lines, on
 # every run. Retrofitting every one of those tests with an explicit
