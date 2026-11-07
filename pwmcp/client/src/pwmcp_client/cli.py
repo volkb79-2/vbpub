@@ -35,6 +35,7 @@ from .blocked import BlockVerdict, detect as detect_block
 from .diagnostics import DOCTOR_CHECKS, try_load_contract
 from .mcp_client import (
     McpError,
+    McpTimeout,
     McpToolError,
     StreamableHttpClient,
     decode_html_value,
@@ -42,6 +43,7 @@ from .mcp_client import (
     evaluation_function,
     html_extraction_function,
     is_browser_crash,
+    is_retryable_page_crash,
     page_diagnostics_function,
     visible_selector_function,
 )
@@ -162,18 +164,31 @@ _SHELL_BYTES = 1024
 _SHRINK_FACTOR = 2
 _MAX_RETRIES = 10
 _MAX_HTML_BYTES = 512 * 1024
+_DEFAULT_MAX_EVAL_BYTES = 1024 * 1024
+_MAX_EVAL_BYTES = 4 * 1024 * 1024
+_MCP_HTTP_TIMEOUT_MARGIN_SECONDS = 2.0
 
 
 def _failure_hint(exc: BaseException) -> str:
     """Keep browser lifecycle failures distinct from service reachability failures."""
 
+    if isinstance(exc, McpTimeout) or "request timed out" in str(exc).lower():
+        return "the MCP request timed out; increase --timeout for eval or --timeout-ms for inspect"
+    if isinstance(exc, McpToolError) and is_browser_crash(exc):
+        return (
+            "the PWMCP MCP endpoint replied, but the page or browser crashed or was closed; "
+            "if it repeats, check that the browser service is running"
+        )
     if is_browser_crash(exc):
         return (
-            "PWMCP is reachable, but the page or browser crashed; retry, reduce page load, check browser "
-            "memory and /dev/shm, or use --retries N"
+            "the page or browser crashed or was closed; if it repeats, check that PWMCP is still running "
+            "and reachable, then reduce page load or check browser memory and /dev/shm"
         )
     if isinstance(exc, McpToolError):
-        return "the PWMCP MCP endpoint replied; check the page URL, its wait condition, and the requested JavaScript"
+        return (
+            "the PWMCP MCP endpoint replied; check the page URL, its wait condition, and the requested JavaScript; "
+            "serialize calls if the shared browser reports that it is already in use"
+        )
     if isinstance(exc, McpError):
         return "check that the PWMCP MCP endpoint is reachable and PWMCP_MCP_URL names its /mcp endpoint"
     if isinstance(exc, PwmcpError):
@@ -420,7 +435,10 @@ def _inspect_html(args: argparse.Namespace, runtime: CliRuntime) -> None:
     result: tuple[str, int, bool] | None = None
     for number in range(1, attempts + 1):
         try:
-            with StreamableHttpClient(timeout=args.timeout_ms / 1000) as client:
+            http_timeout = args.timeout_ms / 1000
+            if args.wait_for:
+                http_timeout += _MCP_HTTP_TIMEOUT_MARGIN_SECONDS
+            with StreamableHttpClient(timeout=http_timeout) as client:
                 client.call_tool("browser_navigate", {"url": args.url})
                 diagnostics_started = time.monotonic()
                 page_diagnostics = decode_tool_value(
@@ -470,8 +488,14 @@ def _inspect_html(args: argparse.Namespace, runtime: CliRuntime) -> None:
                 )
             break
         except McpError as exc:
-            automatic_crash_retry = args.retries is None and number == 1 and is_browser_crash(exc)
-            explicit_retry = args.retries is not None and number < attempts
+            retryable_page_crash = is_retryable_page_crash(exc)
+            browser_lease_closed = is_browser_crash(exc) and not retryable_page_crash
+            automatic_crash_retry = args.retries is None and number == 1 and retryable_page_crash
+            explicit_retry = (
+                args.retries is not None
+                and number < attempts
+                and not browser_lease_closed
+            )
             if not (automatic_crash_retry or explicit_retry):
                 raise CliFailure(f"pwmcp inspect failed: {exc}", hint=_failure_hint(exc)) from exc
             if automatic_crash_retry:
@@ -626,7 +650,7 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
             # setting the service publishes in its contract, else the browser default.
             active = call_override or _server_identity(getattr(lease, "contract", None))
             # PWMCP-24: an explicit --retries N allows N more failed or unstable attempts.
-            # With no option, keep the one-attempt behavior except for one recognised browser crash.
+            # With no option, keep the one-attempt behavior except for one page-local crash.
             attempts = args.retries + 1 if args.retries is not None else 2
             sizes: list[int] = []
             number = 0
@@ -644,8 +668,12 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
                         storage=storage,
                     )
                 except PlaywrightError as exc:
-                    automatic_crash_retry = args.retries is None and number == 1 and is_browser_crash(exc)
-                    explicit_retry = args.retries is not None and not last
+                    retryable_page_crash = is_retryable_page_crash(exc)
+                    browser_lease_closed = is_browser_crash(exc) and not retryable_page_crash
+                    automatic_crash_retry = (
+                        args.retries is None and number == 1 and retryable_page_crash
+                    )
+                    explicit_retry = args.retries is not None and not last and not browser_lease_closed
                     if not (automatic_crash_retry or explicit_retry):
                         raise
                     if automatic_crash_retry:
@@ -963,6 +991,8 @@ def _eval(args: argparse.Namespace, runtime: CliRuntime) -> None:
         raise CliFailure("URL must be an absolute http:// or https:// URL")
     if not math.isfinite(args.timeout) or args.timeout <= 0:
         raise CliFailure("--timeout must be a positive number of seconds")
+    if not 1 <= args.max_bytes <= _MAX_EVAL_BYTES:
+        raise CliFailure(f"--max-bytes must be between 1 and {_MAX_EVAL_BYTES}")
     try:
         function = evaluation_function(
             args.expression,
@@ -975,13 +1005,23 @@ def _eval(args: argparse.Namespace, runtime: CliRuntime) -> None:
         raise CliFailure(str(exc)) from exc
 
     try:
-        with StreamableHttpClient(timeout=args.timeout) as client:
+        response_limit = args.max_bytes * 12 + 64 * 1024
+        with StreamableHttpClient(timeout=args.timeout, max_response_bytes=response_limit) as client:
             client.call_tool("browser_navigate", {"url": args.url})
             evaluated = client.call_tool("browser_evaluate", {"function": function})
             value = decode_tool_value(evaluated)
     except McpError as exc:
         raise CliFailure(f"pwmcp eval failed: {exc}", hint=_failure_hint(exc)) from exc
-    runtime.output.primary_json(value)
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    encoded_bytes = encoded.encode("utf-8")
+    if len(encoded_bytes) <= args.max_bytes:
+        runtime.output.primary_json(value)
+        return
+    preview = encoded_bytes[: args.max_bytes].decode("utf-8", errors="ignore")
+    if runtime.json_mode:
+        runtime.output.primary({"preview": preview, "truncated": True, "max_bytes": args.max_bytes})
+    else:
+        runtime.output.primary(f"{preview}\n[truncated after {args.max_bytes} bytes]")
 
 
 def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
@@ -1018,6 +1058,7 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             'pwmcp eval https://example.com --selector "meta[name=description]" --attr content',
             'pwmcp eval https://example.com --selector "script[type=application/json]" --property textContent',
             'pwmcp eval https://example.com --selector ".card" --property textContent --all --timeout 60',
+            'pwmcp eval https://example.com "document.body.innerText" --max-bytes 262144',
         ),
         include_progress=False,
         arguments=(
@@ -1049,6 +1090,13 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
                 group="WAIT",
                 metavar="SECONDS",
                 parser_kwargs={"type": float, "default": 30.0},
+            ),
+            OptionSpec(
+                ("--max-bytes",),
+                f"maximum encoded result bytes (1 to {_MAX_EVAL_BYTES}; truncation is identified)",
+                group="OUTPUT",
+                metavar="BYTES",
+                parser_kwargs={"type": int, "default": _DEFAULT_MAX_EVAL_BYTES},
             ),
         ),
         handler=_eval,

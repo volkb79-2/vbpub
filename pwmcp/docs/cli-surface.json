@@ -158,14 +158,16 @@
         "argument:route:entrypoint:pwmcp/eval/url",
         "option:route:entrypoint:pwmcp/eval/--contract",
         "option:route:entrypoint:pwmcp/eval/--all",
-        "option:route:entrypoint:pwmcp/eval/--timeout"
+        "option:route:entrypoint:pwmcp/eval/--timeout",
+        "option:route:entrypoint:pwmcp/eval/--max-bytes"
       ],
       "route_id": "route:entrypoint:pwmcp/eval",
       "shape": {
         "defaulted_options": [
           "option:route:entrypoint:pwmcp/eval/--contract",
           "option:route:entrypoint:pwmcp/eval/--all",
-          "option:route:entrypoint:pwmcp/eval/--timeout"
+          "option:route:entrypoint:pwmcp/eval/--timeout",
+          "option:route:entrypoint:pwmcp/eval/--max-bytes"
         ],
         "required_argument_values": {
           "argument:route:entrypoint:pwmcp/eval/url": 1
@@ -176,7 +178,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:3da5a05e9fda701f071988e2e42c9693f88c1ffbba580416bcf642816230d8cf"
+      "signature": "sha256:23f768fc9d851d8d86eb1a368d9149aad7e319d79d1ba4ad9cf73a464fad68e3"
     },
     {
       "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--all/--all",
@@ -242,6 +244,19 @@
         "spelling": "--json"
       },
       "signature": "sha256:dd01dfb0a9515b75c9f086b4c59e9e8357227644e655c319a966b6ca52732e10"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--max-bytes/--max-bytes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/eval/--max-bytes"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/eval/--max-bytes",
+        "spelling": "--max-bytes"
+      },
+      "signature": "sha256:cafaa6ad583b844a66a335e63ad67c1f9be4b0a07a48ba8f401cdba826a5dd86"
     },
     {
       "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--property/--property",
@@ -2380,6 +2395,49 @@
           "scope": "verb-local",
           "type": {
             "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--max-bytes",
+          "choices": null,
+          "const": null,
+          "default": 1048576,
+          "default_present": true,
+          "description": "maximum encoded result bytes (1 to 4194304; truncation is identified)",
+          "dest": "max_bytes",
+          "effective_default": 1048576,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--max-bytes"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/eval/--max-bytes",
+          "kind": "option",
+          "metavar": "BYTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 1048576,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "eval"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
           }
         }
       ],

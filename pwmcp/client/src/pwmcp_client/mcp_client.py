@@ -7,16 +7,20 @@ the JSON-RPC subset used by ``pwmcp eval`` and ``inspect --format html``.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import math
 import os
+import re
 import urllib.error
 import urllib.request
 from json import JSONDecodeError
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 DEFAULT_MCP_URL = "http://pwmcp:8931/mcp"
 _PROTOCOL_VERSION = "2024-11-05"
+_DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 
 
 class McpError(RuntimeError):
@@ -25,6 +29,10 @@ class McpError(RuntimeError):
 
 class McpUnavailable(McpError):
     """The configured MCP endpoint did not accept a request."""
+
+
+class McpTimeout(McpUnavailable):
+    """An MCP request exceeded its configured timeout."""
 
 
 class McpToolError(McpError):
@@ -46,6 +54,13 @@ def is_browser_crash(error: BaseException) -> bool:
             "target page, context or browser has been closed",
         )
     )
+
+
+def is_retryable_page_crash(error: BaseException) -> bool:
+    """Recognise page-local failures that can be retried on the same browser lease."""
+
+    message = str(error).lower()
+    return "page crashed" in message or "execution context was destroyed" in message
 
 
 def configured_mcp_url() -> str:
@@ -82,7 +97,7 @@ def _sse_message(body: bytes, expected_id: int) -> dict[str, object]:
         raise McpError("MCP server returned non-UTF-8 event data") from exc
     data_lines: list[str] = []
     mismatched_response: dict[str, object] | None = None
-    for line in (*text.splitlines(), ""):
+    for line in (*re.split(r"\r\n|\r|\n", text), ""):
         if line == "":
             if data_lines:
                 data = "\n".join(data_lines)
@@ -109,17 +124,50 @@ def _sse_message(body: bytes, expected_id: int) -> dict[str, object]:
 class StreamableHttpClient:
     """The initialize, tools/list, tools/call, and session-close MCP operations."""
 
-    def __init__(self, endpoint: str | None = None, *, timeout: float = 30.0) -> None:
-        self.endpoint = endpoint if endpoint is not None else configured_mcp_url()
+    def __init__(
+        self,
+        endpoint: str | None = None,
+        *,
+        timeout: float = 30.0,
+        max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    ) -> None:
+        configured = endpoint if endpoint is not None else configured_mcp_url()
         try:
-            parsed = urlsplit(self.endpoint)
-        except ValueError as exc:
-            raise McpUnavailable(f"MCP endpoint URL is malformed ({exc})") from exc
+            parsed = urlsplit(configured)
+        except ValueError:
+            raise McpUnavailable("MCP endpoint URL is malformed") from None
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise McpUnavailable("MCP endpoint must be an absolute http:// or https:// URL")
+        try:
+            parsed.port
+        except ValueError:
+            raise McpUnavailable("MCP endpoint URL has an invalid port") from None
+        username = parsed.username
+        password = parsed.password
+        self._authorization: str | None = None
+        if username is not None:
+            try:
+                username = unquote(username, errors="strict")
+                password = unquote(password or "", errors="strict")
+            except UnicodeDecodeError:
+                raise McpUnavailable("MCP endpoint URL has invalid percent-encoded credentials") from None
+            if ":" in username:
+                raise McpUnavailable("MCP endpoint Basic Auth username cannot contain ':'") from None
+            credentials = f"{username}:{password}".encode("utf-8")
+            self._authorization = "Basic " + base64.b64encode(credentials).decode("ascii")
+        authority = parsed.netloc.rsplit("@", 1)[-1]
+        self.endpoint = urlunsplit((parsed.scheme, authority, parsed.path, parsed.query, ""))
         if not math.isfinite(timeout) or timeout <= 0:
             raise McpUnavailable("MCP timeout must be positive")
+        if (
+            not isinstance(max_response_bytes, int)
+            or isinstance(max_response_bytes, bool)
+            or max_response_bytes <= 0
+            or max_response_bytes > _MAX_RESPONSE_BYTES
+        ):
+            raise McpUnavailable(f"MCP response byte limit must be between 1 and {_MAX_RESPONSE_BYTES}")
         self.timeout = timeout
+        self.max_response_bytes = max_response_bytes
         self.protocol_version = _PROTOCOL_VERSION
         self._protocol_negotiated = False
         self.session_id: str | None = None
@@ -132,6 +180,8 @@ class StreamableHttpClient:
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
         }
+        if self._authorization is not None:
+            headers["Authorization"] = self._authorization
         if self.session_id is not None:
             headers["Mcp-Session-Id"] = self.session_id
         if self._protocol_negotiated:
@@ -140,12 +190,14 @@ class StreamableHttpClient:
 
     def _send(self, message: dict[str, object], *, expected_id: int | None) -> dict[str, object] | None:
         data = json.dumps(message, separators=(",", ":")).encode("utf-8")
-        request = urllib.request.Request(self.endpoint, data=data, headers=self._headers(), method="POST")
         try:
+            request = urllib.request.Request(self.endpoint, data=data, headers=self._headers(), method="POST")
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 status = response.status
                 headers = response.headers
-                body = response.read()
+                body = response.read(self.max_response_bytes + 1)
+                if len(body) > self.max_response_bytes:
+                    raise McpError(f"MCP response exceeded the {self.max_response_bytes}-byte limit")
         except urllib.error.HTTPError as exc:
             if expected_id is None:
                 # urllib turns non-2xx notification replies into HTTPError. The
@@ -155,12 +207,24 @@ class StreamableHttpClient:
                 headers = exc.headers
                 body = b""
             else:
-                raise McpUnavailable(f"MCP endpoint rejected the request (HTTP {exc.code})") from exc
+                raise McpUnavailable(f"MCP endpoint rejected the request (HTTP {exc.code})") from None
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", "connection failed")
-            raise McpUnavailable(f"MCP endpoint is unreachable ({reason})") from exc
-        except OSError as exc:
-            raise McpUnavailable(f"MCP endpoint request failed ({exc})") from exc
+            if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower():
+                raise McpTimeout("MCP endpoint request timed out") from None
+            raise McpUnavailable("MCP endpoint is unreachable") from None
+        except McpError:
+            raise
+        except TimeoutError:
+            raise McpTimeout("MCP endpoint request timed out") from None
+        except (http.client.HTTPException, ValueError):
+            raise McpUnavailable("MCP endpoint rejected an invalid request") from None
+        except OSError:
+            raise McpUnavailable("MCP endpoint request failed") from None
+        except Exception:
+            # Request builders and third-party URL handlers must never leak the
+            # configured endpoint or its Basic Auth userinfo into diagnostics.
+            raise McpUnavailable("MCP endpoint request failed") from None
 
         session_id = headers.get("Mcp-Session-Id")
         if session_id:
@@ -262,16 +326,13 @@ class StreamableHttpClient:
             return
         request = urllib.request.Request(
             self.endpoint,
-            headers={
-                "Mcp-Session-Id": self.session_id,
-                **({"MCP-Protocol-Version": self.protocol_version} if self._protocol_negotiated else {}),
-            },
+            headers={**self._headers(), "Mcp-Session-Id": self.session_id},
             method="DELETE",
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout):
                 pass
-        except (urllib.error.HTTPError, urllib.error.URLError, OSError):
+        except Exception:
             # Session deletion is best-effort; the server also expires abandoned sessions.
             pass
         finally:
@@ -349,14 +410,19 @@ def evaluation_function(
         raise ValueError("--all requires --selector with --attr or --property")
     if expression is None or not expression.strip():
         raise ValueError("provide a JavaScript expression or function")
-    source = expression.strip()
-    if source.startswith(("function", "async ")):
+    source = re.sub(r";(?=\s*(?://[^\r\n]*)?$)", "", expression.strip())
+    if re.match(r"^(?:async\s+)?function(?:\s|\*|\()", source):
         return source
     head, separator, _body = source.partition("=>")
     stripped_head = head.strip()
-    if separator and (stripped_head.isidentifier() or (stripped_head.startswith("(") and stripped_head.endswith(")"))):
+    if stripped_head.startswith("async "):
+        stripped_head = stripped_head[len("async ") :].strip()
+    if separator and (
+        stripped_head.isidentifier()
+        or (stripped_head.startswith("(") and stripped_head.endswith(")"))
+    ):
         return source
-    return f"() => ({source})"
+    return f"() => (\n{source}\n)"
 
 
 def visible_selector_function(selector: str, timeout_ms: int) -> str:
@@ -432,4 +498,3 @@ def decode_html_value(value: object, *, max_bytes: int) -> tuple[str, int, bool]
     ):
         raise McpError("MCP HTML extraction exceeded or contradicted its size limit")
     return html, total, truncated
-

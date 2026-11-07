@@ -21,6 +21,7 @@ from pwmcp_client import mcp_client
 from pwmcp_client.mcp_client import (
     McpUnavailable,
     McpError,
+    McpTimeout,
     McpToolError,
     StreamableHttpClient,
     decode_html_value,
@@ -206,7 +207,7 @@ def test_eval_uses_browser_evaluate_without_the_mcp_python_sdk(
         "tools/call",
     ]
     assert _call_args(server.state, "browser_navigate") == [{"url": "https://example.test/page"}]
-    assert _call_args(server.state, "browser_evaluate") == [{"function": "() => (document.title)"}]
+    assert _call_args(server.state, "browser_evaluate") == [{"function": "() => (\ndocument.title\n)"}]
     assert server.state.deleted_sessions == 1
 
 
@@ -396,12 +397,46 @@ def test_eval_javascript_syntax_error_keeps_its_position(
     assert "MCP endpoint replied" in error
 
 
+def test_eval_reports_a_real_javascript_syntax_error_with_its_source_location(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    node = require_binary("node", "Node.js checks generated eval syntax and source locations")
+    function = evaluation_function("1 + )")
+    program = (
+        "const fs = require('fs'); const vm = require('vm'); "
+        "const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+        "try { new vm.Script('(' + input.function + ')', {filename: 'pwmcp-eval.js'}); "
+        "console.log(JSON.stringify({name: null, stack: ''})); } "
+        "catch (error) { console.log(JSON.stringify({name: error.name, stack: error.stack})); }"
+    )
+    completed = subprocess.run(
+        [node, "-e", program],
+        input=json.dumps({"function": function}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    syntax = json.loads(completed.stdout)
+    assert syntax["name"] == "SyntaxError"
+    assert "pwmcp-eval.js:" in syntax["stack"] and "^" in syntax["stack"]
+
+    with _FakeMcpServer() as server:
+        server.state.tool_errors["browser_evaluate"] = syntax["stack"]
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["eval", "https://example.test", "1 + )"]) == 1
+    error = capsys.readouterr().err
+    assert "SyntaxError" in error
+    assert "pwmcp-eval.js:" in error
+    assert "^" in error
+
+
 def test_eval_timeout_hint_does_not_suggest_a_browser_crash_retry(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     def timeout(*_args: object, **_kwargs: object) -> object:
-        raise McpUnavailable("MCP endpoint request timed out")
+        raise McpTimeout("MCP endpoint request timed out")
 
     monkeypatch.setattr(cli_module, "StreamableHttpClient", timeout)
     assert cli_module.main(["eval", "https://example.test", "document.title"]) == 1
@@ -413,7 +448,7 @@ def test_eval_timeout_hint_does_not_suggest_a_browser_crash_retry(
 
 def test_browser_closure_hint_does_not_claim_pwmcp_is_reachable() -> None:
     hint = cli_module._failure_hint(RuntimeError("Browser has been closed"))
-    assert "page or browser was closed" in hint
+    assert "crashed or was closed" in hint
     assert "check that PWMCP is still running" in hint
     assert "PWMCP is reachable" not in hint
 
@@ -482,6 +517,19 @@ def test_eval_tool_error_says_the_endpoint_replied(
     assert "MCP endpoint replied" in error
     assert "requested JavaScript" in error
     assert "check that the PWMCP MCP endpoint is reachable" not in error
+
+
+def test_eval_shared_browser_busy_hint_recommends_serial_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.navigate_errors = ["Browser is already in use by another MCP caller"]
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["eval", "https://example.test", "document.title"]) == 1
+    error = capsys.readouterr().err
+    assert "MCP endpoint replied" in error
+    assert "serialize calls" in error
 
 
 @pytest.mark.parametrize(
@@ -829,6 +877,36 @@ def test_streamable_http_client_accepts_only_the_protocol_version_it_implements(
         assert server.state.deleted_sessions == 1
 
 
+def test_streamable_http_client_times_out_without_echoing_endpoint_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def timeout(*_args: object, **_kwargs: object) -> object:
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(mcp_client.urllib.request, "urlopen", timeout)
+    with pytest.raises(McpTimeout, match="request timed out"):
+        StreamableHttpClient("http://user:secret@127.0.0.1:8931/mcp").initialize()
+    monkeypatch.setattr(
+        mcp_client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            mcp_client.urllib.error.URLError(TimeoutError("timed out"))
+        ),
+    )
+    with pytest.raises(McpTimeout, match="request timed out"):
+        StreamableHttpClient("http://127.0.0.1:8931/mcp").initialize()
+
+
+def test_streamable_http_client_caps_the_raw_response_body() -> None:
+    with _FakeMcpServer() as server:
+        server.state.response_overrides["initialize"] = (
+            "application/json",
+            b'{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05"}}',
+        )
+        with pytest.raises(McpError, match="response exceeded the 8-byte limit"):
+            StreamableHttpClient(server.url, max_response_bytes=8).initialize()
+
+
 def test_streamable_http_client_refuses_unavailable_and_malformed_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PWMCP_MCP_URL", raising=False)
     assert mcp_client.configured_mcp_url() == "http://pwmcp:8931/mcp"
@@ -843,10 +921,18 @@ def test_streamable_http_client_refuses_unavailable_and_malformed_endpoints(monk
         StreamableHttpClient("http:///mcp")
     with pytest.raises(McpUnavailable, match="malformed"):
         StreamableHttpClient("http://[bad/mcp")
+    with pytest.raises(McpUnavailable, match="username cannot contain"):
+        StreamableHttpClient("http://foo%3Abar:password@localhost/mcp")
+    with pytest.raises(McpUnavailable, match="invalid percent-encoded credentials"):
+        StreamableHttpClient("http://user:%FF@localhost/mcp")
     with pytest.raises(McpUnavailable, match="timeout must be positive"):
         StreamableHttpClient("http://localhost/mcp", timeout=0)
     with pytest.raises(McpUnavailable, match="timeout must be positive"):
         StreamableHttpClient("http://localhost/mcp", timeout=float("nan"))
+    with pytest.raises(McpUnavailable, match="response byte limit"):
+        StreamableHttpClient("http://localhost/mcp", max_response_bytes=0)
+    with pytest.raises(McpUnavailable, match="response byte limit"):
+        StreamableHttpClient("http://localhost/mcp", max_response_bytes=64 * 1024 * 1024 + 1)
 
 
 def test_streamable_http_client_closes_session_when_initialization_does_not_finish() -> None:
@@ -954,14 +1040,14 @@ def test_streamable_http_client_maps_url_and_os_errors(monkeypatch: pytest.Monke
         "urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(mcp_client.urllib.error.URLError("offline")),
     )
-    with pytest.raises(McpUnavailable, match=r"MCP endpoint is unreachable \(offline\)"):
+    with pytest.raises(McpUnavailable, match="MCP endpoint is unreachable"):
         client._send({"method": "initialize"}, expected_id=1)
     monkeypatch.setattr(
         mcp_client.urllib.request,
         "urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("socket broke")),
     )
-    with pytest.raises(McpUnavailable, match=r"request failed \(socket broke\)"):
+    with pytest.raises(McpUnavailable, match="MCP endpoint request failed"):
         client._send({"method": "initialize"}, expected_id=1)
 
 
@@ -1154,12 +1240,16 @@ def test_generated_html_capture_javascript_executes_in_node_when_available() -> 
     ):
         function = html_extraction_function(None, "inner", limit)
         program = (
-            "global.document = {documentElement: {innerHTML: "
-            + json.dumps(source, ensure_ascii=True)
-            + "}}; global.btoa = (value) => Buffer.from(value, 'binary').toString('base64'); "
-            + f"console.log(JSON.stringify(({function})()));"
+            "const fs = require('fs'); "
+            "const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+            "global.document = {documentElement: {innerHTML: input.source}}; "
+            "global.btoa = (value) => Buffer.from(value, 'binary').toString('base64'); "
+            "console.log(JSON.stringify((eval('(' + input.function + ')'))()));"
         )
-        completed = subprocess.run([node, "-e", program], check=True, capture_output=True, text=True)
+        payload = json.dumps({"function": function, "source": source}, ensure_ascii=True)
+        completed = subprocess.run(
+            [node, "-e", program], input=payload, check=True, capture_output=True, text=True
+        )
         actual = json.loads(completed.stdout)
         prefix, total, truncated = _python_html_prefix(source, limit)
         assert base64.b64decode(actual["data"]).decode("utf-8") == prefix
@@ -1217,4 +1307,3 @@ def test_decode_tool_value_handles_json_plain_text_multiple_blocks_and_empty_con
         decode_tool_value({})
     with pytest.raises(McpError, match="no text value"):
         decode_tool_value({"content": [{"type": "image"}]})
-

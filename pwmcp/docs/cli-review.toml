@@ -1513,8 +1513,8 @@ test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[eval-http
 id = "case:route:entrypoint:pwmcp/eval/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:3da5a05e9fda701f071988e2e42c9693f88c1ffbba580416bcf642816230d8cf"
-rationale = "The URL plus selector read form exercises the minimum route members; --all returns every matching attribute as one JSON array and --timeout bounds each MCP request. The shared --contract option remains accepted by the parser; MCP endpoint selection uses PWMCP_MCP_URL or the internal default."
+reviewed_signature = "sha256:23f768fc9d851d8d86eb1a368d9149aad7e319d79d1ba4ad9cf73a464fad68e3"
+rationale = "The URL plus selector read form exercises the minimum route members; --all returns every matching attribute as one JSON array, --timeout bounds each MCP request, and --max-bytes bounds the returned JSON value. The shared --contract option remains accepted by the parser; MCP endpoint selection uses PWMCP_MCP_URL or the internal default."
 invocation = ["eval", "https://example.test", "--selector", ".card", "--attr", "data-id", "--all", "--timeout", "60", "--contract", "contract.json"]
 expected_exit_status = 0
 expected_stdout_contains = "first"
@@ -1625,6 +1625,19 @@ expected_stdout_contains = "reviewed value"
 expected_stderr_contains = ""
 effects = ["Navigates and evaluates through the managed MCP browser with a 12-second per-request timeout."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[eval-https://example.test-1 + 1---timeout-12]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--max-bytes/--max-bytes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cafaa6ad583b844a66a335e63ad67c1f9be4b0a07a48ba8f401cdba826a5dd86"
+rationale = "The caller can set the maximum encoded result size, with explicit truncation reporting when a value exceeds it."
+invocation = ["eval", "https://example.test", "document.title", "--max-bytes", "16"]
+expected_exit_status = 0
+expected_stdout_contains = "reviewed value"
+expected_stderr_contains = ""
+effects = ["Navigates and evaluates through the configured MCP endpoint, returning the JSON value within the requested 16-byte cap."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[eval-https://example.test-document.title---max-bytes-16]"]
 
 [[cases]]
 id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/4e3c1a697b"

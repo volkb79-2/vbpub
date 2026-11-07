@@ -84,19 +84,42 @@ pwmcp eval "$URL" 'document.title'
 pwmcp eval "$URL" --selector 'meta[name=description]' --attr content
 pwmcp eval "$URL" --selector 'script#__NEXT_DATA__' --property textContent
 pwmcp eval "$URL" --selector '.card' --property textContent --all --timeout 60
+pwmcp eval "$URL" --selector main --property textContent --max-bytes 262144
 ```
 
-It prints JSON and does not require the Python `mcp` SDK. JavaScript runs in
-the page context with that page's origin permissions; use it only on pages the
-user is authorized to inspect. The `--timeout` value is the limit for each MCP
-request.
+It prints JSON and does not require the Python `mcp` SDK. Results are capped at
+1 MiB by default; `--max-bytes` accepts 1 through 4194304 bytes. An oversized
+value prints a JSON preview and a truncation marker; `--json` returns a
+`preview`, `truncated`, and `max_bytes` object. An unmatched selector returns
+`null` (or `[]` with `--all`); an absent attribute also returns `null`.
 
-If `inspect` reports that the **page or browser crashed**, the MCP service has
-already replied; PWMCP retries that recognised first-navigation crash once by
-default and says so on stderr. Retry manually with `--retries N` when needed;
-`--retries 0` disables the automatic crash retry. Reduce page load and check
-browser memory and `/dev/shm` if it repeats. A separate endpoint connection
-error tells you to check PWMCP reachability instead.
+Expressions follow one wrapping rule: a leading `function` followed by
+whitespace, `*`, or `(`, and an arrow function with an identifier or
+parenthesized parameter list (optionally after `async`), are passed through.
+Every other input loses one final semicolon and is wrapped as:
+
+```javascript
+() => (
+EXPRESSION
+)
+```
+
+The final newline keeps a trailing `//` comment inside the expression. Use an
+explicit function with `return` for multiple statements. JavaScript runs in
+the page context with that page's origin permissions; use it only on pages the
+user is authorized to inspect. In shared browser mode, callers share a
+persistent profile, so `eval` can read cookies and `localStorage` left by other
+callers on the same origin. Do not use it on authenticated pages when browser
+callers are not mutually trusted. The `--timeout` value limits each MCP
+request; it does not cancel page JavaScript already running.
+
+If `inspect` reports a page-local renderer crash, PWMCP retries that recognized
+first-navigation failure once in a new context and says so on stderr. It does
+not retry `Target closed` or browser-closed failures on a possibly dead lease.
+Retry ordinary failures manually with `--retries N` when needed;
+`--retries 0` disables the automatic page-crash retry. A browser-closed hint
+does not establish whether PWMCP is still reachable. Reduce page load and
+check browser memory and `/dev/shm` if a page-local crash repeats.
 
 ## Blocked by bot protection: report it, do not work around it
 

@@ -162,6 +162,7 @@ pwmcp inspect https://example.com --format snapshot --retries 2
 pwmcp eval https://example.com 'document.title'
 pwmcp eval https://example.com --selector 'meta[name=description]' --attr content --json
 pwmcp eval https://example.com --selector '.record' --property textContent --all --timeout 60
+pwmcp eval https://example.com --selector main --property textContent --max-bytes 262144
 ```
 
 `--format` accepts `text`, `snapshot`, `html`, and `screenshot`. HTML returns the
@@ -174,11 +175,55 @@ protection still exits 4 and does not write challenge HTML to `--output`.
 `pwmcp eval URL EXPRESSION` runs the expression through PWMCP's existing
 `browser_evaluate` MCP tool and prints its result as JSON. Use `--selector` with
 `--attr NAME` or `--property NAME` to read a matching element; `--all` returns
-all matches as an array. `--timeout` is a per-MCP-request limit in seconds.
+all matches as an array. No match returns `null` (or `[]` with `--all`); a
+missing element and an absent attribute both return `null`. `--timeout` is a
+per-MCP-request limit in seconds. Results are capped at 1 MiB by default;
+`--max-bytes` accepts 1 through 4194304 bytes. An oversized result prints a
+JSON preview and a `[truncated after N bytes]` marker. In `--json` mode the
+result is an object with `preview`, `truncated: true`, and `max_bytes`.
+An `undefined` page result may be returned as the text `undefined`; several
+MCP text blocks are returned as a JSON array, so prefer one JSON-serializable
+value per expression. Serialize calls when using a shared browser.
+
+Expressions are wrapped as a zero-argument function. A leading function
+expression (`function` followed by whitespace, `*`, or `(`) and an arrow
+function with an identifier or parenthesized parameter list are passed through;
+`async` forms are accepted. For other input, PWMCP removes one final
+semicolon, then sends:
+
+```javascript
+() => (
+EXPRESSION
+)
+```
+
+The final newline keeps a trailing `//` comment inside the expression. Supply
+an explicit function with `return` for multiple statements. JavaScript syntax
+errors returned by the MCP server are shown with any position included by that
+server. A timeout hint identifies a timed-out MCP request and points to
+`--timeout` or `--timeout-ms`.
+
 The client wheel speaks the small Streamable HTTP exchange it needs using the
 Python standard library, so these CLI commands do not require the third-party
-`mcp` package. Set `PWMCP_MCP_URL` only when the default
-`http://pwmcp:8931/mcp` is not reachable from the caller.
+`mcp` package. `PWMCP_MCP_URL` defaults to `http://pwmcp:8931/mcp` and accepts
+an absolute HTTP(S) endpoint with or without `username:password@` userinfo. The
+client strips userinfo from the request URL and sends it as HTTP Basic Auth;
+percent-encode reserved credential characters and use HTTPS outside a trusted
+local network. For example, set `PWMCP_MCP_URL` to
+`https://<user>:<percent-encoded-password>@<host>/mcp` for an externally guarded
+endpoint.
+
+After upgrading the client or pinned server, an operator can check the live
+`browser_navigate` and `browser_evaluate` response format with:
+
+```bash
+pwmcp eval https://example.com document.title
+pwmcp eval https://example.com --selector title --property textContent
+```
+
+The first command returns a value from the expression route; the second checks
+the selector/property route. No local server launcher exists in this checkout;
+the pinned MCP server is installed into the PWMCP image.
 
 `--wait-until` accepts
 `commit`, `domcontentloaded`, `load`, and `networkidle`. The default output is
@@ -188,12 +233,16 @@ waits for a visible CSS selector; `--timeout-ms` sets the wait timeout.
 For pages that hydrate after the initial navigation event, combine
 `--wait-until networkidle` with a visible, page-specific selector. A selector
 can match multiple elements; PWMCP waits for the first matching visible element.
-PWMCP retries a recognised page/browser crash on the first navigation once by
-default and notes the retry on stderr. An explicit `--retries N` adds up to N
-attempts after a failed or unstable result, while `--retries 0` disables the
-automatic crash retry. A page/browser crash means PWMCP has responded: reduce
-page load and check browser memory and `/dev/shm`; endpoint connection failures
-instead direct you to check that PWMCP is reachable.
+PWMCP retries a page-local renderer crash on the first navigation once by
+default and notes the retry on stderr. A new context uses the existing live
+Playwright lease. `Target closed` and browser-closed errors are reported without
+retry because that lease may be dead. An explicit `--retries N` adds attempts
+for ordinary navigation or unstable-page failures, while `--retries 0`
+disables the automatic page-crash retry. A browser-level error does not prove
+that PWMCP is currently reachable; check the service if it repeats. The HTML
+path starts a fresh MCP session for each retry, and `eval` never retries
+caller-supplied code. Reduce page load and check browser memory and `/dev/shm`
+for repeated page-local crashes.
 For a trusted device with a known self-signed or otherwise invalid certificate,
 `--ignore-https-errors` opts into certificate bypass for HTTPS requests in this
 inspection's temporary browser context. This includes redirects and page

@@ -125,20 +125,71 @@ probe can use response status where Chromium exposes it through Navigation
 Timing; browser JavaScript cannot read arbitrary response headers, so HTML-mode
 detection has fewer signals than the native `inspect` path.
 
-The first recognized page/browser lifecycle crash receives one automatic retry
-when `--retries` is omitted. A crash delivered by a navigation/tool call proves
-that the service replied; this retry does not conceal endpoint connection
-failures or unrelated page errors. `--retries N` keeps its explicit broader
-retry behavior, and `--retries 0` disables the automatic crash retry. PWMCP's
-stack currently allocates 2 GiB for `/dev/shm`, has no service-specific memory
-limit on the unified browser container, and does not set
+`eval` measures the UTF-8 size of the compact JSON representation returned by
+the page. It allows 1 MiB by default; `--max-bytes` sets a limit from 1 byte to
+4 MiB. When the result exceeds the limit, text mode prints a JSON prefix and an
+explicit truncation line; `--json` returns a JSON object with `preview`,
+`truncated`, and `max_bytes`. The HTTP reader has a separate bounded body size
+of at most `12 * --max-bytes + 64 KiB`, capped at 64 MiB, so an oversized wire
+response is refused before JSON decoding. The result limit does not interrupt
+JavaScript already running in the browser; a long or non-terminating expression
+can keep the shared browser occupied until the MCP server stops that tool call.
+
+`--selector` returns `null` when there is no match, and `--all` returns an
+empty array. A missing element and a matched element with an absent attribute
+both produce `null`; the current response cannot distinguish those cases.
+For `inspect --format html --wait-for`, the MCP HTTP timeout is two seconds
+longer than the in-page selector timeout. This gives the page function time to
+return its specific `selector not visible` error before the transport closes.
+
+Expression wrapping follows one rule. A leading function expression is passed
+through when `function` is followed by whitespace, `*`, or `(`; an arrow
+function is passed through when its parameter head is an identifier or a
+parenthesized list, optionally after `async`. Every other input is wrapped as
+the following zero-argument function, with one final semicolon removed:
+
+```javascript
+() => (
+EXPRESSION
+)
+```
+
+The newline before the closing parenthesis keeps a trailing `//` comment from
+consuming the wrapper. Multiple statements must be supplied as a function,
+for example `() => { const title = document.title; return title; }`. A
+JavaScript `SyntaxError` from the MCP tool is surfaced with the error text and
+any position the server provides.
+
+`PWMCP_MCP_URL` must be an absolute HTTP(S) endpoint. It may be plain
+`https://host/path` or include `username:password@` userinfo. The client strips
+userinfo before constructing the urllib request and converts it to a Basic
+Authorization header; percent-encode reserved credential characters. Use HTTPS
+for credentials outside a trusted local network. URL parse, request-builder,
+transport, and timeout errors use fixed messages and do not echo the configured
+URL.
+
+Only a page-local `Page crashed` or `Execution context was destroyed` failure
+receives the default native Playwright retry, in a new context on the same live
+lease. `Target closed` and browser-closed failures are not retried on that lease
+because it may already be dead. Explicit `--retries N` still retries ordinary
+navigation or stability failures, but also stops on those browser-level
+closures. The HTML path opens a new MCP session for each attempt; `eval` never
+retries caller-supplied code. A Playwright tool error proves the MCP endpoint
+replied. A local browser connection failure only says the browser connection
+failed, so its hint also asks whether PWMCP is still running.
+
+The pinned `@playwright/mcp` package is installed only while building the PWMCP
+image; this repository has no local server launcher. The opt-in
+`pwmcp_live` integration test checks `tools/list` and the actual
+`browser_navigate`/`browser_evaluate` result shapes when
+`PWMCP_LIVE_MCP_URL` is set. The operator smoke command is
+`pwmcp eval https://example.com document.title`. See [consumer commands](CONSUMERS.md#inspect-a-webpage)
+and [evaluation trust boundary](SECURITY.md#mcp-page-evaluation).
+
+PWMCP's stack currently allocates 2 GiB for `/dev/shm`, has no service-specific
+memory limit on the unified browser container, and does not set
 `--disable-dev-shm-usage`. The OOM investigated in PWMCP-41 came from a test
-fake, not the service envelope. There is no confirmed cold-context crash defect
-or evidence for changing those resource settings; the retry is a bounded
-recovery for a transient renderer failure, and the operator hint points to page
-load, memory, and `/dev/shm` checks if it repeats. Host memory limits remain
-host-owned. See [consumer commands](CONSUMERS.md#inspect-a-webpage) and
-[evaluation trust boundary](SECURITY.md#mcp-page-evaluation).
+fake, not the service envelope. Host memory limits remain host-owned.
 
 ### Certificate errors during inspection
 

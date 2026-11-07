@@ -100,16 +100,38 @@ pwmcp inspect https://example.com/app \
   --wait-until networkidle --wait-for '#content'
 pwmcp eval https://example.com 'document.title'
 pwmcp eval https://example.com --selector 'meta[name=description]' --attr content
+pwmcp eval https://example.com --selector main --property textContent --max-bytes 262144
 ```
 
 HTML is capped at 512 KiB by default and reports truncation. The first
-recognised page/browser crash is retried once; `--retries N` requests additional
-attempts and `--retries 0` disables the automatic retry. A page-crash hint says
-the MCP service replied and points to page load, memory, and `/dev/shm` checks.
-`pwmcp eval` requires no separately installed `mcp` Python package. It executes
-the expression supplied by the caller in the page context, so only use it on
-pages the user is authorized to inspect. See the [remote evaluation and HTML
-design](docs/DESIGN-GUIDE.md#mcp-backed-evaluation-and-bounded-html) and
+`pwmcp eval` caps its compact JSON result at 1 MiB by default; `--max-bytes`
+sets a limit from 1 byte to 4 MiB. An oversized result prints a compact JSON
+preview and a `[truncated after N bytes]` marker. With `--json`, it returns a
+`preview`, `truncated: true`, and `max_bytes` object. It also caps the MCP
+response body before parsing it.
+
+`eval` accepts an expression, a JavaScript function expression, or an arrow
+function. Expressions are wrapped as a zero-argument function, with one final
+semicolon removed and a newline before the wrapper closes so a trailing `//`
+comment stays valid. Use an explicit function with `return` for multiple
+statements. `eval` does not retry page code automatically. It requires no
+separately installed `mcp` Python package and executes the supplied code in the
+page context, so only use it on pages the user is authorized to inspect.
+
+The first page-local renderer crash during native `inspect` is retried once in
+a fresh context; `--retries N` requests additional attempts and `--retries 0`
+disables that retry. A browser-level closure is reported without retry because
+the existing Playwright lease may be dead. The HTML path opens a fresh MCP
+session per attempt. A tool error proves the MCP endpoint replied; a local
+browser connection error does not establish that it is still reachable.
+
+`PWMCP_MCP_URL` accepts an absolute `http://` or `https://` MCP endpoint, with
+or without `username:password@` userinfo. Userinfo is sent as an HTTP Basic
+Authorization header and removed from the URL before the HTTP request. Percent
+encode reserved characters in credentials. Use HTTPS whenever credentials
+leave a trusted local network. See the [remote evaluation and HTML
+design](docs/DESIGN-GUIDE.md#mcp-backed-evaluation-and-bounded-html), the
+[evaluation security boundary](docs/SECURITY.md#mcp-page-evaluation), and
 [consumer examples](docs/CONSUMERS.md#inspect-a-webpage).
 
 For pages that render content after the initial navigation event, use
