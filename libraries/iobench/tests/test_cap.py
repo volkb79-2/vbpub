@@ -418,6 +418,57 @@ def test_cap_02_invalid_capability_observation_does_not_abort_a_complete_run(mon
     assert host.exists(f"{STATE}/result.json") and host.exists(f"{STATE}/calibration.json")
 
 
+def test_cap_02_a_failed_result_write_never_leaves_a_final_capability_row(monkeypatch):
+    host = make_host(cache=INVERSION)
+    real_write_json = res.write_json
+
+    def fail_result_write(write_host, path, value):
+        if path == f"{STATE}/result.json":
+            raise OSError("injected result write failure")
+        return real_write_json(write_host, path, value)
+
+    monkeypatch.setattr(res, "write_json", fail_result_write)
+    with pytest.raises(OSError, match="injected result write failure"):
+        calibrate(host)
+    assert not host.exists(PATH)
+
+
+def test_cap_02_foreign_capability_rotation_failure_keeps_core_result(monkeypatch):
+    host = make_host(cache=INVERSION)
+
+    def fail_rotation(*args, **kwargs):
+        raise OSError("capability history unavailable")
+
+    monkeypatch.setattr(capability, "rotate_foreign", fail_rotation)
+    out = calibrate(host)
+    expected = "capability_not_recorded:OSError"
+    assert out.status == "complete" and expected in out.result["quality"]["warnings"]
+    assert host.exists(f"{STATE}/result.json") and host.exists(f"{STATE}/calibration.json")
+    assert not host.exists(PATH)
+
+
+def test_cap_02_warning_rewrite_failure_does_not_remove_completed_records(monkeypatch):
+    host = make_host(cache=INVERSION)
+    real_write_json = res.write_json
+    writes = {}
+
+    def fail_warning_rewrite(write_host, path, value):
+        writes[path] = writes.get(path, 0) + 1
+        if path in (f"{STATE}/result.json", f"{STATE}/calibration.json") and writes[path] > 1:
+            raise OSError("state filesystem filled after final records")
+        return real_write_json(write_host, path, value)
+
+    def fail_append(*args, **kwargs):
+        raise OSError("capability history unavailable")
+
+    monkeypatch.setattr(res, "write_json", fail_warning_rewrite)
+    monkeypatch.setattr(capability, "append", fail_append)
+    out = calibrate(host)
+    assert out.status == "complete" and "capability_not_recorded:OSError" in out.result["quality"]["warnings"]
+    assert host.exists(f"{STATE}/result.json") and host.exists(f"{STATE}/calibration.json")
+    assert not host.exists(PATH)
+
+
 def test_slo_06_cache_evidence_defaults_and_configured_idle_delay():
     from iobench import plan
     from iobench import calibrate as cal_mod

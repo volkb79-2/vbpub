@@ -120,7 +120,7 @@ def rotate_foreign(host: Host, path: str, digest: str, stamp: str) -> str | None
     try:
         if header_of(text) == digest:
             return None
-    except (ValueError, KeyError, IndexError):
+    except (ValueError, KeyError, IndexError, TypeError):
         pass  # an empty or garbled header cannot be appended to either
     aside = f"{path}.superseded-{stamp.replace(':', '')}"
     host.write_atomic(aside, text)
@@ -135,7 +135,7 @@ def load(host: Host, path: str, digest: str) -> tuple[list[dict[str, Any]], list
     text = host.read_text(path)
     try:
         history_digest = header_of(text)
-    except (ValueError, KeyError, IndexError):
+    except (ValueError, KeyError, IndexError, TypeError):
         return [], ["history_ignored_unreadable"]
     if history_digest != digest:
         return [], ["history_ignored_identity_differs"]

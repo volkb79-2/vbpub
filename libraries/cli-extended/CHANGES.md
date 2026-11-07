@@ -7,6 +7,39 @@ know when upgrading; it is not generated.
 
 ## Contract and upgrade notes
 
+### 0.6.0 — host endpoint records
+
+- **`cli_extended.hostcfg.endpoints`** publishes owner fragments under
+  `/etc/host-endpoints.d/`, renders `/etc/host-endpoints.env`, updates the
+  marked `/etc/environment` block and installs the login-shell profile source.
+  `publish`, `withdraw`, `plan`, `verify`, and `check` share one validated
+  format; `require_env` fails with the missing variable and caller-supplied
+  remedy. The `python3 -m cli_extended.hostcfg.endpoints` CLI supports
+  `publish`, `withdraw`, `check --json`, and `show`. The module sits in the
+  new `cli_extended.hostcfg` package (shared owner validator
+  `^[a-z][a-z0-9-]{0,62}$`, structured `Problem` records, `_fs` primitives with
+  a parameterised lock path); `render`, `render_withdraw` and `render_block`
+  are pure so a later hostcfg plan/stage/rollback can reuse them. See [the endpoint CLI specification](docs/CLI-SPEC.md)
+  and [consumer guide](docs/CONSUMERS.md#host-endpoint-records).
+- **Ownership and safety.** Consumers must read endpoint values from the
+  process environment. A service installer publishes only its own fragment
+  from the service's configured value; this helper does not supply endpoint
+  defaults. Duplicate owners, malformed records, damaged markers, external
+  duplicate assignments (including `export KEY=`, `KEY = v` and indented
+  forms), reserved keys (`PATH`, `IFS`, `HOME`, `PROMPT_COMMAND`, every `LD_*`,
+  `PYTHON*`, `BASH_*` and `LC_*` key, ... see SPEC section 16) and
+  symlinked managed targets are refused.
+- **Concurrency and recovery.** `check` takes the shared lock, so it never
+  reports false drift during a publish; created directories are `0755`
+  regardless of umask; `check` verifies root:root ownership on the real `/`
+  and reports stale temporary files, which `publish` and `withdraw` remove;
+  one damaged fragment no longer blocks another owner's publish or withdraw;
+  `withdraw` of an unknown owner is a no-op (returns `False`); a host with
+  nothing published passes `check` with `no endpoints published`; unmanaged
+  bytes, including a missing final newline, round-trip through publish and
+  withdraw. The profile script ends with `|| :` so it exits `0` when the file
+  is unreadable.
+
 ### 0.4.0 — fallback verb and doctor exit code/detail lines (LCR-1, LCR-2)
 
 Library contract version is unchanged (1) and the surface manifest schema is

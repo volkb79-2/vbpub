@@ -19,6 +19,7 @@ from .host import TAIL_BYTES, Host, HostError, TargetRef
 
 MARKER_MAGIC = "IOBENCH-TARGET-1"
 GIB = 1 << 30
+MIB = 1 << 20
 SIGNATURE_KEYS = ("TYPE=", "PTTYPE=", "USAGE=")
 BAD_FS_TYPES = ("tmpfs", "ramfs", "devtmpfs", "devpts", "proc", "sysfs")  # volatile or pseudo filesystems: never a target or a work dir
 ROOT_MOUNTS = ("/", "/boot")
@@ -69,6 +70,13 @@ def parse_mountinfo(text: str) -> list[MountEntry]:
         fields, tail = left.split(), right.split()
         out.append(MountEntry(fields[2], _unescape(fields[4]), tail[0], _unescape(tail[1]), fields[5]))
     return out
+
+
+def resolved_mount_devno(host: Host, entry: MountEntry) -> str:
+    """Resolve synthetic mountinfo numbers through the block source where one is available."""
+    if entry.fstype != "overlay" and not host.exists(f"/sys/dev/block/{entry.devno}") and entry.source.startswith("/dev/"):
+        return host.devno(entry.source) or entry.devno
+    return entry.devno
 
 
 @dataclass(frozen=True)
@@ -181,11 +189,50 @@ def find_disk(host: Host, *, model: str | None, serial: str | None, wwn: str | N
 
 
 def backing_disk(host: Host, path: str) -> str | None:
-    """The name of the disk behind the filesystem that holds ``path`` (a file target), ``None`` when no single block device is behind it."""
+    """The single disk behind ``path``; refuse btrfs when its member set is not exactly one device."""
     fs = fs_info(host, posixpath.dirname(path))
-    if not host.exists(f"/sys/dev/block/{fs.devno}"):
+    return backing_disk_for_fs(host, fs, path)
+
+
+def backing_disk_for_fs(host: Host, fs: FsInfo, path: str) -> str | None:
+    """Resolve a filesystem already looked up at the path itself to its single backing disk."""
+    devno = fs.devno
+    if fs.fstype == "btrfs":
+        members = btrfs_member_devnos(host, fs.uuid)
+        if members is None or not members:
+            raise Refusal("target_fs_disk_unknown", f"{path} is on btrfs but its member devices cannot be resolved",
+                          "use a filesystem whose backing devices are visible in /sys/fs/btrfs/<uuid>/devices")
+        if len(members) != 1:
+            raise Refusal("target_fs_multi_device", f"{path} is on multi-device btrfs ({len(members)} member devices); disk-scope identity is ambiguous",
+                          "use a single-device filesystem for an iobench file target")
+        devno = members[0]
+    if not host.exists(f"/sys/dev/block/{devno}"):
         return None
-    return device_chain(host, fs.devno).disk_name
+    return device_chain(host, devno).disk_name
+
+
+def btrfs_member_devnos(host: Host, fs_uuid: str | None) -> tuple[str, ...] | None:
+    """Read btrfs's authoritative member set from sysfs; ``None`` means it could not be established."""
+    if not fs_uuid:
+        return None
+    path = f"/sys/fs/btrfs/{fs_uuid}/devices"
+    if not host.exists(path):
+        return None
+    try:
+        names = host.listdir(path)
+        members = []
+        for name in names:
+            device = host.realpath(f"{path}/{name}")
+            dev_path = device + "/dev"
+            if not host.exists(dev_path):
+                return None
+            devno = host.read_text(dev_path).strip()
+            if not re.fullmatch(r"[0-9]+:[0-9]+", devno):
+                return None
+            members.append(devno)
+        return tuple(sorted(set(members)))
+    except (OSError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -228,8 +275,9 @@ def read_device(host: Host, path: str) -> DeviceFacts:
 
 
 # -- mount namespace and swap evidence ---------------------------------------------
-def _touching(entries: Sequence[MountEntry], devnos: set[str], names: set[str]) -> set[MountEntry]:
-    return {e for e in entries if e.devno in devnos or e.source in names}
+def _touching(host: Host, entries: Sequence[MountEntry], devnos: set[str], names: set[str]) -> set[MountEntry]:
+    return {MountEntry(resolved_mount_devno(host, e), e.mountpoint, e.fstype, e.source, e.options)
+            for e in entries if resolved_mount_devno(host, e) in devnos or e.devno in devnos or e.source in names}
 
 
 INIT_PID_NS = "pid:[4026531836]"  # the kernel's fixed inode (PROC_PID_INIT_INO) of the initial PID namespace
@@ -264,7 +312,7 @@ def mount_evidence(host: Host, devnos: set[str], names: set[str]) -> tuple[set[M
     except OSError as exc:
         raise Refusal("namespace_unprovable", f"cannot read the mount tables of this process and PID 1 ({exc})",
                       "run on the host, not in a container (as root, so that /proc/1/mountinfo is readable)") from exc
-    return _touching(own, devnos, names), _touching(init, devnos, names)
+    return _touching(host, own, devnos, names), _touching(host, init, devnos, names)
 
 
 def check_namespaces(host: Host, devnos: set[str], names: set[str], what: str) -> set[MountEntry]:
@@ -443,6 +491,7 @@ class FsInfo:
     uuid: str | None
     total: int
     free: int
+    raw_devno: str | None = None
 
     @property
     def mount_discard(self) -> str:
@@ -456,14 +505,16 @@ def fs_info(host: Host, path: str) -> FsInfo:
     e = max(entries, key=lambda e: len(e.mountpoint))
     uuid = blkid_fields(host, e.source).get("UUID") if e.source.startswith("/dev/") else None
     total, free = host.statfs(path)
-    return FsInfo(e.mountpoint, e.source, e.fstype, e.options, e.devno, uuid, total, free)
+    devno = resolved_mount_devno(host, e)
+    return FsInfo(e.mountpoint, e.source, e.fstype, e.options, devno, uuid, total, free, e.devno)
 
 
 def on_root_fs(host: Host, fs: FsInfo) -> bool:
     """Whether ``fs`` is the filesystem that holds ``/``: the same device or backing source, not only a mount point of ``/``
     (a btrfs subvolume or a bind mount of the root filesystem is the root filesystem too)."""
     root = next((e for e in parse_mountinfo(host.read_text("/proc/self/mountinfo")) if e.mountpoint == "/"), None)
-    return root is not None and (fs.devno == root.devno or (fs.source.startswith("/dev/") and fs.source == root.source))
+    return root is not None and (fs.devno == resolved_mount_devno(host, root)
+                                 or (fs.source.startswith("/dev/") and fs.source == root.source))
 
 
 def file_margin(total: int) -> int:
@@ -480,6 +531,12 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
     require_host_namespaces(host)  # the root-filesystem and free-space rules read the mount table: it must be the host's
     _need(size is not None, "size_required", "a file target needs --size (the operator's upper bound for everything iobench writes)",
           "pass --size BYTES")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        raise Refusal("file_size_invalid", f"--size must be a positive integer number of bytes, got {size!r}", "pass a positive --size BYTES")
+    if size % MIB:
+        aligned = max(MIB, size // MIB * MIB)
+        raise Refusal("file_size_alignment", f"--size {size} is not a multiple of 1 MiB",
+                      f"pass a 1 MiB multiple such as {aligned} bytes")
     _need(own, "own_file_required", f"{path} would be created and overwritten by iobench", "pass --i-own-this-file")
     _need(":" not in path, "path_colon", f"{path} contains ':' (fio would split it into several files)", "use a path without ':'")
     st = host.stat(path)
@@ -490,6 +547,11 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
     _need(expect_fs_uuid is not None and fs.uuid == expect_fs_uuid, "fs_uuid_mismatch",
           f"--expect-fs-uuid {expect_fs_uuid} does not equal the filesystem UUID {fs.uuid} under {path}",
           f"pass --expect-fs-uuid {fs.uuid} if this is the intended filesystem")
+    # Init and calibrate share the same disk-scope admission rule. This refuses
+    # multi-device btrfs before fallocate can create a target that calibration cannot attribute.
+    if backing_disk(host, path) is None:
+        raise Refusal("target_fs_disk_unknown", f"{path} is on a filesystem with no single block device behind it ({fs.fstype} on {fs.source})",
+                      "use a file on a filesystem mounted from one visible block device")
     _need(st is None or sidecar_matches(host, path, st, fs), "exists_without_sidecar",
           f"{path} exists and has no iobench sidecar matching its inode, size and filesystem", "remove it yourself, or pick another path")
     _need(st is None or st.nlink <= 1, "hard_link", f"{path} has a link count above 1", "use a file with a single link")
@@ -609,8 +671,11 @@ def check_workdir(host: Host, path: str, *, planned_volume: int, installer: bool
     on_root = on_root_fs(host, fs)
     _need(not on_root or confirm_quiet_window, "workdir_on_root", f"{path} is on the root filesystem",
           "pass --confirm-quiet-window in an agreed window")
-    check_namespaces(host, {fs.devno}, {fs.source}, path)
-    has_disk = host.exists(f"/sys/dev/block/{fs.devno}")
-    disk = device_chain(host, fs.devno).disk_name if has_disk else ""
+    check_namespaces(host, {fs.devno, fs.raw_devno} - {None}, {fs.source}, path)
+    if fs.fstype == "btrfs":
+        disk = backing_disk_for_fs(host, fs, path) or ""
+    else:
+        has_disk = host.exists(f"/sys/dev/block/{fs.devno}")
+        disk = device_chain(host, fs.devno).disk_name if has_disk else ""
     cross = target_disk is not None and disk != target_disk
     return Workdir(path, fs, disk, cross, on_root, ("cross_disk",) if cross else ())

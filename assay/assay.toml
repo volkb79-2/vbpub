@@ -55,7 +55,7 @@ argv = ["python", "-m", "pytest", "tests", "gate/tests", "-q", "--ignore=gate/te
 # process through the WHEEL nyxloom-trove/nyxloom.toml's gate script builds
 # and installs, never a bind-mounted source copy.
 env = {}
-env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
+env_passthrough = ["PATH"]
 
 # This is the ordinary inner tester phase's budget. The host registered gate
 # has a separate 5h budget for both sequential assay lanes, B145 probes, the
@@ -63,6 +63,9 @@ env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
 budget = "60m"
 
 allow_argv_append = false
+
+[lanes.tester-unified.infrastructure]
+ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
 
 # B105: explicitly invoked full-source self-qualification. It collects the judge
 # tests in `tests` only (B123): the tooling tests, including the self-hosting
@@ -94,12 +97,15 @@ argv = [
   "--cov-report=json:.assay/coverage-self-qualification.json",
 ]
 env = {}
-env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
+env_passthrough = ["PATH"]
 # Interim B110 guard: this per-invocation cap is failure-only, not a candidate
 # classification rule. A timeout is incomplete; B110 must persist one deadline
 # across retries before another full qualification attempt.
 budget = "5h"
 allow_argv_append = false
+
+[lanes.self-qualification.infrastructure]
+ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
 
 [lanes.self-qualification.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"
@@ -217,7 +223,6 @@ argv = [
 env = {}
 env_passthrough = [
   "PATH",
-  "ASSAY_RESOURCE_OBSERVER_SOCKET",
   "ASSAY_B105_COVERAGE_SOURCE",
   "ASSAY_B105_COVERAGE_ARCHIVE_DIR",
   "ASSAY_B105_SOURCE_COMMIT",
@@ -225,6 +230,9 @@ env_passthrough = [
 ]
 budget = "60m"
 allow_argv_append = false
+
+[lanes.self-qualification-preflight.infrastructure]
+ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
 
 [lanes.self-qualification-preflight.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"
@@ -332,9 +340,12 @@ argv = [
   "--cov-report=json:.assay/coverage-self-qualification-provisional.json",
 ]
 env = {}
-env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
+env_passthrough = ["PATH"]
 budget = "60m"
 allow_argv_append = false
+
+[lanes.self-qualification-provisional.infrastructure]
+ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
 
 [lanes.self-qualification-provisional.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"
@@ -447,11 +458,14 @@ argv = [
 ]
 env = {}
 # O15/O5 analysis tests invoke real native R2 runs in-process. The outer
-# tester-unified container provides this read-only endpoint; forward its path
-# into the analysis test process so the private cgroup namespace stays intact.
-env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
+# tester-unified container provides this read-only endpoint; the infrastructure
+# fact below requires its path in the analysis test process.
+env_passthrough = ["PATH"]
 budget = "60m"
 allow_argv_append = false
+
+[lanes.analysis.infrastructure]
+ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
 
 [lanes.analysis.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"
@@ -496,11 +510,14 @@ argv = [
   "--cov-report=json:.assay/coverage-analysis-r2.json",
 ]
 env = {}
-# O15/O5 analysis tests invoke real native R2 runs in-process. Preserve the
+# O15/O5 analysis tests invoke real native R2 runs in-process. Require the
 # read-only cgprofile endpoint for the command launched by this lane.
-env_passthrough = ["PATH", "ASSAY_RESOURCE_OBSERVER_SOCKET"]
+env_passthrough = ["PATH"]
 budget = "60m"
 allow_argv_append = false
+
+[lanes.analysis-r2.infrastructure]
+ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
 
 [lanes.analysis-r2.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"

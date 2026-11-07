@@ -183,9 +183,10 @@ the extra time covers admission, startup, and evidence collection.
 
 ### Provisional release qualification B169 B170
 
-For a release inside the operator-authorized B169 window, CMRU's isolated `run-tests` step
-runs `tools/tester-unified-gate.sh` first and then invokes
-`run-gate self-qualification-provisional` before it creates the release tag.
+For a release inside the operator-authorized B169 window, CMRU's isolated
+`run-tests` step runs `tester-unified` first and then
+`self-qualification-provisional` before it creates the release tag. Both
+commands run through `tools/release-gate.sh`.
 The lane runs R0, R1 over all of `src/assay` with 100% whole-target line and
 branch coverage, and the R3 canary. It omits R2 and, only after the lane is
 verified, records `.assay/mutation-postponed-assay.json` with
@@ -199,12 +200,15 @@ The gate reads the first H2 release heading after `## [Unreleased]` in
 `CHANGES.md`, because CMRU runs the release gate before the tag exists. It
 refuses that heading if it is malformed or unsupported, even when an older
 heading is valid. CMRU passes the transaction's planned version as a protected
-gate input; the heading must match it. The accepted target interval is
-`10.0.0 <= version < 10.2.0`; at least one stable `assay-vX.Y.Z` tag must be
-listable, and its latest version must be below 10.2.0. A release at 9.9.9,
-10.2.0 or later, an unreadable tag list, or no visible stable tag refuses the
-waiver. The operator extended the original 2026-10-27 waiver on 2026-10-31 to
-cover the 10.1.0 release; no R2 pass is claimed.
+gate input; the heading must match it. The currently authorized target
+interval is `10.0.0 <= version < 12.1.0`; at least one stable `assay-vX.Y.Z`
+tag must be listable, and its latest version must be below 12.1.0. A release
+at 9.9.9, 12.1.0 or later, an unreadable tag list, or no visible stable tag
+refuses the waiver. The interval is frozen by the existing operator decision.
+Extending it requires a new operator R2-waiver decision; do not change the
+bound as part of ordinary Assay release work. The refusal names this decision
+and recommends the full self-qualification lane when the waiver no longer
+applies.
 
 Once the bare-host wrapper starts for the full or provisional lane, it removes
 an old postponement marker before its dirty-tree and cgroup-capacity checks. A
@@ -532,20 +536,20 @@ its local cgroup view. If that view specifically proves ancestors are hidden,
 a caller may explicitly provide `ASSAY_RESOURCE_OBSERVER_SOCKET` for a
 trusted observer-only Unix socket. The endpoint must bind the request to the
 caller's peer credentials and native thread ID, derive the cgroup itself,
-return a complete verified ancestry, and expose no control verbs. Run-Gate's
-`resource_observer = "cgprofile"` option mounts the separate cgprofile
-observer socket read-only, supplies its observed GID, and sets this variable.
-The host endpoint is `/run/cgprofile/observer/cgprofile.sock`; binding the
-`observer` directory preserves the in-container endpoint
-`/run/cgprofile-observer/cgprofile.sock`. The host observer directory must be
-`root:root 0755`; the socket inode's GID is the observer access group. This
-path requires the host socket cutover; keep earlier Assay and Run-Gate pins on
-hosts still using the old layout. Never mount the control endpoint
-`/run/cgprofile/control/cgprofile.sock`: a read-only bind does not make its
-protocol read-only. Assay's launchers never mount or stat that control socket;
-Run-Gate carries its control-GID preflight because Run-Gate opens the endpoint
-for control requests. The observer supplies verified ancestry and event-counter
-evidence; it is not a performance-profile stream.
+return a complete verified ancestry, and expose no control verbs. Assay's
+registered launchers read the host endpoint from `CGPROFILE_OBSERVER_SOCKET`,
+mount its parent directory read-only at the identical path, and pass the same
+endpoint as `ASSAY_RESOURCE_OBSERVER_SOCKET`. Run-Gate's environment reader and
+lane passthrough are WP-E3; the Netcup runner's export is WP-R1. Those caller
+integrations are separate work and are not added here. The host directory must
+be `root:root 0755`;
+the socket inode's GID is the observer access group. A missing endpoint fails
+with its variable name and the remedy. There is no translated path, allowlist,
+or old-layout fallback. Never mount the separate control endpoint: a read-only
+bind does not make its protocol read-only. Assay's launchers never mount or
+stat that endpoint; Run-Gate carries its control-GID preflight because it opens
+the endpoint for control requests. The observer supplies verified ancestry and
+event-counter evidence; it is not a performance-profile stream.
 
 Assay's tester launchers read the host Docker GID from
 `ASSAY_GATE_HOST_DOCKER_GID` first, then `MDT_HOST_DOCKER_GID` from host-setup.
@@ -555,10 +559,32 @@ numeric Docker group GID). The optional explicit override takes precedence;
 both values must be positive decimal GIDs, and a malformed override refuses
 instead of falling through. If neither is present, launch refuses and names
 both variables. The Docker API socket's GID is not a fallback because a proxy
-or relay may own it with an unrelated access group. `/run/cgprofile` and the
-observer directory are not GID sources. The observer socket GID must be
+or relay may own it with an unrelated access group. The endpoint directory is
+not a GID source. The observer socket GID must be
 nonzero and different from Docker; Run-Gate also requires it to differ from
 the control socket GID.
+
+### Assay release-gate host
+
+Choose where Assay's two CMRU release gates run by setting
+`ASSAY_RELEASE_GATE_HOST` to `local`, `v1001`, or `r1002` before starting the
+release transaction. The variable is required; there is no default. For
+example, to delegate the gate commands to `v1001` while keeping the complete
+CMRU release transaction on the controller:
+
+```bash
+export ASSAY_RELEASE_GATE_HOST=v1001
+cmru release assay
+```
+
+The two gate commands are `tester-unified` and
+`self-qualification-provisional`. With `local`, the wrapper runs the existing
+local commands. With a remote host, it invokes the repository's `remote-gate.py`
+in attached mode and the runner transfers a Git bundle of the candidate HEAD.
+The controller keeps its SSH credentials and verifies the collected
+`meta.json` SHA against `CMRU_RELEASE_GATE_COMMIT`, then requires a `PASS`
+verdict from `result.json`. A failed lane returns its lane exit code. The
+remote run ID includes the candidate commit, lane and compact UTC timestamp.
 
 After R0/R1, B148/A-494 applies the same local-first observation rule before
 any selected native candidate starts: a configured observer can satisfy it
@@ -628,8 +654,9 @@ separate a test failure from a process or memory limit event. After the R0/R1
 measurements and before any selected native candidate starts, Assay checks the
 same local-first reader. If a private cgroup namespace hides ancestors, a
 caller may explicitly configure a trusted observer-only socket with
-`ASSAY_RESOURCE_OBSERVER_SOCKET`; the Run-Gate mount supplies the new
-in-container endpoint `/run/cgprofile-observer/cgprofile.sock`. Assay consults it only after the local reader
+`ASSAY_RESOURCE_OBSERVER_SOCKET`; Run-Gate supplies that value from the
+environment and mounts the observer directory read-only at the identical path.
+Assay consults it only after the local reader
 specifically proves that ancestors are hidden. Run-Gate's
 `resource_observer = "cgprofile"` option mounts cgprofile's separate observer
 socket read-only and supplies this setting. Do not use `--cgroupns=host` or

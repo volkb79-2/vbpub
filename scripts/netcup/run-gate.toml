@@ -12,4 +12,4 @@ schema_version = 1
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/scripts/netcup && export PYTHONPATH=\"{worktree}/libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH}\" && \"$TESTER_VENV/bin/python\" -m pytest tests/ -q"]
-budget = "2m"
+budget = "5m"

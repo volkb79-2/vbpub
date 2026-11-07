@@ -2631,7 +2631,7 @@
         "option_id": "option:route:entrypoint:iobench/target/init/--size",
         "spelling": "--size"
       },
-      "signature": "sha256:77b724749f630c75724c55c324aca6e4015c10e0dd187a3a3320c012ffaecba8"
+      "signature": "sha256:5dde2a868005ed5bfadc3a1b3a580cbe0a5120333529ef3c2a330fce8b0fea5d"
     },
     {
       "id": "case:route:entrypoint:iobench/target/show/argument-shape/argument:route:entrypoint:iobench/target/show/path",
@@ -7204,7 +7204,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "File target size in bytes (required; the upper bound of everything iobench writes there).",
+          "description": "File target size in bytes (required; upper bound of writes; must be a positive 1 MiB multiple).",
           "dest": "size",
           "effective_default": null,
           "exclusive_group": null,
@@ -7222,7 +7222,7 @@
           "parser_kwargs": {
             "default": null,
             "type": {
-              "callable": "builtins.int"
+              "callable": "iobench.cli._file_size_arg"
             }
           },
           "parser_path": [
@@ -7237,7 +7237,7 @@
           "required": false,
           "scope": "verb-local",
           "type": {
-            "callable": "builtins.int"
+            "callable": "iobench.cli._file_size_arg"
           }
         },
         {
@@ -7365,7 +7365,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "Allow --size above 10 % of the free space of the root filesystem.",
+          "description": "Allow --size above one tenth of the free space of the root filesystem.",
           "dest": "allow_large_root_target",
           "effective_default": false,
           "exclusive_group": null,
@@ -7435,7 +7435,9 @@
       "id": "route:entrypoint:iobench/target/init",
       "kind": "invocation",
       "no_args_action": false,
-      "opaque_fields": [],
+      "opaque_fields": [
+        "option:route:entrypoint:iobench/target/init/--size.type"
+      ],
       "parser_configured_by_callback": false,
       "parser_settings": [
         {
