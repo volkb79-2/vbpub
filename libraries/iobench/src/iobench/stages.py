@@ -44,6 +44,7 @@ class Config:
     work_dir: str | None = None
     profile: str = "standard"
     budget_minutes: float | None = None
+    cache_idle_delay_s: float | None = None
     state_dir: str | None = None
     confirm_quiet_window: bool = False
     protect_cgroup: str | None = None

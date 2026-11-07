@@ -52,7 +52,8 @@ cgpctl [--socket PATH] [--json] <verb> [args]
 
 ### 2.1 Socket selection
 
-Resolution order, first hit wins: `--socket PATH`, then `CGPCTL_SOCKET`, then `/run/cgprofile/ctl.sock`.
+Resolution order, first hit wins: `--socket PATH`, then `CGPCTL_SOCKET`, then
+`/run/cgprofile/control/cgprofile.sock`.
 `--socket` is a global option accepted before or after the verb. An empty `CGPCTL_SOCKET` is a usage
 error (exit 2), not a silent fall-through to the default. The path may be any absolute or relative path
 to a Unix socket; the client never rewrites it. Every verb that talks to the daemon uses the resolved
@@ -104,7 +105,7 @@ counts are integers, seconds are numbers, an unknown value is `null`.
  "daemon": {"version": "2.0.0", "contracts": [1, 2], "started_at": "...", "uptime_seconds": 0.0,
             "damon": "available|unavailable|disabled", "damon_default": "on|off",
             "sessions_live": 0, "max_sessions": 16},
- "socket": {"path": "...", "source": "flag|env|default", "group": "mdt-docker", "gid": 2751,
+ "socket": {"path": "...", "source": "flag|env|default", "group": "cgprofile-control", "gid": 999,
             "listening": true, "allow_uids": []},
  "resource_observer": {"contract": 2, "contracts": [2, 3], "path": "...", "listening": true},
  "config": {"file": "/etc/cgprofile/cgpd.toml", "digest": "sha256:...", "loaded_at": "...",
@@ -218,7 +219,7 @@ with a `pass|warn|fail|skip` status and a remedy on non-pass:
 | `caller-group` | the caller's gid or supplementary gids include the socket's group (derived by `stat`); `skip` when the socket is absent |
 | `daemon-version` | the daemon answers `version`; warns on client/daemon skew |
 | `contracts` | the ctl contract sets overlap; the observer contract set contains 2 and 3 |
-| `observer-dir` | `/run/cgprofile/observer` is mode 0751 with a group that is not the ctl group and not the docker group |
+| `observer-dir` | `/run/cgprofile/observer` is `root:root` mode 0755 and its socket is mode 0660 with a group distinct from control and docker |
 | `slice` | `cgprofile.slice` exists and is bounded (reads `memory.max` / `memory.high`) |
 | `damon` | the daemon reports DAMON available and the lock free |
 | `sessions-dir` | reported from the daemon's `status`, not tested from the client |
@@ -228,7 +229,7 @@ with a `pass|warn|fail|skip` status and a remedy on non-pass:
 
 `doctor` is in the degraded set: with no daemon access it still runs `socket`, `caller-group`,
 `report-extra` and `skills`, marks the rest `skip`, and the failing check prints the fix, for example
-`add yourself to mdt-docker (gid 2751) and re-login`, or `the socket is missing: systemctl start cgpd`.
+`add yourself to cgprofile-control (gid 999) and re-login`, or `the socket is missing: systemctl start cgpd`.
 
 **`config show`**
 
@@ -264,15 +265,15 @@ not an error (`reset` is empty). Audit-logged like `config set`.
 | Caller | Verbs that work |
 |---|---|
 | Any user | `--version`, `--help`, `run`, `mark`, `report --run-dir`, `skills *`, `doctor` (degraded: the local checks and the remedy for the failing one) |
-| Member of the `ctl.sock` group, and in `allow_uids` when that is set | everything in section 2.2 against their own sessions; `sessions`, `show`, `watch`, `status`, `host` against all sessions |
+| Member of the configured control socket group, and in `allow_uids` when that is set | everything in section 2.2 against their own sessions; `sessions`, `show`, `watch`, `status`, `host` against all sessions |
 | uid 0 | the above, plus `stop`, `report` (export) and `prune` of other uids' sessions, and `config set` / `config reset` (the only callers allowed to change settings, the access list included) |
 | `cgprofile-observer` group member | nothing in `cgpctl`; the observer socket is reached by consumers directly, by design |
 
 A daemon verb without access exits 3 with cause `socket-permission`, the socket's group, the caller's
-groups and the remedy; no verb retries. The ctl group is root-equivalent on mdt hosts (it is the Docker
-relay group), so session ownership is hygiene, not a security boundary, and this document says so on
-purpose. Ownership is enforced by the daemon from `SO_PEERCRED` (PROTOCOL.md section 10.5), never by the
-client.
+groups and the remedy; no verb retries. The control socket group is a dedicated cgprofile access grant
+and must not be the Docker group, GID 0, the docker GID, or the observer level's GID. Docker API access
+is not part of the control-group policy. Ownership is enforced by the daemon from `SO_PEERCRED`
+(PROTOCOL.md section 10.5), never by the client.
 
 ### 2.5 Environment read by `cgpctl`
 
@@ -286,6 +287,7 @@ client.
 
 ```
 cgpd [--config PATH] <verb>
+cgpd -t [--config PATH]
 ```
 
 Root only. `cgpd run` refuses to start as a non-root euid (exit 2) and `cgpd unit` / `cgpd config` run
@@ -293,16 +295,23 @@ as any user (they read and render, never touch live state). `cgpd` is a service 
 cli-extended's sense: `--help`, `--version` and malformed arguments never start the service, create state
 or touch the socket.
 
+`cgpd -t` validates the selected config and exits 0 when valid or non-zero when
+invalid. It is equivalent to `cgpd config check` and is suitable for systemd
+`ExecStartPre`.
+
 ### 3.1 Verbs
 
 | Verb | Summary |
 |---|---|
-| `run` | Explicit, never a default verb (`cgpd` without a verb prints usage and exits 2); the unit's `ExecStart` is `cgpd run`. Loads the config, runs the preflight, binds both sockets, serves until SIGTERM. |
-| `unit print [--wheel-venv PATH] [--install-root PATH]` | Prints `cgprofile.slice` and `cgpd.service` rendered from the template in the wheel, with the CP-42 limits. Nothing is read from a checkout. |
-| `unit check [--installed PATH ...]` | Compares installed unit files with the rendered output; exit 2 on drift, naming the first differing line. |
-| `config check [--file PATH]` | Validates the file (unknown keys, types, ranges, slice names, uid list) without starting anything. Exit 0 valid, 2 invalid. |
+| `run [--self-bind]` | Explicit, never a default verb (`cgpd` without a verb prints usage and exits 2); the unit's `ExecStart` is `cgpd run`. Adopts systemd's named `control` and `observer` sockets; `--self-bind` is only for tests and development. |
+| `install` | Fetches hash-pinned wheels, renders config and systemd resources, checks drift, drains live sessions before restart, then applies the service install. A TTY can prompt for missing values; repeat `--add-user LEVEL=USER` to add existing users. |
+| `uninstall [--remove-groups] [--purge-data]` | Stops and removes service resources; keeps groups and `/var/lib/cgprofile` unless the corresponding flags are supplied. |
+| `doctor [--check NAME] [--json]` | Checks config, rendered resources, groups, socket units and nodes, state directory, running version, connections, foreign rules, and caller access. |
+| `unit print [--wheel-venv PATH] [--install-root PATH]` | Prints the service, slice, per-level socket units and sysusers file from the wheel. Nothing is read from a checkout. |
+| `unit check [--installed PATH ...]` | Compares installed service resources with the rendered output; exit 2 on drift, naming the first differing line. |
+| `config check [--file PATH]` | Validates the file (unknown keys, types, ranges, slice names, uid list, and socket tables) without starting anything. Exit 0 valid, 2 invalid. `cgpd -t` is its config-test alias. |
 | `reload [--reset-overrides]` | Root only. Signals the running daemon to reload (what `systemctl reload cgpd` does); with `--reset-overrides` it first removes every runtime override through the socket (`config-reset` with `all`). Overrides are kept without the flag. |
-| `skills`, `doctor` | Not registered: `cgpd` has no agent skill, and diagnosis is `cgpctl doctor`. |
+| `skills` | Not registered: `cgpd` has no agent skill. Client-side diagnosis remains available as `cgpctl doctor`. |
 
 `cgpd run` preflight, each failure a one-line exit 2 that names the fix, nothing partially started:
 
@@ -312,10 +321,11 @@ or touch the socket.
    trivially natively, still enforced);
 4. `cgprofile.slice` is bounded (the 1.1.0 rule, unchanged);
 5. the sessions directory is creatable and writable;
-6. no live daemon answers on `ctl_socket` (section 3.5 of NATIVE-DEPLOYMENT.md): a successful `version`
-   exchange there is a refusal, exit 2, `another daemon already serves <path> (version X, pid Y)`;
-7. the directory of `ctl_socket` exists; the daemon adopts its gid (unchanged CP-43 rule) and re-asserts
-   0770 / 0660.
+
+The run mode is then checked before service startup: `LISTEN_FDS` must contain valid named listening
+descriptors, or the operator must pass `--self-bind`. Systemd creates and owns production socket nodes;
+cgpd does not bind, chmod, chown or unlink them in activated mode. Missing levels are logged while the
+available level remains served; duplicate or unknown descriptor names are refused.
 
 SIGTERM drains as today (shutdown grace unchanged). SIGHUP reloads (section 3.3). SIGUSR1 is unused.
 `cgpd run` logs to stderr in `key=value` lines for the journal; there is no log file option.
@@ -323,16 +333,17 @@ SIGTERM drains as today (shutdown grace unchanged). SIGHUP reloads (section 3.3)
 ### 3.2 Config file
 
 `/etc/cgprofile/cgpd.toml`, root-owned, mode 0644, TOML, parsed with `tomllib`. Override with
-`cgpd --config PATH`. A missing file at the default path means all defaults (so an off-mdt install works
-with no file); a missing file at an explicit `--config PATH` is an error. A single table, no nesting.
-Unknown keys are refused, naming the nearest valid key.
+`cgpd --config PATH`. A missing file at the default path means all defaults; a missing file at an explicit
+`--config PATH` is an error. Root settings are top-level keys; socket settings use fixed nested
+`[sockets.control]` and `[sockets.observer]` tables. Unknown keys are refused, naming the nearest valid key.
+The removed `ctl_socket` and `observer_socket` keys receive a named refusal with their replacements.
 
 | Key | Type | Default | Group | Replaces (1.x flag / env) |
 |---|---|---|---|---|
 | `sessions_dir` | path | `/var/lib/cgprofile/sessions` | fixed | `serve --sessions`, `CGPROFILE_SESSIONS` (daemon use) |
-| `ctl_socket` | path | `/run/cgprofile/ctl.sock` | fixed | `serve --socket` |
-| `observer_socket` | path | `/run/cgprofile/observer/resource-observer.sock` | fixed | none (constant) |
-| `damon_lock` | path | `/run/cgprofile/damon.lock` | fixed | `CGPROFILE_DAMON_LOCK_PATH` |
+| `sockets.control` | table (`path`, `group`, `mode`) | `/run/cgprofile/control/cgprofile.sock`, `cgprofile-control`, `0660` | fixed | `serve --socket` |
+| `sockets.observer` | table (`path`, `group`, `mode`) | `/run/cgprofile/observer/cgprofile.sock`, `cgprofile-observer`, `0660` | fixed | none (constant) |
+| `damon_lock` | path | `/run/cgprofile/state/damon.lock` | fixed | `CGPROFILE_DAMON_LOCK_PATH` |
 | `proc_root` | path | `/proc` | fixed | `CGPROFILE_PROC_ROOT` (was `/hostproc` in the container) |
 | `busctl` | string | `busctl` | fixed | `CGPROFILE_BUSCTL` |
 | `export_max_bytes` | integer | `268435456` (256 MiB) | reloadable | none (new, section 10.3 of PROTOCOL.md) |
@@ -354,7 +365,20 @@ distribution's, via scm; it is no longer an environment input).
 
 Validation reuses the 1.x rules: slice names must expand to a cgroup path (`a--b`, `-a` and names with a
 `/` are refused); `allow_uids` entries are non-negative integers; `max_sessions` bounds the handler pool
-sizing. `interval` is clamped to [0.25, 30] at use, as on the wire.
+sizing. `interval` is clamped to [0.25, 30] at use, as on the wire. The control and observer socket
+groups must be distinct dedicated groups: they cannot share a name or resolve to the same GID. Neither
+may be named `docker`, resolve to GID 0 or the docker GID, or resolve to the other level's GID.
+`config check`, the daemon loader and the installer share this rule. The installer refuses invalid group
+values from flags, saved `install.toml`, existing `cgpd.toml`, and wizard answers, with no override.
+Cross-service group uniqueness belongs to host-setup.
+
+`cgpd install --add-user LEVEL=USER` is repeatable for `LEVEL=control` or `LEVEL=observer`. The installer
+requires each account named with `--add-user` to exist, adds it with `gpasswd -a`, and records the requested
+users in `/etc/cgprofile/install.toml`. On reinstall, recorded users whose accounts no longer exist are
+dropped and reported; the install continues. Reinstalls re-add the remaining recorded members, and
+memberships are never individually removed on uninstall. `--dry-run` lists each requested addition and any
+dropped recorded users. The `groups` doctor check warns when a recorded member has left or their account is
+gone, and recommends rerunning `cgpd install` or naming a replacement with `--add-user LEVEL=USER`.
 
 ### 3.3 Reload
 
@@ -417,9 +441,9 @@ whatever `allow_uids` says, so a mistaken list cannot lock out the repair path.
 | `export_max_bytes` | the export size cap |
 | `max_sessions`, `max_exports`, `max_watchers` | concurrency caps; a value below the current live count only blocks new starts |
 
-Not tunable, ever, over the socket: the fixed keys (`sessions_dir`, `ctl_socket`, `observer_socket`,
-`damon_lock`, `proc_root`, `busctl`), which need a restart anyway, the socket group (which is the
-directory's, CP-43), and `observe_slices` and `gates_slice`: the gates slice bounds where
+Not tunable, ever, over the socket: the fixed keys (`sessions_dir`, `sockets.control`, `sockets.observer`,
+`damon_lock`, `proc_root`, `busctl`), which need a restart anyway, the socket groups and modes (owned by
+the socket units), and `observe_slices` and `gates_slice`: the gates slice bounds where
 `on_stall=kill` may act and the observed set defines what the daemon reports on, both are host-setup
 declarations that should only change by editing the declared state. A `config set` for any of these is
 `bad-argument`, and the message lists the tunable keys.

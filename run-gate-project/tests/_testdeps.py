@@ -9,7 +9,7 @@ missing thing. A checkout that really lacks it (a wheel consumer running the sui
 monorepo, a developer venv without PyYAML) opts out with ``RUN_GATE_ALLOW_MISSING_TEST_DEPS=1``,
 which restores the clean skip with the same reason.
 
-Three deliberate, documented exceptions remain plain skips, each with an explicit reason, because
+Four deliberate, documented exceptions remain plain skips, each with an explicit reason, because
 the condition is structural rather than a missing dependency:
 
 * ``TestHistoryStoreReadableByTheReleasedReader`` (RG-159) needs a released run-gate tag; the
@@ -21,6 +21,11 @@ the condition is structural rather than a missing dependency:
   DESIGN (RG-NARROW: a lane container sees only its worktree). It skips unless
   ``RUN_GATE_REQUIRE_CONTAINER_SMOKE=1`` (set it where Docker is reachable: a developer host).
 * ``test_an_unreadable_record_is_reported`` cannot run as root (root reads a 0o000 file).
+
+* ``TestUserDocumentationOracles.test_cgroup_profiler_contract_mirror_when_monorepo_is_present``
+  checks the cgroup-profiler contract copy when Run-Gate is checked out in the
+  vbpub monorepo. It skips when that sibling file is absent because standalone
+  Run-Gate wheel consumers do not carry the monorepo layout.
 
 ``tests/test_testdeps_policy.py`` forbids any other bare ``pytest.importorskip`` /
 ``skipif(... is None)`` / dependency ``pytest.skip`` in this suite, and the selftest lane runs

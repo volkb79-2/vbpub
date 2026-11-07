@@ -6,6 +6,81 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.7.0] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=f59fc964efa25b723d5fbb81a86974f6cccf6d05 -->
+
+### Added
+- feat(toposd): topos.service runs toposd -t as ExecStartPre (c246f4471)
+- feat(toposd): P-5 group checks, --add-user and toposd -t (eb1d5461c)
+- feat(toposd): refuse docker as the observe group (2b40ef1d1)
+- feat(toposd): verify socket activation in service doctor (00f5b6ce5)
+- feat(toposd): install, uninstall and doctor; hash-pinned daemon lock; old-install refusal (P-7, P-9, P-11) (641f7e05c)
+- feat(topos): add socket-activated host service (4ca769e94)
+
+### Fixed
+- fix(toposd): bound a failing ExecStartPre with a start limit (6ef646471)
+- fix(toposd): changelog, forgotten-user dedup and comment from review (408cc2f03)
+- fix(toposd): review fixes for P-5, --add-user and -t (f9bbed6d9)
+- fix(topos): docker-group follow-ups from review (8a44e9e16)
+- fix(toposd): dangling config symlink, uninstall advice and docs (64fc4e31e)
+- fix(toposd): review fixes for the cgprofile alignment (982ad56e9)
+- fix(toposd): recover interrupted install and uninstall (00b396a75)
+- fix(toposd): defer removal of the running version (0d31136f8)
+- fix(toposd): apply explicit observe group to config (031415f2b)
+- fix(toposd): require observe group on noninteractive install (3b5304a59)
+- fix(toposd): a re-apply after a failed upgrade reloads and restarts (509fb0dd7)
+- fix(toposd): review round 2 (failed-upgrade rerun, rerunnable uninstall, fixed layout) (dbd6ae80e)
+- fix(toposd): install, uninstall and doctor review fixes; complete test coverage (3c2029a53)
+- fix(toposd): repair fix-round regressions; runtime errors exit 1 (32a155d96)
+- fix(toposd): address host socket review findings (5ab5b956f)
+- fix(topos): keep the topos-suite lane parallel (f3ec8ab6d)
+- fix(toposd): report state directory overlap (2ea2eeb68)
+- fix(toposd): name unsupported socket level (f2b88c15e)
+- fix(topos): clarify sysusers plan step (ce7ca1dc6)
+
+### Changed
+- Merge remote-tracking branch 'origin/main' into host-sockets-topos-20261105 (6447ee65d)
+
+### Documentation
+- docs(topos): TOP-SQUEEZE-THREADS: the restore guard's signal mask is per thread (e2c1ae768)
+- docs(topos): name the capture behind each reply size (81a1d318d)
+- docs(topos): reply sizes per view list, decode figures labelled, protocol item states what each cut needs (f5c20cf59)
+- docs(topos): correct the current-reply size, add decode cost and the protocol direction (bb3f3a4c8)
+- docs(topos): plan evidence rows use the recorded sampler and yardstick runs (75539c382)
+- docs(topos): plan drops the settled Rust decision and restates sampler ratios (e733e90ef)
+- docs(topos): plan states what is done and where the branches stand (827f87e8c)
+
+### Testing
+- test(toposd): in-process coverage for owned-node and self-bind refusal paths (cf961c797)
+- test(toposd): cover service boundary failures (00b176e44)
+- test(toposd): pass strings in argv lists (a2be443f4)
+- test(topos): follow daemon helper extraction (5175150d9)
+- test(topos): model systemd metadata in status CLI (1573ed224)
+- test(topos): model systemd-owned status socket (9f6fc3bad)
+- test(topos): accept daemon socket mode in fake (fbeec9537)
+- test(topos): update daemon listener fake (09ecbdce4)
+- test(topos): note that the signal test relies on running in the main thread (172d909a3)
+- test(topos): the restore-under-signal test signals its own thread; None handlers are not restored (9ddc91379)
+- test(topos): the squeeze guard test restores every guarded signal, not only SIGTERM (055957074)
+
+<!-- cmru: pending release notes begin -->
+- feat(toposd): add pinned `install`, `uninstall`, and `doctor` host-service workflows for topos 0.7.0 and later: immutable versioned venvs, recoverable install records, targeted observe-group config edits, activation-aware service checks, deferred removal of the running version, and safe partial cleanup when group removal fails
+- feat(toposd): refuse `docker`, GID 0 and the docker GID as the observe group on every input path (flag, install record, `toposd.toml`, prompt), exit 2, no override; `--add-user observe=USER` (repeatable, `gpasswd -a`, members never removed) replaces `--observe-users`; `toposd config check` and `-t` refuse such a group where it exists; the doctor `groups` check fails on those GIDs and lists members; a recorded user who no longer exists is dropped from the record and reported instead of blocking the install
+- feat(toposd): `toposd -t [--config PATH]` tests the config (same as `config check`, exit 0 or 2); `topos.service` runs it as its `ExecStartPre`
+- feat(topos/release): generate and publish the sha256-pinned daemon dependency lock beside each topos wheel
+- fix(topos): remove `topos daemon preflight` and `install-plan` without alias (use `toposd doctor` and `toposd install --dry-run`); `topos daemon status` stays as the client check, sends hello, and accepts any socket group unless `--group` names one
+- feat(topos/daemon): systemd owns the `observe` socket at `/run/topos/observe/topos.sock`; daemon state moves under `/run/topos/state/`; the old `/run/topos/topos.sock` is no longer served, so an upgrading host needs a fresh install
+- feat(toposd): add `run`, `unit print|check`, and `config check`, with explicit `--self-bind` for tests and development
+- fix(topos): point client defaults at the socket unit and remove `topos daemon serve`
+- fix(topos/deploy): render socket, service, slice, and sysusers files from `/etc/topos/toposd.toml`; remove the tmpfiles asset
+- fix(topos): route daemon BPF snapshots and squeeze recovery records under service `state_dir`
+- fix(toposd): preserve an existing or replacement socket node when self-bind fails or closes
+- fix(toposd): reject unsafe service-config paths before rendering systemd unit text
+- fix(toposd): reject `--self-bind` with an activated listener and report the bound address
+- fix(toposd): prevent systemd restart loops for exit status 2; a runtime OSError at startup exits 1 so systemd still restarts
+<!-- cmru: pending release notes end -->
+
 ## [0.6.0] - 2026-11-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=66da61266884e688d6276515155191f81a020599 -->

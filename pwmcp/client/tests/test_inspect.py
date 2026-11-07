@@ -26,6 +26,7 @@ def _install_cli_browser(
     fail_navigations: int = 0,
     page_events: list[tuple[str, object]] | None = None,
     main_status: int | None = None,
+    navigation_error: str = "navigation failed",
 ) -> dict[str, object]:
     texts_left = list(texts or ["rendered page text"])
     calls: dict[str, object] = {
@@ -81,7 +82,7 @@ def _install_cli_browser(
         def goto(self, url: str, *, wait_until: str, timeout: int) -> object:
             calls["goto"].append({"url": url, "wait_until": wait_until, "timeout": timeout})
             if navigation_fails or len(calls["goto"]) <= fail_navigations:
-                raise FakePlaywrightError("navigation failed")
+                raise FakePlaywrightError(navigation_error)
             for event, payload in page_events or []:
                 for handler in calls["handlers"].get(event, []):
                     handler(payload)
@@ -545,10 +546,81 @@ def test_retries_exhausted_reports_the_last_failure(
     assert len(calls["goto"]) == 2
 
 
-def test_default_has_no_retry_and_no_settle_read(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_generic_navigation_failure_is_not_retried_or_settled(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _install_cli_browser(monkeypatch, fail_navigations=1)
     assert cli_module.main(["inspect", "https://example.test"]) == 1
     assert len(calls["goto"]) == 1 and calls["settles"] == []
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Page.goto: Page crashed",
+        "Execution context was destroyed",
+    ],
+)
+def test_first_page_crash_is_retried_once_without_an_explicit_retries_option(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    message: str,
+) -> None:
+    # Fake Playwright server: its first navigation fails with the crash signatures
+    # reported by operators, and the fresh context's second navigation works.
+    calls = _install_cli_browser(monkeypatch, fail_navigations=1, navigation_error=message)
+    assert cli_module.main(["inspect", "https://example.test/page", "--format", "snapshot"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == '- heading "Sample page" [level=1]\n'
+    assert len(calls["goto"]) == 2
+    assert "retrying automatically once" in captured.err
+    assert message in captured.err
+
+
+@pytest.mark.parametrize("message", ["Target closed", "Browser has been closed"])
+@pytest.mark.parametrize("retry_args", [[], ["--retries", "2"]])
+def test_browser_level_closure_does_not_retry_on_a_dead_playwright_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    message: str,
+    retry_args: list[str],
+) -> None:
+    calls = _install_cli_browser(monkeypatch, fail_navigations=1, navigation_error=message)
+    assert cli_module.main([
+        "inspect", "https://example.test/page", "--format", "snapshot", *retry_args
+    ]) == 1
+    captured = capsys.readouterr()
+    assert len(calls["goto"]) == 1
+    assert len(calls["context_options"]) == 1
+    assert calls["closed"] == [True]
+    assert "retrying" not in captured.err
+    assert "check that PWMCP is still running" in captured.err
+
+
+def test_final_browser_crash_hint_does_not_blame_pwmcp_connectivity(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = _install_cli_browser(monkeypatch, fail_navigations=3, navigation_error="Page.goto: Page crashed")
+    assert cli_module.main(["inspect", "https://example.test/page", "--format", "snapshot"]) == 1
+    captured = capsys.readouterr()
+    assert len(calls["goto"]) == 2  # the automatic retry is bounded to one attempt
+    assert "PWMCP is reachable" not in captured.err
+    assert "page or browser crashed or was closed" in captured.err
+    assert "check that PWMCP is still running" in captured.err
+
+
+def test_connectivity_failure_keeps_a_service_reachability_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = _install_cli_browser(
+        monkeypatch,
+        connect_error=session.PwmcpUnavailable("pwmcp is unreachable at pwmcp:3001"),
+    )
+    assert cli_module.main(["inspect", "https://example.test/page"]) == 1
+    captured = capsys.readouterr()
+    assert "check that PWMCP is running and reachable from this container" in captured.err
+    assert "page or browser crashed" not in captured.err
+    assert len(calls["connect"]) == 1
 
 
 def test_unstable_page_is_retried_and_stable_one_is_not(

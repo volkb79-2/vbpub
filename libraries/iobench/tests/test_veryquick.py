@@ -257,6 +257,8 @@ def test_prf_03_without_the_cold_probe_the_verdict_is_inconclusive_and_the_run_s
 
 def test_pla_19_boundaries():
     assert plausibility.pla_19(None, 1.0).status == "not_applicable" and plausibility.pla_19(1.0, None).status == "not_applicable"
+    for read, write in ((1.0, 0.0), (1.0, -1.0), (float("nan"), 1.0), (float("inf"), 1.0), (1.0, float("inf"))):
+        assert plausibility.pla_19(read, write).status == "not_applicable"
     assert plausibility.pla_19(20.0, 1.0).status == "pass"  # exactly 20x is not above it
     assert plausibility.pla_19(15.0, 1.0).status == "pass"
     assert plausibility.pla_19(50.0, 1.0).status == "info"
@@ -268,26 +270,46 @@ def test_pla_19_boundaries():
     assert plausibility.READ_OVER_WRITE_WARN == 20.0 and plausibility.READ_OVER_WRITE_FAIL == 100.0
 
 
+def test_pla_19_is_recorded_for_every_profile_with_sequential_cells():
+    expected_sizes = {"veryquick": 128 * 1024, "quick": 64 * 1024, "standard": 1 << 20, "thorough": 1 << 20}
+    for profile in ("veryquick", "quick", "standard", "thorough"):
+        out = calibrate(make_host(cache=None, read=MDT016_READ, write=MDT016_WRITE), profile=profile)
+        checks = [c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-19"]
+        assert len(checks) == 1, profile
+        check = checks[0]
+        assert check["status"] == "fail", profile
+        cells = out.calibration["calibration"]["shape"]["cells"]
+        seq = {c["dir"]: c for c in cells if c["pattern"] == "seq" and c["bs"] == expected_sizes[profile]
+               and c["block_state"] == "rewrite" and not c["repeat"] and c["state"] in ("steady", "flat")}
+        assert set(seq) == {"read", "write"}, profile
+        assert check["value"] == pytest.approx(seq["read"]["steady_bps"] / seq["write"]["steady_bps"], abs=0.1), profile
+        assert out.result["quality"]["plausibility"]["verdict"] == "fail", profile
+
+
 def test_prf_03_the_verdict_table():
     expect = {"cold_measured": "pass", "rate_cap": "pass", "cold_hit_like": "fail", "no_cache_observed": "inconclusive", "undetermined": "inconclusive"}
     assert plausibility.VERDICTS == expect and set(expect) == set(P.CACHE_STATES)
     for state, verdict in expect.items():
         assert plausibility.verdict(state) == {"verdict": verdict, "cache_state": state}
-    # veryquick: a hit-like cold region is inconclusive alone; a 20-100x ratio is corroborated by a hit-like cold probe.
+    assert plausibility.verdict("cold_hit_like")["verdict"] == "fail"
     assert plausibility.verdict("cold_hit_like", vq=True)["verdict"] == "inconclusive"
-    assert plausibility.verdict("cold_measured", vq=True)["verdict"] == "pass"
-    assert plausibility.verdict("cold_measured", vq=True, rate_status="info")["verdict"] == "inconclusive"
-    assert plausibility.verdict("cold_hit_like", vq=True, rate_status="info")["verdict"] == "fail"
-    assert plausibility.verdict("undetermined", vq=True, rate_status="fail")["verdict"] == "fail"
+    assert plausibility.verdict("cold_measured")["verdict"] == "pass"
+    assert plausibility.verdict("cold_measured", rate_status="info")["verdict"] == "inconclusive"
+    assert plausibility.verdict("cold_hit_like", rate_status="info")["verdict"] == "fail"
+    assert plausibility.verdict("no_cache_observed", rate_status="fail")["verdict"] == "fail"
+    assert plausibility.verdict("undetermined", rate_status="fail")["verdict"] == "fail"
 
 
 def test_prf_03_every_calibration_carries_the_verdict_of_its_cache_state():
     host = make_host(cache=INVERSION)
     out = calibrate(host)
-    assert out.result["quality"]["plausibility"] == plausibility.verdict(out.calibration["calibration"]["cache"]["read"]["cache_state"])
+    check = next(c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-19")
+    assert out.result["quality"]["plausibility"] == plausibility.verdict(
+        out.calibration["calibration"]["cache"]["read"]["cache_state"], rate_status=check["status"])
     assert out.calibration["quality"]["plausibility"] == out.result["quality"]["plausibility"]
     quick = calibrate(make_host(cache=INVERSION), profile="quick")
-    assert quick.result["quality"]["plausibility"] == {"verdict": "inconclusive", "cache_state": "undetermined"}  # no cold probe in a quick run
+    qcheck = next(c for c in quick.result["quality"]["checks"] if c["id"] == "IOB-PLA-19")
+    assert quick.result["quality"]["plausibility"] == plausibility.verdict("undetermined", rate_status=qcheck["status"])
 
 
 # -- failure modes -----------------------------------------------------------------------------------------------------

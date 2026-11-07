@@ -174,6 +174,17 @@ Behaviour changes a consumer can see:
 
 <!-- cmru: release history -->
 
+## [0.5.3] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=2ce453d39913f5bc3f9f47aac010aaef63cc1c4b -->
+
+### Testing
+- test(cli-extended): kill the four 0.5.2 R2 survivors; drop equivalent exit-code bound and dead isolated defaults (CLI-EXT-33) (7de8fcf48)
+
+<!-- cmru: pending release notes begin -->
+- test(cli-extended): kill the four 0.5.2 R2 survivors; drop the unobservable `1 <=` exit-code bound and the dead private `isolated` defaults in `testing.py` (CLI-EXT-33)
+<!-- cmru: pending release notes end -->
+
 ## [0.5.2] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=ce8bc97e94725293351b3966c347852b2f1a0336 -->
@@ -217,8 +228,6 @@ Behaviour changes a consumer can see:
 <!-- cmru: pending release notes end -->
 
 ## [Unreleased]
-
-- test(cli-extended): kill the four 0.5.2 R2 survivors; drop the unobservable `1 <=` exit-code bound and the dead private `isolated` defaults in `testing.py` (CLI-EXT-33)
 
 ## [0.5.0] - 2026-10-21
 <!-- cmru: generated -->

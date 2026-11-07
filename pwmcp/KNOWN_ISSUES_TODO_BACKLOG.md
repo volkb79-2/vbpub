@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-03 (VM layout / PWMCP-21; local console-corpus verification; R2 follow-up; GlyphGrid tooling integration; PWMCP-18 transparency gap identified during R2 survivor triage).
+Last updated: 2026-11-07 (PWMCP-42 bounded HTML/evaluation, crash retry classification, and skill drift guard).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -632,7 +632,7 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-27 — `inspect --format html|embedded-json` and chunked output for results over 1 MiB (PW-B, F3/F4)
 
-**Status:** OPEN. Severity: P2 (feature). Raw rendered `outerHTML` and the embedded `application/json`/`ld+json`/`__NEXT_DATA__`-style script blobs are the robust fallback when a page's UI is a shell (the whole ChatGPT share conversation was in a 506 KB `__WEB_MOBILE_DATA__` script). MCP `browser_evaluate` fails above 1 MiB per SSE event, so provide file output or chunked fetch and document the limit. Acceptance: both formats with `--output`, tests with a fixture page, CLI review cases.
+**Status: PARTIALLY IMPLEMENTED 2026-11-07 (PWMCP-42).** `inspect --format html` now returns bounded document/selector `outerHTML` or `innerHTML`, supports `--output`, and reports truncation. `pwmcp eval --selector ... --property textContent` reads embedded JSON script data without installing the Python MCP SDK. Residual: HTML is capped at 512 KiB; output above that is identified as truncated, not chunked. There is no separate embedded-JSON format, because the evaluator already reads a selected script's `textContent`.
 
 ## PWMCP-28 — `inspect --scroll-to-bottom` auto-scroll for genuinely lazy lists (PW-D, F10)
 
@@ -640,7 +640,7 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-29 — update the `pwmcp-fetch` skill for the completeness probe, reload loop, embedded-JSON recipe and the 1 MiB event limit (PW-F, F8)
 
-**Status:** OPEN. Severity: P3 (docs). Advise a content-based `--wait-for`, `--retries`, treating `innerText < ~5 KB` or zero turns as not rendered, the embedded-JSON recipe once PWMCP-27 lands, and the stderr diagnostics of PWMCP-25/26. Left open here because `pwmcp-2` edits the same skill file (PWMCP-05/10).
+**Status: FIXED 2026-11-07 (PWMCP-42).** The packaged skill now gives a content-based wait, explains the current `<1 KiB` shell warning and page-diagnostic stderr, reads `__NEXT_DATA__` with `pwmcp eval`, documents the bounded HTML/truncation and crash retry, and records `mcp` SDK 2.3.0's unchanged two-tuple API plus the required `browser_click.target`. `client/tests/test_skill_contract.py` checks every `browser_*` name against the version-pinned Playwright MCP tool contract and every CLI flag named in the skill against the registered parser. The previous ~5 KiB heuristic is intentionally not copied: the maintained CLI warning threshold is 1 KiB and a short page alone is not proof of missing content.
 
 ## PWMCP-30 — `inspect --main-only` readability extraction and `--user-agent` documentation stance (PW-G/PW-E, F7/F9)
 
@@ -710,3 +710,7 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 ## PWMCP-41 — close the R2 survivor and OOM-crash findings from pwmcp-v1.64.1-r4
 
 **Status: FIXED 2026-11-07 on branch `pwmcp-surv3-20261106` (not released).** R2 reported 29 survivors and three OOM crashes across 493 candidates. The closeout adds mutation-sensitive boundary and logging tests, and corrects the rejected-body reader fake so it honors `read1(size)` including `read1(0)`; an eight-read cap makes a non-progressing drain fail clearly. The OOM was caused by that fake returning a byte for a zero-byte read while the `or`→`and` mutant repeatedly retried it; it was not evidence that the service's configured memory envelope was too small. No lane or host memory limit changed. The hostless invalid-port origin `https://:99999` is now covered: it must be ignored without raising. Four survivors are equivalent under supported inputs and remain explicitly waived; 25 now have test evidence, including the `cli.py:369` mutant killed by the exact-`None` assertions. The three formerly crashed candidates are covered by clean test failures. The first final R1 run also exposed a load-sensitive timeout test that gave both the forced timeout and the follow-up success the same 0.4-second subprocess deadline; it now injects timeout then success deterministically, with no wall-clock dependency. A full R2 rerun was not performed; expected closeout classification is 489 killed, 4 equivalent, and 0 crashed. Per-candidate decisions and hand-mutant results: `/home/vscode/vbpub-release-program-20261027/reports/pwmcp-surv3-REPORT.md`.
+
+## PWMCP-42 — browser crashes were misclassified and the CLI lacked page evaluation and HTML output
+
+**Status: IMPLEMENTED; R1 PASS 2026-11-07 on `55747e192db772cd7535691c7f4c74dc8bd86210`; independent review pending; not released.** The client distinguishes browser/page lifecycle failures from endpoint connectivity, retries one recognized first-navigation crash with a stderr note, and provides `pwmcp eval` plus capped `inspect --format html` through the already exposed Playwright MCP tools using only the Python standard library. The `pwmcp-fetch` skill documents the new CLI path, MCP SDK 2.3.0 / `browser_click.target`, and has an inventory/parser drift test. Stack review found `shm_size = "2gb"`, no `--disable-dev-shm-usage`, and no PWMCP-owned memory cap on the unified browser container; the r4 R2 OOM was caused by a test fake (PWMCP-41), not the service envelope. No stack limit changed. R1 verified 2,507/2,507 lines and 802/802 branches; exact test and gate details are in `pwmcp-fold-REPORT.md`.

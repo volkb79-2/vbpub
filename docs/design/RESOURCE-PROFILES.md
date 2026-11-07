@@ -152,7 +152,7 @@ Units are part of the field names: `_bytes`, `_seconds`, `_ops`.
 
 ### 3.1 Wire
 
-These additions go on the existing observer socket, `/run/cgprofile/observer/resource-observer.sock`.
+These additions go on the existing observer socket, `/run/cgprofile/observer/cgprofile.sock` (the per-level layout; the earlier name was `resource-observer.sock`).
 `resource-limits` keeps contract 2 unchanged, and the control socket stays at contract 1.
 
 ```json

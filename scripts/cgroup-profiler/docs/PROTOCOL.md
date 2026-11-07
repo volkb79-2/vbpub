@@ -19,15 +19,16 @@ and every error code below is live.
 
 ## 1. One carrier: the Unix socket (§8.1, design D-30)
 
-The control protocol travels over one carrier. Connect to the control socket (`/run/cgprofile/ctl.sock` by
-default, the `ctl_socket` key of `cgpd.toml`) and write ONE request line; the daemon answers with one line and
+The control protocol travels over one carrier. Connect to the control socket
+(`/run/cgprofile/control/cgprofile.sock` by default, configured by
+`[sockets.control].path` in `cgpd.toml`) and write ONE request line; the daemon answers with one line and
 closes. The only exception is `watch`, which streams. `cgpctl` is the reference client: whatever its
 `ctlwire` module builds for a given command line is what any other consumer should send. The frozen bytes
 are in `tests/fixtures/rg55/socket/<verb>-request.json`.
 
 | aspect | rule |
 |---|---|
-| who may connect | the group that owns `/run/cgprofile` (the directory's mode and group, set by the host's tmpfiles rule), plus the `allow_uids` list of `cgpd.toml` when it is non-empty (section 4) |
+| who may connect | the group that owns the control socket (set by `cgprofile-control.socket` from `[sockets.control].group`), plus the `allow_uids` list of `cgpd.toml` when it is non-empty (section 4) |
 | who is root-equivalent | uid 0 is always allowed |
 | there is no fallback | a caller without access to the socket has no other path to the daemon; `cgpctl doctor` names the remedy |
 
@@ -154,13 +155,13 @@ note in `docs/CONSUMERS.md` and the rationale in `docs/DESIGN-GUIDE.md`.
 
 ## 4. Authorisation on the socket (§8.1)
 
-1. The host directory's mode and group decide who may connect at all. The
-   host's tmpfiles rule creates `/run/cgprofile` as `0770 root:<ctl group>`;
-   the daemon only **re-asserts** `0770` on the directory and
-   `root:<that directory's gid>` `0660` on the socket at every start. It
-   never chooses the group itself (RW-35(b), RW-37).
-2. A `root:root` directory (no host provisioning) means the socket is
-   root-only. The daemon logs one INFO line and keeps serving.
+1. The socket node's group and mode decide who may connect. Systemd creates
+   `/run/cgprofile/control/cgprofile.sock` as `root:<sockets.control.group>`
+   with the configured mode; cgpd adopts the listening descriptor and never
+   changes or unlinks the node.
+2. Runtime directories are root-owned and mode `0755`; they do not grant
+   socket access by themselves. Each consumer mounts only its entitled level
+   directory.
 3. The `allow_uids` key of `cgpd.toml` (an array of uids; runtime-tunable by
    uid 0, `CGPCTL-SPEC.md` section 3.5) adds an `SO_PEERCRED` check: uid 0 is
    always allowed, listed uids are allowed, everything else gets
@@ -174,7 +175,7 @@ note in `docs/CONSUMERS.md` and the rationale in `docs/DESIGN-GUIDE.md`.
 
 ```json
 "transports": {"exec": false,
-               "socket": {"path": "/run/cgprofile/ctl.sock", "listening": true,
+               "socket": {"path": "/run/cgprofile/control/cgprofile.sock", "listening": true,
                           "allow_uids": [], "peer_cred": true}}
 ```
 
@@ -186,7 +187,7 @@ The additive `resource_observer` field reports the distinct observer listener:
 
 ```json
 "resource_observer": {"contract": 2, "contracts": [2, 3],
-                       "path": "/run/cgprofile/observer/resource-observer.sock",
+                       "path": "/run/cgprofile/observer/cgprofile.sock",
                        "listening": true}
 ```
 
@@ -243,16 +244,16 @@ they are what the run-gate socket client (P5) is written against.
 ## 8. Native R2 resource observer (RG-89)
 
 This is a **separate listener**, not a new verb on the control carrier:
-`/run/cgprofile/observer/resource-observer.sock`. Host setup provisions the
-root-owned `/run/cgprofile/observer` directory as `0751` with the dedicated
-`cgprofile-observer` group. Run-Gate bind-mounts this directory read-only into
-an explicitly opted-in Assay R2 container, so daemon restarts replace the
-socket inode at a path an existing container can still resolve. The listener is served
+`/run/cgprofile/observer/cgprofile.sock`. The `cgprofile-observer.socket`
+unit owns the node as `root:cgprofile-observer` mode `0660`; its runtime
+directory is `root:root` mode `0755`. Run-Gate bind-mounts this level directory
+read-only into an explicitly opted-in Assay R2 container, so daemon restarts
+replace the socket inode at a path an existing container can still resolve. The listener is served
 by the existing daemon and accepts no control operation, including `start`,
 `stop`, or placement. Its socket mode uses the dedicated observer directory
 group and the `allow_uids` policy; Run-Gate forwards the observed
 socket GID as a supplementary group. Observer lanes also declare per-container
-memory and PID ceilings and refuse arbitrary extra mounts. A read-only mount of `ctl.sock`
+memory and PID ceilings and refuse arbitrary extra mounts. A read-only mount of the control socket
 is not equivalent and is prohibited for this use.
 
 The observer requires contract 2, independently of the daemon's contract-1
@@ -540,9 +541,9 @@ without a second call.
 | `config-set`, `config-reset` | uid 0 only, including when `allow_uids` is empty; the access list itself (`allow_uids`) is therefore changeable only by uid 0 over the socket |
 
 Anything else is `peer-refused` with a message naming the owner uid. Unreadable credentials fail closed
-for these operations even when no `allow_uids` is configured. This rule is hygiene, not a security
-boundary: on an mdt host the ctl group is the Docker relay group and therefore root-equivalent, which the
-product documentation states plainly. `on_stall=kill` keeps its separate, stricter rule (exact
+for these operations even when no `allow_uids` is configured. This rule is
+hygiene; the control socket uses a dedicated cgprofile level group and is not
+the Docker relay group. `on_stall=kill` keeps its separate, stricter rule (exact
 gates-slice container cgroups only, section 3). Contract-1 callers are subject to the same ownership
 rules: run-gate starts and stops its sessions as one uid, so nothing changes for it.
 

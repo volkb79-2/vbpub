@@ -35,7 +35,7 @@ execution_mode = "project-first"
 
 # Images (built by their own projects' push steps).
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
-CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
+CMRU_TESTER_UNIFIED_IMAGE = "${CMRU_TESTER_UNIFIED_IMAGE:-tester-unified:local}"
 
 # Per-gate-container resource caps (docker --memory/--memory-swap/--cpus):
 #   MEMORY       hard cap on user-space memory (RSS + page cache; not only

@@ -21,7 +21,8 @@ cgpctl doctor                      # socket, group, versions, observer dir, repo
 `doctor` names what this process can reach and the exact fix for what it cannot
 (for example the group that owns the daemon's socket). `cgpctl run` and
 `cgpctl mark` need no daemon; every other verb talks to the host daemon's socket
-(`--socket`, `$CGPCTL_SOCKET`, else `/run/cgprofile/ctl.sock`).
+(`--socket`, `$CGPCTL_SOCKET`, else
+`/run/cgprofile/control/cgprofile.sock`).
 
 Two ways to profile, one CLI:
 

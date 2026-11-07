@@ -2,7 +2,7 @@
 
 `tests/_testdeps.py` is the one policy; this file pins both the policy itself and that no
 test in this suite bypasses it with a bare `pytest.importorskip`, a `skipif(... is None)`
-or an undeclared `pytest.skip(...)`. The two structural exceptions carry a
+or an undeclared `pytest.skip(...)`. The structural exceptions carry a
 `testdeps-exception` marker on the line or the line before it, and nothing else may.
 """
 
@@ -91,7 +91,7 @@ def test_no_test_bypasses_the_policy():
         "through tests/_testdeps.py (fail by default, opt-out skip):\n" + "\n".join(offenders))
     # The exception list is closed: a new structural skip is a policy change,
     # documented in _testdeps.py, not a marker someone adds in passing.
-    assert len(marked) == 3, marked
+    assert len(marked) == 4, marked
     assert all(m.startswith("test_run_gate.py:") for m in marked), marked
 
 

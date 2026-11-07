@@ -25,6 +25,15 @@ def fixture_frame():
     return frame_from_jsonable(payload)
 
 
+def run_toposd_self_bind(socket_path: Path, *options: object) -> int:
+    """Run the daemon through its explicit test/development CLI mode."""
+    from topos.service.cli import main
+
+    argv = ["run", "--self-bind", "--socket", str(socket_path)]
+    argv.extend(str(option) for option in options)
+    return main(argv)
+
+
 def _mcp_extra_installed() -> bool:
     import importlib.util
 
@@ -42,6 +51,17 @@ def requires_mcp(func):
     return pytest.mark.skipif(
         not _mcp_extra_installed(), reason="topos[mcp] extra not installed"
     )(func)
+
+
+@pytest.fixture(autouse=True)
+def _absent_service_config(monkeypatch, tmp_path):
+    """No test reads the host's /etc/topos/toposd.toml: the implicit service config
+    is an absent file, so its defaults apply. A test that needs a file sets
+    ``topos.service.config.DEFAULT_CONFIG_PATH`` itself."""
+    import topos.service.config as service_config
+
+    monkeypatch.setattr(service_config, "DEFAULT_CONFIG_PATH", tmp_path / "absent-toposd.toml")
+
 
 @pytest.fixture
 def real_docker_inspect():

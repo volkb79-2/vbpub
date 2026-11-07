@@ -13,9 +13,10 @@ requirements and the result schema.
 | Capability | One line | Spec |
 |---|---|---|
 | Calibration (once per host or storage class; `veryquick` 3, `quick` 12, `standard` 60, `thorough` 75 min; `veryquick` values are unproven) | cold-region probe (primary, direct) cross-checked by a latency-mode split, working-set ladder, time-axis proof for writes, fresh vs rewritten blocks, ceiling, cost-shape grid, latency-vs-load curve; veryquick refuses to replace a fuller result in the same state directory ([why](docs/DESIGN-GUIDE.md#72-the-veryquick-profile)) | `IOB-CAL`, `IOB-CCH`, `IOB-SHP`, `IOB-LAT` |
+| Cache and burst observations | calibration appends disk-scoped capability observations; `iobench capability --kind raw|file|probe` filters them and the default summary lists each kind separately; `check --json` reports the same per-kind summary; schema 1 minor 3 names the QD1 reference and marks unrun reads `not_measured`; none supply io.cost values ([why](docs/DESIGN-GUIDE.md#73-cache-and-burst-observations)) | `IOB-CAP`, `IOB-CCH-09` |
 | Matrix iteration (6 cells: typical 11, worst case 15 min; one knob A/B typical 4 min) | reuses the calibration; interference cells with a sync-latency probe under buffered writeback load, the read cost of small requests, a noise floor | `IOB-MAT`, `IOB-SWP`, `IOB-RDC` |
 | Proof model | every proposed value is `proven`, `unproven` (with reasons) or `absent`; `check` exit 0 only if every requested proposal is proven, exit 7 if valid but some are not | `IOB-STA`, `IOB-CHK` |
-| Plausibility | rejects numbers that are a cache, a burst, a flat provider cap, a moved ceiling or a too-short run; a 20–100x veryquick ratio plus a hit-like cold probe makes both the IOB-PLA-19 check and verdict fail; ratio bands are provisional ([why](docs/DESIGN-GUIDE.md#72-the-veryquick-profile)); never keys on the `rotational` flag | `IOB-PLA`, `IOB-REF` |
+| Plausibility | checks sequential read/write ratios in every profile that measures both; >20x through 100x is inconclusive unless a hit-like cold probe corroborates it, while >100x or corroboration fails the verdict in every profile; a veryquick hit-like cold probe alone remains inconclusive; thresholds are provisional ([why](docs/DESIGN-GUIDE.md#72-the-veryquick-profile)); never keys on the `rotational` flag | `IOB-PLA`, `IOB-REF` |
 | Proposals | `proposals.writeback`, `proposals.caps`, `proposals.iocost_model`, `proposals.iocost_qos`, each value with `rule`, `inputs`, `status` | `IOB-DER` |
 | Ceiling history | append-only disk history; raw rows supply proposal values, while file/probe rows can confirm stability only; weak disks require the remembered device name and model, and a known stored machine-id must still match; a chroot record with no stored id stays unbound after first boot ([why](docs/DESIGN-GUIDE.md#71-the-key-is-the-disk-not-the-partition-host-tuning-review-b2-2026-11-05)) | `IOB-CEI` |
 | Safety | targets are a dedicated device **or a preallocated file** on an existing filesystem; refuses a target that is mounted, swap, signature-bearing or the root disk, writes nothing without its marker; the Host itself binds every writer and discard to the authorised extent (a plain `run`/`spawn` can only create `iobench-*` load files, never reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
@@ -32,6 +33,7 @@ iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile st
 # ask whether the result is usable, and read the proposals
 iobench check --json; echo "exit=$?"
 iobench show --proposals --json
+iobench capability --json
 ```
 
 ## Layout

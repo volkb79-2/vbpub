@@ -328,9 +328,21 @@ assay exists to close that gap mechanically, not by policy:
   `ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint, but only for that hidden-
   ancestor condition; all identity, ancestry, and attribution checks remain
   fail-closed. Run-Gate's `resource_observer = "cgprofile"` mounts a
-  separate observer-only socket, never the daemon control socket. See the
-  [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
+  separate observer-only socket at host path
+  `/run/cgprofile/observer/cgprofile.sock`, mounted in the lane as
+  `/run/cgprofile-observer/cgprofile.sock`; it never mounts the control socket
+  at `/run/cgprofile/control/cgprofile.sock`. Assay's host launchers never
+  mount or stat the control socket; Run-Gate carries the control-GID preflight
+  because Run-Gate opens that endpoint for control requests. The observer
+  directory must be `root:root`, and launchers read the observer GID from the
+  socket inode. The new paths require the host socket cutover, so keep earlier
+  Run-Gate and Assay pins on hosts that still use the old layout. See the
+  [socket cutover rationale](docs/DESIGN-GUIDE.md#host-cgprofile-socket-cutover)
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+  Assay's tester launchers require the host Docker GID as a numeric value:
+  `ASSAY_GATE_HOST_DOCKER_GID` takes precedence over `MDT_HOST_DOCKER_GID`.
+  Missing or malformed selected values refuse launch. They do not infer it
+  from the Docker API socket, whose GID may belong to a proxy or relay.
   This does not observe per-process limits such as `RLIMIT_NPROC` or
   `RLIMIT_AS`. See the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)

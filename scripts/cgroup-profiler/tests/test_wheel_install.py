@@ -122,6 +122,8 @@ def test_the_wheel_ships_the_package_the_data_and_the_vendored_module(wheel):
         "cgprofile/serve.py",
         "cgprofile/cli/cgpctl.py",
         "cgprofile/cli/cgpd.py",
+        "cgprofile/cli/installer.py",
+        "cgprofile/cli/service_doctor.py",
         "cgprofile/cli/legacy.py",
         "cgprofile/_damon/__init__.py",
         "cgprofile/_damon/damon_analysis.py",
@@ -185,3 +187,22 @@ def test_the_installed_package_imports_from_site_packages_only(venv, tmp_path):
     assert "site-packages" in first and "site-packages" in second
     assert str(PROJECT_ROOT) not in proc.stdout
     assert third in ("True", "False")
+
+
+def test_installer_and_service_doctor_import_from_the_two_wheels_only(venv, tmp_path):
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "CGPROFILE_VERSION")}
+    code = (
+        "import sys;"
+        "from cgprofile.cli import installer, service_doctor;"
+        "assert installer.InstallError and service_doctor.SERVICE_DOCTOR_CHECKS;"
+        "assert not any(name in sys.modules for name in ('pandas', 'numpy', 'plotly', 'scipy'));"
+        "print(installer.__file__);print(service_doctor.__file__)"
+    )
+    proc = _run([str(venv / "bin" / "python"), "-I", "-c", code], env=env, cwd=str(tmp_path))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == [
+        str(venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages" /
+            "cgprofile" / "cli" / "installer.py"),
+        str(venv / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages" /
+            "cgprofile" / "cli" / "service_doctor.py"),
+    ]

@@ -56,7 +56,7 @@ def test_cei_06_the_identity_records_the_whole_disk_and_the_partition_apart(worl
     assert scope["key"] == ceilings.scope_key(scope) == ceilings.identity_digest(ident)
     # the partition that was measured stays in `disk`: it is a field of the observation, not of the key
     assert (ident["disk"]["devno"], ident["disk"]["size_bytes"]) == ("254:7", 435853320192)
-    assert res.SCHEMA_MINOR == 1
+    assert res.SCHEMA_MINOR == 3
 
 
 def test_cei_06_observations_name_the_kind_and_the_partition(world):

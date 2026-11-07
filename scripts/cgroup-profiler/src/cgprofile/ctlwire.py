@@ -13,7 +13,7 @@ import os
 import socket
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-DEFAULT_SOCKET = "/run/cgprofile/ctl.sock"
+DEFAULT_SOCKET = "/run/cgprofile/control/cgprofile.sock"
 SOCKET_ENV = "CGPCTL_SOCKET"
 CLIENT_CONTRACTS = (1, 2)
 ROUNDTRIP_TIMEOUT = 25.0
@@ -25,7 +25,7 @@ RUNTIME_CODES = frozenset({
 })
 
 CAUSE_REMEDY = {
-    "socket-not-mounted": "bind-mount /run/cgprofile into this environment",
+    "socket-not-mounted": "bind-mount /run/cgprofile/control into this environment",
     "socket-missing": "the daemon is not running: systemctl status cgpd; systemctl start cgpd",
     "daemon-refusing": "journalctl -u cgpd; report it if it loops",
     "socket-permission": "join the socket's group (or the allow_uids list) and re-login",

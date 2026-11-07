@@ -1,6 +1,9 @@
 # ==========================================================================
 # cgprofile — the RG-55 profiling daemon, ciu stack defaults
 # ==========================================================================
+# LEGACY cgprofile 1.x CONTAINER TEMPLATE ONLY. cgprofile 2.2.0 and later use
+# the native cgpd service with systemd-owned per-level sockets. Do not use or
+# deploy this template with cgpd 2.2.0; see docs/NATIVE-DEPLOYMENT.md.
 #
 # One service, `daemon`: runs `cgprofile serve` inside `cgprofile-host-daemon`
 # (RG55-INTERFACE-CONTRACT.md §1.8); it is not PID 1 in the host namespace.

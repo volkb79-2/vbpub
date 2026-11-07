@@ -8,10 +8,72 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [2.2.0] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=e9804bf29ebbf49b238df7f6a789096e0f9f9bf3 -->
+
+### Added
+- feat(cgroup-profiler): add socket-activated host service (9a8f65b9a)
+
+### Fixed
+- fix(cgroup-profiler): align fix5 tests and docs (138acdbdd)
+- fix(cgroup-profiler): address socket round review findings (611747312)
+- fix(cgroup-profiler): VM acceptance script refuses anything but a fresh harness guest (R2-3) (7bf66ba9e)
+- fix(cgroup-profiler): installer round-2 review (R2-1 R2-2 R2-4 R2-5 R2-6 R2-7 R2-8 R2-9, --no-deps) (98752a4c9)
+- fix(iogovmon): track source install versions (66a4d1609)
+- fix(cgroup-profiler): cgpd doctor aligned with toposd doctor (24f7447db)
+- fix(cgroup-profiler): cgpd install and uninstall safety (H2 H3 H4 M1 M4 M5 M6 M7 L2 L3 L4 L5) (a8d712269)
+- fix(cgroup-profiler): cgpd.service does not restart a refusal exit (M3) (95b4652fe)
+- fix(cgroup-profiler): repair the red suite and the self-bind observer regression (673115e5b)
+
+### Changed
+- cgroup-profiler: enforce dedicated socket groups (9e34b4143)
+- Merge origin/main into sockets-cgp-20261105 (673b6a85e)
+- refactor(cgroup-profiler): delete prepare_registry_lock_file (L7) (98ef319eb)
+- Merge remote-tracking branch 'origin/main' into sockets-cgp-20261105 (f94910104)
+- chore: retire modern-debian-tools-python-debug; mdt-cockpit is its successor (2015c4e00)
+
+### Documentation
+- docs: reconcile RG55 socket contract text (98c0a860c)
+- docs: reconcile RG55 socket contract mirrors (651d0c39f)
+- docs(cgroup-profiler): VM acceptance guard wording (18a4ca89a)
+- docs(cgroup-profiler): installer and uninstall contract after the fix round (b0c2a4150)
+- docs(cgroup-profiler): show installed cgpd path (985c0c017)
+
+### Testing
+- test: cover duplicate missing installer users (3a22e0e77)
+- test(cgroup-profiler): add round 3 review guards (dc4a8c985)
+- test(cgroup-profiler): cover the remaining new socket-activation code (100 percent line and branch) (5a0d92cf7)
+- test(cgroup-profiler): guest-side VM acceptance script for the review's 10-case list (41d097d91)
+- test(cgroup-profiler): an activated daemon never unlinks its sockets; observer-not-docker guard (6609db393)
+- test(cgprofile): kill the four 2.1.0 R2 survivors (machine.py 57/257/263, metrics.py 235); CP-60 (8a3028c8f)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- feat(cgprofile): systemd-owned per-level control and observer sockets, `cgpd install` / `uninstall` / `doctor`, and explicit `--self-bind` for tests and development (phase 1, plan 5.1)
+- feat(cgprofile): repeatable `cgpd install --add-user LEVEL=USER`; existing users are added with `gpasswd -a`, recorded for reruns and never individually removed on uninstall
+- feat(cgprofile): `cgpd -t` config-test alias for systemd `ExecStartPre`
+
+### Changed
+- breaking(cgprofile): socket defaults move to `/run/cgprofile/control/cgprofile.sock` and `/run/cgprofile/observer/cgprofile.sock`; old config keys are refused and clients have no legacy-path fallback
+- docs(cgprofile): document P-11 manual cleanup, phase-1 rollout boundary, and systemd socket ownership
+- fix(cgprofile): `cgpd install` reruns with a saved `install.toml` that lists users, keeps an existing `cgpd.toml` (merging only socket groups and flag keys), refuses a foreign `/usr/local/bin/cgpctl`, and confirms unless `--yes`; `PENDING` is written first and removed last
+- fix(cgprofile): `cgpd uninstall` needs `install.toml` or `PENDING` and refuses unknown or old-layout paths before any change, stops `cgprofile.slice`, reloads systemd right after the unit files, skips groups that no longer resolve, and removes `PENDING` then `install.toml` last so an interrupted run can be rerun
+- fix(cgprofile): `cgpd.service` has `RestartPreventExitStatus=2`, so a refusal exit is not restarted; a failed self-bind observer setup no longer leaves a closed socket assigned
+- fix(cgprofile): `cgpd doctor` skips unreadable paths for non-root callers and `foreign-rules` runs the whole old-installation scan
+- fix(cgprofile): `cgpd install --force-restart` proceeds with a warning when the session list is unavailable; groups created by an interrupted first install are named in `PENDING` so `uninstall --remove-groups` removes them; with no flag a hand-edited socket group in `cgpd.toml` wins over the install record; a dry run needs no `--enable`; the wheels install with `--no-deps`
+- fix(cgprofile): `cgpd uninstall` keeps `current` until the running tree is removed, continues past a `groupdel` failure and reports it, only ever removes the two default groups, and `install` never prunes the tree it runs from
+- fix(cgprofile): both socket groups reject Docker by name or GID, GID 0, and same-service duplicate GIDs on every install/config input path; `cgpd doctor groups` reports the group IDs and members, including recorded users
+- fix(cgprofile): reinstall drops and reports recorded users whose accounts are gone, while a user named with `--add-user` must still exist; `cgpd doctor groups` warns with a rerun remedy
+- fix(cgprofile): restrict `cgpd -t` to the standalone config check forms and describe P-5 refusals by group, root-equivalent cause, and dedicated-group remedy
+- fix(cgprofile): deferred uninstall failures give manual tree, `groupdel`, and install-record cleanup steps instead of asking operators to rerun a cgpd binary that may have been removed
+- refactor(cgprofile): remove the unused `damon.prepare_registry_lock_file`
+
 ### Tests
 - tests(cgprofile): kill the four 2.1.0 R2 survivors in machine.py/metrics.py (CP-60)
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [2.1.0] - 2026-11-04
 <!-- cmru: generated -->

@@ -11,6 +11,26 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [25.3.0] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=a620a668945454a24cef2343bf3e3fd7c4957951 -->
+
+### Added
+- feat(run-gate): per-level cgprofile socket layout, new-only preflight, host Docker GID from override or docker.sock (RG-243) (4f049b8df)
+
+### Fixed
+- fix(run-gate): close host socket review findings (0f84d4243)
+- fix(run-gate): strict Docker GID source (override rules shared with Assay, non-unix DOCKER_HOST and root-group socket refused), GID-bearing collision messages, cockpit-mapping test, cutover wording, RG-152/RG-243 reconciliation (b6a21beb3)
+
+### Changed
+- run-gate: drop the out-of-scope docker-logs process-group change (broke 10 fake-Process tests); effective GID wording in preflight docstring (a6e513f2e)
+- run-gate: apply host service socket amendment (f9d34a449)
+- Merge origin/main into sockets-rg-20261105 (CHANGES.md: keep both Changed bullets) (0807db258)
+
+### Documentation
+- docs: reconcile RG55 socket contract text (98c0a860c)
+- docs: reconcile RG55 socket contract mirrors (651d0c39f)
+
 ## [25.2.1] - 2026-11-06
 <!-- cmru: generated -->
 <!-- cmru: source-end=9e802ce2b0bebd09ee88805e49b7ddb51bab269c -->
@@ -20,6 +40,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: pending release notes begin -->
 ### Changed
+- Run-Gate's default cgprofile control socket and observer lane endpoint use the new per-level layout, with no old-path fallback. Observer preflight requires a `root:root` directory without group or other write access, but does not require its GID to match the observer socket GID. The observer socket GID must differ from the host Docker and control socket GIDs. The Docker GID source order is the strict `RUN_GATE_HOST_DOCKER_GID` override, then the strict numeric `MDT_HOST_DOCKER_GID` supplied by the host launcher; no Docker API socket or group-database inference is used because a proxy or relay may give the API socket a different access GID. Missing sources name both variables. The control socket must use a non-root group distinct from Docker; before each connection Run-Gate accepts the control GID as the caller's effective or supplementary GID, or accepts UID 0 (the tester runner uses `--user 0:0`). An access refusal names the group and the devcontainer `--group-add` remedy. A host still on the old layout receives a cutover message; keep its earlier Run-Gate and Assay pins until the host is cut over.
 - `DEFAULT_HOST_IMAGE` (the host image when `RUN_GATE_HOST_IMAGE` is unset) is now
   `ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest`. The previous
   default, `modern-debian-tools-python-debug-vsc-devcontainer`, belongs to the retired
