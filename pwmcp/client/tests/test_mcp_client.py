@@ -68,6 +68,8 @@ class _McpState:
         self.wrong_id_methods: set[str] = set()
         self.empty_body_methods: set[str] = set()
         self.delete_status = 200
+        self.sse_line_ending = b"\n"
+        self.tool_error_sequences: dict[str, list[str]] = {}
 
 
 class _FakeMcpServer:
@@ -101,6 +103,9 @@ class _FakeMcpServer:
                     name = payload["params"]["name"]
                     if name == "browser_navigate" and state.navigate_errors:
                         text = state.navigate_errors.pop(0)
+                        result = {"isError": True, "content": [{"type": "text", "text": text}]}
+                    elif name in state.tool_error_sequences and state.tool_error_sequences[name]:
+                        text = state.tool_error_sequences[name].pop(0)
                         result = {"isError": True, "content": [{"type": "text", "text": text}]}
                     elif name in state.tool_errors:
                         text = state.tool_errors[name]
@@ -147,7 +152,8 @@ class _FakeMcpServer:
                         if method in state.wrong_id_methods:
                             response_message["id"] = -1
                             body = json.dumps(response_message, ensure_ascii=False).encode()
-                        self.wfile.write(b"event: message\ndata: " + body + b"\n\n")
+                        ending = state.sse_line_ending
+                        self.wfile.write(b"event: message" + ending + b"data: " + body + ending + ending)
                     else:
                         if method in state.wrong_id_methods:
                             response_message["id"] = -1
@@ -187,6 +193,17 @@ def _call_args(state: _McpState, name: str) -> list[dict[str, object]]:
         for message in state.messages
         if message["method"] == "tools/call" and message["params"]["name"] == name
     ]
+
+
+def _patch_urlopen(monkeypatch: pytest.MonkeyPatch, opener: Any) -> None:
+    """Patch both the legacy convenience call and the client-owned opener path."""
+
+    monkeypatch.setattr(mcp_client.urllib.request, "urlopen", opener)
+    monkeypatch.setattr(
+        mcp_client.urllib.request.OpenerDirector,
+        "open",
+        lambda _self, *args, **kwargs: opener(*args, **kwargs),
+    )
 
 
 def test_eval_uses_browser_evaluate_without_the_mcp_python_sdk(
@@ -288,6 +305,198 @@ def test_eval_output_limit_marks_truncation_in_text_and_json(
     assert len(json_output["preview"].encode("utf-8")) <= 16
 
 
+def test_eval_text_truncation_notice_goes_to_stderr_and_keeps_success_status(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.eval_value = "x" * 100
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "eval", "https://example.test", "document.body.innerText", "--max-bytes", "16"
+        ]) == 0
+    captured = capsys.readouterr()
+    assert "[truncated after 16 bytes]" not in captured.out
+    assert "[truncated after 16 bytes]" in captured.err
+    assert len(captured.out.encode("utf-8")) <= 16
+
+
+def test_eval_exact_byte_cap_is_not_marked_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        # Compact JSON for this value is exactly seven UTF-8 bytes, including quotes.
+        server.state.eval_value = "abcde"
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "eval", "https://example.test", "document.body.innerText", "--max-bytes", "7"
+        ]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == "abcde"
+    assert "truncated" not in captured.err
+
+
+def test_eval_reports_transport_oversize_with_a_size_hint(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        # This fake deliberately ignores the in-page cap function, exercising the
+        # independent HTTP response ceiling and its user-facing diagnosis.
+        server.state.eval_value = "x" * 100_000
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "eval", "https://example.test", "document.body.innerText", "--max-bytes", "16"
+        ]) == 1
+    error = capsys.readouterr().err
+    assert "MCP response exceeded" in error
+    assert "return a smaller or aggregated value" in error
+    assert "check that the PWMCP MCP endpoint is reachable" not in error
+
+
+def test_eval_caps_a_large_page_value_inside_the_page_function() -> None:
+    node = require_binary("node", "Node.js executes the generated eval size guard")
+    function = evaluation_function("'large value'.repeat(1000)", max_bytes=16)
+    program = (
+        "const fs = require('fs'); const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+        "(async () => { const fn = eval('(' + input.function + ')'); "
+        "console.log(JSON.stringify(await fn())); })();"
+    )
+    completed = subprocess.run(
+        [node, "-e", program],
+        input=json.dumps({"function": function}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(completed.stdout)
+    assert result["__pwmcp_eval_result__"] is True
+    assert result["truncated"] is True
+    assert result["max_bytes"] == 16
+    assert len(result["preview"].encode("utf-8")) <= 16
+
+
+@pytest.mark.parametrize("line_ending", [b"\r\n", b"\r"])
+def test_eval_parses_crlf_and_bare_cr_sse_frames(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    line_ending: bytes,
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.sse_line_ending = line_ending
+        server.state.eval_value = 2
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["eval", "https://example.test", "1 + 1"]) == 0
+        assert json.loads(capsys.readouterr().out) == 2
+
+
+def test_mcp_redirects_are_refused_without_forwarding_credentials_or_session_id() -> None:
+    forwarded: list[tuple[str, dict[str, str]]] = []
+    first_requests: list[tuple[str, dict[str, str]]] = []
+
+    class TargetHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            forwarded.append(("POST", {key.lower(): value for key, value in self.headers.items()}))
+            self.send_response(204)
+            self.end_headers()
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            forwarded.append(("DELETE", {key.lower(): value for key, value in self.headers.items()}))
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), TargetHandler)
+    target.daemon_threads = True
+    target_thread = threading.Thread(target=target.serve_forever, daemon=True)
+    target_thread.start()
+    target_url = f"http://127.0.0.1:{target.server_port}/mcp"
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def _redirect(self, method: str) -> None:
+            first_requests.append((method, {key.lower(): value for key, value in self.headers.items()}))
+            self.send_response(302)
+            self.send_header("Location", target_url)
+            self.end_headers()
+
+        def do_POST(self) -> None:  # noqa: N802
+            self._redirect("POST")
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._redirect("DELETE")
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    redirect = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    redirect.daemon_threads = True
+    redirect_thread = threading.Thread(target=redirect.serve_forever, daemon=True)
+    redirect_thread.start()
+    try:
+        endpoint = f"http://user:secret@127.0.0.1:{redirect.server_port}/mcp"
+        client = StreamableHttpClient(endpoint)
+        with pytest.raises(McpUnavailable, match=r"HTTP 302.*redirects are not followed"):
+            client._send({"method": "initialize"}, expected_id=1)
+        client.session_id = "fixture-session"
+        client.close()
+    finally:
+        redirect.shutdown()
+        redirect.server_close()
+        redirect_thread.join()
+        target.shutdown()
+        target.server_close()
+        target_thread.join()
+
+    assert [method for method, _headers in first_requests] == ["POST", "DELETE"]
+    assert first_requests[0][1]["authorization"].startswith("Basic ")
+    assert first_requests[1][1]["mcp-session-id"] == "fixture-session"
+    assert forwarded == []
+
+
+def test_mcp_client_ignores_http_proxy_environment_for_credentialed_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy_requests: list[str] = []
+
+    class ProxyHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            proxy_requests.append(self.command)
+            self.send_response(502)
+            self.end_headers()
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            proxy_requests.append(self.command)
+            self.send_response(502)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    proxy = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
+    proxy.daemon_threads = True
+    proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+    proxy_thread.start()
+    try:
+        proxy_url = f"http://127.0.0.1:{proxy.server_port}"
+        for name in ("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
+            monkeypatch.setenv(name, proxy_url)
+        for name in ("no_proxy", "NO_PROXY"):
+            monkeypatch.setenv(name, "")
+        with _FakeMcpServer() as server:
+            endpoint = server.url.replace("http://", "http://user:secret@", 1)
+            with StreamableHttpClient(endpoint) as client:
+                client.call_tool("browser_navigate", {"url": "https://example.test"})
+            assert server.state.deleted_sessions == 1
+    finally:
+        proxy.shutdown()
+        proxy.server_close()
+        proxy_thread.join()
+    assert proxy_requests == []
+
+
 @pytest.mark.parametrize("value", ["0", "8388609"])
 def test_eval_output_limit_rejects_values_outside_the_supported_range(
     monkeypatch: pytest.MonkeyPatch,
@@ -352,7 +561,7 @@ def test_eval_mcp_transport_errors_are_safe_with_credentialed_urls(
         raise exception_type(f"rejected {request_url}")
 
     monkeypatch.setenv("PWMCP_MCP_URL", endpoint)
-    monkeypatch.setattr(mcp_client.urllib.request, "urlopen", reject_request)
+    _patch_urlopen(monkeypatch, reject_request)
     assert cli_module.main(["eval", "https://example.test", "document.title"]) == 1
     captured = capsys.readouterr()
     with pytest.raises(McpUnavailable) as raised:
@@ -751,6 +960,32 @@ def test_inspect_html_does_not_retry_a_generic_tool_error_by_default(
 
 
 @pytest.mark.parametrize(
+    ("error", "options", "expected_evaluations"),
+    [
+        ("Target closed", ["--retries", "2"], 1),
+        ("Page crashed", ["--retries", "0"], 1),
+        ("Page crashed", [], 2),
+    ],
+)
+def test_inspect_html_retry_guard_distinguishes_page_crashes_from_closed_browser_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: str,
+    options: list[str],
+    expected_evaluations: int,
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.tool_error_sequences["browser_evaluate"] = [error] * 2
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "inspect", "https://example.test", "--format", "html", *options
+        ]) == 1
+        captured = capsys.readouterr()
+    assert error in captured.err
+    assert len(_call_args(server.state, "browser_evaluate")) == expected_evaluations
+
+
+@pytest.mark.parametrize(
     "page_diagnostics",
     [
         ["not an object"],
@@ -883,12 +1118,11 @@ def test_streamable_http_client_times_out_without_echoing_endpoint_details(
     def timeout(*_args: object, **_kwargs: object) -> object:
         raise TimeoutError("timed out")
 
-    monkeypatch.setattr(mcp_client.urllib.request, "urlopen", timeout)
+    _patch_urlopen(monkeypatch, timeout)
     with pytest.raises(McpTimeout, match="request timed out"):
         StreamableHttpClient("http://user:secret@127.0.0.1:8931/mcp").initialize()
-    monkeypatch.setattr(
-        mcp_client.urllib.request,
-        "urlopen",
+    _patch_urlopen(
+        monkeypatch,
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             mcp_client.urllib.error.URLError(TimeoutError("timed out"))
         ),
@@ -1035,16 +1269,14 @@ def test_streamable_http_client_classifies_http_unavailability_and_tool_errors()
 
 def test_streamable_http_client_maps_url_and_os_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     client = StreamableHttpClient("http://example.test/mcp")
-    monkeypatch.setattr(
-        mcp_client.urllib.request,
-        "urlopen",
+    _patch_urlopen(
+        monkeypatch,
         lambda *_args, **_kwargs: (_ for _ in ()).throw(mcp_client.urllib.error.URLError("offline")),
     )
     with pytest.raises(McpUnavailable, match="MCP endpoint is unreachable"):
         client._send({"method": "initialize"}, expected_id=1)
-    monkeypatch.setattr(
-        mcp_client.urllib.request,
-        "urlopen",
+    _patch_urlopen(
+        monkeypatch,
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("socket broke")),
     )
     with pytest.raises(McpUnavailable, match="MCP endpoint request failed"):
@@ -1072,9 +1304,8 @@ def test_streamable_http_client_close_is_best_effort(monkeypatch: pytest.MonkeyP
     client.close()  # no session id: no request
     client.session_id = "session"
     with monkeypatch.context() as scoped:
-        scoped.setattr(
-            mcp_client.urllib.request,
-            "urlopen",
+        _patch_urlopen(
+            scoped,
             lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("close failed")),
         )
         client.close()
@@ -1221,6 +1452,7 @@ def test_html_capture_javascript_and_python_byte_prefix_oracle_agree() -> None:
     assert "included_bytes + width <= limit" in extraction
     assert "truncated: total_bytes > included_bytes" in extraction
     for source, limit in (
+        ("Aé!", 2),
         ("Aé中𝄞", 7),
         ("é" * 9, 10),
         ("𝄞" * 80_000, 131_071),
@@ -1234,6 +1466,7 @@ def test_html_capture_javascript_and_python_byte_prefix_oracle_agree() -> None:
 def test_generated_html_capture_javascript_executes_in_node_when_available() -> None:
     node = require_binary("node", "Node.js executes the generated HTML truncation function")
     for source, limit in (
+        ("Aé!", 2),
         ("Aé中𝄞", 7),
         ("é" * 9, 10),
         ("𝄞" * 80_000, 131_071),
@@ -1275,15 +1508,76 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
     assert evaluation_function("document.title") == "() => (\ndocument.title\n)"
     assert evaluation_function("document.title;") == "() => (\ndocument.title\n)"
     assert evaluation_function("document.title; // trailing comment") == (
-        "() => (\ndocument.title // trailing comment\n)"
+        "() => (\ndocument.title\n)"
     )
-    assert evaluation_function("1 // trailing comment") == "() => (\n1 // trailing comment\n)"
+    assert evaluation_function("1 // trailing comment") == "() => (\n1\n)"
     assert evaluation_function("functionality.value") == "() => (\nfunctionality.value\n)"
     assert evaluation_function("functionCount + 1") == "() => (\nfunctionCount + 1\n)"
     with pytest.raises(ValueError, match="only one"):
         evaluation_function(None, selector="a", attribute="href", property_name="href")
     with pytest.raises(ValueError, match="provide a JavaScript"):
         evaluation_function("   ")
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("'x; // y'", "x; // y"),
+        ("'a;//'", "a;//"),
+        ('"say hi; // bye"', "say hi; // bye"),
+        (r"'say \' hi; // bye'", "say ' hi; // bye"),
+        ("`template; // text`", "template; // text"),
+        (r"`escaped \`; // text`", "escaped `; // text"),
+        ("`value ${'x; // y'}`", "value x; // y"),
+        (r"/a;\/\/b/.test('a;//b');", True),
+        ("1 + 1; /* c */", 2),
+        ("1;;", 1),
+        ("// leading comment\n1 + 1", 2),
+        ("1 + 1 // trailing comment", 2),
+        ("() => 3 // trailing function comment", 3),
+    ],
+)
+def test_evaluation_function_preserves_literals_and_strips_only_trailing_syntax(
+    expression: str,
+    expected: object,
+) -> None:
+    node = require_binary("node", "Node.js executes generated JavaScript evaluation functions")
+    function = evaluation_function(expression)
+    program = (
+        "const fs = require('fs'); const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+        "const fn = eval('(' + input.function + ')'); console.log(JSON.stringify(fn()));"
+    )
+    completed = subprocess.run(
+        [node, "-e", program],
+        input=json.dumps({"function": function}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == expected
+
+
+def test_evaluation_function_rejects_a_lone_comment_with_a_clear_error() -> None:
+    with pytest.raises(ValueError, match="no JavaScript expression"):
+        evaluation_function("// only comment")
+
+
+def test_javascript_trailing_scanner_reads_a_megabyte_in_linear_operations() -> None:
+    class CountingString(str):
+        def __new__(cls, value: str) -> "CountingString":
+            instance = super().__new__(cls, value)
+            instance.reads = 0
+            return instance
+
+        def __getitem__(self, key: object) -> object:
+            self.reads += 1
+            return super().__getitem__(key)  # type: ignore[arg-type]
+
+    source = CountingString(";//" * 350_000)
+    with pytest.raises(ValueError, match="no JavaScript expression"):
+        mcp_client._strip_trailing_javascript(source)
+    assert len(source) >= 1_000_000
+    assert source.reads <= len(source) * 6
 
 
 @pytest.mark.parametrize(
