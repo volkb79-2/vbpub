@@ -1,4 +1,4 @@
-"""Reference cells and the runtime plausibility checks (IOB-REF-01/02, IOB-PLA-01..18).
+"""Reference cells and the runtime plausibility checks (IOB-REF-01/02, IOB-PLA-01..19).
 
 A check's ``fail`` degrades only the proposal groups it lists, through proposal statuses.  Data-integrity
 checks (PLA-14, -15, -16) fail the whole run instead: they are raised as exceptions by the stages and surface
@@ -39,8 +39,8 @@ def compare_group(values: Mapping[str, float], ref_before: float, ref_after: flo
             "reasons": ["ceiling_moved"] if moved else [], "finding": "reference_shift" if moved else None}
 
 
-def shift_observation(ts: str, direction: str, ref_after_iops: float) -> dict[str, Any]:
-    return ceilings.reference_shift(ts, direction, ref_after_iops * 4096)
+def shift_observation(ts: str, direction: str, ref_after_iops: float, kind: str) -> dict[str, Any]:
+    return ceilings.reference_shift(ts, direction, ref_after_iops * 4096, kind)
 
 
 @dataclass(frozen=True)
@@ -126,6 +126,46 @@ def pla_09(fill_bps: float, seq_rewrite_bps: float, moved: bool) -> Check:
 
 def pla_10(cache_state: str, reasons: Sequence[str]) -> Check:
     return Check("IOB-PLA-10", "info", f"cache state {cache_state}" + (f" ({', '.join(reasons)})" if reasons else ""), value=cache_state)
+
+
+VERDICTS = {"cold_measured": "pass", "rate_cap": "pass", "cold_hit_like": "fail", "no_cache_observed": "inconclusive", "undetermined": "inconclusive"}
+READ_OVER_WRITE_WARN = 20.0  # [I] inferred: above this, flag the ratio for review
+READ_OVER_WRITE_FAIL = 100.0  # [I] inferred: a gross mismatch fails without corroboration
+
+
+def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str | None = None) -> Check:
+    """veryquick only: an inferred gross cache-inflation check, calibrated against the cold probe when possible.
+
+    The thresholds are provisional [I] values; IOB-ACC-01 must calibrate them on the VM and a known cached device."""
+    if read_bps is None or write_bps is None:
+        return Check("IOB-PLA-19", "not_applicable", "no sequential read and write cell pair")
+    ratio = read_bps / write_bps
+    if ratio > READ_OVER_WRITE_FAIL:
+        return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.0f}x the sequential write (> {READ_OVER_WRITE_FAIL:.0f}x): a cache is serving the reads; inferred threshold, calibrate with IOB-ACC-01",
+                     value=round(ratio, 1))
+    if ratio > READ_OVER_WRITE_WARN:
+        if cache_state == "cold_hit_like":
+            return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x) and the cold probe is hit-like: cache inflation is corroborated; inferred threshold, calibrate with IOB-ACC-01",
+                         value=round(ratio, 1))
+        return Check("IOB-PLA-19", "info", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x): inconclusive without a hit-like cold probe; inferred threshold, calibrate with IOB-ACC-01",
+                     value=round(ratio, 1))
+    return Check("IOB-PLA-19", "pass", f"sequential read is {ratio:.1f}x the sequential write (within the inferred {READ_OVER_WRITE_WARN:.0f}x band)", value=round(ratio, 1))
+
+
+def verdict(cache_state: str, *, vq: bool = False, rate_status: str = "pass") -> dict[str, str]:
+    """The plausibility verdict of a calibration (``quality.plausibility``).
+
+    A veryquick ratio above 100x fails alone; a ratio above 20x is inconclusive unless the cold probe is also hit-like, which corroborates
+    the cache explanation. The ratio bands are inferred and IOB-ACC-01 must calibrate them. A hit-like veryquick cold region without a
+    ratio warning remains inconclusive because no cache looks the same."""
+    found = VERDICTS[cache_state]
+    if vq and rate_status == "fail":
+        found = "fail"
+    elif vq and rate_status == "info":
+        found = "fail" if cache_state == "cold_hit_like" else "inconclusive"
+    elif vq and found == "fail":
+        found = "inconclusive"
+    return {"verdict": found, "cache_state": cache_state}
 
 
 def pla_11(fit_by_dir: Mapping[str, str]) -> Check:

@@ -20,7 +20,7 @@ from .series import SeriesError
 from .stages import Config
 
 HostFactory = Callable[[], Host]
-PROFILES = ("quick", "standard", "thorough")
+PROFILES = ("veryquick", "quick", "standard", "thorough")
 KNOBS = ("dirty_bytes", "nr_requests", "max_sectors_kb")
 SECTIONS = proposals.SECTIONS
 
@@ -62,7 +62,7 @@ RUN_OPTIONS = (
     _value(("--governor-histogram",), "A governor latency histogram file; recorded as the latency source.", "FILE", "RUN"),
 )
 CAL_OPTIONS = (
-    _value(("--profile",), "Calibration profile (quick 12, standard 60, thorough 75 minutes).", "PROFILE", "RUN", choices=PROFILES, default="standard"),
+    _value(("--profile",), "Calibration profile (veryquick 3, quick 12, standard 60, thorough 75 minutes).", "PROFILE", "RUN", choices=PROFILES, default="standard"),
     _value(("--budget-minutes",), "Hard wall-clock budget in minutes; overrides the profile.", "MINUTES", "RUN", type=float),
     _value(("--metering",), "Typed metering override; dependent values become unproven: operator_override.", "KIND", "RUN", choices=("byte", "iops", "mixed")),
     _value(("--assume-r-est",), "With --dry-run: the write rate (bytes/s) to plan with; otherwise READ from calibration.json.", "BYTES_PER_S", "RUN", type=float),
@@ -202,11 +202,15 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
                  OptionSpec(("--bps",), "Sustained plateau in bytes/s.", group="OBSERVATION", metavar="BYTES_PER_S", parser_kwargs={"required": True, "type": float}),
                  OptionSpec(("--duration-s",), "Observed seconds (>= 60).", group="OBSERVATION", metavar="SECONDS", parser_kwargs={"required": True, "type": float}),
                  OptionSpec(("--source",), "Who observed it.", group="OBSERVATION", metavar="SOURCE", parser_kwargs={"required": True, "choices": ceilings.SOURCES}),
+                 _value(("--kind",), "What it was measured on: raw (device), file or probe (default: the calibrated target's kind for a benchmark, probe for a probe; "
+                        "a governor must say).", "KIND", "OBSERVATION", choices=ceilings.KINDS),
                  STATE_DIR),
         handler=lambda args, runtime: _ceilings_add(args, runtime, host_factory)))
     ceil.register(VerbSpec(
-        "summary", None, "Worst, median, best and n per direction and workload over a window.", group=VerbGroup.EXPLORATION.value,
-        options=(_value(("--window-days",), "Window in days.", "DAYS", type=int, default=30), STATE_DIR),
+        "summary", None, "Worst, median, best and n per direction and workload over a window (and per evidence class).", group=VerbGroup.EXPLORATION.value,
+        options=(_value(("--window-days",), "Window in days.", "DAYS", type=int, default=30),
+                 _value(("--kind",), "Summarise only the observations of this class (raw, file, probe), whatever they count for.", "KIND", choices=ceilings.KINDS),
+                 STATE_DIR),
         handler=lambda args, runtime: _ceilings_summary(args, runtime, host_factory)))
     registry.register(VerbSpec("ceilings", None, "The append-only ceiling history (add, summary).", group=VerbGroup.MIXED.value, delegate=ceil.build()))
 
@@ -298,20 +302,32 @@ def _show(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
     return 0
 
 
-def _ceilings_identity_digest(host: Host, state: str) -> str:
-    doc = res.load(host, res.paths(state)["calibration"], res.REQUIRED_CAL_TOP)
-    return ceilings.identity_digest(doc["identity"])
+def _ceilings_identity(host: Host, state: str) -> dict[str, Any]:
+    return res.load(host, res.paths(state)["calibration"], res.REQUIRED_CAL_TOP)["identity"]
+
+
+def _observation_kind(args: Any, identity: dict[str, Any]) -> str:
+    """``--kind``; else a benchmark is what the calibrated target is, a probe is a probe; a governor has to say what it measured on."""
+    if args.kind is not None:
+        return args.kind
+    if args.source == "benchmark":
+        return ceilings.TARGET_KIND[identity["target"]["kind"]]
+    if args.source == "probe":
+        return "probe"
+    raise Refusal("ceiling_kind", "a governor observation does not say what it was measured on (its scratch file, or a raw device)",
+                  "pass --kind file (a scratch file on the data filesystem) or --kind raw")
 
 
 def _ceilings_add(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
     host = factory()
     state = res.state_dir_of(host, args.state_dir)
     try:
-        digest = _ceilings_identity_digest(host, state)
+        identity = _ceilings_identity(host, state)
     except res.LoadError as exc:
         raise Refusal("no_calibration", f"the history is bound to the calibrated disk identity ({exc.reason})", "run `iobench calibrate` first") from exc
+    digest = ceilings.identity_digest(identity)
     obs = {"ts": ceilings.iso(host.now()), "dir": args.dir, "workload": args.workload, "plateau_bps": args.bps, "duration_s": args.duration_s,
-           "source": args.source}
+           "source": args.source, "kind": _observation_kind(args, identity)}
     ceilings.validate(obs)
     if not runtime.dry_run:
         ceilings.append(host, res.paths(state)["ceilings"], obs, digest)
@@ -323,11 +339,12 @@ def _ceilings_summary(args: Any, runtime: CliRuntime, factory: HostFactory) -> i
     host = factory()
     state = res.state_dir_of(host, args.state_dir)
     try:
-        digest = _ceilings_identity_digest(host, state)
-    except res.LoadError:
-        digest = ""
+        digest = ceilings.identity_digest(_ceilings_identity(host, state))
+    except (res.LoadError, Refusal):
+        digest = ""  # no calibration, or one that predates the disk scope: the history is not this disk's
     rows, warnings = ceilings.load(host, res.paths(state)["ceilings"], digest)
-    out = ceilings.summary(rows, host.now(), args.window_days)
+    out = ceilings.summary(rows, host.now(), args.window_days, args.kind)
+    out["by_kind"] = ceilings.summary_by_kind(rows, host.now(), args.window_days)
     if warnings:
         out["warnings"] = warnings
     _emit(runtime, out)

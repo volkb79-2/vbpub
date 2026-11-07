@@ -20,7 +20,7 @@ Operators of a shared host need continuous, fine-grained (1-5 s) cgroup-level ev
 
 cgprofile already has most of the per-cgroup readers (measured 2026-10-27, see Evidence) but no way to point them at a standing set of named scopes without a gate lane around them. Two ad-hoc tools now exist that each re-implement part of it:
 - `iomon` (branch `iomon-20261027`, vbpub@d1a19a159 / vbpub@5aba27feb; `mdt-cockpit/scripts/iomon.py`, `iomon_bpf.py`): 5 s stdlib sampler of /proc/diskstats, PSI, vmstat, docker stats of two named containers, a 4 KiB O_DSYNC probe, `analyze` with stall-episode detection and cross-container correlation, plus a bpftrace container.
-- IO governor v1 recorder (worktree `agent-a12c7e7bacd247601`, vbpub@2db1712aa; `mdt-cockpit/iogov/{collectors,episodes,covariates}.py`): reads cgroup `io.stat`/`io.pressure` of governed/protected cgroups, resolves `docker:<name>` to its `docker-<id>.scope` via `config.v2.json`, PSI-based distress episodes.
+- IO governor v1 recorder (worktree `agent-a12c7e7bacd247601`, vbpub@2db1712aa; `iogovmon/src/iogovmon/{collectors,episodes,covariates}.py`): reads cgroup `io.stat`/`io.pressure` of governed/protected cgroups, resolves `docker:<name>` to its `docker-<id>.scope` via `config.v2.json`, PSI-based distress episodes.
 
 Both parse `io.stat`/PSI/`memory.stat` and resolve container scopes themselves. That is cgroup measurement and belongs in cgprofile.
 

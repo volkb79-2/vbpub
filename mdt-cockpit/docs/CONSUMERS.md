@@ -118,6 +118,33 @@ changed `terminate` without that record refuses BEFORE touching anything (the ru
 is left as it was) until `--wizard` confirms it; the host config stays available for review. During `--wizard`, accepting the default answer
 changes `terminate` to `report-only`.
 
+### Run-Gate admission cap
+
+After a Docker daemon reinstall, wait until the host can run the configured
+`run-gate` and has the local ticket image, then publish or reconcile the
+host-wide gates cap from the MDT checkout root:
+
+```bash
+sudo ./host-setup/install.sh --admission-only
+sudo mdt-host-check.sh
+```
+
+If run-gate lives in a cockpit, configure `ADMISSION_COCKPIT` in
+`/etc/mdt/host-setup.env` first. A host without a cockpit needs a local image
+with `/bin/true` set in `ADMISSION_TICKET_IMAGE`. A full install that runs
+before these prerequisites exist prints a NOTE; the command above is the
+required follow-up once they are available.
+
+`ADMISSION_PUBLISH=auto` (the default) lets a full install publish when no cap
+is readable and preserves a differing readable cap. The explicit
+`--admission-only` command reconciles a difference. Set `missing` to preserve
+existing caps in both paths, `replace` to let full installs reconcile too, or
+`off` to leave the cap unmanaged. `ADMISSION_MAX_CONCURRENT` pins the desired
+number over the computed formula. The checker fails on a missing cap, warns on
+a difference from the computed value, and fails when a pinned value disagrees.
+The [design guide](DESIGN-GUIDE.md#mdt-077-admission-cap-publication-policy)
+explains why full installs preserve a manual cap.
+
 ### cgprofile resource-observer host setup
 
 For an existing MDT host with a valid `/run/cgprofile` control directory,

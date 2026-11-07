@@ -14,12 +14,12 @@ UNPROVEN_REASONS = (
     "cache_model_undetermined", "cache_residual_possible", "no_cliff_hit_like_mode", "device_smaller_than_cache_margin",
     "ceiling_moved", "budget_limited", "short_observation", "quick_profile", "worst_from_single_run", "metering_undetermined",
     "operator_override", "shape_fit_poor", "noise_floor_high", "drain_below_ladder", "formula_only", "target_missed",
-    "cross_disk", "identity_weak", "cache_not_excluded", "fresh_not_measured")
+    "cross_disk", "identity_weak", "cache_not_excluded", "fresh_not_measured", "veryquick_profile")
 ABSENT_REASONS = ("stage_skipped", "stage_failed", "basis_unsteady", "basis_missing", "bps_basis_missing", "no_calibration", "missing_from_document")
 CACHE_STATES = ("cold_measured", "rate_cap", "no_cache_observed", "cold_hit_like", "undetermined")
-METERING = ("byte", "iops", "mixed", "undetermined")
+METERING = ("byte", "iops", "mixed", "undetermined", "coarse")
 FITS = ("good", "poor", "insufficient", "plateau")
-LIMIT_FIXED = ("quick-profile", "limited-by-budget", "short-observation", "single-run", "filesystem_layer", "fresh_semantics_filesystem")
+LIMIT_FIXED = ("quick-profile", "very-quick-profile", "limited-by-budget", "short-observation", "single-run", "filesystem_layer", "fresh_semantics_filesystem")
 LIMIT_PATTERNS = (re.compile(r"^stage_skipped:S[0-9]$"), re.compile(r"^bucket_exclusion_s<=[0-9]+$"))
 BASES = ("measured", "confirmed-by-sweep", "ratio-inferred", "formula-only", "single-run")
 SECTIONS = ("writeback", "caps", "iocost_model", "iocost_qos")
@@ -32,7 +32,7 @@ REQUIRED_LEAVES = {
     "iocost_model": ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wrandiops"),
     "iocost_qos": ("min", "max", "wpct", "rpct", "wlat", "rlat"),
 }
-WARNINGS = ("scheduler_changed", "ram_changed", "kernel_changed", "root_source_changed", "workdir_fs_changed",
+WARNINGS = ("scheduler_changed", "ram_changed", "kernel_changed", "root_source_changed", "workdir_fs_changed", "target_changed",
             "older_than_180_days", "recalibrate_recommended", "last_run_aborted")
 DEFAULT_TARGETS = {"W_s": 2.0, "P_ms": 250, "F_read_ratio": 0.25, "U_dev_share": 0.70}
 
@@ -164,7 +164,29 @@ def build_caps(cal: Mapping[str, Any], targets: Mapping[str, Any], history: Mapp
 
 
 # -- model (R6) -----------------------------------------------------------------------------
+def build_coarse_model(coarse: Mapping[str, Any]) -> dict[str, Any]:
+    """The veryquick model: an order-of-magnitude estimate from the 4-cell grid, always ``unproven`` (``veryquick_profile``, ``formula_only``).
+
+    Per direction: ``bps`` is the measured 128 KiB sequential rate, ``randiops`` the measured 4 KiB random rate and ``seqiops`` the
+    sequential rate counted in 4 KiB units (the byte-metered reading).  Two sizes cannot separate a per-IO cost from a per-byte cost,
+    so there is no fit, no metering class and no claim of precision."""
+    out: dict[str, Any] = {}
+    for direction in ("read", "write"):
+        names = tuple(f"{direction[0]}{k}" for k in ("bps", "seqiops", "randiops"))
+        cells = coarse[direction]
+        if cells is None:
+            out.update({n: absent("stage_failed", "R6-model", {"key": n, "coarse": "cell_missing"}) for n in names})
+            continue
+        for n in names:
+            inputs = {"key": n, "direction": direction, "metering": "coarse", "worst_bps": cells["seq_bps"], "worst_iops": cells["rand_iops"],
+                      "cache_ratio": 1.0, "c_io_seq_us": None, "c_io_rand_us": None, "c_byte_ns": None}
+            out[n] = value(derive.recompute("R6-model", inputs), "R6-model", inputs, "formula-only", reasons=["veryquick_profile", "formula_only"])
+    return out
+
+
 def build_model(cal: Mapping[str, Any], history: Mapping[str, Any]) -> dict[str, Any]:
+    if cal.get("coarse_model") is not None:
+        return build_coarse_model(cal["coarse_model"])
     shape = cal["shape"]
     out: dict[str, Any] = {}
     for direction in ("read", "write"):
