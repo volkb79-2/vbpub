@@ -3007,7 +3007,7 @@ class SessionServer:
 
     # ── dispatch / socket loop ───────────────────────────────────────────
 
-    # ── settings (cgprofiled config, CGPCTL-SPEC 3) ────────────────────────────
+    # ── settings (cgprofiled config, CGPROFILECTL-SPEC 3) ────────────────────────────
 
     #: settings key -> how a changed value reaches the running server.
     _APPLIED_KEYS = (
@@ -3783,6 +3783,11 @@ class SessionServer:
                     )
                     return
             conn.sendall((json.dumps(resp) + "\n").encode("utf-8"))
+        except (BrokenPipeError, ConnectionResetError):
+            # The client closed before the reply was written (a probe that disconnects early, a
+            # killed `cgprofilectl`): there is nobody to answer, and it is not a daemon fault, so
+            # no thread traceback in the journal (VM acceptance observation, 2026-11-07).
+            return
         finally:
             if holding_reader:
                 self._reader_slots.release()

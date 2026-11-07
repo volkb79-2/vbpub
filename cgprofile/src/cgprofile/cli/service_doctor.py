@@ -14,6 +14,7 @@ import pwd
 import socket
 import stat
 import subprocess
+import threading
 import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
@@ -438,8 +439,19 @@ def _caller_in_group(gid: int) -> bool:
     return gid == os.getegid() or gid in os.getgroups()
 
 
+OBSERVER_PROBE_CONTRACT = 2
+
+
 def _observer_request(path: str) -> Dict[str, Any]:
-    payload = {"verb": "host", "args": {}, "contract": 1}
+    """Probe the observer endpoint with a request it serves (C1).
+
+    The observer accepts contracts 2 and 3 only, and over contract 2 only ``resource-limits``. The probe
+    asks for this process's own thread: an answer proves the endpoint is up and authenticates the peer,
+    whether it is ``ok`` or the ``observer-refused`` a caller outside the gates slice gets. Anything else
+    (a ``bad-argument`` for the wrong contract, no envelope at all) is a failed probe.
+    """
+    payload = {"verb": "resource-limits", "args": {"thread_id": threading.get_native_id()},
+               "contract": OBSERVER_PROBE_CONTRACT}
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(CONNECT_TIMEOUT)
         client.connect(path)
@@ -451,8 +463,12 @@ def _observer_request(path: str) -> Dict[str, Any]:
                 break
             data.extend(chunk)
     body = json.loads(data.decode("utf-8"))
-    if not isinstance(body, dict) or body.get("ok") is not True or body.get("contract") != 1:
-        raise OSError("observer socket returned no successful contract-1 host response")
+    if not isinstance(body, dict) or body.get("contract") != OBSERVER_PROBE_CONTRACT:
+        raise OSError("observer socket returned no contract-2 resource-limits envelope")
+    error = body.get("error")
+    code = error.get("code") if isinstance(error, dict) else None
+    if body.get("ok") is not True and code != "observer-refused":
+        raise OSError(f"observer socket refused the contract-2 probe: {code or 'no error code'}")
     return body
 
 
@@ -484,7 +500,7 @@ def _check_connect(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
                 results[level] = {"ok": True, "socket_activation": response.get("socket_activation", {})}
             else:
                 _observer_request(path)
-                results[level] = {"ok": True, "contract": 1}
+                results[level] = {"ok": True, "contract": OBSERVER_PROBE_CONTRACT}
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             problems.append(f"{level}: {type(exc).__name__}: {exc}")
             results[level] = "fail"

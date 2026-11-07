@@ -48,6 +48,40 @@ def test_the_uninstall_cases_cover_the_review_additions():
     assert "systemctl enable cgprofile.slice" in text
 
 
+def test_the_self_bind_case_uses_dedicated_groups_the_slice_and_a_poll_not_a_sleep():
+    """C2: group root is refused by P-5, the daemon needs cgprofile.slice, and 3 s is too tight under TCG."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    case = text[text.index('CASE="4 activation contract"'):text.index('CASE="5 observer-only user"')]
+    assert 'group = "root"' not in case
+    assert 'group = "cgprofile-control"' in case and 'group = "cgprofile-observer"' in case
+    assert "systemd-run --quiet --unit cgp-selfbind-test --slice cgprofile.slice" in case
+    assert "sleep 3" not in case and "wait_for_socket" in case
+
+
+def test_the_observer_probe_sends_a_request_the_observer_serves():
+    """C1: contract-1 `host` is refused by the observer (it serves contract 2 resource-limits and contract 3)."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    case = text[text.index('CASE="5 observer-only user"'):text.index('CASE="7 downgrade refusal"')]
+    assert '"verb": "resource-limits"' in case and '"contract": 2' in case
+    assert '"verb":"host"' not in text and "contract\":1" not in text
+
+
+def test_no_cleanup_claims_to_remove_the_gid_zero_alias_group():
+    """C4: groupdel cannot remove a group that is root's primary group, so none is created."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "cgptest-root-gid" not in text
+    assert '--control-group root' in text and '--observer-group root' in text
+
+
+def test_the_old_layout_case_seeds_and_checks_the_2x_layout_and_the_removal_list():
+    """C3 + E.2: the seeded ctl_socket config and the cgpd/cgpctl files all appear in the refusal."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "old config keys: ctl_socket" in text and "Manual steps:" in text
+    for path in ("/etc/systemd/system/cgpd.service", "/etc/cgprofile/cgpd.toml", "/usr/local/bin/cgpctl"):
+        assert path in text
+    assert text.count("rm -rf") == 1  # the removal of the seeded 2.x files adds no recursive delete
+
+
 def _guard_run(tmp_path, mode="guard-check", *, opt_in="yes", hostname="vbpub-test", tester=True, vm=True,
                service_active=False, existing=(), dangling_symlink=None, test_mode=True):
     """Run the script with stub id/hostname/systemd-detect-virt/systemctl and a fake root."""

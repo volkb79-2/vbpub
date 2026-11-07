@@ -457,7 +457,7 @@ def test_version_and_observer_requests_use_the_declared_contract(monkeypatch):
     clients = []
     responses = [
         (json.dumps({"ok": True, "contract": 2}) + "\n").encode(),
-        (json.dumps({"ok": True, "contract": 1}) + "\n").encode(),
+        (json.dumps({"ok": True, "contract": 2}) + "\n").encode(),
     ]
 
     def socket_factory(*_args, **_kwargs):
@@ -469,15 +469,26 @@ def test_version_and_observer_requests_use_the_declared_contract(monkeypatch):
     assert service_doctor._version_request("/control") == {"ok": True, "contract": 2}
     assert json.loads(clients[0].sent) == {"verb": "version", "args": {}, "contract": 2}
     monkeypatch.setattr(service_doctor.socket, "socket", socket_factory)
-    assert service_doctor._observer_request("/observer") == {"ok": True, "contract": 1}
-    assert json.loads(clients[-1].sent) == {"verb": "host", "args": {}, "contract": 1}
+    assert service_doctor._observer_request("/observer") == {"ok": True, "contract": 2}
+    sent = json.loads(clients[-1].sent)
+    assert sent["verb"] == "resource-limits" and sent["contract"] == 2
+    assert type(sent["args"]["thread_id"]) is int and sent["args"]["thread_id"] > 0
     bad = FakeClient(b"{}\n")
     monkeypatch.setattr(service_doctor.socket, "socket", lambda *_args, **_kwargs: bad)
     with pytest.raises(OSError, match="successful contract-2 version response"):
         service_doctor._version_request("/control")
     bad.response = b"{}\n"
-    with pytest.raises(OSError, match="contract-1 host response"):
+    with pytest.raises(OSError, match="no contract-2 resource-limits envelope"):
         service_doctor._observer_request("/observer")
+    # an endpoint that answers but refuses the probe is a failed probe; observer-refused is a live endpoint
+    bad.response = (json.dumps({"ok": False, "contract": 2, "error": {"code": "bad-argument"}}) + "\n").encode()
+    with pytest.raises(OSError, match="refused the contract-2 probe: bad-argument"):
+        service_doctor._observer_request("/observer")
+    bad.response = (json.dumps({"ok": False, "contract": 2, "error": "not-a-dict"}) + "\n").encode()
+    with pytest.raises(OSError, match="no error code"):
+        service_doctor._observer_request("/observer")
+    bad.response = (json.dumps({"ok": False, "contract": 2, "error": {"code": "observer-refused"}}) + "\n").encode()
+    assert service_doctor._observer_request("/observer")["error"]["code"] == "observer-refused"
     # a peer that closes without answering produces a decode error the callers map to a failure
     empty = FakeClient(b"")
     monkeypatch.setattr(service_doctor.socket, "socket", lambda *_args, **_kwargs: empty)
@@ -485,6 +496,38 @@ def test_version_and_observer_requests_use_the_declared_contract(monkeypatch):
         service_doctor._version_request("/control")
     with pytest.raises(ValueError):
         service_doctor._observer_request("/observer")
+
+
+class RealObserverClient(FakeClient):
+    """Answers with the daemon's real observer dispatcher, not a canned reply (C1)."""
+
+    def __init__(self, server):
+        super().__init__(b"")
+        self.server = server
+
+    def sendall(self, data):
+        super().sendall(data)
+        response = self.server._observer_dispatch(data.strip(), (os.getpid(), os.getuid(), os.getgid()))
+        self.response = (json.dumps(response) + "\n").encode()
+
+
+def test_the_observer_probe_passes_against_the_real_observer_contract(monkeypatch, tmp_path):
+    """C1: the doctor's `connect` probe used a contract-1 `host` request the observer never serves."""
+    from cgprofile import serve
+
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"), socket_path=str(tmp_path / "ctl.sock"),
+        cgroup_root=str(tmp_path / "cgroup"), proc_root=str(tmp_path / "proc"),
+        gates_slice_name="dev-gates.slice",
+    )
+    client = RealObserverClient(server)
+    monkeypatch.setattr(service_doctor.socket, "socket", lambda *_args, **_kwargs: client)
+    body = service_doctor._observer_request("/observer")
+    assert body["contract"] == 2 and (body["ok"] is True or body["error"]["code"] == "observer-refused")
+    # the contract-1 `host` request the old probe sent is refused by the same dispatcher
+    old_request = {"verb": "host", "args": {}, "contract": 1}
+    refusal = server._observer_dispatch(json.dumps(old_request).encode(), (os.getpid(), os.getuid(), os.getgid()))
+    assert refusal["ok"] is False and refusal["error"]["code"] == "bad-argument"
 
 
 def test_the_loaded_config_is_cached_on_the_arguments(tmp_path):
@@ -631,9 +674,10 @@ def test_connect_check_probes_accessible_levels_and_skips_expected_eacces(monkey
     monkeypatch.setattr(service_doctor, "_version_request", lambda _path: {
         "ok": True, "contract": 2, "socket_activation": {},
     })
-    monkeypatch.setattr(service_doctor, "_observer_request", lambda _path: {"ok": True, "contract": 1})
+    monkeypatch.setattr(service_doctor, "_observer_request", lambda _path: {"ok": True, "contract": 2})
     result = service_doctor._check_connect(_runtime(), _args(tmp_path))
     assert result.status == "ok" and result.details["control"]["ok"] is True
+    assert result.details["observer"] == {"ok": True, "contract": 2}
 
     _as(monkeypatch, 1000)
     monkeypatch.setattr(service_doctor, "_caller_in_group", lambda _gid: False)

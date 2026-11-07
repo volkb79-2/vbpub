@@ -5,7 +5,7 @@
 # (scripts/debian-install-v2/testing/vm/run-vm-harness.sh), as root. It is never run on a
 # cockpit host: it installs and uninstalls the whole service and creates test users.
 #
-#   run-vm-harness.sh copy  RUN scripts/cgroup-profiler/tools  /root/tools
+#   run-vm-harness.sh copy  RUN cgprofile/tools  /root/tools
 #   run-vm-harness.sh copy  RUN <wheel directory>              /root/wheels
 #   run-vm-harness.sh ssh   RUN -- sudo env CGP_DISPOSABLE_GUEST=yes CGPROFILE_PIN=... CLI_EXTENDED_PIN=... \
 #       bash /root/tools/vm-socket-acceptance.sh clean-guest
@@ -45,6 +45,10 @@ expect_exit() {  # expect_exit CODE "description" command...
     if [ "$got" -eq "$want" ]; then pass "$description (exit $got)"; else fail "$description (exit $got, wanted $want)"; sed 's/^/        /' /tmp/vm-accept.out; fi
 }
 inode() { stat -c %i "$1"; }
+wait_for_socket() {  # wait_for_socket PATH SECONDS: a TCG guest needs about 5 s to start the daemon
+    local waited=0
+    while [ "$waited" -lt "$2" ] && [ ! -S "$1" ]; do sleep 1; waited=$((waited + 1)); done
+}
 group_has_member() {
     getent group "$1" | cut -d: -f4 | tr ',' '\n' | grep -Fx "$2" >/dev/null
 }
@@ -127,8 +131,6 @@ p5_groups() {
     observer_gid="$(getent group cgprofile-observer | cut -d: -f3)"
     groupadd --non-unique --gid "$docker_gid" cgptest-docker-gid \
         || refuse "could not create the temporary docker-GID alias group"
-    groupadd --non-unique --gid 0 cgptest-root-gid \
-        || refuse "could not create the temporary GID-0 alias group"
     groupadd --non-unique --gid "$observer_gid" cgptest-observer-gid \
         || refuse "could not create the temporary duplicate-GID group"
 
@@ -146,13 +148,14 @@ p5_groups() {
     fi
     p5_refusal "control refuses a group with the docker GID" --control-group cgptest-docker-gid
     p5_refusal "observer refuses a group with the docker GID" --observer-group cgptest-docker-gid
-    p5_refusal "control refuses GID 0" --control-group cgptest-root-gid
-    p5_refusal "observer refuses GID 0" --observer-group cgptest-root-gid
+    # `root` is GID 0 itself: no alias group is created (C4: groupdel refuses to remove a group that is
+    # the primary group of root, so an alias with GID 0 could never be cleaned up).
+    p5_refusal "control refuses GID 0" --control-group root
+    p5_refusal "observer refuses GID 0" --observer-group root
     p5_refusal "control refuses the observer group name" --control-group cgprofile-observer
     p5_refusal "control refuses a duplicate level GID" --control-group cgptest-observer-gid
 
     groupdel cgptest-docker-gid
-    groupdel cgptest-root-gid
     groupdel cgptest-observer-gid
     if [ "$docker_created" = yes ]; then
         groupdel docker
@@ -213,16 +216,18 @@ sessions_dir = "$dir/sessions"
 
 [sockets.control]
 path = "$dir/control/cgprofile.sock"
-group = "root"
-mode = "0600"
+group = "cgprofile-control"
+mode = "0660"
 
 [sockets.observer]
 path = "$dir/observer/cgprofile.sock"
-group = "root"
-mode = "0600"
+group = "cgprofile-observer"
+mode = "0660"
 EOF
-    systemd-run --quiet --unit cgp-selfbind-test --collect "$CGPD" --config "$cfg" run --self-bind
-    sleep 3
+    # C2: dedicated groups (a GID-0 group is refused by P-5) and the daemon must be provably inside
+    # cgprofile.slice, or it refuses to start.
+    systemd-run --quiet --unit cgp-selfbind-test --slice cgprofile.slice --collect "$CGPD" --config "$cfg" run --self-bind
+    wait_for_socket "$dir/control/cgprofile.sock" 30
     check "--self-bind serves explicit test paths" test -S "$dir/control/cgprofile.sock"
     systemctl stop cgp-selfbind-test.service >/dev/null 2>&1 || true
 
@@ -230,9 +235,13 @@ EOF
     id cgptest-obs >/dev/null 2>&1 || useradd --no-create-home --shell /usr/sbin/nologin cgptest-obs
     gpasswd -a cgptest-obs cgprofile-observer
     check "observer endpoint answers for the observer-only user" runuser -u cgptest-obs -- python3 - <<EOF
-import json, socket
-s = socket.socket(socket.AF_UNIX); s.connect("$OBSERVER"); s.sendall(b'{"verb":"host","args":{},"contract":1}\n')
-assert json.loads(s.makefile().readline())["ok"] is True
+import json, socket, threading
+# C1: the observer serves contract 2 resource-limits (and 3 window verbs) only; a contract-1 host
+# request is refused. observer-refused is an answer from a live endpoint to a caller outside the gates slice.
+s = socket.socket(socket.AF_UNIX); s.connect("$OBSERVER")
+s.sendall((json.dumps({"verb": "resource-limits", "args": {"thread_id": threading.get_native_id()}, "contract": 2}) + "\n").encode())
+body = json.loads(s.makefile().readline())
+assert body["contract"] == 2 and (body["ok"] is True or body["error"]["code"] == "observer-refused"), body
 EOF
     check "control is EACCES for the observer-only user" runuser -u cgptest-obs -- python3 - <<EOF
 import socket
@@ -314,14 +323,22 @@ old_layout_guest() {
     seed_old_layout
     expect_exit 2 "install refuses the seeded host-setup state" bootstrap install "${install_flags[@]}"
     grep -q 'mdt-cgprofile.conf' /tmp/vm-accept.out && pass "the refusal names the tmpfiles rule" || fail "refusal text lacks the tmpfiles rule"
+    # C3: the seeded config carries the removed ctl_socket key; the refusal still has to list the removal steps.
+    grep -q 'old config keys: ctl_socket' /tmp/vm-accept.out && grep -q 'Manual steps:' /tmp/vm-accept.out \
+        && pass "the refusal lists the old config key and the manual removal steps" \
+        || fail "refusal text lacks the old config key or the manual removal list"
+    grep -q '2.x layout: /etc/systemd/system/cgpd.service' /tmp/vm-accept.out \
+        && grep -q '2.x layout: /usr/local/bin/cgpctl' /tmp/vm-accept.out \
+        && pass "the refusal names the 2.x layout" || fail "refusal text lacks the 2.x layout paths"
     CASE="8 uninstall on an mdt-style install"
     expect_exit 2 "uninstall refuses before changing anything" bootstrap uninstall --yes
-    check "the seeded files are untouched" bash -c "[ -f /etc/tmpfiles.d/mdt-cgprofile.conf ] && [ -f /opt/cgprofile/2.1.0/MANIFEST ]"
+    check "the seeded files are untouched" bash -c "[ -f /etc/tmpfiles.d/mdt-cgprofile.conf ] && [ -f /opt/cgprofile/2.1.0/MANIFEST ] && [ -f /etc/systemd/system/cgpd.service ] && [ -L /usr/local/bin/cgpctl ]"
     CASE="6 P-11 after manual removal"
     # Only what seed_old_layout wrote may be removed: its marker proves this run created it.
     [ -f /opt/cgprofile/.vm-acceptance-seed ] || refuse "the seed marker is missing; not deleting /opt/cgprofile"
     rm -f /etc/tmpfiles.d/mdt-cgprofile.conf /etc/tmpfiles.d/mdt-cgprofile-observer.conf \
-        /etc/sysusers.d/mdt-cgprofile.conf
+        /etc/sysusers.d/mdt-cgprofile.conf /etc/systemd/system/cgpd.service /usr/local/bin/cgpctl
+    rmdir /etc/systemd/system/cgpd.service.d
     rm -rf /opt/cgprofile /run/cgprofile /etc/cgprofile
     systemctl daemon-reload
     expect_exit 0 "fresh install succeeds once the old files are removed" bootstrap install "${install_flags[@]}"
@@ -333,6 +350,11 @@ seed_old_layout() {
     printf 'd /run/cgprofile/observer 0751 root cgprofile-observer -\n' >/etc/tmpfiles.d/mdt-cgprofile-observer.conf
     printf 'g cgprofile-observer - - -\n' >/etc/sysusers.d/mdt-cgprofile.conf
     printf 'ctl_socket = "/run/cgprofile/ctl.sock"\n' >/etc/cgprofile/cgprofiled.toml
+    # the 2.x layout (cgpd/cgpctl): P-11 refuses it and lists the removal, nothing is migrated
+    mkdir -p /etc/systemd/system/cgpd.service.d /usr/local/bin
+    printf '[Service]\nExecStart=/bin/true\n' >/etc/systemd/system/cgpd.service
+    printf 'interval = 2\n' >/etc/cgprofile/cgpd.toml
+    ln -s /opt/cgprofile/current/venv/bin/cgpctl /usr/local/bin/cgpctl
     printf 'installer=mdt host-setup (MDT-055)\n' >/opt/cgprofile/2.1.0/MANIFEST
     printf 'seeded by vm-socket-acceptance.sh\n' >/opt/cgprofile/.vm-acceptance-seed
     chmod 0770 /run/cgprofile

@@ -720,6 +720,32 @@ class TestWireShape:
         assert response["error"]["code"] == "bad-argument"
         assert "exceeds 8 bytes" in response["error"]["message"]
 
+    @pytest.mark.parametrize("error", [BrokenPipeError(32, "Broken pipe"), ConnectionResetError(104, "reset")])
+    def test_a_client_that_closes_before_the_reply_is_not_a_thread_traceback(self, tmp_path, error):
+        """VM acceptance: a probe that disconnects early made `conn.sendall` raise BrokenPipeError out of the
+        connection thread, one traceback per probe in the journal. There is nobody to answer; it is not a fault."""
+        class _GoneConn(_FakeConn):
+            def sendall(self, payload: bytes) -> None:
+                raise error
+
+        server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+        for chunks in ([_wire_bytes("version")], [b"not json\n"]):
+            conn = _GoneConn(chunks)
+            server._handle_connection(conn)  # must return, not raise
+            assert conn.closed is True
+        denied = _GoneConn([_wire_bytes("version")], uid=4242)  # the peer-refused reply path
+        server._handle_connection(denied)
+        assert denied.closed is True
+
+    def test_other_send_errors_are_still_loud(self, tmp_path):
+        class _BrokenConn(_FakeConn):
+            def sendall(self, payload: bytes) -> None:
+                raise PermissionError("not a closed peer")
+
+        server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+        with pytest.raises(PermissionError):
+            server._handle_connection(_BrokenConn([_wire_bytes("version")]))
+
     def test_complete_request_exactly_at_the_size_limit_is_accepted(self, tmp_path):
         server = serve.SessionServer(
             sessions_dir=str(tmp_path / "sessions"), max_request_line_bytes=3,
