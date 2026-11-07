@@ -64,7 +64,7 @@ def test_export_calls_api_guard_before_pinned_ssh_and_checks_remote_identity(tmp
     assert str(exporter.ENV_HELPER) in command
     assert "v1001_ssh root@\"$V1001_IP\"" in command
     assert 'checked(["hostname", "-f"])' in exporter.REMOTE_COLLECTOR
-    assert "hostnamectl --static" in exporter.REMOTE_COLLECTOR
+    assert 'checked(["hostnamectl", "--static"])' in exporter.REMOTE_COLLECTOR
     assert "/etc/vbpub/server-id" in exporter.REMOTE_COLLECTOR
     assert exporter.REMOTE_COLLECTOR.index("facts = identity()") < exporter.REMOTE_COLLECTOR.index(
         '("partition/sfdisk-d.txt", ["sfdisk", "-d", "/dev/vda"])'
