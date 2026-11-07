@@ -206,7 +206,7 @@ def test_remote_collector_enforces_identity_redaction_scratch_and_size_cap(tmp_p
         '{\n  // capacity note\n  "password": "sentinel-jsonc",\n  "API_KEY": "sentinel-api",\n  "Authorization": "Bearer sentinel-json-bearer"\n}\n',
         encoding="utf-8",
     )
-    (root / "etc/mdt/too-large.txt").write_bytes(b"x" * 129)
+    (root / "etc/mdt/too-large.txt").write_bytes(b"x" * 257)
     (root / "home/runner/runner-scripts/runner.env").write_text(
         "COCKPIT_CONFIG_DIR=/home/runner/mdt-cockpit-runner-config-test\n"
         "COCKPIT_HOME_DIR=/home/runner/mdt-cockpit-runner-home-test\n",
@@ -241,7 +241,7 @@ esac
     for command in ("hostname", "hostnamectl", "lsblk", "sfdisk", "blkid", "docker"):
         (bindir / command).symlink_to(stub)
 
-    remote = exporter.remote_collector("v1001", max_file_bytes=128)
+    remote = exporter.remote_collector("v1001", max_file_bytes=256)
     remote = remote.replace('ROOT = Path("/")', f"ROOT = Path({str(root)!r})")
     script = tmp_path / "collector.py"
     script.write_text(remote, encoding="utf-8")
@@ -274,7 +274,7 @@ esac
     assert not any("scratch" in name for name in names)
     notes = files["meta/collection.txt"].decode()
     assert "scratch" in notes and "skipped" in notes
-    assert "too-large.txt" in notes and "129" in notes and "128" in notes
+    assert "too-large.txt" in notes and "257" in notes and "256" in notes
     all_bytes = b"\n".join(files.values())
     for secret in (b"sentinel-jsonc", b"sentinel-api", b"sentinel-bearer", b"sentinel-json-bearer"):
         assert secret not in all_bytes
