@@ -53,10 +53,16 @@ refuse() { echo "refusing: $1" >&2; exit 2; }
 #   - a guest created by run-vm-harness.sh (vmctl's cloud-init gives it the hostname
 #     vbpub-test and the user tester);
 #   - nothing of cgprofile is installed or running yet (checked before anything is seeded).
-# CGP_TEST_ROOT only prefixes the path checks, for the guard's own tests.
+# The unit test harness may set CGP_TEST_ROOT only together with CGP_TEST_MODE=1;
+# live VM acceptance runs must never redirect the installed-path checks.
 need_guest() {
-    local root="${CGP_TEST_ROOT:-}"
+    local root=""
     [ "$(id -u)" -eq 0 ] || { echo "run as root inside the guest" >&2; exit 2; }
+    if [ -n "${CGP_TEST_ROOT:-}" ] || [ "${CGP_TEST_MODE:-}" = 1 ]; then
+        [ "${CGP_TEST_MODE:-}" = 1 ] && [ -n "${CGP_TEST_ROOT:-}" ] \
+            || refuse "CGP_TEST_ROOT is only allowed with CGP_TEST_MODE=1 in the unit test harness"
+        root="$CGP_TEST_ROOT"
+    fi
     [ "${CGP_DISPOSABLE_GUEST:-}" = yes ] || refuse "set CGP_DISPOSABLE_GUEST=yes to confirm this is a disposable run-vm-harness guest"
     systemd-detect-virt --vm >/dev/null 2>&1 || refuse "not a VM"
     [ "$(hostname)" = vbpub-test ] && id tester >/dev/null 2>&1 \

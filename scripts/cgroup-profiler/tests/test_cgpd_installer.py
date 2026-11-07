@@ -1153,6 +1153,28 @@ def test_failed_apply_leaves_pending_and_a_rerun_reapplies(tmp_path, monkeypatch
     assert host.has("systemctl", "daemon-reload")
 
 
+def test_pending_records_new_groups_before_systemd_sysusers_is_invoked(tmp_path, monkeypatch):
+    host = Host(tmp_path, monkeypatch)
+    original = host.subject.run
+    sysusers_calls = 0
+
+    def run(argv, **kwargs):
+        nonlocal sysusers_calls
+        if list(argv)[0] == "systemd-sysusers":
+            pending = Path(host.paths.pending)
+            assert pending.is_file()
+            assert "created_groups=cgprofile-control,cgprofile-observer\n" in pending.read_text(
+                encoding="utf-8"
+            )
+            sysusers_calls += 1
+        return original(argv, **kwargs)
+
+    host.subject.run = run
+    host.install()
+
+    assert sysusers_calls == 1
+
+
 def test_a_first_install_that_failed_after_pending_needs_uninstall_not_a_blind_rerun(tmp_path, monkeypatch):
     host = Host(tmp_path, monkeypatch, fail={("systemd-sysusers",): 1})
     with pytest.raises(installer.InstallError, match="systemd-sysusers"):
@@ -1772,19 +1794,20 @@ _SOCKETS = ('[sockets.control]\npath = "/run/cgprofile/control/cgprofile.sock"\n
 
 def test_a_hand_edited_socket_group_wins_over_the_record_when_no_flag_is_given(host):
     host.install()
-    host.group_gids["ops"] = 4200
-    edited = _SOCKETS.format(control="ops", observer="cgprofile-observer")
+    host.group_gids.update({"ops": 4200, "metrics": 4201})
+    edited = _SOCKETS.format(control="ops", observer="metrics")
     Path(host.paths.config).write_text("# mine\n" + edited, encoding="utf-8")
     again = host.install(_args(control_group=None, observer_group=None))
     assert again["config_changes"] == []
     assert Path(host.paths.config).read_text(encoding="utf-8").startswith("# mine\n")
     record = Path(host.paths.install_record).read_text(encoding="utf-8")
-    assert 'control_group = "ops"' in record and 'observer_group = "cgprofile-observer"' in record
+    assert 'control_group = "ops"' in record and 'observer_group = "metrics"' in record
     # a group passed as a flag is applied to the file
     flagged = host.install(_args(control_group="cgprofile-control", observer_group=None))
     assert flagged["config_changes"] == ["sockets.control.group"]
-    assert daemon_config.parse_table(Path(host.paths.config).read_text(encoding="utf-8"))[
-        "sockets.control"]["group"] == "cgprofile-control"
+    parsed = daemon_config.parse_table(Path(host.paths.config).read_text(encoding="utf-8"))
+    assert parsed["sockets.control"]["group"] == "cgprofile-control"
+    assert parsed["sockets.observer"]["group"] == "metrics"
 
 
 def test_prune_never_deletes_the_tree_the_installer_runs_from(tmp_path, monkeypatch):

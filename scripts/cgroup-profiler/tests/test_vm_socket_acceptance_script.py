@@ -49,7 +49,7 @@ def test_the_uninstall_cases_cover_the_review_additions():
 
 
 def _guard_run(tmp_path, mode="guard-check", *, opt_in="yes", hostname="vbpub-test", tester=True, vm=True,
-               service_active=False, existing=()):
+               service_active=False, existing=(), dangling_symlink=None, test_mode=True):
     """Run the script with stub id/hostname/systemd-detect-virt/systemctl and a fake root."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -66,8 +66,14 @@ def _guard_run(tmp_path, mode="guard-check", *, opt_in="yes", hostname="vbpub-te
     root.mkdir(exist_ok=True)
     for path in existing:
         (root / path.lstrip("/")).mkdir(parents=True, exist_ok=True)
+    if dangling_symlink is not None:
+        link = root / dangling_symlink.lstrip("/")
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(root / "dangling-target")
     env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "CGP_TEST_ROOT": str(root),
            "CGPROFILE_PIN": "2.2.0@sha256:" + "a" * 64, "CLI_EXTENDED_PIN": "0.5.1@sha256:" + "b" * 64}
+    if test_mode:
+        env["CGP_TEST_MODE"] = "1"
     if opt_in:
         env["CGP_DISPOSABLE_GUEST"] = opt_in
     return subprocess.run(["bash", str(SCRIPT), mode], capture_output=True, text=True, env=env, check=False)
@@ -95,6 +101,20 @@ def test_every_mode_refuses_on_a_real_host_look_alike(tmp_path, mode, kwargs, me
     result = _guard_run(tmp_path, mode, **kwargs)
     assert result.returncode == 2 and message in result.stderr
     assert "PASS" not in result.stdout and "FAIL" not in result.stdout  # no case ran
+
+
+def test_a_dangling_opt_symlink_is_still_an_existing_installation(tmp_path):
+    result = _guard_run(tmp_path, dangling_symlink="/opt/cgprofile")
+    assert result.returncode == 2
+    assert "/opt/cgprofile already exists" in result.stderr
+    assert "PASS" not in result.stdout and "FAIL" not in result.stdout
+
+
+def test_cgp_test_root_requires_the_explicit_unit_test_marker(tmp_path):
+    result = _guard_run(tmp_path, test_mode=False)
+    assert result.returncode == 2
+    assert "CGP_TEST_ROOT is only allowed with CGP_TEST_MODE=1" in result.stderr
+    assert "PASS" not in result.stdout and "FAIL" not in result.stdout
 
 
 def test_the_destructive_removal_needs_the_seed_marker_the_script_writes_itself():
