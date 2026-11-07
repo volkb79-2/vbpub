@@ -611,7 +611,7 @@ class FakeHost:
     def listdir(self, path: str) -> list[str]:
         real = self._resolve(path).rstrip("/")
         names = set()
-        for p in list(self.files) + list(self.dirs) + list(self.devices):
+        for p in list(self.files) + list(self.dirs) + list(self.devices) + list(self.symlinks):
             if p.startswith(real + "/") and p != real:
                 names.add(p[len(real) + 1:].split("/", 1)[0])
         if real not in self.dirs and not names:
@@ -698,6 +698,7 @@ class FakeHost:
                  wwn: str | None = None, rotational: str = "1", scheduler: str = "none") -> None:
         base = f"/sys/devices/pci0/block/{name}"
         self.symlinks[f"/sys/class/block/{name}"] = base
+        self.symlinks[f"/sys/block/{name}"] = base  # /sys/block lists whole disks only (a partition has no entry there)
         self.symlinks[f"/sys/dev/block/{major}:0"] = base
         self.put(f"{base}/dev", f"{major}:0\n")
         self.put(f"{base}/size", f"{size // 512}\n")
@@ -1048,4 +1049,5 @@ def standard_host(scenario: Scenario | None = None, *, target_size: int = R1002_
     host.allow_scratch("/run/iobench")  # the test estate's scratch places (a Runner authorises its own run dir and work dir on S0)
     host.allow_scratch("/bench")
     host.put("/proc/sys/kernel/osrelease", "7.2.9\n")
+    host.put("/etc/machine-id", "0123456789abcdef0123456789abcdef\n")  # a weak (serial-less) disk scope binds to this host
     return host

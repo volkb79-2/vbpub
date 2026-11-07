@@ -328,19 +328,40 @@ def test_iops_metered_model_uses_the_worst_iops_and_history():
 
 def test_identity_comparison_on_every_strict_field():
     from iobench import result as res_mod
+    scope = {"model": "m", "serial": None, "wwn": None, "size_bytes": 10, "strength": "weak", "machine_id_hash": "h", "name": "vda"}
     base = {"target": {"kind": "device", "path": "/dev/vda7", "fs_uuid": None, "inode": None},
-            "disk": {"devno": "254:7", "partuuid": "p", "size_bytes": 10, "model": "m", "serial": None, "wwn": None}}
+            "disk": {"devno": "254:7", "partuuid": "p", "size_bytes": 10, "model": "m", "serial": None, "wwn": None}, "disk_scope": scope}
     assert res_mod.identity_differs(base, None) is True
     assert res_mod.identity_differs(base, copy.deepcopy(base)) is False
-    for section, key, value in (("target", "inode", 5), ("target", "kind", "file"), ("disk", "devno", "254:8"), ("disk", "partuuid", "q"),
-                                ("disk", "size_bytes", 11), ("disk", "model", "other")):
+    assert res_mod.target_changed(base, copy.deepcopy(base)) is False
+    # the measured partition or file is not identity (a warning), the disk is
+    for section, key, value in (("target", "inode", 5), ("target", "kind", "file"), ("target", "fs_uuid", "u"), ("disk", "devno", "254:8"),
+                                ("disk", "partuuid", "q"), ("disk", "size_bytes", 11)):
         live = copy.deepcopy(base)
         live[section][key] = value
-        assert res_mod.identity_differs(base, live) is True, (section, key)
-    # a field the stored record never had does not make it stale
+        assert res_mod.identity_differs(base, live) is False, (section, key)
+        assert res_mod.target_changed(base, live) is True, (section, key)
+    gone = {**copy.deepcopy(base), "target": None}
+    assert res_mod.identity_differs(base, gone) is False and res_mod.target_changed(base, gone) is True
+    for key, value in (("size_bytes", 11), ("model", "other"), ("machine_id_hash", "other-host")):
+        live = copy.deepcopy(base)
+        live["disk_scope"][key] = value
+        assert res_mod.identity_differs(base, live) is True, key
+    # a field the stored record never had normally does not make it stale; a weak-to-strong identity change is the exception
     live = copy.deepcopy(base)
-    live["disk"]["serial"] = "S1"
-    assert res_mod.identity_differs(base, live) is False
+    live["disk_scope"].update(serial="S1", strength="strong", machine_id_hash=None)
+    assert res_mod.identity_differs(base, live) is True
+    unknown_host = copy.deepcopy(base)
+    unknown_host["disk_scope"]["machine_id_hash"] = None  # no usable machine id at calibration time: the later real one is not a change
+    assert res_mod.identity_differs(unknown_host, base) is False
+    strong = copy.deepcopy(base)
+    strong["disk_scope"].update(serial="S1", strength="strong", machine_id_hash=None)
+    other = copy.deepcopy(strong)
+    other["disk_scope"].update(serial="S2")
+    assert res_mod.identity_differs(strong, other) is True and res_mod.identity_differs(strong, copy.deepcopy(strong)) is False
+    # a record from before the disk scope, and a live identity without one, cannot be shown to be the same disk
+    legacy = {k: v for k, v in base.items() if k != "disk_scope"}
+    assert res_mod.identity_differs(legacy, base) is True and res_mod.identity_differs(base, legacy) is True
 
 
 def test_run_without_a_work_dir_records_no_workdir_identity():

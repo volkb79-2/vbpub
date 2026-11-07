@@ -395,7 +395,7 @@ def test_rev_b_b7_pla_17_and_18_are_recorded_by_a_run():
     host.makedirs(STATE)
     for d, v in (("read", 21600 * 4096.0), ("write", 71584 * 4096.0)):
         ceilings.append(host, f"{STATE}/ceilings.jsonl", {"ts": ceilings.iso(host.now() - 3600), "dir": d, "workload": "rand4k", "plateau_bps": v,
-                                                           "duration_s": 600, "source": "governor"}, digest)
+                                                           "duration_s": 600, "source": "governor", "kind": "raw"}, digest)
     assert check_of(calibrate(host), "IOB-PLA-17")["status"] in ("pass", "info")
 
 
@@ -703,7 +703,7 @@ def test_rev_b_s9_a_dry_run_never_plans_with_another_disks_rate(world):
         dryrun.rate_source(host, config(target="/dev/vdb9"))
     assert err.value.condition == "dry_run_rate_other_target" and err.value.exit_code == 2
     h = copy.deepcopy(host)
-    h.devices["/dev/vda7"].partuuid = "00000000-0000-0000-0000-0000deadbeef"
+    h.put("/sys/devices/pci0/block/vda/size", f"{(500 << 30) // 512 + 2048}\n")  # another disk (IOB-CEI-06: a PARTUUID alone is no longer a change of identity)
     with pytest.raises(Refusal) as err:
         dryrun.rate_source(h, cfg)
     assert err.value.condition == "dry_run_rate_unusable"
@@ -714,9 +714,9 @@ def test_rev_b_s10_a_foreign_history_is_rotated_aside_before_the_run_not_refused
     host.makedirs(STATE)
     foreign = "sha256:" + "0" * 64
     ceilings.append(host, f"{STATE}/ceilings.jsonl", {"ts": CREATED, "dir": "read", "workload": "rand4k", "plateau_bps": 1e8, "duration_s": 600,
-                                                       "source": "governor"}, foreign)
+                                                       "source": "governor", "kind": "raw"}, foreign)
     out = calibrate(host)
-    assert out.status == "complete" and out.exit_code == 0 and out.result["evidence"]["history_rotated"].startswith(f"{STATE}/ceilings.jsonl.foreign-")
+    assert out.status == "complete" and out.exit_code == 0 and out.result["evidence"]["history_rotated"].startswith(f"{STATE}/ceilings.jsonl.superseded-")
     aside = out.result["evidence"]["history_rotated"]
     assert json.loads(host.read_text(aside).splitlines()[0])["identity_digest"] == foreign  # kept, not deleted
     assert json.loads(host.read_text(f"{STATE}/ceilings.jsonl").splitlines()[0])["identity_digest"] != foreign

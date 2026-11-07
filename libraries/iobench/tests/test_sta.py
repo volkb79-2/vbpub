@@ -27,7 +27,7 @@ def test_sta_01_every_value_carries_its_own_status():
 
 
 def test_sta_02_closed_vocabularies():
-    assert len(P.UNPROVEN_REASONS) == 20 and len(P.ABSENT_REASONS) == 7
+    assert len(P.UNPROVEN_REASONS) == 21 and len(P.ABSENT_REASONS) == 7 and P.UNPROVEN_REASONS[-1] == "veryquick_profile"
     with pytest.raises(ValueError):
         P.value(1, "R1", {}, "measured", reasons=["because"])
     with pytest.raises(ValueError):
@@ -37,7 +37,7 @@ def test_sta_02_closed_vocabularies():
     with pytest.raises(ValueError):
         P.worsen(P.value(1, "R1", {}, "measured"), ["nope"])
     assert P.CACHE_STATES == ("cold_measured", "rate_cap", "no_cache_observed", "cold_hit_like", "undetermined")
-    assert P.METERING == ("byte", "iops", "mixed", "undetermined") and P.FITS == ("good", "poor", "insufficient", "plateau")
+    assert P.METERING == ("byte", "iops", "mixed", "undetermined", "coarse") and P.FITS == ("good", "poor", "insufficient", "plateau")
     for limit in ("quick-profile", "limited-by-budget", "short-observation", "single-run", "stage_skipped:S6", "bucket_exclusion_s<=240",
                   "filesystem_layer", "fresh_semantics_filesystem"):
         assert P.limit_ok(limit)
@@ -95,7 +95,7 @@ def seed_history(host, path="/dev/vda7"):
         for w, vals in (("seq1m", (1.0e9, 1.1e9, 1.2e9)), ("rand4k", (4.0e7, 4.1e7, 4.2e7))):
             for i, v in enumerate(vals):
                 ceilings.append(host, "/var/lib/iobench/ceilings.jsonl", {"ts": ceilings.iso(host.now() - 3600 * (i + 1)), "dir": d, "workload": w,
-                                "plateau_bps": v, "duration_s": 600, "source": "governor"}, digest)
+                                "plateau_bps": v, "duration_s": 600, "source": "governor", "kind": "raw"}, digest)
 
 
 def seeded(seed=True, **host_kw):
@@ -258,6 +258,7 @@ def test_sta_05_status_collapse_audit():
         "ceiling_moved": ("caps.RIOPS", moved),
         "budget_limited": ("caps.RIOPS", cut),
         "quick_profile": ("caps.RIOPS", cal(profile="quick")),
+        "veryquick_profile": ("caps.RIOPS", cal(profile="veryquick")),
         "short_observation": ("caps.WIOPS", burst_throttle),
         "worst_from_single_run": ("caps.RIOPS", cal(seed=False)),
         "metering_undetermined": ("iocost_model.wbps", lambda: with_shape(cells_of(lambda d, p, bs: 1 / ((80e-6 if p == "rand" else 20e-6) + bs * 0.25e-9)))),
@@ -326,6 +327,8 @@ CONSEQUENCES = {
     "budget_limited": {"cache_not_excluded", "cache_model_undetermined", "ceiling_moved", "no_cliff_hit_like_mode", "cache_residual_possible"},
     "ceiling_moved": {"cache_model_undetermined", "no_cliff_hit_like_mode"},
     "quick_profile": {"budget_limited"},  # the quick fill is time-bounded to R_est x 60 s, so the working set is budget-limited too
+    # the veryquick fill is 20 s of data (budget-limited working set); its one cold probe on an unbounded disk reads hit-like (no ladder to say more)
+    "veryquick_profile": {"budget_limited", "no_cliff_hit_like_mode"},
 }
 
 
