@@ -708,8 +708,6 @@ def _strip_trailing_javascript(source: str) -> tuple[str, int]:
     if trailing_comment_start is not None and (cut_at is None or trailing_comment_start < cut_at):
         cut_at = trailing_comment_start
     normalized = source[:cut_at].rstrip() if cut_at is not None else source.rstrip()
-    if not normalized.strip():
-        raise ValueError("no JavaScript expression remains after trailing semicolons and comments")
     return normalized, first_token
 
 

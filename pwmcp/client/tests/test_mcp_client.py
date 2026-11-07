@@ -1666,6 +1666,8 @@ def test_javascript_scanner_preserves_uncertain_or_incomplete_expressions() -> N
         "`unterminated",
         "`trailing\\",
         "`value ${1 /* unterminated",
+        "`value ${'unterminated",
+        "`value ${answer",
         "`value ${answer / 2}`;",
     ):
         normalized, first_token = mcp_client._strip_trailing_javascript(source)
