@@ -69,12 +69,39 @@ browser binaries:
 ```bash
 pwmcp inspect https://example.com
 pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format html --selector main --html-mode outer --output page.html
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded
 pwmcp inspect https://nas.example --ignore-https-errors
+pwmcp inspect https://example.com --retries 2
+pwmcp eval https://example.com 'document.title'
+pwmcp eval https://example.com --selector 'script#__NEXT_DATA__' --property textContent
 ```
 
-`--format` accepts `text`, `snapshot`, or `screenshot`. `--wait-until` accepts
+`--format` accepts `text`, `snapshot`, `html`, or `screenshot`. HTML returns
+document or selected-element markup, capped at 512 KiB by default, with an
+explicit truncation notice. `pwmcp eval` returns a JSON value through the
+existing `browser_evaluate` MCP tool and needs no third-party Python `mcp`
+package. Its caller-supplied JavaScript runs with the page origin's permissions;
+use it only on pages the user is authorized to inspect. See the [evaluation
+design](DESIGN-GUIDE.md#mcp-backed-evaluation-and-bounded-html) and
+[security policy](SECURITY.md#mcp-page-evaluation).
+
+`eval` checks the compact JSON result size in the page before it crosses MCP.
+`--max-bytes` defaults to 1 MiB and accepts 1 through 4194304 bytes. A
+truncated text result keeps the preview on stdout, writes
+`[truncated after N bytes]` to stderr, and exits 0; `--json` returns
+`preview`, `truncated: true`, and `max_bytes`. If the separate transport limit
+is reached, PWMCP reports a size error with a hint to return a smaller or
+aggregated value.
+
+Expressions may begin with comments. PWMCP strips final semicolons and trailing
+comments outside strings and template literals; a comment alone is an error.
+Semicolons and `//` inside literals are preserved. If slash syntax is
+ambiguous, the expression is left unchanged for JavaScript to parse. Supply a
+function with `return` when an expression needs multiple statements.
+
+`--wait-until` accepts
 `commit`, `domcontentloaded`, `load`, or `networkidle`. Text and snapshots go to
 stdout unless `--output PATH` is given; screenshots require `--output` and a
 `.png`, `.jpg`, or `.jpeg` suffix. `--wait-for SELECTOR` waits for a visible
@@ -84,6 +111,12 @@ HTTPS requests in this one-shot browser context, including redirects and page
 resources. Use it only for a trusted target with a known certificate problem;
 it does not change PWMCP service defaults. See the
 [design rationale](DESIGN-GUIDE.md#certificate-errors-during-inspection).
+
+A recognized page/browser crash during the first navigation is retried once by
+default and noted on stderr. `--retries N` requests up to N additional attempts;
+`--retries 0` disables the automatic crash retry. When the hint says the page or
+browser crashed, the MCP endpoint has replied: reduce page load and check memory
+and `/dev/shm`. An endpoint-connection hint asks you to check PWMCP reachability.
 
 Bot protection (PWMCP-32): when the page is a challenge or block page (Cloudflare "Just a
 moment...", a CAPTCHA wall, ...), `inspect` exits **4**, says `blocked by bot protection (...)`,
@@ -104,10 +137,12 @@ and never change stdout:
   output under 1 KiB without `--wait-for` (a legitimately tiny page also triggers
   it; the line is advice, not an error), and `result is N bytes, much smaller
   than an earlier attempt` after a retry.
-- `--retries N` (0 to 10, default 0) allows N more attempts, each a fresh context
+- `--retries N` (0 to 10) requests N additional attempts, each a fresh context
   and navigation, after a failed attempt or when the text/snapshot still changes
-  over a 0.5 s settle window. The last attempt is returned as it is. Pair it with a
-  content-based `--wait-for` and a `--timeout-ms` of 30000 or more.
+  over a 0.5 s settle window. When omitted, only a recognised page/browser crash
+  is retried once; `--retries 0` disables that retry. The last attempt is returned
+  as it is. Pair retries with a content-based `--wait-for` and a `--timeout-ms`
+  of 30000 or more.
 
 When an override is active (server-level or `--user-agent`), the result reports the
 user agent it presented and its source (`user_agent`, `user_agent_source`:

@@ -41,6 +41,60 @@ the loopback upstream values required by Playwright. The allowlist is a
 DNS-rebinding safeguard, not authentication; access from the trusted internal
 network remains unauthenticated as before.
 
+## MCP page evaluation
+
+`pwmcp eval URL EXPRESSION` invokes the already-exposed `browser_evaluate` MCP
+tool after `browser_navigate`. It executes the caller's JavaScript in the page
+context with that page origin's permissions. It can read the DOM, script data,
+and browser storage available to that page, and it can issue requests subject
+to the browser's same-origin and CORS rules. PWMCP does not sanitize the
+expression or give it a separate per-call permission prompt. Use it only for
+pages the user is authorized to inspect.
+
+In `browser_mode = "shared"`, `@playwright/mcp` uses a persistent Chromium
+profile and its MCP callers share the browser context. `eval` can therefore
+read cookies and `localStorage` left for the same origin by an earlier caller;
+it can also observe that context's current page state. `inspect`'s native
+Playwright path uses a temporary context, but that does not isolate MCP
+`browser_evaluate` calls in shared mode. Treat every caller with access to the
+shared MCP endpoint as part of one trust boundary. Use `per-session` mode or a
+separate PWMCP instance when callers are not mutually trusted, and do not run
+untrusted expressions against authenticated pages in a shared profile.
+
+The `--max-bytes` result limit bounds what `eval` returns; it is not a JavaScript
+sandbox and does not prevent an expression from reading page storage. Its HTTP
+timeout also does not cancel JavaScript already running in the browser. Keep
+shared-browser calls serialized; an expression that runs for a long time can
+keep the single shared browser occupied until the server stops that call.
+
+This CLI uses the existing Streamable HTTP `/mcp` endpoint and does not invoke
+the upstream `browser_run_code_unsafe` tool. The same endpoint controls still
+apply: the internal Docker network is the access boundary in internal mode;
+external access uses TLS and basicAuth; and the MCP gateway's existing Host
+allowlist remains in force. That Host allowlist protects the MCP endpoint from
+DNS rebinding; it is not a destination-site allowlist. A caller with access to
+the MCP endpoint can already navigate and evaluate pages through the server's
+tool list. The client adds a command-line route to that capability, not a new
+server permission or network exposure.
+
+`inspect --format html` also uses `browser_evaluate`, but sends only fixed
+extraction and block-detection functions. It caps the returned HTML at 512 KiB
+and preserves `inspect`'s BLOCKED result for recognised challenges.
+
+When `PWMCP_MCP_URL` includes `username:password@`, the client removes that
+userinfo from the request URL and sends it as an HTTP Basic Authorization
+header. Percent-encode reserved characters in the credentials, use HTTPS when
+they leave a trusted local network, and avoid placing credentialed URLs in
+shared shell history or logs.
+
+The MCP transport sends requests directly to the configured endpoint. It
+ignores `http_proxy`, `https_proxy`, `all_proxy`, and their uppercase variants;
+there is no `PWMCP_MCP_PROXY` setting. The endpoint opener refuses redirects and
+reports their HTTP status because forwarding Authorization or
+`Mcp-Session-Id` to another origin would cross the configured trust boundary.
+This applies to MCP transport requests; the remote browser follows page
+navigation redirects according to its browser behavior.
+
 ## External Mode Access Control
 
 In external mode, access is controlled by:
