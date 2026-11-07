@@ -181,6 +181,7 @@ items:
   - {id: B199, title: "Cleanup-only failures after a finished measurement are ERROR, not an advisory", type: improvement, component: runner, context_estimate: small}
   - {id: B200, title: "CoW parity test lacks git status/index and has never run on a real btrfs area in CI", type: improvement, component: tests, context_estimate: small}
   - {id: B201, title: "Optional packed-object reflink path on XFS", type: improvement, component: workspace, context_estimate: small}
+  - {id: B522, title: "Move Assay observer launchers to the new per-level cgprofile socket path and check the socket-group separation", type: feature, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14080,37 +14081,15 @@ TB-13 phase 2, this entry and cmru KI-114 phase 3, run-gate RG-153 the default f
 
 **Dependencies and order.** After RG-151 and TB-13; in parallel with KI-114. Then RG-153.
 
-## B212 — assay observer launchers: drop `ASSAY_GATE_HOST_DOCKER_GID`, derive gids by `stat`, assert against both docker-class gids
+## B212 — Assay observer host Docker GID source and level-group separation
 
-**Status: OPEN (filed 2026-11-04).** Operator decision 2026-11-04: new fixed estate group `mdt-docker` (gid 2751) on the host relay socket and on
-`/run/cgprofile` (mdt-cockpit MDT-053, cgprofile CP-43); every consumer derives the gid by `stat` of the socket it mounts.
+**Status: IMPLEMENTED on branch `sockets-assay-20261105`, pending controller gate evidence and independent review; amended 2026-11-07.** The original proposal to derive the host Docker GID from the Docker API socket is dropped. That socket's GID describes access to the socket and can belong to a proxy or relay; it is not an authoritative host Docker-group fact. The `/run/cgprofile` directory-GID fallback is also dropped because the new level directories are `root:root 0755`. Current source order is the strict `ASSAY_GATE_HOST_DOCKER_GID` override, then numeric `MDT_HOST_DOCKER_GID`; a malformed selected value refuses and absence names both. The observer GID must be nonzero and differ from Docker. The helper no longer uses a directory GID as a group-separation rule. The launcher tests use a private `unshare -rm` mount fixture at the canonical observer path.
 
-**Problem.** `tools/resource-observer-gid.sh:56-75` (`assay_host_docker_gid`) accepts an environment override `ASSAY_GATE_HOST_DOCKER_GID`
-(passed in "from the host launcher", which is the stale host-number pattern) and otherwise reads `/run/cgprofile` and requires mode 770.
-The observer gid must differ from the docker gid. On an mdt host there are now two docker-class gids (`mdt-docker` on the cgprofile
-directory and the relay socket, and the host `docker` group); on a non-mdt host there is one and possibly no cgprofile at all.
+The initial 2026-11-04 proposal to reject `ASSAY_GATE_HOST_DOCKER_GID` and infer Docker GIDs from socket and `/run/cgprofile` metadata is superseded by the amended source contract above. Keep `ASSAY_GATE_HOST_DOCKER_GID` because the controller supplies an explicit host fact for non-mdt callers; do not stat the Docker API socket or infer a GID from `/run/cgprofile`. Require the observer directory to be `root:root`, with safe mode, but do not require its GID to equal or differ from the socket GID.
 
-**Design.**
+**Controller acceptance still required.** Run the registered Assay gate with the new launcher mount fixture, verify fail-before/pass-after and 100% line plus branch coverage for changed source, and complete mutation proof. Run one pytest at a time under `nice`; do not use the cockpit pytest environment. Keep the non-mdt, no-cgprofile behavior in the supported gate's host acceptance coverage.
 
-- Remove the `ASSAY_GATE_HOST_DOCKER_GID` input entirely (no alias; a set variable is an error naming the replacement, so no stale launcher
-  silently relies on it).
-- Derive the docker-class gid by `stat` of the docker socket the launcher mounts (`DOCKER_HOST` when `unix://`, else the default) and, when
-  present, of `/run/cgprofile`.
-- Assert the observer socket gid differs from every derived docker-class gid (socket gid, `/run/cgprofile` directory gid); keep the
-  existing mode and ownership checks of the observer directory.
-- Messages name the paths read, never a group name.
-
-**Acceptance criteria.**
-
-- The helper's tests cover: observer gid equal to the socket gid refused; equal to the `/run/cgprofile` gid refused; distinct accepted; the old
-  variable set gives a clear error.
-- No `ASSAY_GATE_HOST_DOCKER_GID` remains in `assay/`, docs or tests except the refusal test.
-- **Non-mdt path.** With no `/run/cgprofile` and an arbitrary-gid docker socket the launchers work without the observer (or refuse the observer
-  feature with one clear infrastructure message when it is required) and require no mdt group.
-
-**Test plan.** `bash` helper tests with injected `stat` results, plus the existing launcher tests updated.
-
-**Dependencies and order.** After CP-43 and with MDT-053; pairs with run-gate RG-152.
+**Dependencies and order.** Shares the observer cutover with B522 and Run-Gate RG-152.
 
 <!-- Id note (2026-11-04, ops-dstdns-r2 session): the ids below start at B213, one past the highest id on main (B212); B210 exists only on
      branch finish-assay-1-20261104. The controller resolves ordering on merge. -->
@@ -14316,3 +14295,7 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 **Proposal.** Distinguish the two causes. (a) Keep refusing a target with NO coverage entry. (b) For a target that HAS an entry with zero statements (executed and missing both empty, nothing excluded), either tolerate it as "no executable lines, contributes nothing to the floor" and record it in the verdict (`unmeasurable_targets`, so it is visible and counted neither as covered nor as missed), or, if strictness is wanted, fail at lane-load/plan time (`assay lanes`/`assay plan`, which already parse the target list and can `ast`-check a python target) with a message that names the file and the remedy ("remove it from judge.targets: it has no executable lines") instead of after the baseline. Preferred: tolerate plus record for python whole-target mode, because the estate convention is "list every shipped module" and the inventory tests in tnt/iobench/test-policy would otherwise each have to encode the exclusion rule. Needs the verdict-schema decision and a `verify.py` key-set change if the new field is recorded.
 
 **Interim in the projects.** tnt omits both files (TNT-63, with `tests/test_assay_lane_inventory.py`); the cmru lane (`src/cmru/__init__.py`, `assay.toml` lines 114 and 195) needs the same omission or this fix.
+
+## B522 — Move Assay observer launchers to the new per-level cgprofile socket path
+
+**Status: FIXED on branch `sockets-assay-20261105`, pending controller gate evidence and independent review; amended 2026-11-07.** The registered tester and self-qualification launchers use `/run/cgprofile/observer/cgprofile.sock` on the host and `/run/cgprofile-observer/cgprofile.sock` in the container. The shared guard requires the observer directory to be `root:root` and reads the observer GID from the socket inode. It reads the host Docker GID from `ASSAY_GATE_HOST_DOCKER_GID` first, then `MDT_HOST_DOCKER_GID`, with strict positive-decimal validation; if neither exists it names both. The Docker API socket-owner fallback from the first implementation is removed because a proxy or relay can own the socket with an unrelated access GID. The guard does not infer a Docker GID from `/run/cgprofile` or the observer directory. It requires a nonzero observer GID distinct from Docker and reports the host cutover when the new socket is absent. Assay never mounts or stats the control socket; its control-GID rule is carried by Run-Gate, which opens that endpoint for control requests. README, DESIGN-GUIDE, CONSUMERS and CHANGES describe the source order, no-fallback rule, and new paths.

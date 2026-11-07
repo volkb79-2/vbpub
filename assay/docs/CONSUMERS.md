@@ -535,9 +535,30 @@ caller's peer credentials and native thread ID, derive the cgroup itself,
 return a complete verified ancestry, and expose no control verbs. Run-Gate's
 `resource_observer = "cgprofile"` option mounts the separate cgprofile
 observer socket read-only, supplies its observed GID, and sets this variable.
-Never mount cgprofile's `ctl.sock`: a read-only bind does not make its
-protocol read-only. This socket supplies verified ancestry and event-counter
+The host endpoint is `/run/cgprofile/observer/cgprofile.sock`; binding the
+`observer` directory preserves the in-container endpoint
+`/run/cgprofile-observer/cgprofile.sock`. The host observer directory must be
+`root:root 0755`; the socket inode's GID is the observer access group. This
+path requires the host socket cutover; keep earlier Assay and Run-Gate pins on
+hosts still using the old layout. Never mount the control endpoint
+`/run/cgprofile/control/cgprofile.sock`: a read-only bind does not make its
+protocol read-only. Assay's launchers never mount or stat that control socket;
+Run-Gate carries its control-GID preflight because Run-Gate opens the endpoint
+for control requests. The observer supplies verified ancestry and event-counter
 evidence; it is not a performance-profile stream.
+
+Assay's tester launchers read the host Docker GID from
+`ASSAY_GATE_HOST_DOCKER_GID` first, then `MDT_HOST_DOCKER_GID` from host-setup.
+Set the latter in the host environment before running a plain-host gate, for
+example `export MDT_HOST_DOCKER_GID=999` (replace this example with the host's
+numeric Docker group GID). The optional explicit override takes precedence;
+both values must be positive decimal GIDs, and a malformed override refuses
+instead of falling through. If neither is present, launch refuses and names
+both variables. The Docker API socket's GID is not a fallback because a proxy
+or relay may own it with an unrelated access group. `/run/cgprofile` and the
+observer directory are not GID sources. The observer socket GID must be
+nonzero and different from Docker; Run-Gate also requires it to differ from
+the control socket GID.
 
 After R0/R1, B148/A-494 applies the same local-first observation rule before
 any selected native candidate starts: a configured observer can satisfy it
@@ -607,7 +628,8 @@ separate a test failure from a process or memory limit event. After the R0/R1
 measurements and before any selected native candidate starts, Assay checks the
 same local-first reader. If a private cgroup namespace hides ancestors, a
 caller may explicitly configure a trusted observer-only socket with
-`ASSAY_RESOURCE_OBSERVER_SOCKET`; Assay consults it only after the local reader
+`ASSAY_RESOURCE_OBSERVER_SOCKET`; the Run-Gate mount supplies the new
+in-container endpoint `/run/cgprofile-observer/cgprofile.sock`. Assay consults it only after the local reader
 specifically proves that ancestors are hidden. Run-Gate's
 `resource_observer = "cgprofile"` option mounts cgprofile's separate observer
 socket read-only and supplies this setting. Do not use `--cgroupns=host` or

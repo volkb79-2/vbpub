@@ -334,7 +334,7 @@ def test_hidden_ancestor_fallback_is_explicit_and_narrow(monkeypatch):
     monkeypatch.setattr(resource_limits, "read_current_cgroup_counters", hidden)
     monkeypatch.setattr(resource_limits, "read_resource_observer_counters", lambda path: remote)
     assert resource_limits.read_candidate_resource_counters(
-        observer_socket_path="/run/cgprofile-observer/resource-observer.sock"
+        observer_socket_path="/run/cgprofile-observer/cgprofile.sock"
     ) is remote
     with pytest.raises(ResourceLimitAncestorsHiddenError):
         resource_limits.read_candidate_resource_counters()
@@ -345,7 +345,7 @@ def test_hidden_ancestor_fallback_is_explicit_and_narrow(monkeypatch):
     monkeypatch.setattr(resource_limits, "read_current_cgroup_counters", ordinary_failure)
     with pytest.raises(ResourceLimitObservationError, match="bad local mount"):
         resource_limits.read_candidate_resource_counters(
-            observer_socket_path="/run/cgprofile-observer/resource-observer.sock"
+            observer_socket_path="/run/cgprofile-observer/cgprofile.sock"
         )
 
 
