@@ -1781,6 +1781,7 @@ def test_passthrough_call_wrapper_keeps_closers_after_a_line_comment() -> None:
         ("x => { return x + 1; }", [2], "value", 3),
         ("x => /a,b/.test(x)", ["a,b"], "value", True),
         ("x => 'a,b'", [], "value", "a,b"),
+        ("(a // c\n) => 6", [], "value", 6),
         ("function () { return 5; }", [], "value", 5),
         ("function(){return 1}()", [], "value", 1),
         ("function(){} + 1", [], "value", "function(){}1"),
@@ -1831,6 +1832,7 @@ def test_javascript_scanner_differential_fuzz_matches_node_for_fixed_seeds() -> 
         "o?.of / 2;",
         "a.typeof / 2;",
         "x => o.do / 2",
+        "(a // c\n) => 6",
         "function(){return 1}()",
         "function(){} + 1",
     ]
