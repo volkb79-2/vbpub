@@ -791,10 +791,11 @@ it may set the node mode but does not create or change the parent directory.
 
 ### Dedicated groups for each socket level
 
-The control and observer groups are separate, dedicated access grants. A
-control client can start and stop profiling sessions; an observer client can
-read only the observer contract. Neither group may be named `docker`, resolve
-to GID 0 or the docker GID, or resolve to the other cgprofile level's GID.
+The control and observer groups must be distinct dedicated groups: they cannot
+share a name or resolve to the same GID. A control client can start and stop
+profiling sessions; an observer client can read only the observer contract.
+Neither group may be named `docker`, resolve to GID 0 or the docker GID, or
+resolve to the other cgprofile level's GID.
 `cgpd` checks its own levels; host-setup owns uniqueness across services. The
 installer applies this rule to flags, saved records, existing config, and
 wizard answers, without an override. This keeps control access independent of

@@ -112,12 +112,13 @@ are fixed and require a service restart:
 | `/run/cgprofile/observer/cgprofile.sock` | parent `0755 root:root`; socket mode `0660`, group `root:cgprofile-observer` | observer contracts 2 and 3: resource counters and measurement windows ([`docs/PROTOCOL.md`](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)) |
 
 Each systemd socket unit has one `ListenStream` and passes one named fd to
-`cgpd.service`. Systemd owns the socket nodes across daemon restarts. The
-Both level groups must be dedicated: neither can be named `docker`, resolve to
-GID 0 or the docker GID, or share a GID with the other cgprofile level. The
-installer and config checker refuse these values from flags, saved records,
-existing config, and wizard answers, with no override. Cross-service group
-uniqueness belongs to host-setup. Repeatable `cgpd install --add-user
+`cgpd.service`. Systemd owns the socket nodes across daemon restarts.
+The control and observer groups must be distinct dedicated groups: neither can
+be named `docker`, resolve to GID 0 or the docker GID, or share a GID with the
+other cgprofile level. The installer and config checker refuse these values
+from flags, saved records, existing config, and wizard answers, with no
+override. Cross-service group uniqueness belongs to host-setup.
+Repeatable `cgpd install --add-user
 LEVEL=USER` flags add existing users with `gpasswd -a`. A user named with
 `--add-user` must exist. The installer records and keeps additions, and
 uninstall never removes memberships. On reinstall, recorded users whose

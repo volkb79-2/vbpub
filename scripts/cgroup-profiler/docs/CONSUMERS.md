@@ -56,11 +56,12 @@ retain them and uninstall never removes them. A user named with
 exist are dropped and reported; the install continues. Dry-run output lists
 each requested addition and any dropped recorded users.
 
-Both groups must be dedicated. `cgpd install` and `cgpd config check` refuse a
-group named `docker`, a group resolving to GID 0 or the docker GID, or two
-levels resolving to the same GID. The refusal applies to flags, saved records,
-existing config, and wizard answers, without an override. Cross-service group
-uniqueness is checked by host-setup. See the [group design rationale](DESIGN-GUIDE.md#dedicated-groups-for-each-socket-level).
+The control and observer groups must be distinct dedicated groups: they cannot
+share a name or GID. `cgpd install` and `cgpd config check` refuse a group named
+`docker`, a group resolving to GID 0 or the docker GID, or two levels resolving
+to the same GID. The refusal applies to flags, saved records, existing config,
+and wizard answers, without an override. Cross-service group uniqueness is
+checked by host-setup. See the [group design rationale](DESIGN-GUIDE.md#dedicated-groups-for-each-socket-level).
 
 After installation, these checks should pass:
 

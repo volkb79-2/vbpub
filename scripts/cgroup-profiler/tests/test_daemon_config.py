@@ -145,7 +145,7 @@ class TestFile:
     @pytest.mark.parametrize("control,observer,needle", [
         ({"path": "/control", "group": "same", "mode": "0660"},
          {"path": "/observer", "group": "same", "mode": "0660"},
-         "control and observer groups must be distinct dedicated groups"),
+         "control and observer groups both name 'same'"),
         ({"path": "/same", "group": "control", "mode": "0660"},
          {"path": "/same", "group": "observer", "mode": "0660"}, "sockets.control.path and sockets.observer.path must differ"),
     ])
@@ -204,7 +204,7 @@ class TestFile:
     def test_parse_table_checks_group_and_path_distinctness(self):
         same_group = ('[sockets.control]\npath = "/a"\ngroup = "g"\nmode = "0660"\n'
                       '[sockets.observer]\npath = "/b"\ngroup = "g"\nmode = "0660"\n')
-        with pytest.raises(dc.ConfigError, match="control and observer groups must be distinct dedicated groups"):
+        with pytest.raises(dc.ConfigError, match="control and observer groups both name 'g'"):
             dc.parse_table(same_group)
         same_path = ('[sockets.control]\npath = "/a"\ngroup = "c"\nmode = "0660"\n'
                      '[sockets.observer]\npath = "/a"\ngroup = "o"\nmode = "0660"\n')

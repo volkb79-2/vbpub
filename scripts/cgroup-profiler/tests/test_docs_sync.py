@@ -184,7 +184,7 @@ def test_recorded_user_reconciliation_and_requested_user_validation_are_document
         normalized = " ".join(text.split())
         assert "recorded users whose accounts no longer exist are dropped and reported" in normalized
         assert "A user named with `--add-user` must exist" in normalized
-    assert "missing recorded accounts do not block later installs" in " ".join(design.split())
+    assert "missing recorded accounts do not block later installs" in " ".join(design.split()).lower()
     assert "dropped and reported; the install continues" in " ".join(spec.split())
 
 
@@ -192,6 +192,8 @@ def test_group_examples_and_legacy_container_files_name_the_dedicated_model():
     spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
     serve = (ROOT / "src" / "cgprofile" / "serve.py").read_text(encoding="utf-8")
     compose = (ROOT / "ciu.compose.yml.j2").read_text(encoding="utf-8")
+    compose_text = " ".join(
+        line.lstrip().removeprefix("#").strip() for line in compose.splitlines())
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     assert '"group": "cgprofile-control", "gid": 999' in spec
@@ -200,7 +202,7 @@ def test_group_examples_and_legacy_container_files_name_the_dedicated_model():
     assert "docker-group trust" not in serve
     assert "dedicated socket group" in serve
     assert "LEGACY cgprofile 1.x CONTAINER TEMPLATE ONLY" in compose
-    assert "obsolete /run/cgprofile 0770 root:docker layout" in " ".join(compose.split())
+    assert "obsolete /run/cgprofile 0770 root:docker layout" in compose_text
     assert "LEGACY cgprofile container image" in dockerfile
 
 

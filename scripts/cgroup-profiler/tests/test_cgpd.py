@@ -173,6 +173,13 @@ class TestConfigCheck:
         ):
             assert cgpd._expand_config_test(argv) == argv
 
+    def test_short_test_option_expansion_requires_exactly_one_occurrence(self):
+        assert cgpd._expand_config_test([]) == []
+        assert cgpd._expand_config_test(["--config", "/tmp/cgpd.toml"]) == [
+            "--config", "/tmp/cgpd.toml",
+        ]
+        assert cgpd._expand_config_test(["-t", "-t"]) == ["-t", "-t"]
+
     @pytest.mark.parametrize("argv", [["uninstall", "-t"], ["run", "-t"]])
     def test_short_test_option_is_a_normal_argparse_error_outside_config_test(self, argv, capsys):
         assert cgpd.main(argv) == 2

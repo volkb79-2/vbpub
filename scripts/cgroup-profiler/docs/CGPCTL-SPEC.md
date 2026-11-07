@@ -365,8 +365,9 @@ distribution's, via scm; it is no longer an environment input).
 
 Validation reuses the 1.x rules: slice names must expand to a cgroup path (`a--b`, `-a` and names with a
 `/` are refused); `allow_uids` entries are non-negative integers; `max_sessions` bounds the handler pool
-sizing. `interval` is clamped to [0.25, 30] at use, as on the wire. Both socket groups are dedicated:
-neither may be named `docker`, resolve to GID 0 or the docker GID, or resolve to the other level's GID.
+sizing. `interval` is clamped to [0.25, 30] at use, as on the wire. The control and observer socket
+groups must be distinct dedicated groups: they cannot share a name or resolve to the same GID. Neither
+may be named `docker`, resolve to GID 0 or the docker GID, or resolve to the other level's GID.
 `config check`, the daemon loader and the installer share this rule. The installer refuses invalid group
 values from flags, saved `install.toml`, existing `cgpd.toml`, and wizard answers, with no override.
 Cross-service group uniqueness belongs to host-setup.

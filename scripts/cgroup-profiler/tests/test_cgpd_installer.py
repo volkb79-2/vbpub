@@ -562,7 +562,7 @@ def test_mapped_group_must_exist_and_all_levels_reject_docker_root_and_duplicate
         installer._validate_group_mapping("docker-alias", "cgprofile-observer")
     with pytest.raises(installer.InstallError, match="docker group's GID"):
         installer._validate_group_mapping("cgprofile-control", "docker-alias")
-    with pytest.raises(installer.InstallError, match="control and observer groups must be distinct"):
+    with pytest.raises(installer.InstallError, match="control and observer groups both name 'same'"):
         installer._validate_group_mapping("same", "same")
     with pytest.raises(installer.InstallError, match="same GID"):
         installer._validate_group_mapping("control", "observer")
@@ -927,6 +927,26 @@ def test_install_still_refuses_a_missing_user_named_with_add_user(host, monkeypa
     assert not Path(host.paths.opt).exists()
 
 
+def test_tty_wizard_refuses_a_prompted_nonexistent_user(tmp_path, monkeypatch):
+    def getpwnam(name):
+        if name == "missing-user":
+            raise KeyError(name)
+        return SimpleNamespace(pw_name=name)
+
+    monkeypatch.setattr(installer.pwd, "getpwnam", getpwnam)
+    monkeypatch.setattr(installer, "_group_gid", lambda _name: None)
+    prompts = Prompts(text_values=["missing-user"])
+
+    with pytest.raises(installer.InstallError, match="user 'missing-user' does not exist"):
+        installer._gather_inputs(
+            _args(add_user=None), _runtime(interactive=True, prompts=prompts), _paths(tmp_path))
+
+    assert prompts.calls == [(
+        "text", "Users to add to the control group (comma-separated)",
+        {"default": "", "required": False},
+    )]
+
+
 @pytest.mark.parametrize(
     "groups,overrides,needles",
     [
@@ -943,10 +963,10 @@ def test_install_still_refuses_a_missing_user_named_with_add_user(host, monkeypa
         ({"root-alias": 0}, {"observer_group": "root-alias"},
          ("observer group 'root-alias'", "GID 0", "cgprofile-observer")),
         ({"shared": 9002}, {"control_group": "shared", "observer_group": "shared"},
-         ("control and observer groups must be distinct dedicated groups",)),
+         ("control and observer groups both name 'shared'",)),
         ({"control-alias": 9003, "observer-alias": 9003},
          {"control_group": "control-alias", "observer_group": "observer-alias"},
-         ("control and observer groups", "same GID 9003")),
+         ("control group 'control-alias' and observer group 'observer-alias'", "same GID 9003")),
     ],
 )
 def test_install_refuses_unsafe_group_flags_before_any_write(tmp_path, monkeypatch, groups, overrides, needles):
