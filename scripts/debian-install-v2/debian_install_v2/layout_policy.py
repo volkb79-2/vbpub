@@ -11,7 +11,8 @@ Layout contract (README "Disk layout", docs/DESIGN-data-area-v2.md):
   numbers they have; cloud images number root 1 with 14/15 before it.)
 * The layout depends ONLY on the config (`partitioning` plus `swap_*`). There
   is no rule-based sizing and no hidden reserve: the plan accounts for the whole
-  disk (only the 1 MiB end buffer remains), or the installer refuses it.
+  disk except GPT backup metadata and alignment slack before it, or the
+  installer refuses it.
 
 Everything here is arithmetic on integers (GiB or 512-byte sectors); nothing
 touches a device.
@@ -28,8 +29,9 @@ SECTORS_PER_GIB = GIB // SECTOR
 ALIGN = 2048  # 1 MiB in sectors
 MIB_SECTORS = 2048
 
-# A swap partition may end at most this far before the disk end: the planner
-# reserves a 1 MiB end buffer after rounding to 1 MiB alignment.
+# Maximum accepted slack after the final partition. The planner ends at the
+# 1 MiB-aligned boundary before GPT's 34-sector backup metadata, leaving 34 to
+# 2081 sectors depending on the disk size's alignment remainder.
 SWAP_END_SLACK_SECTORS = 4096
 GPT_LAST_USABLE_OFFSET = 34
 
@@ -109,15 +111,14 @@ LV_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,30}")
 PERCENT_RE = re.compile(r"(0|[1-9][0-9]{0,2})(?:\.([0-9]{1,2}))?%")
 RESERVED_LABELS = frozenset({"esp", "efi", "boot", "root", "swap", LVM_PV_PARTLABEL, IOBENCH_PARTLABEL})
 _RESERVED_MOUNT_TREES = (
-    "/boot", "/etc", "/usr", "/var", "/home", "/root", "/tmp", "/var/lib/dpkg",
-    "/proc", "/sys", "/dev", "/run", "/bin", "/sbin", "/lib",
+    "/boot", "/etc", "/usr", "/root", "/tmp", "/proc", "/sys", "/dev", "/run", "/bin", "/sbin", "/lib",
+    "/var/lib/dpkg", "/var/lib/apt", "/var/cache/apt", "/var/log",
     # runner tree-cache paths (mdt-cockpit): a data area must never shadow them
     "/srv/tree-cache", "/srv/tree-upper",
 )
-# Parents of live system state are refused too. No system-tree filesystem is
-# pre-populated by design today; adding an exception requires naming the exact
-# mountpoint here and documenting how its contents are seeded.
-_RESERVED_MOUNT_PARENTS = ("/var", "/var/lib", "/srv", "/home", "/root", "/tmp")
+# These paths themselves contain or anchor OS state. Child data mounts are
+# allowed unless they intersect one of the protected trees above.
+_RESERVED_MOUNT_POINTS = ("/var", "/var/lib", "/srv", "/home")
 PREPOPULATED_SYSTEM_MOUNTS: frozenset[str] = frozenset()
 MAX_GIB = 10240
 GPT_MAX_PARTITIONS = 128
@@ -296,13 +297,19 @@ def _check_mount(mount: object, what: str) -> str:
     if not re.fullmatch(r"/[A-Za-z0-9_.@+/-]*", mount) or "//" in mount or "/." in mount + "/":
         raise LayoutPolicyError(f"{what} mount {mount!r} contains unsupported characters or dot segments")
     if mount == "/":
-        raise LayoutPolicyError(f"{what} mount {mount!r} would hide installer or system state")
+        raise LayoutPolicyError(f"{what} mount {mount!r} would hide protected system path '/'")
     if mount in PREPOPULATED_SYSTEM_MOUNTS:
         return mount
-    if any(mount == p or mount.startswith(p + "/") for p in _RESERVED_MOUNT_TREES):
-        raise LayoutPolicyError(f"{what} mount {mount!r} would hide installer or system state")
-    if mount in _RESERVED_MOUNT_PARENTS or any(p.startswith(mount + "/") for p in (*_RESERVED_MOUNT_TREES, *_RESERVED_MOUNT_PARENTS)):
-        raise LayoutPolicyError(f"{what} mount {mount!r} would hide installer or system state")
+    for protected in _RESERVED_MOUNT_TREES:
+        if mount == protected or mount.startswith(protected + "/") or protected.startswith(mount + "/"):
+            raise LayoutPolicyError(
+                f"{what} mount {mount!r} would hide protected system path {protected!r}"
+            )
+    for protected in _RESERVED_MOUNT_POINTS:
+        if mount == protected or protected.startswith(mount + "/"):
+            raise LayoutPolicyError(
+                f"{what} mount {mount!r} would hide protected system path {protected!r}"
+            )
     return mount
 
 
@@ -443,16 +450,15 @@ def parse_partitioning(raw: object) -> DiskSpec:
         raise LayoutPolicyError(f"partitioning.reserve_gb must be an integer GiB value from 0 to {MAX_GIB} or \"*\"")
     else:
         reserve = Size("gib", reserve_raw)
-    fixed_reserve = reserve.kind == "gib" and reserve.value > 0
     data_raw = raw.get("data")
     if data_raw is None:
         if root.kind == "keep" and not reserve.is_star:
             raise LayoutPolicyError("root keep leaves space unallocated: add a data volume or set reserve_gb to \"*\"")
         entries = [("root", root)]
-        if fixed_reserve or reserve.is_star:
+        if reserve.is_star:
             entries.append(("reserve_gb", reserve))
         if root.kind == "keep":
-            entries = [("reserve_gb", reserve)] if fixed_reserve or reserve.is_star else []
+            entries = [("reserve_gb", reserve)] if reserve.is_star else []
         if reserve.is_star and any(size.kind == "percent" for _name, size in entries):
             raise LayoutPolicyError(
                 "percent sizes need a known pool: they cannot be combined with reserve_gb \"*\" "
@@ -485,7 +491,7 @@ def parse_partitioning(raw: object) -> DiskSpec:
         ]
         if root.kind == "keep" and not volumes and not reserve.is_star:
             raise LayoutPolicyError("root keep leaves space unallocated: add a data volume or set reserve_gb to \"*\"")
-        if fixed_reserve or reserve.is_star:
+        if reserve.is_star:
             pool.append(("reserve_gb", reserve))
         if reserve.is_star and any(size.kind == "percent" for _name, size in pool):
             raise LayoutPolicyError(
@@ -503,7 +509,7 @@ def parse_partitioning(raw: object) -> DiskSpec:
         if isinstance(free, bool) or not isinstance(free, int) or not 0 <= free <= MAX_GIB:
             raise LayoutPolicyError(f"partitioning.data.vg_free_gib must be an integer GiB value from 0 to {MAX_GIB}")
         pool = ([] if root.kind == "keep" else [("root", root)]) + [("pv_size", pv)]
-        if fixed_reserve or reserve.is_star:
+        if reserve.is_star:
             pool.append(("reserve_gb", reserve))
         if reserve.is_star and any(size.kind == "percent" for _name, size in pool):
             raise LayoutPolicyError(
@@ -571,9 +577,11 @@ def plan_pool(
 ) -> PoolPlan:
     """Lay out root + data partitions contiguously from `root_start` to `pool_end` (first swap start, aligned).
 
-    Percent is a share of the POOL = pool_end - root_start - reserve (with root `keep`: the pool behind the
-    kept root). Every boundary is 1 MiB aligned; the `*` entry (root, a data partition, the PV, or the reserve)
-    absorbs every remainder, so nothing is left over. Raises LayoutPolicyError with the numbers on any problem.
+    Percent is a share of the pool after subtracting the raw iobench partition
+    and any fixed reserve (with root `keep`: the pool behind the kept root).
+    Every boundary is 1 MiB aligned; the `*` entry (root, data partition, PV,
+    or reserve) absorbs every remainder, so nothing is left over. Raises
+    LayoutPolicyError with the numbers on any problem.
     """
     keep = spec.root.kind == "keep"
     reserve_fixed = spec.reserve.value * SECTORS_PER_GIB if spec.reserve.kind == "gib" else 0
@@ -593,7 +601,8 @@ def plan_pool(
     total = end_total - (cursor0 if keep else root_start)
     if total <= 0:
         raise LayoutPolicyError(
-            f"no space is left for the plan: swap and reserve_gb take the disk down to {_gib(max(end_total, 0))} "
+            f"no space is left for the plan: swap, raw iobench ({spec.iobench_raw_gb or 0} GiB), and reserve_gb "
+            f"take the disk down to {_gib(max(end_total, 0))} "
             f"while root starts at {_gib(root_start)}"
         )
     items = [(n, s, m) for n, s, m in zip(names, sizes, mins)][first_pool:]

@@ -51,7 +51,10 @@ is sent.
 The operating-system installer owns customScript generation. Netcup's wizard
 can consume a plain command or a JSON bundle from that producer with
 `--custom-script-file`; file-driven installs send the reviewed `customScript`
-as-is. Netcup only expands the provider-neutral
+as-is. The Debian-v2 partitioning plan and its root-geometry-specific offline
+preview belong to the producer contract; Netcup documents the saved r1002 and
+v1001 adoption commands in its [consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
+Netcup only expands the provider-neutral
 `{{CONTROLLER_SSH_PUBKEY}}` marker and optionally waits for a declared
 `completionMarker`. A plain image install can therefore complete without any
 temporary controller key.

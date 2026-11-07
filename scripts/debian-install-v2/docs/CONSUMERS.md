@@ -100,29 +100,33 @@ partition:
 ```
 
 Every managed partition is numbered by physical order: root, `MDT_COW`,
-`iobench-raw`, then the tail swap partitions. The exact numbers depend on
-preserved partitions before root. `provision-runner.sh` finds the CoW
+`iobench-raw`, then the tail swap partitions. The exact numbers depend on the
+root number and preserved partitions before root. `provision-runner.sh` finds the CoW
 partition by PARTLABEL `MDT_COW`; it does not infer `/dev/vda8` or carve a
 partition.
 
 Resolve the table for a real target size before ordering a reinstall:
 
 ```bash
-./debian-install-v2.py plan --config target-host.json --disk-size 512GiB --ram-gib 8
+./debian-install-v2.py plan --config target-host.json --disk-size 512GiB --ram-gib 8 \
+  --root-start-sector 2500608 --root-number 3
 ```
 
 `--ram-gib` is needed when swap size is automatic. Set
-`--root-current-size-gib` when `partitioning.root` is `"keep"`; use
-`--root-start-sector` if root begins somewhere other than sector 2048. The
-offline table assumes root is partition 1 and no preserved pre-root
-partitions; the live plan reads them from the actual disk. Both forms show
+`--root-current-size-gib` when `partitioning.root` is `"keep"`. The offline
+resolver defaults to root 1 at sector 2048; pass `--root-start-sector` and
+`--root-number` to match a target. For the saved netcup host geometry, pass
+sector 2500608 and root number 3. The offline table omits preserved pre-root
+geometry; the live plan reads it from the actual disk. Both forms show
 the resolved table in GiB, and a refusal includes the resolved table when
 the provided disk facts are enough to calculate it.
 
-At config load and `build-customscript`, the installer refuses fixed sizes
-without a growable remainder, percentages that do not total 100% without a
-star, and percent/fixed mixtures. Disk fit and filesystem minimums are
-checked against the target disk. `swap_policy` must be `on` or `off`.
+At config load and `build-customscript`, the installer refuses fixed root/data
+sizes without a growable remainder, percentages that do not total 100% without
+a star, and percent/fixed mixtures. A numeric fixed reserve can be combined
+with percentage sizes; `reserve_gb: "*"` cannot. Disk fit, filesystem
+minimums, and GPT's 128-partition limit are checked against the target disk.
+`swap_policy` must be `on` or `off`.
 `on` replaces the guest's configured swap setup with planned GPT partitions: it
 disables all currently active swap, removes configured swapfiles and swap
 logical volumes, and replaces `/etc/fstab` swap entries. An eligible pre-root swap partition is retained.
@@ -137,10 +141,14 @@ a 256 MiB margin. Root-shrink safety is checked before swapfile cleanup.
 Automatic swap sizing uses
 `min(ceil(RAM × 2), round-half-up(20% of disk capacity))`, in GiB.
 
-Mounts directly on protected system paths such as `/var`, `/var/lib`, `/srv`,
-`/home`, `/usr`, `/etc`, and `/boot`, or on a parent that would cover one, are
-refused with the protected path named. No exact system mountpoint is
-pre-populated by design; dedicated children such as `/srv/cow` are valid.
+Exact mounts on `/`, `/var`, `/var/lib`, `/srv`, and `/home` are refused. A
+mount equal to, inside, or above protected OS-state trees `/usr`, `/etc`,
+`/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`,
+`/lib`, `/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt`, `/var/log`,
+`/srv/tree-cache`, and `/srv/tree-upper` is also refused. The refusal names the
+requested mount and protected path. Data mounts such as `/var/lib/docker`,
+`/var/lib/containerd`, `/srv/cow`, `/srv/data`, and `/home/runner` are allowed
+when they do not cover a protected tree.
 See [README](../README.md#disk-layout) for filesystem and ordering details and
 [DESIGN-GUIDE](DESIGN-GUIDE.md#root-and-swap-policies) for why the plan has one
 sizing authority.

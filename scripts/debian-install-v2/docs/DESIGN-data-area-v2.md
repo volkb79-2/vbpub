@@ -75,8 +75,10 @@ policies are `on` and `off`, so the plan always knows the pool boundary.
 At config load and `build-customscript`, the schema rejects impossible shapes:
 
 - fixed GiB sizes need exactly one growable `"*"` or `reserve_gb: "*"`;
-- percentage sizes cannot be mixed with fixed sizes and must total exactly
-  100% unless a single `"*"` absorbs the remainder;
+- percentage sizes cannot be mixed with fixed root/data sizes and must total
+  exactly 100% unless a single `"*"` absorbs the remainder; a numeric fixed
+  `reserve_gb` is allowed and is removed before the percentage pool is
+  calculated;
 - percentages cannot be combined with `reserve_gb: "*"` because that reserve
   would make the percentage pool unknown;
 - duplicate stars, invalid labels, unsafe mounts, and out-of-range values are
@@ -91,9 +93,11 @@ disk facts and plan can be resolved. If a plan cannot fit, the refusal shows
 the usable capacity and requested raw/swap sizes.
 
 The offline resolver assumes root is partition 1 at sector 2048 by default
-and has no preserved pre-root partitions. Override the root start with
-`--root-start-sector` for a different starting offset. Live planning reads the
-actual partition geometry and preserves eligible pre-root partitions.
+and omits preserved pre-root partition geometry. Override the root start with
+`--root-start-sector` and root number with `--root-number` to match the target.
+For the saved netcup layout use `--root-start-sector 2500608 --root-number 3`.
+Live planning reads the actual partition geometry and preserves eligible
+pre-root partitions.
 
 ## Root safety and table writes
 
@@ -106,23 +110,23 @@ partition table. A smaller target uses the existing offline ext4 shrink hook,
 which verifies current usage and filesystem minimum plus the safety margin.
 
 Stage two writes one crash-safe table containing data/raw/swap partitions,
-then grows root if needed, formats or mounts only configured data volumes,
-and activates swap. The install benchmark runs after the table is final and
-before data formatting or swap activation. The `sfdisk -N` root-growth step is
-documented in [CHANGES.md](../CHANGES.md).
+then runs the install benchmark against the final raw partition. It applies
+the io.cost model from that benchmark result before growing root, formatting
+or mounting configured data volumes, and activating swap. The `sfdisk -N`
+root-growth step is documented in [CHANGES.md](../CHANGES.md).
 
 ## Mount policy
 
-Data mounts are validated during config load. Mounts directly on protected
-system directories, or on a parent that would cover one, are refused because
-the installer does not pre-populate those filesystems. Protected mountpoints
-include `/var`, `/var/lib`, `/srv`, `/home`, `/usr`, `/etc`, `/boot`, `/root`,
-`/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`, and `/lib`; specific
-protected descendants include `/var/lib/dpkg`, `/srv/tree-cache`, and
-`/srv/tree-upper`. A refusal names the requested mountpoint and the protected
-tree. A dedicated child such as `/srv/cow` is allowed because it does not
-cover `/srv` or another protected path. No exact system mountpoint is
-currently marked as pre-populated by design.
+Data mounts are validated during config load. The exact paths `/`, `/var`,
+`/var/lib`, `/srv`, and `/home` are refused. A mount equal to, inside, or
+above a protected OS-state tree is also refused: `/usr`, `/etc`, `/boot`,
+`/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`, `/lib`,
+`/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt`, `/var/log`,
+`/srv/tree-cache`, and `/srv/tree-upper`. Refusals name the requested mount
+and the protected path it would hide. Data children such as
+`/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, `/srv/data`, and
+`/home/runner` are allowed when they do not cover one of those protected
+trees. The installer does not pre-populate protected system filesystems.
 
 Mounts must be absolute, cannot collide with each other, and are written to
 fstab by UUID. A mount equal to or containing `/var/lib/docker` gets a systemd
@@ -133,8 +137,9 @@ dependency so Docker waits for it.
 Configured data partitions are recognized only by both Linux partition type
 and exact PARTLABEL. A matching filesystem label alone is never enough. The
 `iobench-raw` partition is also checked by PARTLABEL, type, start, and size
-before it can be wiped. Partition numbers after root must remain within GPT's
-128-entry limit; numbering beyond 128 is refused before any table write.
+before it can be wiped. Config load refuses a statically oversized partition
+count; the offline and live planners also check the actual root number and
+refuse any table that would exceed GPT's 128-entry limit before a table write.
 
 The runner locates the planned CoW partition using PARTLABEL `MDT_COW`, so its
 partition number may change when the plan changes. It never creates or carves

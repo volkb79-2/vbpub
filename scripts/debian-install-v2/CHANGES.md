@@ -25,10 +25,14 @@ All notable changes to debian-install-v2 are recorded here.
   `{"partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [{"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}}}`
   (data takes the remainder before the raw partition and swap); old capped-root-only settings must be rewritten as an explicit plan.
 - Deferred: `fs: zfs` as a managed filesystem, btrfs `subvol` (both refused with a clear message).
-- Fixed and percentage size shapes are rejected during config load and `build-customscript`; `plan --disk-size SIZE` resolves a table
-  offline. System mountpoints and their parents are refused with the affected protected path.
+- Fixed root/data sizes cannot mix with percentage sizes; a numeric fixed reserve can accompany a percentage pool. The offline resolver
+  accepts `--root-start-sector` and `--root-number` (netcup: `2500608`, `3`). Config load and both planners enforce GPT's 128-entry limit.
+- Mount refusals name the protected OS-state path. Exact `/`, `/var`, `/var/lib`, `/srv`, and `/home` mounts are refused, as are mounts
+  covering `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/var/lib/dpkg`,
+  `/var/lib/apt`, `/var/cache/apt`, `/var/log`, `/srv/tree-cache`, or `/srv/tree-upper`; dedicated data children such as
+  `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, and `/home/runner` remain allowed.
 - Tests cover boundary behavior with swap on/off, raw partition geometry and wipe ordering, PARTLABEL-only recognition, static invalid
-  plans, protected mounts, and the GPT partition-number limit. `test_data_area_vm.py` remains in `r1-vm-real-commit`.
+  plans, protected and allowed mounts, offline root geometry, and the GPT partition-number limit. `test_data_area_vm.py` remains in `r1-vm-real-commit`.
 
 ### Fixed (div2-data-area-v2 review): one GPT-safe pool boundary and raw benchmark allocation
 - The swap planner and data planner now share the same exclusive pool end. Swap-off plans reserve backup-GPT metadata and remain
@@ -37,6 +41,7 @@ All notable changes to debian-install-v2 are recorded here.
   and runs iobench against the planned `iobench-raw` partition, which stays in the final table.
 - `show_plan`, the install summary, wizard summary, and refusal output describe the raw reservation; the resolved plan table is shown
   in GiB when disk facts suffice.
+- Stage two runs `iobench` on the planned raw partition before configuring io.cost, so its benchmark result is available to the model.
 - All root growth now updates only the root partition with `sfdisk -N <root-number>`, refreshes it with `partx -u`, and verifies the
   exact planned size. This applies to every current plan; the plan-less `root_resize_policy` path has been removed.
 

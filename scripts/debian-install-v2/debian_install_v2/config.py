@@ -435,6 +435,20 @@ def validate_config(config: Config) -> None:
     try:
         spec = layout_policy.disk_spec(config.partitioning)
         layout_policy.validate_prereqs(swap_policy=config.swap_policy)
+        if config.swap_policy == "on":
+            swap_slots = (
+                config.swap_partition_count
+                if config.swap_disk_total_gb is None
+                else min(config.swap_partition_count, config.swap_disk_total_gb)
+            )
+        else:
+            swap_slots = 0
+        highest_planned_number = 1 + spec.partition_count + swap_slots
+        if highest_planned_number > layout_policy.GPT_MAX_PARTITIONS:
+            raise layout_policy.LayoutPolicyError(
+                f"configured partition plan needs at least partition number {highest_planned_number}, above the GPT "
+                f"limit of {layout_policy.GPT_MAX_PARTITIONS}; reduce data volumes, iobench_raw_gb, or swap slots"
+            )
         if config.run_io_benchmark and spec.iobench_raw_gb is None:
             raise layout_policy.LayoutPolicyError(
                 "run_io_benchmark requires partitioning.iobench_raw_gb; reserve the raw partition or disable the benchmark"

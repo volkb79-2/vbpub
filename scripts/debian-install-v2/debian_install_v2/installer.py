@@ -4516,7 +4516,6 @@ MaxFileSec=1month
         self._disable_active_swap()
         if self.config.run_zswap_config:
             self._configure_zswap()
-        self._configure_iocost()
         if self.config.run_cgroup2_config:
             self._configure_cgroup2_flags()
         if self.config.run_ksm:
@@ -4533,6 +4532,9 @@ MaxFileSec=1month
         # Run against the final, already-planned raw partition before any data
         # volume or swap partition is formatted or activated.
         self._run_io_benchmark()
+        # The iocost model consumes the coefficients produced by the install
+        # benchmark. Configure it only after that result is available.
+        self._configure_iocost()
         self._grow_root_to_plan()
         self._configure_root_cap_boot_guards()
         self._activate_swap_partitions()

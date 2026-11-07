@@ -62,7 +62,7 @@ def _assert_numbers_follow_disk_position(entries):
 
 
 def _assert_whole_disk_used(entries, disk_sectors, root_start):
-    """Every partition after root touches the next one, and the last ends at the 1 MiB end buffer."""
+    """Check contiguity and that the tail ends before backup GPT metadata plus alignment slack."""
     tail = sorted((e for n, e in entries.items() if int(e["start"]) >= root_start), key=lambda e: int(e["start"]))
     for first, second in zip(tail, tail[1:]):
         assert int(first["start"]) + int(first["size"]) == int(second["start"]), "gap inside the plan"
@@ -209,7 +209,7 @@ def test_pool_end_is_shared_and_gpt_safe_for_all_plan_shapes(
 ):
     """Kills M-swapoff-pool-end and guards on/off against the backup GPT area."""
     disk_sectors = disk_gib * S + remainder
-    root_start = 2_625_536
+    root_start = 2_500_608
     installer = make_planner(
         tmp_path / f"{disk_gib}-{remainder}-{swap_policy}-{hash(str(partitioning)) & 0xffff}",
         disk_gib=disk_gib,
@@ -485,9 +485,28 @@ def test_lvm_commands_pass_the_allowlist_star_lv_is_last_and_unformatted_lv_is_s
     assert "/dev/vg_data/cow /srv/cow btrfs" in written and "spare" not in written
 
 
-def test_mount_on_system_state_is_refused_with_a_clear_reason(tmp_path):
-    plan = {"root": 160, "data": {"kind": "partitions", "volumes": [{**COW, "mount": "/var/lib/docker"}]}}
-    with pytest.raises(InstallerError, match="would hide installer or system state"):
+@pytest.mark.parametrize(
+    ("mount", "needs_docker_dependency"),
+    [
+        ("/var/lib/docker", True),
+        ("/var/lib/containerd", False),
+        ("/srv/cow", False),
+        ("/home/runner", False),
+    ],
+)
+def test_data_mounts_are_allowed_and_docker_storage_waits_for_docker(
+    tmp_path, mount, needs_docker_dependency
+):
+    plan = {"root": 160, "data": {"kind": "partitions", "volumes": [{**COW, "mount": mount}]}}
+    installer = _stage_two(tmp_path, plan)
+    line = next(line for line in installer.actions.dry_run_writes["/etc/fstab"].splitlines() if mount in line)
+    assert f" {mount} btrfs " in line
+    assert ("x-systemd.required-by=docker.service" in line) is needs_docker_dependency
+
+
+def test_mount_on_package_database_is_refused_with_the_protected_path(tmp_path):
+    plan = {"root": 160, "data": {"kind": "partitions", "volumes": [{**COW, "mount": "/var/lib/dpkg"}]}}
+    with pytest.raises(InstallerError, match=r"protected system path '/var/lib/dpkg'"):
         _stage_two(tmp_path, plan)
 
 

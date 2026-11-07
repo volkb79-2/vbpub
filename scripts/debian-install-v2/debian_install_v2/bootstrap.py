@@ -363,6 +363,7 @@ def _plan(args: Any, runtime: Any) -> int:
                 disk_size=args.disk_size,
                 ram_gib=args.ram_gib,
                 root_start_sector=args.root_start_sector,
+                root_number=args.root_number,
                 root_current_size_gib=args.root_current_size_gib,
             )
         except PlanPreviewError as exc:
@@ -383,6 +384,7 @@ def _plan(args: Any, runtime: Any) -> int:
                 disk_size=f"{Decimal(disk_sectors * 512) / Decimal(1024 ** 3)}GiB",
                 ram_bytes=installer._memory_total_bytes(),
                 root_start_sector=root_start,
+                root_number=installer.root_number,
                 root_current_size_sectors=root_current,
             )
             detail = "Resolved disk table (GiB):\n" + format_table(preview["plan_table"])
@@ -607,6 +609,10 @@ def build_cli():
                 OptionSpec(
                     ("--root-start-sector",), "root partition start sector (offline plans default to 2048)",
                     group="OFFLINE PLAN", metavar="SECTOR", parser_kwargs={"type": int, "default": 2048},
+                ),
+                OptionSpec(
+                    ("--root-number",), "root partition number (offline plans default to 1)",
+                    group="OFFLINE PLAN", metavar="NUMBER", parser_kwargs={"type": int, "default": 1},
                 ),
                 OptionSpec(
                     ("--root-current-size-gib",), "current root size when partitioning.root is keep",

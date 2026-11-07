@@ -112,10 +112,13 @@ def test_plan_cli_resolves_a_disk_size_without_host_inspection(capsys):
     }
     result = main([
         "plan", "--config-json", json.dumps(config), "--disk-size", "512GiB", "--ram-gib", "8",
+        "--root-start-sector", "2500608", "--root-number", "3",
     ])
     assert result == 0
     output = capsys.readouterr().out
     assert "Resolved plan table (GiB):" in output
+    assert "  3  root" in output and "1.19" in output
+    assert "  4  data" in output
     assert "MDT_COW" in output and "iobench-raw" in output and "swap" in output
 
 

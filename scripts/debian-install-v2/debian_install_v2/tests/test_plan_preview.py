@@ -43,6 +43,33 @@ def test_resolved_512_gib_plan_shows_data_raw_and_swap_in_disk_order(swap_policy
         assert left["start"] + left["sectors"] == right["start"]
 
 
+def test_netcup_preview_uses_the_real_root_start_and_partition_number():
+    config = Config(
+        partitioning={"root": 160, "data": {"kind": "partitions", "volumes": [
+            {"size": "*", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+        ]}},
+        swap_policy="on",
+        swap_disk_total_gb=16,
+        swap_partition_count=4,
+    )
+    result = resolve_plan(
+        config,
+        disk_size="512GiB",
+        root_start_sector=2_500_608,
+        root_number=3,
+    )
+    rows = result["plan_table"]
+    assert [(row["entry"], row["number"], row["start"], row["sectors"]) for row in rows] == [
+        ("root", 3, 2_500_608, 335_544_320),
+        ("data", 4, 338_044_928, 685_363_200),
+        ("iobench raw", 5, 1_023_408_128, 16_777_216),
+        ("swap", 6, 1_040_185_344, 8_388_608),
+        ("swap", 7, 1_048_573_952, 8_388_608),
+        ("swap", 8, 1_056_962_560, 8_388_608),
+        ("swap", 9, 1_065_351_168, 8_388_608),
+    ]
+
+
 @pytest.mark.parametrize("swap_policy", ["on", "off"])
 def test_20_gib_and_2_tib_are_resolved_with_explicit_swap_size(swap_policy):
     config = Config(
@@ -88,3 +115,22 @@ def test_disabling_raw_partition_removes_it_from_the_resolved_table():
     config = Config(partitioning={"root": "*", "iobench_raw_gb": False}, swap_policy="off")
     result = resolve_plan(config, disk_size="512GiB")
     assert [row["entry"] for row in result["plan_table"]] == ["root"]
+
+
+def test_offline_resolver_accepts_partition_128_and_refuses_129():
+    def config(data_count: int) -> Config:
+        volumes = [
+            {"size": 1, "fs": "none", "label": f"V{index:03d}"}
+            for index in range(data_count)
+        ]
+        return Config(
+            partitioning={"root": "*", "iobench_raw_gb": False, "data": {
+                "kind": "partitions", "volumes": volumes,
+            }},
+            swap_policy="off",
+        )
+
+    accepted = resolve_plan(config(127), disk_size="512GiB")
+    assert accepted["plan_table"][-1]["number"] == 128
+    with pytest.raises(PlanPreviewError, match="above the GPT limit of 128"):
+        resolve_plan(config(128), disk_size="512GiB")

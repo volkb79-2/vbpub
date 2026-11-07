@@ -14,7 +14,7 @@ from debian_install_v2 import layout_policy as lp
 from debian_install_v2.config import ConfigError, load_config
 
 S = lp.SECTORS_PER_GIB
-BOOT_END = 2_625_536  # root start after ESP + /boot (1.25 GiB), 1 MiB aligned
+BOOT_END = 2_500_608  # saved v1001 root start after ESP + /boot (1.19 GiB), 1 MiB aligned
 
 
 def vol(**kw):
@@ -88,10 +88,10 @@ def test_swap_end_slack_boundary():
         (parts(vol(fs="ntfs")), "fs must be one of"),
         (parts(vol(mount="srv/cow")), "absolute path"),
         (parts(vol(mount="/srv/cow/")), "trailing slash"),
-        (parts(vol(mount="/")), "installer or system state"),
-        (parts(vol(mount="/boot/data")), "installer or system state"),
+        (parts(vol(mount="/")), "protected system path"),
+        (parts(vol(mount="/boot/data")), "protected system path"),
         (parts(vol(mount="/srv/../etc")), "dot segments"),
-        (parts(vol(mount="/srv/tree-cache")), "installer or system state"),
+        (parts(vol(mount="/srv/tree-cache")), "protected system path"),
         (parts(vol(label="THIS_LABEL_IS_TOO_LONG")), "label must be"),
         (parts(vol(label="boot")), "collides with a system partition"),
         (parts(vol(label="vbpub-swap1")), "collides with a system partition"),
@@ -115,7 +115,7 @@ def test_swap_end_slack_boundary():
             {"name": "b", "size": "60%", "fs": "ext4", "mount": "/srv/b"}]}}, "more than 100%"),
         ({"root": 10, "data": {"kind": "lvm", "vg": "v", "volumes": [
             {"name": "a", "size": 1, "fs": "ext4", "mount": "/srv"},
-            {"name": "b", "size": 1, "fs": "ext4", "mount": "/srv/b"}]}}, "installer or system state"),
+            {"name": "b", "size": 1, "fs": "ext4", "mount": "/srv/b"}]}}, "protected system path"),
     ],
 )
 def test_schema_refusals(partitioning, message):
@@ -137,28 +137,74 @@ def test_impossible_pool_shapes_are_refused_at_schema_validation(partitioning, m
 
 
 @pytest.mark.parametrize(
-    "mount", [
-        "/var", "/var/lib", "/var/lib/docker", "/srv", "/home", "/home/runner",
-        "/usr", "/usr/local", "/etc", "/etc/vbpub", "/boot", "/boot/efi",
-        "/tmp", "/root", "/proc/cpuinfo", "/run/secrets", "/lib",
+    ("mount", "protected"), [
+        ("/", "/"), ("/var", "/var"), ("/var/lib", "/var/lib"),
+        ("/var/lib/dpkg", "/var/lib/dpkg"), ("/var/lib/dpkg/status", "/var/lib/dpkg"),
+        ("/var/lib/apt", "/var/lib/apt"), ("/var/lib/apt/lists", "/var/lib/apt"),
+        ("/var/cache/apt", "/var/cache/apt"), ("/var/log", "/var/log"),
+        ("/srv", "/srv"), ("/home", "/home"),
+        ("/usr", "/usr"), ("/usr/local", "/usr"),
+        ("/etc", "/etc"), ("/etc/vbpub", "/etc"),
+        ("/boot", "/boot"), ("/boot/efi", "/boot"),
+        ("/tmp", "/tmp"), ("/root", "/root"), ("/proc/cpuinfo", "/proc"),
+        ("/run/secrets", "/run"), ("/lib", "/lib"),
+        ("/srv/tree-cache", "/srv/tree-cache"), ("/srv/tree-upper", "/srv/tree-upper"),
     ]
 )
-def test_mounts_that_hide_a_system_tree_are_refused(mount):
+def test_mounts_that_cover_protected_system_state_are_refused(mount, protected):
     with pytest.raises(lp.LayoutPolicyError) as exc:
         lp.disk_spec(parts(vol(mount=mount)))
     assert mount in str(exc.value)
-    assert "would hide installer or system state" in str(exc.value)
+    assert protected in str(exc.value)
+    assert "would hide protected system path" in str(exc.value)
 
 
-def test_dedicated_child_mountpoint_does_not_hide_its_protected_parent():
-    assert lp.disk_spec(parts(vol(mount="/srv/cow"), root=10)).data.volumes[0].mount == "/srv/cow"
+@pytest.mark.parametrize(
+    "mount",
+    [
+        "/var/lib/docker", "/var/lib/docker/volumes", "/var/lib/containerd",
+        "/var/lib/containerd/io.containerd", "/var/cache/vbpub",
+        "/srv/cow", "/srv/data/archive", "/home/runner", "/home/runner/cache",
+    ],
+)
+def test_data_mounts_under_var_srv_and_home_are_allowed(mount):
+    assert lp.disk_spec(parts(vol(mount=mount), root=10)).data.volumes[0].mount == mount
+
+
+def test_fixed_reserve_is_subtracted_before_percent_sizes():
+    plan, pool_end = pool(parts(vol(size="60%"), root="40%", reserve=5))
+    total = pool_end - BOOT_END - 5 * S
+    assert plan.root_size == (total * 40 // 100) // 2048 * 2048
+    assert plan.root_size + plan.extents[0][1] == total
+    assert plan.reserve_sectors == 5 * S
 
 
 def test_keep_without_an_entry_refuses_instead_of_indexing_an_empty_list():
     with pytest.raises(lp.LayoutPolicyError, match="root keep leaves .* unallocated"):
-        pool({"root": "keep"})
+        lp.disk_spec({"root": "keep"})
     with pytest.raises(lp.LayoutPolicyError, match="root keep leaves .* unallocated"):
-        pool({"root": "keep", "reserve_gb": 5})
+        lp.disk_spec({"root": "keep", "reserve_gb": 5})
+
+
+def test_plan_pool_rechecks_that_keep_has_a_remainder_owner():
+    spec = lp.DiskSpec(lp.KEEP, lp.Size("gib", 0), lp.DataArea("none"))
+    with pytest.raises(lp.LayoutPolicyError, match="root keep leaves .* unallocated"):
+        lp.plan_pool(
+            spec,
+            root_start=BOOT_END,
+            pool_end=512 * S - 16 * S,
+            root_current_size=3 * S,
+        )
+
+
+def test_no_space_message_accounts_for_the_raw_iobench_partition():
+    with pytest.raises(lp.LayoutPolicyError, match=r"raw iobench \(8 GiB\)"):
+        lp.plan_pool(
+            lp.DiskSpec(lp.KEEP, lp.Size("gib", 0), lp.DataArea("none")),
+            root_start=BOOT_END,
+            pool_end=4 * S,
+            root_current_size=S,
+        )
 
 
 def test_valid_forms_parse():
@@ -246,9 +292,48 @@ def test_reserve_star_keeps_the_remainder_free_on_purpose():
     assert plan.extents[0][0] + plan.extents[0][1] + plan.reserve_sectors == pool_end
 
 
-def test_explicit_fixed_reserve_is_subtracted_before_percent():
-    with pytest.raises(lp.LayoutPolicyError, match="mixing percent and fixed sizes is ambiguous"):
-        pool(parts(vol(size="50%"), root="50%", reserve=20))
+def test_explicit_fixed_reserve_with_percent_sizes_is_accepted_at_config_load():
+    config = load_config(raw_json=(
+        '{"partitioning":{"root":"40%","reserve_gb":5,"data":{"kind":"partitions",'
+        '"volumes":[{"size":"60%","fs":"btrfs","mount":"/srv/cow","label":"MDT_COW"}]}}}'
+    ))
+    assert config.partitioning["reserve_gb"] == 5
+
+
+def test_iobench_raw_lower_bound_is_checked_at_config_load():
+    with pytest.raises(ConfigError, match="iobench_raw_gb must be an integer GiB value from 2"):
+        load_config(raw_json='{"partitioning":{"iobench_raw_gb":1}}')
+    assert load_config(raw_json='{"partitioning":{"iobench_raw_gb":2}}').partitioning["iobench_raw_gb"] == 2
+
+
+def test_iobench_raw_label_is_reserved_at_config_load():
+    with pytest.raises(ConfigError, match="label 'iobench-raw' collides"):
+        load_config(raw_json=(
+            '{"partitioning":{"root":10,"iobench_raw_gb":false,"data":{"kind":"partitions",'
+            '"volumes":[{"size":"*","fs":"none","label":"iobench-raw"}]}}}'
+        ))
+
+
+def test_config_load_refuses_more_than_128_gpt_partitions():
+    def raw_config(data_volumes: int) -> str:
+        volumes = [
+            {"size": 1, "fs": "none", "label": f"V{index}"}
+            for index in range(data_volumes)
+        ]
+        import json
+        return json.dumps({
+            "swap_disk_total_gb": 4,
+            "swap_partition_count": 4,
+            "partitioning": {
+                "root": "*",
+                "data": {"kind": "partitions", "volumes": volumes},
+            },
+        })
+
+    # root + data + the default raw partition + four swaps = 128.
+    assert load_config(raw_json=raw_config(122)).partitioning["root"] == "*"
+    with pytest.raises(ConfigError, match=r"above the GPT limit of 128"):
+        load_config(raw_json=raw_config(123))
 
 
 def test_mixed_percent_and_fixed_without_star_is_ambiguous():

@@ -22,6 +22,7 @@ def _plan_rows(
     plan: layout_policy.PoolPlan,
     *,
     root_start_sector: int,
+    root_number: int,
     swap_extents: list[tuple[int, int]],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -37,8 +38,8 @@ def _plan_rows(
             "gib": round(size * 512 / GIB, 2),
         })
 
-    row("root", 1, root_start_sector, plan.root_size)
-    number = 2
+    row("root", root_number, root_start_sector, plan.root_size)
+    number = root_number + 1
     for (start, size), entry in zip(plan.extents, spec.entries()):
         label = entry.partlabel
         row("iobench raw" if label == layout_policy.IOBENCH_PARTLABEL else "data",
@@ -76,12 +77,21 @@ def resolve_plan(
     ram_gib: int | None = None,
     ram_bytes: int | None = None,
     root_start_sector: int = layout_policy.ALIGN,
+    root_number: int = 1,
     root_current_size_gib: int | None = None,
     root_current_size_sectors: int | None = None,
 ) -> dict[str, Any]:
     """Resolve entries and display assumptions without inspecting or opening a device."""
     disk_bytes = disk_size_bytes(disk_size)
     disk_sectors = disk_bytes // layout_policy.SECTOR
+    if (
+        isinstance(root_number, bool)
+        or not isinstance(root_number, int)
+        or not 1 <= root_number <= layout_policy.GPT_MAX_PARTITIONS
+    ):
+        raise PlanPreviewError(
+            f"root partition number must be an integer from 1 to {layout_policy.GPT_MAX_PARTITIONS}"
+        )
     if root_start_sector < 1 or root_start_sector >= disk_sectors:
         raise PlanPreviewError("root start sector must be positive and before the end of the disk")
     safe_end = disk_sectors
@@ -146,7 +156,8 @@ def resolve_plan(
                 pass
         if diagnostic is not None:
             table = format_table(_plan_rows(
-                spec, diagnostic, root_start_sector=root_start_sector, swap_extents=swap_extents
+                spec, diagnostic, root_start_sector=root_start_sector, root_number=root_number,
+                swap_extents=swap_extents,
             ))
             raise PlanPreviewError(f"{exc}\nResolved plan table (GiB):\n{table}") from exc
         raise PlanPreviewError(
@@ -158,7 +169,13 @@ def resolve_plan(
             f"  requested swap: {swap_total if 'swap_total' in locals() else 'unresolved'} GiB"
         ) from exc
 
-    rows = _plan_rows(spec, plan, root_start_sector=root_start_sector, swap_extents=swap_extents)
+    rows = _plan_rows(
+        spec,
+        plan,
+        root_start_sector=root_start_sector,
+        root_number=root_number,
+        swap_extents=swap_extents,
+    )
     number = max((row["number"] or 0 for row in rows), default=0) + 1
     if number - 1 > layout_policy.GPT_MAX_PARTITIONS:
         raise PlanPreviewError(
@@ -169,13 +186,14 @@ def resolve_plan(
         "disk_size_gib": round(disk_bytes / GIB, 2),
         "disk_sectors": disk_sectors,
         "root_start_sector": root_start_sector,
+        "root_number": root_number,
         "root_start_gib": round(root_start_sector * 512 / GIB, 2),
         "swap_policy": config.swap_policy,
         "swap_total_gib": swap_total,
         "partitioning": config.partitioning,
         "plan_table": rows,
         "assumptions": [
-            "no pre-root partitions are included; root defaults to partition 1 at the supplied root-start sector",
+            "pre-root partition geometry is omitted; root starts at the supplied sector and uses the supplied number",
             "the raw iobench partition is never formatted or mounted",
         ],
     }

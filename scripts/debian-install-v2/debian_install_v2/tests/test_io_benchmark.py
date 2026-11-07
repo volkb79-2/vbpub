@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from debian_install_v2 import installer as installer_module
 from debian_install_v2.actions import ActionError, HostActions, PlannedAction
 from debian_install_v2.config import Config
-from debian_install_v2.installer import Installer
+from debian_install_v2.installer import Installer, InstallerError
 from debian_install_v2.layout_policy import IOBENCH_PARTLABEL
 from debian_install_v2.state import StateStore
 
@@ -36,6 +38,8 @@ class SimDisk(HostActions):
         self.timeouts: list[tuple[str, float | None]] = []
         self.fstab_content = ""
         self.files: dict[str, bytes] = {}
+        self.findmnt_output = "/dev/vda3 / ext4\n"
+        self.swap_output = ""
 
     def dump(self) -> str:
         lines = ["label: gpt", "device: /dev/vda", "unit: sectors", "sector-size: 512", ""]
@@ -68,7 +72,9 @@ class SimDisk(HostActions):
         if name == "sfdisk" and "--dump" in argv:
             return self.dump()
         if name == "findmnt" and "SOURCE,TARGET,FSTYPE" in argv:
-            return "/dev/vda3 / ext4\n"
+            return self.findmnt_output
+        if name == "swapon" and "--show=NAME,TYPE,SIZE,PRIO" in argv:
+            return self.swap_output
         if name == "blkid" and "PARTUUID" in argv:
             return PARTUUID
         if name == "iobench-install-runner":
@@ -177,6 +183,87 @@ def test_benchmark_refuses_when_the_planned_partlabel_geometry_disagrees(tmp_pat
         assert "PARTLABEL=iobench-raw" in str(exc)
     else:
         raise AssertionError("raw benchmark partition with a foreign PARTLABEL was accepted")
+
+
+@pytest.mark.parametrize("geometry_field", ["start", "size"])
+def test_benchmark_geometry_mismatch_stops_before_wipefs(tmp_path, geometry_field):
+    installer, disk = make(tmp_path)
+    raw_number = next(number for number, entry in disk.table.items() if entry.get("name") == IOBENCH_PARTLABEL)
+    disk.table[raw_number][geometry_field] = str(int(disk.table[raw_number][geometry_field]) + 2048)
+
+    with pytest.raises(InstallerError, match="does not match PARTLABEL=iobench-raw"):
+        installer._run_io_benchmark()
+
+    assert not any(Path(action.argv[0]).name == "wipefs" for action in disk.planned)
+
+
+def test_duplicate_iobench_partlabels_stop_before_wipefs(tmp_path):
+    installer, disk = make(tmp_path)
+    raw_number = next(number for number, entry in disk.table.items() if entry.get("name") == IOBENCH_PARTLABEL)
+    raw = disk.table[raw_number]
+    disk.table[raw_number + 20] = {
+        "start": str(int(raw["start"]) + int(raw["size"]) + 2048),
+        "size": "2048", "type": LINUX.upper(), "name": IOBENCH_PARTLABEL,
+    }
+
+    with pytest.raises(InstallerError, match="expected exactly one disk partition with PARTLABEL=iobench-raw"):
+        installer._run_io_benchmark()
+
+    assert not any(Path(action.argv[0]).name == "wipefs" for action in disk.planned)
+
+
+@pytest.mark.parametrize("guard", ["mounted", "active-swap"])
+def test_mounted_or_active_swap_raw_partition_is_never_wiped(tmp_path, guard):
+    installer, disk = make(tmp_path)
+    raw_number = next(number for number, entry in disk.table.items() if entry.get("name") == IOBENCH_PARTLABEL)
+    raw_device = f"/dev/vda{raw_number}"
+    if guard == "mounted":
+        disk.findmnt_output += f"{raw_device} /mnt/raw ext4\n"
+    else:
+        disk.swap_output = f"{raw_device} partition 8G -2\n"
+
+    installer._run_io_benchmark()
+
+    assert step(installer)["status"] == "warned"
+    assert not any(Path(action.argv[0]).name == "wipefs" for action in disk.planned)
+
+
+def test_stage_two_benchmark_result_is_consumed_by_iocost_after_the_table_write(tmp_path, monkeypatch):
+    installer, disk = make(tmp_path, iocost_enabled=True)
+    disk.mkdir = lambda path: disk.planned.append(PlannedAction(("/usr/bin/mkdir", "-p", path), "fake mkdir"))
+    disk.exists = lambda _path: False
+    events: list[str] = []
+    monkeypatch.setattr(installer, "_packages", lambda *args, **kwargs: None)
+    monkeypatch.setattr(installer, "_verify_and_apply_root_shrink", lambda: False)
+    monkeypatch.setattr(installer, "_swap_partitions_already_planned_in_table", lambda: False)
+    monkeypatch.setattr(installer, "_disable_active_swap", lambda: None)
+    monkeypatch.setattr(installer, "_configure_zswap", lambda: None)
+    monkeypatch.setattr(installer, "_configure_cgroup2_flags", lambda: None)
+    monkeypatch.setattr(installer, "_configure_ksm", lambda: None)
+    monkeypatch.setattr(installer, "_configure_oomd", lambda: None)
+    monkeypatch.setattr(installer, "_configure_fstrim", lambda: None)
+    monkeypatch.setattr(installer, "_configure_auto_reboot", lambda: None)
+    monkeypatch.setattr(installer, "_apply_known_swap_shape", lambda: events.append("table-write"))
+    monkeypatch.setattr(installer, "_ensure_disk_transaction_manifest", lambda: None)
+    run_benchmark = installer._run_io_benchmark
+    configure_iocost = installer._configure_iocost
+    monkeypatch.setattr(installer, "_run_io_benchmark", lambda: (events.append("benchmark"), run_benchmark())[1])
+    monkeypatch.setattr(installer, "_configure_iocost", lambda: (events.append("iocost"), configure_iocost())[1])
+    monkeypatch.setattr(installer, "_grow_root_to_plan", lambda: events.append("root-grow"))
+    monkeypatch.setattr(installer, "_activate_swap_partitions", lambda: events.append("swap-active"))
+    monkeypatch.setattr(installer, "_health_gate_swap_devices", lambda: None)
+    monkeypatch.setattr(installer, "_run_cpu_benchmark", lambda: None)
+    monkeypatch.setattr(installer, "_release_apt_timers", lambda: None)
+    monkeypatch.setattr(installer, "_cleanup_cloud_init_cache", lambda: None)
+
+    installer._stage2()
+
+    assert events.index("table-write") < events.index("benchmark") < events.index("iocost")
+    assert events.index("iocost") < events.index("root-grow") < events.index("swap-active")
+    iocost = step(installer, "iocost")
+    assert iocost["status"] == "success"
+    assert f"rbps={RESULTS['rbps']}" in iocost["detail"]
+    assert f"wbps={RESULTS['wbps']}" in iocost["detail"]
 
 
 def test_removed_temporary_tail_and_generator_commands_are_not_allowed():

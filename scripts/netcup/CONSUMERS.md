@@ -259,10 +259,19 @@ two-stage lifecycle rationale.
 The producer's `partitioning` config rides in the customScript config that
 `debian-install-v2.py build-customscript` embeds
 (`VBPUB_CONFIG_EXTRA_JSON`); `install-host.py` passes that customScript
-through untouched. Config loading and bundle construction refuse impossible
-fixed/percentage size shapes. Before ordering a reinstall, resolve disk fit
-with `debian-install-v2.py plan --config install.json --disk-size SIZE` (add
-`--ram-gib GIB` when swap size is automatic).
+through untouched. Config loading and bundle construction refuse impossible fixed/percentage
+size shapes and plans that exceed GPT's 128-entry limit. Before ordering a
+reinstall, resolve disk fit and provide the target root geometry to the offline
+resolver. Saved r1002 and v1001 evidence records a 512 GiB disk and vda3/root
+starting at sector `2500608` (root number 3):
+
+```bash
+./debian-install-v2.py plan --config install.json --disk-size 512GiB \
+  --root-start-sector 2500608 --root-number 3
+```
+
+Percentage sizes may share the pool with a numeric fixed reserve; the percent
+pool is calculated after that reserve, raw iobench, and swap are removed.
 
 The raw benchmark partition defaults to 8 GiB, has PARTLABEL `iobench-raw`,
 and remains unformatted and unmounted. Set
@@ -285,9 +294,10 @@ four 4 GiB swaps, and the default raw benchmark partition:
 }
 ```
 
-The physical order is root, `MDT_COW`, `iobench-raw`, then swaps. Partition
-numbers follow their disk position; the runner uses PARTLABEL so a changed
-plan does not require an environment-file device-number edit.
+For the saved 512 GiB layout, the physical order is vda3 root at sector
+`2500608`, vda4 `MDT_COW`, vda5 `iobench-raw`, then swaps vda6-vda9.
+Partition numbers follow their disk position; the runner uses PARTLABEL so a
+changed plan does not require an environment-file device-number edit.
 
 ## Remote gate (run a lane on a test host)
 

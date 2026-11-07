@@ -99,15 +99,21 @@ an explicit GiB or percentage is the target, and `"*"` takes the available
 allocation. This keeps the root target in the same plan as data and swap.
 Static size-shape errors are caught when loading config or building a
 custom-script bundle; disk-dependent fit is available before reinstall through
-`plan --disk-size`. The plan table is included in live `show_plan` output and
-in refusals when the disk facts suffice.
+`plan --disk-size`. The offline resolver can take the real root start sector
+and root partition number (`--root-start-sector`, `--root-number`) so its
+physical table matches a cloud disk with preserved pre-root partitions. A
+numeric fixed reserve is subtracted before percentage sizes are resolved;
+`reserve_gb: "*"` remains incompatible with percentages. The plan table is
+included in live `show_plan` output and in refusals when the disk facts suffice.
 
 Every plan reserves the default 8 GiB Linux partition with PARTLABEL
 `iobench-raw`. Its fixed size can be configured or disabled with
 `iobench_raw_gb: false`. It is never formatted or mounted; an enabled
 benchmark wipes it immediately before the direct iobench run and leaves it
-raw in the final layout. A first-class plan entry prevents a benchmark from
-temporarily changing partition numbers or leaving an interim-table hole.
+raw in the final layout. Stage two runs the benchmark before configuring
+io.cost, so the measured coefficients reach the model on a fresh install. A
+first-class plan entry prevents a benchmark from temporarily changing
+partition numbers or leaving an interim-table hole.
 
 Swap is sized independently from the pool, then placed last. `swap_policy`
 has only `on` and `off`. `on` replaces the guest's configured swap setup with
@@ -131,12 +137,17 @@ The plan orders partitions by sector extent and preserves complete partitions
 before root, including the Debian genericcloud boot partitions numbered 14
 and 15 before root partition 1. Unknown partitions after root are refused.
 
-Mounts directly on protected system directories, or at a parent that would
-hide one, are refused with the affected path in the message. There are no
-system mountpoint exceptions pre-populated by design; dedicated paths such as
-`/srv/cow` remain available because they do not cover `/srv` itself. The
-runner finds that planned partition by PARTLABEL `MDT_COW`; it does not carve
-or guess a partition number. Copyable configs and offline previews are in
+Exact mounts on `/`, `/var`, `/var/lib`, `/srv`, and `/home` are refused.
+Mounts equal to, inside, or above protected OS-state trees (`/usr`, `/etc`,
+`/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`,
+`/lib`, `/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt`, `/var/log`,
+`/srv/tree-cache`, `/srv/tree-upper`) are refused with the protected path in
+the message. This protects operating-system state while allowing dedicated
+data children such as `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`,
+and `/home/runner`; the Docker systemd dependency is attached when a data
+filesystem holds Docker's data root. The runner finds that planned partition
+by PARTLABEL `MDT_COW`; it does not carve or guess a partition number.
+Copyable configs and offline previews are in
 [CONSUMERS.md](CONSUMERS.md#disk-plan-and-offline-preview).
 
 ## Private VM seed ISO and moving profiles

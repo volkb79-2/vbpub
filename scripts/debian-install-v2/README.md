@@ -278,11 +278,12 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
 
 - **Sizes** are integer GiB, percentages from 0.01% through 100.00% (up to two
   decimals), or `"*"` for the remainder. Omitted size is `"*"`. At config load,
-  impossible fixed/percentage combinations are refused: fixed entries need a
-  growable `"*"` or `reserve_gb: "*"`; percentages without a star must sum to
-  100%; percent and fixed sizes cannot be mixed. Percentages are shares of the
-  pool after swap and fixed reserve are removed. The single star absorbs the
-  remainder and alignment rounding. The pool ends at the first tail swap
+  impossible fixed/percentage combinations are refused: fixed root/data sizes
+  need a growable `"*"` or `reserve_gb: "*"`; percentages without a star must
+  sum to 100%. A numeric fixed `reserve_gb` may accompany percentages;
+  percentages are shares of the pool after swap, raw iobench, and that fixed
+  reserve are removed. Percentages cannot use `reserve_gb: "*"`. The single
+  star absorbs the remainder and alignment rounding. The pool ends at the first tail swap
   start, or at the aligned final usable GPT sector when swap is off or no tail
   swap is needed. A refusal includes the resolved table when the disk facts
   allow one.
@@ -315,13 +316,15 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   root, then the data partitions in config order, then the swaps. Pre-root partitions keep
   the numbers they have (a cloud image has root = 1 and 14/15 before it). Find volumes by
   label, never by number.
-- **Mount policy**: mountpoints directly on `/var`, `/var/lib`, `/srv`, `/home`,
-  `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`,
-  `/bin`, `/sbin`, or `/lib` are refused. Mounts that would cover protected
-  descendants such as `/var/lib/dpkg`, `/srv/tree-cache`, or `/srv/tree-upper`
-  are also refused. No exact system mountpoint is currently pre-populated by
-  design. A dedicated child such as `/srv/cow` is allowed. Refusal text names
-  the protected system path. Equal and nested planned mounts are refused.
+- **Mount policy**: exact mounts on `/`, `/var`, `/var/lib`, `/srv`, or `/home`
+  are refused. A mount equal to, inside, or above a protected OS-state tree is
+  also refused: `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`,
+  `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/var/lib/dpkg`, `/var/lib/apt`,
+  `/var/cache/apt`, `/var/log`, `/srv/tree-cache`, and `/srv/tree-upper`.
+  The refusal names the requested mount and protected path. Data mounts such as
+  `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, `/srv/data`, and
+  `/home/runner` are allowed when they do not cover a protected tree. Equal
+  and nested planned mounts are refused.
 - **Not supported**: `fs: zfs` as a managed filesystem (refused with a clear message; deferred),
   btrfs `subvol`.
 - **Safety**: `mkfs`/`pvcreate` only touch a BLANK device (the same filesystem again is kept, any
@@ -329,8 +332,9 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   a mount that holds `/var/lib/docker` also gets `x-systemd.required-by=docker.service`; another
   device with the same label is refused; a `blkid` failure other than "no signature" is never
   treated as blank; a rerun that would delete or move a data partition holding a signature is
-  refused (no wipe override: `wipefs -a` by hand on an empty host). The table is written in
-  ONE crash-safe transaction after any root shrink and before root growth; the plan is a pure
+  refused with no wipe override; preserve the signature and resolve data
+  ownership before changing the plan. The table is written in ONE crash-safe
+  transaction after any root shrink and before root growth; the plan is a pure
   function of (config, disk size, root start), so a resume recomputes it.
 - Runner integration: `provision-runner.sh` finds the planned CoW partition by
   GPT PARTLABEL `MDT_COW` and does not infer its number or carve another one.
@@ -347,9 +351,11 @@ To preview the resolved GiB plan without opening a device, run:
 ```
 
 `--ram-gib` is required when `swap_disk_total_gb` is automatic. `root: "keep"`
-also needs `--root-current-size-gib`. The resolver assumes no preserved
-pre-root partitions and root number 1; use `--root-start-sector` when its
-starting sector differs. The wizard summary shows the reserved raw partition
+also needs `--root-current-size-gib`. The offline resolver omits preserved
+pre-root geometry and assumes root number 1 at sector 2048; use
+`--root-start-sector` and `--root-number` to supply the target root geometry.
+The saved netcup hosts use `--root-start-sector 2500608 --root-number 3`. The
+wizard summary shows the reserved raw partition
 size and directs users to this command for the resolved table.
 
 Example plan for a 512 GiB host, root 160 GiB, four 4 GiB swaps, and the
@@ -374,7 +380,8 @@ partition and 16 GiB of swap. In physical order the plan is root, `MDT_COW`,
 
 Swap is the last allocation on disk. The planner leaves backup-GPT metadata
 room and aligns boundaries to 1 MiB. Number 128 is the GPT partition-number
-limit; any plan needing a higher number is refused.
+limit; config load refuses a statically oversized plan, and offline/live
+planning also checks the actual root number before any table write.
 
 ### zswap
 
@@ -645,8 +652,10 @@ layout; choose another `partitioning.iobench_raw_gb` size or set it to
 `false` when the benchmark is off. Stage two verifies the PARTLABEL and
 geometry, confirms the partition is neither mounted nor active swap, and
 wipes its signatures before the run. It never formats or mounts this
-partition, and it remains reserved afterward. The old temporary-tail
-allocation and cleanup table write have been removed.
+partition, and it remains reserved afterward. Stage two runs this benchmark
+before configuring io.cost, so a successful result supplies the model
+coefficients on a fresh install. The old temporary-tail allocation and
+cleanup table write have been removed.
 
 Results (`rbps`/`rseqiops`/`rrandiops`/`wbps`/`wseqiops`/`wrandiops`) go to
 `state_dir/io-benchmark.json` with mode `0600`, the `io_benchmark` step and
