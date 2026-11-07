@@ -158,7 +158,7 @@ def validate_bundle(
             bundle["customScript"], host=host, expected_branch=repo_branch,
             load_config=load_config, ConfigError=ConfigError,
         )
-        if embedded_config != config:
+        if asdict(embedded_config) != asdict(bundle_config):
             raise PreflightError("customScript's embedded config does not match the bundle config")
         expected_marker = f"{config.state_dir}/stage2_done"
         if bundle["completionMarker"] != expected_marker:

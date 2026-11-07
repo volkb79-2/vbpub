@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -58,6 +59,26 @@ def test_preflight_validates_config_bundle_offline_plan_and_sha256(tmp_path):
     assert checked.digest == preflight.sha256_file(bundle_path)
     assert checked.plan["plan_table"][0]["start"] == 2_500_608
     assert [row["number"] for row in checked.plan["plan_table"]] == list(range(3, 10))
+
+
+def test_preflight_refuses_embedded_config_that_differs_from_validated_bundle(tmp_path):
+    preflight, config_path, bundle_path = _build_valid_inputs(tmp_path)
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    embedded = dict(bundle["config"])
+    embedded["run_docker_install"] = False
+    bundle["customScript"] = (
+        "REPO_BRANCH=main VBPUB_CONFIG_EXTRA_JSON="
+        + shlex.quote(json.dumps(embedded, sort_keys=True, separators=(",", ":")))
+        + " python3 -c pass"
+    )
+    bundle_path.write_text(json.dumps(bundle), encoding="utf-8")
+
+    with pytest.raises(preflight.PreflightError, match="embedded config does not match"):
+        preflight.validate_bundle(
+            "v1001", config_path, bundle_path,
+            disk_size="512GiB", root_start_sector=2_500_608, root_number=3,
+            repo_branch="main",
+        )
 
 
 @pytest.mark.parametrize(
