@@ -4,11 +4,23 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.12.3] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=77da6f33f202df26ab8321b10f1addc8b3ad41b8 -->
+
+### Fixed
+- fix(nyxloom): nyxloomd wheel-build stage pulls python:3.14-slim via mirror.gcr.io (6452353cc)
+
+### Changed
+- chore: retire modern-debian-tools-python-debug; mdt-cockpit is its successor (2015c4e00)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - nyxloomd now uses the mdt-cockpit Python 3.14 / PHP 8.5 devcontainer image as its base; the host image target uses the matching image and tag.
 - The nyxloomd wheel-build stage pulls `python:3.14-slim` through `mirror.gcr.io` instead of Docker Hub.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.12.2] - 2026-11-04
 <!-- cmru: generated -->
