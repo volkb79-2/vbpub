@@ -537,17 +537,20 @@ return a complete verified ancestry, and expose no control verbs. Run-Gate's
 observer socket read-only, supplies its observed GID, and sets this variable.
 The host endpoint is `/run/cgprofile/observer/cgprofile.sock`; binding the
 `observer` directory preserves the in-container endpoint
-`/run/cgprofile-observer/cgprofile.sock`. This path requires the host socket
-cutover; keep earlier Assay and Run-Gate pins on hosts still using the old
-layout. Never mount the control endpoint
+`/run/cgprofile-observer/cgprofile.sock`. The host observer directory must be
+`root:root 0755`; the socket inode's GID is the observer access group. This
+path requires the host socket cutover; keep earlier Assay and Run-Gate pins on
+hosts still using the old layout. Never mount the control endpoint
 `/run/cgprofile/control/cgprofile.sock`: a read-only bind does not make its
-protocol read-only. The observer supplies verified ancestry and event-counter
+protocol read-only. Assay's launchers never mount or stat that control socket;
+Run-Gate carries its control-GID preflight because Run-Gate opens the endpoint
+for control requests. The observer supplies verified ancestry and event-counter
 evidence; it is not a performance-profile stream.
 
 Assay's tester launchers read the host Docker GID from
 `ASSAY_GATE_HOST_DOCKER_GID` first, then `MDT_HOST_DOCKER_GID` from host-setup.
 Set the latter in the host environment before running a plain-host gate, for
-example `export MDT_HOST_DOCKER_GID=2751` (replace this example with the host's
+example `export MDT_HOST_DOCKER_GID=999` (replace this example with the host's
 numeric Docker group GID). The optional explicit override takes precedence;
 both values must be positive decimal GIDs, and a malformed override refuses
 instead of falling through. If neither is present, launch refuses and names

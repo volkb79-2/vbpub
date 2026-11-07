@@ -215,7 +215,7 @@ def test_observer_guards_use_the_new_paths_and_launcher_docker_gid() -> None:
     assert "DOCKER_HOST" not in helper
     assert "MDT_HOST_DOCKER_GID" in helper
     assert "ASSAY_GATE_HOST_DOCKER_GID" in helper
-    assert "parent_gid" not in helper
+    assert 'parent_gid" == 0' in helper
     assert '"$socket_gid" != "$host_docker_gid"' in helper
     assert 'socket_gid" =~ ^[1-9][0-9]*$' in helper
     for script in (GATE_SCRIPT, SELF_QUALIFICATION_SCRIPT):
@@ -226,21 +226,73 @@ def test_observer_guards_use_the_new_paths_and_launcher_docker_gid() -> None:
 
 
 @pytest.mark.parametrize(
-    ("docker_gid", "socket_gid", "directory_gid",
+    ("groups", "expected_status"),
+    [("4242", 0), ("1234", 2)],
+)
+def test_self_qualification_identity_guard_reads_the_observer_socket_gid(
+    tmp_path: Path, groups: str, expected_status: int
+) -> None:
+    source = SELF_QUALIFICATION_SCRIPT.read_text(encoding="utf-8")
+    guard = source.split("  bash -lc '", 1)[1].split(
+        "' \\\n  assay-b105-inner", 1
+    )[0]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name, body in {
+        "git": "#!/bin/sh\nexit 0\n",
+        "id": "#!/bin/sh\nprintf '%s\\n' \"$FAKE_GROUPS\"\n",
+        "stat": (
+            "#!/bin/bash\n"
+            '[[ "$1" == "-c" && "$2" == "%g" ]] || exit 90\n'
+            'case "$3" in\n'
+            '  /run/cgprofile-observer) printf "0\\n" ;;\n'
+            '  "$ASSAY_RESOURCE_OBSERVER_SOCKET") printf "4242\\n" ;;\n'
+            '  *) exit 91 ;;\n'
+            'esac\n'
+        ),
+        "assay-b105-inner": "#!/bin/sh\nexit 0\n",
+    }.items():
+        path = fake_bin / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+    proc = subprocess.run(
+        ["bash", "-c", guard, "guard", "assay-b105-inner"],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}:{os.environ['PATH']}",
+            "FAKE_GROUPS": groups,
+            "ASSAY_GATE_HOST_DOCKER_GID": "999",
+            "ASSAY_RESOURCE_OBSERVER_SOCKET": "/fixture/cgprofile-observer/cgprofile.sock",
+        },
+    )
+
+    assert proc.returncode == expected_status, proc.stderr
+    if expected_status == 0:
+        assert proc.stdout == ""
+    else:
+        assert "tester identity must include only the observer access group" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    ("docker_gid", "socket_gid", "directory_uid", "directory_gid",
      "directory_mode", "socket_mode", "expected_status", "error_text"),
     [
-        (994, 995, 995, "755", "660", 0, ""),
-        (994, 995, 994, "755", "660", 0, ""),
-        (994, 0, 0, "755", "660", 1, "non-root group"),
-        (994, 994, 0, "755", "660", 1, "dedicated group"),
-        (994, 995, 0, "770", "660", 1, "not writable"),
-        (994, 995, 0, "755", "666", 1, "not accessible to other"),
-        (994, 995, 0, "755", "640", 1, "group-connectable"),
-        (994, 995, 0, "744", "660", 1, "group-searchable"),
+        (994, 995, 0, 0, "755", "660", 0, ""),
+        (994, 995, 0, 994, "755", "660", 1, "root:root"),
+        (994, 0, 0, 0, "755", "660", 1, "non-root group"),
+        (994, 994, 0, 0, "755", "660", 1, "dedicated group"),
+        (994, 995, 0, 0, "770", "660", 1, "not writable"),
+        (994, 995, 0, 0, "755", "666", 1, "not accessible to other"),
+        (994, 995, 0, 0, "755", "640", 1, "group-connectable"),
+        (994, 995, 0, 0, "744", "660", 1, "group-searchable"),
+        (994, 995, 1000, 0, "755", "660", 1, "root:root"),
     ],
 )
 def test_observer_gid_guard_rejects_wrong_host_group_facts(
-    tmp_path: Path, docker_gid: int, socket_gid: int, directory_gid: int,
+    tmp_path: Path, docker_gid: int, socket_gid: int, directory_uid: int,
+    directory_gid: int,
     directory_mode: str, socket_mode: str,
     expected_status: int, error_text: str,
 ) -> None:
@@ -253,9 +305,10 @@ def test_observer_gid_guard_rejects_wrong_host_group_facts(
 observer_socket="$2"
 fact_docker_gid="$3"
 fact_socket_gid="$4"
-fact_directory_gid="$5"
-fact_directory_mode="$6"
-fact_socket_mode="$7"
+fact_directory_uid="$5"
+fact_directory_gid="$6"
+fact_directory_mode="$7"
+fact_socket_mode="$8"
 observer_dir="$(dirname "$observer_socket")"
 unset ASSAY_GATE_HOST_DOCKER_GID MDT_HOST_DOCKER_GID DOCKER_HOST
 ASSAY_GATE_HOST_DOCKER_GID="$fact_docker_gid"
@@ -264,8 +317,8 @@ stat() {
   case "$path" in
     "$observer_dir")
       case "$format" in
-        '%u %a') printf '0 %s\n' "$fact_directory_mode" ;;
-        '%u %g %a') printf '0 %s %s\n' "$fact_directory_gid" "$fact_directory_mode" ;;
+        '%u %a') printf '%s %s\n' "$fact_directory_uid" "$fact_directory_mode" ;;
+        '%u %g %a') printf '%s %s %s\n' "$fact_directory_uid" "$fact_directory_gid" "$fact_directory_mode" ;;
         *) return 1 ;;
       esac
       ;;
@@ -279,7 +332,8 @@ assay_resource_observer_gid "$observer_socket"
         [
             "bash", "-c", script, "observer-gid-test",
             str(OBSERVER_GID_HELPER), str(observer_socket), str(docker_gid),
-            str(socket_gid), str(directory_gid), directory_mode, socket_mode,
+            str(socket_gid), str(directory_uid), str(directory_gid),
+            directory_mode, socket_mode,
         ],
         capture_output=True, text=True,
         env={**os.environ, "ASSAY_GATE_HOST_DOCKER_GID": str(docker_gid)},
@@ -306,7 +360,7 @@ unset ASSAY_GATE_HOST_DOCKER_GID MDT_HOST_DOCKER_GID DOCKER_HOST
 stat() {
   local path="${@: -1}"
   case "$path" in
-    "$observer_dir") printf '0 755\n' ;;
+    "$observer_dir") printf '0 0 755\n' ;;
     "$observer_socket") printf '0 995 660\n' ;;
     *) return 1 ;;
   esac
@@ -336,7 +390,7 @@ def test_observer_gid_guard_names_cutover_when_new_socket_is_absent(
         listener.bind(str(legacy_socket))
     script = r'''source "$1"
 observer_socket="$2"
-stat() { [[ "${@: -1}" == "$(dirname "$observer_socket")" ]] && printf '0 755\n'; }
+stat() { [[ "${@: -1}" == "$(dirname "$observer_socket")" ]] && printf '0 0 755\n'; }
 assay_resource_observer_gid "$observer_socket"
 '''
     proc = subprocess.run(
@@ -365,6 +419,35 @@ assay_host_docker_gid_source
     assert proc.stdout == "994\nMDT_HOST_DOCKER_GID\n"
 
 
+def test_host_docker_gid_does_not_fall_back_to_a_statable_docker_socket(
+    tmp_path: Path,
+) -> None:
+    fake_socket = tmp_path / "docker.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(fake_socket))
+    script = r'''source "$1"
+unset ASSAY_GATE_HOST_DOCKER_GID MDT_HOST_DOCKER_GID
+stat() {
+  case "${@: -1}" in
+    /var/run/docker.sock|"$FAKE_DOCKER_SOCKET") printf '4242\n' ;;
+    *) return 1 ;;
+  esac
+}
+assay_host_docker_gid
+'''
+    proc = subprocess.run(
+        ["bash", "-c", script, "docker-gid-test", str(OBSERVER_GID_HELPER)],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "FAKE_DOCKER_SOCKET": str(fake_socket),
+             "DOCKER_HOST": f"unix://{fake_socket}"},
+    )
+    assert proc.returncode != 0
+    assert "host Docker GID is unavailable" in proc.stderr
+    assert "ASSAY_GATE_HOST_DOCKER_GID" in proc.stderr
+    assert "MDT_HOST_DOCKER_GID" in proc.stderr
+
+
 def test_observer_gid_guard_collision_message_prints_both_gids_and_source(
     tmp_path: Path,
 ) -> None:
@@ -377,7 +460,7 @@ def test_observer_gid_guard_collision_message_prints_both_gids_and_source(
 observer_socket="$2"
 stat() {
   case "${@: -1}" in
-    "$(dirname "$observer_socket")") printf '0 755\n' ;;
+    "$(dirname "$observer_socket")") printf '0 0 755\n' ;;
     "$observer_socket") printf '0 994 660\n' ;;
     *) return 1 ;;
   esac

@@ -2743,7 +2743,7 @@ def test_a_clone_that_is_not_the_gated_commit_is_refused_before_any_harness_or_c
     worktree, _commit, _tree = _sql_worktree(tmp_path)
     env, docker_log, harness_log = _sql_env(tmp_path, out=_MARKER, rc=0)
     proc = run_bash(
-        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{HEX40}" "dev-gates.slice" "994"',
+        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{HEX40}" "dev-gates.slice" "994" "4242"',
         gate_functions=gate_functions,
         env=env,
         timeout=120,
@@ -2772,6 +2772,26 @@ def test_the_runner_joins_the_verified_host_docker_group_not_the_visible_sockets
     assert group_ids == ["4242", "994"]
 
 
+@pytest.mark.parametrize("docker_gid", ["", "not-a-gid"])
+def test_sql_runner_refuses_empty_or_malformed_host_docker_gid(
+    tmp_path: Path, gate_functions: Path, docker_gid: str
+) -> None:
+    worktree, commit, _tree = _sql_worktree(tmp_path)
+    env, docker_log, _harness_log = _sql_env(tmp_path, out=_MARKER, rc=0)
+    proc = run_bash(
+        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\n'
+        "trap cleanup_assay_gate_container EXIT\n"
+        f'run_sql_qualification "{commit}" "dev-gates.slice" "994" "{docker_gid}"',
+        gate_functions=gate_functions,
+        env=env,
+        timeout=120,
+    )
+
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "host Docker GID is unavailable" in proc.stderr
+    assert not docker_log.exists() or not docker_log.read_text(encoding="utf-8")
+
+
 def _run_sql_phase(tmp_path: Path, gate_functions: Path, allow: str | None):
     worktree, commit, _tree = _sql_worktree(tmp_path)
     env, _docker_log, harness_log = _sql_env(tmp_path, out=_MARKER, rc=0)
@@ -2779,7 +2799,7 @@ def _run_sql_phase(tmp_path: Path, gate_functions: Path, allow: str | None):
     if allow is not None:
         env["ASSAY_GATE_ALLOW_SHARED_HOST"] = allow
     proc = run_bash(
-        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{commit}" "dev-gates.slice" "994"',
+        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{commit}" "dev-gates.slice" "994" "4242"',
         gate_functions=gate_functions,
         env=env,
         timeout=120,

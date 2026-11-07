@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,7 @@ ANALYSIS_PILOT_HOST_CHECK = PROJECT_ROOT / "tools" / "analysis_r2_pilot_host_che
 CONTAINER_ID = "a" * 64
 ANALYSIS_PILOT_ATTESTATION = "f" * 64
 OBSERVER_SOURCE = "/run/cgprofile/observer/cgprofile.sock"
+_SHORT_OBSERVER_FIXTURE_DIRS: set[Path] = set()
 
 
 FAKE_GIT = r'''#!/usr/bin/env python3
@@ -644,11 +646,25 @@ def record_run_gate_error_preserving_success(worktree: Path, receipt: dict) -> N
     history_path.write_text(json.dumps(store), encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def _remove_short_observer_fixtures():
+    yield
+    for path in tuple(_SHORT_OBSERVER_FIXTURE_DIRS):
+        shutil.rmtree(path, ignore_errors=True)
+        _SHORT_OBSERVER_FIXTURE_DIRS.discard(path)
+
+
 def _prepare_observer_fixture(tmp_path: Path, fake_bin: Path, env: dict[str, str]) -> None:
     """Provide the canonical host socket only inside the launcher's mount namespace."""
     observer_dir = tmp_path / "observer-fixture"
+    observer_socket = observer_dir / "cgprofile.sock"
+    if len(os.fsencode(observer_socket)) >= 108:
+        observer_dir = Path(tempfile.mkdtemp(prefix="ao-", dir="/tmp"))
+        _SHORT_OBSERVER_FIXTURE_DIRS.add(observer_dir)
     observer_dir.mkdir(mode=0o755, exist_ok=True)
     observer_socket = observer_dir / "cgprofile.sock"
+    assert len(os.fsencode(observer_socket)) < 108, \
+        "AF_UNIX fixture path must be short"
     if not observer_socket.exists():
         with socket.socket(socket.AF_UNIX) as listener:
             listener.bind(str(observer_socket))
@@ -659,8 +675,8 @@ def _prepare_observer_fixture(tmp_path: Path, fake_bin: Path, env: dict[str, str
     fake_stat.write_text(
         "#!/bin/bash\n"
         'if [[ "$#" == 3 && "$1" == "-Lc" ]]; then\n'
-        '  if [[ "$2" == "%u %a" && "$3" == "/run/cgprofile/observer" ]]; then\n'
-        "    printf '0 755\\n'; exit 0\n"
+        '  if [[ "$2" == "%u %g %a" && "$3" == "/run/cgprofile/observer" ]]; then\n'
+        "    printf '0 0 755\\n'; exit 0\n"
         "  fi\n"
         '  if [[ "$2" == "%u %g %a" && "$3" == "/run/cgprofile/observer/cgprofile.sock" ]]; then\n'
         "    printf '0 995 660\\n'; exit 0\n"
@@ -674,7 +690,33 @@ def _prepare_observer_fixture(tmp_path: Path, fake_bin: Path, env: dict[str, str
     env["ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"] = OBSERVER_SOURCE
 
 
+@lru_cache(maxsize=1)
+def _unshare_rm_unavailable_reason() -> str | None:
+    unshare = shutil.which("unshare")
+    missing = [name for name in ("mount", "mkdir") if shutil.which(name) is None]
+    if unshare is None:
+        return "the unshare command is not installed"
+    if missing:
+        return "required launcher fixture command(s) missing: " + ", ".join(missing)
+    probe_setup = (
+        "mount --make-rprivate / && "
+        "mount -t tmpfs -o mode=755,nosuid,nodev tmpfs /run"
+    )
+    probe = subprocess.run(
+        [unshare, "-rm", "--", "/bin/bash", "-c", probe_setup],
+        capture_output=True, text=True, check=False,
+    )
+    if probe.returncode != 0:
+        detail = (probe.stderr.strip() or probe.stdout.strip()
+                  or f"probe exited with status {probe.returncode}")
+        return f"unshare -rm tmpfs fixture is unavailable: {detail}"
+    return None
+
+
 def _isolated_launcher_command(env: dict[str, str], *argv: str) -> list[str]:
+    reason = _unshare_rm_unavailable_reason()
+    if reason is not None:
+        pytest.skip(f"self-qualification launcher tests require unshare -rm: {reason}")
     unshare = shutil.which("unshare")
     mount = shutil.which("mount")
     mkdir = shutil.which("mkdir")
@@ -690,6 +732,38 @@ def _isolated_launcher_command(env: dict[str, str], *argv: str) -> list[str]:
         )
     )
     return [unshare, "-rm", "--", "/bin/bash", "-c", setup, "assay-observer-fixture", *argv]
+
+
+def test_launcher_fixture_skips_when_unshare_is_not_installed(monkeypatch) -> None:
+    _unshare_rm_unavailable_reason.cache_clear()
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name: None if name == "unshare" else f"/usr/bin/{name}",
+    )
+    try:
+        with pytest.raises(pytest.skip.Exception,
+                           match="launcher tests require unshare -rm"):
+            _isolated_launcher_command({}, "true")
+    finally:
+        _unshare_rm_unavailable_reason.cache_clear()
+
+
+def test_launcher_fixture_skips_when_unshare_namespace_is_disabled(monkeypatch) -> None:
+    _unshare_rm_unavailable_reason.cache_clear()
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            argv, 1, "", "unprivileged user namespaces are disabled"
+        ),
+    )
+    try:
+        with pytest.raises(pytest.skip.Exception,
+                           match="unshare -rm tmpfs fixture is unavailable"):
+            _isolated_launcher_command({}, "true")
+    finally:
+        _unshare_rm_unavailable_reason.cache_clear()
 
 
 def run_launcher(

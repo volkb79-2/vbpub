@@ -4,7 +4,7 @@
 
 assay_resource_observer_gid() {
   local observer_source="$1"
-  local parent parent_uid parent_mode
+  local parent parent_uid parent_gid parent_mode
   local socket_uid socket_gid socket_mode host_docker_gid
 
   parent="$(dirname "$observer_source")"
@@ -12,12 +12,12 @@ assay_resource_observer_gid() {
     printf 'cgprofile observer directory is absent, not a directory, or a symlink: %s; complete the host socket cutover\n' "$parent" >&2
     return 1
   }
-  read -r parent_uid parent_mode < <(stat -Lc '%u %a' "$parent") || {
+  read -r parent_uid parent_gid parent_mode < <(stat -Lc '%u %g %a' "$parent") || {
     printf 'could not inspect the cgprofile observer directory: %s\n' "$parent" >&2
     return 1
   }
-  [[ "$parent_uid" == 0 ]] || {
-    printf 'cgprofile observer directory is not root-owned: %s; complete the host socket cutover\n' "$parent" >&2
+  [[ "$parent_uid" == 0 && "$parent_gid" == 0 ]] || {
+    printf 'cgprofile observer directory is not root:root: %s; complete the host socket cutover\n' "$parent" >&2
     return 1
   }
   (( (8#$parent_mode & 0022) == 0 && (8#$parent_mode & 0010) != 0 )) || {

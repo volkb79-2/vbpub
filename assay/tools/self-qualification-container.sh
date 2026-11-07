@@ -559,7 +559,7 @@ setsid timeout --signal=TERM --kill-after=5s 60s docker run -d \
   "${mount_args[@]}" \
   -w "$worktree" \
   tester-unified:local \
-  bash -lc 'git config --global --replace-all safe.directory "*" && groups=" $(id -G) " && observer_gid="$(stat -c %g /run/cgprofile-observer)" && [[ "$ASSAY_GATE_HOST_DOCKER_GID" =~ ^[1-9][0-9]*$ ]] && [[ "$groups" == *" $observer_gid "* ]] && [[ "$groups" != *" $ASSAY_GATE_HOST_DOCKER_GID "* ]] || { echo "tester identity must include only the observer access group, not the host Docker group" >&2; exit 2; } && exec "$@"' \
+  bash -lc 'git config --global --replace-all safe.directory "*" && groups=" $(id -G) " && observer_gid="$(stat -c %g "$ASSAY_RESOURCE_OBSERVER_SOCKET")" && [[ "$ASSAY_GATE_HOST_DOCKER_GID" =~ ^[1-9][0-9]*$ ]] && [[ "$groups" == *" $observer_gid "* ]] && [[ "$groups" != *" $ASSAY_GATE_HOST_DOCKER_GID "* ]] || { echo "tester identity must include only the observer access group, not the host Docker group" >&2; exit 2; } && exec "$@"' \
   assay-b105-inner "${inner_argv[@]}" >"$launch_output" 2>"$launch_error" &
 launch_pid=$!
 if wait "$launch_pid"; then

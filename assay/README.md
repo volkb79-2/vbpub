@@ -331,9 +331,12 @@ assay exists to close that gap mechanically, not by policy:
   separate observer-only socket at host path
   `/run/cgprofile/observer/cgprofile.sock`, mounted in the lane as
   `/run/cgprofile-observer/cgprofile.sock`; it never mounts the control socket
-  at `/run/cgprofile/control/cgprofile.sock`. The new paths require the host
-  socket cutover, so keep earlier Run-Gate and Assay pins on hosts that still
-  use the old layout. See the
+  at `/run/cgprofile/control/cgprofile.sock`. Assay's host launchers never
+  mount or stat the control socket; Run-Gate carries the control-GID preflight
+  because Run-Gate opens that endpoint for control requests. The observer
+  directory must be `root:root`, and launchers read the observer GID from the
+  socket inode. The new paths require the host socket cutover, so keep earlier
+  Run-Gate and Assay pins on hosts that still use the old layout. See the
   [socket cutover rationale](docs/DESIGN-GUIDE.md#host-cgprofile-socket-cutover)
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
   Assay's tester launchers require the host Docker GID as a numeric value:

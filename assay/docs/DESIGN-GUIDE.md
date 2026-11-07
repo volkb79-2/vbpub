@@ -890,9 +890,14 @@ Assay's tester launchers consume the observer socket from
 `ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint is
 `/run/cgprofile-observer/cgprofile.sock`. The control endpoint stays at
 `/run/cgprofile/control/cgprofile.sock` and is never mounted for observation.
+Assay's host launchers do not mount or stat the control socket; Run-Gate carries
+the control-GID preflight because Run-Gate opens that endpoint for control
+requests.
 
 Systemd owns the per-level directories as `root:root`; the socket file's GID
-grants access. The launch guard reads the host Docker GID from the strict
+grants access. Assay's observer launch guard verifies uid 0, gid 0, and a safe
+mode on the observer directory, then reads the observer GID from the socket
+inode. The launch guard reads the host Docker GID from the strict
 `ASSAY_GATE_HOST_DOCKER_GID` override first, then `MDT_HOST_DOCKER_GID` from
 host-setup. Each selected value must be a positive decimal GID, and a malformed
 override refuses instead of falling through. The Docker API socket's GID is
