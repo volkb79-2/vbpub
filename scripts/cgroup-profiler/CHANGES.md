@@ -8,6 +8,12 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Fixed
+- Keep stall-kill evidence by elapsed time so every supported sampler cadence can retain the full 60-second window.
+- Preserve an enforced `killed` verdict in status, Summary and watch streams, including after a monitor gap.
+- Let a fresh, healthy `over_ceiling` kill stop active work without the no-growth confirmation required for stalled and hung kills.
+- Retry transient kill-confirmation refusals; treat missing or empty `io.stat` as zero growth, and give configured progress streams a documented 120-second creation grace.
+
 <!-- cmru: release history -->
 
 ## [2.2.0] - 2026-11-07

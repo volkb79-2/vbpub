@@ -952,7 +952,7 @@ class TestRestartRecovery:
         serve.SessionServer(sessions_dir=str(sessions_dir), clock=lambda: EPOCH_END)
         manifest = json.loads((session_dir / "manifest.json").read_text())
         assert manifest["status"] == "aborted"
-        assert manifest["aborted_reason"] == "daemon-crash-recovery"
+        assert manifest["aborted_reason"] == "daemon-restarted"
         assert not (session_dir / "summary.json").exists()
 
     def test_a_live_session_with_samples_is_finalized_with_a_summary(self, tmp_path):

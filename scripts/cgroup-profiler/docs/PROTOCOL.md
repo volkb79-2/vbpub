@@ -114,9 +114,21 @@ explicit successful `--place` leaf; it never adds placement itself. If the
 requested boundary is unavailable at start, the request is `bad-policy` and
 no live session is created. If the boundary is empty, unreadable, or later
 refuses the write, the watch verdict is `reported`, not `killed`.
-Before writing `cgroup.kill`, the daemon also requires three consecutive fresh
-kill-state readings spanning at least 60 seconds and a final target-counter
-confirmation against a reading at least 30 seconds old. A missing monitor
+Before writing `cgroup.kill`, a stalled or hung kill requires three consecutive
+fresh kill-state readings spanning at least 60 seconds and a healthy, fresh
+monitor. Its final target-counter confirmation compares CPU and I/O with a
+reading at least 30 seconds old and checks the configured stream identity for
+growth. A missing or empty `io.stat` means no I/O growth; a read error refuses
+the confirmation. A configured progress stream that has never appeared gets
+120 seconds from session start to be created. Before that grace expires,
+confirmation is refused; after it, stable absence counts as no stream growth,
+while a read error still refuses.
+
+`over_ceiling` is the active-work backstop: once the daemon's monotonic clock
+passes the ceiling, one fresh healthy monitor reading is enough to authorize
+the kill, even when CPU, I/O, or stream counters are growing. It does not wait
+for the stall-evidence window or read target counters. A busy `runaway` that
+has not exceeded its ceiling is reported and is not killed. A missing monitor
 produces `unknown`; a monitor gap never counts as idle time and never permits
 a kill.
 
@@ -127,10 +139,11 @@ stream in `socket/watch-response.json`):
 * `reading` — every `--watch-interval`: `live` (as in `status`), `liveness`
   (§8.4) and `placement` (§8.3 — the block for a placed or refused session,
   `null` for one that never asked to be placed).
-* `verdict` — only when the state CHANGES, carrying
+* `verdict` — when the state or verdict CHANGES, carrying
   `{state, verdict, reason, readings, monitor_state, monitor_reason}`. The
   policy those came from is in `status`/`stop`/the Summary (§8.7), not on
-  every line.
+  every line. A confirmed kill emits one `killed` verdict even when the
+  liveness state remains `stalled` or `over_ceiling`.
 * `end` — exactly one, last: `stopped` \| `killed` \| `daemon-shutdown`.
 
 Liveness readings add `seq`, `mono_ns`, `due_ns`, `fresh`, `interval_seconds`,

@@ -974,7 +974,10 @@ class SessionServer:
             )
         manifest["status"] = "aborted"
         recovery_failed = manifest.get("placement_recovery", {}).get("status") == "failed"
-        manifest["aborted_reason"] = "daemon-crash-recovery"
+        manifest["aborted_reason"] = (
+            "daemon-restarted-placement-recovery-failed"
+            if recovery_failed else "daemon-restarted"
+        )
         manifest["ended_at"] = ended_at
         if acc.sample_count:
             summary_doc = acc.finalize(ended_at=ended_at)
@@ -2323,8 +2326,13 @@ class SessionServer:
     def _confirm_stall_kill(
         self, sess: _Session, pids: List[int], *, now_mono: float,
     ) -> Tuple[bool, str]:
-        """Confirm no lane growth using a >=30 s-old daemon reading and one
-        target read performed immediately before the cgroup kill write."""
+        """Confirm a stall kill, or the independent daemon-clock ceiling.
+
+        Stalled/hung kills need an old target reading and no growth through the
+        final read. An over-ceiling kill is the backstop for active runaway
+        work, so it needs a fresh healthy monitor and an exceeded daemon-clock
+        ceiling, but does not require the target to be idle.
+        """
         tracker = sess.watch
         if tracker is None or not tracker.kill_requested_at(now_mono):
             return False, "kill-state-not-fresh"
@@ -2332,47 +2340,68 @@ class SessionServer:
         if not readings:
             return False, "kill-evidence-missing"
         latest = readings[-1]
-        anchor = tracker.kill_confirm_anchor(now_mono)
-        if anchor is None or now_mono - anchor.mono < liveness_mod.KILL_CONFIRM_MIN_SPAN_SECONDS:
-            return False, "confirm-span-short"
-        if (
-            anchor.cpu_usage_usec_total is None
-            or anchor.io_bytes_total is None
-            or latest.cpu_usage_usec_total is None
-            or latest.io_bytes_total is None
-        ):
-            return False, "confirm-target-counters-unavailable"
-        if (
-            latest.cpu_usage_usec_total != anchor.cpu_usage_usec_total
-            or latest.io_bytes_total != anchor.io_bytes_total
-        ):
-            return False, "confirm-target-counter-growth-or-unavailable"
-        if sess.watch.policy.progress_stream is not None:
-            if (
-                anchor.stream is None or not anchor.stream.present
-                or anchor.stream.identity is None
-                or latest.stream is None or not latest.stream.present
-                or latest.stream.identity != anchor.stream.identity
-                or not pids
-            ):
-                return False, "confirm-stream-identity-unavailable-or-grew"
-            stream_abs = liveness_mod.resolve_stream_path(
-                self.proc_root, min(pids), tracker.policy.progress_stream,
-            )
-        else:
+        ceiling = tracker.ceiling_seconds()
+        over_ceiling = ceiling is not None and now_mono > ceiling
+        if over_ceiling:
+            anchor = None
             stream_abs = None
+        else:
+            anchor = tracker.kill_confirm_anchor(now_mono)
+            if (
+                anchor is None
+                or now_mono - anchor.mono < liveness_mod.KILL_CONFIRM_MIN_SPAN_SECONDS
+            ):
+                return False, "confirm-span-short"
+            if (
+                anchor.cpu_usage_usec_total is None
+                or anchor.io_bytes_total is None
+                or latest.cpu_usage_usec_total is None
+                or latest.io_bytes_total is None
+            ):
+                return False, "confirm-target-counters-unavailable"
+            if (
+                latest.cpu_usage_usec_total != anchor.cpu_usage_usec_total
+                or latest.io_bytes_total != anchor.io_bytes_total
+            ):
+                return False, "confirm-target-counter-growth-or-unavailable"
+            stream_abs = None
+            if tracker.policy.progress_stream is not None:
+                for sample in (anchor, latest):
+                    if sample.stream is not None and sample.stream.read_error:
+                        return False, "confirm-stream-read-failed"
+                if tracker.progress_stream_never_created():
+                    if not tracker.progress_stream_absence_grace_elapsed(now_mono):
+                        return False, "confirm-stream-not-created-grace"
+                    if not pids:
+                        return False, "confirm-stream-identity-unavailable-or-grew"
+                else:
+                    if (
+                        anchor.stream is None or not anchor.stream.present
+                        or latest.stream is None or not latest.stream.present
+                        or latest.stream.identity != anchor.stream.identity
+                        or not pids
+                    ):
+                        return False, "confirm-stream-identity-unavailable-or-grew"
+                stream_abs = liveness_mod.resolve_stream_path(
+                    self.proc_root, min(pids), tracker.policy.progress_stream,
+                )
 
-        abs_target = self._sample_source_abs(sess.cgroup, sess.placement)
-        try:
-            evidence = self.kill_evidence_reader(abs_target, stream_abs)
-        except Exception:  # noqa: BLE001 - a failed confirm read cannot authorize a kill
-            return False, "confirm-read-failed"
+        evidence = None
+        if not over_ceiling:
+            abs_target = self._sample_source_abs(sess.cgroup, sess.placement)
+            try:
+                evidence = self.kill_evidence_reader(abs_target, stream_abs)
+            except Exception:  # noqa: BLE001 - a failed confirm read cannot authorize a kill
+                return False, "confirm-read-failed"
         try:
             monitor_nr_throttled = self.monitor_throttled_reader()
         except Exception:  # noqa: BLE001 - unreadable monitor health fails closed
             monitor_nr_throttled = None
         after_mono = max(now_mono, self._session_mono_now(sess))
-        if not tracker.kill_requested_at(after_mono):
+        if (
+            not tracker.kill_requested_at(after_mono)
+            or tracker.monitor_state_at(after_mono) != liveness_mod.MONITOR_HEALTHY
+        ):
             return False, "confirm-monitor-stale"
         if (
             latest.monitor_nr_throttled_total is None
@@ -2380,15 +2409,27 @@ class SessionServer:
             or monitor_nr_throttled != latest.monitor_nr_throttled_total
         ):
             return False, "confirm-monitor-throttled-or-unavailable"
+        if over_ceiling:
+            return True, ""
+        assert anchor is not None and evidence is not None
+        if evidence.cpu_usage_usec is None or evidence.io_bytes is None:
+            return False, "confirm-read-failed"
         if (
-            evidence.cpu_usage_usec is None
-            or evidence.io_bytes is None
-            or evidence.cpu_usage_usec != anchor.cpu_usage_usec_total
+            evidence.cpu_usage_usec != anchor.cpu_usage_usec_total
             or evidence.io_bytes != anchor.io_bytes_total
         ):
             return False, "confirm-target-counter-growth-or-unavailable"
-        if evidence.stream_identity != (anchor.stream.identity if anchor.stream else None):
-            return False, "confirm-stream-identity-grew"
+        if tracker.policy.progress_stream is not None:
+            if evidence.stream_read_error:
+                return False, "confirm-stream-read-failed"
+            if tracker.progress_stream_never_created():
+                if evidence.stream_present is not False:
+                    return False, "confirm-stream-identity-grew"
+            elif (
+                evidence.stream_present is not True
+                or evidence.stream_identity != anchor.stream.identity
+            ):
+                return False, "confirm-stream-identity-grew"
         return True, ""
 
     def _enforce_stall_kill(
@@ -2398,9 +2439,9 @@ class SessionServer:
         if sess.watch is None or not sess.watch.kill_requested_at(action_mono):
             return
 
-        def refused(reason: str) -> None:
+        def refused(reason: str, *, terminal: bool = True) -> None:
             with sess.lock:
-                sess.watch.record_kill_refused(reason)
+                sess.watch.record_kill_refused(reason, terminal=terminal)
             self._log(
                 f"watch {sess.session_id}: --on-stall kill refused ({reason}); "
                 "no exact, verified lane cgroup was killable"
@@ -2418,13 +2459,17 @@ class SessionServer:
 
         def refused_kill(boundary_reason: Optional[str]) -> None:
             if confirmation_failure:
-                if (
+                reason = confirmation_failure[0]
+                terminal = reason == "confirm-target-counters-unavailable"
+                monitor_problem = (
                     "monitor-throttled" in confirmation_failure[0]
                     or confirmation_failure[0] == "confirm-monitor-stale"
-                ):
-                    sess.watch.monitor_state = liveness_mod.MONITOR_DEGRADED
-                    sess.watch.monitor_reason = confirmation_failure[0]
-                refused(confirmation_failure[0])
+                )
+                if monitor_problem:
+                    with sess.lock:
+                        sess.watch.monitor_state = liveness_mod.MONITOR_DEGRADED
+                        sess.watch.monitor_reason = reason
+                refused(reason, terminal=terminal)
             else:
                 refused(boundary_reason or "target-cgroup-kill-refused")
 
@@ -4017,12 +4062,13 @@ class SessionServer:
         first reading rather than waiting for the next transition — and two
         watchers of one session each get their own complete picture.
         """
-        last_state = liveness_mod.STATE_OK
+        last_verdict = (liveness_mod.STATE_OK, liveness_mod.VERDICT_NONE)
         while True:
             reading, watch_block = self._watch_lines(sess)
             self._send_line(conn, reading)
-            if watch_block["state"] != last_state:
-                last_state = watch_block["state"]
+            current_verdict = (watch_block["state"], watch_block["verdict"])
+            if current_verdict != last_verdict:
+                last_verdict = current_verdict
                 self._send_line(conn, {
                     "contract": CONTRACT_VERSION, "event": "verdict",
                     "session": sess.session_id, "at": self._iso(self.clock()),

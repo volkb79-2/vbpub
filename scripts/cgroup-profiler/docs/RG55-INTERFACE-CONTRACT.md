@@ -648,13 +648,13 @@ New `start` options (policy authored by the consumer):
 | `--progress-stream <path>` | the lane's own progress NDJSON path AS THE LANE SEES IT; the daemon reads it through `/proc/<lane pid>/root/<path>` — no extra mount. The stream's `plan` event field `expect_next_event_within_s` (assay B091) is the cadence hint |
 | `--idle-bound auto\|<seconds>` | `auto` = `max(300, 3 × cadence_hint)` (D-22); the idle and progress-cadence clocks pause during gates-slice/host memory pressure and across a monitor gap |
 | `--ceiling auto\|<seconds>` | `auto` = `3 × meta.expected.duration_s` when known, else none; a session over its ceiling is `over_ceiling` |
-| `--on-stall kill\|report` | `kill` keeps the authenticated start grant and exact-boundary rules; it additionally requires at least three consecutive fresh kill-state readings spanning 60 seconds and an immediate daemon confirmation that exact target CPU/I/O counters and, when configured, stream identity have not grown since a reading at least 30 seconds earlier; no PID signals or fallback; a runtime refusal is `reported`; `report` = verdict `reported`, nothing killed; default `report` |
+| `--on-stall kill\|report` | `kill` keeps the authenticated start grant and exact-boundary rules. `stalled`/`hung` additionally require at least three consecutive fresh kill-state readings spanning 60 seconds, a fresh healthy monitor, and an immediate daemon confirmation that target CPU/I/O counters and, when configured, stream identity have not grown since a reading at least 30 seconds earlier. `over_ceiling` can kill active work on one fresh healthy reading after the daemon clock passes the ceiling; it does not wait for stall evidence or no-growth. A configured stream never seen gets a 120-second start grace; before it expires confirmation is refused, and after it expires stable absence is no-growth. Missing/empty `io.stat` is zero growth; read errors refuse. No PID signals or fallback; a runtime refusal is `reported`; `report` = verdict `reported`, nothing killed; default `report` |
 
 States: `ok`; `stalled` (idle bound exceeded with no stream event and no
 CPU growth ≥ 1 s over the trailing 30 s); `hung` (the stream reported
 completion — its last event is terminal — and the pid subtree is still
 alive 30 s later); `runaway` (idle bound exceeded WITH CPU growth — the lane
-is busy but silent; killed only when over ceiling); `throttled` (the leaf's
+is busy but silent; not killed until it exceeds the ceiling); `throttled` (the leaf's
 `memory.pressure full avg10 > 20` while `memory.high` is applied — never
 killed, reported); `over_ceiling`; `unknown` (a monitor gap or stalled monitor,
 so no liveness conclusion is available).
@@ -673,8 +673,15 @@ the daemon's own `cpu.stat nr_throttled` counter or a non-fresh reading in the
 confirmation span yields a reported verdict but makes `kill_requested` false.
 An absent or stalled monitor yields `unknown`; `over_ceiling` remains judged
 from the authenticated start on the daemon clock. Restarted live sessions are
-finalized as `daemon-crash-recovery` and their liveness clocks are never
-resumed.
+finalized with `aborted_reason: "daemon-restarted"`, or
+`"daemon-restarted-placement-recovery-failed"` when placement restoration
+fails. Their liveness clocks are never resumed.
+
+The stream emits a verdict when either `state` or `verdict` changes, so an
+enforced kill emits `verdict: "killed"` once even if the state remains
+`stalled` or `over_ceiling`. Run-Gate accepts `unknown` as an informational
+state, keeps consuming later verdicts, and does not warn that an unknown lane
+was reported stalled.
 
 ### 8.5 `host.gates_slice`
 

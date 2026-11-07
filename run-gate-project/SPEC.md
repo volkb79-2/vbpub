@@ -2522,7 +2522,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `start`, run-gate creates one `ctl watch` reader for that session. `reading`
   and `verdict` events update the inflight/history watch field. A daemon
   `killed` verdict is the declared stall path; `reported` emits one warning
-  and does not fail the lane. A closed or failed watch is disclosed and the
+  and does not fail the lane. The additive `unknown` state is informational:
+  accept and record it without a stalled warning, then continue consuming the
+  stream so a later terminal `killed` verdict is delivered. A closed or failed watch is disclosed and the
   client reattaches once before using the in-process fallback. A healthy
   daemon watch is the sole liveness verdict authority: local log/progress
   silence cannot declare a stall until the daemon watch fails. If a daemon

@@ -67,15 +67,33 @@ sampler was delayed.
 The watch state is `unknown` while the monitor is absent or has stopped
 reporting. A stale reading or any increase in the daemon's own
 `nr_throttled` counter marks monitor health `degraded-monitor`; liveness
-verdicts remain visible, but that evidence cannot authorize a kill. A kill
-still needs the authenticated `on_stall=kill` start grant, three consecutive
-fresh kill-state readings over at least 60 seconds, and a final daemon-side
-read immediately before `cgroup.kill`. That read compares exact target
-`cpu.stat` and `io.stat` values with a reading at least 30 seconds old, plus
-the same progress-stream identity with no growth. A missing or stalled
+verdicts remain visible, but that evidence cannot authorize a kill. A stalled
+or hung kill still needs the authenticated `on_stall=kill` start grant, three
+consecutive fresh kill-state readings over at least 60 seconds, and a final
+daemon-side read immediately before `cgroup.kill`. That read compares exact
+target `cpu.stat` and `io.stat` values with a reading at least 30 seconds old,
+plus the same progress-stream identity with no growth. A missing or stalled
 monitor leaves the consumer's wall timeout and the daemon-clock
-`over_ceiling` verdict as the backstops. Restart recovery finalizes a live
-session as `daemon-crash-recovery`; it never resumes liveness clocks.
+`over_ceiling` verdict as the backstops. `over_ceiling` can kill active work
+once the daemon clock is past the ceiling and the monitor is fresh and healthy;
+one fresh healthy reading past that ceiling is sufficient, with no stall
+evidence window or no-growth check, because the ceiling bounds cost.
+`runaway` below the ceiling remains reported. Stalled and hung kills still
+require no growth, which is the evidence that distinguishes them from useful
+work. An absent or empty `io.stat` is zero growth; read errors refuse. A
+configured progress stream gets 120 seconds from session start to appear, then
+stable absence is treated as no stream growth. Restart recovery finalizes a
+live session without resuming liveness clocks. Its manifest retains the
+existing `daemon-restarted` reason, or
+`daemon-restarted-placement-recovery-failed` when placement restoration fails;
+the placement recovery record also carries its exact result.
+
+Evidence retention follows elapsed time rather than a sample count. The
+sampler runs at 0.25 to 30 second cadences, while liveness freshness uses a
+two-second floor; count-based pruning could therefore discard the required
+60-second evidence window at the default cadence. An enforced kill's verdict
+also stays terminal: status, Summary, and an attached watch retain `killed`,
+and the stream emits that verdict once even though the state does not change.
 
 This closes a live failure mode in which sampler downtime accrued as idle
 time while CPU growth during the same gap fell out of the sampled window. The

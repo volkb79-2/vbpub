@@ -108,7 +108,9 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    through the environment's declared `forward_env`.
    A daemon watch is one reader per session and records readings/verdicts;
    `killed` follows the declared stall path and `reported` is one warning,
-   never a profiling verdict. When the daemon/watch is unavailable, the
+   never a profiling verdict. The additive `unknown` state is informational:
+   Run-Gate continues consuming the stream without calling it stalled, so a
+   later `killed` verdict is still handled. When the daemon/watch is unavailable, the
    in-process assay watch bounds the baseline heartbeat, for an R2 lane the
    wait for the plan (600 s), and the plan's
    calibrated cadence and pauses its idle clock while host memory PSI `full avg10` is above 5. Before a

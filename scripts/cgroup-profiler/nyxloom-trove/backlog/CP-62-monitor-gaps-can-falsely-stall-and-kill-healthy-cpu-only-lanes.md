@@ -14,7 +14,7 @@ spec_owner: "docs/PROTOCOL.md §8.2/§8.4"
 priority: 1
 filed_date: "2026-11-07"
 closed_date: "2026-11-07"
-closed_reason: "CGP-FS implementation passed cgroup-profiler r0-r1 with 100% line/branch coverage and r3 with all six canaries rejected on 2026-11-07"
+closed_reason: "CGP-FS passed cgroup-profiler r0-r1 (3418 passed, 100% line/branch coverage), r3 (6 canaries rejected), and Run-Gate selftest (3074 passed, 1 skipped, 100% diff line/branch coverage) on 2026-11-07"
 ---
 
 ## Observed mechanism and reproduction
@@ -47,13 +47,23 @@ backstops.
 - Daemon-cgroup throttling or a non-fresh confirmation reading yields a
   reported verdict with `monitor_state: degraded-monitor`; it cannot request
   a kill. An absent or stalled monitor yields state `unknown` and no kill.
-- A kill retains the authenticated `on_stall=kill` grant and exact cgroup
-  boundary, requires three consecutive fresh kill-state readings spanning at
-  least 60 seconds, and requires the immediate pre-write confirmation to find
-  no CPU, I/O, or configured stream-identity growth against a reading at least
-  30 seconds old.
-- A session found live after daemon restart is finalized as
-  `daemon-crash-recovery`; liveness clocks are never resumed.
+- Every kill retains the authenticated `on_stall=kill` grant and exact cgroup
+  boundary. `stalled`/`hung` require three consecutive fresh kill-state
+  readings spanning at least 60 seconds and immediate pre-write no-growth
+  confirmation against a reading at least 30 seconds old. `over_ceiling` can
+  stop active work on one fresh healthy reading after the daemon-clock ceiling
+  is passed; it does not wait for stall evidence or no-growth. `runaway` below
+  the ceiling is report-only.
+- Missing or empty `io.stat` is zero observed I/O; a read error refuses the
+  confirmation. A configured progress stream has a 120-second creation grace;
+  before it expires confirmation is transiently refused, then stable absence
+  is treated as no stream growth.
+- Transient confirmation failures clear kill evidence so the state can be
+  evaluated again; definitive counter unavailability and exact-boundary
+  refusals remain terminal and report their reason.
+- A session found live after daemon restart is finalized with manifest reason
+  `daemon-restarted`, or `daemon-restarted-placement-recovery-failed` when
+  placement restoration fails; liveness clocks are never resumed.
 
 ## Oracles
 
@@ -61,14 +71,25 @@ backstops.
   is paused and the cumulative CPU delta survives into the 30-second rule.
 - Fake-clock monitor faults (stopped monitor, increased daemon throttling,
   stale or blocked reads) never write `cgroup.kill`.
-- A stable target requires three fresh readings over 60 seconds and a final
-  exact counter/stream confirmation at least 30 seconds after its earlier
-  reading; any growth refuses the kill.
+- At actual sample cadences of 0.25, 1, 2, 5, and 30 seconds, a stalled target
+  retains the full evidence window and reaches the serve kill boundary.
+- A busy over-ceiling lane is killed with a fresh monitor, while a busy silent
+  lane below its ceiling is not; one fresh sample is sufficient once its
+  daemon-clock ceiling has passed.
+- A stable stalled/hung target requires three fresh readings over 60 seconds
+  and a final exact counter/stream confirmation at least 30 seconds after its
+  earlier reading; any growth refuses the kill and can be reconsidered later.
+- An empty or missing `io.stat` confirms zero growth; an existing-file read
+  error refuses. A never-created configured stream refuses before its 120 s
+  grace and is treated as stable absence after the grace.
+- An enforced kill remains `killed` in tracker, status, Summary and stream,
+  including after a later monitor gap.
 - Protocol fields and values are documented in `docs/PROTOCOL.md` and both
   byte-identical copies of `RG55-INTERFACE-CONTRACT.md`. README, DESIGN-GUIDE,
   and CONSUMERS describe what the capability does, why, and how to consume it.
-- Inspect Run-Gate's liveness parser without changing it. If it rejects the
-  additive `unknown` state, record that compatibility break in the report.
+- Run-Gate accepts the additive `unknown` state, continues consuming the
+  stream, and does not emit a stalled warning for that informational state
+  (RG-245).
 
 ## SPEC ownership
 

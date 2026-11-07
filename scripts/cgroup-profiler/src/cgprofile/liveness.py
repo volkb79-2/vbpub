@@ -76,6 +76,10 @@ MONITOR_GAP_MIN_SECONDS = 5.0
 KILL_CONFIRM_MIN_SPAN_SECONDS = 30.0
 KILL_MIN_READINGS = 3
 KILL_MIN_SPAN_SECONDS = 60.0
+# A configured progress stream may be created after the lane starts. Give it
+# two complete kill-evidence windows to appear; after that, stable absence is
+# treated as no stream growth. A read error is never absence.
+PROGRESS_STREAM_START_GRACE_SECONDS = 2 * KILL_MIN_SPAN_SECONDS
 #: A terminal stream event plus a subtree still alive this long after -> `hung`.
 HUNG_GRACE_SECONDS = 30.0
 #: Memory `full avg10` above this pauses both clocks (§8.4).
@@ -256,6 +260,7 @@ class StreamSample:
     identity: Optional[str] = None
     last_event: Optional[str] = None
     cadence_hint_seconds: Optional[float] = None
+    read_error: bool = False
 
 
 def resolve_stream_path(proc_root: str, pid: int, lane_path: str) -> str:
@@ -296,7 +301,10 @@ def read_progress_stream(path: str, *, previous: Optional[StreamSample] = None) 
         with os.fdopen(fd, "rb") as fh:
             info = os.fstat(fh.fileno())
             if not stat.S_ISREG(info.st_mode):
-                return StreamSample(path=path, present=False, cadence_hint_seconds=carried_hint)
+                return StreamSample(
+                    path=path, present=False, cadence_hint_seconds=carried_hint,
+                    read_error=True,
+                )
             size = info.st_size
             if size > STREAM_TAIL_BYTES:
                 fh.seek(size - STREAM_TAIL_BYTES)
@@ -309,8 +317,13 @@ def read_progress_stream(path: str, *, previous: Optional[StreamSample] = None) 
             if previous is None and partial:
                 fh.seek(0)
                 head = fh.read(STREAM_TAIL_BYTES)
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         return StreamSample(path=path, present=False, cadence_hint_seconds=carried_hint)
+    except OSError:
+        return StreamSample(
+            path=path, present=False, cadence_hint_seconds=carried_hint,
+            read_error=True,
+        )
 
     # Only newline-terminated objects can be progress. Track the byte offset
     # of each complete line, so a producer appending an unfinished line does
@@ -399,11 +412,25 @@ def cgroup_io_bytes(abs_path: str) -> Optional[int]:
     than widening every sample record — which would change `samples.jsonl`
     for every session, golden fixtures included, to feed one boolean.
     """
-    stat = util.read_flat_keyed(os.path.join(abs_path, "io.stat"))
-    if not stat:
+    if not os.path.isdir(abs_path):
+        return None
+    path = os.path.join(abs_path, "io.stat")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            contents = fh.read()
+    except (FileNotFoundError, NotADirectoryError):
+        # cgroup v2 does not create io.stat when the I/O controller is not
+        # enabled for a valid leaf. That is stable zero observed I/O.
+        return 0
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not contents.strip():
+        return 0
+    parsed = util.parse_flat_keyed(contents)
+    if not parsed:
         return None
     total = 0
-    for fields in stat.values():
+    for fields in parsed.values():
         for key in ("rbytes", "wbytes"):
             value = fields.get(key)
             try:
@@ -426,16 +453,22 @@ class KillEvidence:
     cpu_usage_usec: Optional[int]
     io_bytes: Optional[int]
     stream_identity: Optional[str]
+    stream_present: Optional[bool] = None
+    stream_read_error: bool = False
 
 
 def read_kill_evidence(abs_cgroup: str, stream_path: Optional[str]) -> KillEvidence:
     """Read cumulative target counters and the latest complete stream identity."""
     cpu_usage = cgroup_cpu_usage_usec(abs_cgroup)
     io_bytes = cgroup_io_bytes(abs_cgroup)
-    stream_identity: Optional[str] = None
+    stream: Optional[StreamSample] = None
     if stream_path is not None:
-        stream_identity = read_progress_stream(stream_path).identity
-    return KillEvidence(cpu_usage, io_bytes, stream_identity)
+        stream = read_progress_stream(stream_path)
+    return KillEvidence(
+        cpu_usage, io_bytes, stream.identity if stream is not None else None,
+        stream_present=stream.present if stream is not None else None,
+        stream_read_error=stream.read_error if stream is not None else False,
+    )
 
 
 @dataclass
@@ -475,9 +508,9 @@ class LivenessTracker:
 
     Pure: :meth:`observe` is the only way state changes, it takes a
     :class:`LivenessSample` and returns the new state when (and only when)
-    the state CHANGED — which is exactly §8.2's "verdict lines only on a
-    state change", so the watch stream and the session record cannot
-    disagree about when a transition happened.
+    the state CHANGED. The server also emits a verdict when its verdict value
+    changes without a state change, so an enforced kill is visible to an
+    already-attached watch stream.
 
     ``throttled`` is computed only when the caller supplies leaf readings.
     Until CP-9 (C8) creates a leaf there are none, so in production today
@@ -522,11 +555,16 @@ class LivenessTracker:
         self._prev_monitor_nr_throttled: Optional[int] = None
         self._last_sample: Optional[LivenessSample] = None
         self._kill_evidence: List[LivenessSample] = []
+        self._stream_ever_present = False
         self._terminal_seen_mono: Optional[float] = None
 
     # -- the tick ---------------------------------------------------------
 
     def observe(self, sample: LivenessSample) -> Optional[str]:
+        if self.enforced:
+            # An enforced kill or permanent boundary refusal is terminal.
+            # In particular, a later monitor gap cannot rewrite its verdict.
+            return None
         self.readings += 1
         dt = 0.0 if self._prev_mono is None else max(0.0, sample.mono - self._prev_mono)
         previous_mono = self._prev_mono
@@ -599,9 +637,10 @@ class LivenessTracker:
         change = self._set_state(*self._evaluate(sample, cpu_growing))
         if fresh and self.monitor_state == MONITOR_HEALTHY and self.state in KILL_STATES:
             self._kill_evidence.append(sample)
-            keep = max(KILL_MIN_READINGS, int(KILL_MIN_SPAN_SECONDS / sample.interval_seconds) + 3)
-            if len(self._kill_evidence) > keep:
-                del self._kill_evidence[:-keep]
+            keep_span = KILL_MIN_SPAN_SECONDS + max(sample.interval_seconds, 1.0)
+            cutoff = sample.mono - keep_span
+            while self._kill_evidence and self._kill_evidence[0].mono < cutoff:
+                del self._kill_evidence[0]
         else:
             self._kill_evidence.clear()
         return change
@@ -641,7 +680,11 @@ class LivenessTracker:
 
     def _observe_stream(self, sample: LivenessSample) -> bool:
         stream = sample.stream
-        if stream is None or not stream.present:
+        if stream is None:
+            return False
+        if stream.present:
+            self._stream_ever_present = True
+        if not stream.present:
             return False
         previous = self.stream
         self.stream = stream
@@ -718,11 +761,6 @@ class LivenessTracker:
     def _evaluate(
         self, sample: LivenessSample, cpu_growing: bool,
     ) -> Tuple[str, Optional[str]]:
-        if self.enforced:
-            # A kill (or a refused kill) is terminal: the verdict a consumer
-            # already read must not be rewritten by later ticks of a subtree
-            # that is now dying.
-            return self.state, self.reason
         idle_bound = self.idle_bound_seconds()
         ceiling = self.ceiling_seconds()
         state = STATE_OK
@@ -784,19 +822,35 @@ class LivenessTracker:
         return self.kill_requested_at(now)
 
     def kill_requested_at(self, now_mono: float) -> bool:
-        """Whether the kill state persisted over three fresh readings and 60 s."""
+        """Whether fresh healthy evidence permits the configured kill path."""
+        if self.policy.on_stall != "kill" or self.enforced:
+            return False
+        latest = self._last_sample
+        if (
+            latest is None
+            or not latest.fresh
+            or self.monitor_state_at(now_mono) != MONITOR_HEALTHY
+            or now_mono - latest.mono > 2 * latest.interval_seconds
+        ):
+            return False
+        state, _reason = self._effective_state(now_mono)
+        if state == STATE_OVER_CEILING:
+            # The authenticated daemon clock is the ceiling evidence. Do not
+            # delay this active-work backstop behind the stall evidence window.
+            ceiling = self.ceiling_seconds()
+            return ceiling is not None and now_mono > ceiling
+
         if not self._kill_evidence:
             return False
         first = self._kill_evidence[0]
-        latest = self._kill_evidence[-1]
+        evidence_latest = self._kill_evidence[-1]
         return (
-            self.policy.on_stall == "kill"
-            and not self.enforced
-            and self.state in KILL_STATES
+            state in (STATE_STALLED, STATE_HUNG)
+            and evidence_latest.fresh
             and self.monitor_state == MONITOR_HEALTHY
             and len(self._kill_evidence) >= KILL_MIN_READINGS
-            and latest.mono - first.mono >= KILL_MIN_SPAN_SECONDS
-            and now_mono - latest.mono <= 2 * latest.interval_seconds
+            and evidence_latest.mono - first.mono >= KILL_MIN_SPAN_SECONDS
+            and now_mono - evidence_latest.mono <= 2 * evidence_latest.interval_seconds
         )
 
     def kill_confirm_anchor(self, now_mono: float) -> Optional[LivenessSample]:
@@ -806,6 +860,15 @@ class LivenessTracker:
             if now_mono - sample.mono >= KILL_CONFIRM_MIN_SPAN_SECONDS
         ]
         return eligible[-1] if eligible else None
+
+    def progress_stream_never_created(self) -> bool:
+        """Whether no successful regular-file read has seen the stream."""
+        return not self._stream_ever_present
+
+    @staticmethod
+    def progress_stream_absence_grace_elapsed(now_mono: float) -> bool:
+        """Whether the daemon's 120 s stream-start grace has elapsed."""
+        return now_mono >= PROGRESS_STREAM_START_GRACE_SECONDS
 
     def monitor_state_at(self, now_mono: Optional[float] = None) -> str:
         """Return unknown when the sampler has exceeded its monitor-gap bound."""
@@ -821,6 +884,8 @@ class LivenessTracker:
     def _effective_state(
         self, now_mono: Optional[float],
     ) -> Tuple[str, Optional[str]]:
+        if self.enforced:
+            return self.state, self.reason
         if now_mono is not None:
             ceiling = self.ceiling_seconds()
             if ceiling is not None and now_mono > ceiling:
@@ -850,12 +915,15 @@ class LivenessTracker:
         how = via if via is not None else f"cgroup kill enforced for {len(pids)} tracked pid(s)"
         self.reason = f"{self.reason}; {how}"
 
-    def record_kill_refused(self, why: str) -> None:
-        """``--on-stall kill`` was asked for and the daemon would not do it
-        (there is nothing it can safely kill). The verdict stays
-        ``reported`` — claiming ``killed`` for a lane that is still running
-        would be a lie a consumer acts on."""
-        self.enforced = True
+    def record_kill_refused(self, why: str, *, terminal: bool = True) -> None:
+        """Record a refusal without claiming that the lane was killed.
+
+        Boundary refusals and definitively unavailable counters are terminal.
+        A transient confirmation failure is reportable but clears the current
+        evidence so later readings can be evaluated again.
+        """
+        self.enforced = terminal
+        self._kill_evidence.clear()
         self.verdict = VERDICT_REPORTED
         self.reason = f"{self.reason}; kill-refused:{why}"
 
@@ -923,7 +991,10 @@ class LivenessTracker:
             monitor_reason = "monitor-gap" if self._last_sample is not None else "no monitor reading"
         return {
             "state": state,
-            "verdict": VERDICT_NONE if state == STATE_OK else VERDICT_REPORTED,
+            "verdict": (
+                self.verdict if self.enforced else
+                VERDICT_NONE if state == STATE_OK else VERDICT_REPORTED
+            ),
             "reason": reason,
             "readings": self.readings,
             "monitor_state": monitor_state,

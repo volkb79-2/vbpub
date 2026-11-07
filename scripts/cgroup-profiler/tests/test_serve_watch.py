@@ -514,6 +514,250 @@ class TestKillTargets:
         )
         assert pids == [] and refusal == "unplaced-token-subtree"
 
+    def test_enforced_kill_remains_in_status_and_summary_after_a_monitor_gap(
+        self, tmp_path,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        server = _server(
+            tmp_path, cgroup_root=root, proc_root=str(_fake_proc(tmp_path)),
+            sampler_clock=lambda: 1000.0,
+        )
+        sess = self._session(
+            tmp_path, scope="container", cgroup=SCOPE_CGROUP,
+        )
+        sess.sampler_origin_mono = 0.0
+        sess.watch = liveness.LivenessTracker(
+            liveness.parse_policy({"idle_bound": 1, "on_stall": "kill"}),
+            started_at=sess.started_at,
+        )
+        sess.watch.observe(liveness.LivenessSample(
+            mono=0.0, at=sess.started_at, elapsed_seconds=0.0,
+            seq=0, mono_ns=0, due_ns=0, fresh=True, interval_seconds=2.0,
+            cpu_seconds_total=0.0, io_bytes_total=0,
+            monitor_nr_throttled_total=0,
+        ))
+        sess.watch.observe(liveness.LivenessSample(
+            mono=2.0, at=sess.started_at, elapsed_seconds=2.0,
+            seq=1, mono_ns=2_000_000_000, due_ns=2_000_000_000,
+            fresh=True, interval_seconds=2.0, cpu_seconds_total=0.0,
+            io_bytes_total=0, monitor_nr_throttled_total=0,
+        ))
+        sess.watch.record_kill([4242])
+        sess.watch.observe(liveness.LivenessSample(
+            mono=1000.0, at=sess.started_at, elapsed_seconds=1000.0,
+            seq=2, mono_ns=1_000_000_000_000, due_ns=4_000_000_000,
+            fresh=False, interval_seconds=2.0, cpu_seconds_total=0.0,
+            io_bytes_total=0, monitor_nr_throttled_total=0,
+        ))
+
+        status_watch = server._status_entry(sess)["watch"]
+        assert status_watch["state"] == liveness.STATE_STALLED
+        assert status_watch["verdict"] == liveness.VERDICT_KILLED
+
+        server._sessions[SESSION_ID] = sess
+        server._finalize_after_kill(sess)
+        assert sess.summary_doc["watch"]["state"] == liveness.STATE_STALLED
+        assert sess.summary_doc["watch"]["verdict"] == liveness.VERDICT_KILLED
+
+    def test_stream_emits_killed_once_when_verdict_changes_without_state_change(
+        self, tmp_path, monkeypatch,
+    ):
+        server = _server(
+            tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),
+            proc_root=str(_fake_proc(tmp_path)),
+        )
+        sess = self._session(tmp_path, scope="container", cgroup=SCOPE_CGROUP)
+        sess.watch = liveness.LivenessTracker(
+            liveness.parse_policy({"idle_bound": 1, "on_stall": "kill"}),
+            started_at=sess.started_at,
+        )
+        sent = []
+        monkeypatch.setattr(server, "_send_line", lambda _conn, line: sent.append(line))
+        waits = [0]
+
+        def advance(_event, _timeout):
+            waits[0] += 1
+            if waits[0] == 1:
+                sess.watch.observe(liveness.LivenessSample(
+                    mono=0.0, at=sess.started_at, elapsed_seconds=0.0,
+                    seq=0, mono_ns=0, due_ns=0, fresh=True,
+                    interval_seconds=2.0, cpu_seconds_total=0.0,
+                    io_bytes_total=0, monitor_nr_throttled_total=0,
+                ))
+                sess.watch.observe(liveness.LivenessSample(
+                    mono=2.0, at=sess.started_at, elapsed_seconds=2.0,
+                    seq=1, mono_ns=2_000_000_000, due_ns=2_000_000_000,
+                    fresh=True, interval_seconds=2.0, cpu_seconds_total=0.0,
+                    io_bytes_total=0, monitor_nr_throttled_total=0,
+                ))
+            else:
+                sess.watch.record_kill([4242])
+                _event.set()
+
+        monkeypatch.setattr(server, "watch_wait", advance)
+        server._stream_watch(object(), sess, 5.0)
+
+        verdicts = [line["watch"] for line in sent if line.get("event") == "verdict"]
+        assert [line["state"] for line in verdicts] == [
+            liveness.STATE_UNKNOWN, liveness.STATE_STALLED, liveness.STATE_STALLED,
+        ]
+        assert [line["verdict"] for line in verdicts] == [
+            liveness.VERDICT_REPORTED, liveness.VERDICT_REPORTED,
+            liveness.VERDICT_KILLED,
+        ]
+        assert sum(line["verdict"] == liveness.VERDICT_KILLED for line in verdicts) == 1
+
+    @pytest.mark.parametrize("cadence", [0.25, 1.0, 2.0, 5.0, 30.0])
+    def test_stall_kill_reaches_the_boundary_at_real_sampler_cadences(
+        self, tmp_path, monkeypatch, cadence,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        target = root / SCOPE_CGROUP
+        (target / "cpu.stat").write_text("usage_usec 0\nnr_throttled 0\n")
+        (target / "io.stat").write_text(
+            "8:0 rbytes=0 wbytes=0 rios=0 wios=0\n"
+        )
+        mono = [0.0]
+        server = _server(
+            tmp_path, cgroup_root=root, proc_root=str(_fake_proc(tmp_path)),
+            sampler_clock=lambda: mono[0], monitor_throttled_reader=lambda: 0,
+        )
+        sess = self._session(
+            tmp_path, scope="container", cgroup=SCOPE_CGROUP, interval=cadence,
+        )
+        sess.sampler_origin_mono = 0.0
+        sess.watch = liveness.LivenessTracker(
+            liveness.parse_policy({"idle_bound": 1, "on_stall": "kill"}),
+            started_at=sess.started_at,
+        )
+        writes = []
+
+        class Killer:
+            refusal_reason = None
+
+            def kill(self, *, before_kill):
+                assert before_kill() is True
+                writes.append(mono[0])
+                return True
+
+        monkeypatch.setattr(server, "_make_container_killer", lambda **_kw: Killer())
+        monkeypatch.setattr(server, "_finalize_after_kill", lambda _sess: None)
+
+        deadline = 180.0
+        while mono[0] <= deadline and not writes:
+            server._observe_liveness(
+                sess, mono=mono[0], record={"cg": {}, "host": {}},
+                abs_target=str(target), target_metrics={}, host_metrics={}, pids=[101],
+            )
+            if not writes:
+                mono[0] = round(mono[0] + cadence, 9)
+
+        assert writes, f"no kill at sampler cadence {cadence}s"
+        assert sess.watch.verdict == liveness.VERDICT_KILLED
+        evidence = sess.watch.kill_state_readings
+        assert evidence[-1].mono - evidence[0].mono >= 60.0
+
+    def test_busy_over_ceiling_lane_is_killed_without_a_no_growth_confirmation(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        target = root / SCOPE_CGROUP
+        (target / "cpu.stat").write_text("usage_usec 0\nnr_throttled 0\n")
+        (target / "io.stat").write_text("8:0 rbytes=0 wbytes=0\n")
+        stream_path = tmp_path / "progress.ndjson"
+        stream_path.write_text('{"event":"phase"}\n')
+        stream = liveness.read_progress_stream(str(stream_path))
+        mono = [0.0]
+        server = _server(
+            tmp_path, cgroup_root=root, proc_root=str(_fake_proc(tmp_path)),
+            sampler_clock=lambda: mono[0], monitor_throttled_reader=lambda: 0,
+        )
+        sess = self._session(
+            tmp_path, scope="container", cgroup=SCOPE_CGROUP, interval=2.0,
+        )
+        sess.sampler_origin_mono = 0.0
+        sess.watch = liveness.LivenessTracker(
+            liveness.parse_policy({
+                "idle_bound": 1, "ceiling": 1, "on_stall": "kill",
+                "progress_stream": "/run/lane/progress.ndjson",
+            }),
+            started_at=sess.started_at,
+        )
+        monkeypatch.setattr(
+            liveness, "resolve_stream_path", lambda *_args: str(stream_path),
+        )
+        writes = []
+
+        class Killer:
+            refusal_reason = None
+
+            def kill(self, *, before_kill):
+                assert before_kill() is True
+                writes.append(mono[0])
+                return True
+
+        monkeypatch.setattr(server, "_make_container_killer", lambda **_kw: Killer())
+        monkeypatch.setattr(server, "_finalize_after_kill", lambda _sess: None)
+
+        for seq in range(40):
+            mono[0] = float(seq * 2)
+            (target / "cpu.stat").write_text(
+                f"usage_usec {seq * 2_000_000}\nnr_throttled 0\n"
+            )
+            server._observe_liveness(
+                sess, mono=mono[0], record={"cg": {}, "host": {}},
+                abs_target=str(target), target_metrics={}, host_metrics={}, pids=[101],
+            )
+            if writes:
+                break
+
+        assert sess.watch.state == liveness.STATE_OVER_CEILING
+        assert writes
+        assert writes[0] <= 2.0  # no stall-evidence window delays the ceiling
+        assert len(sess.watch.kill_state_readings) == 1
+        assert sess.watch.verdict == liveness.VERDICT_KILLED
+
+    def test_busy_lane_that_is_only_silent_on_its_progress_stream_is_not_killed(
+        self, tmp_path, monkeypatch,
+    ):
+        root = _fake_cgroup_root(tmp_path)
+        target = root / SCOPE_CGROUP
+        (target / "cpu.stat").write_text("usage_usec 0\nnr_throttled 0\n")
+        (target / "io.stat").write_text("8:0 rbytes=0 wbytes=0\n")
+        stream_path = tmp_path / "progress.ndjson"
+        stream_path.write_text('{"event":"phase"}\n')
+        mono = [0.0]
+        server = _server(
+            tmp_path, cgroup_root=root, proc_root=str(_fake_proc(tmp_path)),
+            sampler_clock=lambda: mono[0], monitor_throttled_reader=lambda: 0,
+        )
+        sess = self._session(
+            tmp_path, scope="container", cgroup=SCOPE_CGROUP, interval=2.0,
+        )
+        sess.sampler_origin_mono = 0.0
+        sess.watch = liveness.LivenessTracker(
+            liveness.parse_policy({
+                "idle_bound": 1, "ceiling": None, "on_stall": "kill",
+                "progress_stream": "/run/lane/progress.ndjson",
+            }),
+            started_at=sess.started_at,
+        )
+        monkeypatch.setattr(
+            liveness, "resolve_stream_path", lambda *_args: str(stream_path),
+        )
+        for seq in range(100):
+            mono[0] = float(seq * 2)
+            (target / "cpu.stat").write_text(
+                f"usage_usec {seq * 2_000_000}\nnr_throttled 0\n"
+            )
+            server._observe_liveness(
+                sess, mono=mono[0], record={"cg": {}, "host": {}},
+                abs_target=str(target), target_metrics={}, host_metrics={}, pids=[101],
+            )
+
+        assert sess.watch.state == liveness.STATE_RUNAWAY
+        assert sess.watch.kill_requested is False
+
     def test_the_refusal_is_recorded_on_the_verdict(self, tmp_path):
         server = _server(
             tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),

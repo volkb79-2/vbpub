@@ -363,6 +363,32 @@ class TestReadingHelpers:
         assert liveness.cgroup_io_bytes(str(tmp_path)) == 3030
         assert liveness.cgroup_io_bytes(str(tmp_path / "missing")) is None
 
+    def test_missing_or_empty_io_stat_means_no_io_growth(self, tmp_path):
+        assert liveness.cgroup_io_bytes(str(tmp_path)) == 0
+        (tmp_path / "io.stat").write_text("")
+        assert liveness.cgroup_io_bytes(str(tmp_path)) == 0
+
+    def test_malformed_nonempty_io_stat_is_not_treated_as_zero(self, tmp_path):
+        (tmp_path / "io.stat").write_text("8:0 rbytes=1 rbytes=2\n")
+        assert liveness.cgroup_io_bytes(str(tmp_path)) is None
+
+    def test_io_stat_read_error_is_not_mistaken_for_zero_growth(
+        self, tmp_path, monkeypatch,
+    ):
+        import builtins
+
+        path = tmp_path / "io.stat"
+        path.write_text("8:0 rbytes=0 wbytes=0\n")
+        real_open = builtins.open
+
+        def fail_existing_io_stat(file, *args, **kwargs):
+            if os.fspath(file) == str(path):
+                raise PermissionError("synthetic io.stat read failure")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fail_existing_io_stat)
+        assert liveness.cgroup_io_bytes(str(tmp_path)) is None
+
     def test_kill_evidence_reads_exact_counters_and_stream_identity(self, tmp_path):
         cgroup = tmp_path / "cgroup"
         cgroup.mkdir()
@@ -652,6 +678,25 @@ class TestStateMachine:
         assert t.kill_state_readings == []
         assert t.kill_requested is False
 
+    def test_unavailable_monitor_throttle_counter_is_reported_as_monitor_health(self):
+        t = _tracker(idle_bound=1, on_stall="kill")
+        t.observe(_liveness_sample(
+            mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
+            fresh=True, interval_seconds=2.0,
+            monitor_nr_throttled_total=None,
+        ))
+        t.observe(_liveness_sample(
+            mono=2.0, at="2026-09-12T10:00:02Z", elapsed_seconds=2.0,
+            fresh=True, interval_seconds=2.0,
+            monitor_nr_throttled_total=None,
+        ))
+
+        watch = t.watch_block()
+        assert watch["monitor_state"] == "degraded-monitor"
+        assert watch["monitor_reason"] == "monitor cpu throttling counter unavailable"
+        assert watch["verdict"] == "reported"
+        assert t.kill_requested is False
+
     @pytest.mark.parametrize("fault", ["sigstop", "throttled", "blocked-read"])
     def test_monitor_faults_in_fake_clock_never_authorize_a_kill(self, fault):
         t = _tracker(idle_bound=1, on_stall="kill")
@@ -815,9 +860,7 @@ class TestStateMachine:
         assert fake.tick(6) == "ok"       # elapsed 60 s, not yet OVER
         assert fake.tick() == "over_ceiling"
         assert "over the ceiling of 60.0s" in t.reason
-        assert t.kill_requested is False  # state must remain confirmed for 60 s
-        fake.tick(6)
-        assert t.kill_requested is True
+        assert t.kill_requested is True  # daemon clock + fresh healthy reading
 
     def test_ceiling_auto_comes_from_the_declared_expected_duration(self):
         t = liveness.LivenessTracker(
@@ -1012,9 +1055,83 @@ class TestEnforcement:
 
         fake.tick(12)
 
-        assert len(t.kill_state_readings) == 5
-        assert t.kill_state_readings[-1].mono - t.kill_state_readings[0].mono >= 60.0
+        assert len(t.kill_state_readings) >= liveness.KILL_MIN_READINGS
+        assert (
+            t.kill_state_readings[-1].mono - t.kill_state_readings[0].mono
+            >= liveness.KILL_MIN_SPAN_SECONDS
+        )
         assert t.kill_requested is True
+
+    @pytest.mark.parametrize("cadence", [0.25, 1.0, 2.0, 5.0, 30.0])
+    def test_kill_evidence_retains_sixty_seconds_at_real_sample_cadences(self, cadence):
+        t = _tracker(idle_bound=1, on_stall="kill")
+        # The serve path's liveness interval has a two-second floor even when
+        # the actual sampler is running at 0.25 or 1 second. Exercise both
+        # clocks exactly as production does instead of faking a ten-second
+        # interval.
+        interval = max(cadence, 2.0)
+        count = int(180.0 / cadence) + 1
+        for seq in range(count):
+            mono = seq * cadence
+            t.observe(_liveness_sample(
+                mono=mono, at="2026-09-12T10:00:00Z", elapsed_seconds=mono,
+                cpu_seconds_total=0.0, cpu_usage_usec_total=0, io_bytes_total=0,
+                seq=seq, mono_ns=int(mono * 1_000_000_000),
+                due_ns=int(mono * 1_000_000_000), fresh=True,
+                interval_seconds=interval, monitor_nr_throttled_total=0,
+            ))
+            if t.kill_requested:
+                break
+
+        assert t.kill_requested is True
+        assert t.kill_state_readings[-1].mono - t.kill_state_readings[0].mono >= 60.0
+        assert t.kill_state_readings[-1].mono - t.kill_state_readings[0].mono \
+            <= 60.0 + max(interval, 1.0) + cadence
+
+    def test_kill_requires_three_readings_even_when_two_span_sixty_seconds(self):
+        t = _tracker(idle_bound=1, on_stall="kill")
+        for seq, mono in enumerate((0.0, 30.0, 90.0)):
+            t.observe(_liveness_sample(
+                mono=mono, at="2026-09-12T10:00:00Z", elapsed_seconds=mono,
+                cpu_seconds_total=0.0, io_bytes_total=0, seq=seq,
+                mono_ns=int(mono * 1_000_000_000),
+                due_ns=int(mono * 1_000_000_000), fresh=True,
+                interval_seconds=30.0, monitor_nr_throttled_total=0,
+            ))
+
+        assert len(t.kill_state_readings) == 2
+        assert t.kill_state_readings[-1].mono - t.kill_state_readings[0].mono == 60.0
+        assert t.kill_requested is False
+
+    def test_monitor_gap_clears_kill_evidence_instead_of_carrying_its_span(self):
+        t = _tracker(idle_bound=1, on_stall="kill")
+        for seq, mono in enumerate((0.0, 30.0, 60.0)):
+            t.observe(_liveness_sample(
+                mono=mono, at="2026-09-12T10:00:00Z", elapsed_seconds=mono,
+                cpu_seconds_total=0.0, io_bytes_total=0, seq=seq,
+                mono_ns=int(mono * 1_000_000_000),
+                due_ns=int(mono * 1_000_000_000), fresh=True,
+                interval_seconds=30.0, monitor_nr_throttled_total=0,
+            ))
+        assert len(t.kill_state_readings) == 2
+
+        t.observe(_liveness_sample(
+            mono=180.0, at="2026-09-12T10:03:00Z", elapsed_seconds=180.0,
+            cpu_seconds_total=0.0, io_bytes_total=0, seq=3,
+            mono_ns=180_000_000_000, due_ns=60_000_000_000,
+            fresh=False, interval_seconds=30.0, monitor_nr_throttled_total=0,
+        ))
+        assert t.state == liveness.STATE_UNKNOWN
+        assert t.kill_state_readings == []
+
+        t.observe(_liveness_sample(
+            mono=182.0, at="2026-09-12T10:03:02Z", elapsed_seconds=182.0,
+            cpu_seconds_total=0.0, io_bytes_total=0, seq=4,
+            mono_ns=182_000_000_000, due_ns=182_000_000_000,
+            fresh=True, interval_seconds=2.0, monitor_nr_throttled_total=0,
+        ))
+        assert len(t.kill_state_readings) == 1
+        assert t.kill_requested is False
 
     def test_a_killed_verdict_is_not_rewritten_by_later_ticks(self):
         t = _tracker(idle_bound=50, on_stall="kill")
@@ -1024,6 +1141,17 @@ class TestEnforcement:
         fake.cpu += 50.0           # the subtree's last gasps
         fake.tick(3)
         assert t.state == "stalled" and t.verdict == "killed"
+        assert t.watch_block()["state"] == "stalled"
+        assert t.watch_block()["verdict"] == "killed"
+
+        t.observe(_liveness_sample(
+            mono=1000.0, at="2026-09-12T10:16:40Z", elapsed_seconds=1000.0,
+            seq=99, mono_ns=1_000_000_000_000, due_ns=0, fresh=False,
+            interval_seconds=2.0, monitor_nr_throttled_total=0,
+        ))
+        watch = t.watch_block(now_mono=1000.0)
+        assert watch["state"] == "stalled"
+        assert watch["verdict"] == "killed"
 
     def test_a_refused_kill_is_reported_never_claimed(self):
         t = _tracker(idle_bound=50, on_stall="kill")
@@ -1051,6 +1179,23 @@ class TestEnforcement:
             fake.cpu += 5.0
             fake.tick()
         assert t.state == "over_ceiling" and t.kill_requested is True
+
+    def test_over_ceiling_needs_one_fresh_healthy_reading_not_sixty_seconds(self):
+        t = liveness.LivenessTracker(
+            liveness.parse_policy({"ceiling": 1, "on_stall": "kill"}),
+            started_at="2026-09-12T10:00:00Z",
+        )
+        t.observe(_liveness_sample(
+            mono=2.0, at="2026-09-12T10:00:02Z", elapsed_seconds=2.0,
+            cpu_usage_usec_total=2_000_000, io_bytes_total=0, seq=0,
+            mono_ns=2_000_000_000, due_ns=2_000_000_000, fresh=True,
+            interval_seconds=2.0, monitor_nr_throttled_total=0,
+        ))
+
+        assert t.state == liveness.STATE_OVER_CEILING
+        assert len(t.kill_state_readings) == 1
+        assert t.kill_requested_at(2.0) is True
+        assert t.kill_requested_at(20.0) is False
 
 
 class TestBlocks:
