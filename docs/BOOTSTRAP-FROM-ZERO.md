@@ -33,7 +33,7 @@ builder. No published vbpub image is needed.
 The checked-in level view must match the graph:
 
 ```project-order
-L0: cli-extended, assay, topos, test-policy, tls-edge, tester-base
+L0: cli-extended, assay, topos, test-policy, tls-edge, iogovmon, tester-base
 L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
 L2: run-gate-project
 L3: cmru
