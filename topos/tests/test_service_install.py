@@ -804,6 +804,46 @@ def test_a_group_edit_keeps_the_mode_of_the_operators_config(tmp_path: Path, mon
     assert stat.S_IMODE(os.stat(paths.config).st_mode) == 0o640
 
 
+def test_install_replaces_a_dangling_config_symlink_and_a_stat_failure_is_a_clean_refusal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args()
+    groups = _groups(monkeypatch)
+    Path(paths.config).parent.mkdir(parents=True)
+    Path(paths.config).symlink_to(tmp_path / "missing.toml")
+    subject = Installer(paths, run=_fake_run([], groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+
+    body = subject.install(args, _runtime(yes=True))
+
+    assert body["config_changes"] == [] and not Path(paths.config).is_symlink()
+    assert 'group = "topos-observe"' in Path(paths.config).read_text(encoding="utf-8")
+
+    original = install.os.stat
+
+    def denied(path, *a, **kw):
+        if os.fspath(path) == paths.config:
+            raise PermissionError("denied")
+        return original(path, *a, **kw)
+
+    monkeypatch.setattr(install.os, "stat", denied)
+    with pytest.raises(InstallError, match="cannot inspect .*toposd.toml: denied"):
+        subject.install(args, _runtime(yes=True))
+    assert not Path(paths.pending).exists()
+
+
+def test_uninstall_reports_nothing_installed_for_a_directory_at_the_sysusers_path_of_an_unowned_host(
+    tmp_path: Path,
+) -> None:
+    paths = InstallPaths(tmp_path)
+    Path(paths.sysusers).mkdir(parents=True)
+
+    body = Installer(paths, run=_fake_run([]), geteuid=lambda: 0).uninstall(_args(), _runtime(yes=True))
+
+    assert body["message"] == "nothing installed by toposd install"
+
+
 @pytest.mark.parametrize("which", ("sysusers", "dropin"))
 def test_uninstall_refuses_a_directory_at_every_unlinked_path_of_an_owned_host(
     tmp_path: Path, which: str
@@ -1216,6 +1256,27 @@ def test_finish_uninstall_is_rerunnable_after_running_tree_was_already_removed(t
     assert not Path(paths.current).exists() and not Path(paths.opt).exists()
 
 
+def test_a_finish_failure_after_a_group_failure_keeps_the_groupdel_advice(monkeypatch) -> None:
+    from cli_extended import CliFailure
+
+    class Subject:
+        def uninstall(self, _args, _runtime):
+            return {"ok": False, "removed": [], "kept": [], "deferred": "/version",
+                    "group_failures": ["topos-observe: busy"], "groups_kept": ["topos-observe"]}
+
+        def finish_uninstall(self, _body):
+            raise InstallError("cannot remove /version: busy")
+
+    monkeypatch.setattr(install, "_handler_paths", lambda _args, _runtime: InstallPaths("/fake"))
+    monkeypatch.setattr(install, "Installer", lambda _paths: Subject())
+    runtime = _runtime(yes=True)
+    runtime.output.primary = lambda _body: None
+
+    with pytest.raises(CliFailure, match=r"finish by hand: remove /fake/opt/topos, then /fake/etc/topos/install.toml; "
+                                          r"run groupdel for topos-observe once free"):
+        install._uninstall_handler(argparse.Namespace(root="/", remove_groups=True), runtime)
+
+
 def test_finish_uninstall_reports_running_tree_and_current_removal_errors(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
     version = Path(paths.opt, "0.7.3")
@@ -1311,7 +1372,7 @@ def test_uninstall_handler_maps_finish_failure_to_rerun_hint(monkeypatch) -> Non
     printed = []
     runtime.output.primary = printed.append
 
-    with pytest.raises(CliFailure, match=r"cannot remove /version: busy; finish by hand: remove /opt/topos, then /fake/etc/topos/install.toml") as caught:
+    with pytest.raises(CliFailure, match=r"cannot remove /version: busy; finish by hand: remove /fake/opt/topos, then /fake/etc/topos/install.toml") as caught:
         install._uninstall_handler(argparse.Namespace(root="/", remove_groups=False), runtime)
     assert printed
     assert "rerun" not in str(caught.value)  # the toposd that ran is gone with its tree
@@ -1351,7 +1412,7 @@ def test_remove_groups_rerun_skips_groups_already_gone(tmp_path: Path, monkeypat
     assert ["groupdel", "topos-observe"] not in commands
 
 
-def test_groupdel_failure_is_reported_after_cleanup_and_can_be_rerun_without_remove_groups(
+def test_groupdel_failure_is_reported_after_cleanup_and_names_the_manual_steps(
     tmp_path: Path, monkeypatch
 ) -> None:
     from cli_extended import CliFailure

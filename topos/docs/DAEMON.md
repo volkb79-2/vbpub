@@ -161,7 +161,8 @@ the result. It then removes the running tree, `current`, `PENDING`, `/opt/topos`
 the install record, and `/etc/topos` if empty, in that order. Otherwise the
 version tree and `current` are removed in the main pass before `PENDING`, the
 `/opt/topos` directory, the install record, and the empty `/etc/topos` directory.
-The ownership markers are last, so an interrupted uninstall can be rerun.
+The ownership markers are last, so an uninstall interrupted before the version
+tree is removed can be rerun; after that point finish by hand as described above.
 `--dry-run` lists the paths and groups it would remove.
 
 A failed upgrade of a finished install leaves `PENDING` next to the install
@@ -174,8 +175,8 @@ after that point can be rerun to re-apply, or uninstalled with
 `--remove-groups` to remove the group. A `PENDING` without a record means the
 install stopped before writing that ownership record; uninstall can clear the
 partial files, while install refuses the unfinished state. A host where an
-interrupted uninstall left the record can likewise be reinstalled over, or the
-uninstall rerun.
+interrupted uninstall left the record can likewise be reinstalled over (and then
+uninstalled again).
 
 ### Manual removal of an old installation
 

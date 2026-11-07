@@ -88,7 +88,8 @@ directory. Those ownership markers remain until the end so a partial finish can
 be retried. The installer writes its complete record after sysusers creates a
 group and before the readiness wait, which preserves the group's ownership on
 an interrupted first install. A failed `groupdel` does not block service and
-file cleanup; the record stays so a rerun without `--remove-groups` can finish.
+file cleanup; the record stays, and the operator runs `groupdel` and removes the
+record by hand, because the `toposd` that ran is removed with its version tree.
 
 The topos-specific differences from cgpd are listed in the
 [daemon operator guide](DAEMON.md#differences-from-cgpd). They follow from

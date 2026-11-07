@@ -1024,7 +1024,15 @@ class Installer:
         values = _gather_inputs(args, runtime, self.paths)
         running_version = self._running_version_dir()
         downgrade, version_drift = self._preflight(values, dry_run=runtime.dry_run)
-        config_existed = os.path.lexists(self.paths.config)
+        # Read before PENDING is written, so a failure is a clean refusal. An absent
+        # file and a dangling symlink are both "new": _config renders a fresh file.
+        try:
+            config_mode: int | None = stat.S_IMODE(os.stat(self.paths.config).st_mode)
+        except FileNotFoundError:
+            config_mode = None
+        except OSError as exc:
+            raise InstallError(f"cannot inspect {self.paths.config}: {exc}") from None
+        config_existed = config_mode is not None
         # A flag is applied to the file; so is a group from the record or a prompt
         # when the file names none. A group the file names itself is never replaced.
         config_text, config, config_changed = self._config(
@@ -1083,8 +1091,7 @@ class Installer:
 
         if config_changed:
             # An edit keeps the operator's file mode; only a new file gets 0644.
-            _atomic_write(self.paths.config, config_text,
-                          stat.S_IMODE(os.stat(self.paths.config).st_mode) if config_existed else 0o644)
+            _atomic_write(self.paths.config, config_text, config_mode if config_mode is not None else 0o644)
         for name, content in rendered.items():
             _atomic_write(resource_paths[name], content)
         if os.path.lexists(self.paths.current_new):  # left by a failed upgrade being re-applied
@@ -1468,10 +1475,10 @@ def _uninstall_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
     except InstallError as exc:
         # The toposd that ran this lives in the tree being removed, so the operator
         # cannot rerun it; name what is left instead.
-        raise CliFailure(
-            f"{exc}; finish by hand: remove /opt/topos, then {paths.install_record}",
-            exit_code=exc.exit_code,
-        ) from None
+        advice = f"{exc}; finish by hand: remove {paths.opt}, then {paths.install_record}"
+        if body.get("group_failures"):
+            advice += f"; run groupdel for {', '.join(body.get('groups_kept', []))} once free"
+        raise CliFailure(advice, exit_code=exc.exit_code) from None
     if body.get("group_failures"):
         groups = ", ".join(body.get("groups_kept", []))
         # This toposd is gone with its version tree, so it cannot be rerun.
