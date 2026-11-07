@@ -87,6 +87,20 @@ use it only on pages the user is authorized to inspect. See the [evaluation
 design](DESIGN-GUIDE.md#mcp-backed-evaluation-and-bounded-html) and
 [security policy](SECURITY.md#mcp-page-evaluation).
 
+`eval` checks the compact JSON result size in the page before it crosses MCP.
+`--max-bytes` defaults to 1 MiB and accepts 1 through 4194304 bytes. A
+truncated text result keeps the preview on stdout, writes
+`[truncated after N bytes]` to stderr, and exits 0; `--json` returns
+`preview`, `truncated: true`, and `max_bytes`. If the separate transport limit
+is reached, PWMCP reports a size error with a hint to return a smaller or
+aggregated value.
+
+Expressions may begin with comments. PWMCP strips final semicolons and trailing
+comments outside strings and template literals; a comment alone is an error.
+Semicolons and `//` inside literals are preserved. If slash syntax is
+ambiguous, the expression is left unchanged for JavaScript to parse. Supply a
+function with `return` when an expression needs multiple statements.
+
 `--wait-until` accepts
 `commit`, `domcontentloaded`, `load`, or `networkidle`. Text and snapshots go to
 stdout unless `--output PATH` is given; screenshots require `--output` and a

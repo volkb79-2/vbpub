@@ -34,7 +34,9 @@ from . import storage_state as storage_module
 from .blocked import BlockVerdict, detect as detect_block
 from .diagnostics import DOCTOR_CHECKS, try_load_contract
 from .mcp_client import (
+    _EVAL_RESULT_MARKER,
     McpError,
+    McpResponseTooLarge,
     McpTimeout,
     McpToolError,
     StreamableHttpClient,
@@ -172,6 +174,10 @@ _MCP_HTTP_TIMEOUT_MARGIN_SECONDS = 2.0
 def _failure_hint(exc: BaseException) -> str:
     """Keep browser lifecycle failures distinct from service reachability failures."""
 
+    if isinstance(exc, McpResponseTooLarge):
+        return (
+            "the MCP response exceeded its configured transport limit; return a smaller or aggregated value"
+        )
     if isinstance(exc, McpTimeout) or "request timed out" in str(exc).lower():
         return "the MCP request timed out; increase --timeout for eval or --timeout-ms for inspect"
     if isinstance(exc, McpToolError) and is_browser_crash(exc):
@@ -194,6 +200,16 @@ def _failure_hint(exc: BaseException) -> str:
     if isinstance(exc, PwmcpError):
         return "check that PWMCP is running and reachable from this container"
     return "check that PWMCP is running and reachable from this container, and that the page wait condition is reachable"
+
+
+def _print_eval_truncation(preview: str, max_bytes: int, runtime: CliRuntime) -> None:
+    """Print a bounded JSON preview and keep its truncation signal machine-readable."""
+
+    if runtime.json_mode:
+        runtime.output.primary({"preview": preview, "truncated": True, "max_bytes": max_bytes})
+    else:
+        runtime.output.primary(preview)
+        runtime.output.emit(LogLevel.WARN, f"[truncated after {max_bytes} bytes]", force=True)
 
 
 class _PageDiagnostics:
@@ -1000,6 +1016,7 @@ def _eval(args: argparse.Namespace, runtime: CliRuntime) -> None:
             attribute=args.attr,
             property_name=args.property,
             all_matches=args.all_matches,
+            max_bytes=args.max_bytes,
         )
     except ValueError as exc:
         raise CliFailure(str(exc)) from exc
@@ -1013,15 +1030,18 @@ def _eval(args: argparse.Namespace, runtime: CliRuntime) -> None:
     except McpError as exc:
         raise CliFailure(f"pwmcp eval failed: {exc}", hint=_failure_hint(exc)) from exc
     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, dict) and value.get(_EVAL_RESULT_MARKER) is True:
+        if value.get("truncated") is True:
+            _print_eval_truncation(str(value.get("preview", "")), args.max_bytes, runtime)
+            return
+        value = value.get("value")
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     encoded_bytes = encoded.encode("utf-8")
     if len(encoded_bytes) <= args.max_bytes:
         runtime.output.primary_json(value)
         return
     preview = encoded_bytes[: args.max_bytes].decode("utf-8", errors="ignore")
-    if runtime.json_mode:
-        runtime.output.primary({"preview": preview, "truncated": True, "max_bytes": args.max_bytes})
-    else:
-        runtime.output.primary(f"{preview}\n[truncated after {args.max_bytes} bytes]")
+    _print_eval_truncation(preview, args.max_bytes, runtime)
 
 
 def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:

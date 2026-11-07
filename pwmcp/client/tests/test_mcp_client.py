@@ -114,11 +114,14 @@ class _FakeMcpServer:
                         result = {"content": [{"type": "text", "text": "navigated"}]}
                     else:
                         function = payload["params"]["arguments"]["function"]
-                        if "new TextEncoder()" in function:
+                        if (
+                            "const source = element.outerHTML" in function
+                            or "const source = element.innerHTML" in function
+                        ):
                             value = state.html_value
                         elif "performance.getEntriesByType('navigation')" in function:
                             value = state.page_diagnostics
-                        elif function.startswith("async "):
+                        elif function.startswith("async ") and "MutationObserver" in function:
                             value = True
                         else:
                             value = state.eval_results.pop(0) if state.eval_results else state.eval_value
@@ -224,7 +227,9 @@ def test_eval_uses_browser_evaluate_without_the_mcp_python_sdk(
         "tools/call",
     ]
     assert _call_args(server.state, "browser_navigate") == [{"url": "https://example.test/page"}]
-    assert _call_args(server.state, "browser_evaluate") == [{"function": "() => (\ndocument.title\n)"}]
+    evaluated_function = _call_args(server.state, "browser_evaluate")[0]["function"]
+    assert evaluated_function.startswith("async () => { const value = await (() => (")
+    assert "document.title" in evaluated_function and "JSON.stringify(value)" in evaluated_function
     assert server.state.deleted_sessions == 1
 
 
@@ -292,8 +297,10 @@ def test_eval_output_limit_marks_truncation_in_text_and_json(
         assert cli_module.main([
             "eval", "https://example.test", "document.body.innerText", "--max-bytes", "16"
         ]) == 0
-        text_output = capsys.readouterr().out
-        assert "[truncated" in text_output
+        text_result = capsys.readouterr()
+        text_output = text_result.out
+        assert "[truncated" not in text_output
+        assert "[truncated after 16 bytes]" in text_result.err
         assert len(text_output.encode("utf-8")) < 100
 
         assert cli_module.main([
@@ -318,7 +325,7 @@ def test_eval_text_truncation_notice_goes_to_stderr_and_keeps_success_status(
     captured = capsys.readouterr()
     assert "[truncated after 16 bytes]" not in captured.out
     assert "[truncated after 16 bytes]" in captured.err
-    assert len(captured.out.encode("utf-8")) <= 16
+    assert len(captured.out.rstrip("\n").encode("utf-8")) <= 16
 
 
 def test_eval_exact_byte_cap_is_not_marked_truncated(
@@ -327,7 +334,11 @@ def test_eval_exact_byte_cap_is_not_marked_truncated(
 ) -> None:
     with _FakeMcpServer() as server:
         # Compact JSON for this value is exactly seven UTF-8 bytes, including quotes.
-        server.state.eval_value = "abcde"
+        server.state.eval_value = {
+            "__pwmcp_eval_result__": True,
+            "truncated": False,
+            "value": "abcde",
+        }
         monkeypatch.setenv("PWMCP_MCP_URL", server.url)
         assert cli_module.main([
             "eval", "https://example.test", "document.body.innerText", "--max-bytes", "7"
@@ -335,6 +346,25 @@ def test_eval_exact_byte_cap_is_not_marked_truncated(
     captured = capsys.readouterr()
     assert json.loads(captured.out) == "abcde"
     assert "truncated" not in captured.err
+
+
+def test_eval_page_truncation_envelope_uses_the_json_preview_shape(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.eval_value = {
+            "__pwmcp_eval_result__": True,
+            "truncated": True,
+            "preview": '"x' * 8,
+            "max_bytes": 16,
+        }
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "eval", "https://example.test", "document.body.innerText", "--max-bytes", "16", "--json"
+        ]) == 0
+        output = json.loads(capsys.readouterr().out)
+    assert output == {"preview": '"x' * 8, "truncated": True, "max_bytes": 16}
 
 
 def test_eval_reports_transport_oversize_with_a_size_hint(
@@ -377,6 +407,49 @@ def test_eval_caps_a_large_page_value_inside_the_page_function() -> None:
     assert len(result["preview"].encode("utf-8")) <= 16
 
 
+def test_eval_page_cap_includes_exact_boundary_and_shortens_utf8_safely() -> None:
+    node = require_binary("node", "Node.js executes generated eval cap boundary cases")
+    program = (
+        "const fs = require('fs'); const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+        "(async () => { const fn = eval('(' + input.function + ')'); "
+        "console.log(JSON.stringify(await fn())); })();"
+    )
+    for expression, limit, expected_truncated in (("'abcde'", 7, False), ("'😀x'", 4, True)):
+        function = evaluation_function(expression, max_bytes=limit)
+        completed = subprocess.run(
+            [node, "-e", program],
+            input=json.dumps({"function": function}),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        assert result["truncated"] is expected_truncated
+        if expected_truncated:
+            assert result["preview"] == '"'
+            assert len(result["preview"].encode("utf-8")) <= limit
+        else:
+            assert result["value"] == "abcde"
+
+
+def test_eval_page_function_preserves_undefined_results() -> None:
+    node = require_binary("node", "Node.js executes generated eval size handling")
+    function = evaluation_function("undefined", max_bytes=16)
+    program = (
+        "const fs = require('fs'); const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+        "(async () => { const fn = eval('(' + input.function + ')'); "
+        "const result = await fn(); console.log(JSON.stringify({result})); })();"
+    )
+    completed = subprocess.run(
+        [node, "-e", program],
+        input=json.dumps({"function": function}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == {}
+
+
 @pytest.mark.parametrize("line_ending", [b"\r\n", b"\r"])
 def test_eval_parses_crlf_and_bare_cr_sse_frames(
     monkeypatch: pytest.MonkeyPatch,
@@ -396,6 +469,11 @@ def test_mcp_redirects_are_refused_without_forwarding_credentials_or_session_id(
     first_requests: list[tuple[str, dict[str, str]]] = []
 
     class TargetHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            forwarded.append(("GET", {key.lower(): value for key, value in self.headers.items()}))
+            self.send_response(204)
+            self.end_headers()
+
         def do_POST(self) -> None:  # noqa: N802
             forwarded.append(("POST", {key.lower(): value for key, value in self.headers.items()}))
             self.send_response(204)
@@ -1517,6 +1595,8 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
         evaluation_function(None, selector="a", attribute="href", property_name="href")
     with pytest.raises(ValueError, match="provide a JavaScript"):
         evaluation_function("   ")
+    with pytest.raises(ValueError, match="size limit must be positive"):
+        evaluation_function("1", max_bytes=0)
 
 
 @pytest.mark.parametrize(
@@ -1526,11 +1606,26 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
         ("'a;//'", "a;//"),
         ('"say hi; // bye"', "say hi; // bye"),
         (r"'say \' hi; // bye'", "say ' hi; // bye"),
+        ("\"line\\\r\nnext\"", "linenext"),
         ("`template; // text`", "template; // text"),
         (r"`escaped \`; // text`", "escaped `; // text"),
+        ("`line\\\r\nnext`", "linenext"),
         ("`value ${'x; // y'}`", "value x; // y"),
+        ("`value ${ {item: 'x; // y'} /* block */ // line\n.item}`", "value x; // y"),
+        ("`outer ${`inner ${'nested'}`}`", "outer inner nested"),
         (r"/a;\/\/b/.test('a;//b');", True),
+        (r"/[;/]+/gi.test(';/');", True),
+        (r"/\//.test('/');", True),
+        ("1 === 1;", True),
+        ("1 == 1;", True),
+        ("() => { return /x/.test('x'); };", True),
+        ("typeof /x/.source;", "x"),
+        ("6 / 2;", 3),
+        ("({value: 2}).value / 2;", 1),
+        ("({$value_2: 3}).$value_2;", 3),
+        ("({café: 4}).café;", 4),
         ("1 + 1; /* c */", 2),
+        ("1 /* c */;", 1),
         ("1;;", 1),
         ("// leading comment\n1 + 1", 2),
         ("1 + 1 // trailing comment", 2),
@@ -1555,6 +1650,40 @@ def test_evaluation_function_preserves_literals_and_strips_only_trailing_syntax(
         text=True,
     )
     assert json.loads(completed.stdout) == expected
+
+
+def test_javascript_scanner_preserves_uncertain_or_incomplete_expressions() -> None:
+    for source in (
+        "{value: 1} / 2;",
+        "/[unterminated/;",
+        "'unterminated",
+        "'trailing\\",
+        "'line\nbreak'",
+        "1 /* unterminated",
+        "1 /**",
+        "/trailing\\",
+        "/line\nbreak/;",
+        "`unterminated",
+        "`trailing\\",
+        "`value ${1 /* unterminated",
+        "`value ${answer / 2}`;",
+    ):
+        normalized, first_token = mcp_client._strip_trailing_javascript(source)
+        assert normalized == source
+        assert first_token == 0
+
+    for source in (";", "// only comment", "/* only comment */"):
+        with pytest.raises(ValueError, match="no JavaScript expression"):
+            mcp_client._strip_trailing_javascript(source)
+
+    assert mcp_client._strip_trailing_javascript("value /= 2;") == ("value /= 2", 0)
+
+
+def test_javascript_scanner_caps_nested_template_recursion_conservatively() -> None:
+    source = "`value ${" * 65 + "1" + "}`" * 65 + ";"
+    normalized, first_token = mcp_client._strip_trailing_javascript(source)
+    assert normalized == source
+    assert first_token == 0
 
 
 def test_evaluation_function_rejects_a_lone_comment_with_a_clear_error() -> None:

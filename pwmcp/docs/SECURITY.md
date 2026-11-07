@@ -87,6 +87,14 @@ header. Percent-encode reserved characters in the credentials, use HTTPS when
 they leave a trusted local network, and avoid placing credentialed URLs in
 shared shell history or logs.
 
+The MCP transport sends requests directly to the configured endpoint. It
+ignores `http_proxy`, `https_proxy`, `all_proxy`, and their uppercase variants;
+there is no `PWMCP_MCP_PROXY` setting. The endpoint opener refuses redirects and
+reports their HTTP status because forwarding Authorization or
+`Mcp-Session-Id` to another origin would cross the configured trust boundary.
+This applies to MCP transport requests; the remote browser follows page
+navigation redirects according to its browser behavior.
+
 ## External Mode Access Control
 
 In external mode, access is controlled by:

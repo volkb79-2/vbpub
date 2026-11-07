@@ -21,6 +21,53 @@ DEFAULT_MCP_URL = "http://pwmcp:8931/mcp"
 _PROTOCOL_VERSION = "2024-11-05"
 _DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+_EVAL_RESULT_MARKER = "__pwmcp_eval_result__"
+_REGEX_PREFIX_WORDS = frozenset(
+    {
+        "await",
+        "case",
+        "delete",
+        "do",
+        "else",
+        "in",
+        "instanceof",
+        "new",
+        "of",
+        "return",
+        "throw",
+        "typeof",
+        "void",
+        "yield",
+    }
+)
+_THREE_CHARACTER_JS_OPERATORS = frozenset({"===", "!==", ">>>", "**=", "&&=", "||=", "??="})
+_TWO_CHARACTER_JS_OPERATORS = frozenset(
+    {
+        "++",
+        "--",
+        "=>",
+        "?.",
+        "&&",
+        "||",
+        "??",
+        "==",
+        "!=",
+        "<=",
+        ">=",
+        "+=",
+        "-=",
+        "*=",
+        "/=",
+        "%=",
+        "**",
+        "<<",
+        ">>",
+        "&=",
+        "|=",
+        "^=",
+        "??=",
+    }
+)
 
 
 class McpError(RuntimeError):
@@ -37,6 +84,17 @@ class McpTimeout(McpUnavailable):
 
 class McpToolError(McpError):
     """The server reported an error while running an MCP tool."""
+
+
+class McpResponseTooLarge(McpError):
+    """The MCP HTTP response exceeded its configured byte limit."""
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """MCP credentials and session headers stay on the configured endpoint."""
+
+    def redirect_request(self, *_args: object, **_kwargs: object) -> None:
+        return None
 
 
 def is_browser_crash(error: BaseException) -> bool:
@@ -168,6 +226,10 @@ class StreamableHttpClient:
             raise McpUnavailable(f"MCP response byte limit must be between 1 and {_MAX_RESPONSE_BYTES}")
         self.timeout = timeout
         self.max_response_bytes = max_response_bytes
+        self._opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({}),
+            _NoRedirectHandler(),
+        )
         self.protocol_version = _PROTOCOL_VERSION
         self._protocol_negotiated = False
         self.session_id: str | None = None
@@ -192,13 +254,19 @@ class StreamableHttpClient:
         data = json.dumps(message, separators=(",", ":")).encode("utf-8")
         try:
             request = urllib.request.Request(self.endpoint, data=data, headers=self._headers(), method="POST")
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with self._opener.open(request, timeout=self.timeout) as response:
                 status = response.status
                 headers = response.headers
                 body = response.read(self.max_response_bytes + 1)
                 if len(body) > self.max_response_bytes:
-                    raise McpError(f"MCP response exceeded the {self.max_response_bytes}-byte limit")
+                    raise McpResponseTooLarge(
+                        f"MCP response exceeded the {self.max_response_bytes}-byte limit (transport ceiling)"
+                    )
         except urllib.error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise McpUnavailable(
+                    f"MCP endpoint returned HTTP {exc.code}; redirects are not followed"
+                ) from None
             if expected_id is None:
                 # urllib turns non-2xx notification replies into HTTPError. The
                 # server still answered, so let the notification status check
@@ -330,7 +398,7 @@ class StreamableHttpClient:
             method="DELETE",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout):
+            with self._opener.open(request, timeout=self.timeout):
                 pass
         except Exception:
             # Session deletion is best-effort; the server also expires abandoned sessions.
@@ -377,6 +445,290 @@ def decode_tool_value(result: dict[str, object]) -> object:
     return values[0] if len(values) == 1 else values
 
 
+def _skip_js_quoted(source: str, start: int, quote: str) -> int | None:
+    """Return the end of a quoted string, or None for an incomplete literal."""
+
+    index = start + 1
+    while index < len(source):
+        character = source[index]
+        if character == "\\":
+            if index + 1 >= len(source):
+                return None
+            if source[index + 1] == "\r" and index + 2 < len(source) and source[index + 2] == "\n":
+                index += 3
+            else:
+                index += 2
+        elif character == quote:
+            return index + 1
+        elif character in "\r\n\u2028\u2029":
+            return None
+        else:
+            index += 1
+    return None
+
+
+def _skip_js_block_comment(source: str, start: int) -> int | None:
+    """Return the end of a block comment, or None when it is unterminated."""
+
+    index = start + 2
+    while index < len(source):
+        if source[index] == "*" and index + 1 < len(source) and source[index + 1] == "/":
+            return index + 2
+        index += 1
+    return None
+
+
+def _skip_js_regex(source: str, start: int) -> int | None:
+    """Skip a JavaScript regex literal, respecting escapes and character classes."""
+
+    index = start + 1
+    in_character_class = False
+    while index < len(source):
+        character = source[index]
+        if character in "\r\n\u2028\u2029":
+            return None
+        if character == "\\":
+            if index + 1 >= len(source):
+                return None
+            index += 2
+        elif character == "[" and not in_character_class:
+            in_character_class = True
+            index += 1
+        elif character == "]" and in_character_class:
+            in_character_class = False
+            index += 1
+        elif character == "/" and not in_character_class:
+            index += 1
+            while index < len(source) and (source[index].isalpha() or source[index].isdigit()):
+                index += 1
+            return index
+        else:
+            index += 1
+    return None
+
+
+def _skip_js_template_expression(source: str, start: int, nesting: int) -> int | None:
+    """Skip `${...}` code inside a template, returning after its closing brace."""
+
+    depth = 1
+    index = start
+    while index < len(source):
+        character = source[index]
+        if character.isspace():
+            index += 1
+        elif character in "'\"":
+            end = _skip_js_quoted(source, index, character)
+            if end is None:
+                return None
+            index = end
+        elif character == "`":
+            end = _skip_js_template(source, index, nesting + 1)
+            if end is None:
+                return None
+            index = end
+        elif character == "/" and index + 1 < len(source) and source[index + 1] == "/":
+            index += 2
+            while index < len(source) and source[index] not in "\r\n\u2028\u2029":
+                index += 1
+        elif character == "/" and index + 1 < len(source) and source[index + 1] == "*":
+            end = _skip_js_block_comment(source, index)
+            if end is None:
+                return None
+            index = end
+        elif character == "/":
+            # Distinguishing division from a regex here needs a token parser.
+            # Preserve the source untouched rather than guessing at a delimiter.
+            return None
+        elif character == "{":
+            depth += 1
+            index += 1
+        elif character == "}":
+            depth -= 1
+            index += 1
+            if depth == 0:
+                return index
+        else:
+            index += 1
+    return None
+
+
+def _skip_js_template(source: str, start: int, nesting: int = 0) -> int | None:
+    """Skip a template literal and its interpolations without treating text as code."""
+
+    if nesting >= 64:
+        return None
+    index = start + 1
+    while index < len(source):
+        character = source[index]
+        if character == "\\":
+            if index + 1 >= len(source):
+                return None
+            if source[index + 1] == "\r" and index + 2 < len(source) and source[index + 2] == "\n":
+                index += 3
+            else:
+                index += 2
+        elif character == "`":
+            return index + 1
+        elif character == "$" and index + 1 < len(source) and source[index + 1] == "{":
+            end = _skip_js_template_expression(source, index + 2, nesting)
+            if end is None:
+                return None
+            index = end
+        else:
+            index += 1
+    return None
+
+
+def _identifier_character(character: str) -> bool:
+    return character.isalnum() or character in "_$" or ord(character) >= 128
+
+
+def _strip_trailing_javascript(source: str) -> tuple[str, int]:
+    """Scan JavaScript once and remove only final semicolons/comments outside literals."""
+
+    index = 0
+    first_token: int | None = None
+    last_token_is_semicolon = False
+    semicolon_start: int | None = None
+    trailing_comment_start: int | None = None
+    nonsemicolon_seen = False
+    previous_can_end_expression = False
+    previous_is_brace_close = False
+    uncertain = False
+    while index < len(source):
+        character = source[index]
+        if character.isspace():
+            index += 1
+            continue
+        if character == "/" and index + 1 < len(source) and source[index + 1] == "/":
+            if first_token is not None and trailing_comment_start is None:
+                trailing_comment_start = index
+            index += 2
+            while index < len(source) and source[index] not in "\r\n\u2028\u2029":
+                index += 1
+            continue
+        if character == "/" and index + 1 < len(source) and source[index + 1] == "*":
+            if first_token is not None and trailing_comment_start is None:
+                trailing_comment_start = index
+            end = _skip_js_block_comment(source, index)
+            if end is None:
+                uncertain = True
+                break
+            index = end
+            continue
+
+        start = index
+        if first_token is None:
+            first_token = start
+        token_is_semicolon = False
+        token_can_end_expression = False
+        token_is_brace_close = False
+
+        if character in "'\"":
+            end = _skip_js_quoted(source, index, character)
+            if end is None:
+                uncertain = True
+                break
+            index = end
+            token_can_end_expression = True
+        elif character == "`":
+            end = _skip_js_template(source, index)
+            if end is None:
+                uncertain = True
+                break
+            index = end
+            token_can_end_expression = True
+        elif character == "/":
+            if previous_is_brace_close:
+                uncertain = True
+                break
+            if previous_can_end_expression:
+                index += 2 if index + 1 < len(source) and source[index + 1] == "=" else 1
+            else:
+                end = _skip_js_regex(source, index)
+                if end is None:
+                    uncertain = True
+                    break
+                index = end
+                token_can_end_expression = True
+        elif character.isalpha() or character in "_$" or ord(character) >= 128:
+            index += 1
+            while index < len(source) and _identifier_character(source[index]):
+                index += 1
+            word = source[start:index]
+            token_can_end_expression = word not in _REGEX_PREFIX_WORDS
+        elif character.isdigit():
+            index += 1
+            while index < len(source) and (source[index].isalnum() or source[index] in "._"):
+                index += 1
+            token_can_end_expression = True
+        else:
+            two_character = source[index : index + 2]
+            three_character = source[index : index + 3]
+            token = (
+                three_character
+                if three_character in _THREE_CHARACTER_JS_OPERATORS
+                else two_character
+            )
+            if token in _TWO_CHARACTER_JS_OPERATORS or token in _THREE_CHARACTER_JS_OPERATORS:
+                index += len(token)
+            else:
+                token = character
+                index += 1
+            if token == ";":
+                token_is_semicolon = True
+            elif token in {")", "]", "}", "++", "--"}:
+                token_can_end_expression = True
+                token_is_brace_close = token == "}"
+
+        if token_is_semicolon:
+            if not last_token_is_semicolon:
+                semicolon_start = start
+            last_token_is_semicolon = True
+            previous_can_end_expression = False
+            previous_is_brace_close = False
+        else:
+            semicolon_start = None
+            trailing_comment_start = None
+            last_token_is_semicolon = False
+            nonsemicolon_seen = True
+            previous_can_end_expression = token_can_end_expression
+            previous_is_brace_close = token_is_brace_close
+
+    if first_token is None:
+        raise ValueError("no JavaScript expression was provided; comments alone are not an expression")
+    if uncertain:
+        return source, first_token
+
+    cut_at: int | None = None
+    if last_token_is_semicolon:
+        if not nonsemicolon_seen:
+            raise ValueError("no JavaScript expression was provided before the trailing semicolon")
+        cut_at = semicolon_start
+    if trailing_comment_start is not None and (cut_at is None or trailing_comment_start < cut_at):
+        cut_at = trailing_comment_start
+    normalized = source[:cut_at].rstrip() if cut_at is not None else source.rstrip()
+    if not normalized.strip():
+        raise ValueError("no JavaScript expression remains after trailing semicolons and comments")
+    return normalized, first_token
+
+
+def _bounded_evaluation_function(function_source: str, max_bytes: int) -> str:
+    """Call a page function and cap its compact JSON representation before MCP replies."""
+
+    return (
+        "async () => { const value = await (" + function_source + ")(); "
+        "const serialized = JSON.stringify(value); if (typeof serialized !== 'string') return value; "
+        "const encoded = new TextEncoder().encode(serialized); "
+        f"const maxBytes = {max_bytes}; "
+        f"if (encoded.length <= maxBytes) return {{{_EVAL_RESULT_MARKER}: true, truncated: false, value}}; "
+        "let previewEnd = Math.min(maxBytes, encoded.length); "
+        "while (previewEnd > 0 && (encoded[previewEnd] & 0xc0) === 0x80) previewEnd -= 1; "
+        "const preview = new TextDecoder().decode(encoded.subarray(0, previewEnd)); "
+        f"return {{{_EVAL_RESULT_MARKER}: true, truncated: true, preview, max_bytes: maxBytes}}; }}"
+    )
+
+
 def evaluation_function(
     expression: str | None,
     *,
@@ -384,9 +736,12 @@ def evaluation_function(
     attribute: str | None = None,
     property_name: str | None = None,
     all_matches: bool = False,
+    max_bytes: int | None = None,
 ) -> str:
     """Build the ``browser_evaluate`` function for caller code or selector-based DOM reads."""
 
+    if max_bytes is not None and max_bytes <= 0:
+        raise ValueError("evaluation result size limit must be positive")
     if selector is not None:
         if attribute is None and property_name is None:
             raise ValueError("--selector requires --attr NAME or --property NAME")
@@ -399,21 +754,26 @@ def evaluation_function(
         else:
             read = f"element[{json.dumps(property_name)}]"
         result = "values" if all_matches else "(values.length ? values[0] : null)"
-        return (
+        function = (
             "() => { const elements = Array.from(document.querySelectorAll("
             f"{json.dumps(selector)})); const values = elements.map((element) => {read}); "
             f"return {result}; }}"
         )
+        if max_bytes is not None:
+            return _bounded_evaluation_function(function, max_bytes)
+        return function
     if attribute is not None or property_name is not None:
         raise ValueError("--attr and --property require --selector")
     if all_matches:
         raise ValueError("--all requires --selector with --attr or --property")
     if expression is None or not expression.strip():
         raise ValueError("provide a JavaScript expression or function")
-    source = re.sub(r";(?=\s*(?://[^\r\n]*)?$)", "", expression.strip())
-    if re.match(r"^(?:async\s+)?function(?:\s|\*|\()", source):
-        return source
-    head, separator, _body = source.partition("=>")
+    source, first_token = _strip_trailing_javascript(expression.strip())
+    code_source = source[first_token:]
+    function_source: str | None = None
+    if re.match(r"^(?:async\s+)?function(?:\s|\*|\()", code_source):
+        function_source = source
+    head, separator, _body = code_source.partition("=>")
     stripped_head = head.strip()
     if stripped_head.startswith("async "):
         stripped_head = stripped_head[len("async ") :].strip()
@@ -421,8 +781,12 @@ def evaluation_function(
         stripped_head.isidentifier()
         or (stripped_head.startswith("(") and stripped_head.endswith(")"))
     ):
-        return source
-    return f"() => (\n{source}\n)"
+        function_source = source
+    if function_source is None:
+        function_source = f"() => (\n{source}\n)"
+    if max_bytes is not None:
+        return _bounded_evaluation_function(function_source, max_bytes)
+    return function_source
 
 
 def visible_selector_function(selector: str, timeout_ms: int) -> str:
