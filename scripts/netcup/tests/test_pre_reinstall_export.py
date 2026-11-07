@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import os
+import signal
 import subprocess
 import sys
 import tarfile
@@ -78,20 +79,48 @@ def test_export_calls_api_guard_before_pinned_ssh_and_checks_remote_identity(tmp
 def test_export_uses_a_real_ssh_timeout_and_reports_timeout_by_name(tmp_path, monkeypatch):
     exporter = _load_exporter()
     fake_ssh = tmp_path / "fake-ssh"
-    fake_ssh.write_text("#!/bin/sh\nexec /bin/sleep 30\n", encoding="utf-8")
+    child_script = tmp_path / "fake-ssh-child.py"
+    child_pid_file = tmp_path / "child.pid"
+    release_child = tmp_path / "release-child"
+    child_script.write_text(
+        "import os, sys, time\n"
+        "from pathlib import Path\n"
+        "Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+        "while not Path(sys.argv[2]).exists():\n"
+        "    time.sleep(0.01)\n",
+        encoding="utf-8",
+    )
+    fake_ssh.write_text(
+        "#!" + sys.executable + "\n"
+        "import subprocess, sys\n"
+        f"child = subprocess.Popen([sys.executable, {str(child_script)!r}, {str(child_pid_file)!r}, {str(release_child)!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "child.wait()\n",
+        encoding="utf-8",
+    )
     fake_ssh.chmod(0o755)
-    monkeypatch.setattr(exporter, "SSH_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(exporter, "SSH_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(exporter, "ssh_command", lambda _host: f"exec {fake_ssh}")
 
-    def run_fake_ssh(argv, **kwargs):
-        assert kwargs.get("timeout") == 0.2
-        return subprocess.run(argv, **kwargs)
-
-    with pytest.raises(RuntimeError, match=r"SSH collection timed out after 0\.2 seconds"):
-        exporter.export_snapshot(
-            "v1001", "20261107", root=tmp_path, runner=run_fake_ssh
-        )
-    assert not (tmp_path / "v1001" / "pre-reinstall-20261107").exists()
+    try:
+        with pytest.raises(RuntimeError, match=r"SSH collection timed out after 1 seconds"):
+            exporter.export_snapshot("v1001", "20261107", root=tmp_path)
+        assert child_pid_file.exists(), "fake ssh did not start its grandchild"
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        proc_stat = Path(f"/proc/{child_pid}/stat")
+        state = None
+        if proc_stat.exists():
+            state = proc_stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
+        assert state in (None, "Z"), "ssh grandchild survived the collection timeout"
+        assert not (tmp_path / "v1001" / "pre-reinstall-20261107").exists()
+    finally:
+        release_child.touch()
+        if child_pid_file.exists():
+            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+            proc_stat = Path(f"/proc/{child_pid}/stat")
+            if proc_stat.exists():
+                state = proc_stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
+                if state != "Z":
+                    os.kill(child_pid, signal.SIGKILL)
 
 
 def test_file_cap_override_cannot_exceed_the_redaction_budget(tmp_path):
@@ -431,8 +460,25 @@ def test_collector_skips_and_lists_a_line_over_the_redaction_cap(tmp_path):
     assert not any(name.endswith("single-line.env") for name in names)
     assert (
         "skipped binary, sensitive or unredactable file: /var/lib/vbpub/bootstrap/single-line.env "
-        "(line exceeds the 65536-byte redaction limit"
+        "(line exceeds the 4096-byte redaction limit"
     ) in notes
+
+
+def test_collector_skips_and_lists_a_file_whose_redacted_output_exceeds_budget(tmp_path):
+    def populate(root):
+        directory = root / "var/lib/vbpub/bootstrap"
+        directory.mkdir(parents=True)
+        (directory / "state.env").write_bytes(b"password=a\n" * 90000)
+        (directory / "keep.env").write_text("HOST_ROLE=dedicated-dev\n", encoding="utf-8")
+
+    names, files, notes = _run_collector(tmp_path, populate)
+    assert "installer/state/keep.env" in names
+    assert "installer/state/state.env" not in names
+    assert (
+        "skipped binary, sensitive or unredactable file: /var/lib/vbpub/bootstrap/state.env "
+        "(redacted file exceeds the 1048576-byte redaction limit"
+    ) in notes
+    assert b"password=a" not in b"\n".join(files.values())
 
 
 def test_collector_skips_sockets_and_symlinked_files_and_directories(tmp_path):

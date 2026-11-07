@@ -78,7 +78,12 @@ SHAPES = {
     "key-rootpass": f"ROOTPASS={SECRET}\n",
     "key-sshpass": f"SSHPASS={SECRET}\n",
     "key-pwd": f"PWD={SECRET}\n",
+    "key-adminpwd": f"adminpwd={SECRET}\n",
     "key-presharedkey": f"PresharedKey = {SECRET}\n",
+    "key-pin": f"pin: {SECRET}\n",
+    "key-passkey": f"passkey={SECRET}\n",
+    "redis-cli-auth": f"redis-cli -a {SECRET}\n",
+    "ldapsearch-bind-password": f"ldapsearch -w {SECRET} -x\n",
     "yaml-sequence-at-parent-indent": f"secrets:\n- {SECRET}\nkeep: harmless\n",
     "yaml-multiword-plain-value": f"password: my {SECRET} secret phrase\n",
     "netrc-password": f"machine example.invalid login operator password {SECRET}\n",
@@ -211,8 +216,21 @@ def test_one_megabyte_single_lines_take_the_deterministic_line_cap_path(shape, r
             pytest.fail(f"regex scanner ran before the {shape} line cap")
 
     monkeypatch.setattr(redaction, "PRIVATE_KEY_RE", RegexMustNotRun())
-    with pytest.raises(ValueError, match=r"line exceeds the 65536-byte redaction limit"):
+    with pytest.raises(ValueError, match=r"line exceeds the 4096-byte redaction limit"):
         redaction.redact_bytes("etc/example/large.txt", content)
+
+
+def test_line_at_the_4k_cap_is_scanned_and_the_next_byte_is_skipped(monkeypatch):
+    content = b"a" * redaction.MAX_REDACTION_LINE_BYTES
+    assert redaction.redact_bytes("etc/example/capped.txt", content) == content
+
+    class RegexMustNotRun:
+        def search(self, *_args, **_kwargs):
+            pytest.fail("regex scanner ran before the 4 KiB line cap")
+
+    monkeypatch.setattr(redaction, "PRIVATE_KEY_RE", RegexMustNotRun())
+    with pytest.raises(ValueError, match=r"line exceeds the 4096-byte redaction limit"):
+        redaction.redact_bytes("etc/example/over-cap.txt", content + b"a")
 
 
 def test_total_file_budget_rejects_many_short_lines_before_scanning(monkeypatch):
@@ -250,6 +268,88 @@ def test_second_pass_uses_one_stem_lookup_for_a_long_identifier(monkeypatch):
     assert len(text.encode()) < redaction.MAX_REDACTION_LINE_BYTES
     assert not redaction.has_unredacted(text)
     assert counted.steps <= 2
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a" * (redaction.MAX_REDACTION_LINE_BYTES - 1),
+        "A" * (redaction.MAX_REDACTION_LINE_BYTES - 3) + "=x",
+        ".-ua" * ((redaction.MAX_REDACTION_LINE_BYTES - 1) // 4),
+        ".-p/a" * ((redaction.MAX_REDACTION_LINE_BYTES - 1) // 5),
+    ],
+    ids=["lowercase-no-match", "uppercase-assignment-no-match", "curl-user-no-match", "short-p-no-match"],
+)
+def test_second_pass_no_match_paths_use_a_bounded_number_of_stem_lookups(text, monkeypatch):
+    original = redaction._STEM_SCAN
+
+    class CountedStemScan:
+        calls = 0
+
+        def search(self, value):
+            self.calls += 1
+            return original.search(value)
+
+    counted = CountedStemScan()
+    monkeypatch.setattr(redaction, "_STEM_SCAN", counted)
+    assert len(text.encode()) < redaction.MAX_REDACTION_LINE_BYTES
+    assert not redaction.has_unredacted(text)
+    token_count = len([part for part in __import__("re").findall(r"[A-Za-z0-9_.-]+", text)])
+    assert counted.calls <= token_count
+
+
+def test_long_suffix_stem_uses_a_suffix_check_before_the_stem_regex(monkeypatch):
+    class RegexMustNotRun:
+        def search(self, *_args, **_kwargs):
+            pytest.fail("suffix-sensitive token was sent through the unbounded stem regex")
+
+    monkeypatch.setattr(redaction, "_STEM_SCAN", RegexMustNotRun())
+    text = "a" * (redaction.MAX_REDACTION_LINE_BYTES - len("pass:secret")) + "pass:secret"
+    assert redaction.has_unredacted(text)
+
+
+def test_uppercase_key_normalisation_does_not_use_re_sub(monkeypatch):
+    def forbid_regex_sub(*_args, **_kwargs):
+        pytest.fail("uppercase key was passed to regex-based camel-case normalisation")
+
+    monkeypatch.setattr(redaction.re, "sub", forbid_regex_sub)
+    assert not redaction.key_is_sensitive("A" * (redaction.MAX_REDACTION_LINE_BYTES - 2))
+
+
+def test_short_p_benign_paths_are_consumed_once(monkeypatch):
+    original = redaction._VALUE_RE
+
+    class CountedValuePattern:
+        calls = 0
+
+        def match(self, value, position=0):
+            self.calls += 1
+            return original.match(value, position)
+
+    counted = CountedValuePattern()
+    monkeypatch.setattr(redaction, "_VALUE_RE", counted)
+    text = ".-p/a" * (redaction.MAX_REDACTION_LINE_BYTES // 5)
+    assert len(text.encode()) < redaction.MAX_REDACTION_LINE_BYTES
+    assert redaction.redact_text(text) == text
+    assert counted.calls <= 2
+
+
+def test_curl_user_field_is_bounded_and_overlong_credentials_are_refused():
+    line = "curl -u " + "u" * 129 + f":{SECRET}\n"
+    assert len(line.encode()) < redaction.MAX_REDACTION_LINE_BYTES
+    with pytest.raises(ValueError, match="unredacted"):
+        redaction.redact_bytes("etc/example/curl.txt", line.encode())
+
+
+def test_url_userinfo_scheme_bound_is_exactly_32_characters():
+    accepted_scheme = "x" + "a" * 31
+    rejected_scheme = accepted_scheme + "a"
+    accepted = redaction.redact_text(f"{accepted_scheme}://user:{SECRET}@host/path\n")
+    assert accepted == f"{accepted_scheme}://host/path\n"
+    with pytest.raises(ValueError, match="unredacted"):
+        redaction.redact_bytes(
+            "etc/example/url.txt", f"{rejected_scheme}://user:{SECRET}@host/path\n".encode()
+        )
 
 
 def test_incomplete_pem_headers_are_scanned_once_per_file_line(monkeypatch):
