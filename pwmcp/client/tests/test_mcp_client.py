@@ -1619,7 +1619,7 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
         ("1 === 1;", True),
         ("1 == 1;", True),
         ("() => { return /x/.test('x'); };", True),
-        ("typeof /x/.source;", "x"),
+        ("typeof /x/.source;", "string"),
         ("6 / 2;", 3),
         ("({value: 2}).value / 2;", 1),
         ("({$value_2: 3}).$value_2;", 3),
