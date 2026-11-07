@@ -9,6 +9,21 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Changed
+- Run-Gate now resolves cgprofile control and observer endpoints only from
+  `CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET` in its process
+  environment. `[profile].socket_path` is refused; observer mounts use an
+  identity read-only bind and pass the same path through
+  `ASSAY_RESOURCE_OBSERVER_SOCKET`. Missing required variables name
+  `cgpd doctor` and the host endpoints record as the remedy. `RUN_GATE_PROFILE=off`
+  explicitly opts out of profiling; observer lanes still require both endpoints.
+  Endpoint values are shape-validated (absolute path over `[A-Za-z0-9_./:@+-]`,
+  no `..`/empty/`.` components, no trailing `/`, observer directory never `/`)
+  before they reach any Docker argument. `run-gate doctor` reports an unusable
+  control endpoint as a WARN and continues. Recovery (re-attach, promoted
+  follower) stops a profiler session on the control endpoint recorded in the
+  run record (`profile_control_socket`) and reports a record without one.
+
 <!-- cmru: release history -->
 
 ## [25.3.0] - 2026-11-07
@@ -40,7 +55,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: pending release notes begin -->
 ### Changed
-- Run-Gate's default cgprofile control socket and observer lane endpoint use the new per-level layout, with no old-path fallback. Observer preflight requires a `root:root` directory without group or other write access, but does not require its GID to match the observer socket GID. The observer socket GID must differ from the host Docker and control socket GIDs. The Docker GID source order is the strict `RUN_GATE_HOST_DOCKER_GID` override, then the strict numeric `MDT_HOST_DOCKER_GID` supplied by the host launcher; no Docker API socket or group-database inference is used because a proxy or relay may give the API socket a different access GID. Missing sources name both variables. The control socket must use a non-root group distinct from Docker; before each connection Run-Gate accepts the control GID as the caller's effective or supplementary GID, or accepts UID 0 (the tester runner uses `--user 0:0`). An access refusal names the group and the devcontainer `--group-add` remedy. A host still on the old layout receives a cutover message; keep its earlier Run-Gate and Assay pins until the host is cut over.
+- The per-level cgprofile socket layout and its observer GID preflights were
+  introduced under RG-243. WP-E3 / RG-244 supersedes that interim endpoint
+  selection: Run-Gate reads the host-published values from its process
+  environment, and the observer lane mounts the observer directory at the
+  same host and lane path. The strict Docker GID source order and socket GID
+  checks remain as described in the RG-243 release entry.
 - `DEFAULT_HOST_IMAGE` (the host image when `RUN_GATE_HOST_IMAGE` is unset) is now
   `ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest`. The previous
   default, `modern-debian-tools-python-debug-vsc-devcontainer`, belongs to the retired
@@ -198,8 +218,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - **BREAKING (RG-156): run-gate reaches the cgprofile daemon over its control socket only.** The
   `docker exec cgprofile-host-daemon cgprofile ctl ...` fallback is removed with its settings: the `[profile] transport`
   and `[profile] daemon` keys, the `RUN_GATE_PROFILE_TRANSPORT` variable and the `docker ps` check in `doctor`. Each is
-  refused by name (exit 2), with no alias; delete the key or unset the variable. The socket is
-  `[profile] socket_path` (default `/run/cgprofile/ctl.sock`) and works against the current 1.x daemon (the operations
+  refused by name (exit 2), with no alias; delete the key or unset the variable. At that interim
+  revision, `[profile] socket_path` (default `/run/cgprofile/ctl.sock`) supplied the endpoint;
+  WP-E3 / RG-244 removes that key and reads `CGPROFILE_CONTROL_SOCKET` from the process
+  environment only. The control protocol works against the current 1.x daemon (the operations
   run-gate uses, `version`, `host`, `status`, `start`, `stop` and `watch`, are unchanged; run-gate never sends `report` or
   `gc`). An unreachable socket degrades exactly as an absent profiler did (basic or rusage profile, one warning) and the
   warning now carries the CP-31 cause tag (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
