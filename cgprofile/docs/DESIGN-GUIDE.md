@@ -451,11 +451,11 @@ identity is still proven as pool-owned. During a session, target recommits
 rebuild the exact array, preventing a shrinking subtree or reused slot from
 continuing to watch former lane PIDs.
 
-The one-shot collector (`cgprofilectl run`, `cgprofilectl attach`) follows the same
-nonzero-baseline refusal and optional-evidence rule. A startup or later
+Direct-mode collection (`cgprofile run`) and daemon sessions
+(`cgprofilectl start`) follow the same nonzero-baseline refusal and optional-evidence rule. A startup or later
 collection error closes only DAMON, writes ordinary samples and the normal
 finished manifest, and lets the wrapped command run to completion. In
-particular, `cgprofilectl run` must not
+particular, `cgprofile run` must not
 wait for DAMON before launching the user's command or let a missing optional
 series alter its verdict.
 

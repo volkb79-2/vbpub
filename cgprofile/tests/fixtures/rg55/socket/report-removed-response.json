@@ -3,6 +3,6 @@
   "contract": 1,
   "error": {
     "code": "report-removed",
-    "message": "the daemon no longer renders reports; export the session with contract 2 and render locally (cgprofilectl report <session>)"
+    "message": "the daemon no longer renders reports; export the session with contract 2 and render locally (cgprofile report <session>)"
   }
 }

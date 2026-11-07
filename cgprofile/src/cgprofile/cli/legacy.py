@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The collector child shared by ``cgprofilectl run`` (direct mode) and the daemon.
+"""The collector child shared by ``cgprofile run`` (direct mode) and the daemon.
 
 What remains of the 1.x ``cgprofile`` CLI:
 
@@ -266,7 +266,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
                         for region in regions:
                             run.append("damon", {"mono": record["mono"], **region})
                 # A phase mark can be written by a different process sharing
-                # this run directory (``cgprofilectl mark``, a wrapper boundary — see
+                # this run directory (``cgprofile mark``, a wrapper boundary — see
                 # DESIGN.md §3) — this sampler has no other way to notice one,
                 # so poll for new marks each tick and give any that arrived the
                 # same next-tick-snaps-to-hot treatment as an event or a

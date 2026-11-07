@@ -144,6 +144,43 @@ def test_analyze_prints_the_proposals_as_text_and_json(cli, monkeypatch, tmp_pat
     assert code == 0 and doc["run_dir"] == str(run.resolve()) and doc["proposals"][0]["id"] == "dev-slice-uncapped"
 
 
+def test_analyze_real_run_directory_prints_real_proposals_as_text_and_json(cli, run_dir_with_data):
+    """Exercise the CLI, RunDir, analyzer and Proposal model against on-disk run data."""
+    manifest_path = run_dir_with_data / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    subject = manifest["targets"][0]["cgroup"]
+    manifest["limits"] = {
+        subject: {
+            "resolved": {
+                "memory_high": 1_000_000,
+                "strict_min": 900_000,
+                "strict_low": 0,
+                "recursive_min": 900_000,
+                "recursive_low": 0,
+                "protection_mode": "strict",
+                "warnings": [],
+            },
+            "described": [],
+            "fingerprint": "fixture",
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    code, out, err = cli("analyze", str(run_dir_with_data), "--json")
+    document = jdoc(out)
+    assert code == 0, err
+    assert document["run_dir"] == str(run_dir_with_data.resolve())
+    assert len(document["proposals"]) == 1
+    proposal = document["proposals"][0]
+    assert proposal["id"] == f"pinned:{subject}"
+    assert proposal["severity"] == "warn" and proposal["confidence"] == "inferred"
+    assert proposal["evidence"] and proposal["change"]
+
+    code, out, err = cli("analyze", str(run_dir_with_data))
+    assert code == 0, err
+    assert proposal["id"] in out and proposal["title"] in out and "(inferred)" in out
+
+
 def test_analyze_with_no_proposals_says_so(cli, monkeypatch, tmp_path):
     FakeStageModules(monkeypatch)
     code, out, err = cli("analyze", str(tmp_path))

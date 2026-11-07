@@ -645,7 +645,7 @@ class TestHandleReportRealRender:
         assert resp["error"]["code"] == "report-removed"
         assert resp["error"]["message"] == (
             "the daemon no longer renders reports; export the session with "
-            "contract 2 and render locally (cgprofilectl report <session>)"
+            "contract 2 and render locally (cgprofile report <session>)"
         )
         assert not (tmp_path / "sessions" / session_id / "report.html").exists()
 
@@ -1629,7 +1629,7 @@ def test_session_loop_error_finalizes_the_session_as_aborted(simple_server, monk
 
 def test_manifest_target_follow_children_is_false(simple_server):
     # `_manifest_for`'s one target entry is never a `@follow` group (that is
-    # the collector-tier `cgprofile attach` mode's own thing, DESIGN.md
+    # direct-mode `cgprofile run`'s own thing, DESIGN.md
     # §4.4 -- a daemon session's single subject target never expands into
     # a group), so `follow_children` is always written `False`.
     resp = simple_server._dispatch(_start_req())

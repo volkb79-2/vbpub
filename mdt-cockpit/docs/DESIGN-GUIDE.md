@@ -805,6 +805,19 @@ ignores blank lines and comments but rejects extra active directives, so a
 missing or widened rule is reported before a consumer lane tries to mount the socket. See the
 [pasteable consumer command](CONSUMERS.md#cgprofile-resource-observer-host-setup).
 
+## cgprofile 2.x host-setup installer boundary
+
+`mdt-cgprofile-install.sh` renders the host config and units through `cgpd`,
+queries sessions with `cgpctl`, and installs `cgpd.service`. cgprofile 3.0.0
+uses the renamed `cgprofiled` and `cgprofilectl` entry points and its own
+`cgprofiled install` service workflow. The mdt host-setup installer therefore
+accepts only cgprofile 2.x pins (`<3.0.0`) and refuses outside that range before
+fetching a wheel. Its protected-unit defaults name both `cgpd.service` and
+`cgprofiled.service` while 2.x host-setup installs and 3.x service installs
+coexist across hosts. The [host guide](../host-setup/README.md#install-pin-and-upgrade-the-cgprofile-service)
+states the supported range; the [consumer procedure](CONSUMERS.md#cgprofile-resource-observer-host-setup)
+shows the install command.
+
 ## BuildKit guard policy
 
 The guard defaults to `report-only` because a reserved Buildx worker may be

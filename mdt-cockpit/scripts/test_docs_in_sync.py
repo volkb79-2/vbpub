@@ -150,11 +150,12 @@ def test_every_retired_name_is_a_plain_substring_that_can_match() -> None:
 # ── the rename guard: every text file of the project, both spellings of the old name ──
 
 OLD_NAME = re.compile(r"modern[- ]debian[- ]tools", re.IGNORECASE)
-# The link text/anchor of the one section that explains how to move from the old project.
+# Exact historical phrases: the migration heading and the closed issue that records the retirement.
 ALLOWED_PHRASES = (
     "moving-from-modern-debian-tools-python-debug",
     "Moving from modern-debian-tools-python-debug",
     "(`modern-debian-tools-python-debug`) are not carried over",
+    "MDT-078 - retire modern-debian-tools-python-debug",
 )
 # Files that legitimately name the old project, each with its reason. Anything else that
 # mentions it is a straggler of the rename.

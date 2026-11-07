@@ -877,7 +877,7 @@ production-quality. Support windows as of June 2026:
 | [USAGE.md](USAGE.md) | Consuming the image day to day |
 | [docs/DEVCONTAINER-MECHANISMS.md](docs/DEVCONTAINER-MECHANISMS.md) | **Start here.** Every devcontainer mechanism end to end: host prerequisites, bootstrap, create-time mounts and env, finalizer, filesystem split, shell selection and startup files, troubleshooting |
 | [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) | Build → create → start ordering, what runs when, host resource governance |
-| [host-setup/README.md](host-setup/README.md) | Installing host cgroup tiers, publishing the gates admission cap, and narrow cgprofile observer setup |
+| [host-setup/README.md](host-setup/README.md) | Installing host cgroup tiers, publishing the gates admission cap, narrow cgprofile observer setup, and the 2.x-only `cgpd.service` installer |
 | [host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md) | What slice units can't express; BFQ caveats |
 | [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) | Which concerns belong to the image, the orchestration, and the host |
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |

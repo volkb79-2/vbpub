@@ -1,6 +1,6 @@
 """Tests for the collector child's entry (``legacy.py _collect``): its parser,
 the small output helpers and ``main``'s error mapping. The 1.x ``serve`` and
-``report`` subcommands are gone (cgprofiled and ``cgprofilectl report`` replace them)."""
+``report`` subcommands are gone (cgprofiled and ``cgprofile report`` replace them)."""
 
 from __future__ import annotations
 

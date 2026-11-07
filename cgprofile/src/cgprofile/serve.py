@@ -4,7 +4,7 @@
 request per connection) and runs one sampling thread per live profiling
 session. Each thread drives :class:`lib.sampler.Sampler` at a FIXED cadence
 (hot == idle == the session's own ``interval`` — the adaptive back-off
-DESIGN.md §4.4 describes for ``cgprofile run``/``attach`` is deliberately
+DESIGN.md §4.4 describes for ``cgprofile run`` is deliberately
 turned off here: the contract's own computation rules (§7) assume samples
 land every ``interval_seconds`` with no gaps, which a caller reading
 ``memory.current`` for a p90/median needs to be true), samples the target
@@ -2894,7 +2894,7 @@ class SessionServer:
         raise RequestError(
             "report-removed",
             "the daemon no longer renders reports; export the session with "
-            "contract 2 and render locally (cgprofilectl report <session>)",
+            "contract 2 and render locally (cgprofile report <session>)",
         )
 
     # ── verb: gc / retention ─────────────────────────────────────────────

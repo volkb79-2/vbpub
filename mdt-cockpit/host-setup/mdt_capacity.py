@@ -358,7 +358,7 @@ DEDICATED_MEMORY_PIN_MIN = 256 * 1024 * 1024
 # PSI guard's pressure signals).  docker/containerd are protected too, so a dev-tier OOM victim is
 # never the daemon that supervises the containers.
 DEDICATED_PROTECTED_UNITS_DEFAULT = (
-    "docker.service containerd.service cgprofiled.service mdt-psi-guard.service "
+    "docker.service containerd.service cgpd.service cgprofiled.service mdt-psi-guard.service "
     "systemd-journald.service systemd-oomd.service"
 )
 # NEVER in the list: sshd restores the OOM score it started with into every login session it forks, so an

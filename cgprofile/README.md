@@ -271,7 +271,7 @@ current tree. See
 
 A daemon session stores `samples.jsonl.gz`, `events.jsonl`, `host.jsonl`,
 `manifest.json`, `summary.json`, and `damon.jsonl` only when DAMON samples were
-persisted; `cgprofilectl report ID` renders them locally from an `export`, so the
+persisted; `cgprofile report ID` renders them locally from an `export`, so the
 daemon process never imports the report libraries.
 
 ## The parts worth knowing about
@@ -289,7 +289,7 @@ quiet, snapping back to hot on any event. Designed to be run on a host that is
 already short of memory: the collector is standard-library only, holds no
 series in memory, and does all analysis after the run.
 
-**Phases three ways.** Explicit marks (`cgprofilectl mark "restoring db"`, callable
+**Phases three ways.** Explicit marks (`cgprofile mark "restoring db"`, callable
 from inside a gate container), wrapper-derived boundaries for gates that know
 nothing about the tool, and changepoint detection over the series so unlabelled
 regime shifts still get timestamped.

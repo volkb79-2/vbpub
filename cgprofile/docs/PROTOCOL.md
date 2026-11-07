@@ -401,7 +401,7 @@ every verb that exists in contract 1 except one: the `report` verb is removed. T
 * **How 1.x clients are told.** A 1.x client (run-gate's `_wire_args`, the 1.x in-image `ctl`) that sends
   `report` to a 2.x daemon at contract 1 receives a normal contract-1 error, never a silent drop:
   `{"ok": false, "contract": 1, "error": {"code": "report-removed", "message": "the daemon no longer
-  renders reports; export the session with contract 2 and render locally (cgprofilectl report <session>)"}}`.
+  renders reports; export the session with contract 2 and render locally (cgprofile report <session>)"}}`.
   `report-removed` is a new additive error code; a 1.x client that does not know it treats it like any
   unknown error code (exit 2 over the old carrier). Nothing else changes for contract-1 callers, which is
   why run-gate's socket-only change (RG-next) ships against 1.x and 2.x alike.

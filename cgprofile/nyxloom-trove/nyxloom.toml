@@ -1,4 +1,4 @@
-# nyxloom project config — cgroup-profiler.
+# nyxloom project config — cgprofile.
 #
 # Scope note, deliberately narrow: this declares a GATE CONTRACT, not a full
 # nyxloom document surface. The `roadmap`/`backlog`/`decisions` keys are absent
@@ -8,12 +8,12 @@
 # evidence table: one isolated, fail-closed command whose real exit propagates.
 
 [project]
-id = "cgroup-profiler"
+id = "cgprofile"
 default_branch = "main"
 trove = "nyxloom-trove"
 
 # A subdir of the vbpub monorepo; git ops resolve upward to vbpub.
-worktree_root = "../../.worktrees"
+worktree_root = "../.worktrees"
 
 reports_dir = "nyxloom-trove/reports"
 
@@ -62,7 +62,7 @@ id_prefix = "CP"
 # unlimited transient slice beside production.
 
 [gates.unit]
-argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/scripts/cgroup-profiler && exec tools/gate.sh {worktree} unit"]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/cgprofile && exec tools/gate.sh {worktree} unit"]
 phase = "implementation"
 asserts = ["tests-pass"]
 timeout_seconds = 900
@@ -77,7 +77,7 @@ environment = "tester-unified"
 # gate declares `tests-pass`; its command itself fails when the coverage floor
 # is not met.
 [gates.coverage]
-argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/scripts/cgroup-profiler && exec tools/gate.sh {worktree} coverage"]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/cgprofile && exec tools/gate.sh {worktree} coverage"]
 phase = "review"
 asserts = ["tests-pass"]
 timeout_seconds = 1200
@@ -89,7 +89,7 @@ environment = "tester-unified"
 # nothing about whether any assertion would notice if the line were wrong, and
 # these two gates are complementary for exactly that reason.
 [gates.canary]
-argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/scripts/cgroup-profiler && exec tools/canary-run.sh"]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/cgprofile && exec tools/canary-run.sh"]
 phase = "review"
 asserts = ["canary-verified"]
 timeout_seconds = 900

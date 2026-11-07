@@ -8,7 +8,7 @@
 # cgprofile wheel into /opt/cgprofile/<version>/venv (pip --no-index, sha256 verified before anything is
 # unpacked), renders /etc/cgprofile/cgpd.toml and the two units with the wheel's own `cgpd config check`
 # / `cgpd unit print`, and restarts only on drift, only after the live sessions drained. The design is
-# scripts/cgroup-profiler/docs/NATIVE-DEPLOYMENT.md (sections 3, 5, 6); this file is the host side.
+# ../../../cgprofile/docs/NATIVE-DEPLOYMENT.md (sections 3, 5, 6); this file is the 2.x host side.
 #
 # Exit codes: 0 done or nothing to do, 2 refused or failed (nothing half-applied that the next run
 # cannot repair), 3 the drain deadline passed with live sessions (old daemon and old `current` kept,
@@ -111,7 +111,9 @@ supported_keys() {
   # The version-to-keys table: only keys the pinned cgpd knows are rendered, so a rollback never feeds an
   # older daemon a key it would refuse. Every release that adds a key adds a line here (and a test).
   local major="${1%%.*}"
-  if [ "$major" -ge 2 ]; then echo "allow_uids gates_slice observe_slices"; else die "cgprofile $1 has no native service (1.x is the ciu container deployment)"; fi
+  if [ "$major" = 2 ]; then echo "allow_uids gates_slice observe_slices"; else
+    die "mdt host-setup installer supports cgprofile 2.x only (<3.0.0); 1.x is the ciu container deployment and 3.x uses cgprofiled install"
+  fi
 }
 
 toml_list_of_strings() { local out="" item; for item in $1; do out="${out:+$out, }\"$item\""; done; printf '[%s]' "$out"; }

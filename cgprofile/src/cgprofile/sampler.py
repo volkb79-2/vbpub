@@ -191,8 +191,7 @@ class Sampler:
     `tick()` only knows about producing one correctly-numbered record; all
     scheduling state (the current interval, the forced-hot latch) lives in
     `run()`/the instance so that a caller can also call `tick()` in
-    isolation — e.g. `cgprofile attach --duration 0` taking a single sample
-    — without dragging the loop's bookkeeping along.
+    isolation without dragging the loop's bookkeeping along.
     """
 
     def __init__(

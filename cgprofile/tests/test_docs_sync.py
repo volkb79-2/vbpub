@@ -9,7 +9,10 @@ A grep test keeps removed 1.x names out of every live document (CP-49).
 
 from __future__ import annotations
 
+import ast
+import os
 import re
+import tomllib
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -150,6 +153,94 @@ def test_cgprofiled_run_is_explicit_in_the_spec_and_the_readme():
     assert "never a default verb" in spec
     assert "The default verb" not in spec
     assert "explicit service entrypoint" in README.read_text(encoding="utf-8")
+
+
+def test_nyxloom_gate_paths_resolve_to_the_cgprofile_project():
+    """The trove's worktree root and every gate cwd must resolve in this checkout."""
+    config_path = ROOT / "nyxloom-trove" / "nyxloom.toml"
+    config = tomllib.loads(config_path.read_text(encoding="utf-8"))
+
+    for gate_name, gate in config["gates"].items():
+        shell = " ".join(gate["argv"])
+        paths = re.findall(r"\bcd\s+\{worktree\}/([^\s;&]+)", shell)
+        assert paths, f"{gate_name} has no worktree project directory"
+        for relative in paths:
+            project_dir = REPO / relative
+            assert project_dir.is_dir(), f"{gate_name} cd target does not exist: {project_dir}"
+
+    assert config["project"]["id"] == ROOT.name
+    worktree_root = Path(config["project"]["worktree_root"])
+    project_from_repo = ROOT.relative_to(REPO)
+    normalized_worktree_root = Path(os.path.normpath(str(project_from_repo / worktree_root)))
+    assert normalized_worktree_root == Path(".worktrees")
+
+
+def _markdown_code_fragments(text: str) -> List[str]:
+    """Extract quoted command material while leaving prose and historical tables alone."""
+    fenced = re.findall(r"```[^\n]*\n(.*?)```", text, re.S)
+    inline = re.findall(r"(?<!`)`([^`\n]+)`(?!`)", text)
+    return [*fenced, *inline]
+
+
+_CLI_COMMAND = re.compile(r"(?<![\w./-])(cgprofilectl|cgprofile)\s+([A-Za-z][A-Za-z0-9_-]*)")
+_CLI_ARGUMENT = re.compile(r"\s+(?:--\S|-[A-Za-z0-9]|<[^>]+>|[A-Z][A-Z0-9_-]*(?=\s|[|,.;)]|$)|[\"'])")
+
+
+def _invalid_cli_commands(items, verb_sets: Dict[str, Set[str]]) -> List[str]:
+    invalid = []
+    for label, text in items:
+        for match in _CLI_COMMAND.finditer(text):
+            executable, verb = match.groups()
+            # These three verbs were removed from cgprofilectl in the rename;
+            # mention of their old command form is always actionable.
+            removed_ctl_verb = executable == "cgprofilectl" and verb in {"run", "mark", "report"}
+            has_argument = _CLI_ARGUMENT.match(text, match.end()) is not None
+            if removed_ctl_verb or (verb not in verb_sets[executable] and has_argument):
+                invalid.append(f"{label}: {executable} {verb}")
+    return invalid
+
+
+def _live_command_docs() -> List[tuple[str, str]]:
+    paths = [ROOT / "README.md", ROOT / "ATTACH-GUIDE.md", ROOT / "DESIGN.md"]
+    paths.extend(sorted((ROOT / "docs").glob("*.md")))
+    paths.append(ROOT / "src" / "cgprofile" / "skills" / "cgprofile" / "SKILL.md")
+    items = []
+    for path in paths:
+        if path.name == "RG55-INTERFACE-CONTRACT.md":
+            # This byte-mirrored file documents the old wire protocol, not either current CLI.
+            continue
+        text = path.read_text(encoding="utf-8")
+        if path == ROOT / "docs" / "CONSUMERS.md":
+            text = _consumers_without_migration_table()
+        items.extend((f"{path.relative_to(ROOT)}", fragment)
+                     for fragment in _markdown_code_fragments(text))
+    return items
+
+
+def _source_string_literals(path: Path) -> List[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return [node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+
+
+def test_live_cli_command_strings_use_registered_verbs():
+    """Docs, skills, and daemon/help strings must name verbs the parser exposes."""
+    verb_sets = {
+        "cgprofilectl": set(_registry_verbs(cgprofilectl.build_cli())),
+        "cgprofile": set(_registry_verbs(cgprofile.build_cli())),
+    }
+    source_items = []
+    for path in sorted((ROOT / "src" / "cgprofile").rglob("*.py")):
+        source_items.extend((str(path.relative_to(ROOT)), literal)
+                            for literal in _source_string_literals(path))
+    docs = _live_command_docs()
+
+    assert _CLI_COMMAND.search("`cgprofilectl report ID`")
+    assert _invalid_cli_commands([("mutation", "`cgprofilectl report ID`")], verb_sets) == [
+        "mutation: cgprofilectl report"
+    ]
+    invalid = _invalid_cli_commands([*docs, *source_items], verb_sets)
+    assert invalid == [], "\n".join(invalid)
 
 
 def test_socket_group_user_and_config_test_contract_stays_in_sync():

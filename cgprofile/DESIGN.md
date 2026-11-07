@@ -617,7 +617,8 @@ cgprofile mark <name> [--kind phase|event] [--meta JSON]                  append
 cgprofile report <session> | --run-dir D   [--out D] [--html-only|--md-only|--export-only D]
 cgprofilectl start --target T [...] / stop / watch / show / sessions / status / host / prune
 cgprofilectl config show | set KEY VALUE [--persist] | reset KEY|--all
-cgprofilectl doctor | skills install|uninstall|check|list
+cgprofilectl doctor
+cgprofile skills install|uninstall|check|list
 cgprofiled run | unit print|check | config check | reload [--reset-overrides]
 ```
 
