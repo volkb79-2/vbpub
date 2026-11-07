@@ -328,25 +328,37 @@ be complete before the destructive sequence starts.
 The read-only evidence exporter verifies API identity first, uses the pinned
 SSH helper, checks the host name and server-ID file remotely, and writes an
 allowlisted snapshot under each host's `pre-reinstall-<date>/` directory. It
-redacts token, password, passphrase, pass/passwd suffixes, PWD, PresharedKey,
-API key, PAT, webhook URL fields and related secret values. Covered examples
-include quoted JSON/YAML/INI pairs, same-indent YAML secret sequences,
-multi-word plain values, JSONC comments, `.netrc` passwords, `curl -u` and
-`--user` credentials, URL userinfo and `/hooks/<token>` paths, command-line
-options, bearer headers, and private-key blocks.
+redacts token, password, passphrase, pass/passwd/PWD suffixes, `adminpwd`,
+`passkey`, `pin`, PresharedKey, API key, PAT, webhook URL fields and related
+secret values. Covered examples include quoted JSON/YAML/INI pairs,
+same-indent YAML secret sequences, multi-word plain values, JSONC comments,
+`.netrc` passwords, `curl -u` and `--user` credentials, `redis-cli -a`,
+`ldapsearch -w`, URL userinfo and `/hooks/<token>` paths, command-line options,
+bearer headers, and private-key blocks.
 
-The fixed total file budget is 1 MiB and the line budget is 64 KiB. Files over
-either limit are skipped and listed in `meta/collection.txt`; the
-`--max-file-bytes` option can lower the file budget. The remote SSH collection
-has a 300-second wall-clock timeout and removes its partial local output on
-failure. The iogovmon `scratch/` tree and Docker volume contents are excluded.
-Known gaps include secret-like INI section names, bare `key`/
-`encryption_key`/`signing_key`/`tls_key`, bare `auth` or `cookie` fields,
-raw JWTs, PGP private-key blocks, and multiline or encoded secret forms outside
-the listed shapes. `-p` followed by a path or a 1–5 digit number is kept for
-path/port uses. Review the exported file names and contents, then verify every
-exported file against `SHA256SUMS` before continuing. Run v1001 first, then
-r1002 only after v1001 passes post-install checks.
+The fixed input and redacted-output file budget is 1 MiB. The input line budget
+is 4 KiB: allowlisted config and evidence lines are much shorter, and a longer
+minified or encoded line is skipped and listed before scanning. Both redaction
+passes scan tokens in linear time; the cap is defense in depth. Redaction
+markers can expand a file, so the collector also skips and lists any output
+that grows past 1 MiB. The `--max-file-bytes` option can lower the file budget.
+Remote SSH collection has a 300-second wall-clock timeout and kills its whole
+process group, including child `ssh` processes; a failure removes partial local
+output. The iogovmon `scratch/` tree and Docker volume contents are excluded.
+
+Known gaps include Slack/Discord webhook secrets in URL paths outside
+`/hooks/<token>`, Kubernetes or Compose `name:`/`value:` secret pairs, prose
+such as `the password is X`, secret-like INI section names, bare `key`/
+`encryption_key`/`signing_key`/`tls_key`, bare `auth` or `cookie` fields, raw
+JWTs, PGP private-key blocks, and multiline or encoded secret forms outside
+the listed shapes. Round 8 added coverage for earlier misses `redis-cli -a`,
+`ldapsearch -w`, `pin`, and `passkey`; `adminpwd` is now masked by the first
+pass. `-p` followed by a path or a 1–5 digit number is kept for path/port uses.
+The broad key matcher may hide harmless values such as `lock_passwd: true` and
+`password_max_days`; that evidence loss is accepted. Review the exported file
+names and contents, then verify every exported file against `SHA256SUMS` before
+continuing. Run v1001 first, then r1002 only after v1001 passes post-install
+checks.
 
 From `scripts/netcup`, use the exact saved root geometry for the host and
 reviewed config/bundle. The following uses the recorded 512 GiB disk, root

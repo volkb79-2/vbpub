@@ -9,6 +9,7 @@ controller re-runs the redaction (idempotence).
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,7 @@ SHAPES = {
     "key-pin": f"pin: {SECRET}\n",
     "key-passkey": f"passkey={SECRET}\n",
     "redis-cli-auth": f"redis-cli -a {SECRET}\n",
+    "redis-cli-auth-attached": f"redis-cli -a{SECRET}\n",
     "ldapsearch-bind-password": f"ldapsearch -w {SECRET} -x\n",
     "yaml-sequence-at-parent-indent": f"secrets:\n- {SECRET}\nkeep: harmless\n",
     "yaml-multiword-plain-value": f"password: my {SECRET} secret phrase\n",
@@ -281,6 +283,7 @@ def test_second_pass_uses_one_stem_lookup_for_a_long_identifier(monkeypatch):
     ids=["lowercase-no-match", "uppercase-assignment-no-match", "curl-user-no-match", "short-p-no-match"],
 )
 def test_second_pass_no_match_paths_use_a_bounded_number_of_stem_lookups(text, monkeypatch):
+    assert r"(?i:[A-Za-z0-9_.-]+(?:pass|pw|pwd))" not in redaction._STEM_SCAN.pattern
     original = redaction._STEM_SCAN
 
     class CountedStemScan:
@@ -294,7 +297,7 @@ def test_second_pass_no_match_paths_use_a_bounded_number_of_stem_lookups(text, m
     monkeypatch.setattr(redaction, "_STEM_SCAN", counted)
     assert len(text.encode()) < redaction.MAX_REDACTION_LINE_BYTES
     assert not redaction.has_unredacted(text)
-    token_count = len([part for part in __import__("re").findall(r"[A-Za-z0-9_.-]+", text)])
+    token_count = len(re.findall(r"[A-Za-z0-9_.-]+", text))
     assert counted.calls <= token_count
 
 
@@ -306,6 +309,10 @@ def test_long_suffix_stem_uses_a_suffix_check_before_the_stem_regex(monkeypatch)
     monkeypatch.setattr(redaction, "_STEM_SCAN", RegexMustNotRun())
     text = "a" * (redaction.MAX_REDACTION_LINE_BYTES - len("pass:secret")) + "pass:secret"
     assert redaction.has_unredacted(text)
+
+
+def test_second_pass_keeps_suffix_matches_before_token_punctuation():
+    assert redaction.has_unredacted("adminpwd.yaml: unredacted-value\n")
 
 
 def test_uppercase_key_normalisation_does_not_use_re_sub(monkeypatch):

@@ -34,13 +34,13 @@ PRIVATE_KEY_MARKER = "***REDACTED PRIVATE KEY***"
 # removed) and short words matched only as whole words.
 LONG_STEMS = (
     "token", "passw", "passph", "passcode", "secret", "credential",
-    "authorization", "private", "apikey", "accesskey", "jwt", "psk",
+    "passkey", "authorization", "private", "apikey", "accesskey", "jwt", "psk",
     "presharedkey", "bearer",
 )
-SHORT_WORDS = ("pass", "pat", "pw", "pwd")
+SHORT_WORDS = ("pass", "pat", "pw", "pwd", "pin")
 
 MAX_REDACTION_FILE_BYTES = 1024 * 1024
-MAX_REDACTION_LINE_BYTES = 64 * 1024
+MAX_REDACTION_LINE_BYTES = 4 * 1024
 
 PRIVATE_KEY_RE = re.compile(r"-----BEGIN [^-\r\n]*PRIVATE KEY-----")
 PRIVATE_KEY_END_RE = re.compile(r"-----END [^-\r\n]*PRIVATE KEY-----")
@@ -73,7 +73,10 @@ _NETRC_PASSWORD_RE = re.compile(
     r"""(?i)(?<![A-Za-z0-9_-])(?P<prefix>password|passwd)(?P<space>[ \t]+)(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?![=:])[^\s]+)"""
 )
 _CURL_USER_RE = re.compile(
-    r"""(?i)(?<![A-Za-z0-9_-])(?P<prefix>--user(?:[ \t]*=[ \t]*|[ \t]+)|-u(?:[ \t]+|(?=[^ \t])))(?P<quote>["']?)(?P<user>[^:\s"']+):(?P<password>[^,\s"']+)(?P=quote)"""
+    r"""(?i)(?<![A-Za-z0-9_-])(?P<prefix>--user(?:[ \t]*=[ \t]*|[ \t]+)|-u(?:[ \t]+|(?=[^ \t])))(?P<quote>["']?)(?P<user>[^:\s"']{1,128}):(?P<password>[^,\s"']+)(?P=quote)"""
+)
+_SHELL_TOKEN_RE = re.compile(
+    r"""(?P<token>'(?:\\.|[^'\\])*'?|"(?:\\.|[^"\\])*"?|[^\s]+)"""
 )
 _TOKEN_FORMAT_RE = re.compile(
     r"""\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}"""
@@ -85,9 +88,21 @@ _BLOCK_OPENERS = {"{", "[", "|", ">", "|-", ">-", "|+", ">+"}
 
 
 def _words(key):
-    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", key)
-    spaced = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", spaced)
-    return [word for word in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if word]
+    spaced = []
+    for index, char in enumerate(key):
+        if "A" <= char <= "Z" and index:
+            previous = key[index - 1]
+            following = key[index + 1] if index + 1 < len(key) else ""
+            lower_or_digit_to_upper = (
+                "a" <= previous <= "z" or "0" <= previous <= "9"
+            )
+            acronym_to_word = (
+                "A" <= previous <= "Z" and "a" <= following <= "z"
+            )
+            if lower_or_digit_to_upper or acronym_to_word:
+                spaced.append(" ")
+        spaced.append(char.lower())
+    return [word for word in re.split(r"[^A-Za-z0-9]+", "".join(spaced)) if word]
 
 
 def key_is_sensitive(key):
@@ -96,7 +111,7 @@ def key_is_sensitive(key):
     joined = "".join(words)
     if any(stem in joined for stem in LONG_STEMS):
         return True
-    if joined.endswith(("pass", "pw")):
+    if joined.endswith(("pass", "pw", "pwd")):
         return True
     if "webhook" in joined and "url" in joined:
         return True
@@ -117,6 +132,59 @@ def _mask(value):
         closed = len(value) > 1 and value[-1] == quote
         return quote + MARKER + (quote if closed else "")
     return MARKER
+
+
+def _redact_client_short_options(line):
+    """Mask redis-cli -a and ldapsearch -w values during one token pass."""
+    tokens = list(_SHELL_TOKEN_RE.finditer(line))
+    replacements = []
+    active_option = None
+    index = 0
+    while index < len(tokens):
+        match = tokens[index]
+        raw = match.group("token")
+        token = raw.strip("\"'")
+        bare = token.rstrip(";&|")
+        executable = bare.rsplit("/", 1)[-1].lower()
+        if token in (";", "|", "&&", "||"):
+            active_option = None
+            index += 1
+            continue
+        if executable == "redis-cli":
+            active_option = "-a"
+        elif executable == "ldapsearch":
+            active_option = "-w"
+        elif active_option and token == active_option:
+            value_start = match.end()
+            while value_start < len(line) and line[value_start] in " \t":
+                value_start += 1
+            value = _VALUE_RE.match(line, value_start)
+            if value is not None:
+                replacements.append((value.start(), value.end(), _mask(value.group())))
+                while index + 1 < len(tokens) and tokens[index + 1].start() < value.end():
+                    index += 1
+        elif active_option and token.startswith(active_option) and len(token) > len(active_option):
+            leading_quote = len(raw) - len(raw.lstrip("\"'"))
+            value_start = match.start() + leading_quote + len(active_option)
+            if value_start < match.end() and line[value_start] == "=":
+                value_start += 1
+            value = _VALUE_RE.match(line, value_start)
+            if value is not None:
+                replacements.append((value.start(), value.end(), _mask(value.group())))
+        if token.endswith((";", "|", "&")):
+            active_option = None
+        index += 1
+
+    if not replacements:
+        return line
+    output = []
+    position = 0
+    for start, end, replacement in replacements:
+        output.append(line[position:start])
+        output.append(replacement)
+        position = end
+    output.append(line[position:])
+    return "".join(output)
 
 
 def _indent(line):
@@ -183,6 +251,7 @@ def _redact_line(line):
         lambda m: m.group("prefix") + m.group("quote") + m.group("user") + ":" + MARKER + m.group("quote"),
         line,
     )
+    line = _redact_client_short_options(line)
     line = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), line)
     line = _WEBHOOK_PATH_RE.sub(lambda m: m.group("prefix") + MARKER, line)
     line = _TOKEN_FORMAT_RE.sub(MARKER, line)
@@ -222,7 +291,11 @@ def _redact_line(line):
         out.append(line[position:found.end()])
         position = found.end()
         value = _VALUE_RE.match(line, found.end())
-        if value is None or _benign_short_p_value(value.group().strip("'\"")):
+        if value is None:
+            continue
+        if _benign_short_p_value(value.group().strip("'\"")):
+            out.append(line[position:value.end()])
+            position = value.end()
             continue
         out.append(_mask(value.group()))
         position = value.end()
@@ -326,10 +399,25 @@ def redact_json(value, key=""):
 # ---------------------------------------------------------------------------
 
 _STEM_SCAN = re.compile(
-    r"(?i)token|passw|passph|passcode|secret|credential|authorization|private|api[-_]?key|access[-_]?key|jwt|psk|preshared[-_]?key|bearer|webhook[-_]?url"
-    r"|(?<![A-Za-z0-9])(?:pass|pat|pw|pwd)(?![A-Za-z0-9])|(?-i:(?<=[a-z0-9])(?:Pass|Pat|Pw|Pwd)(?![a-z]))"
-    r"|(?i:[A-Za-z0-9_.-]+(?:pass|pw|pwd))(?![A-Za-z0-9])"
+    r"(?i)token|passw|passph|passcode|passkey|secret|credential|authorization|private|api[-_]?key|access[-_]?key|jwt|psk|preshared[-_]?key|bearer|webhook[-_]?url"
+    r"|(?<![A-Za-z0-9])(?:pass|pat|pw|pwd|pin)(?![A-Za-z0-9])|(?-i:(?<=[a-z0-9])(?:Pass|Pat|Pw|Pwd)(?![a-z]))"
 )
+
+
+def _token_has_stem(token):
+    # The former regex suffix branch retried its unbounded token prefix at each
+    # backtracking point. Check fixed suffix candidates directly, retaining its
+    # non-alphanumeric right boundary (including punctuation inside a token).
+    lowered = token.lower()
+    for index in range(len(lowered)):
+        for suffix in ("pass", "pw", "pwd"):
+            end = index + len(suffix)
+            if lowered.startswith(suffix, index) and (
+                end == len(lowered)
+                or not ("a" <= lowered[end] <= "z" or "0" <= lowered[end] <= "9")
+            ):
+                return True
+    return bool(_STEM_SCAN.search(token))
 
 
 def _is_marker(rest):
@@ -344,7 +432,7 @@ def _is_marker_at(line, index):
 
 def _stem_leaks(line):
     for token in re.finditer(r"[A-Za-z0-9_.-]+", line):
-        if not _STEM_SCAN.search(token.group()):
+        if not _token_has_stem(token.group()):
             continue
         index = token.end()
         if index < len(line) and line[index] in "\"'":
@@ -419,6 +507,34 @@ def _curl_user_leaks(line):
     return False
 
 
+def _client_short_option_leaks(line):
+    """Independently detect unmasked redis-cli -a and ldapsearch -w values."""
+    words = line.split()
+    active_option = None
+    for index, raw in enumerate(words):
+        token = raw.strip("\"'")
+        bare = token.rstrip(";&|")
+        executable = bare.rsplit("/", 1)[-1].lower()
+        if token in (";", "|", "&&", "||"):
+            active_option = None
+            continue
+        if executable == "redis-cli":
+            active_option = "-a"
+        elif executable == "ldapsearch":
+            active_option = "-w"
+        elif active_option == token and index + 1 < len(words):
+            value = words[index + 1].strip("\"';&|")
+            if value and not _is_marker(value):
+                return True
+        elif active_option and token.startswith(active_option) and len(token) > len(active_option):
+            value = token[len(active_option):].lstrip("=")
+            if value and not _is_marker(value):
+                return True
+        if token.endswith((";", "|", "&")):
+            active_option = None
+    return False
+
+
 def has_unredacted(text):
     """True when the (already redacted) text still looks like it carries a secret."""
     if "PRIVATE KEY-----" in text and re.search(r"-----BEGIN [^-\r\n]*PRIVATE KEY-----", text):
@@ -469,12 +585,16 @@ def has_unredacted(text):
             or _short_p_leaks(raw)
             or _netrc_password_leaks(raw)
             or _curl_user_leaks(raw)
+            or _client_short_option_leaks(raw)
         ):
             return True
         # a secret-named parent (empty, block scalar or masked) opens a block whose
         # deeper lines must all be masked
         name, separator, value = stripped.split("#", 1)[0].partition(":")
-        if separator and _STEM_SCAN.search(name) and (
+        if separator and any(
+            _token_has_stem(match.group())
+            for match in re.finditer(r"[A-Za-z0-9_.-]+", name)
+        ) and (
             value.strip() in _BLOCK_OPENERS | {"", MARKER, '"' + MARKER + '"'}
         ):
             block_indent = indent
@@ -534,7 +654,14 @@ def _check_redaction_budgets(name, content):
             )
 
 
-def redact_bytes(name, content):
+def _check_redacted_output_budget(name, content, max_output_bytes):
+    if len(content) > max_output_bytes:
+        raise ValueError(
+            f"redacted file exceeds the {max_output_bytes}-byte redaction limit: {name}"
+        )
+
+
+def redact_bytes(name, content, *, max_output_bytes=MAX_REDACTION_FILE_BYTES):
     """Return redacted bytes, or raise ValueError (the caller must skip the file)."""
     if SENSITIVE_PATH_RE.search(name):
         raise ValueError("sensitive export path refused: " + name)
@@ -552,6 +679,7 @@ def redact_bytes(name, content):
         pass
     else:
         cleaned = (json.dumps(redact_json(parsed), indent=2, sort_keys=True) + "\n").encode()
+        _check_redacted_output_budget(name, cleaned, max_output_bytes)
         if has_unredacted(cleaned.decode("utf-8")):
             raise ValueError("unredacted secret-like value remains in " + name)
         return cleaned
@@ -566,6 +694,8 @@ def redact_bytes(name, content):
         text = "\n".join(rows) + ("\n" if rows else "")
     else:
         text = redact_text(text)
+    cleaned = text.encode()
+    _check_redacted_output_budget(name, cleaned, max_output_bytes)
     if has_unredacted(text):
         raise ValueError("unredacted secret-like value remains in " + name)
-    return text.encode()
+    return cleaned

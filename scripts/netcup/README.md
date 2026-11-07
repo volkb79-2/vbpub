@@ -11,8 +11,10 @@ For the Debian-install-v2 data-area plan, offline preview, and saved r1002/v1001
 root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
 
 For the guarded v1001/r1002 reinstall path, `pre-reinstall-export.py` collects
-allowlisted, redacted host evidence with a 1 MiB file budget, a 64 KiB line
-limit, and a 300-second SSH timeout. See the
+allowlisted, redacted host evidence with a 1 MiB input/output file budget, a
+4 KiB per-line scan limit, and a 300-second SSH process-group timeout. Longer
+lines and files whose redacted output exceeds the budget are skipped and listed.
+See the
 [design rationale](DESIGN-GUIDE.md#guarded-destructive-reinstall). The
 `pre-reinstall.py` wrapper validates the source config, generated bundle, live
 identity, disk facts, and wizard payload before submit. Submit requires the

@@ -481,6 +481,20 @@ def test_collector_skips_and_lists_a_file_whose_redacted_output_exceeds_budget(t
     assert b"password=a" not in b"\n".join(files.values())
 
 
+def test_collector_applies_a_lowered_file_cap_to_redacted_output(tmp_path):
+    def populate(root):
+        directory = root / "var/lib/vbpub/bootstrap"
+        directory.mkdir(parents=True)
+        (directory / "state.env").write_bytes(b"password=a\n")
+
+    names, _files, notes = _run_collector(tmp_path, populate, max_file_bytes=16)
+    assert "installer/state/state.env" not in names
+    assert (
+        "skipped binary, sensitive or unredactable file: /var/lib/vbpub/bootstrap/state.env "
+        "(redacted file exceeds the 16-byte redaction limit"
+    ) in notes
+
+
 def test_collector_skips_sockets_and_symlinked_files_and_directories(tmp_path):
     import socket
 
@@ -671,3 +685,17 @@ def test_export_date_must_round_trip_exactly(tmp_path, date):
     with pytest.raises(ValueError, match="YYYYMMDD"):
         exporter.export_snapshot("v1001", date, root=tmp_path, runner=lambda *a, **k: calls.append(a))
     assert calls == []
+
+
+def test_export_budget_contract_is_synced_across_user_docs():
+    readme = (NETCUP_DIR / "README.md").read_text(encoding="utf-8")
+    design = (NETCUP_DIR / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (NETCUP_DIR / "CONSUMERS.md").read_text(encoding="utf-8")
+
+    assert "4 KiB per-line scan limit" in readme
+    assert "DESIGN-GUIDE.md#guarded-destructive-reinstall" in readme
+    assert "allowlisted config and evidence lines are far shorter than" in design
+    assert "Redaction can expand values" in design
+    assert "input line budget" in consumers and "is 4 KiB" in consumers
+    assert "skips and lists any output" in consumers
+    assert "./pre-reinstall-export.py v1001 --date" in consumers

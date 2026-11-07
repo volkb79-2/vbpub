@@ -113,13 +113,19 @@ prompt from the destructive path. Wizard output is streamed to the terminal
 and log; a submitted task ID is persisted before further monitoring.
 
 The exporter applies the same conservative redaction remotely and locally,
-including JSONC and key/value pairs independent of filename. A fixed 1 MiB
-per-file budget and 64 KiB per-line budget are checked before redaction, so a
-long unbroken value is skipped and listed without entering the regex scanners.
-The SSH collection subprocess has a 300-second wall-clock limit and reports a
-named timeout failure; neither a malformed file nor a stalled connection can
-hold the maintenance window indefinitely. The iogovmon `scratch/` tree and
-Docker volume contents are excluded. The pin updater does not trust a
+including JSONC and key/value pairs independent of filename. It checks a
+1 MiB input file budget and a 4 KiB input-line budget before any redaction
+regex runs. The allowlisted config and evidence lines are far shorter than
+4 KiB; longer minified or encoded lines are skipped and listed. The scanners
+also process tokens in linear time, so the size limit is defense in depth
+rather than the only bound on work. Redaction can expand values, so the
+exporter checks the 1 MiB budget again on the redacted output and the remote
+collector skips and lists a file that grows past it.
+
+The SSH collection subprocess starts in its own process group and kills that
+group after its 300-second wall-clock limit, so a child `ssh` cannot continue
+running after the controller reports a timeout. The iogovmon `scratch/` tree
+and Docker volume contents are excluded. The pin updater does not trust a
 first-seen key: it requires an authenticated provider fingerprint before
 replacing the exact host entries.
 

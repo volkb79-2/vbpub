@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import io
 import os
+import signal
 import shutil
 import subprocess
 import tarfile
@@ -157,7 +158,7 @@ def add_path(archive, source, destination, notes):
         if data is None:
             continue
         try:
-            content = redact_bytes(archive_name, data)
+            content = redact_bytes(archive_name, data, max_output_bytes=MAX_FILE_BYTES)
         except ValueError as exc:
             notes.append("skipped binary, sensitive or unredactable file: " + source_name + " (" + str(exc)[:120] + ")")
             continue
@@ -260,9 +261,16 @@ def ssh_command(host: str) -> str:
     )
 
 
-def redact_export_bytes(name: str, content: bytes) -> bytes:
+def redact_export_bytes(
+    name: str,
+    content: bytes,
+    *,
+    max_output_bytes: int = MAX_FILE_BYTES,
+) -> bytes:
     """Redact sensitive fields and refuse binary or incompletely redacted content."""
-    return export_redaction.redact_bytes(name, content)
+    return export_redaction.redact_bytes(
+        name, content, max_output_bytes=max_output_bytes
+    )
 
 
 def _safe_member_name(name: str) -> str:
@@ -295,7 +303,7 @@ def _extract_redacted(
             raw = stream.read(max_file_bytes + 1)
             if len(raw) > max_file_bytes:
                 raise ValueError(f"export archive member exceeds the {max_file_bytes}-byte file cap: {name}")
-            content = redact_export_bytes(name, raw)
+            content = redact_export_bytes(name, raw, max_output_bytes=max_file_bytes)
             target = destination.joinpath(*PurePosixPath(name).parts)
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             with target.open("xb") as output:
@@ -315,12 +323,46 @@ def _write_manifest(destination: Path) -> None:
     os.chmod(manifest, 0o600)
 
 
+def _run_in_process_group(
+    argv: list[str],
+    *,
+    input: bytes | None,
+    stdout,
+    stderr,
+    check: bool,
+    timeout: float,
+) -> subprocess.CompletedProcess:
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE if input is not None else None,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=True,
+    )
+    try:
+        captured_stdout, captured_stderr = process.communicate(input=input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate()
+        raise
+    if check and process.returncode:
+        raise subprocess.CalledProcessError(
+            process.returncode, argv, output=captured_stdout, stderr=captured_stderr
+        )
+    return subprocess.CompletedProcess(
+        argv, process.returncode, stdout=captured_stdout, stderr=captured_stderr
+    )
+
+
 def export_snapshot(
     host: str,
     date: str,
     *,
     root: Path = RELEASE_ROOT,
-    runner: Callable = subprocess.run,
+    runner: Callable = _run_in_process_group,
     max_file_bytes: int = MAX_FILE_BYTES,
 ) -> Path:
     if host not in HOSTS:
