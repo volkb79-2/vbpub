@@ -416,7 +416,7 @@ requires `/etc/host-endpoints.env` to be a root-owned regular file with no
 group or other write permission; it rejects symlinks, duplicate keys and
 values outside the published alphabet before any Docker call. If startup names
 a missing variable, repair it through the publisher that owns it: host-setup,
-`cgpd install`, or `toposd install`. Run that publisher's checker and inspect
+`cgprofiled install`, or `toposd install`. Run that publisher's checker and inspect
 the aggregate record again, then retry startup. Do not copy a value from
 another host or add a local fallback. The cockpit binds each published socket
 directory read-only at the same path and receives the socket values in its

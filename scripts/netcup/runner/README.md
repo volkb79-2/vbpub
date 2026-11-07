@@ -11,7 +11,7 @@ The cockpit's service endpoints and access GIDs come from the host-published `/e
 `runner.env`. The loader accepts only a regular, non-symlink file owned by root with no group or other write bit. It
 parses comments, blank lines and the published `KEY=VALUE` alphabet as data; malformed and duplicate entries fail with
 the file and line named. It exports only the runner's keys. `start-cockpit-runner.sh` refuses with the first missing
-variable's name. Repair the record through its owner (host-setup for Docker API and BuildKit, `cgpd install` for
+variable's name. Repair the record through its owner (host-setup for Docker API and BuildKit, `cgprofiled install` for
 cgprofile, or `toposd install` for topos), then run
 the corresponding host checker and retry; do not add socket paths or endpoint GIDs to `runner.env`. The cockpit
 receives the record's endpoint values, including both `CGPROFILE_OBSERVER_SOCKET` and its directory, gets read-only

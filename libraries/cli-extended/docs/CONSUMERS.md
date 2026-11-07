@@ -30,7 +30,7 @@ publish(
         "CGPROFILE_OBSERVER_SOCKET_DIR": observer_socket_dir,
         "CGPROFILE_OBSERVER_GID": str(observer_gid),
     },
-    writer=f"cgpd install {version}",
+    writer=f"cgprofiled install {version}",
 )
 ```
 
@@ -51,7 +51,7 @@ socket_path = require_env(
     "CGPROFILE_CONTROL_SOCKET",
     remedy=(
         "log in again, or `set -a; . /etc/host-endpoints.env`, "
-        "or run `cgpd install`"
+        "or run `cgprofiled install`"
     ),
 )
 ```
@@ -63,7 +63,7 @@ useful for host-side operations:
 
 ```bash
 python3 -m cli_extended.hostcfg.endpoints publish \
-  --owner cgprofile --writer 'cgpd install 2.3.0' \
+  --owner cgprofile --writer 'cgprofiled install 3.0.0' \
   --entry CGPROFILE_CONTROL_SOCKET=/run/cgprofile/control/cgprofile.sock \
   --entry CGPROFILE_CONTROL_SOCKET_DIR=/run/cgprofile/control
 python3 -m cli_extended.hostcfg.endpoints check --json
