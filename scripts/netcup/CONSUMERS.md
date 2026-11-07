@@ -254,9 +254,40 @@ See [README](README.md#unattended-restore-iso-workflow) for the feature
 overview and [DESIGN-GUIDE](DESIGN-GUIDE.md#restore-iso-lifecycle) for the
 two-stage lifecycle rationale.
 
-## Install-time data area (debian-install-v2 `partitioning`)
+## Install-time disk plan (debian-install-v2 `partitioning`)
 
-The producer config key `partitioning` (debian-install-v2 README "Disk layout"; it replaced the removed `data_area`, `data_partition`, `data_lvm`, `disk_layout` and `root_max_size_gb`) rides in the customScript config that `debian-install-v2.py build-customscript` embeds (`VBPUB_CONFIG_EXTRA_JSON`); `install-host.py` passes the customScript through untouched and needed no change. A plan needs `swap_policy` `on` or `off`; the bundle is refused at build time when the plan is invalid or does not account for the whole disk. When the installer created the cow (a partition or LVM LV with filesystem label `MDT_COW`, btrfs, mounted at the runner's `COW_MOUNT`, default `/srv/cow`), `runner/provision-runner.sh` detects it by label and skips carving; it exits 4 for a non-btrfs cow and 8 when the cow is mounted elsewhere than `COW_MOUNT`. Without a data area (`reserve_gb: "*"`, free space behind root) the carve from the free row works as before.
+The producer's `partitioning` config rides in the customScript config that
+`debian-install-v2.py build-customscript` embeds
+(`VBPUB_CONFIG_EXTRA_JSON`); `install-host.py` passes that customScript
+through untouched. Config loading and bundle construction refuse impossible
+fixed/percentage size shapes. Before ordering a reinstall, resolve disk fit
+with `debian-install-v2.py plan --config install.json --disk-size SIZE` (add
+`--ram-gib GIB` when swap size is automatic).
+
+The raw benchmark partition defaults to 8 GiB, has PARTLABEL `iobench-raw`,
+and remains unformatted and unmounted. Set
+`partitioning.iobench_raw_gb` to 2–10240 GiB, or `false` only when
+`run_io_benchmark` is off. The runner finds the CoW volume by GPT PARTLABEL
+`MDT_COW`; it does not use a fixed partition number or create a partition.
+A missing/duplicate label, incompatible filesystem, or mount that disagrees
+with `COW_MOUNT` is refused. The install plan must mount the CoW filesystem at
+the configured `COW_MOUNT` (default `/srv/cow`).
+
+Example portion of a 512 GiB host config with 160 GiB root, a CoW partition,
+four 4 GiB swaps, and the default raw benchmark partition:
+
+```json
+{
+  "partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [
+    {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}
+  ]}},
+  "swap_policy": "on", "swap_disk_total_gb": 16, "swap_partition_count": 4
+}
+```
+
+The physical order is root, `MDT_COW`, `iobench-raw`, then swaps. Partition
+numbers follow their disk position; the runner uses PARTLABEL so a changed
+plan does not require an environment-file device-number edit.
 
 ## Remote gate (run a lane on a test host)
 

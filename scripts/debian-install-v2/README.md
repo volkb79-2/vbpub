@@ -174,20 +174,15 @@ and the [consumer example](docs/CONSUMERS.md#cloud-init-cache-policy).
 
 ### Disk / swap
 
-Root and swap are separate policy choices in the shared config/profile. The
-keys `root_resize_policy` and `swap_policy` control them independently. By
-default, `root_resize_policy: "resize"` sizes the ext root partition to the
-largest safe extent after the configured swap area; it may grow online or
-shrink offline in an initramfs pre-mount hook. `grow-only` can use available
-space but never shrinks root. `untouched` forbids root geometry changes. These two knobs describe plain root
-growth; to size root, create a data area or keep space free, use the single
-`partitioning` object instead (see [Disk layout](#disk-layout)). Swap is always
-placed at the END of the disk. See the
-[root sizing design](docs/DESIGN-GUIDE.md#root-and-swap-policies) and the
-[consumer example](docs/CONSUMERS.md#root-and-swap-policy).
+One `partitioning` plan owns root, data, the raw benchmark allocation,
+unallocated reserve, and managed tail swap. An absent plan means the default
+`root: "*"`, `reserve_gb: 0`, and `iobench_raw_gb: 8`; there is no separate
+root-resize policy or plan-less layout. See [Disk layout](#disk-layout), the
+[design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies), and the
+[consumer example](docs/CONSUMERS.md#disk-plan-and-offline-preview).
 
 `swap_policy: "on"` (default) replaces the guest's configured swap setup with
-native GPT swap partitions. It disables all active swap, removes configured
+native GPT swap partitions. It disables all currently active swap, removes configured
 swapfiles and swap logical volumes, and replaces `/etc/fstab` swap entries
 with the managed partitions. A pre-root swap partition (physically before the
 root partition) is retained; its capacity counts toward the target, so less
@@ -195,9 +190,10 @@ swap is placed after root. The default `swap_partition_count: 4` is the total
 including any retained pre-root swap partition. `off` disables active swap,
 removes swap entries from `/etc/fstab`, and removes swap-type partition entries
 from the root disk; it does not delete swapfiles or logical volumes.
-`untouched` leaves swap activation, fstab entries, and partition geometry
-alone. When swap is managed, the installer deactivates active swap before its
-partition-table transaction.
+`untouched` is not supported: select `on` or `off` so the plan has one known
+pool boundary. When swap is managed, the installer deactivates active swap
+before its partition-table transaction.
+Root-shrink safety is checked before swapfile cleanup.
 
 `swap_disk_total_gb: null` (default) derives the total from actual disk
 capacity and guest RAM: `min(ceil(2 × RAM in GiB), round-half-up(20% of disk
@@ -218,12 +214,11 @@ provider capacities (decimal GB; actual sizing uses bytes):
 | 256 GB | 8 | 16 | 32 | 48 | 48 | 48 |
 | 512 GB | 8 | 16 | 32 | 64 | 95 | 95 |
 
-The default root and swap layout settings are:
+The default swap settings are:
 
 ```json
 {
   "schema_version": 1,
-  "root_resize_policy": "resize",
   "swap_policy": "on",
   "swap_disk_total_gb": null,
   "swap_partition_count": 4,
@@ -231,42 +226,22 @@ The default root and swap layout settings are:
 }
 ```
 
-To give root a fixed size, keep the rest free on purpose, and choose a fixed
-managed swap size, use `partitioning` (root 40 GiB, `reserve_gb: "*"` = the rest
-stays unallocated):
+The defaults are listed from the loader, not copied into an alternate layout
+policy. To pin root at 40 GiB and keep all remaining pool space unallocated,
+set `"partitioning": {"root": 40, "reserve_gb": "*"}`. Root behaviour comes
+from that entry: `"keep"` preserves its current geometry; a size, percentage,
+or `"*"` sets the target. Shrinks use the offline ext4 hook and are refused
+when current use or the filesystem minimum plus a 256 MiB safety margin does
+not fit. Growth uses `sfdisk -N` to update only the root partition, then
+refreshes and verifies it. `swap_policy` must be `on` or `off`; `untouched` is
+refused because the disk plan must own its boundary.
 
-```json
-{
-  "schema_version": 1,
-  "partitioning": {"root": 40, "reserve_gb": "*"},
-  "swap_policy": "on",
-  "swap_disk_total_gb": 8,
-  "swap_partition_count": 4,
-  "preserve_root_size_gb": 10
-}
-```
-
-With a `partitioning` plan the root behaviour is derived from `partitioning.root`
-(`"keep"` = untouched; a size, a percent or `"*"` = resize: a larger current root
-is shrunk safely, a smaller one grows to the planned size) and
-`root_resize_policy` must not be set. A plan needs `swap_policy` `on` (swap at
-the end of the disk) or `off` (the pool ends at the disk end); `untouched` swap
-is refused. Stage-two growth resizes root to exactly the plan (`growpart` would
-consume a following gap). When the plan fixes the root size (anything but
-`"*"`), stage one installs and stage two repeats guards against automatic root
-growth by writing `/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg`
-with `growpart: {mode: off}` and `resize_rootfs: false`, and creating
-`/etc/growroot-disabled` for initramfs growroot.
-
-When `swap=on` cannot fit without shrinking, `root=untouched` and
-`root=grow-only` fail with the requested and available space rather than
-silently changing root. A shrink is also refused if current root data or the
-ext filesystem's estimated minimum plus a 256 MiB safety margin exceeds the
-planned root target. The offline hook repeats the filesystem-minimum check
-after stage-one package changes. Unknown non-swap partitions after root are
-not moved or overwritten; that layout is refused when swap is managed.
-Root-shrink safety is checked before swapfile cleanup, so the original file
-usage and filesystem minimum remain part of the safety check.
+Unknown non-swap partitions after root, overlaps, and incomplete geometry are
+refused. Debian genericcloud's BIOS/EFI partitions 14 and 15 before root
+partition 1 are retained with their original numbers. Every managed table
+write is planned, backed up, applied, read back, and rolled back on mismatch.
+See the [design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies) and
+[adoption examples](docs/CONSUMERS.md#disk-plan-and-offline-preview).
 
 Partition order is determined from on-disk sector extents, never partition
 numbers. This supports Debian genericcloud's GPT layout, where BIOS/EFI
@@ -279,43 +254,53 @@ Every managed partition-table write is planned, backed up, applied, read back,
 and rolled back on a mismatch. Kernel partition refreshes target only the exact
 added/removed/changed partition-number ranges. See the
 [root/swap design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies) and
-[adoption examples](docs/CONSUMERS.md#root-and-swap-policy).
+[adoption examples](docs/CONSUMERS.md#disk-plan-and-offline-preview).
 
 ### Disk layout
 
 ```
-[pre-root partitions] | root | DATA PARTITION(S) or one LVM PV | [reserve] | swap (END of disk)
+[pre-root partitions] | root | data partition(s) or one LVM PV | [reserve] | iobench-raw | swap (end)
 ```
 
-The layout depends ONLY on the config: the single `partitioning` object plus the
-`swap_*` keys. There is no rule-based sizing and no hidden reserve. Design,
-algorithm and exact refusal messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
-Tests: `tests/test_layout_policy.py` (pure planner, properties), `tests/test_data_area.py`
-(installer), `tests/test_data_area_vm.py` (real loop disk in the `r1-vm-real-commit` VM lane).
+The layout depends only on the validated `partitioning` object and `swap_*`
+keys. There is no second root-sizing path. Design, sizing rules and refusal
+messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
 
 ```
 {"partitioning": {
   "root": "*" | "keep" | 160 | "40%",
   "reserve_gb": 0 | 25 | "*",
+  "iobench_raw_gb": 8 | 16 | false,
   "data": {"kind": "partitions" | "lvm", "vg": "vg_data", "pv_size": "*" | 200 | "60%",
            "vg_free_gib": 0,
            "volumes": [{"name": "cow", "size": "*", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}}}
 ```
 
-- **Sizes** are an integer GiB, a percent string (`"40%"`, 0-100, two decimals) or `"*"`
-  (the remainder). An omitted size is `"*"`. Exactly ONE `"*"` per plan (root, a
-  data partition or the PV, or `reserve_gb: "*"`); without a `"*"` the entries must be
-  percentages adding up to 100%. Percent is a share of the POOL = from the end of the
-  pre-root partitions to the first swap, less a fixed `reserve_gb`. Mixing percent and
-  fixed sizes without a `"*"` is refused as ambiguous. Swap is defined separately and is
-  subtracted first. The whole disk is accounted for (only the 1 MiB head and end
-  buffers remain); a plan that leaves space over is refused with the fix computed
-  (`set volume[0] to "*" (it becomes N GiB), or set reserve_gb to "*"`).
-- **`root`**: `"keep"` leaves the current size (no grow, no shrink); a size, percent or
-  `"*"` resizes (shrinking uses the existing offline path and safety checks). There is no
-  `root_resize_policy` with a plan. Root must be at least `preserve_root_size_gb`.
-- **`reserve_gb`**: default 0. A number or `"*"` keeps that much unallocated directly in
-  front of swap on purpose (usable later for another partition; root cannot grow into it).
+- **Sizes** are integer GiB, percentages from 0.01% through 100.00% (up to two
+  decimals), or `"*"` for the remainder. Omitted size is `"*"`. At config load,
+  impossible fixed/percentage combinations are refused: fixed entries need a
+  growable `"*"` or `reserve_gb: "*"`; percentages without a star must sum to
+  100%; percent and fixed sizes cannot be mixed. Percentages are shares of the
+  pool after swap and fixed reserve are removed. The single star absorbs the
+  remainder and alignment rounding. The pool ends at the first tail swap
+  start, or at the aligned final usable GPT sector when swap is off or no tail
+  swap is needed. A refusal includes the resolved table when the disk facts
+  allow one.
+- **`root`**: `"keep"` preserves the current root size; a size, percentage, or
+  `"*"` gives the planned size. Shrinking uses the offline ext4 hook after
+  usage/minimum checks. Growing updates the root entry with `sfdisk -N`, then
+  refreshes and verifies it. The minimum is `preserve_root_size_gb`.
+- **`reserve_gb`**: default 0. A number or `"*"` leaves that much unallocated
+  after the planned data area. It sits before `iobench-raw` and swap and can be
+  used for a later partition; root does not grow through a reserved gap.
+- **`iobench_raw_gb`**: default 8 GiB; set an integer from 2 to 10240 GiB to
+  choose another size, or `false` to disable it. This is an always-planned
+  Linux partition with reserved PARTLABEL `iobench-raw`, numbered by physical
+  position immediately before tail swap. It is never formatted, mounted, or
+  activated as swap. If `run_io_benchmark` is enabled, the installer checks
+  it is unused, wipes signatures, and runs `iobench` directly on it. The raw
+  partition remains in place after benchmarking. The old temporary-tail
+  benchmark partition path has been removed.
 - **`data.kind = "partitions"`**: one GPT partition per volume `{size, fs, mount, label}`,
   `fs` is `btrfs`, `ext4`, `xfs` or `none` (a raw partition; `type: "zfs"` sets the ZFS
   GPT type for a hand-made pool). `label` is required and unique (it is the GPT partition
@@ -330,9 +315,15 @@ Tests: `tests/test_layout_policy.py` (pure planner, properties), `tests/test_dat
   root, then the data partitions in config order, then the swaps. Pre-root partitions keep
   the numbers they have (a cloud image has root = 1 and 14/15 before it). Find volumes by
   label, never by number.
+- **Mount policy**: mountpoints directly on `/var`, `/var/lib`, `/srv`, `/home`,
+  `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`,
+  `/bin`, `/sbin`, or `/lib` are refused. Mounts that would cover protected
+  descendants such as `/var/lib/dpkg`, `/srv/tree-cache`, or `/srv/tree-upper`
+  are also refused. No exact system mountpoint is currently pre-populated by
+  design. A dedicated child such as `/srv/cow` is allowed. Refusal text names
+  the protected system path. Equal and nested planned mounts are refused.
 - **Not supported**: `fs: zfs` as a managed filesystem (refused with a clear message; deferred),
-  btrfs `subvol`. Mounts on `/`, `/boot`, `/etc`, `/usr` and other system trees,
-  `/srv/tree-cache` and `/srv/tree-upper` are refused; equal or nested mounts are refused.
+  btrfs `subvol`.
 - **Safety**: `mkfs`/`pvcreate` only touch a BLANK device (the same filesystem again is kept, any
   other signature is refused); fstab uses `UUID=` and `nofail` (btrfs `noatime,user_subvol_rm_allowed`),
   a mount that holds `/var/lib/docker` also gets `x-systemd.required-by=docker.service`; another
@@ -341,19 +332,38 @@ Tests: `tests/test_layout_policy.py` (pure planner, properties), `tests/test_dat
   refused (no wipe override: `wipefs -a` by hand on an empty host). The table is written in
   ONE crash-safe transaction after any root shrink and before root growth; the plan is a pure
   function of (config, disk size, root start), so a resume recomputes it.
-- Runner integration: `provision-runner.sh` finds an installer-created cow by label
-  (`MDT_COW`, a partition or an LV listed by `lsblk` as `/dev/mapper/<vg>-<lv>`) and does NOT
-  carve a second one. It refuses a non-btrfs cow and a cow mounted somewhere other than `COW_MOUNT`.
-- The keys `root_max_size_gb`, `disk_layout`, `data_area`, `data_partition`, `data_lvm` were removed
-  (no migration): a config containing them is refused with a pointer to `partitioning`.
+- Runner integration: `provision-runner.sh` finds the planned CoW partition by
+  GPT PARTLABEL `MDT_COW` and does not infer its number or carve another one.
+  It refuses a missing or duplicate label, a non-btrfs filesystem, or a mount
+  that disagrees with `COW_MOUNT`.
+- Removed keys have no migration path: `root_resize_policy`,
+  `root_max_size_gb`, `disk_layout`, `data_area`, `data_partition`, and
+  `data_lvm` are refused with a pointer to `partitioning`.
 
-Examples (512 GiB host, swap 4 x 4 GiB):
+To preview the resolved GiB plan without opening a device, run:
+
+```bash
+./debian-install-v2.py plan --config install.json --disk-size 512GiB --ram-gib 8
+```
+
+`--ram-gib` is required when `swap_disk_total_gb` is automatic. `root: "keep"`
+also needs `--root-current-size-gib`. The resolver assumes no preserved
+pre-root partitions and root number 1; use `--root-start-sector` when its
+starting sector differs. The wizard summary shows the reserved raw partition
+size and directs users to this command for the resolved table.
+
+Example plan for a 512 GiB host, root 160 GiB, four 4 GiB swaps, and the
+default 8 GiB raw benchmark partition:
 
 ```json
 {"schema_version": 1, "swap_disk_total_gb": 16, "swap_partition_count": 4,
  "partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [
    {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}}}
 ```
+
+The resolved middle partition is about 328 GiB after reserving the 8 GiB raw
+partition and 16 GiB of swap. In physical order the plan is root, `MDT_COW`,
+`iobench-raw`, then the four swaps; partition numbers follow that order.
 
 ```json
 {"schema_version": 1, "swap_disk_total_gb": 16, "swap_partition_count": 4,
@@ -362,9 +372,9 @@ Examples (512 GiB host, swap 4 x 4 GiB):
    {"name": "scratch", "fs": "xfs", "mount": "/srv/scratch", "label": "SCRATCH"}]}}}
 ```
 
-Swap rules (unchanged): swap is the LAST allocation on the disk; the planner refuses a plan in
-which a non-swap partition follows the first swap or more than 2 MiB follows the last swap.
-Alignment is 1 MiB with a 1 MiB end buffer.
+Swap is the last allocation on disk. The planner leaves backup-GPT metadata
+room and aligns boundaries to 1 MiB. Number 128 is the GPT partition-number
+limit; any plan needing a higher number is refused.
 
 ### zswap
 
@@ -628,28 +638,25 @@ replacement `run_cpu_benchmark` (`RENAMED_V1_SETTINGS`), described under
 The v1 Geekbench scores were never sizing inputs; v2 does not use them to size
 anything either.
 
-The optional io.cost benchmark (`run_io_benchmark`, off by default;
-`io_benchmark_duration_s`, `io_benchmark_max_size_gb`) runs in stage 2 before
-the swap shape is written: it carves ONE throwaway partition from the tail of
-the free space (sized `min(io_benchmark_max_size_gb, free - swap requirement -
-1 GiB margin)`, skipped under 2 GiB), formats and mounts it, runs the shared
-generated `tools/iocost_coef_gen.py` in `--testfile` mode, then unmounts and
-deletes the partition and reads the table back before swap placement. Results
-(`rbps`/`rseqiops`/`rrandiops`/`wbps`/`wseqiops`/`wrandiops`) go to
-`state_dir/io-benchmark.json` (0600), the `io_benchmark` step and one
-milestone notification. A benchmark failure is advisory (step `warned`, the
-install continues); a cleanup that cannot be verified stops the install.
-**Caveat (2026-10-19):** the generator measures with `fio --direct=1`, which does not defeat a
-hypervisor write-back cache, so on a virtual disk the numbers can be cache readings (one host: 4.3 GB/s
-from a disk that saturated at ~20 MB/s). `tools/iocost-calibrate.sh` now refuses to write an io.cost model
-from a rotational-flagged device measuring above 1 GiB/s sequential or 20,000 random 4 KiB IOPS (shared `tools/iocost_plausibility.py`; `IO_BASELINE_ROTATIONAL_FLAG=ignore` overrides it for a fast virtio disk); the installer step still records
-the numbers unchecked and they are advisory only. The generator redesign is in `TODO.md`.
-It needs `fio` and `pv` (installed only when the benchmark runs) and, while
-it runs, the tool sets the disk's scheduler to `none` and disables merging
-(the installer restores both itself, success or failure). Every long command has
-a hard timeout (the whole process group is killed; an unreapable child stops the
-install), and the artifact's body must match `tools/iocost_coef_gen.py.sha256`.
-See `IO-BENCHMARK-DESIGN.md` for the full flow.
+The optional io.cost benchmark (`run_io_benchmark`, off by default) runs
+`iobench veryquick` directly on the planned, unformatted `iobench-raw`
+partition. That Linux partition defaults to 8 GiB and is always part of the
+layout; choose another `partitioning.iobench_raw_gb` size or set it to
+`false` when the benchmark is off. Stage two verifies the PARTLABEL and
+geometry, confirms the partition is neither mounted nor active swap, and
+wipes its signatures before the run. It never formats or mounts this
+partition, and it remains reserved afterward. The old temporary-tail
+allocation and cleanup table write have been removed.
+
+Results (`rbps`/`rseqiops`/`rrandiops`/`wbps`/`wseqiops`/`wrandiops`) go to
+`state_dir/io-benchmark.json` with mode `0600`, the `io_benchmark` step and
+one milestone notification. A benchmark failure is advisory (`warned`, the
+install continues), except a child that cannot be reaped, which stops the
+install.
+The benchmark output is advisory and is not used to write an io.cost model.
+`fio --direct=1` can measure a hypervisor write-back cache rather than durable
+device speed, so interpret virtual-disk numbers accordingly. See
+[`IO-BENCHMARK-DESIGN.md`](IO-BENCHMARK-DESIGN.md) for the execution contract.
 
 ### Host CPU benchmark tool (`tools/cpu_benchmark.py`, HB-1)
 

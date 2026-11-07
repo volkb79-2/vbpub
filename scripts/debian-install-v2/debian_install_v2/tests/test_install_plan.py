@@ -144,7 +144,7 @@ def test_stage1_refused_root_cap_does_not_install_boot_guards(tmp_path):
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
 
-    with pytest.raises(InstallerError, match="unallocated|over-allocates"):
+    with pytest.raises(InstallerError, match="fixed sizes without a growable entry"):
         installer.install()
 
     descriptions = [action.description for action in actions.planned]

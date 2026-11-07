@@ -139,17 +139,17 @@ def test_wizard_metadata_covers_every_config_field_except_fixed_contract_fields(
     assert field.choices == CLOUD_INIT_CLEANUP_MODES
 
 
-def test_wizard_exposes_independent_disk_policies_and_auto_swap_size():
+def test_wizard_exposes_one_disk_plan_and_auto_swap_size():
     fields_by_name = {
         field.name: field
         for section in WIZARD_SECTIONS
         for field in section.fields
     }
-    assert fields_by_name["root_resize_policy"].choices == ("resize", "untouched", "grow-only")
     assert fields_by_name["partitioning"].kind == "json"
-    for removed in ("root_max_size_gb", "disk_layout", "data_area", "data_partition", "data_lvm"):
+    assert "defaults to 8 GiB" in fields_by_name["partitioning"].prompt
+    for removed in ("root_resize_policy", "root_max_size_gb", "disk_layout", "data_area", "data_partition", "data_lvm"):
         assert removed not in fields_by_name
-    assert fields_by_name["swap_policy"].choices == ("on", "off", "untouched")
+    assert fields_by_name["swap_policy"].choices == ("on", "off")
     assert fields_by_name["swap_disk_total_gb"].kind == "optional-integer"
 
     runtime = _Runtime()

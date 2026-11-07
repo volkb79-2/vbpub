@@ -1,0 +1,90 @@
+"""Host-independent plan resolution and capacity refusal diagnostics."""
+
+from __future__ import annotations
+
+import pytest
+
+from debian_install_v2.config import Config
+from debian_install_v2.layout_policy import GPT_LAST_USABLE_OFFSET, IOBENCH_PARTLABEL
+from debian_install_v2.plan_preview import PlanPreviewError, disk_size_bytes, resolve_plan
+
+
+def test_disk_size_parser_accepts_binary_gib_and_tib_units():
+    assert disk_size_bytes("20GiB") == 20 * 1024**3
+    assert disk_size_bytes("512G") == 512 * 1024**3
+    assert disk_size_bytes("2TiB") == 2048 * 1024**3
+    with pytest.raises(PlanPreviewError, match="look like"):
+        disk_size_bytes("512GB decimal")
+
+
+@pytest.mark.parametrize("swap_policy", ["on", "off"])
+def test_resolved_512_gib_plan_shows_data_raw_and_swap_in_disk_order(swap_policy):
+    config = Config(
+        partitioning={"root": 160, "data": {"kind": "partitions", "volumes": [
+            {"size": "*", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+        ]}},
+        swap_policy=swap_policy,
+        swap_disk_total_gb=16,
+        swap_partition_count=4,
+    )
+    result = resolve_plan(config, disk_size="512GiB")
+    rows = result["plan_table"]
+    assert [row["entry"] for row in rows[:3]] == ["root", "data", "iobench raw"]
+    raw = next(row for row in rows if row["partlabel"] == IOBENCH_PARTLABEL)
+    assert raw["number"] == 3 and raw["gib"] == 8.0
+    swaps = [row for row in rows if row["entry"] == "swap"]
+    assert len(swaps) == (4 if swap_policy == "on" else 0)
+    last = max(row["start"] + row["sectors"] for row in rows)
+    disk_sectors = result["disk_sectors"]
+    assert last <= disk_sectors - GPT_LAST_USABLE_OFFSET
+    numbered = [row["number"] for row in rows if row["number"] is not None]
+    assert numbered == sorted(numbered)
+    for left, right in zip(rows, rows[1:]):
+        assert left["start"] + left["sectors"] == right["start"]
+
+
+@pytest.mark.parametrize("swap_policy", ["on", "off"])
+def test_20_gib_and_2_tib_are_resolved_with_explicit_swap_size(swap_policy):
+    config = Config(
+        partitioning={}, swap_policy=swap_policy, swap_disk_total_gb=2,
+        swap_partition_count=1, preserve_root_size_gb=9,
+    )
+    small = resolve_plan(config, disk_size="20GiB")
+    large = resolve_plan(config, disk_size="2TiB")
+    assert small["disk_size_gib"] == 20
+    assert large["disk_size_gib"] == 2048
+    assert next(row for row in small["plan_table"] if row["entry"] == "iobench raw")["gib"] == 8.0
+    assert all(row["gib"] > 0 for row in large["plan_table"])
+
+
+def test_auto_swap_requires_ram_and_fit_refusal_prints_capacity_table():
+    config = Config(partitioning={}, swap_policy="on", swap_disk_total_gb=None)
+    with pytest.raises(PlanPreviewError, match="needs --ram-gib"):
+        resolve_plan(config, disk_size="512GiB")
+    too_small = Config(
+        partitioning={}, swap_policy="on", swap_disk_total_gb=16,
+        preserve_root_size_gb=10,
+    )
+    with pytest.raises(PlanPreviewError, match="(?s)Resolved capacity table.*disk.*root-start.*usable-plan-end"):
+        resolve_plan(too_small, disk_size="20GiB")
+
+
+def test_root_floor_refusal_prints_the_resolvable_partition_table():
+    config = Config(
+        partitioning={"root": 5, "data": {"kind": "partitions", "volumes": [
+            {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+        ]}, "iobench_raw_gb": False},
+        swap_policy="off",
+        preserve_root_size_gb=10,
+    )
+    with pytest.raises(PlanPreviewError) as exc:
+        resolve_plan(config, disk_size="512GiB")
+    assert "below the minimum" in str(exc.value)
+    assert "Resolved plan table (GiB):" in str(exc.value)
+    assert "root" in str(exc.value) and "MDT_COW" in str(exc.value)
+
+
+def test_disabling_raw_partition_removes_it_from_the_resolved_table():
+    config = Config(partitioning={"root": "*", "iobench_raw_gb": False}, swap_policy="off")
+    result = resolve_plan(config, disk_size="512GiB")
+    assert [row["entry"] for row in result["plan_table"]] == ["root"]

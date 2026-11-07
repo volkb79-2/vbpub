@@ -95,7 +95,8 @@ class Guest:
 
         installer = make_planner(
             tmp_path, disk_gib=6, root_gib=1, root_start=ROOT_START, swap_policy="on", swap_disk_total_gb=1,
-            swap_partition_count=4, preserve_root_size_gb=1, partitioning=partitioning,
+            swap_partition_count=4, preserve_root_size_gb=1,
+            partitioning={**partitioning, "iobench_raw_gb": False},
         )
         installer.actions = RedirectFstab(str(self.fstab))  # REAL HostActions: production allowlist applies
         installer.root_disk = os.path.basename(self.loop)

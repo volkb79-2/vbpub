@@ -36,6 +36,13 @@ PLAN = {
     "swap_retained_before_root_gb": 0.0,
     "swap_after_root_gb": 4.0,
     "swap_partitions": [{"device": "/dev/vda2", "start": 2048, "sectors": 4096}],
+    "partitioning": {"root": "*"},
+    "root_policy": "resize",
+    "data_partitions": [],
+    "iobench_partition": None,
+    "plan_table": [{"entry": "root", "device": "/dev/vda1", "number": 1,
+                    "partlabel": "root", "start": 2048, "start_gib": 0.0,
+                    "sectors": 1000, "gib": 0.0}],
     "sfdisk_plan": "label: dos\n",
 }
 CONFIG_VERBS = {

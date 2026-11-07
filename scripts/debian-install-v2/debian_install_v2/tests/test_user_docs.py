@@ -64,14 +64,12 @@ def test_partitioning_is_adoptable_from_user_documents():
     )
 
 
-def test_each_user_doc_explains_a_plan_needs_end_of_disk_managed_swap():
+def test_each_user_doc_explains_one_plan_and_the_raw_benchmark_partition():
     for path in DOCS:
         text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8").lower())
         assert "swap_policy" in text and "partitioning" in text, path
-    for path in (PROJECT / "docs" / "CONSUMERS.md", PROJECT / "docs" / "DESIGN-GUIDE.md"):
-        text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8").lower())
-        assert "managed tail swap partition at the end of the disk" in text, path
-        assert "pre-root swap" in text and "needs no tail partition" in text, path
+        assert "iobench-raw" in text, path
+        assert "swap_policy" in text and "off" in text and "on" in text, path
 
 
 def test_readme_keeps_the_plain_defaults_next_to_the_partitioning_layout():
@@ -89,11 +87,11 @@ def test_every_cloud_init_cleanup_mode_is_named_in_user_docs():
         assert f"`{mode}`" in text
 
 
-def test_every_root_and_swap_policy_value_is_named_in_user_docs():
+def test_every_user_doc_states_that_root_and_swap_are_one_plan():
     text = "\n".join(path.read_text(encoding="utf-8") for path in DOCS)
-    assert "`root_resize_policy`" in text
     assert "`swap_policy`" in text
-    for value in ("resize", "untouched", "grow-only", "on", "off"):
+    assert "root" in text and "partitioning" in text
+    for value in ('"keep"', '"*"', "on", "off"):
         assert f"`{value}`" in text
 
 

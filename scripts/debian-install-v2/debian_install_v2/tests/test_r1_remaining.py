@@ -308,7 +308,7 @@ def test_geometry_bad_swap_numbering(tmp_path):
     current = {3: {"start": "100", "size": "100"}}
     plan = {
         3: {"start": "100", "size": "100"},
-        5: {
+        6: {
             "start": "250", "size": "100",
             "type": SWAP_TYPE_GUID,
         },
@@ -331,6 +331,9 @@ def test_plan_disk_too_small(tmp_path):
 
 def test_write_plan_real_keeps_earlier_partitions(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
+    installer.config = installer.config.__class__(
+        **{**installer.config.__dict__, "partitioning": {"root": "*", "iobench_raw_gb": False}}
+    )
     installer.actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = (
         "label: gpt\n"
         "device: /dev/vda\n"
@@ -356,6 +359,9 @@ def test_write_plan_real_keeps_earlier_partitions(tmp_path):
 
 def test_write_plan_root_without_size(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
+    installer.config = installer.config.__class__(
+        **{**installer.config.__dict__, "partitioning": {"root": "*", "iobench_raw_gb": False}}
+    )
     installer.actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = (
         "label: gpt\n"
         "device: /dev/vda\n"
@@ -377,22 +383,22 @@ def test_health_gate_failures(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = ""
-    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = ""
 
     # missing PARTUUID
     with pytest.raises(RuntimeError, match="missing PARTUUID"):
         installer._health_gate_swap_devices()
 
     # present but not active
-    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
-    for num in range(5, 8):
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = "uuid5"
+    for num in range(6, 9):
         installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
     with pytest.raises(RuntimeError, match="formatted but not active"):
         installer._health_gate_swap_devices()
 
     # active but not in fstab
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = (
-        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(4, 8))
+        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(5, 9))
     )
     with pytest.raises(RuntimeError, match="absent from fstab"):
         installer._health_gate_swap_devices()
@@ -402,7 +408,7 @@ def test_activate_swap_partitions_real(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    for num in range(4, 8):
+    for num in range(5, 9):
         p = f"/dev/vda{num}"
         installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", p)] = f"uuid{num}"
         installer.actions.outputs[("/usr/sbin/mkswap", p)] = ""
@@ -487,7 +493,7 @@ def test_activate_swap_missing_partuuid(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = ""
     with pytest.raises(RuntimeError, match="no PARTUUID"):
         installer._activate_swap_partitions()
 
@@ -496,13 +502,13 @@ def test_activate_swap_partuuid_disappears(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
-    installer.actions.outputs[("/usr/sbin/mkswap", "/dev/vda4")] = ""
-    installer.actions.outputs[("/usr/sbin/swapon", "-p", "10", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = "uuid5"
+    installer.actions.outputs[("/usr/sbin/mkswap", "/dev/vda5")] = ""
+    installer.actions.outputs[("/usr/sbin/swapon", "-p", "10", "/dev/vda5")] = ""
     real_run = installer.actions.run
     calls = {"n": 0}
     def flaky(argv, **kw):
-        if argv == ["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4"]:
+        if argv == ["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5"]:
             calls["n"] += 1
             if calls["n"] == 2:
                 return ""
@@ -546,11 +552,11 @@ def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
     monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 8 * 1024 ** 3)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = (
-        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(4, 8))
+        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(5, 9))
     )
-    for num in range(4, 8):
+    for num in range(5, 9):
         installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
-    fstab_content = "\n".join(f"PARTUUID=uuid{num} none swap sw,pri=10 0 0" for num in range(4, 8))
+    fstab_content = "\n".join(f"PARTUUID=uuid{num} none swap sw,pri=10 0 0" for num in range(5, 9))
     real_read = Path.read_text
     real_is_file = Path.is_file
 

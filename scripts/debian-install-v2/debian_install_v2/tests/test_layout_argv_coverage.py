@@ -7,7 +7,7 @@ never saw that argv. Two independent nets close that here:
 
 1. a static AST scan: EVERY literal argv in the installer modules is validated, executed or not;
 2. a dynamic walk of the real stage-two sequence for the 512 GiB plan (root 3 -> 160 GiB, btrfs MDT_COW data
-   partition 4, four tail swaps 5-8) against a stateful fake whose `run` is validated by the production
+   partition 4, raw iobench partition 5, four tail swaps 6-9) against a stateful fake whose `run` is validated by the production
    `HostActions._validate`.
 """
 
@@ -208,7 +208,7 @@ def test_stage_two_layout_walk_validates_every_argv_and_ends_in_the_planned_layo
     # no hole behind root: data starts at the planned root end; root grows to exactly that end with sfdisk -N
     assert tools.index("sfdisk") < tools.index("partx") < tools.index("resize2fs") and "growpart" not in tools
     assert tools.count("mkswap") == 4 and tools.count("swapon") >= 4
-    assert host.swapped == [f"/dev/vda{n}" for n in (5, 6, 7, 8)]  # swaps follow the data partition (4)
+    assert host.swapped == [f"/dev/vda{n}" for n in (6, 7, 8, 9)]  # swaps follow data (4) and raw iobench (5)
     assert host.formatted == {"/dev/vda4": "btrfs"} and host.labels == {"/dev/vda4": lp.COW_LABEL}
     assert host.mounted == ["/srv/cow"]
     assert host.table == host.kernel == TARGET

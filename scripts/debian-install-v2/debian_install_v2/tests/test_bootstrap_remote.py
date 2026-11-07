@@ -45,7 +45,6 @@ def test_manual_bootstrap_recipe_uses_native_python_fetch_without_pipeline(mod):
 def test_build_config_maps_named_env_vars(mod, monkeypatch):
     monkeypatch.setenv("SWAP_DISK_TOTAL_GB", "64")
     monkeypatch.setenv("SWAP_PARTITION_COUNT", "4")
-    monkeypatch.setenv("ROOT_RESIZE_POLICY", "grow-only")
     monkeypatch.setenv("SWAP_POLICY", "on")
     monkeypatch.setenv("ZSWAP_COMPRESSOR", "zstd")
     monkeypatch.setenv("VM_SWAPPINESS", "50")
@@ -57,7 +56,6 @@ def test_build_config_maps_named_env_vars(mod, monkeypatch):
     assert config == {
         "swap_disk_total_gb": 64,
         "swap_partition_count": 4,
-        "root_resize_policy": "grow-only",
         "swap_policy": "on",
         "zswap_compressor": "zstd",
         "vm_swappiness": 50,
@@ -66,6 +64,12 @@ def test_build_config_maps_named_env_vars(mod, monkeypatch):
         "telegram_bot_token": "123:token",
         "telegram_chat_id": "456",
     }
+
+
+def test_build_config_refuses_removed_root_resize_environment_key(mod, monkeypatch):
+    monkeypatch.setenv("ROOT_RESIZE_POLICY", "grow-only")
+    with pytest.raises(mod.BootstrapError, match="ROOT_RESIZE_POLICY was removed"):
+        mod.build_config()
 
 
 def test_build_config_maps_controller_ssh_pubkey(mod, monkeypatch):
@@ -194,7 +198,9 @@ def test_fetch_subtree_uses_provider_neutral_blobless_sparse_git(mod, monkeypatc
         "scripts/debian-install-v2/debian-install-v2.py": b"#!/usr/bin/env python3\n",
         "scripts/debian-install-v2/debian_install_v2/installer.py": b"# installer\n",
         "scripts/debian-install-v2/profiles/default.jsonc": b'{"schema_version":1}\n',
-        "scripts/debian-install-v2/tools/iocost_coef_gen.py": b"# tool\n",
+        "scripts/debian-install-v2/tools/iobench-install-runner": b"#!/usr/bin/python3\n",
+        "libraries/iobench/src/iobench/calibrate.py": b"# calibrate\n",
+        "libraries/iobench/src/iobench/guard.py": b"# guard\n",
         "README.md": b"unrelated repository file\n",
         "libraries/cli-extended/README.md": b"separate released wheel\n",
     }
@@ -213,7 +219,8 @@ def test_fetch_subtree_uses_provider_neutral_blobless_sparse_git(mod, monkeypatc
         "scripts/debian-install-v2/debian-install-v2.py"
     ]
     assert (install_dir / "profiles" / "default.jsonc").is_file()
-    assert (install_dir / "tools" / "iocost_coef_gen.py").is_file()
+    assert (install_dir / "tools" / "iobench-install-runner").is_file()
+    assert (install_dir / "iobench" / "src" / "iobench" / "calibrate.py").is_file()
     assert not (install_dir / "README.md").exists()
     assert not (install_dir / "libraries").exists()
     assert (install_dir / "debian-install-v2.py").stat().st_mode & 0o111

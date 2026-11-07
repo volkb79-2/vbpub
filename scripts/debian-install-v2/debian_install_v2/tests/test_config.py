@@ -37,13 +37,21 @@ def test_known_shape_loads():
     assert config.cloud_init_cleanup_mode == "retain"
 
 
-def test_disk_layout_defaults_are_configurable_and_automatic():
+def test_disk_layout_uses_one_plan_and_swap_defaults_are_automatic():
+    from debian_install_v2.layout_policy import DEFAULT_IOBENCH_RAW_GB, disk_spec
+
     config = load_config(raw_json='{"schema_version":1}')
-    assert config.root_resize_policy == "resize"
-    assert config.partitioning == {}
+    assert not hasattr(config, "root_resize_policy")
+    assert disk_spec(config.partitioning).root.is_star
+    assert disk_spec(config.partitioning).iobench_raw_gb == DEFAULT_IOBENCH_RAW_GB
     assert config.swap_policy == "on"
     assert config.swap_disk_total_gb is None
     assert config.swap_partition_count == 4
+
+
+def test_root_resize_policy_is_removed_without_a_legacy_path():
+    with pytest.raises(ConfigError, match="root_resize_policy.*removed"):
+        load_config(raw_json='{"root_resize_policy":"resize"}')
 
 
 def test_partitioning_is_optional_and_validated_at_load():
@@ -55,19 +63,24 @@ def test_partitioning_is_optional_and_validated_at_load():
         load_config(raw_json='{"partitioning":[1]}')
 
 
-@pytest.mark.parametrize("policy", ["resize", "untouched", "grow-only"])
-def test_root_resize_policy_accepts_each_documented_value(policy):
-    assert load_config(raw_json=json.dumps({"root_resize_policy": policy})).root_resize_policy == policy
+def test_raw_iobench_partition_can_only_be_disabled_when_benchmark_is_off():
+    config = load_config(raw_json='{"partitioning":{"iobench_raw_gb":false},"run_io_benchmark":false}')
+    assert config.partitioning["iobench_raw_gb"] is False
+    with pytest.raises(ConfigError, match="run_io_benchmark requires partitioning.iobench_raw_gb"):
+        load_config(raw_json='{"partitioning":{"iobench_raw_gb":false},"run_io_benchmark":true}')
 
 
-@pytest.mark.parametrize("policy", ["on", "off", "untouched"])
+@pytest.mark.parametrize("policy", ["on", "off"])
 def test_swap_policy_accepts_each_documented_value(policy):
     assert load_config(raw_json=json.dumps({"swap_policy": policy})).swap_policy == policy
 
 
+def test_swap_untouched_is_removed():
+    with pytest.raises(ConfigError, match="untouched was removed"):
+        load_config(raw_json='{"swap_policy":"untouched"}')
+
+
 def test_disk_policy_rejects_unknown_values():
-    with pytest.raises(ConfigError, match="root_resize_policy"):
-        load_config(raw_json='{"root_resize_policy":"shrink-whatever"}')
     with pytest.raises(ConfigError, match="swap_policy"):
         load_config(raw_json='{"swap_policy":"maybe"}')
 

@@ -2,10 +2,13 @@
 
 ## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
 
-Replaces the rule-sized `dev-host` layout, `root_max_size_gb` and `data_area*` (removed, no migration). Partition
-numbers follow disk position, the whole disk is accounted for (one `"*"`), see README "Disk layout" and
-`docs/DESIGN-data-area-v2.md`. Proven in unit tests and the `r1-vm-real-commit` VM lane; NOT yet run on a real
-host. Deferred: `fs: zfs` as a managed filesystem, btrfs `subvol`.
+Replaces the predecessor rule-sized layout and separate root-cap setting with
+one whole-disk `partitioning` plan. It reserves an 8 GiB raw `iobench-raw`
+partition by default, numbers partitions by physical order, and refuses
+unaccounted plans. See README "Disk layout" and
+`docs/DESIGN-data-area-v2.md`. Unit tests cover the current planner; the
+`r1-vm-real-commit` lane remains the real-disk-image validation and was not run
+in this fix round. Deferred: `fs: zfs` as a managed filesystem, btrfs `subvol`.
 
 ## DONE (root-cap follow-ups, 2026-11-02; superseded by `partitioning`)
 
@@ -19,21 +22,22 @@ the installer, tests, generated CLI surface, and adoption/design docs. Future
 tool manifests are inventoried in the release-program requirements naming
 report and will migrate in separate tool-scoped changes.
 
-## OPEN (MDT-016 / D-HS-01-2, 2026-10-19): the io.cost generator measures through the hypervisor cache
+## OPEN (MDT-016 / D-HS-01-2, 2026-10-19): standalone io.cost calibration can measure through the hypervisor cache
 
 `tools/iocost_coef_gen.py` (patched copy of the Linux generator, built by `tools/build-iocost-generator.py`)
 runs `fio --direct=1 ... --time_based` and reports the mean. O_DIRECT does not defeat a hypervisor
 write-back cache: one virtio host measured 4.3 GB/s read / 2 GB/s write / 94k IOPS from a disk that
 saturated at ~20 MB/s with 35-60 ms write latency, so the numbers (and any io.cost model or io.max cap
-derived from them) are cache readings. Shipped now (both consumers, mdt-cockpit `mdt-io-baseline.py` and
+derived from them) are cache readings. Shipped now for the standalone calibration consumers,
+mdt-cockpit `mdt-io-baseline.py` and
 `tools/iocost-calibrate.sh`): a plausibility REFUSAL for a rotational-flagged device above 1 GiB/s sequential or
 20,000 random 4-KiB IOPS (one shared definition, `tools/iocost_plausibility.py`; override
 `IO_BASELINE_ROTATIONAL_FLAG=ignore` for a fast virtio disk). NOT done (too large, touches the vendored patch series and the sha256): redesign the
 generator to use `--fsync`/`--end_fsync` for writes, a working set larger than the cache the host can
 see, and a steady-state tail measurement (ramp then measure only the last N seconds), recorded in the
-output. Also open: `Installer._run_io_benchmark()` persists the generator's numbers without the
-plausibility check (advisory data, never applied as caps); add it with the redesign. Tracked in
-mdt-cockpit as MDT-017.
+output. Installer benchmarking now uses iobench `veryquick` against the planned raw partition and
+does not use this generator; its measurements are also advisory and may reflect the guest-visible
+virtual-disk cache. Tracked in mdt-cockpit as MDT-017.
 
 ## OPEN (operator note, 2026-10-06): test Augeas as an alternative for in-place config edits
 
@@ -44,17 +48,18 @@ only true in-place edit in v2 is the fstab swap filter, and the lens catalog has
 no deb822 lens. The evaluation's code sketches were never executed; proving
 them in a throwaway container with the packages is the first step of any trial.
 
-## IMPLEMENTED (LT-IOB, 2026-10-06; live validation pending): io.cost benchmark step
+## IMPLEMENTED (LT-IOB, updated by div2-data-area-v2): io.cost benchmark step
 
-`Installer._run_io_benchmark()` — see `IO-BENCHMARK-DESIGN.md` and
-`LT-IOB-REPORT.md`. Unit-tested against a simulated disk only; the first
-real run (netcup test host, controller-driven) is still to happen. Open:
-(a) writing `io.cost.model`/`io.cost.qos` and enabling io.cost from the
-result (deliberately separate, "Not yet"); (b) Case B (hook already wrote
-swap) only benchmarks if tail free space remains, which is rarely the case;
-(c) was "`HostActions.run` has no timeout": closed, `HostActions.run(timeout=)`
-exists (`actions.py:174-180`) and `_run_io_benchmark` passes timeouts for sync,
-umount, mkfs, dd and the tool (`installer.py:3138-3310`).
+`Installer._run_io_benchmark()` runs iobench `veryquick` on the planned
+`iobench-raw` partition. It checks the PARTLABEL and geometry, refuses a
+mounted or active-swap device, wipes signatures before the run, and leaves the
+partition in place and raw. The default reservation is 8 GiB; config can set
+2–10240 GiB or `false` when the benchmark is disabled. The temporary-tail
+partition path, scratch filesystem, and delete-table transaction are removed.
+See `IO-BENCHMARK-DESIGN.md`; unit coverage is in
+`debian_install_v2/tests/test_io_benchmark.py`. The VM lane remains the real
+partition-table validation and was not run in this fix round. Writing
+`io.cost.model`/`io.cost.qos` remains a separate feature.
 
 ## Feature request: a zswap fill-watermark governor
 

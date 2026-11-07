@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -98,6 +99,41 @@ def test_config_source_grammar_and_verb_description_are_library_rendered(capsys)
     assert status.description not in catalog
     assert "(--config FILE | --config-json JSON)" in flattened_usage
     assert "[--config FILE] [--config-json JSON]" not in flattened_usage
+
+
+def test_plan_cli_resolves_a_disk_size_without_host_inspection(capsys):
+    config = {
+        "partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [
+            {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+        ]}},
+        "swap_policy": "on",
+        "swap_disk_total_gb": 16,
+        "swap_partition_count": 4,
+    }
+    result = main([
+        "plan", "--config-json", json.dumps(config), "--disk-size", "512GiB", "--ram-gib", "8",
+    ])
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "Resolved plan table (GiB):" in output
+    assert "MDT_COW" in output and "iobench-raw" in output and "swap" in output
+
+
+def test_plan_refusal_shows_the_resolvable_gib_table(capsys):
+    config = {
+        "partitioning": {"root": 5, "iobench_raw_gb": False, "data": {
+            "kind": "partitions", "volumes": [
+                {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+            ],
+        }},
+        "swap_policy": "off",
+        "preserve_root_size_gb": 10,
+    }
+    result = main(["plan", "--config-json", json.dumps(config), "--disk-size", "512GiB"])
+    assert result == 2
+    output = capsys.readouterr().err
+    assert "below the minimum" in output
+    assert "Resolved plan table (GiB):" in output and "MDT_COW" in output
 
     assert main(["status"]) == 2
     refusal = capsys.readouterr().err

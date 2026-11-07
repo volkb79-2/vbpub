@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from debian_install_v2 import layout_policy as lp
 from debian_install_v2.actions import HostActions
 from debian_install_v2.config import Config
 from debian_install_v2.disk_layout import GIB
@@ -24,7 +25,6 @@ def make_planner(
     root_gib: int | None = None,
     root_start: int = 2048,
     ram_gib: int = 4,
-    root_resize_policy: str = "resize",
     swap_policy: str = "on",
     swap_disk_total_gb: int | None = 2,
     swap_partition_count: int = 4,
@@ -42,7 +42,6 @@ def make_planner(
     )
     config = Config(
         state_dir=str(tmp_path / "state"),
-        root_resize_policy=root_resize_policy,
         swap_policy=swap_policy,
         swap_disk_total_gb=swap_disk_total_gb,
         swap_partition_count=swap_partition_count,
@@ -71,7 +70,7 @@ def make_planner(
 
 
 def test_resize_policy_shrinks_to_make_requested_swap_and_keeps_four_devices(tmp_path):
-    installer = make_planner(tmp_path, root_resize_policy="resize")
+    installer = make_planner(tmp_path)
 
     partitions, target_root = installer._plan_swap_partitions()
 
@@ -80,11 +79,13 @@ def test_resize_policy_shrinks_to_make_requested_swap_and_keeps_four_devices(tmp
     assert target_root * 512 >= installer.config.preserve_root_size_gb * GIB
     assert len(partitions) == 4
     assert all(size == partitions[0][1] for _start, size in partitions)
-    assert partitions[0][0] == root_start + target_root
+    _raw_number, raw_start, raw_size = installer._data_area_layout(partitions, [])[0]
+    assert raw_start == root_start + target_root
+    assert partitions[0][0] == raw_start + raw_size
     assert partitions[-1][0] + partitions[-1][1] <= _disk_sectors - 2048
 
 
-def test_root_max_size_leaves_the_remaining_disk_free_after_swap(tmp_path):
+def test_fixed_root_leaves_the_remaining_pool_free_after_raw_and_swap(tmp_path):
     installer = make_planner(
         tmp_path,
         disk_gib=128,
@@ -104,10 +105,12 @@ def test_root_max_size_leaves_the_remaining_disk_free_after_swap(tmp_path):
     aligned_root_end = (
         (root_start + target_root + 2048 - 1) // 2048
     ) * 2048
+    raw_start = installer._data_area_layout(partitions, [])[0][1]
     # Swap sits at the END of the disk; the gap after root stays unallocated.
     assert partitions[0][0] > aligned_root_end
     end_of_swap = partitions[-1][0] + partitions[-1][1]
     assert (disk_sectors - end_of_swap) * 512 <= 2 * 1024 * 1024
+    assert (raw_start - aligned_root_end) * 512 >= 71 * GIB
     assert (partitions[0][0] - aligned_root_end) * 512 >= 79 * GIB
     assert installer.show_plan()["partitioning"] == cap(40)
 
@@ -221,7 +224,7 @@ def test_pre_root_swap_is_retained_and_counts_toward_total_size_and_partition_co
     assert len(partitions) == 3
     assert sum(size for _start, size in partitions) * 512 == pytest.approx(3 * GIB, abs=4 * 1024 * 1024)
     assert plan[2] == live[2]
-    assert [number for number in plan if plan[number].get("type") == "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"] == [2, 4, 5, 6]
+    assert [number for number in plan if plan[number].get("type") == "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"] == [2, 5, 6, 7]
     assert report["swap_partition_count"] == 4
     assert report["swap_retained_before_root_gb"] == pytest.approx(1.0)
     assert report["swap_after_root_gb"] == pytest.approx(3.0, abs=4 / 1024)
@@ -242,10 +245,10 @@ def test_pre_root_swap_is_activated_and_formatted_with_tail_swaps(tmp_path, monk
     installer._activate_swap_partitions()
 
     assert [argv[-1] for argv in commands if argv[0] == "/usr/sbin/mkswap"] == [
-        "/dev/vda2", "/dev/vda4", "/dev/vda5", "/dev/vda6",
+        "/dev/vda2", "/dev/vda5", "/dev/vda6", "/dev/vda7",
     ]
     assert [argv[-1] for argv in commands if argv[0] == "/usr/sbin/swapon"] == [
-        "/dev/vda2", "/dev/vda4", "/dev/vda5", "/dev/vda6",
+        "/dev/vda2", "/dev/vda5", "/dev/vda6", "/dev/vda7",
     ]
     assert len(fstab_entries) == 4
     assert "vbpub-swap-pre1" in commands[0][commands[0].index("-L") + 1]
@@ -268,21 +271,13 @@ def test_a_plan_needs_no_tail_swap_when_a_pre_root_swap_meets_the_target(tmp_pat
         tmp_path,
         pre_root_gib=4,
         swap_total_gib=4,
-        partitioning=cap(8),
+        partitioning=cap(8) | {"iobench_raw_gb": False},
     )
 
     partitions, target_root = installer._plan_swap_partitions()
 
     assert partitions == []
     assert target_root * 512 == 8 * GIB
-
-
-@pytest.mark.parametrize("policy", ["untouched", "grow-only"])
-def test_non_shrinking_root_policy_refuses_swap_that_does_not_fit(tmp_path, policy):
-    installer = make_planner(tmp_path, root_resize_policy=policy)
-
-    with pytest.raises(InstallerError, match=rf"root_resize_policy={policy} forbids the shrink"):
-        installer._plan_swap_partitions()
 
 
 def test_resize_refuses_when_root_data_usage_exceeds_planned_target(tmp_path):
@@ -306,6 +301,7 @@ def test_root_shrink_uses_pre_cleanup_usage_snapshot_instead_of_post_delete_usag
         swap_disk_total_gb=8,
         preserve_root_size_gb=2,
         root_used_gib=2,
+        partitioning={"root": "*", "iobench_raw_gb": False},
     )
     installer.actions.dry_run = False
     installer._root_used_bytes = lambda: 2 * GIB  # after deleting a large swapfile
@@ -327,59 +323,6 @@ def test_resize_refuses_when_ext_minimum_plus_margin_exceeds_target(tmp_path):
 
     with pytest.raises(InstallerError, match="root filesystem minimum plus 256 MiB"):
         installer._plan_swap_partitions()
-
-
-def test_swap_untouched_preserves_partition_geometry_but_root_can_grow(tmp_path):
-    root_start = 2048
-    current_root = 8 * GIB // 512
-    next_start = root_start + current_root + 2048
-    live = {
-        3: {"start": str(root_start), "size": str(current_root), "type": "0fc63daf"},
-        4: {
-            "start": str(next_start), "size": str(GIB // 512),
-            "type": "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f",
-        },
-    }
-    installer = make_planner(
-        tmp_path,
-        root_gib=8,
-        root_resize_policy="grow-only",
-        swap_policy="untouched",
-        entries=live,
-    )
-
-    partitions, target_root = installer._plan_swap_partitions()
-
-    assert target_root > current_root
-    assert partitions == [(next_start, GIB // 512)]
-
-
-def test_untouched_swap_growth_uses_physical_partition_order_not_partition_number(tmp_path):
-    root_start = 2048
-    current_root = 8 * GIB // 512
-    next_start = root_start + current_root + 2048
-    live = {
-        3: {
-            "start": str(root_start), "size": str(current_root),
-            "type": "0fc63daf-8483-4772-8e79-3d69d8477de4",
-        },
-        2: {
-            "start": str(next_start), "size": str(GIB // 512),
-            "type": "0fc63daf-8483-4772-8e79-3d69d8477de4",
-        },
-    }
-    installer = make_planner(
-        tmp_path,
-        root_gib=8,
-        root_resize_policy="grow-only",
-        swap_policy="untouched",
-        entries=live,
-    )
-
-    partitions, target_root = installer._plan_swap_partitions()
-
-    assert partitions == []
-    assert target_root == next_start - root_start
 
 
 def test_managed_swap_refuses_non_swap_partition_physically_after_root_even_if_numbered_before(
@@ -425,7 +368,6 @@ def test_debian_cloud_image_high_numbered_boot_partitions_before_root_are_preser
         tmp_path,
         disk_gib=20,
         root_gib=None,
-        root_resize_policy="resize",
         swap_disk_total_gb=4,
         preserve_root_size_gb=2,
         root_used_gib=1,
@@ -457,14 +399,14 @@ sector-size: 512
     assert sorted(
         number for number, entry in plan.items()
         if installer._is_swap_partition(entry)
-    ) == [2, 3, 4, 5]
+    ) == [3, 4, 5, 6]
 
 
 def test_tail_swap_numbers_skip_any_preserved_pre_root_partition(tmp_path):
     installer = make_planner(tmp_path)
     installer.root_number = 1
 
-    assert installer._tail_swap_numbers(3, {2, 14, 15}) == [3, 4, 5]
+    assert installer._tail_swap_numbers(3, {2, 14, 15}) == [4, 5, 6]
 
 
 def test_swap_off_leaves_no_planned_swap_and_uses_reclaimed_disk_space(tmp_path):
@@ -480,7 +422,6 @@ def test_swap_off_leaves_no_planned_swap_and_uses_reclaimed_disk_space(tmp_path)
     installer = make_planner(
         tmp_path,
         root_gib=8,
-        root_resize_policy="resize",
         swap_policy="off",
         entries=live,
     )
@@ -488,10 +429,10 @@ def test_swap_off_leaves_no_planned_swap_and_uses_reclaimed_disk_space(tmp_path)
     partitions, target_root = installer._plan_swap_partitions()
 
     assert partitions == []
-    assert target_root == installer._disk_facts()[0] - root_start
+    assert target_root == lp.gpt_safe_end(installer._disk_facts()[0]) - root_start - 8 * GIB // 512
 
 
-def test_show_plan_reports_untouched_swap_count_and_off_as_disabled(tmp_path):
+def test_show_plan_reports_swap_off_as_disabled(tmp_path):
     root_start = 2048
     current_root = 8 * GIB // 512
     live = {
@@ -501,31 +442,9 @@ def test_show_plan_reports_untouched_swap_count_and_off_as_disabled(tmp_path):
             "type": "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f",
         },
     }
-    untouched = make_planner(
-        tmp_path / "untouched",
-        root_gib=8,
-        root_resize_policy="untouched",
-        swap_policy="untouched",
-        entries=live,
-    )
-    untouched_plan = untouched.show_plan()
-    assert untouched_plan["swap_partition_count"] == 1
-
-    disabled = make_planner(
-        tmp_path / "off", root_gib=8, swap_policy="off", entries=live
-    )
+    disabled = make_planner(tmp_path / "off", root_gib=8, swap_policy="off", entries=live)
     disabled_plan = disabled.show_plan()
     assert disabled_plan["swap_partition_count"] == 0
-
-
-def test_untouched_swap_policy_does_not_deactivate_swap(tmp_path, monkeypatch):
-    installer = make_planner(tmp_path, swap_policy="untouched")
-    calls = []
-    monkeypatch.setattr(installer, "_run", lambda *args, **kwargs: calls.append(args))
-
-    installer._disable_active_swap()
-
-    assert calls == []
 
 
 def test_swap_on_removes_configured_file_and_logical_volume_after_swapoff(tmp_path, monkeypatch):
@@ -658,30 +577,31 @@ def test_plan_overlap_check_uses_physical_order_not_partition_number(tmp_path):
     }
     plan = {
         **current,
-        4: {"start": "10240", "size": "2048", "type": swap_type},
+        4: {"start": "10240", "size": "2048", "type": linux_type, "name": lp.IOBENCH_PARTLABEL},
         5: {"start": "12288", "size": "2048", "type": swap_type},
         6: {"start": "14336", "size": "2048", "type": swap_type},
         7: {"start": "16384", "size": "2048", "type": swap_type},
+        8: {"start": "18432", "size": "2048", "type": swap_type},
     }
 
     installer._validate_plan_geometry(current, plan, 4096)
 
 
-def test_root_growth_uses_growpart_then_resizes_filesystem(tmp_path, monkeypatch):
+def test_root_growth_uses_exact_sfdisk_update_then_resizes_filesystem(tmp_path, monkeypatch):
     installer = make_planner(tmp_path, root_gib=8, swap_policy="off")
     installer.actions.dry_run = True
-    events: list[tuple[str, ...]] = []
+    events: list[tuple[tuple[str, ...], dict]] = []
     monkeypatch.setattr(installer, "_resolve_swap_plan", lambda: ([], 12 * GIB // 512, False))
-    monkeypatch.setattr(installer, "_packages", lambda *_args: events.append(("packages",)))
     monkeypatch.setattr(installer, "_root_filesystem_facts", lambda: (4096, 100_000))
-    monkeypatch.setattr(installer, "_run", lambda argv, *args, **kwargs: events.append(tuple(argv)) or "")
+    monkeypatch.setattr(installer, "_run", lambda argv, *args, **kwargs: events.append((tuple(argv), kwargs)) or "")
     monkeypatch.setattr(installer, "_mark_step", lambda *args, **kwargs: None)
 
     installer._grow_root_to_plan()
 
-    commands = [event for event in events if event and event[0] != "packages"]
-    assert commands[0] == ("/usr/bin/growpart", "--fudge", "0", "/dev/vda", "3")
-    assert commands[1] == ("/usr/sbin/resize2fs", "/dev/vda3")
+    assert events[0][0] == ("/usr/sbin/sfdisk", "--no-reread", "--no-tell-kernel", "-N", "3", "/dev/vda")
+    assert events[0][1]["input"] == f",{12 * GIB // 512}\n"
+    assert events[1][0] == ("/usr/bin/partx", "-u", "--nr", "3", "/dev/vda")
+    assert events[2][0] == ("/usr/sbin/resize2fs", "/dev/vda3")
 
 
 def test_root_growth_resume_resizes_filesystem_after_partition_already_reached_target(

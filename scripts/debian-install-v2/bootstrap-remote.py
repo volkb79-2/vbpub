@@ -184,8 +184,10 @@ _INT_FIELDS = {
 }
 _LEGACY_INT_FIELDS = {"SWAP_FILE_COUNT": "swap_partition_count"}
 _POLICY_STRING_FIELDS = {
-    "ROOT_RESIZE_POLICY": "root_resize_policy",
     "SWAP_POLICY": "swap_policy",
+}
+_REMOVED_ENV_VARS = {
+    "ROOT_RESIZE_POLICY": "root sizing is derived from partitioning.root",
 }
 _BOOL_FIELDS = {
     "AUTO_REBOOT_AFTER_STAGE1": "auto_reboot_after_stage1",
@@ -281,6 +283,11 @@ _V1_OBSOLETE_ENV_VARS = {"SWAP_ARCH", "SWAP_TOTAL_GB", "SWAP_FILES", "USE_PARTIT
 
 
 def build_config() -> dict:
+    removed = sorted(name for name in _REMOVED_ENV_VARS if os.environ.get(name))
+    if removed:
+        raise BootstrapError(
+            f"{', '.join(removed)} was removed; {_REMOVED_ENV_VARS[removed[0]]}"
+        )
     present_obsolete = sorted(name for name in _V1_OBSOLETE_ENV_VARS if os.environ.get(name))
     if present_obsolete:
         raise BootstrapError(
@@ -353,14 +360,12 @@ _SPARSE_PATHS = (
     "/scripts/debian-install-v2/VERSION",
     "/scripts/debian-install-v2/debian-install-v2.py",
     "/scripts/debian-install-v2/debian_install_v2/*.py",
-    "/scripts/debian-install-v2/debian_install_v2/vendor/iocost_coef_gen.py",
-    "/scripts/debian-install-v2/debian_install_v2/vendor/000*.patch",
-    "/scripts/debian-install-v2/tools/iocost_coef_gen.py",
-    "/scripts/debian-install-v2/tools/iocost_coef_gen.py.sha256",
     "/scripts/debian-install-v2/tools/cpu_benchmark.py",
     "/scripts/debian-install-v2/tools/cpu_benchmark.py.sha256",
     "/scripts/debian-install-v2/tools/cpu_benchmark.pins.json",
+    "/scripts/debian-install-v2/tools/iobench-install-runner",
     "/scripts/debian-install-v2/profiles/*.jsonc",
+    "/libraries/iobench/src/iobench/*.py",
 )
 
 
@@ -572,6 +577,28 @@ def fetch_subtree(
                 shutil.copyfile(source, target)
                 target.chmod(mode & 0o777)
                 written += 1
+
+        # iobench is an in-repo runtime dependency of this installer. Copy the
+        # same fetched branch's standard-library-only measurement core beside
+        # the installer; no separately released wheel or stale vendored copy.
+        iobench_source = checkout / "libraries" / "iobench" / "src" / "iobench"
+        if not (iobench_source / "calibrate.py").is_file():
+            raise BootstrapError(f"fetched branch {branch!r} is missing libraries/iobench/src/iobench/calibrate.py")
+        iobench_target = install_dir / "iobench" / "src" / "iobench"
+        iobench_target.mkdir(parents=True, exist_ok=True)
+        copied_iobench = 0
+        for source in sorted(iobench_source.glob("*.py")):
+            mode = source.lstat().st_mode
+            if not stat.S_ISREG(mode):
+                raise BootstrapError(f"refusing non-regular iobench runtime file: {source}")
+            target = iobench_target / source.name
+            if target.is_symlink():
+                raise BootstrapError(f"refusing symlink install target: {target}")
+            shutil.copyfile(source, target)
+            target.chmod(mode & 0o777)
+            copied_iobench += 1
+        if copied_iobench == 0:
+            raise BootstrapError("no iobench runtime files were copied from the fetched branch")
 
     if written == 0:
         raise BootstrapError(

@@ -44,7 +44,6 @@ the shipped loader; omitted fields receive that loader’s current defaults:
 {
   "schema_version": 1,
   "fresh_install": true,
-  "root_resize_policy": "resize",
   "swap_policy": "on",
   "swap_disk_total_gb": 32,
   "swap_partition_count": 8,
@@ -65,86 +64,86 @@ arguments. For example:
 ```bash
 ./debian-install-v2.py plan --config target-host.json
 ./debian-install-v2.py plan --config-json \
-  '{"schema_version":1,"fresh_install":true,"root_resize_policy":"resize","swap_policy":"on","swap_disk_total_gb":32,"swap_partition_count":8,"credential_mode":"systemd","cloud_init_cleanup_mode":"userdata-only"}'
+  '{"schema_version":1,"fresh_install":true,"swap_policy":"on","swap_disk_total_gb":32,"swap_partition_count":8,"credential_mode":"systemd","cloud_init_cleanup_mode":"userdata-only"}'
 ```
 
 The parser rejects both a missing source and supplying both forms before any
 installation logic runs.
 
-## Root and swap policy
+## Disk plan and offline preview
 
-The shared config keys `root_resize_policy` and `swap_policy` independently
-control root sizing and swap:
+The one `partitioning` plan describes root, optional data, reserve, and the
+raw benchmark partition. Its defaults are root `"*"`, no data, no reserve,
+and an 8 GiB `iobench-raw` partition. The raw partition can be resized with
+`partitioning.iobench_raw_gb` (2–10240 GiB) or disabled with `false` when the
+benchmark is off. Root sizing no longer has a plan-less policy; the removed
+`root_resize_policy`, `disk_layout`, `root_max_size_gb`, and `data_area*`
+keys are refused.
+
+This example is for a 512 GiB host with a 160 GiB root, a CoW partition taking
+the remaining allocation, four 4 GiB swaps, and the default 8 GiB raw
+partition:
 
 ```json
 {
   "schema_version": 1,
-  "partitioning": {"root": 40, "reserve_gb": "*"},
+  "partitioning": {
+    "root": 160,
+    "data": {"kind": "partitions", "volumes": [
+      {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}
+    ]}
+  },
   "swap_policy": "on",
-  "swap_disk_total_gb": 8,
-  "swap_partition_count": 4,
-  "preserve_root_size_gb": 10
+  "swap_disk_total_gb": 16,
+  "swap_partition_count": 4
 }
 ```
 
-Without `partitioning`, choose one root policy: `resize` (default) uses the
-largest safe root extent after managed swap and can grow or shrink; `grow-only`
-expands when possible but never shrinks; `untouched` forbids root partition
-changes. The optional `partitioning` object replaces the removed
-`root_max_size_gb`, `disk_layout` and `data_area*` keys and describes the whole
-disk: `root` (`"*"`, `"keep"`, GiB or `"N%"`), `reserve_gb` (default 0, a number or
-`"*"` to keep space unallocated on purpose) and an optional `data` area (physical
-partitions or LVM, each volume with `size`, `fs`, `mount`, `label`). Exactly one
-`"*"` takes the remainder, so the whole disk is accounted for (README "Disk layout",
-`docs/DESIGN-data-area-v2.md`). With a plan the root behaviour is derived from `root`
-(`"keep"` = untouched) and `root_resize_policy` must not be set. A plan needs
-`swap_policy` `on` (a managed tail swap partition at the end of the disk; retained
-pre-root swap that needs no tail partition is fine, the pool then ends at the disk
-end) or `off`; untouched swap is refused. Root must be at least
-`preserve_root_size_gb`. When the plan fixes root (anything but `"*"`), stage one
-installs and stage two repeats guards against automatic root growth by writing
-`/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg` with
-`growpart: {mode: off}` and `resize_rootfs: false`, and creating
-`/etc/growroot-disabled` for initramfs growroot. Choose one swap
-policy: `on` (default) replaces the guest's configured swap setup with native
-partitions: it disables all active swap, removes configured swapfiles and swap
-logical volumes, and replaces fstab swap entries with the managed partitions.
-A pre-root swap partition (physically before root) is retained and counts
-toward both the requested total size and the default total count of four, so
-less swap is placed after root. If that retained partition already meets or
-exceeds the requested total, no new tail swap partition is needed. `off` also
-disables all active swap and removes fstab swap entries and root-disk swap
-partitions; it does not delete swapfiles or logical volumes. `untouched`
-preserves swap state and geometry. With `swap_policy: "untouched"`, root
-growth can still use contiguous free space before the next existing partition.
+Every managed partition is numbered by physical order: root, `MDT_COW`,
+`iobench-raw`, then the tail swap partitions. The exact numbers depend on
+preserved partitions before root. `provision-runner.sh` finds the CoW
+partition by PARTLABEL `MDT_COW`; it does not infer `/dev/vda8` or carve a
+partition.
 
-`swap_disk_total_gb: null` derives the target from actual disk capacity and
-guest RAM using `min(RAM × 2, round(20% of disk capacity))`, expressed in GiB.
-Twice the RAM rounds up to a whole GiB; 20% of actual disk bytes rounds to the
-nearest GiB, with half-GiB ties upward. The retained pre-root swap partition,
-when present, is included in that target. The example table covers nominal
-20–512 GB disks and 4–128 GB RAM; see the
-[default sizing table](../README.md#disk--swap).
-The default count is four total managed partitions, including retained
-pre-root swap; set `swap_partition_count` to change it. The nominal-capacity
-examples and the reasons for this sizing rule are in the
-[feature overview](../README.md#disk--swap) and
-[design rationale](DESIGN-GUIDE.md#root-and-swap-policies).
+Resolve the table for a real target size before ordering a reinstall:
 
-Partition order is read from sector extents, not partition numbers. The
-Debian genericcloud GPT layout with BIOS/EFI partitions 14 and 15 before root
-partition 1 is supported; those pre-root partitions are retained unchanged.
-Managed swap refuses partitions that overlap root, incomplete geometry, or an
-unknown non-swap partition physically after root. Review `plan` before
-confirming if the image has a custom partition layout.
+```bash
+./debian-install-v2.py plan --config target-host.json --disk-size 512GiB --ram-gib 8
+```
 
-If `swap=on` needs more tail space than exists and root policy is `untouched`
-or `grow-only`, planning refuses with the available/requested sizes. A
-`resize` shrink is refused if root data usage or the ext filesystem's minimum
-plus 256 MiB would exceed the planned target. Managed swap refuses layouts
-with an unknown non-swap partition after root rather than moving it.
-Root-shrink safety is checked before swapfile cleanup, so existing swapfile
-and ordinary-file usage are both included in that check.
+`--ram-gib` is needed when swap size is automatic. Set
+`--root-current-size-gib` when `partitioning.root` is `"keep"`; use
+`--root-start-sector` if root begins somewhere other than sector 2048. The
+offline table assumes root is partition 1 and no preserved pre-root
+partitions; the live plan reads them from the actual disk. Both forms show
+the resolved table in GiB, and a refusal includes the resolved table when
+the provided disk facts are enough to calculate it.
+
+At config load and `build-customscript`, the installer refuses fixed sizes
+without a growable remainder, percentages that do not total 100% without a
+star, and percent/fixed mixtures. Disk fit and filesystem minimums are
+checked against the target disk. `swap_policy` must be `on` or `off`.
+`on` replaces the guest's configured swap setup with planned GPT partitions: it
+disables all currently active swap, removes configured swapfiles and swap
+logical volumes, and replaces `/etc/fstab` swap entries. An eligible pre-root swap partition is retained.
+Its capacity counts toward both the requested total size and the total
+partition count. The default total count of four includes
+retained pre-root partitions.
+`off` disables active swap, removes `/etc/fstab` swap entries and
+root-disk swap partitions, but does not delete swapfiles or logical volumes.
+`untouched` swap is refused because it cannot define the plan boundary. A root
+shrink needs enough space for current usage and the ext filesystem minimum plus
+a 256 MiB margin. Root-shrink safety is checked before swapfile cleanup.
+Automatic swap sizing uses
+`min(ceil(RAM × 2), round-half-up(20% of disk capacity))`, in GiB.
+
+Mounts directly on protected system paths such as `/var`, `/var/lib`, `/srv`,
+`/home`, `/usr`, `/etc`, and `/boot`, or on a parent that would cover one, are
+refused with the protected path named. No exact system mountpoint is
+pre-populated by design; dedicated children such as `/srv/cow` are valid.
+See [README](../README.md#disk-layout) for filesystem and ordering details and
+[DESIGN-GUIDE](DESIGN-GUIDE.md#root-and-swap-policies) for why the plan has one
+sizing authority.
 
 ## Cloud-init cache policy
 
