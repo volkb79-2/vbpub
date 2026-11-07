@@ -48,7 +48,7 @@ internal-network access policy. See [security controls](SECURITY.md#internal-mod
 ## Client version projection
 
 The client wheel is versioned 1:1 with the server release: `client/src/pwmcp_client/VERSION` is generated
-by `scripts/resolve-playwright-version.py` from the release (`1.64.1-r2` -> `1.64.1.post2`, the PEP 440
+by `scripts/resolve-playwright-version.py` from the release (`1.64.1-r5` -> `1.64.1.post5`, the PEP 440
 spelling of the same string) through the one helper in `pwmcp_client/release.py`, which the resolver loads
 by path and the CLI imports. `--check` fails when the file differs from the mapped contract release, and the
 file is listed in `[project.release] commit_generated` beside the other generated client projections.
@@ -101,6 +101,107 @@ selectors do; PWMCP waits for the first visible match instead of treating
 multiple matches as an error. This keeps the wait tied to rendered content
 without adding a fixed delay to every inspection. See the
 [dynamic page example](CONSUMERS.md#inspect-a-webpage).
+
+### MCP-backed evaluation and bounded HTML
+
+`pwmcp eval` and `inspect --format html` use the existing `browser_navigate`
+and `browser_evaluate` tools from the pinned `@playwright/mcp` server. PWMCP
+adds no new server tool or gateway permission: arbitrary page evaluation is
+already part of the MCP tool surface. `eval` is an explicit caller-supplied
+JavaScript capability for reading values from the page; HTML extraction sends
+only fixed page-inspection code. Both speak the small Streamable HTTP subset
+they need (`initialize`, `tools/list`, `tools/call`, and session close) with the
+Python standard library. This avoids making the separately installed `mcp`
+SDK a dependency of the client wheel, while the tests exercise JSON and SSE
+responses against a local fake MCP endpoint.
+
+HTML is encoded in the browser before its response leaves the page context and
+is capped at 512 KiB of UTF-8 source bytes. That bounds the MCP response itself
+and provides an exact included-byte count; a byte boundary is shortened to the
+last valid UTF-8 sequence. The HTML format probes the title and bounded body
+text with the same existing block detector before returning markup, so a
+recognised challenge remains exit 4 and is never written as target HTML. The
+probe can use response status where Chromium exposes it through Navigation
+Timing; browser JavaScript cannot read arbitrary response headers, so HTML-mode
+detection has fewer signals than the native `inspect` path.
+
+`eval` measures the UTF-8 size of the compact JSON representation returned by
+the page. The page function runs `JSON.stringify` and checks the encoded byte
+length before MCP sends the value over HTTP. It allows 1 MiB by default;
+`--max-bytes` sets a limit from 1 byte to 4 MiB. When the result exceeds the
+limit, text mode prints only the JSON preview to stdout and writes an explicit
+truncation marker to stderr while keeping exit status 0. `--json` returns an
+object with `preview`, `truncated`, and `max_bytes`. The HTTP reader has a
+separate bounded body size of at most `12 * --max-bytes + 64 KiB`, capped at
+64 MiB. A response that reaches this transport ceiling is a size error with a
+hint to return a smaller or aggregated value. The result limit does not
+interrupt JavaScript already running in the browser; a long or non-terminating
+expression can keep the shared browser occupied until the MCP server stops that
+tool call.
+
+`--selector` returns `null` when there is no match, and `--all` returns an
+empty array. A missing element and a matched element with an absent attribute
+both produce `null`; the current response cannot distinguish those cases.
+For `inspect --format html --wait-for`, the MCP HTTP timeout is two seconds
+longer than the in-page selector timeout. This gives the page function time to
+return its specific `selector not visible` error before the transport closes.
+
+Expression wrapping follows one rule. A leading function expression is passed
+through when `function` is followed by whitespace, `*`, or `(`; an arrow
+function is passed through when its parameter head is an identifier or a
+parenthesized list, optionally after `async`. A linear lexical scan recognizes
+single- and double-quoted strings, escaped template literals, line comments,
+and block comments before removing trailing semicolons and comments. Leading
+comments are skipped when deciding whether an expression exists; a comment by
+itself is a clear input error. If slash syntax cannot be classified safely, the
+scanner leaves the source untouched for JavaScript to parse. Every other input
+is wrapped as the following zero-argument function:
+
+```javascript
+() => (
+EXPRESSION
+)
+```
+
+Multiple statements must be supplied as a function, for example
+`() => { const title = document.title; return title; }`. A JavaScript
+`SyntaxError` from the MCP tool is surfaced with the error text and any
+position the server provides.
+
+`PWMCP_MCP_URL` must be an absolute HTTP(S) endpoint. It may be plain
+`https://host/path` or include `username:password@` userinfo. The client strips
+userinfo before constructing the urllib request and converts it to a Basic
+Authorization header; percent-encode reserved credential characters. Use HTTPS
+for credentials outside a trusted local network. The MCP opener disables
+environment-configured HTTP proxies and refuses redirects, keeping credentials
+and session headers on the configured endpoint. No `PWMCP_MCP_PROXY` override is
+provided. URL parse, request-builder, transport, and timeout errors use fixed
+messages and do not echo the configured URL.
+
+Only a page-local `Page crashed` or `Execution context was destroyed` failure
+receives the default native Playwright retry, in a new context on the same live
+lease. `Target closed` and browser-closed failures are not retried on that lease
+because it may already be dead. Explicit `--retries N` still retries ordinary
+navigation or stability failures, but stops on browser-level closures. The
+HTML path opens a new MCP session for each attempt and applies the same closure
+stop rule because a new session cannot restore a browser that the server says
+is closed; its tests pin both recognized crash retries and this guard. `eval`
+never retries caller-supplied code. A Playwright tool error proves the MCP
+endpoint replied. A local browser connection failure only says the browser
+connection failed, so its hint also asks whether PWMCP is still running.
+
+The pinned `@playwright/mcp` package is installed only while building the PWMCP
+image; this repository has no local server launcher. The opt-in
+`pwmcp_live` integration test checks `tools/list` and the actual
+`browser_navigate`/`browser_evaluate` result shapes when
+`PWMCP_LIVE_MCP_URL` is set. The operator smoke command is
+`pwmcp eval https://example.com document.title`. See [consumer commands](CONSUMERS.md#inspect-a-webpage)
+and [evaluation trust boundary](SECURITY.md#mcp-page-evaluation).
+
+PWMCP's stack currently allocates 2 GiB for `/dev/shm`, has no service-specific
+memory limit on the unified browser container, and does not set
+`--disable-dev-shm-usage`. The OOM investigated in PWMCP-41 came from a test
+fake, not the service envelope. Host memory limits remain host-owned.
 
 ### Certificate errors during inspection
 
