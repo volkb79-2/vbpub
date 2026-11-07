@@ -146,9 +146,14 @@ first), the slice, the sysusers file, its own `/usr/local/bin` links, the runtim
 tree, `/opt/topos`, and the leftover host-setup drop-in
 `topos.service.d/50-mdt-socket-group.conf`. Other files in `/usr/local/bin` or
 `/etc/topos` are kept and listed; `/etc/topos/toposd.toml` is removed even when
-it predates the install. The ownership markers (`PENDING`, then the install
-record) are removed last, so an interrupted uninstall can be rerun. `--dry-run`
-lists the paths and groups it would remove.
+it predates the install. When the uninstall process runs from a version tree
+under `/opt/topos`, it keeps that tree and the `current` symlink while printing
+the result. It then removes the running tree, `current`, `PENDING`, `/opt/topos`,
+the install record, and `/etc/topos` if empty, in that order. Otherwise the
+version tree and `current` are removed in the main pass before `PENDING`, the
+`/opt/topos` directory, the install record, and the empty `/etc/topos` directory.
+The ownership markers are last, so an interrupted uninstall can be rerun.
+`--dry-run` lists the paths and groups it would remove.
 
 A failed upgrade of a finished install leaves `PENDING` next to the install
 record. Rerunning `toposd install` after fixing the cause re-applies the

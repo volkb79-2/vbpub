@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 import hashlib
 import os
 import socket
@@ -860,6 +861,183 @@ def test_uninstall_reports_an_unremovable_version_root(tmp_path: Path, monkeypat
         Installer(paths, run=_fake_run([]), geteuid=lambda: 0).uninstall(_args(), _runtime(yes=True))
     # Both ownership markers survive, so the uninstall can be rerun.
     assert Path(paths.pending).is_file() and Path(paths.install_record).is_file()
+
+
+def test_running_version_dir_comes_from_real_prefix_and_requires_a_real_tree(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    version = Path(paths.opt, "0.7.3")
+    (version / "venv").mkdir(parents=True)
+    Path(paths.current).symlink_to("0.7.3")
+
+    through_current = Installer(paths, running_prefix=f"{paths.current}/venv")
+    assert through_current._running_version_dir() == str(version)
+    assert Installer(paths, running_prefix=str(version))._running_version_dir() == str(version)
+    assert Installer(paths, running_prefix=paths.opt)._running_version_dir() is None
+    assert Installer(paths, running_prefix=str(Path(paths.opt, "0.7.4", "venv")))._running_version_dir() is None
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    Path(paths.opt, "0.7.5").symlink_to(outside, target_is_directory=True)
+    assert Installer(paths, running_prefix=str(Path(paths.opt, "0.7.5")))._running_version_dir() is None
+
+    monkeypatch.setattr(install.os.path, "commonpath", lambda _paths: (_ for _ in ()).throw(ValueError("drive")))
+    assert through_current._running_version_dir() is None
+
+
+def test_prune_versions_skips_the_tree_the_installer_runs_from(tmp_path: Path) -> None:
+    paths = InstallPaths(tmp_path)
+    Path(paths.opt).mkdir(parents=True)
+    for version in ("0.5.0", "0.6.0", "0.7.0", "0.8.0"):
+        Path(paths.opt, version).mkdir()
+    running = str(Path(paths.opt, "0.6.0"))
+
+    removed = Installer(paths)._prune_versions("0.8.0", running)
+
+    assert removed == ["0.5.0"]
+    assert Path(running).is_dir()
+
+
+def test_uninstall_defers_running_tree_and_current_until_finish(tmp_path: Path) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    version = Path(paths.opt, "0.7.3")
+    version.mkdir(parents=True)
+    (version / "MANIFEST").write_text("installer=toposd install\n", encoding="utf-8")
+    Path(paths.opt, "0.7.2").mkdir()
+    Path(paths.opt, "0.7.2", "MANIFEST").write_text("installer=toposd install\n", encoding="utf-8")
+    Path(paths.current).symlink_to("0.7.3")
+    Path(paths.pending).write_text("0.7.3\n", encoding="utf-8")
+    subject = Installer(paths, run=_fake_run([]), geteuid=lambda: 0,
+                        running_prefix=f"{paths.current}/venv")
+
+    body = subject.uninstall(_args(), _runtime(yes=True))
+
+    assert body["deferred"] == str(version)
+    assert Path(paths.current).is_symlink() and version.is_dir()
+    assert not Path(paths.opt, "0.7.2").exists()
+    assert Path(paths.pending).is_file() and Path(paths.install_record).is_file()
+
+    subject.finish_uninstall(body)
+
+    assert "deferred" not in body
+    assert not Path(paths.current).exists() and not version.exists()
+    assert not Path(paths.pending).exists() and not Path(paths.opt).exists()
+    assert not Path(paths.install_record).exists()
+
+
+def test_uninstall_reports_config_directory_inspection_failure_before_marker_removal(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    original = install.os.listdir
+
+    def listdir(path):
+        if os.fspath(path) == os.path.dirname(paths.config):
+            raise PermissionError("denied")
+        return original(path)
+
+    monkeypatch.setattr(install.os, "listdir", listdir)
+    with pytest.raises(InstallError, match="cannot inspect .*etc/topos.*denied"):
+        Installer(paths, run=_fake_run([]), geteuid=lambda: 0).uninstall(_args(), _runtime(yes=True))
+    assert Path(paths.install_record).is_file()
+
+
+def test_version_root_and_marker_helpers_accept_missing_paths_and_remove_symlink_children(tmp_path: Path) -> None:
+    paths = InstallPaths(tmp_path)
+    subject = Installer(paths)
+    subject._remove_version_root(keep=None)
+    subject._remove_markers({"kept": []})
+
+    Path(paths.opt).mkdir(parents=True)
+    target = tmp_path / "target"
+    target.mkdir()
+    link = Path(paths.opt, "current.new")
+    link.symlink_to(target, target_is_directory=True)
+    subject._remove_version_root(keep=None)
+    assert not link.exists() and not link.is_symlink()
+
+
+def test_finish_uninstall_is_rerunnable_after_running_tree_was_already_removed(tmp_path: Path) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    Path(paths.opt).mkdir(parents=True)
+    Path(paths.current).symlink_to("0.7.3")
+    Path(paths.pending).write_text("0.7.3\n", encoding="utf-8")
+    body = {"kept": [], "deferred": str(Path(paths.opt, "0.7.3"))}
+
+    Installer(paths).finish_uninstall(body)
+
+    assert not Path(paths.current).exists() and not Path(paths.pending).exists()
+    assert not Path(paths.opt).exists() and not Path(paths.install_record).exists()
+
+
+def test_uninstall_handler_prints_before_tree_removal_and_imports_nothing_after(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    version = Path(paths.opt, "0.7.3")
+    version.mkdir(parents=True)
+    (version / "MANIFEST").write_text("installer=toposd install\n", encoding="utf-8")
+    Path(paths.current).symlink_to("0.7.3")
+    monkeypatch.setattr(install, "_handler_paths", lambda _args, _runtime: paths)
+    base_installer = Installer
+    monkeypatch.setattr(
+        install,
+        "Installer",
+        lambda _paths: base_installer(paths, run=_fake_run([]), geteuid=lambda: 0,
+                                     running_prefix=f"{paths.current}/venv"),
+    )
+
+    state = {"removed": False, "events": [], "imports": []}
+    original_import = builtins.__import__
+    original_rmtree = install.shutil.rmtree
+
+    def tracked_import(name, *args, **kwargs):
+        if state["removed"]:
+            state["imports"].append(name)
+        return original_import(name, *args, **kwargs)
+
+    def tracked_rmtree(path, *args, **kwargs):
+        result = original_rmtree(path, *args, **kwargs)
+        if str(path) == str(version):
+            state["removed"] = True
+        return result
+
+    monkeypatch.setattr(builtins, "__import__", tracked_import)
+    monkeypatch.setattr(install.shutil, "rmtree", tracked_rmtree)
+    runtime = _runtime(yes=True, json_mode=True)
+    runtime.output.primary = lambda value: state["events"].append(("printed", value))
+    try:
+        assert install._uninstall_handler(argparse.Namespace(root="/", remove_groups=False), runtime) == 0
+    finally:
+        monkeypatch.setattr(builtins, "__import__", original_import)
+
+    assert state["events"] and state["events"][0][0] == "printed"
+    assert "deferred" not in state["events"][0][1]
+    assert state["removed"] and state["imports"] == []
+
+
+def test_uninstall_handler_maps_finish_failure_to_rerun_hint(monkeypatch) -> None:
+    from cli_extended import CliFailure
+
+    class Subject:
+        def uninstall(self, _args, _runtime):
+            return {"ok": True, "removed": [], "kept": [], "deferred": "/version"}
+
+        def finish_uninstall(self, _body):
+            raise InstallError("cannot remove /version: busy")
+
+    monkeypatch.setattr(install, "_handler_paths", lambda _args, _runtime: InstallPaths("/fake"))
+    monkeypatch.setattr(install, "Installer", lambda _paths: Subject())
+    runtime = _runtime(yes=True)
+    printed = []
+    runtime.output.primary = printed.append
+
+    with pytest.raises(CliFailure, match="cannot remove /version: busy; rerun toposd uninstall --yes to finish"):
+        install._uninstall_handler(argparse.Namespace(root="/", remove_groups=False), runtime)
+    assert printed
 
 
 def test_pending_only_host_keeps_its_marker_until_the_end(tmp_path: Path, monkeypatch) -> None:

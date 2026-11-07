@@ -770,6 +770,7 @@ class Installer:
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         python: str = sys.executable,
+        running_prefix: str | os.PathLike[str] = sys.prefix,
         systemctl: str = "systemctl",
     ) -> None:
         self.paths = paths
@@ -779,6 +780,7 @@ class Installer:
         self.sleep = sleep
         self.monotonic = monotonic
         self.python = python
+        self.running_prefix = os.fspath(running_prefix)
         self.systemctl = systemctl
 
     def _command(
@@ -975,7 +977,22 @@ class Installer:
                 )
             self.sleep(min(1.0, deadline - now))
 
-    def _prune_versions(self, current: str) -> list[str]:
+    def _running_version_dir(self) -> str | None:
+        """Return the real /opt/topos version tree this process runs from."""
+        prefix = os.path.realpath(self.running_prefix)
+        opt = os.path.realpath(self.paths.opt)
+        try:
+            if os.path.commonpath((opt, prefix)) != opt or prefix == opt:
+                return None
+        except ValueError:
+            return None
+        name = os.path.relpath(prefix, opt).split(os.sep, 1)[0]
+        running = os.path.join(opt, name)
+        if not os.path.isdir(running) or os.path.islink(running):
+            return None
+        return running
+
+    def _prune_versions(self, current: str, running: str | None = None) -> list[str]:
         if not os.path.isdir(self.paths.opt):
             return []
         candidates = []
@@ -986,13 +1003,15 @@ class Installer:
         keep = set(sorted(candidates, key=version_key, reverse=True)[:2]) | {current}
         removed = []
         for name in candidates:
-            if name not in keep:
-                shutil.rmtree(os.path.join(self.paths.opt, name))
+            path = os.path.join(self.paths.opt, name)
+            if name not in keep and (running is None or os.path.realpath(path) != running):
+                shutil.rmtree(path)
                 removed.append(name)
         return removed
 
     def install(self, args: argparse.Namespace, runtime: CliRuntime) -> dict[str, Any]:
         values = _gather_inputs(args, runtime, self.paths)
+        running_version = self._running_version_dir()
         downgrade, version_drift = self._preflight(values, dry_run=runtime.dry_run)
         config_text, config, config_changed = self._config(
             values["observe_group"], apply_group=getattr(args, "observe_group", None) is not None
@@ -1094,7 +1113,7 @@ class Installer:
         created_groups = list(values["prior_created_groups"])
         if group_missing_before and values["observe_group"] not in created_groups:
             created_groups.append(values["observe_group"])
-        removed = self._prune_versions(values["version"])
+        removed = self._prune_versions(values["version"], running_version)
         record = {
             "wheel": values["wheel"],
             "cli_extended_wheel": values["cli_extended_wheel"],
@@ -1206,6 +1225,48 @@ class Installer:
         ]
         return [path for path in candidates if os.path.lexists(path)]
 
+    def _remove_version_root(self, keep: str | None) -> None:
+        paths = self.paths
+        try:
+            for name in sorted(_directory_entries(paths.opt, [], "version root")):
+                path = os.path.join(paths.opt, name)
+                if name == "PENDING":
+                    continue
+                if keep is not None and (
+                    (name == "current" and os.path.islink(path))
+                    or (not os.path.islink(path) and os.path.realpath(path) == keep)
+                ):
+                    continue
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path)
+                else:
+                    os.unlink(path)
+        except OSError as exc:
+            raise InstallError(f"cannot remove {exc.filename or paths.opt}: {exc}") from None
+
+    def _remove_markers(self, body: dict[str, Any]) -> None:
+        """Remove PENDING, /opt/topos, then ownership records and empty /etc/topos."""
+        paths = self.paths
+        try:
+            if os.path.lexists(paths.pending):
+                os.unlink(paths.pending)
+            if os.path.isdir(paths.opt):
+                os.rmdir(paths.opt)
+        except OSError as exc:
+            raise InstallError(f"cannot remove {exc.filename or paths.opt}: {exc}") from None
+        try:
+            os.unlink(paths.install_record)
+        except FileNotFoundError:
+            pass
+        config_dir = os.path.dirname(paths.config)
+        try:
+            os.rmdir(config_dir)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            if config_dir not in body.setdefault("kept", []):
+                body["kept"].append(config_dir)
+
     def uninstall(self, args: argparse.Namespace, runtime: CliRuntime) -> dict[str, Any]:
         record = _read_record(self.paths.install_record)
         created_groups = _record_created_groups(record)
@@ -1277,40 +1338,48 @@ class Installer:
             os.unlink(paths.config)
         except FileNotFoundError:
             pass
-        # The ownership markers go last, so an interrupted uninstall can be rerun:
-        # everything in /opt/topos except PENDING, then PENDING, then the record.
-        if os.path.isdir(paths.opt):
-            try:
-                for name in sorted(os.listdir(paths.opt)):
-                    if name == "PENDING":
-                        continue
-                    path = os.path.join(paths.opt, name)
-                    if os.path.isdir(path) and not os.path.islink(path):
-                        shutil.rmtree(path)
-                    else:
-                        os.unlink(path)
-                if os.path.lexists(paths.pending):
-                    os.unlink(paths.pending)
-                os.rmdir(paths.opt)
-            except OSError as exc:
-                raise InstallError(f"cannot remove {exc.filename or paths.opt}: {exc}") from None
+        config_dir = os.path.dirname(paths.config)
         try:
-            os.unlink(paths.install_record)
+            remaining = os.listdir(config_dir)
         except FileNotFoundError:
-            pass
-        try:
-            os.rmdir(os.path.dirname(paths.config))
-        except FileNotFoundError:
-            pass
-        except OSError:
-            kept.append(os.path.dirname(paths.config))
-        return {
+            remaining = []
+        except OSError as exc:
+            raise InstallError(f"cannot inspect {config_dir}: {exc}") from None
+        if any(name != os.path.basename(paths.install_record) for name in remaining):
+            kept.append(config_dir)
+        body: dict[str, Any] = {
             "ok": True,
             "dry_run": False,
             "removed": targets,
             "groups_removed": removed_groups,
             "kept": kept,
         }
+        running = self._running_version_dir()
+        self._remove_version_root(keep=running)
+        if running is None:
+            self._remove_markers(body)
+        else:
+            body["deferred"] = running
+        return body
+
+    def finish_uninstall(self, body: dict[str, Any]) -> None:
+        """Remove the running version after output, then remove ownership markers."""
+        running = body.pop("deferred", None)
+        if running is None:
+            return
+        try:
+            shutil.rmtree(running)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise InstallError(f"cannot remove {exc.filename or running}: {exc}") from None
+        try:
+            os.unlink(self.paths.current)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise InstallError(f"cannot remove {self.paths.current}: {exc}") from None
+        self._remove_markers(body)
 
 
 def _handler_paths(args: argparse.Namespace, runtime: CliRuntime) -> InstallPaths:
@@ -1334,11 +1403,17 @@ def _install_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
 
 def _uninstall_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
     paths = _handler_paths(args, runtime)
+    subject = Installer(paths)
     try:
-        body = Installer(paths).uninstall(args, runtime)
+        body = subject.uninstall(args, runtime)
     except InstallError as exc:
         raise CliFailure(str(exc), exit_code=exc.exit_code) from None
-    runtime.output.primary(body if runtime.json_mode else _uninstall_summary(body))
+    shown = {key: value for key, value in body.items() if key != "deferred"}
+    runtime.output.primary(shown if runtime.json_mode else _uninstall_summary(shown))
+    try:
+        subject.finish_uninstall(body)
+    except InstallError as exc:
+        raise CliFailure(f"{exc}; rerun toposd uninstall --yes to finish", exit_code=exc.exit_code) from None
     return 0
 
 
