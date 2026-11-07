@@ -2,13 +2,25 @@
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.4.2] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=59e5b3e0424e6d8c0ac8fe6383d9dfbf0625280e -->
+
+### Fixed
+- fix(tnt): close tmux teardown review gaps (acfe9fde3)
+
+### Testing
+- test(tnt): reap tmux descendants under assay subreaper (9e14f8908)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - TNT-64: tmux teardown verifies the test session is a child subreaper, reaps server and pane process groups, and treats zombies as present until `waitpid` removes them. Missing tmux now fails the registered lanes; only local development can opt out. The lock-owner test now isolates its `os` mock so unrelated filesystem calls keep using real `stat_result` values.
 
 ### Changed
 - TNT-30: set the R2 Assay budget to 24 hours per invocation from the measured 2,990-candidate plan (~47 candidates/hour at three workers, about 64 hours total). The operator reruns `run-gate r2` against the same committed worktree after each BUDGET_EXCEEDED result; `--resume` and `.assay/mutation-state-r2` carry candidate state. Run-Gate bounds each invocation at 25 hours; no `--campaign-deadline` is set.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.4.1] - 2026-11-05
 <!-- cmru: generated -->
