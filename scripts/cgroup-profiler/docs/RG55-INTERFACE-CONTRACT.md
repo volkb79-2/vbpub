@@ -16,7 +16,13 @@ monorepo layout, and skips that check when the sibling file is absent.
 absolute-counter rule for `cpu`/`pressure`/`faults`/`events`, `§3`
 nullability note for `peak_over_baseline_bytes`, `§7` new subsection); RG-156 /
 plan 2026-11 host-service-sockets: per-level socket layout, dedicated groups,
-no exec carrier, no legacy path fallback.
+no exec carrier, no legacy path fallback; WP-E3 (2026-11-07): Run-Gate reads
+control and observer endpoints only from
+`CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET`, respectively;
+`[profile].socket_path` is refused; each endpoint value must be an absolute
+path over `[A-Za-z0-9_./:@+-]` without `..`, empty or `.` components and not
+ending in `/`, and the observer's directory is never `/`; observer mounts use the host directory's
+identity path and pass `ASSAY_RESOURCE_OBSERVER_SOCKET` to the lane.
 **v1.1 (RW-34, 2026-09-12, §8 below):** additive under `contract: 1` —
 the socket-only control carrier (§8.1), `watch` (§8.2), placement (§8.3),
 liveness + policy (§8.4), `host.gates_slice` (§8.5), `version.transports` (§8.6), Summary
@@ -46,9 +52,11 @@ compatibility checks use the installed `run-gate --version`.
 
 Parties: **producer** = cgroup-profiler's daemon (`cgpd`) and its client
 (`cgpctl`); **consumer** = the installed Run-Gate wheel (stdlib-only
-runtime), whose `ProfilerClient` sends control-protocol requests directly over
-`/run/cgprofile/control/cgprofile.sock` (§8.1), or the configured socket path,
-from any devcontainer, worktree or instance. **RG-156 (2026-11-04):** the
+runtime), whose `ProfilerClient` sends control-protocol requests directly to
+the endpoint named by `CGPROFILE_CONTROL_SOCKET` (§8.1), from any devcontainer,
+worktree or instance. The environment value is the only endpoint source:
+Run-Gate does not read the host endpoints record file or use a built-in path.
+**RG-156 (2026-11-04):** the
 socket is the only carrier Run-Gate uses; its former `docker exec
 cgprofile-host-daemon cgprofile ctl <verb> [args] --json` fallback, the
 `[profile] transport` and `[profile] daemon` settings and
@@ -62,9 +70,10 @@ reference translator of the socket protocol.
 
 1. The control protocol is newline-delimited JSON. `cgpctl` translates its
    command-line requests to this protocol; Run-Gate's stdlib-only
-   `ProfilerClient` builds the same wire requests directly and connects to
-   `/run/cgprofile/control/cgprofile.sock` (or the configured socket path).
-   Consumers mount the corresponding control-level directory at that path.
+   `ProfilerClient` builds the same wire requests directly and connects to the
+   path in `CGPROFILE_CONTROL_SOCKET`. Consumers make the corresponding
+   control endpoint available at that path; Run-Gate obtains it from the
+   process environment only.
 2. **`cgpctl` CLI output:** stdout is exactly one JSON object (UTF-8, no
    other output). stderr is free text for diagnostics.
 3. **`cgpctl` CLI exit codes:** `0` ok; `2` bad request (the JSON still carries
@@ -336,18 +345,19 @@ and the `footprint` manifest.
 6. **Disclosure lines** (stdout, exact shapes; `{…}` substituted; optional
    segments in `[…]` appear only when known):
    ```
-   run-gate: host memory PSI full avg10={x}% avg60={y}%[ | slice {name}: full avg10={z}%][ | profiler {socket_path} (cgprofile {ver}, damon {on|off|unavailable})]
+   run-gate: host memory PSI full avg10={x}% avg60={y}%[ | slice {name}: full avg10={z}%][ | profiler {endpoint} (cgprofile {ver}, damon {on|off|unavailable})]
    run-gate: profile session {id} (scope {scope}, baseline {n} MiB, damon {on|off|unavailable: reason})
    run-gate: footprint {lane}: peak {n} MiB[ (+{n} MiB over baseline)], p90 {n} MiB, {c} cores avg, {s} s stalled on memory (full)[, hot-set p90 {n} MiB]; history median peak {n} MiB ({k} runs)[ | manifest {n} MiB]
    run-gate: WARNING profiling: {reason} — {basic in-lane sampling only|no profile recorded}
    ```
 7. **Config:** `[profile]` top-level table (central or project, whole-table
-   shadowing per R-09): `enabled` (bool, default true), `socket_path`
-   (absolute path, default `/run/cgprofile/control/cgprofile.sock`), `admission_wait`,
+   shadowing per R-09): `enabled` (bool, default true), `admission_wait`,
    `interval` (duration grammar of
    `budget`, default `"1s"`, passed as `--interval`), `damon` (bool, default
-   true → `--damon on`). The former `daemon` and `transport` keys are
-   refused by name (RG-156). Per lane: `profile = false` (bool) or a table
+   true → `--damon on`). The endpoint comes from `CGPROFILE_CONTROL_SOCKET`;
+   `[profile].socket_path` is refused by name and has no legacy behavior.
+   The former `daemon` and `transport` keys are refused by name (RG-156).
+   Per lane: `profile = false` (bool) or a table
    `[lanes.<n>.profile]` with `enabled`/`damon`. `[footprint]`:
    `tolerance_pct` (int, default 25), `max_age_days` (int, default 30).
    Unknown keys refuse at load like every other table.
@@ -470,19 +480,22 @@ stay byte-identical.
 ### 8.1 Socket-only carrier (D-30)
 
 The `cgpd` serve loop speaks newline-delimited JSON, one request per
-connection, on `/run/cgprofile/control/cgprofile.sock`. Its systemd socket
-unit creates a `root:root` level directory with mode `0755` and a
+connection, on its configured control endpoint. The installer publishes that
+endpoint as `CGPROFILE_CONTROL_SOCKET` in the host endpoints record; consumers
+receive it through their process environment. Its systemd socket unit creates
+a `root:root` level directory with mode `0755` and a
 `root:<configured dedicated control group>` socket with mode `0660`, then
 passes one descriptor named `control` to `cgpd`. The default control group is
 `cgprofile-control`; the observer has its own socket unit, dedicated group,
 level directory and `observer` descriptor. These level groups are distinct,
 and neither may be the Docker group or use its GID. Consumers mount only the
-level directory they are entitled to. The supported host layout uses the
-new per-level paths; no client falls back to the pre-cutover socket paths.
+level directory they are entitled to. Clients take each
+per-level endpoint only from its environment variable; no client falls back to
+a built-in socket path.
 
 | carrier | how a request travels | who is authorised | default |
 |---|---|---|---|
-| `socket` | the consumer connects to `/run/cgprofile/control/cgprofile.sock` and writes ONE request line `{"verb": "<verb>", "args": {…}, "contract": 1}\n`; the daemon returns a JSON response object, then closes (streaming verbs: one object per line until end) | members of the configured dedicated control group and UID 0 can connect through the `0660` socket; when the daemon's `allow_uids` setting is non-empty, `SO_PEERCRED` also restricts peers to those UIDs plus UID 0; a refused peer gets `{"ok": false, "contract": 1, "error": {"code": "peer-refused", …}}` and the connection closes | only carrier |
+| `socket` | the consumer connects to the endpoint named by `CGPROFILE_CONTROL_SOCKET` and writes ONE request line `{"verb": "<verb>", "args": {…}, "contract": 1}\n`; the daemon returns a JSON response object, then closes (streaming verbs: one object per line until end) | members of the configured dedicated control group and UID 0 can connect through the `0660` socket; when the daemon's `allow_uids` setting is non-empty, `SO_PEERCRED` also restricts peers to those UIDs plus UID 0; a refused peer gets `{"ok": false, "contract": 1, "error": {"code": "peer-refused", …}}` and the connection closes | only carrier |
 
 Rules: (1) the control and observer levels are separate endpoints; the
 control endpoint accepts daemon control verbs and the observer endpoint
@@ -659,14 +672,16 @@ is not installed — `ctl host` and run-gate `doctor` say "unbounded").
 ### 8.6 `version.transports`
 
 ```json
-"transports": {"exec": false, "socket": {"path": "/run/cgprofile/control/cgprofile.sock", "listening": true,
+"transports": {"exec": false, "socket": {"path": "<configured control endpoint>", "listening": true,
                "allow_uids": [] , "peer_cred": true}}
 ```
 
 The `exec` carrier is unsupported; contract 2 omits the `exec` key. The
 additive `version.resource_observer` object advertises the separate
 native-R2 listener: `{"contract": 2, "contracts": [2, 3],
-"path": "/run/cgprofile/observer/cgprofile.sock", "listening": true}`.
+"path": "<configured observer endpoint>", "listening": true}`. Its path is
+published as `CGPROFILE_OBSERVER_SOCKET`; Run-Gate compares the advertisement
+with that environment value.
 Its contract numbers are independent of the control protocol's contract
 number; `listening` reflects whether the observer socket was bound
 successfully. Control contract 2 adds `export`, `config`, `config-set`, and
@@ -737,9 +752,9 @@ bounded-admission limit or shutting down; retry shortly).
 
 ## 9. Native-R2 resource observer (RW-484–RW-487)
 
-The daemon exposes a second AF_UNIX listener at
-`/run/cgprofile/observer/cgprofile.sock`. It is distinct from
-`/run/cgprofile/control/cgprofile.sock`; a read-only bind of the control socket would still
+The daemon exposes a second AF_UNIX listener at the endpoint published as
+`CGPROFILE_OBSERVER_SOCKET`. It is distinct from the endpoint published as
+`CGPROFILE_CONTROL_SOCKET`; a read-only bind of the control socket would still
 expose its control verbs. The observer listener belongs to the existing
 cgprofile daemon and performs no placement or cgroup write.
 
@@ -852,7 +867,8 @@ for an Assay lane or command lane in an ephemeral environment. The explicit lane
 declaration is the opt-in; command wrappers that launch Assay R2 preserve the
 inherited endpoint variable for that process. The observer remains a
 read-only query bound to the command's own peer. Before launch Run-Gate
-uses `lstat` on the `/run/cgprofile/observer` directory and socket. It
+uses `lstat` on the directory containing `CGPROFILE_OBSERVER_SOCKET` and the
+socket at that endpoint. It
 requires the directory to be a `root:root` directory, not writable by group
 or other, and searchable by group; it does not require its GID to match the
 socket GID or connect to the observer socket. The socket unit creates the
@@ -860,17 +876,23 @@ socket as `root:<configured dedicated observer group>` with mode `0660`
 (default group: `cgprofile-observer`). Run-Gate checks that it is root-owned,
 group-connectable, not accessible to other users, and uses a non-root GID
 distinct from both the host Docker GID and control socket GID. Inside the
-lane, the observer endpoint is `/run/cgprofile-observer/cgprofile.sock`.
-Run-Gate mounts the directory read-only into the test container, so the socket
-path resolves again after daemon restart. It grants that dedicated GID and
-sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container path. Observer-backed
+lane, Run-Gate bind-mounts `dirname(CGPROFILE_OBSERVER_SOCKET)` read-only at
+the identical path. The socket therefore remains reachable after daemon
+restart, and Run-Gate sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the unchanged
+`CGPROFILE_OBSERVER_SOCKET` value. Observer-backed
 lanes declare per-container memory and PID ceilings and refuse arbitrary extra
 mounts. They do not mount the control socket, change PID/cgroup/network
 namespaces, or add a Docker socket.
 
 Before launch, Run-Gate's `resource_observer_version_preflight` requires
-`resource_observer.contract == 2`, the fixed observer socket path, and
-`listening is true` in the version response. For a present control socket,
+`resource_observer.contract == 2`, the advertised path to equal
+`CGPROFILE_OBSERVER_SOCKET`, and `listening is true` in the version response.
+The control endpoint comes from `CGPROFILE_CONTROL_SOCKET`. Both variables
+are read from the process environment only; an unset or empty required value
+is an infrastructure error naming that variable and directing the operator to
+`cgpd doctor` and the host endpoints record. Profiling can be explicitly
+disabled with `RUN_GATE_PROFILE=off`; observer lanes still require both
+endpoints for their version preflight and mount. For a present control socket,
 Run-Gate checks before connecting that it is a
 Unix socket with a non-zero GID distinct from the host Docker GID. It accepts
 UID 0 without supplementary group membership because the tester runner uses

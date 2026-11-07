@@ -262,8 +262,8 @@ def make_project(repo: Path, config: str, name: str = "proj", *,
 
 # RG-156: run-gate talks to the cgprofile daemon over its control socket only.
 # `set_cgprofile_plan` starts an in-process fake daemon on a short AF_UNIX path
-# and points `run_gate.PROFILE_SOCKET_PATH_DEFAULT` at it; the per-verb plan
-# files $plan_dir/<verb>.{json,exit,sleep} are read on every request.
+# and publishes that path through the same environment variable used by the
+# host endpoint record; per-verb plan files are read on every request.
 _FAKE_CGPROFILE_DAEMONS: dict[str, "_FakeCgprofileDaemon"] = {}
 
 
@@ -359,7 +359,7 @@ def set_cgprofile_plan(tmp_path: Path, monkeypatch, **verbs) -> Path:
     """Configure the fake daemon's `<verb>` answers. Each kwarg is
     `<verb>=(response_text_or_None, exit_code_or_None, sleep_seconds_or_None)`;
     no response text means the connection closes with no answer. The fake
-    listens on a fresh socket that becomes the default `socket_path`."""
+    listens on a fresh socket supplied through `CGPROFILE_CONTROL_SOCKET`."""
     plan_dir = tmp_path / "cgprofile-plan"
     plan_dir.mkdir(exist_ok=True)
     for verb, (stdout, exit_code, sleep_s) in verbs.items():
@@ -377,9 +377,9 @@ def set_cgprofile_plan(tmp_path: Path, monkeypatch, **verbs) -> Path:
     host_docker_gid = "995" if control_gid == 994 else "994"
     monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR,
                        host_docker_gid)
+    monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", daemon.path)
     # Control-socket fixtures must not inherit the cockpit's group list.
     monkeypatch.setattr(run_gate.os, "getgroups", lambda: [control_gid])
-    monkeypatch.setattr(run_gate, "PROFILE_SOCKET_PATH_DEFAULT", daemon.path)
     return plan_dir
 
 
@@ -748,16 +748,15 @@ def profiling_off_by_default(monkeypatch):
     monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "off")
 
 
-SHIPPED_PROFILE_SOCKET_PATH_DEFAULT = run_gate.PROFILE_SOCKET_PATH_DEFAULT
-
-
 @pytest.fixture(autouse=True)
 def isolate_host_profiler_socket(monkeypatch):
-    """Never let unit tests reach the cockpit's real host daemon: the default
-    socket path points at a directory that does not exist (CP-31
-    `socket-not-mounted`) until a test installs a fake daemon."""
-    monkeypatch.setattr(run_gate, "PROFILE_SOCKET_PATH_DEFAULT",
-                        "/nonexistent-run-gate-test/cgprofile/ctl.sock")
+    """Never let unit tests reach the cockpit's real host daemon: endpoint
+    variables point at a directory that does not exist until a test installs
+    a fake daemon."""
+    monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET",
+                       "/nonexistent-run-gate-test/control.sock")
+    monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
+                       "/nonexistent-run-gate-test/observer.sock")
 
 
 @pytest.fixture
@@ -7295,8 +7294,8 @@ class TestDryRun:
             run_gate, "prepare_profile_start",
             lambda *_args, **_kwargs: pytest.fail(
                 "no daemon preflight without a resolvable target"))
-        plan = {"enabled": True, "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
-                "interval": "1s", "damon": True, "source": "test",
+        plan = {"enabled": True, "interval": "1s", "damon": True,
+                "source": "test",
                 "token": "fixture-token"}
         assert run_gate.run_bare_host_lane(
             {"kind": "command", "argv": ["true"]}, "unit", tmp_path,
@@ -10281,8 +10280,13 @@ class TestShippedGateFullDeclaration:
             # The only working channel is the infrastructure mapping, and
             # Assay refuses the same name in both places.
             assert "TMPDIR" not in cfg["lanes"][name]["env_passthrough"]
-            assert cfg["lanes"][name]["infrastructure"] == {
-                "TMPDIR": "required-env:RUN_GATE_TMPDIR"}
+            infrastructure = cfg["lanes"][name]["infrastructure"]
+            assert infrastructure["TMPDIR"] == "required-env:RUN_GATE_TMPDIR"
+            assert set(infrastructure) == ({"TMPDIR"} if name == "r1" else {
+                "TMPDIR", "ASSAY_RESOURCE_OBSERVER_SOCKET"})
+            if name == "r2":
+                assert infrastructure["ASSAY_RESOURCE_OBSERVER_SOCKET"] == (
+                    "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET")
 
     def test_gate_full_forwards_base_only_to_assay_r1_in_order(self):
         cfg_path = RUN_GATE_DIR / "run-gate.toml"
@@ -10337,66 +10341,421 @@ class TestResourceObserverLane:
     def _stat(self, mode, uid=0, gid=994):
         return SimpleNamespace(st_mode=mode, st_uid=uid, st_gid=gid)
 
-    def test_host_service_socket_paths_stay_in_sync_with_user_docs(self):
-        # The autouse fixture points the live default at a nonexistent
-        # directory; the shipped value is captured at import time.
-        assert SHIPPED_PROFILE_SOCKET_PATH_DEFAULT == (
-            "/run/cgprofile/control/cgprofile.sock")
-        assert run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE == (
-            "/run/cgprofile/observer/cgprofile.sock")
-        assert run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET == (
-            "/run/cgprofile-observer/cgprofile.sock")
-
+    def test_user_docs_describe_environment_endpoints_without_source_paths(self):
         project = Path(__file__).resolve().parents[1]
-        doc_paths = {
-            "README.md": (
-                "/run/cgprofile/control/cgprofile.sock",
-                "RUN_GATE_HOST_DOCKER_GID",
-                "MDT_HOST_DOCKER_GID",
-            ),
-            "CONSUMERS.md": (
-                "/run/cgprofile/control/cgprofile.sock",
-                "/run/cgprofile/observer/cgprofile.sock",
-                "/run/cgprofile-observer/cgprofile.sock",
-                "host socket cutover",
-                "RUN_GATE_HOST_DOCKER_GID",
-                "MDT_HOST_DOCKER_GID",
-            ),
-            "SPEC.md": (
-                "/run/cgprofile/control/cgprofile.sock",
-                "/run/cgprofile/observer/cgprofile.sock",
-                "/run/cgprofile-observer/cgprofile.sock",
-                "RUN_GATE_HOST_DOCKER_GID",
-                "MDT_HOST_DOCKER_GID",
-            ),
-            "docs/DESIGN-GUIDE.md": (
-                "/run/cgprofile/control/cgprofile.sock",
-                "/run/cgprofile/observer/cgprofile.sock",
-                "/run/cgprofile-observer/cgprofile.sock",
-                "RUN_GATE_HOST_DOCKER_GID",
-                "MDT_HOST_DOCKER_GID",
-            ),
-            "nyxloom-trove/RG55-INTERFACE-CONTRACT.md": (
-                "/run/cgprofile/control/cgprofile.sock",
-                "/run/cgprofile/observer/cgprofile.sock",
-                "/run/cgprofile-observer/cgprofile.sock",
-                "RUN_GATE_HOST_DOCKER_GID",
-                "MDT_HOST_DOCKER_GID",
-            ),
-        }
-        obsolete_paths = (
-            "/run/cgprofile/ctl.sock",
-            "/run/cgprofile/observer/resource-observer.sock",
-            "/run/cgprofile-observer/resource-observer.sock",
-        )
-        for relative, expected in doc_paths.items():
+        doc_paths = ("README.md", "CONSUMERS.md", "SPEC.md",
+                     "docs/DESIGN-GUIDE.md",
+                     "nyxloom-trove/RG55-INTERFACE-CONTRACT.md")
+        for relative in doc_paths:
             content = (project / relative).read_text()
-            assert all(value in content for value in expected), relative
-            assert not any(value in content for value in obsolete_paths), relative
+            assert "CGPROFILE_CONTROL_SOCKET" in content, relative
+            assert "CGPROFILE_OBSERVER_SOCKET" in content, relative
+            assert "/run/cgprofile-observer" not in content, relative
             assert "owning GID of the Docker API socket" not in content, relative
             assert "default `/var/run/docker.sock`" not in content, relative
+        consumers = (project / "CONSUMERS.md").read_text()
+        assert ('ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:'
+                'ASSAY_RESOURCE_OBSERVER_SOCKET"') in consumers
+        source = (project / "run_gate.py").read_text()
+        assert "/run/cgprofile/" not in source
+        assert "/run/cgprofile-observer" not in source
         readme = (project / "README.md").read_text()
         assert "docs/DESIGN-GUIDE.md#host-service-sockets-use-a-per-level-layout" in readme
+
+    def test_r2_judge_requires_the_mounted_observer_environment_fact(self):
+        assay_cfg = tomllib.loads((RUN_GATE_DIR / "assay.toml").read_text())
+        assert assay_cfg["lanes"]["r2"]["infrastructure"][
+            "ASSAY_RESOURCE_OBSERVER_SOCKET"] == (
+                "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET")
+
+    @pytest.mark.parametrize(("variable", "resolver"), [
+        ("CGPROFILE_CONTROL_SOCKET", run_gate.control_socket_from_env),
+        ("CGPROFILE_OBSERVER_SOCKET", run_gate.observer_socket_from_env),
+    ])
+    def test_socket_environment_resolvers_fail_when_unset_or_empty(
+            self, monkeypatch, variable, resolver):
+        for value in (None, ""):
+            if value is None:
+                monkeypatch.delenv(variable, raising=False)
+            else:
+                monkeypatch.setenv(variable, value)
+            with pytest.raises(
+                    run_gate.GateInfraError,
+                    match=rf"{variable}.*cgpd doctor.*host endpoints record"):
+                resolver()
+
+    @pytest.mark.parametrize(("variable", "resolver"), [
+        ("CGPROFILE_CONTROL_SOCKET", run_gate.control_socket_from_env),
+        ("CGPROFILE_OBSERVER_SOCKET", run_gate.observer_socket_from_env),
+    ])
+    def test_socket_environment_resolvers_return_the_supplied_endpoint(
+            self, monkeypatch, variable, resolver, tmp_path):
+        endpoint = str(tmp_path / "socket-from-environment.sock")
+        monkeypatch.setenv(variable, endpoint)
+        assert resolver() == endpoint
+
+    @pytest.mark.parametrize(("variable", "resolver"), [
+        ("CGPROFILE_CONTROL_SOCKET", run_gate.control_socket_from_env),
+        ("CGPROFILE_OBSERVER_SOCKET", run_gate.observer_socket_from_env),
+    ])
+    @pytest.mark.parametrize("endpoint", [
+        "/run/o,source=/etc/obs.sock",
+        "relative.sock",
+        "/run/cgprofile/../other.sock",
+        "/run/cgprofile/observer.sock/",
+        "/run/x/ y.sock",
+        "/run/x/\ty.sock",
+        "/run/x/y.sock\n",
+        "/run/a,b/obs.sock",
+        "/run/a=b/obs.sock",
+        "/run/ü/obs.sock",
+        "/run/．．/obs.sock",
+        "/d/" + "a" * 4094,
+    ])
+    def test_socket_environment_resolvers_reject_malformed_endpoints(
+            self, monkeypatch, variable, resolver, endpoint):
+        monkeypatch.setenv(variable, endpoint)
+        with pytest.raises(run_gate.GateInfraError, match=variable) as caught:
+            resolver()
+        assert endpoint not in str(caught.value)
+
+    def test_required_endpoint_preflight_follows_lane_policy(
+            self, monkeypatch):
+        monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+        monkeypatch.delenv("CGPROFILE_OBSERVER_SOCKET", raising=False)
+        run_gate.preflight_profile_endpoints({}, False)
+
+        with pytest.raises(run_gate.GateInfraError,
+                           match="CGPROFILE_CONTROL_SOCKET.*cgpd doctor"):
+            run_gate.preflight_profile_endpoints({}, True)
+
+        monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "/host/control.sock")
+        run_gate.preflight_profile_endpoints({}, True)
+        with pytest.raises(run_gate.GateInfraError,
+                           match="CGPROFILE_OBSERVER_SOCKET.*cgpd doctor"):
+            run_gate.preflight_profile_endpoints(
+                {"resource_observer": "cgprofile"}, False)
+
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", "/host/observer.sock")
+        run_gate.preflight_profile_endpoints(
+            {"resource_observer": "cgprofile"}, False)
+        monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET")
+        with pytest.raises(run_gate.GateInfraError,
+                           match="CGPROFILE_CONTROL_SOCKET.*cgpd doctor"):
+            run_gate.preflight_profile_endpoints(
+                {"resource_observer": "cgprofile"}, False)
+
+    @staticmethod
+    def _bare_profile_config(*, lane_profile_false=False,
+                             observer_lane=False):
+        profile = "\nprofile = false" if lane_profile_false else ""
+        if observer_lane:
+            return textwrap.dedent("""\
+                schema_version = 1
+                [environments.runner]
+                mode = "ephemeral"
+                image = "runner:local"
+                [lanes.unit]
+                kind = "command"
+                environment = "runner"
+                argv = ["true"]
+                clean_tree = false
+                resources = { memory = "1g", pids = 1024 }
+                resource_observer = "cgprofile"
+            """)
+        return textwrap.dedent(f"""\
+            schema_version = 1
+            [lanes.unit]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false{profile}
+        """)
+
+    def test_dispatch_requires_control_before_locks_or_runner(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, self._bare_profile_config())
+        monkeypatch.chdir(project)
+        monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+        monkeypatch.delenv("CGPROFILE_OBSERVER_SOCKET", raising=False)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        lock_calls = []
+        runner_calls = []
+        docker_lookups = []
+        monkeypatch.setattr(
+            run_gate, "acquire_shared_locks",
+            lambda *args, **kwargs: lock_calls.append(args) or [])
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
+                            lambda *args, **kwargs:
+                            runner_calls.append(args) or 0)
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: docker_lookups.append(name) or None)
+
+        result = run_gate._dispatch(["unit", "--dry-run"])
+
+        assert result.verdict == "ERROR"
+        assert "CGPROFILE_CONTROL_SOCKET" in result.reason
+        assert not lock_calls
+        assert not runner_calls
+        assert not docker_lookups
+
+    @pytest.mark.parametrize(("lane_profile_false", "ambient"), [
+        (True, None),
+        (False, "off"),
+    ])
+    def test_disabled_profile_dry_run_needs_no_endpoints(
+            self, tmp_path, monkeypatch, lane_profile_false, ambient):
+        repo = make_repo(tmp_path)
+        project = make_project(
+            repo, self._bare_profile_config(
+                lane_profile_false=lane_profile_false))
+        monkeypatch.chdir(project)
+        monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+        monkeypatch.delenv("CGPROFILE_OBSERVER_SOCKET", raising=False)
+        if ambient is None:
+            monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR,
+                               raising=False)
+        else:
+            monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, ambient)
+        plans = []
+        monkeypatch.setattr(run_gate, "acquire_shared_locks",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "run_bare_host_lane",
+                            lambda *args, **kwargs:
+                            plans.append(kwargs["profile_plan"]) or 0)
+
+        result = run_gate._dispatch(["unit", "--dry-run"])
+
+        assert result.verdict == "PASS"
+        assert plans and plans[0]["enabled"] is False
+
+    def test_disabled_container_profile_plan_does_not_resolve_control_endpoint(
+            self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+        state = run_gate.start_lane_profiling(
+            {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
+            tmp_path, "docker", {"enabled": False}, "container", "cid",
+            None, "container")
+        assert state["mode"] == "disabled"
+        assert state["socket_path"] is None
+
+    def test_enabled_container_profile_plan_requires_control_endpoint(
+            self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+        with pytest.raises(run_gate.GateInfraError,
+                           match="CGPROFILE_CONTROL_SOCKET"):
+            run_gate.start_lane_profiling(
+                {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
+                tmp_path, "docker", {"enabled": True}, "container", "cid",
+                None, "container")
+
+    @pytest.mark.parametrize("value", [None, "relative.sock"])
+    def test_doctor_warns_and_continues_when_control_endpoint_is_unusable(
+            self, tmp_path, monkeypatch, capsys, value):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, "schema_version = 1\n")
+        monkeypatch.chdir(project)
+        monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
+        monkeypatch.delenv("CGPROFILE_OBSERVER_SOCKET", raising=False)
+        if value is None:
+            monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+        else:
+            monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", value)
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: None)
+        cfg, cfg_path, central, central_path = run_gate.load_config(project)
+
+        run_gate.cmd_doctor({}, project, cfg, central, cfg_path, central_path)
+
+        out = capsys.readouterr().out
+        assert "[WARN] profiler endpoint: CGPROFILE_CONTROL_SOCKET" in out
+        assert "lane 'doctor' verdict ERROR" not in out
+        assert "stale coordination locks" in out
+
+    def test_observer_lane_with_profile_off_still_requires_observer_endpoint(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        project = make_project(
+            repo, self._bare_profile_config(observer_lane=True))
+        monkeypatch.chdir(project)
+        monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "off")
+        monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "/host/control.sock")
+        monkeypatch.delenv("CGPROFILE_OBSERVER_SOCKET", raising=False)
+        monkeypatch.setattr(run_gate, "resolve_slice",
+                            lambda *_args: ("test.slice", "fixture"))
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_args: None)
+        monkeypatch.setattr(run_gate, "check_slice_memory_admission",
+                            lambda *_args: None)
+        locks = []
+        runners = []
+        monkeypatch.setattr(run_gate, "acquire_shared_locks",
+                            lambda *args, **kwargs: locks.append(args) or [])
+        monkeypatch.setattr(run_gate, "run_container_lane",
+                            lambda *args, **kwargs: runners.append(args) or 0)
+
+        result = run_gate._dispatch(["unit", "--dry-run"])
+
+        assert result.verdict == "ERROR"
+        assert "CGPROFILE_OBSERVER_SOCKET" in result.reason
+        assert not locks
+        assert not runners
+
+    @pytest.mark.parametrize("dry_run", [True, False])
+    @pytest.mark.parametrize(("variable", "endpoint"), [
+        ("CGPROFILE_CONTROL_SOCKET", "/run/o,source=/etc/ctl.sock"),
+        ("CGPROFILE_OBSERVER_SOCKET", "/run/o,source=/etc/obs.sock"),
+        ("CGPROFILE_OBSERVER_SOCKET", "relative.sock"),
+        ("CGPROFILE_OBSERVER_SOCKET", "/run/cgprofile/../observer.sock"),
+        ("CGPROFILE_OBSERVER_SOCKET", "/run/cgprofile/observer.sock/"),
+        ("CGPROFILE_OBSERVER_SOCKET", "/x.sock"),
+        ("CGPROFILE_OBSERVER_SOCKET", "/run/x/observer.sock\n"),
+    ])
+    def test_malformed_endpoints_refuse_live_and_dry_run_before_mount_argv(
+            self, tmp_path, monkeypatch, dry_run, variable, endpoint):
+        monkeypatch.delenv("MDT_COW_ROOT", raising=False)
+        monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "/run/test/control.sock")
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", "/run/test/observer.sock")
+        monkeypatch.setenv(variable, endpoint)
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "container_mount_flags", lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "resource_observer_version_preflight",
+                            lambda *_a: None)
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *_a, **_k: pytest.fail(
+                                "malformed socket path reached docker run"))
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lane = {"kind": "command", "environment": "runner",
+                "argv": ["true"], "resource_observer": "cgprofile",
+                "clean_tree": False}
+        with pytest.raises(run_gate.GateInfraError, match=variable):
+            run_gate.run_container_lane(
+                lane, "unit", repo, repo, repo,
+                {"mode": "ephemeral", "image": "runner:local"},
+                "fixture", "test.slice", "fixture", dry_run=dry_run,
+                profile_plan={"enabled": False, "disabled_reason": "test"})
+
+    @pytest.mark.parametrize(("variable", "resolver"), [
+        ("CGPROFILE_CONTROL_SOCKET", run_gate.control_socket_from_env),
+        ("CGPROFILE_OBSERVER_SOCKET", run_gate.observer_socket_from_env),
+    ])
+    def test_endpoint_of_the_maximum_length_is_accepted(
+            self, monkeypatch, variable, resolver):
+        endpoint = "/" + "a" * 4095
+        assert len(endpoint) == 4096
+        monkeypatch.setenv(variable, endpoint)
+        # A top-level file name is fine for the control endpoint; the
+        # observer additionally needs a directory below the root.
+        if variable == "CGPROFILE_OBSERVER_SOCKET":
+            endpoint = "/d/" + "a" * 4093
+            monkeypatch.setenv(variable, endpoint)
+        assert resolver() == endpoint
+
+    def test_observer_endpoint_directly_below_the_root_is_refused(
+            self, monkeypatch):
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", "/obs.sock")
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"CGPROFILE_OBSERVER_SOCKET.*filesystem root"):
+            run_gate.observer_socket_from_env()
+        # The control endpoint is never mounted, so the same shape is fine.
+        monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "/ctl.sock")
+        assert run_gate.control_socket_from_env() == "/ctl.sock"
+
+    def test_root_level_observer_socket_never_reaches_a_mount_argv(
+            self, monkeypatch):
+        # Stat is faked so every other preflight passes: the refusal must
+        # come from the filesystem-root rule itself, not a missing file.
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", "/obs.sock")
+        monkeypatch.delenv(run_gate.EXTRA_MOUNT_ENV_VAR, raising=False)
+        self._patch_socket_metadata(
+            monkeypatch, Path("/obs.sock"),
+            control_socket_path="/run/test/control.sock")
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"CGPROFILE_OBSERVER_SOCKET.*filesystem root"):
+            run_gate.resource_observer_docker_flags(
+                {"kind": "assay", "environment": "tester-unified",
+                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_run_gate_sources_hold_no_socket_path_literals(self):
+        # Every string constant (docstrings and f-string parts included) is
+        # scanned: the endpoints come from the environment only. The allowlist
+        # of strings that may mention an old path is explicit and empty.
+        denied = ("/run/cgprofile", "/var/run/cgprofile", "cgprofile.sock",
+                  "cgprofile-observer")
+        allowed: set[tuple[str, str]] = set()
+        offenders = []
+        for name in ("run_gate.py", "run_gate_admission.py",
+                     "run_gate_profile.py"):
+            tree = ast.parse((RUN_GATE_DIR / name).read_text())
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant)
+                        and isinstance(node.value, str)):
+                    for literal in denied:
+                        if (literal in node.value
+                                and (name, node.value) not in allowed):
+                            offenders.append(
+                                (name, node.lineno, literal))
+        assert offenders == []
+
+    def test_observer_directory_with_a_colon_is_refused_before_any_mount(
+            self, monkeypatch):
+        monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "/run/test/control.sock")
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", "/run/a:b/observer.sock")
+        monkeypatch.delenv(run_gate.EXTRA_MOUNT_ENV_VAR, raising=False)
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"CGPROFILE_OBSERVER_SOCKET directory"):
+            run_gate.resource_observer_docker_flags(
+                {"kind": "assay", "environment": "tester-unified",
+                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_observer_directory_mode_guide_matches_preflight(
+            self, tmp_path, monkeypatch):
+        guide = " ".join(
+            (RUN_GATE_DIR / "docs" / "DESIGN-GUIDE.md").read_text().split())
+        assert "mode & 0o010 != 0" in guide
+        assert "mode & 0o022 == 0" in guide
+        assert "`0750` passes the preflight but is not usable" in guide
+        assert "`0755`" in guide
+        assert "`mode & 0o010 != 0`" in guide
+        assert "`mode & 0o022 == 0`" in guide
+        assert run_gate.CGPROFILE_OBSERVER_DIRECTORY_SEARCH == 0o010
+        assert run_gate.CGPROFILE_OBSERVER_DIRECTORY_WRITE_MASK == 0o022
+
+        socket_path = tmp_path / "cgprofile.sock"
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path,
+            parent_mode=run_gate.stat.S_IFDIR | 0o750, socket_gid=1234)
+        flags = run_gate.resource_observer_docker_flags(
+            {"kind": "assay", "environment": "tester-unified",
+             "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+        assert flags[1].count("source=") == 1
+        assert flags[1].count("target=") == 1
+
+    def test_removed_profile_socket_path_refuses_with_environment_remedy(
+            self, tmp_path):
+        path = tmp_path / "run-gate.toml"
+        path.write_text(textwrap.dedent("""\
+            schema_version = 1
+            [profile]
+            socket_path = "/some/endpoint.sock"
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+        """))
+        with pytest.raises(run_gate.GateError,
+                           match=r"socket_path.*removed.*CGPROFILE_CONTROL_SOCKET"):
+            run_gate._validate_config(
+                run_gate._read_toml(path), path, central=False)
+
+    def test_profile_source_contains_no_socket_path_literals(self):
+        source = _TOOL.read_text()
+        assert "/run/cgprofile/" not in source
+        assert "/run/cgprofile-observer" not in source
 
     def _patch_socket_metadata(self, monkeypatch, socket_path, *,
                                parent_mode=None, parent_uid=0,
@@ -10413,7 +10772,9 @@ class TestResourceObserverLane:
         socket_mode = socket_mode or run_gate.stat.S_IFSOCK | 0o660
         control_mode = control_mode or run_gate.stat.S_IFSOCK | 0o660
         control_socket_path = Path(
-            control_socket_path or run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+            control_socket_path or run_gate.control_socket_from_env())
+        monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET",
+                           str(control_socket_path))
 
         def fake_lstat(path):
             path = Path(path)
@@ -10566,7 +10927,7 @@ class TestResourceObserverLane:
         valid = {
             "resource_observer": {
                 "contract": 2,
-                "path": run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE,
+                "path": run_gate.observer_socket_from_env(),
                 "listening": True,
             },
         }
@@ -10574,7 +10935,7 @@ class TestResourceObserverLane:
             run_gate.ProfilerClient, "version", lambda self: (valid, None),
         )
         run_gate.resource_observer_version_preflight(
-            run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+            run_gate.control_socket_from_env())
 
         for bad, message in [
             ({}, "does not advertise"),
@@ -10584,7 +10945,7 @@ class TestResourceObserverLane:
                                      "listening": True}}, "unexpected socket path"),
             ({"resource_observer": {
                 "contract": 2,
-                "path": run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE,
+                "path": run_gate.observer_socket_from_env(),
                 "listening": False,
             }}, "not listening"),
         ]:
@@ -10593,7 +10954,7 @@ class TestResourceObserverLane:
             )
             with pytest.raises(run_gate.GateInfraError, match=message):
                 run_gate.resource_observer_version_preflight(
-                    run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+                    run_gate.control_socket_from_env())
 
     def test_observer_version_preflight_reports_daemon_query_failure(self, monkeypatch):
         monkeypatch.setattr(
@@ -10602,12 +10963,12 @@ class TestResourceObserverLane:
         )
         with pytest.raises(run_gate.GateInfraError, match="control socket unavailable"):
             run_gate.resource_observer_version_preflight(
-                run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+                run_gate.control_socket_from_env())
 
     def test_live_observer_lane_preflights_before_clearing_or_launching(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, parent_gid=0, socket_gid=1234,
@@ -10660,11 +11021,11 @@ class TestResourceObserverLane:
 
     def test_missing_socket_is_infrastructure_error(self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(monkeypatch, socket_path, missing=True)
         with pytest.raises(run_gate.GateInfraError,
-                           match="observer directory or socket is unavailable.*socket cutover"):
+                           match="observer directory or socket is unavailable.*host endpoints record"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
@@ -10672,19 +11033,19 @@ class TestResourceObserverLane:
     def test_missing_control_socket_is_infrastructure_error(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, control_missing=True)
         with pytest.raises(run_gate.GateInfraError,
-                           match="cannot inspect cgprofile control socket.*socket cutover"):
+                           match="cannot inspect cgprofile control socket.*host endpoints record"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     def test_control_path_must_be_a_socket(self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path,
@@ -10698,7 +11059,7 @@ class TestResourceObserverLane:
     def test_control_socket_must_use_a_non_root_group(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, control_gid=0)
@@ -10711,7 +11072,7 @@ class TestResourceObserverLane:
     def test_observer_preflight_accepts_root_directory_gid_different_from_socket_gid(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(monkeypatch, socket_path, parent_gid=0,
                                     socket_gid=1234)
@@ -10724,7 +11085,7 @@ class TestResourceObserverLane:
     def test_observer_preflight_refuses_non_root_directory_identity(
             self, tmp_path, monkeypatch, parent_uid, parent_gid):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(monkeypatch, socket_path,
                                     parent_uid=parent_uid,
@@ -10739,15 +11100,15 @@ class TestResourceObserverLane:
     def test_observer_preflight_rejects_an_empty_control_socket_path(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(monkeypatch, socket_path)
+        monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "")
         with pytest.raises(run_gate.GateInfraError,
-                           match="control socket path is empty"):
+                           match="CGPROFILE_CONTROL_SOCKET.*cgpd doctor"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
-                "resource_observer": "cgprofile"}, {"mode": "ephemeral"},
-                control_socket_path="")
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("parent_mode, parent_uid, socket_mode, socket_uid, socket_gid, message", [
         (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 1234, "not a safe root-owned"),
@@ -10765,7 +11126,7 @@ class TestResourceObserverLane:
             self, tmp_path, monkeypatch, parent_mode, parent_uid,
             socket_mode, socket_uid, socket_gid, message):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, parent_mode=parent_mode,
@@ -10780,7 +11141,7 @@ class TestResourceObserverLane:
     def test_observer_flags_mount_only_readonly_socket_and_forward_gid(
             self, tmp_path, monkeypatch, kind):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(monkeypatch, socket_path)
         assert run_gate.resource_observer_docker_flags({
@@ -10788,19 +11149,21 @@ class TestResourceObserverLane:
             "resource_observer": "cgprofile"}, {"mode": "ephemeral"}) == [
                 "--mount",
                 f"type=bind,source={socket_path.parent},target="
-                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly",
+                f"{socket_path.parent},readonly",
                 "--group-add", "1234",
                 "-e", "ASSAY_RESOURCE_OBSERVER_SOCKET="
-                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET}",
+                f"{socket_path}",
             ]
-        assert run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE.endswith(
-            "/cgprofile.sock")
-        assert run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET == (
-            "/run/cgprofile-observer/cgprofile.sock")
+        mount = run_gate.resource_observer_docker_flags({
+            "kind": kind, "environment": "tester-unified",
+            "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+        assert mount[1] == (
+            f"type=bind,source={socket_path.parent},target={socket_path.parent},readonly")
+        assert mount[-1] == f"ASSAY_RESOURCE_OBSERVER_SOCKET={socket_path}"
 
     def test_observer_refuses_docker_group_socket(self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, socket_gid=1234, docker_gid=1234)
@@ -10812,7 +11175,7 @@ class TestResourceObserverLane:
     def test_observer_refuses_when_observer_group_matches_control_group(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, socket_gid=995, control_gid=995)
@@ -10826,7 +11189,7 @@ class TestResourceObserverLane:
     def test_observer_refuses_when_control_group_matches_docker_group(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, socket_gid=1234, control_gid=994,
@@ -10840,7 +11203,7 @@ class TestResourceObserverLane:
     def test_observer_refuses_when_no_host_docker_gid_source_exists(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path)
@@ -10856,7 +11219,7 @@ class TestResourceObserverLane:
     def test_observer_uses_the_explicit_docker_gid_override_first(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, socket_gid=1234, docker_gid=994)
@@ -10957,7 +11320,7 @@ class TestResourceObserverLane:
         assert run_gate.preflight_control_socket_access(
             "/tmp/missing.sock", missing_ok=True) is None
         with pytest.raises(run_gate.GateInfraError,
-                           match="complete the host cgprofile socket cutover"):
+                           match="host endpoints record"):
             run_gate.preflight_control_socket_access("/tmp/missing.sock")
 
         def uninspectable(_path):
@@ -10971,7 +11334,7 @@ class TestResourceObserverLane:
     def test_observer_accepts_a_root_control_socket_caller_without_group_add(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, socket_gid=1234, control_gid=995,
@@ -10984,7 +11347,7 @@ class TestResourceObserverLane:
     def test_control_socket_caller_needs_supplementary_control_group(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, control_gid=995, docker_gid=994,
@@ -10998,7 +11361,7 @@ class TestResourceObserverLane:
     def test_control_socket_caller_with_supplementary_group_is_accepted(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, control_gid=995, docker_gid=994,
@@ -11011,7 +11374,7 @@ class TestResourceObserverLane:
     def test_control_socket_primary_group_is_accepted_with_empty_supplementary_groups(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, control_gid=995, docker_gid=994,
@@ -11035,7 +11398,7 @@ class TestResourceObserverLane:
         # CoW --mount ahead of the observer mount; this test pins the latter.
         monkeypatch.delenv("MDT_COW_ROOT", raising=False)
         socket_path = tmp_path / "cgprofile.sock"
-        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, parent_gid=0, socket_gid=1234)
@@ -11083,11 +11446,11 @@ class TestResourceObserverLane:
         assert "--memory" in argv and argv[argv.index("--memory") + 1] == "2g"
         assert "--pids-limit" in argv and argv[argv.index("--pids-limit") + 1] == "8192"
         assert ["--mount", f"type=bind,source={socket_path.parent},target="
-                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly"] == argv[
+                f"{str(Path(run_gate.observer_socket_from_env()).parent)},readonly"] == argv[
                     argv.index("--mount"):argv.index("--mount") + 2]
         assert ["--group-add", "1234"] == argv[
             argv.index("--group-add"):argv.index("--group-add") + 2]
-        assert f"ASSAY_RESOURCE_OBSERVER_SOCKET={run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET}" in argv
+        assert f"ASSAY_RESOURCE_OBSERVER_SOCKET={run_gate.observer_socket_from_env()}" in argv
         assert not any("ctl.sock" in item for item in argv)
 
 
@@ -22206,7 +22569,6 @@ class TestProfileConfigValidation:
         assert settings == {
             "enabled": True,
             "interval": "1s", "damon": True, "source": "default",
-            "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
             "admission_wait": "10m",
             "disabled_reason": "disabled"}
 
@@ -22215,7 +22577,6 @@ class TestProfileConfigValidation:
             schema_version = 1
             [profile]
             enabled = false
-            socket_path = "/run/my-daemon/ctl.sock"
             interval = "2s"
             damon = false
             [lanes.suite]
@@ -22227,7 +22588,7 @@ class TestProfileConfigValidation:
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
         assert settings["enabled"] is False
-        assert settings["socket_path"] == "/run/my-daemon/ctl.sock"
+        assert "socket_path" not in settings
         assert settings["interval"] == "2s"
         assert settings["damon"] is False
         assert settings["source"] == f"[profile] in {path}"
@@ -22235,12 +22596,13 @@ class TestProfileConfigValidation:
     def test_project_profile_table_shadows_central_whole_table(self, tmp_path):
         central_path = tmp_path / "central.toml"
         central = run_gate._validate_config(
-            {"schema_version": 1, "profile": {"enabled": False, "socket_path": "/run/central-d.sock"}},
+            {"schema_version": 1, "profile": {"enabled": False,
+                                                   "interval": "3s"}},
             central_path, central=True)
         path = self._cfg(tmp_path, """\
             schema_version = 1
             [profile]
-            socket_path = "/run/project-d.sock"
+            interval = "2s"
             [lanes.suite]
             kind = "command"
             environment = "bare-host"
@@ -22251,14 +22613,14 @@ class TestProfileConfigValidation:
             cfg["lanes"]["suite"], cfg, path, central, central_path)
         # whole-table shadowing (R-09): the project's [profile] table wins
         # ENTIRELY -- central's enabled=False must NOT leak through.
-        assert settings["socket_path"] == "/run/project-d.sock"
         assert settings["enabled"] is True
+        assert settings["interval"] == "2s"
 
     def test_resolve_profile_settings_falls_back_to_central_when_project_omits_it(
             self, tmp_path):
         central_path = tmp_path / "central.toml"
         central = run_gate._validate_config(
-            {"schema_version": 1, "profile": {"socket_path": "/run/central-only-d.sock"}},
+            {"schema_version": 1, "profile": {"interval": "3s"}},
             central_path, central=True)
         path = self._cfg(tmp_path, """\
             schema_version = 1
@@ -22270,7 +22632,7 @@ class TestProfileConfigValidation:
         cfg = run_gate._validate_config(run_gate._read_toml(path), path, central=False)
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path, central, central_path)
-        assert settings["socket_path"] == "/run/central-only-d.sock"
+        assert settings["interval"] == "3s"
         assert settings["source"] == f"[profile] in central {central_path}"
 
     def test_a_populated_central_dict_is_ignored_with_no_central_path(
@@ -22292,9 +22654,9 @@ class TestProfileConfigValidation:
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path,
             {"environments": {},
-             "profile": {"socket_path": "/run/should-be-ignored.sock"}},
+             "profile": {"interval": "3s"}},
             None)
-        assert settings["socket_path"] == run_gate.PROFILE_SOCKET_PATH_DEFAULT
+        assert settings["interval"] == "1s"
         assert settings["source"] == "default"
 
     def test_top_level_profile_table_rejects_non_table_scalar(self, tmp_path):
@@ -22324,7 +22686,7 @@ class TestProfileConfigValidation:
 
     @pytest.mark.parametrize("key, value", [
         ("daemon", '"cgprofile-host-daemon"'), ("transport", '"socket"'),
-        ("transport", '"exec"')])
+        ("transport", '"exec"'), ("socket_path", '"/tmp/old.sock"')])
     def test_removed_profile_keys_are_refused_by_name(
             self, tmp_path, key, value):
         path = self._cfg(tmp_path, f"""\
@@ -22337,7 +22699,8 @@ class TestProfileConfigValidation:
             argv = ["true"]
         """)
         with pytest.raises(run_gate.GateError,
-                           match=f"'{key}' was removed \\(RG-156\\)"):
+                           match=(rf"'{key}' was removed \("
+                                  rf"(?:RG-156|WP-E3 / RG-244)\)")):
             run_gate._validate_config(run_gate._read_toml(path), path, central=False)
 
     def test_top_level_profile_table_rejects_non_bool_damon(self, tmp_path):
@@ -22623,11 +22986,10 @@ class TestProfileConfigValidation:
         with pytest.raises(run_gate.GateError, match="'footprint' must be a table"):
             run_gate._validate_config(run_gate._read_toml(path), path, central=False)
 
-    def test_profile_socket_path_and_admission_wait_validate(self, tmp_path):
+    def test_admission_wait_validates_without_a_socket_setting(self, tmp_path):
         path = self._cfg(tmp_path, """\
             schema_version = 1
             [profile]
-            socket_path = "/run/cgprofile/control/cgprofile.sock"
             admission_wait = "2m"
             [lanes.suite]
             kind = "command"
@@ -22639,14 +23001,13 @@ class TestProfileConfigValidation:
         settings = run_gate.resolve_profile_settings(
             cfg["lanes"]["suite"], cfg, path, {"environments": {}}, None)
         assert "transport" not in settings and "daemon" not in settings
-        assert settings["socket_path"] == "/run/cgprofile/control/cgprofile.sock"
+        assert "socket_path" not in settings
         assert settings["admission_wait"] == "2m"
 
     @pytest.mark.parametrize("field, value, phrase", [
-        ("socket_path", '"relative.sock"', "socket_path"),
         ("admission_wait", '"not-a-duration"', "admission_wait"),
     ])
-    def test_profile_socket_path_and_wait_reject_bad_values(
+    def test_profile_wait_rejects_bad_values(
             self, tmp_path, field, value, phrase):
         path = self._cfg(tmp_path, f"""\
             schema_version = 1
@@ -23017,7 +23378,7 @@ class TestProfilerClient:
 
     def _client(self, tmp_path, monkeypatch) -> "run_gate.ProfilerClient":
         set_cgprofile_plan(tmp_path, monkeypatch)   # fake daemon + default path
-        return run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        return run_gate.ProfilerClient(run_gate.control_socket_from_env())
 
     def test_wire_args_covers_watch_defaults_and_start_rejections(self):
         assert run_gate.ProfilerClient._wire_args(
@@ -23069,7 +23430,10 @@ class TestProfilerClient:
         doc, reason = client.version()
         assert doc is None
         assert f"(cause: {cause}:" in reason
-        assert "host cgprofile socket cutover" in reason
+        assert ("check $CGPROFILE_CONTROL_SOCKET, run 'cgpd doctor', and "
+                "repair the host endpoints record") in reason
+        assert "cutover" not in reason
+        assert "old layout" not in reason
 
     def test_unclassified_failures_have_no_cause_tag(self):
         assert run_gate.socket_unreachable_cause(
@@ -23582,7 +23946,7 @@ class TestProfilerClient:
     def test_start_success_and_argv_shape(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "start-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, start=(golden, None, None))
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         doc, reason = client.start(RG55_CONTAINER_ID, "container-shared",
                                    token="abc123", damon=True, interval=1.0,
                                    meta={"lane": "suite"})
@@ -23603,7 +23967,7 @@ class TestProfilerClient:
     def test_start_with_minimal_args_omits_optional_flags(self, tmp_path, monkeypatch):
         golden = (RG55_FIXTURES / "start-v1.json").read_text()
         set_cgprofile_plan(tmp_path, monkeypatch, start=(golden, None, None))
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         doc, reason = client.start(RG55_CONTAINER_ID, "container")
         assert reason is None
         (daemon,) = _FAKE_CGPROFILE_DAEMONS.values()
@@ -24442,8 +24806,8 @@ class TestProfilingOrchestration:
         monkeypatch.delenv(run_gate.PROFILE_AMBIENT_ENV_VAR, raising=False)
 
     def _plan(self, **overrides):
-        plan = {"enabled": True, "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
-               "interval": "1s", "damon": True, "source": "test",
+        plan = {"enabled": True, "interval": "1s", "damon": True,
+               "source": "test",
                "token": "abc123token"}
         plan.update(overrides)
         return plan
@@ -24470,7 +24834,7 @@ class TestProfilingOrchestration:
         assert "baseline 500 MiB" in state["session_line"]   # 524288000 bytes
         assert state["warning"] is None
         assert state["profiler_status"] == (
-            f"{run_gate.PROFILE_SOCKET_PATH_DEFAULT} "
+            f"{run_gate.control_socket_from_env()} "
             "(cgprofile 1.1.0, damon available)")
 
     def test_version_failure_degrades_to_basic_and_samples_once(self, tmp_path, monkeypatch):
@@ -24609,16 +24973,16 @@ class TestProfilingOrchestration:
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(stop, None, None))
         fake_docker(tmp_path, monkeypatch)
         docker = shutil.which("docker")
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         state = {"mode": "daemon", "client": client,
-                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                "socket_path": run_gate.control_socket_from_env(),
                 "session": "s-20260912T101500Z-9f01", "warning": None}
         result = run_gate.finish_lane_profiling(state)
         expected = json.loads(stop)["summary"]
         assert result["resources"] == expected
         assert result["profile_error"] is None
         assert result["profile_ref"] == {
-            "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+            "socket_path": run_gate.control_socket_from_env(),
             "session": "s-20260912T101500Z-9f01",
             "session_dir": "/var/lib/cgprofile/sessions/s-20260912T101500Z-9f01"}
 
@@ -24626,9 +24990,9 @@ class TestProfilingOrchestration:
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(None, 3, None))
         fake_docker(tmp_path, monkeypatch)
         docker = shutil.which("docker")
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         state = {"mode": "daemon", "client": client,
-                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                "socket_path": run_gate.control_socket_from_env(),
                 "session": "s-x", "warning": None}
         result = run_gate.finish_lane_profiling(state)
         assert result["resources"] is None
@@ -24642,7 +25006,7 @@ class TestProfilingOrchestration:
         """A ProfilerClient whose `_ctl` answers `stop` from a scripted list
         of `(doc, reason, refusal_code)`; records the calls."""
         fake_docker(tmp_path, monkeypatch)
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         script = iter(answers)
         calls = []
 
@@ -24701,7 +25065,7 @@ class TestProfilingOrchestration:
     def test_ctl_clears_the_refusal_code_before_every_call(self, tmp_path, monkeypatch):
         """The real `_ctl`: a carrier timeout returns before
         `_parse_response` could reset the code."""
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         client.last_refusal_code = "stop-incomplete"
         monkeypatch.setattr(client, "_socket_ctl", lambda verb, *args: (
             None, f"cgprofile socket ctl {verb} timed out after 30s"))
@@ -24721,7 +25085,7 @@ class TestProfilingOrchestration:
 
     def test_parse_response_records_the_refusal_code(self, tmp_path, monkeypatch):
         fake_docker(tmp_path, monkeypatch)
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         refused = {"contract": run_gate.PROFILE_CONTRACT, "ok": False,
                    "error": {"code": "stop-incomplete", "message": "busy"}}
         doc, reason = client._parse_response("stop", json.dumps(refused))
@@ -24743,9 +25107,9 @@ class TestProfilingOrchestration:
         stop["summary"]["stop_forced"] = "sampler-still-running"
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(json.dumps(stop), None, None))
         fake_docker(tmp_path, monkeypatch)
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         state = {"mode": "daemon", "client": client,
-                 "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                 "socket_path": run_gate.control_socket_from_env(),
                  "session": "s-x", "warning": None}
         result = run_gate.finish_lane_profiling(state)
         assert result["resources"] == stop["summary"]   # recorded verbatim
@@ -24764,9 +25128,9 @@ class TestProfilingOrchestration:
                                             "quarantined": True}
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(json.dumps(stop), None, None))
         fake_docker(tmp_path, monkeypatch)
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         state = {"mode": "daemon", "client": client,
-                 "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                 "socket_path": run_gate.control_socket_from_env(),
                  "session": "s-x", "warning": "earlier"}
         result = run_gate.finish_lane_profiling(state)
         assert result["resources"]["damon_cleanup"]["slot"] == 2
@@ -24827,7 +25191,7 @@ class TestProfilingOrchestration:
         run_gate.print_profile_plan_dry_run(self._plan(), "container")
         out = capsys.readouterr().out
         assert "profile plan" in out
-        assert run_gate.PROFILE_SOCKET_PATH_DEFAULT in out
+        assert "socket from $CGPROFILE_CONTROL_SOCKET" in out
         assert "daemon '" not in out and "transport" not in out
         assert run_gate.PROFILE_TOKEN_ENV in out
         run_gate.print_profile_plan_dry_run(self._plan(enabled=False), "container")
@@ -24940,9 +25304,10 @@ class TestProfilingOrchestration:
             self, monkeypatch, capsys):
         monkeypatch.setenv(run_gate.PROC_ROOT_ENV_VAR,
                            str(RG55_FIXTURES / "frames" / "0" / "proc"))
+        endpoint = "/tmp/fake-cgprofile-control.sock"
         run_gate.print_host_pressure_line(
-            "/run/cgprofile/control/cgprofile.sock (cgprofile 1.1.0, damon on)")
-        assert "| profiler /run/cgprofile/control/cgprofile.sock" in capsys.readouterr().out
+            f"{endpoint} (cgprofile 1.1.0, damon on)")
+        assert f"| profiler {endpoint}" in capsys.readouterr().out
 
     def test_profile_meta_shape(self, tmp_path):
         repo = make_repo(tmp_path)
@@ -25752,6 +26117,63 @@ class TestContainerProfilingDefensiveBranches:
             "test", run_record=None, profile_plan=plan) == 0
 
 
+    def test_container_lane_records_the_control_endpoint_with_the_session(
+            self, tmp_path, monkeypatch):
+        # Recovery (re-attach, promoted follower) stops the session on the
+        # endpoint recorded with it, so the container lane's second inflight
+        # write must carry `profile_control_socket` next to `profile_session`.
+        repo = make_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "physical_path", lambda path: path)
+        monkeypatch.setattr(run_gate, "dual_mount_flags",
+                            lambda *args: ["-v", "host:container"])
+        monkeypatch.setattr(run_gate, "git_config_overlay_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *args: None)
+        monkeypatch.setattr(run_gate, "prepare_profile_start",
+                            lambda *args, **kwargs: {"state": "admitted"})
+        monkeypatch.setattr(run_gate, "head_commit", lambda *args: "deadbeef")
+        writes = []
+        monkeypatch.setattr(
+            run_gate, "write_inflight_record",
+            lambda _project, _worktree, _lane, payload:
+            writes.append(dict(payload)))
+        monkeypatch.setattr(run_gate, "container_state",
+                            lambda *args: {"id": "container-id"})
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": None,
+                                "socket_path": "/host/recorded-control.sock",
+                                "session": "s-container",
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None})
+        monkeypatch.setattr(run_gate, "print_profile_warning", lambda *args: None)
+        monkeypatch.setattr(run_gate, "print_host_pressure_line", lambda *args: None)
+        monkeypatch.setattr(run_gate, "print_profile_session_line", lambda *args: None)
+        monkeypatch.setattr(run_gate, "make_progress_watch", lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "await_container",
+                            lambda *args, **kwargs: 0)
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda argv, *args, **kwargs: subprocess.CompletedProcess(
+                argv, 0, stdout="container-id\n", stderr=""))
+        plan = {"enabled": True, "interval": "1s",
+                "damon": True, "source": "test", "token": "tok"}
+        lane = {"kind": "command", "environment": "tester-unified",
+                "argv": ["true"], "clean_tree": False}
+
+        assert run_gate.run_container_lane(
+            lane, "suite", repo, repo, repo,
+            {"image": "tester:local"}, "test-env", "dev-background.slice",
+            "test", run_record=None, profile_plan=plan) == 0
+
+        assert writes[-1]["profile_session"] == "s-container"
+        assert writes[-1]["profile_control_socket"] == (
+            "/host/recorded-control.sock")
+
+
 class TestBareHostProfilingWiring:
     """RG-57/RW-27b: a bare-host lane IS profiled once `[profile]` is
     enabled -- the daemon path (self container id + token, scope ALWAYS
@@ -25769,6 +26191,15 @@ class TestBareHostProfilingWiring:
             argv = ["true"]
             clean_tree = false
         """
+
+    def test_disabled_profile_plan_does_not_resolve_control_endpoint(
+            self, tmp_path, monkeypatch):
+        monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+        state = run_gate.start_bare_host_profiling(
+            {"kind": "command", "argv": ["true"]}, "suite", tmp_path,
+            tmp_path, None, {"enabled": False})
+        assert state["mode"] == "disabled"
+        assert state["socket_path"] is None
 
     def test_preflight_fatal_reason_is_preserved_on_missing_version(
             self, tmp_path, monkeypatch):
@@ -25970,7 +26401,6 @@ class TestBareHostProfilingWiring:
         monkeypatch.setattr(run_gate, "time", _Clock())
         record = {}
         plan = {"enabled": True,
-                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                 "interval": run_gate.PROFILE_INTERVAL_DEFAULT,
                 "damon": run_gate.PROFILE_DAMON_DEFAULT,
                 "source": "test", "disabled_reason": "disabled",
@@ -26052,7 +26482,7 @@ class TestBareHostProfilingWiring:
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
         assert "DRY RUN — profile plan: scope" in out
-        assert f"socket {run_gate.PROFILE_SOCKET_PATH_DEFAULT!r}" in out
+        assert "socket from $CGPROFILE_CONTROL_SOCKET" in out
         assert "container-shared" in out
         assert "admission: would wait" in out
         assert preflights == [("container-shared", True)]
@@ -27337,7 +27767,6 @@ class TestBareHostProfilingWiring:
         repo, proj = make_history_repo(tmp_path, self._config())
         fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
         profile_plan = {"enabled": True,
-                        "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": run_gate.PROFILE_INTERVAL_DEFAULT,
                         "damon": run_gate.PROFILE_DAMON_DEFAULT,
                         "source": "test", "disabled_reason": "disabled",
@@ -27360,7 +27789,6 @@ class TestBareHostProfilingWiring:
         repo, proj = make_history_repo(tmp_path, self._config())
         fake_docker(tmp_path, monkeypatch)   # no inspect case -> rusage mode
         profile_plan = {"enabled": True,
-                        "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": run_gate.PROFILE_INTERVAL_DEFAULT,
                         "damon": run_gate.PROFILE_DAMON_DEFAULT,
                         "source": "test", "disabled_reason": "disabled",
@@ -27830,7 +28258,7 @@ class TestEphemeralProfilingWiring:
         assert latest["profile_error"] is None
         assert latest["profile_ref"]["session"] == "s-20260912T101500Z-9f01"
         assert (latest["profile_ref"]["socket_path"]
-                == run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+                == run_gate.control_socket_from_env())
         # the inflight record's second write (RW: session added after start)
         # already happened and was cleared in the same finally as `rm -f` --
         # nothing left behind.
@@ -27859,7 +28287,7 @@ class TestEphemeralProfilingWiring:
                      "cpu_weight": 100}
         daemon_state = {
             "mode": "daemon", "client": Client(),
-            "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+            "socket_path": run_gate.control_socket_from_env(),
             "session": "s-placement", "session_line": None,
             "warning": None, "sampler": None,
             "profiler_status": None, "placement": placement,
@@ -28001,7 +28429,7 @@ class TestEphemeralProfilingWiring:
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
         assert "DRY RUN — profile plan: scope" in out
-        assert f"socket {run_gate.PROFILE_SOCKET_PATH_DEFAULT!r}" in out
+        assert "socket from $CGPROFILE_CONTROL_SOCKET" in out
         assert run_gate.PROFILE_TOKEN_ENV in out
         assert docker_runs(log) == []
 
@@ -28119,7 +28547,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         docker = shutil.which("docker")
         set_cgprofile_plan(tmp_path, monkeypatch,
                            start=('{"ok": true, "contract": 1}', None, None))
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         doc, reason = client.start(RG55_CONTAINER_ID, "container")
         assert doc is None
         assert reason is not None and "session" in reason
@@ -28129,7 +28557,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         docker = shutil.which("docker")
         set_cgprofile_plan(tmp_path, monkeypatch,
                            stop=('{"ok": true, "contract": 1}', None, None))
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         doc, reason = client.stop("s-20260912T101500Z-9f01")
         assert doc is None
         assert reason is not None and "summary" in reason
@@ -28142,7 +28570,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         body = json.dumps({"ok": True, "contract": 1, "session": session})
         set_cgprofile_plan(tmp_path, monkeypatch,
                            start=(body, None, None))
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         doc, reason = client.start(RG55_CONTAINER_ID, "container")
         assert doc is None
         assert reason is not None and "session" in reason
@@ -28155,7 +28583,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         body = json.dumps({"ok": True, "contract": 1, "summary": summary})
         set_cgprofile_plan(tmp_path, monkeypatch,
                            stop=(body, None, None))
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         doc, reason = client.stop("s-20260912T101500Z-9f01")
         assert doc is None
         assert reason is not None and "summary" in reason
@@ -28168,7 +28596,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         body = json.dumps({"ok": False, "contract": 1, "error": error})
         set_cgprofile_plan(tmp_path, monkeypatch,
                            version=(body, 3, None))
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         doc, reason = client.version()
         assert doc is None
         assert reason is not None and "non-object 'error'" in reason
@@ -28178,7 +28606,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
             raise RecursionError("planted: JSON nesting too deep")
 
         monkeypatch.setattr(run_gate.json, "loads", boom)
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         monkeypatch.setattr(client, "_socket_request", lambda *args: "{}")
         doc, reason = client.version()
         assert doc is None
@@ -28192,7 +28620,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         docker = shutil.which("docker")
         set_cgprofile_plan(tmp_path, monkeypatch,
                            version=('{"ok": true, "contract": 1}', None, None))
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         doc, reason = client.version()
         assert reason is None
         assert doc == {"ok": True, "contract": 1}
@@ -28203,7 +28631,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         # broadened from (TimeoutExpired, OSError) to Exception.
         def _boom(*a, **k):
             raise ValueError("planted: socket request exploded")
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         monkeypatch.setattr(client, "_socket_request", _boom)
         doc, reason = client.version()
         assert doc is None
@@ -28215,7 +28643,7 @@ class TestProfilerClientDegradesOnMalformedResponses:
         # degrade to (None, reason), never raise UnicodeDecodeError.
         plan_dir = set_cgprofile_plan(tmp_path, monkeypatch)
         (plan_dir / "version.json").write_bytes(b'{"ok": true, \xff"contract": 1}')
-        client = run_gate.ProfilerClient(run_gate.PROFILE_SOCKET_PATH_DEFAULT)
+        client = run_gate.ProfilerClient(run_gate.control_socket_from_env())
         doc, reason = client.version()   # must not raise
         assert doc is None
         assert reason is not None
@@ -28977,6 +29405,20 @@ class TestPlacementBarrier:
         assert seen[0]["fatal_reason"] == (
             "profiling preflight failed unexpectedly: planted preflight error")
 
+    def test_exec_endpoint_infrastructure_error_is_not_degraded(
+            self, tmp_path, monkeypatch):
+        _marker, args, plan, _state, children = self._exec_lane_fixture(
+            tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "prepare_profile_start",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                run_gate.GateInfraError(
+                    "CGPROFILE_CONTROL_SOCKET is unset")))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="CGPROFILE_CONTROL_SOCKET is unset"):
+            run_gate.run_exec_lane(*args, run_record={}, profile_plan=plan)
+        assert not children
+
     def test_exec_placement_without_token_refuses_before_wrapper(
             self, tmp_path, monkeypatch):
         _marker, args, plan, _state, children = self._exec_lane_fixture(
@@ -29053,6 +29495,34 @@ class TestPlacementBarrier:
         assert children and children[0].returncode == 125
         assert len(cleared) == 1
 
+    def test_bare_host_infra_error_after_spawn_abandons_the_barrier(
+            self, tmp_path, monkeypatch):
+        marker, lane, project, repo, plan, _state, children = \
+            self._bare_host_lane_fixture(tmp_path, monkeypatch)
+        abandoned = []
+
+        def fail_start(*_args, **_kwargs):
+            assert children and children[0].poll() is None
+            raise run_gate.GateInfraError("planted endpoint failure")
+
+        real_abandon = run_gate.abandon_placement_launch
+
+        def spy_abandon(proc, nonce, *args):
+            abandoned.append((proc, nonce))
+            return real_abandon(proc, nonce, *args)
+
+        monkeypatch.setattr(run_gate, "start_bare_host_profiling", fail_start)
+        monkeypatch.setattr(run_gate, "abandon_placement_launch", spy_abandon)
+        with pytest.raises(run_gate.GateInfraError,
+                           match="planted endpoint failure"):
+            run_gate.run_bare_host_lane(
+                lane, "suite", project, repo, repo, run_record={},
+                profile_plan=plan)
+        assert len(abandoned) == 1
+        assert abandoned[0][0] is children[0]
+        assert not marker.exists()
+        assert children[0].wait(timeout=10) != 0
+
     def test_bare_host_preflight_exception_degrades_without_blocking_lane(
             self, tmp_path, monkeypatch):
         marker, lane, project, repo, plan, _state, children = \
@@ -29080,6 +29550,52 @@ class TestPlacementBarrier:
         assert not children
         assert seen[0]["fatal_reason"] == (
             "profiling preflight failed unexpectedly: planted preflight error")
+
+    def test_bare_host_endpoint_preflight_infrastructure_error_is_not_degraded(
+            self, tmp_path, monkeypatch):
+        _marker, lane, project, repo, plan, _state, children = \
+            self._bare_host_lane_fixture(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "prepare_profile_start",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                run_gate.GateInfraError(
+                    "CGPROFILE_CONTROL_SOCKET is unset")))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="CGPROFILE_CONTROL_SOCKET is unset"):
+            run_gate.run_bare_host_lane(
+                lane, "suite", project, repo, repo, run_record={},
+                profile_plan=plan)
+        assert not children
+
+    def test_bare_host_profile_start_endpoint_error_is_not_degraded(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """
+            schema_version = 1
+            [lanes.suite]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+        """)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "prepare_profile_start",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate, "clear_previous_assay_verdict",
+                            lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *_args, **_kwargs: pytest.fail(
+                                "the lane body must not start without an endpoint"))
+        monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+        lane = {"kind": "command", "environment": "bare-host",
+                "argv": ["true"], "clean_tree": False}
+        plan = {"enabled": True, "interval": "1s", "damon": False,
+                "source": "test", "token": "profile-token"}
+        with pytest.raises(run_gate.GateInfraError,
+                           match="CGPROFILE_CONTROL_SOCKET.*cgpd doctor"):
+            run_gate.run_bare_host_lane(
+                lane, "suite", project, repo, repo, run_record=None,
+                profile_plan=plan)
 
     def test_bare_host_placement_without_token_refuses_before_wrapper(
             self, tmp_path, monkeypatch):
@@ -29372,7 +29888,7 @@ class TestExecLaneProfilingWiring:
         assert run_gate.main(["suite", "--dry-run"]) == 0
         out = capsys.readouterr().out
         assert "DRY RUN — profile plan: scope" in out
-        assert f"socket {run_gate.PROFILE_SOCKET_PATH_DEFAULT!r}" in out
+        assert "socket from $CGPROFILE_CONTROL_SOCKET" in out
         assert "scope 'container-shared'" in out
         assert "admission: would wait" in out
         assert preflights == [("container-shared", True)]
@@ -29400,8 +29916,8 @@ class TestExecLaneProfilingWiring:
             lane, "suite", repo, repo, repo, env, "test-env",
             "the-runner", "test-src", "test-remedy", None, "no-slice",
             dry_run=False, run_record=None,
-            profile_plan={"enabled": False, "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
-                         "interval": "1s", "damon": True, "source": "test",
+            profile_plan={"enabled": False, "interval": "1s",
+                         "damon": True, "source": "test",
                          "token": None})
         assert code == 0
 
@@ -29464,7 +29980,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                                "socket_path": run_gate.control_socket_from_env(),
                                 "session": "s-watch", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29508,7 +30024,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": Client(),
-                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                                "socket_path": run_gate.control_socket_from_env(),
                                 "session": "s-failed-watch", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29669,7 +30185,7 @@ class TestExecLaneProfilingWiring:
         client = Client()
         fallback = Fallback()
         state = {"mode": "daemon", "client": client,
-                 "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                 "socket_path": run_gate.control_socket_from_env(),
                  "session": "s-reattach-fail", "session_line": None,
                  "warning": "earlier profiling warning", "sampler": None,
                  "profiler_status": None}
@@ -29755,7 +30271,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                                "socket_path": run_gate.control_socket_from_env(),
                                 "session": "s-progress-fallback", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29821,7 +30337,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                                "socket_path": run_gate.control_socket_from_env(),
                                 "session": "s-no-fallback", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29881,7 +30397,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                                "socket_path": run_gate.control_socket_from_env(),
                                 "session": "s-live-exec", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -29939,7 +30455,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": client,
-                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                                "socket_path": run_gate.control_socket_from_env(),
                                 "session": "s-final", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -30004,7 +30520,7 @@ class TestExecLaneProfilingWiring:
         monkeypatch.setattr(run_gate, "start_lane_profiling",
                             lambda *args, **kwargs: {
                                 "mode": "daemon", "client": Client(),
-                                "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                                "socket_path": run_gate.control_socket_from_env(),
                                 "session": "s-killed", "session_line": None,
                                 "warning": None, "sampler": None,
                                 "profiler_status": None})
@@ -30068,8 +30584,8 @@ class TestExecLaneProfilingWiring:
             lane, "suite", repo, repo, repo, env, "test-env",
             "the-runner", "test-src", "test-remedy", None, "no-slice",
             dry_run=False, run_record=run_record,
-            profile_plan={"enabled": True, "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
-                         "interval": "1s", "damon": True, "source": "test",
+            profile_plan={"enabled": True, "interval": "1s",
+                         "damon": True, "source": "test",
                          "token": "abc123"})
 
     def test_start_lane_profiling_exception_never_escapes_exec_lane(
@@ -30220,7 +30736,6 @@ class TestExecLaneInflightRecord:
             "kind": "command", "environment": "fixture", "argv": ["true"],
         }
         profile_plan = {"enabled": True,
-                        "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": "1s", "damon": True, "source": "test",
                         "token": "abc123",
                         "disabled_reason": "disabled"}
@@ -30261,7 +30776,6 @@ class TestExecLaneInflightRecord:
         after a child exists, where Python never reaches the finally and the
         record must survive for reconciliation."""
         profile_plan = {"enabled": False,
-                        "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": "1s", "damon": True, "source": "test",
                         "token": None, "disabled_reason": "disabled"}
 
@@ -30294,7 +30808,7 @@ class TestExecLaneInflightRecord:
         # daemon shim.
         def _fake_daemon_state(*a, **k):
             return {"mode": "daemon", "client": None,
-                    "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
+                    "socket_path": run_gate.control_socket_from_env(),
                     "session": "s-fake-session-id", "session_line": None,
                     "warning": None, "sampler": None, "profiler_status": None}
         monkeypatch.setattr(run_gate, "start_lane_profiling", _fake_daemon_state)
@@ -30321,8 +30835,8 @@ class TestExecLaneInflightRecord:
         monkeypatch.setattr(run_gate.subprocess, "Popen", _spy_popen)
         env = {"forward_env": []}
         lane = {"kind": "command", "argv": ["true"]}
-        profile_plan = {"enabled": True, "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
-                        "interval": "1s", "damon": True, "source": "test",
+        profile_plan = {"enabled": True, "interval": "1s", "damon": True,
+                        "source": "test",
                         "token": "abc123", "disabled_reason": "disabled"}
         code = run_gate.run_exec_lane(
             lane, "suite", repo, repo, repo, env, "test-env",
@@ -30330,6 +30844,8 @@ class TestExecLaneInflightRecord:
             dry_run=False, run_record={}, profile_plan=profile_plan)
         assert code == 0
         assert seen["record"]["profile_session"] == "s-fake-session-id"
+        assert seen["record"]["profile_control_socket"] == (
+            run_gate.control_socket_from_env())
 
     def test_killed_client_leaves_the_record_on_disk(self, tmp_path,
                                                       monkeypatch):
@@ -30441,7 +30957,6 @@ class TestExecLaneInflightRecord:
         # container regardless of `[profile]` -- a client can die mid-run
         # whether or not this invocation is profiled.
         profile_plan = {"enabled": False,
-                        "socket_path": run_gate.PROFILE_SOCKET_PATH_DEFAULT,
                         "interval": "1s", "damon": True, "source": "test",
                         "token": None, "disabled_reason": "disabled"}
         seen = {}
@@ -30492,7 +31007,9 @@ class TestReattachProfilingWiring:
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(stop, None, None))
         plant_inflight(proj, repo, state, status="running", code=0,
                        profile_token="tok123",
-                       profile_session="s-20260912T101500Z-9f01")
+                       profile_session="s-20260912T101500Z-9f01",
+                       profile_control_socket=os.environ[
+                           "CGPROFILE_CONTROL_SOCKET"])
         assert run_gate.main(["suite"]) == 0
         latest = lane_slot(proj)["latest"]
         expected = json.loads(stop)["summary"]
@@ -30522,6 +31039,8 @@ class TestReattachProfilingWiring:
         plant_inflight(proj, repo, state, status="running", code=0,
                        profile_token="tok123",
                        profile_session="s-20260912T101500Z-9f01",
+                       profile_control_socket=os.environ[
+                           "CGPROFILE_CONTROL_SOCKET"],
                        **live_owner_fields())
         answers = iter([os.getpid(), os.getpid(), None])
         monkeypatch.setattr(run_gate, "live_owner_pid",
@@ -30531,6 +31050,57 @@ class TestReattachProfilingWiring:
         expected = json.loads(stop)["summary"]
         assert latest["resources"] == expected
         assert latest["profile_ref"]["session"] == "s-20260912T101500Z-9f01"
+
+    @pytest.mark.parametrize("environment", ["unset", "other"])
+    def test_recovery_stops_on_the_recorded_endpoint_not_the_environment(
+            self, tmp_path, monkeypatch, environment):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        stop = (RG55_FIXTURES / "stop-v1.json").read_text()
+        set_cgprofile_plan(tmp_path, monkeypatch, stop=(stop, None, None))
+        recorded = os.environ["CGPROFILE_CONTROL_SOCKET"]
+        if environment == "unset":
+            monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET")
+            monkeypatch.setenv(run_gate.PROFILE_AMBIENT_ENV_VAR, "off")
+        else:
+            monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET",
+                               "/run/other/never-used.sock")
+        plant_inflight(proj, repo, state, status="running", code=0,
+                       profile_token="tok123", profile_session="s-rec",
+                       profile_control_socket=recorded,
+                       **live_owner_fields())
+        answers = iter([os.getpid(), os.getpid(), None])
+        monkeypatch.setattr(run_gate, "live_owner_pid",
+                            lambda pending: next(answers, None))
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        assert latest["profile_ref"]["socket_path"] == recorded
+        (daemon,) = _FAKE_CGPROFILE_DAEMONS.values()
+        assert ("stop", "s-rec") in [
+            (r["verb"], r["args"].get("session")) for r in daemon.requests]
+
+    @pytest.mark.parametrize("planted", [None, "relative.sock"])
+    @pytest.mark.parametrize("recovery", ["reattach", "promote"])
+    def test_recovery_without_a_usable_recorded_endpoint_reports_not_guesses(
+            self, tmp_path, monkeypatch, recovery, planted):
+        repo, proj, log, state = self._fixture(tmp_path, monkeypatch)
+        set_cgprofile_plan(tmp_path, monkeypatch,
+                           stop=((RG55_FIXTURES / "stop-v1.json").read_text(),
+                                 None, None))
+        extra = {"profile_control_socket": planted} if planted else {}
+        if recovery == "promote":
+            extra.update(live_owner_fields())
+            answers = iter([os.getpid(), os.getpid(), None])
+            monkeypatch.setattr(run_gate, "live_owner_pid",
+                                lambda pending: next(answers, None))
+        plant_inflight(proj, repo, state, status="running", code=0,
+                       profile_token="tok123", profile_session="s-rec",
+                       **extra)
+        assert run_gate.main(["suite"]) == 0
+        latest = lane_slot(proj)["latest"]
+        assert latest["resources"] is None
+        assert "profile_control_socket" in latest["profile_error"]
+        (daemon,) = _FAKE_CGPROFILE_DAEMONS.values()
+        assert not daemon.requests   # nothing was guessed from the environment
 
     def test_promoted_follower_with_no_session_names_the_reason(
             self, tmp_path, monkeypatch):
@@ -30552,7 +31122,10 @@ class TestReattachProfilingWiring:
         set_cgprofile_plan(tmp_path, monkeypatch, stop=(None, 3, None))
         plant_inflight(proj, repo, state, status="running", code=0,
                        profile_token="tok123",
-                       profile_session="s-x", **live_owner_fields())
+                       profile_session="s-x",
+                       profile_control_socket=os.environ[
+                           "CGPROFILE_CONTROL_SOCKET"],
+                       **live_owner_fields())
         answers = iter([os.getpid(), os.getpid(), None])
         monkeypatch.setattr(run_gate, "live_owner_pid",
                             lambda pending: next(answers, None))
