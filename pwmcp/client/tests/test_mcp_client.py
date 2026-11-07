@@ -316,7 +316,42 @@ def test_eval_output_limit_marks_truncation_in_text_and_json(
         json_output = json.loads(capsys.readouterr().out)
     assert json_output["truncated"] is True
     assert json_output["max_bytes"] == 16
+    assert len(json_output["content"].encode("utf-8")) <= 16
+    assert json_output["http_error"] is False
     assert len(json_output["preview"].encode("utf-8")) <= 16
+
+
+def test_eval_json_has_status_fields_and_http_errors_exit_distinctly(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics["status"] = 404
+        server.state.eval_value = "Not Found"
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["eval", "https://example.test", "document.title", "--json"]) == 5
+        captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["content"] == "Not Found"
+    assert result["http_status"] == 404 and result["http_error"] is True
+    assert any("main document HTTP 404" in item for item in result["diagnostics"])
+    assert "--allow-http-error" in captured.err
+
+
+def test_eval_allow_http_error_returns_the_page_value(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics["status"] = 404
+        server.state.eval_value = "Not Found"
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "eval", "https://example.test", "document.title", "--allow-http-error",
+        ]) == 0
+        captured = capsys.readouterr()
+    assert json.loads(captured.out) == "Not Found"
+    assert "main document HTTP 404" in captured.err
 
 
 def test_eval_text_truncation_notice_goes_to_stderr_and_keeps_success_status(
@@ -950,6 +985,30 @@ def test_inspect_html_reads_element_html_and_waits_for_a_visible_selector(
     assert "MutationObserver" in functions[1] and "h1" in functions[1]
     assert "document.querySelector(\"main\")" in functions[2]
     assert "element.outerHTML" in functions[2]
+
+
+def test_inspect_html_http_error_is_in_json_and_has_the_distinct_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    html = "<main>Not Found</main>"
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics["status"] = 404
+        server.state.html_value = {
+            "data": base64.b64encode(html.encode()).decode(),
+            "included_bytes": len(html.encode()),
+            "total_bytes": len(html.encode()),
+            "truncated": False,
+        }
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "inspect", "https://example.test", "--format", "html", "--json",
+        ]) == cli_module.EXIT_HTTP_ERROR == 5
+        captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["content"] == html
+    assert result["http_status"] == 404 and result["http_error"] is True
+    assert any("main document HTTP 404" in item for item in result["diagnostics"])
 
 
 def test_inspect_html_truncates_with_a_notice_and_can_write_a_file(
