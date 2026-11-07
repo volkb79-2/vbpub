@@ -100,7 +100,7 @@ def test_mat_04_recalibration_triggers(calibrated):
     now = host.now()
     for hours in (1, 3, 14, 20):
         ceilings.append(host, f"{STATE}/ceilings.jsonl", {"ts": ceilings.iso(now - hours * 3600), "dir": "write", "workload": "rand4k",
-                                                           "plateau_bps": plateau * 0.5, "duration_s": 600, "source": "governor"}, digest)
+                                                           "plateau_bps": plateau * 0.5, "duration_s": 600, "source": "governor", "kind": "raw"}, digest)
     out = matrix(host)
     assert out.status == "complete" and "recalibrate_recommended" in out.result["run"]["warnings"]
 

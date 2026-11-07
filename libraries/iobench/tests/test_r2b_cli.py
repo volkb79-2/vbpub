@@ -41,7 +41,7 @@ def test_every_verb_handler_returns_the_integer_zero_on_success():
     returned["run dry"], _ = invoke(host, "run", *RUN_BASE, dry_run=True)
     returned["show"], _ = invoke(host, "show", "--proposals")
     returned["ceilings add"], _ = invoke(host, "ceilings", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600",
-                                         "--source", "governor", sub="add")
+                                         "--source", "governor", "--kind", "file", sub="add")
     returned["ceilings summary"], _ = invoke(host, "ceilings", sub="summary")
     returned["restore dry"], _ = invoke(host, "restore", dry_run=True)
     returned["restore"], _ = invoke(host, "restore")

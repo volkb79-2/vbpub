@@ -2268,7 +2268,96 @@ exec target also gets the selected-checkout mount proof from S16.7. When both
 stdin and stdout are terminals, `ciu exec` allocates a Docker terminal so an
 interactive shell works; scripted and piped calls stay non-interactive.
 
-## 23. Migrate an outdated generated identity safely (CIU-115 / CIU-119)
+## 23. Run one command in a fresh rendered service (CIU-141)
+
+Use `ciu run` when a command needs the user, mounts, secrets, network, and
+cgroup settings already declared for a Compose service, but should get its own
+container for one invocation. CIU renders the selected stack and passes the
+arguments after `--` exactly as supplied; it does not start `depends_on`
+services. The selected service's network must already exist. For a runner
+stack on a network owned by the test environment, start that environment first.
+
+```console
+$ ciu run --profile test tools/test-runner:test-runner -- pytest -q
+$ ciu run tools/lint-runner:lint -- ruff check .
+```
+
+With no service after the colon, CIU proceeds only when the selected stack has
+one runnable service. An explicit `--name` is used verbatim and must be a valid
+Docker name. `--env-name` forwards only the named variable from CIU's
+environment; an unset variable stays unset. `--label KEY=VALUE` adds a
+non-reserved container label. A typed `--extend FILE` may add per-run resource
+limits, supplementary groups, non-colliding mounts, literal environment
+entries, labels, or `init`; CIU refuses ambiguous merge collisions and
+extension keys outside that allowlist (including `cap_add` and `security_opt`),
+and bind sources of `/`, a Docker/containerd/podman socket (or its parent
+directory), or anything inside `/etc`, `/proc`, `/var/lib/docker` or
+`/var/lib/containerd`. That list is a narrow safety net, not a sandbox: the
+extension file is operator-trusted input and other host paths are not refused. A `--name` that is already held by
+any container (for example a persistent `test-runner`) is refused before
+anything is created and that container is never touched; a name made only of
+hex characters is refused because Docker would read it as a container ID.
+
+Preparation normally runs the selected stack's `pre_secrets` and `pre_compose`
+hooks. Use `--skip-hooks` only when the caller intentionally does not need
+their effects. A detached supervisor MUST pass its own PID with `--owner-pid`
+so `ciu run reap` tracks that supervisor's lifetime. Without it CIU records its
+parent process, which is the owner only when the parent is the long-lived
+controller; behind a short-lived wrapper shell the owner is dead at once and
+`ciu run reap --yes` may remove the run 300 seconds after it exits (or once it
+has run past the reap age bound). Collect the exit status and remove your own
+container well inside that window.
+
+Foreground runs inherit stdout and stderr. CIU allocates a terminal and
+forwards stdin only when both stdin and stdout are terminals (a piped
+`echo data | ciu run ... -- cat` gets EOF immediately). SIGINT, SIGTERM and
+SIGHUP are forwarded to the container (the first one only; later ones are
+ignored during the grace period) and, with a terminal, window resizes are
+relayed. It writes lifecycle JSONL separately from the command streams when
+`--events-fd N` or `--events-file PATH` is supplied; the events report the
+inspected container ID, command exit status, and removal result, and
+`launched` is emitted only for a container that actually started. If the sink
+breaks (for example the observer closed its pipe), CIU reports it once on
+stderr and keeps running the command. The event file is created with mode
+`0600`.
+
+Preview what a real run would do without starting a container:
+
+```console
+$ ciu run --dry-run --json tools/test-runner:test-runner -- pytest -q
+```
+
+The preview runs the same read-only checks as a launch (network ownership,
+name availability) and fails where the launch would. It is not side-effect
+free: stack preparation still runs first (hooks unless `--skip-hooks`, secret
+materialisation, rendered files); only the container is not started. It reports the effective
+container name (generated when you give none), the `ciu.run.*` runtime labels
+(run ID and start time are placeholders), the injected variables
+(`CIU_RUN_CONTAINER_NAME`, `CIU_RUN_ID`, `CIU_RUN_CGROUP_PARENT`) and the
+forwarded `--env-name` variable names, never values.
+
+For an observer that must inspect the container, detach and keep it after CIU
+returns:
+
+```console
+$ ciu run --detach --json --name lane-123 tools/test-runner:test-runner -- pytest -q
+```
+
+The JSON response contains the exact full container ID and name. Detached
+containers are not auto-removed, including commands that exit immediately.
+`ciu run reap` first surveys abandoned CIU one-shots; add `--yes` to remove
+eligible ones. It requires a dead controller; an exited run is removed (without
+force) only 300 seconds after its `State.FinishedAt`, whatever `--older-than`
+says, and a running one only once it is older than the bound (one hour by
+default). `ciu down` leaves one-shots running. `ciu clean` removes one-shots
+owned by the selected checkout and stack; before it removes anything it checks
+every selected stack and refuses (also under `--dry-run`) if another or unknown
+checkout owns a matching one-shot.
+
+See the [lifecycle rationale](DESIGN-GUIDE.md#why-ciu-run-uses-a-fresh-one-shot-service-container)
+and the normative contract in [SPEC S8.9](SPEC.md#s89-one-shot-compose-runs-ciu-run-ciu-141).
+
+## 24. Migrate an outdated generated identity safely (CIU-115 / CIU-119)
 
 CIU reads the old generated format and checks Docker before rewriting it. When
 no network or exact `ciu.instance` ownership label carries the old id, CIU
@@ -2298,7 +2387,7 @@ CIU root and refuses when the requested identity is the primary root's current
 identity. Current-format corruption remains a refusal and is not overwritten
 as a migration.
 
-## 24. Resume an interrupted adopt without resetting the checkout (CIU-107)
+## 25. Resume an interrupted adopt without resetting the checkout (CIU-107)
 
 CIU records the adopted checkout's HEAD before preparing its environment. If
 `ensure` resumes after an interruption, it compares the live HEAD with that
@@ -2306,7 +2395,7 @@ recorded target and continues only when they match. If HEAD moved, the command
 refuses and preserves the commits. Review the checkout before deciding how to
 continue; do not reset it to make the record match.
 
-## 25. Isolate worktree image tags and check explicit container names (CIU-117, CIU-104)
+## 26. Isolate worktree image tags and check explicit container names (CIU-117, CIU-104)
 
 By default, CIU gives project-built image references in a linked Git worktree
 the checkout's instance suffix. Pulled images stay unchanged, and the primary

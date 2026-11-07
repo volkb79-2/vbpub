@@ -1,0 +1,34 @@
+# iogovmon's executable gate matrix. All lanes run inside tester-unified; the tests use fakes and temp dirs only (no real block
+# device, no cgroup write, no host state), so the verdict does not depend on host load.
+#
+# R0/R1 only for now: pytest with a branch-aware coverage FLOOR (measured 90.1 % line+branch at extraction, 2026-11-05; the
+# floor is a regression guard, not the estate's 100 % target). The Assay R2 mutation lane and the 100 % floor are open work
+# (BACKLOG IGM-02); there is deliberately no `assay.toml` until that lands, so `r2` is not declared here.
+# The tests need `bash` and `systemd-analyze` (install.sh and the rendered-unit verification); a missing one FAILS, never skips.
+schema_version = 1
+
+[lanes.r0-r1]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/iogovmon && PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q --cov=iogovmon --cov-branch --cov-fail-under=88 --cov-report=term-missing:skip-covered --cov-report=json:coverage.json",
+]
+clean_tree = false
+budget = "10m"
+artifacts = ["coverage.json"]
+
+[lanes.r0-r1.resources]
+memory = "1g"
+memory_swap = "2g"
+io_sync = "durable"
+
+[lanes.gate]
+kind = "command"
+environment = "bare-host"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/iogovmon && run-gate --worktree {worktree} r0-r1",
+]
+clean_tree = false
+budget = "15m"

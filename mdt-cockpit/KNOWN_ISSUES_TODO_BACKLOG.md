@@ -641,79 +641,30 @@ first through `/srv/pwmcp-instance/bin`), so `pwmcp` resolves and the runtime la
 2026-10-27 review: do NOT add it to the venv. A second copy would have to match the bundle's version exactly (the
 bundle is pinned by `pwmcp.contract.json`, the wheel would follow `pwmcp-client-latest`), both would be on `PATH`,
 and nothing in the cockpit imports it as a library. Revisit only if a cockpit tool needs `import pwmcp_client`;
-then install the wheel that the SAME bundle release carries, never a separately resolved one. The iogov/iomon
-tooling (IO governor, iomon scripts) stays host-side for the same reason the `topos` daemon does: it needs cgroup
+then install the wheel that the SAME bundle release carries, never a separately resolved one. The iogovmon/iomon
+tooling (IO governor, now the independent project `iogovmon/`; iomon scripts) stays host-side for the same reason the `topos` daemon does: it needs cgroup
 and block-device access the devcontainer does not have; the image may carry read-only clients once they exist.
 
 ## MDT-028 - iogov `watch`: per-cgroup swap, refault and memory.events counters in episodes and ticks (2026-10-27)
 
-**Status:** OPEN. From the second (Fable) review of iogov v1 (7f38a7743). Live monitoring (`docs/IO-MONITORING-SETUP.md`, iomon branch) found the
-protected workload's stalls are driven by memory/swap reclaim (zswap writeback, swap-in, major-fault bursts of thousands per second) while the
-disk is healthy. The review added `memory.pressure` to `watch` episodes and host-wide `/proc/vmstat` swap rates to the passive record, which
-names the stall's resource but not its *per-cgroup* mechanism.
-
-**Add (read-only files, no probe IO):** per protected cgroup, at every `watch` sample inside an episode and in every tick's passive snapshot:
-`memory.stat` (`pgmajfault`, `workingset_refault_anon`, `zswpin`, `zswpout`, `pswpin`/`pswpout` where present), `memory.swap.current`,
-`memory.current`, `memory.events` (`high`, `max`, `oom`, `oom_kill`) and `memory.events.local`; as rates/deltas, not cumulative values.
-Episode evidence gets `peak_majfault_per_s`, `swap_in_bytes` (pages x page size) and the `memory.events` deltas; `analyze`'s harm section
-prints them next to `driver`.
-
-**Acceptance:** a fake-cgroup test in which `memory.pressure` is flat but `pgmajfault`/`zswpin` jump during an episode records the rates and
-labels the episode `driver: memory`; a tick's passive record carries the per-cgroup deltas for the configured `protected_cgroups` and
-`containers`; missing files yield null, never an exception; the journal record stays under `MAX_LINE_BYTES`; design note section 8 updated.
+**MOVED 2026-11-05 to `iogovmon/BACKLOG.md` IGM-04** (the IO governor is now the independent project `iogovmon/`; full text there). Status OPEN.
 
 ## MDT-029 - iogov: a protected-process-side canary ("what does the game wait on?") (2026-10-27)
 
-**Status:** OPEN. iogov v1 measures the disk from the outside (raw reads, scratch bench) and the protected workload from PSI. Neither says
-*what* the protected process waits on during a stall. The iomon eBPF collector (`stall.bt`: D-state kernel stacks over 100 ms by comm)
-answers it but needs a root container with BPF capabilities and runs for hours at a time.
-
-**Options, cheapest first:** (a) in `watch`, when an episode opens, sample `/proc/<tid>/wchan` (and `/proc/<tid>/syscall`, if readable) of the
-protected cgroups' D-state threads once per second and histogram the wait symbols into the episode evidence (`swap_readpage`,
-`folio_wait_bit`, `jbd2_log_wait_commit`, `blk_mq_get_tag`, ...; readability of `wchan` for another user's tasks depends on `hidepid` and
-the ptrace scope, so this may need the `watch` unit to run with a read-only `CAP_SYS_PTRACE` or be documented as root-only);
-(b) an operator-run attach of the existing iomon eBPF collector for N minutes when `status` shows episodes (documented procedure, no code);
-(c) a tiny in-container canary (one 4 KiB `O_DSYNC` write + one `O_DIRECT` read every 10 s on a pre-allocated file inside the protected
-volume, as iomon's sampler does) so that the *application's* latency path is measured, not the host's.
-
-**Acceptance:** (a) a test with a fake `/proc/<tid>/wchan` tree shows the symbol histogram in an episode; the sampler never reads `/proc/<pid>/maps`
-or `environ`; (c) is only acceptable if the file lives in a dedicated directory the operator names, is created `O_EXCL`, and the IO is
-charged to iogov's daily budget. No automatic cap or setting change (unchanged v1 rule).
+**MOVED 2026-11-05 to `iogovmon/BACKLOG.md` IGM-05** (full text there). Status OPEN.
 
 ## MDT-030 - iogov: gate reachability on a never-calm host, and a bench gate on memory pressure (2026-10-27)
 
-**Status:** OPEN. The write bench runs only when system io PSI `some` <= 1 %, `full` <= 0.1 %, protected pressure <= 1 %, governed writes <= 2 MB/s
-and nothing is in flight. On a host that swaps continuously (the review's devcontainer host showed memory PSI `some` 37 % / `full` 17 % at the time)
-the bench may rarely pass, so the write lanes stay STALE while the read lanes and passive records accumulate. That is the designed failure
-mode (design note section 11.8), but it is invisible in `status` today, and a host in heavy reclaim is not "calm" even when its io PSI is low:
-the bench's writes would compete with zswap writeback and the measurement would be contended without being labelled so.
-
-**Do:** (1) `status` prints, per run kind, the gate pass/skip counts of the last 7 days by reason class (from the journal's `skip`, `passive`
-(`gated`) and `run_start` records) and the age of the last valid window per write lane; (2) add `bench_memory_pressure_some_max` (default 5 %,
-hard max 25 %) to the bench gate (memory PSI in the gate `ctx` is already recorded by the review); (3) document in the design note that a bench
-gated for more than N days means "no write-capability evidence on this host", with the operator's options (a bench window at night, lower
-thresholds justified by a measured `watch` comparison, or accept read-only evidence).
-
-**Acceptance:** tests for the `status` lines and the new gate reason (`memory_pressure_high`); the design note's gate table and section 6 agree with
-`config.py`; `plan` prints the new threshold.
+**MOVED 2026-11-05 to `iogovmon/BACKLOG.md` IGM-06** (full text there). Status OPEN.
 
 ## MDT-031 - iogov -> iobench ceilings bridge (`ceilings.jsonl`, `source: governor`) (2026-10-27)
 
-**Status:** OPEN. MDT-023's P0 was "an observe-only service feeding `libraries/iobench` `ceilings.jsonl` (`source: governor`, IOB-CEI-01)".
-iogov v1 is that service but writes only its own journal; its `w_fresh_qd1`/`w_fresh_qd4` durable rates and confirmed `shift_detected`
-recommendations never reach iobench, so `recalibrate_recommended` in `mdt doctor` (the next MDT-023 step) has nothing to read.
-
-**Do:** an `iogov export-ceilings [--since]` command that prints (never writes outside its state dir, never runs a subprocess: the static
-no-write test must stay green) one `iobench ceilings add --dir write --workload <w> --bps <rate> --duration-s <s> --source governor` line per
-qualifying closed window, or the JSON observation lines themselves for the operator to append. The mapping of iogov's 64 KiB sequential lanes
-to iobench's `seq1m|rand4k` workload names needs an explicit decision (a new workload name, or a documented approximation carrying the
-`file`-kind label of IOB-TGT-09, since iogov measures a file, not the device).
-
-**Acceptance:** a test that a journal with a confirmed downward shift yields export lines whose `plateau_bps` equals the window's median
-durable rate and whose `note` carries the recommendation key; `iobench ceilings add` accepts the printed line in a dry run; the design note's
-"v1 does NOT" list and MDT-023's "Next" paragraph point at each other.
+**MOVED 2026-11-05 to `iogovmon/BACKLOG.md` IGM-07** (full text there; the interface is now fixed by the host-tuning design as
+`iogovmonctl export ceilings`). Status OPEN. MDT-023's "Next" paragraph reads the export through host-tuning's adapter, not an mdt import.
 
 ## MDT-032 - iogov: `test_prevention_checker_is_quiet_when_healthy_and_says_unknown_when_blind` reads the real filesystem fill (2026-11-02)
+
+*(The iogov code and tests moved to `iogovmon/` on 2026-11-05; this entry is kept as the record of the closed fix.)*
 
 The test builds its collectors from the live host (`covs(world)`) and asserts that no `fill` finding is raised. On a host whose
 root filesystem is above the fill threshold (observed at 74% used) the finding appears and the `smoke` lane fails although
@@ -1435,7 +1386,14 @@ with no score, not a parse of the challenge HTML.
 **Open.**
 1. A supported refresh: for example a finalize step that merges the template's `customizations.vscode.settings` into the machine settings file (template keys win, user-only keys kept), or a `mdt` verb that does the same. It needs a source for the effective settings inside the container (the workspace `devcontainer.json` as JSONC, or the metadata label).
 2. A check that warns when a template key is missing from the machine settings file.
+## MDT-077 - nothing in host provisioning publishes the run-gate gates cap; a reinstalled runner host refuses every dstdns lane (2026-11-05)
 
+**Status:** DONE on branch `mdt-admission-20261105` (found on v1001 after the 2026-11-05 reinstall; review findings addressed in the fix round). The finding text was first filed on `mdt-admission-cap-gap-20261105` (`5e37e9cf8`); this entry supersedes it.
+**Symptom.** dstdns sets `[admission] enabled = true`, `unreadable_policy = "refuse"`. On a fresh Docker daemon no `ciu-admission-<g>` object exists, so every lane ends `NOT_RUN no-headroom` ("no gates limit is published and unreadable_policy=refuse"); the v1001 dstdns chain retried 11+ times at 3-minute intervals while the host sat ~65% idle.
+**Root cause.** The cap is a Docker-daemon object (a never-started `ciu-admission-<g>` container carrying `ciu.admission.tiers.gates.max_concurrent`), published only by the operator verb `run-gate admission set --max-concurrent N --unreadable-policy refuse`. It was not part of `host-setup/install.sh`, `debian-install-v2` or the runner provisioning scripts (`provision-runner.sh`, `setup-cockpit-run-gate.sh`); `scripts/netcup/runner/remote-gate.py` only DETECTS the gap (`admission_check`, fail-closed) when a dstdns gate is submitted, and the value was never derived from host policy. A reinstall (new Docker daemon) loses the object. AGENTS.md says limits are host-owned and "a tool asks the host policy", but no host policy provided this number. The numbers actually published were hand-picked: v1001 2, r1002 first 1 then 4 (both 4 vCPU / 8 GB), so "about one gate per 2 vCPU on both hosts" in the first filing was only true of v1001.
+**Interim (done on v1001, 2026-11-05).** `run-gate admission set --max-concurrent 2 --unreadable-policy refuse` run in the cockpit from a dstdns checkout.
+**Fix.** `host-setup/mdt_admission.py` derives the cap from the effective minimum of `dev.slice`'s `DEV_CPU_QUOTA` and `dev-gates.slice`'s `DEV_GATES_CPU_QUOTA`; auto shares come from the same `mdt_capacity` derivation used by install.sh. The formula remains `max(1, min(floor(gates CPU cores / ADMISSION_CPUS_PER_GATE), floor(gates MemoryHigh / ADMISSION_MEMORY_PER_GATE)))`, defaulting to 2 CPUs and 2G per gate (4 vCPU / 8 GB dedicated-dev gives 2). Publishing uses `show`, `set` or the safety-verified `set --replace` path, then reads the cap back. The full install's default `ADMISSION_PUBLISH=auto` publishes when no readable cap exists and preserves a differing readable cap; explicit `install.sh --admission-only` reconciles differences. `missing` never replaces, `replace` lets full installs reconcile, and `off` disables management. `ADMISSION_MAX_CONCURRENT` always supplies the desired value when pinned. An explicit reconcile can repair an unparseable published limit with `--replace`. The verb runs with a minimal private `run-gate.toml` and `CGROUP_PARENT_DEV_GATES=dev-gates.slice`, on the host or inside the cockpit. Missing run-gate/cockpit/ticket image and an unreachable Docker daemon produce distinct NOTE reasons; attempted publish failures remain non-zero. `ADMISSION_RUN_GATE` rejects a leading dash. `mdt-host-check.sh` fails on a missing cap and pinned mismatch, warns on an unpinned difference, and warns when a prerequisite makes the cap unreadable. Tests cover the installer function with fake docker and run-gate commands in a temporary PATH. The registered `host-setup-admission` Run-Gate lane runs the requested subset in tester-unified. User-facing guidance is in the host-setup README, MDT DESIGN-GUIDE, and CONSUMERS.md.
+**Open.** Live verification on a host is not done (no host access in this fix round). After a reinstall, operators must run `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist; set `ADMISSION_COCKPIT` first when run-gate lives in a cockpit. r1002 should pin `ADMISSION_MAX_CONCURRENT=4` before an explicit reconciliation if the hand-raised limit is still required. The reinstall runbook is not tracked; the host README and consumer guide carry the adoption instruction.
 ## MDT-078 - retire modern-debian-tools-python-debug (2026-11-05)
 
 **Status:** DONE on this branch. Removed the predecessor directory and its CMRU project registration; repointed live image, install, code, and documentation references to `mdt-cockpit`. Kept runtime state paths and historical records intact.

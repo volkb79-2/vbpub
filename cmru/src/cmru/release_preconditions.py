@@ -159,6 +159,16 @@ def _run_gate_release_identity_preflight(
             _materialize_gate_identity_config(source_git_root, revision, identity_root)
             checked = gate._current_run_gate_identity(identity_root)
         version = checked.get("version")
+        if not isinstance(version, str) or not version:
+            raise RuntimeError("Run-Gate identity preflight did not report its version")
+        wheel_sha256 = checked.get("published_wheel_sha256")
+        if (
+            not isinstance(wheel_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", wheel_sha256) is None
+        ):
+            raise RuntimeError(
+                "Run-Gate identity preflight did not report its published wheel SHA-256"
+            )
         image = checked.get("tester_image", image)
     except Exception as exc:
         detail = str(exc)
@@ -206,9 +216,7 @@ def _run_gate_release_identity_preflight(
         return GatePrecondition(
             "cmru", "Run-Gate image identity", "FAIL", detail, remedy,
         )
-    image = checked.get("tester_image", "the selected tester image")
-    version = checked.get("version", version or "unknown")
-    wheel_sha256 = checked.get("published_wheel_sha256", "unknown")
+    image = checked.get("tester_image", image)
     return GatePrecondition(
         "cmru", "Run-Gate image identity", "PASS",
         f"Run-Gate {version} wheel sha256 {wheel_sha256} matches {image}.",
