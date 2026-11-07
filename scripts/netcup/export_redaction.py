@@ -70,7 +70,7 @@ _WEBHOOK_PATH_RE = re.compile(
     r"""(?i)(?P<prefix>https?://[^/\s?#]+/(?:[^/?#\s]+/)*hooks/)(?P<token>[^/?#\s]+)"""
 )
 _NETRC_PASSWORD_RE = re.compile(
-    r"""(?i)(?<![A-Za-z0-9_-])(?P<prefix>password|passwd)(?P<space>[ \t]+)(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s]+)"""
+    r"""(?i)(?<![A-Za-z0-9_-])(?P<prefix>password|passwd)(?P<space>[ \t]+)(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?![=:])[^\s]+)"""
 )
 _CURL_USER_RE = re.compile(
     r"""(?i)(?<![A-Za-z0-9_-])(?P<prefix>--user(?:[ \t]*=[ \t]*|[ \t]+)|-u(?:[ \t]+|(?=[^ \t])))(?P<quote>["']?)(?P<user>[^:\s"']+):(?P<password>[^,\s"']+)(?P=quote)"""
