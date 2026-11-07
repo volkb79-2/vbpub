@@ -185,6 +185,117 @@ def _render_config(group: str) -> str:
     )
 
 
+def _config_edit_refusal(path: str, group: str) -> InstallError:
+    return InstallError(
+        f"cannot safely edit sockets.observe.group in {path}; edit the group under "
+        f"[sockets.observe] to {_toml_string(group)} by hand, then rerun"
+    )
+
+
+def _edit_config_group(text: str, group: str, path: str) -> str:
+    """Edit only the observe group declaration, preserving all other text."""
+    lines = text.splitlines(keepends=True)
+    table = ""
+    observe_start: int | None = None
+    observe_end = len(lines)
+    sockets_start: int | None = None
+    sockets_end = len(lines)
+    has_root_observe_dotted = False
+    has_sockets_observe_dotted = False
+    unsafe_inline = False
+    target: tuple[int, re.Match[str]] | None = None
+    header_pattern = re.compile(r"^\s*\[(?P<name>[^\[\]]+)\]\s*(?:#.*)?(?:\r?\n)?$")
+    assignment_pattern = re.compile(
+        r"^(?P<prefix>\s*(?:group|observe\.group|sockets\.observe\.group)\s*=\s*)"
+        r"(?P<value>\"(?:\\.|[^\"\\])*\"|'[^'\r\n]*')"
+        r"(?P<suffix>\s*(?:#.*)?(?:\r?\n)?)$"
+    )
+
+    for index, line in enumerate(lines):
+        header = header_pattern.fullmatch(line)
+        if header is not None:
+            if table == "sockets.observe" and observe_end == len(lines):
+                observe_end = index
+            if table == "sockets" and sockets_end == len(lines):
+                sockets_end = index
+            table = header.group("name").strip()
+            if table == "sockets.observe":
+                observe_start = index
+            elif table == "sockets":
+                sockets_start = index
+            elif "sockets" in table:
+                raise _config_edit_refusal(path, group)
+            continue
+
+        code = line.lstrip()
+        if not code or code.startswith("#"):
+            continue
+        code = code.split("#", 1)[0]
+        if table == "" and re.match(r"\s*sockets(?:\.observe)?\s*=\s*\{", code):
+            unsafe_inline = True
+        elif table == "sockets" and re.match(r"\s*observe\s*=\s*\{", code):
+            unsafe_inline = True
+
+        dotted_key = re.match(r"\s*sockets\.observe\.", code) is not None
+        nested_dotted_key = re.match(r"\s*observe\.", code) is not None
+        has_root_observe_dotted |= table == "" and dotted_key
+        has_sockets_observe_dotted |= table == "sockets" and nested_dotted_key
+
+        expected_key = (
+            "group" if table == "sockets.observe"
+            else "observe.group" if table == "sockets"
+            else "sockets.observe.group" if table == ""
+            else None
+        )
+        if expected_key is not None:
+            match = assignment_pattern.fullmatch(line)
+            if match is not None and re.match(r"\s*" + re.escape(expected_key) + r"\s*=", line):
+                if target is not None:
+                    raise _config_edit_refusal(path, group)
+                target = (index, match)
+
+    if table == "sockets.observe" and observe_end == len(lines):
+        observe_end = len(lines)
+    if table == "sockets" and sockets_end == len(lines):
+        sockets_end = len(lines)
+
+    if target is not None:
+        index, match = target
+        current = match.group("value")
+        if current[1:-1] == group:
+            return text
+        lines[index] = match.group("prefix") + _toml_string(group) + match.group("suffix")
+        return "".join(lines)
+
+    if unsafe_inline:
+        raise _config_edit_refusal(path, group)
+
+    entry = f"group = {_toml_string(group)}\n"
+    if observe_start is not None:
+        index = observe_end
+        insertion = entry
+    elif has_root_observe_dotted:
+        index = next(
+            (i for i, line in enumerate(lines) if header_pattern.fullmatch(line) is not None),
+            len(lines),
+        )
+        insertion = f"sockets.observe.group = {_toml_string(group)}\n"
+    elif has_sockets_observe_dotted:
+        index = sockets_end
+        insertion = f"observe.group = {_toml_string(group)}\n"
+    elif sockets_start is not None:
+        index = sockets_end
+        insertion = f"[sockets.observe]\n{entry}"
+    else:
+        separator = "" if not text or text.endswith("\n\n") else "\n" if text.endswith("\n") else "\n\n"
+        return text + separator + f"[sockets.observe]\n{entry}"
+
+    if index > 0 and not lines[index - 1].endswith(("\n", "\r")):
+        lines[index - 1] += "\n"
+    lines.insert(index, insertion)
+    return "".join(lines)
+
+
 def _atomic_write(path: str, data: str, mode: int = 0o644) -> None:
     parent = os.path.dirname(path)
     os.makedirs(parent, mode=0o755, exist_ok=True)
@@ -476,8 +587,31 @@ def _render_record(record: Mapping[str, Any]) -> str:
     return "".join(lines)
 
 
-def _resolve_group(args: argparse.Namespace, record: Mapping[str, Any], runtime: CliRuntime) -> str:
-    value = getattr(args, "observe_group", None) or record.get("observe_group")
+def _existing_config_group(paths: InstallPaths) -> str | None:
+    try:
+        text = Path(paths.config).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise InstallError(f"cannot read {paths.config}: {exc}") from None
+    try:
+        config = parse_config(text, source=paths.config)
+    except ConfigError as exc:
+        raise InstallError(f"{paths.config} is invalid: {exc}; fix or remove it, then rerun") from None
+    return config.sockets.observe.group
+
+
+def _resolve_group(
+    args: argparse.Namespace,
+    record: Mapping[str, Any],
+    runtime: CliRuntime,
+    config_group: str | None,
+) -> str:
+    value = getattr(args, "observe_group", None)
+    if value is None:
+        value = config_group
+    if value is None:
+        value = record.get("observe_group")
     if value:
         if not isinstance(value, str):
             raise InstallError("the saved observe_group value is invalid; repair the install record manually")
@@ -518,7 +652,7 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     wheel = required("--wheel", "topos release pin", record.get("wheel"))
     clix = required("--cli-extended-wheel", "cli-extended release pin", record.get("cli_extended_wheel"))
     lock_pin = required("--daemon-lock", "topos daemon lock pin", record.get("daemon_lock"))
-    group = _resolve_group(args, record, runtime)
+    group = _resolve_group(args, record, runtime, _existing_config_group(paths))
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", group):
         raise InstallError(f"not a usable observe group name: {group!r}")
     if _group_gid(group) is None and group != DEFAULT_OBSERVE_GROUP:
@@ -860,7 +994,13 @@ class Installer:
     def install(self, args: argparse.Namespace, runtime: CliRuntime) -> dict[str, Any]:
         values = _gather_inputs(args, runtime, self.paths)
         downgrade, version_drift = self._preflight(values, dry_run=runtime.dry_run)
-        config_text, config, config_changed = self._config(values["observe_group"])
+        config_text, config, config_changed = self._config(
+            values["observe_group"], apply_group=getattr(args, "observe_group", None) is not None
+        )
+        values["observe_group"] = config.sockets.observe.group
+        if _group_gid(values["observe_group"]) is None and values["observe_group"] != DEFAULT_OBSERVE_GROUP:
+            raise InstallError(f"mapped observe group {values['observe_group']!r} does not exist")
+        config_changes = ["sockets.observe.group"] if config_changed else []
         rendered = render_units(config)
         if runtime.dry_run:
             return {
@@ -868,6 +1008,8 @@ class Installer:
                 "dry_run": True,
                 "version": values["version"],
                 "config": self.paths.config,
+                "observe_group": values["observe_group"],
+                "config_changes": config_changes,
                 "resources": sorted(rendered),
                 "downgrade": downgrade,
                 "enabled": values["enable_now"],
@@ -969,6 +1111,9 @@ class Installer:
             "ok": True,
             "dry_run": False,
             "version": values["version"],
+            "config": self.paths.config,
+            "observe_group": values["observe_group"],
+            "config_changes": config_changes,
             "config_changed": config_changed,
             "resources_changed": sorted(name for name, changed in resource_changed.items() if changed),
             "pruned": removed,
@@ -976,12 +1121,8 @@ class Installer:
             "downgrade": downgrade,
         }
 
-    def _config(self, group: str) -> tuple[str, ServiceConfig, bool]:
-        """Return the config text, its parse, and whether the file is new.
-
-        An existing file is the operator's: it is kept as written, and its
-        observe group must match the requested one.
-        """
+    def _config(self, group: str, *, apply_group: bool = True) -> tuple[str, ServiceConfig, bool]:
+        """Return validated config text, applying only an explicitly chosen group."""
         try:
             existing: str | None = Path(self.paths.config).read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -993,11 +1134,16 @@ class Installer:
             config = parse_config(text, source=self.paths.config)
         except ConfigError as exc:
             raise InstallError(f"{self.paths.config} is invalid: {exc}; fix or remove it, then rerun") from None
-        if existing is not None and config.sockets.observe.group != group:
-            raise InstallError(
-                f"{self.paths.config} sets observe group {config.sockets.observe.group!r}, not {group!r}; "
-                f"edit the file or pass --observe-group {config.sockets.observe.group}"
-            )
+        if existing is not None and apply_group:
+            text = _edit_config_group(existing, group, self.paths.config)
+            if text != existing:
+                try:
+                    config = parse_config(text, source=self.paths.config)
+                except ConfigError as exc:
+                    raise InstallError(
+                        f"editing sockets.observe.group would make {self.paths.config} invalid: {exc}; "
+                        f"edit [sockets.observe] group = {_toml_string(group)} by hand, then rerun"
+                    ) from None
         # The layout is fixed (plan 3.1): the old-layout scan, doctor and uninstall
         # all rely on it, so a kept config may change the group and mode only.
         for key, value, fixed in (
@@ -1009,7 +1155,7 @@ class Installer:
                     f"{self.paths.config} sets {key} = {value.as_posix()!r}; topos uses the fixed path "
                     f"{fixed.as_posix()!r}, so remove the key or restore that value"
                 )
-        return text, config, existing is None
+        return text, config, existing is None or text != existing
 
     def _uninstall_targets(self) -> list[str] | None:
         """Refuse before any change unless toposd install owns this host.
@@ -1198,9 +1344,13 @@ def _uninstall_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
 
 def _install_summary(body: Mapping[str, Any]) -> str:
     if body.get("dry_run"):
-        return f"dry run: topos {body['version']} would be installed; no changes made"
-    changed = ", ".join(body.get("resources_changed", [])) or "no resource drift"
-    return f"topos {body['version']} installed; {changed}; enabled={body['enabled']}"
+        summary = f"dry run: topos {body['version']} would be installed; no changes made"
+    else:
+        changed = ", ".join(body.get("resources_changed", [])) or "no resource drift"
+        summary = f"topos {body['version']} installed; {changed}; enabled={body['enabled']}"
+    if body.get("config_changes"):
+        summary += f"; set sockets.observe.group = {body['observe_group']} in {body['config']}"
+    return summary
 
 
 def _uninstall_summary(body: Mapping[str, Any]) -> str:

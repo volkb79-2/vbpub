@@ -84,11 +84,16 @@ the service files without enabling or starting the socket/service.
 `toposd` or daemon lock. Installing a version older than the current one needs
 `--allow-downgrade`.
 
-`/etc/topos/toposd.toml` is written only when it is absent. An existing file is
-kept as written, so later edits survive an upgrade; its observe group must match
-the requested `--observe-group`, and the units are rendered from it. Its
-`state_dir` and socket `path` must keep the fixed layout (`/run/topos/state`,
-`/run/topos/observe/topos.sock`); only the group and mode are host choices.
+`/etc/topos/toposd.toml` is written only when it is absent. With
+`--observe-group`, the installer updates only `sockets.observe.group`, preserves
+the other lines and comments, and reports the change in the install result and
+dry-run summary. Without the flag, an existing config's group wins over the
+install record and is saved back into the record. A mapped group must already
+exist; `topos-observe` may be created by the installer. If the config uses a
+form the installer cannot safely edit, it refuses and tells you what to change
+by hand. The config's `state_dir` and socket `path` must keep the fixed layout
+(`/run/topos/state`, `/run/topos/observe/topos.sock`); only the group and mode
+are host choices.
 
 The installer refuses an entry in `/usr/local/bin/topos` or `toposd` that is not
 its own symlink into `/opt/topos`. Move such a file away before installing.
