@@ -1263,7 +1263,9 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
     assert evaluation_function("async function() { return 3; }") == "async function() { return 3; }"
     assert evaluation_function("function count() { return 3; }") == "function count() { return 3; }"
     assert evaluation_function("async item => item.title") == "async item => item.title"
-    assert evaluation_function("[1, 2].map((item) => item * 2)") == "() => ([1, 2].map((item) => item * 2))"
+    assert evaluation_function("[1, 2].map((item) => item * 2)") == (
+        "() => (\n[1, 2].map((item) => item * 2)\n)"
+    )
     assert evaluation_function("item => item.title") == "item => item.title"
     assert evaluation_function(None, selector="h1", property_name="textContent") == (
         "() => { const elements = Array.from(document.querySelectorAll(\"h1\")); "
