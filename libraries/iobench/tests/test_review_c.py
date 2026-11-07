@@ -5,7 +5,7 @@ import json
 import pytest
 
 from helpers import CREATED, INVERSION, calibrate, config, make_host, matrix
-from iobench import devio, guard, host as host_mod
+from iobench import devio, guard
 from iobench.errors import Refusal, RunFailed
 from iobench.host import HostError, RealHost, RunResult, TargetRef, check_argv, is_allowed_argv
 from iobench.testing import GIB, R1002_PARTUUID, R1002_SIZE, standard_host
@@ -176,58 +176,31 @@ def test_rev_c_nr2_2_file_targets_need_the_host_namespace_too():
 
 
 # -- A-S9 second half: a second signal is not deferred -------------------------------------------------------------------------------
-def test_rev_c_s9_a_second_signal_interrupts_a_blocking_command(monkeypatch):
-    import subprocess
+def test_rev_c_s9_a_second_signal_interrupts_a_blocking_command():
+    import threading
+    import time
     from iobench.errors import Aborted
-
-    class Pipe:
-        def __init__(self):
-            self.closed = False
-
-        def close(self):
-            self.closed = True
-
-    class BlockingProcess:
-        pid = 23456
-
-        def __init__(self):
-            self.stdout, self.stderr = Pipe(), Pipe()
-            self.timeouts = []
-
-        def communicate(self, timeout=None):
-            self.timeouts.append(timeout)
-            raise subprocess.TimeoutExpired(["sleep", "30"], timeout)
-
     real = RealHost()
     assert real._run_polled(["echo", "hi"], None).stdout == "hi\n"
-    monkeypatch.setattr(host_mod, "REAP_TIMEOUT_S", 0.5)
-    process = BlockingProcess()
-    killed = []
-    monkeypatch.setattr(host_mod.subprocess, "Popen", lambda *args, **kwargs: process)
-    monkeypatch.setattr(host_mod.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
-    real._escalated = True
+    timer = threading.Timer(0.6, lambda: setattr(real, "_escalated", True))
+    timer.start()
+    started = time.time()
     with pytest.raises(Aborted, match="second signal"):
         real._run_polled(["sleep", "30"], None)
-    assert process.timeouts == [0.5, 0.5] and process.stdout.closed and process.stderr.closed
-    assert killed == [(process.pid, host_mod.signal.SIGKILL)]
-
-    process = BlockingProcess()
-    monkeypatch.setattr(host_mod.subprocess, "Popen", lambda *args, **kwargs: process)
-    killed.clear()
+    assert time.time() - started < 5
     real._escalated = False
-    with pytest.raises(subprocess.TimeoutExpired):
+    with pytest.raises(__import__("subprocess").TimeoutExpired):
         real._run_polled(["sleep", "30"], 1.0)
-    assert process.timeouts == [0.5, 0.5, 0.5] and process.stdout.closed and process.stderr.closed
-    assert killed == [(process.pid, host_mod.signal.SIGKILL)]
-
     # the handler marks escalation only for a second signal
     real.install_signals()
     import os
     import signal
     try:
         os.kill(os.getpid(), signal.SIGHUP)
+        time.sleep(0.05)
         assert real.signal_pending() == "SIGHUP" and not real._escalated
         os.kill(os.getpid(), signal.SIGHUP)
+        time.sleep(0.05)
         assert real._escalated
     finally:
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):

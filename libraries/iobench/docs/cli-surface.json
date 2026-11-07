@@ -417,6 +417,45 @@
       "signature": "sha256:da817ed8c4daec179e209e4049ddb6bcf702188b919bde1541dd204e59a5958e"
     },
     {
+      "id": "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/59a56e97bc",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "choice": "probe",
+        "option_id": "option:route:entrypoint:iobench/capability/--kind"
+      },
+      "signature": "sha256:b52e7e997775b96753dfc09c0497169028b990746431987ff3b018eb03925298"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/9d8744a686",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "choice": "raw",
+        "option_id": "option:route:entrypoint:iobench/capability/--kind"
+      },
+      "signature": "sha256:31ca65f45852e89f5c134559322a68aff239c08178bbdb803275ef05a49add94"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/bfdde6f565",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "choice": "file",
+        "option_id": "option:route:entrypoint:iobench/capability/--kind"
+      },
+      "signature": "sha256:7bfcdff1dd1d7c95404960ce0d2e635800369e2722a5c87526223bbde22e22e7"
+    },
+    {
       "id": "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--debug-raw/--debug-raw",
       "kind": "option-spelling",
       "members": [
@@ -441,6 +480,19 @@
         "spelling": "--json"
       },
       "signature": "sha256:1824175e236bec3828e623102950980bef4149759d190509a62348daefc8f2f3"
+    },
+    {
+      "id": "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--kind/--kind",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:iobench/capability/--kind"
+      ],
+      "route_id": "route:entrypoint:iobench/capability",
+      "shape": {
+        "option_id": "option:route:entrypoint:iobench/capability/--kind",
+        "spelling": "--kind"
+      },
+      "signature": "sha256:ba26c52022b2669647812a6f992c2c79a1764d7d296f801e6622ebb3a375e0e9"
     },
     {
       "id": "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--since/--since",
@@ -3548,6 +3600,53 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "capability"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--kind",
+          "choices": [
+            "raw",
+            "file",
+            "probe"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Show only this evidence kind; by default all kinds are summarised separately.",
+          "dest": "kind",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--kind"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:iobench/capability/--kind",
+          "kind": "option",
+          "metavar": "KIND",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "raw",
+              "file",
+              "probe"
+            ],
             "default": null
           },
           "parser_path": [

@@ -129,11 +129,15 @@ def rotate_foreign(host: Host, path: str, digest: str, stamp: str) -> str | None
 
 
 def load(host: Host, path: str, digest: str) -> tuple[list[dict[str, Any]], list[str]]:
-    """``(observations, warnings)``; a history of another identity is ignored with a warning."""
+    """``(observations, warnings)``; foreign or unreadable headers are ignored with a warning."""
     if not host.exists(path):
         return [], []
     text = host.read_text(path)
-    if header_of(text) != digest:
+    try:
+        history_digest = header_of(text)
+    except (ValueError, KeyError, IndexError):
+        return [], ["history_ignored_unreadable"]
+    if history_digest != digest:
         return [], ["history_ignored_identity_differs"]
     return [json.loads(line) for line in text.splitlines()[1:] if line.strip()], []
 

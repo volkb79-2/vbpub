@@ -6,6 +6,7 @@ as ``run.status: failed`` plus ``*.last-failed.json``, never as a stored ``fail`
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -137,8 +138,9 @@ def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str 
     """An inferred gross cache-inflation check for every profile with sequential read and write cells.
 
     The thresholds are provisional [I] values; IOB-ACC-01 must calibrate them on the VM and a known cached device."""
-    if read_bps is None or write_bps is None:
-        return Check("IOB-PLA-19", "not_applicable", "no sequential read and write cell pair")
+    if (not isinstance(read_bps, (int, float)) or isinstance(read_bps, bool) or not math.isfinite(read_bps) or read_bps <= 0
+            or not isinstance(write_bps, (int, float)) or isinstance(write_bps, bool) or not math.isfinite(write_bps) or write_bps <= 0):
+        return Check("IOB-PLA-19", "not_applicable", "sequential read and write rates must both be finite and positive")
     ratio = read_bps / write_bps
     if ratio > READ_OVER_WRITE_FAIL:
         return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.0f}x the sequential write (> {READ_OVER_WRITE_FAIL:.0f}x): a cache is serving the reads; inferred threshold, calibrate with IOB-ACC-01",
@@ -155,16 +157,17 @@ def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str 
 def verdict(cache_state: str, *, vq: bool = False, rate_status: str = "pass") -> dict[str, str]:
     """The plausibility verdict of a calibration (``quality.plausibility``).
 
-    A veryquick ratio above 100x fails alone; a ratio above 20x is inconclusive unless the cold probe is also hit-like, which corroborates
-    the cache explanation. The ratio bands are inferred and IOB-ACC-01 must calibrate them. A hit-like veryquick cold region without a
-    ratio warning remains inconclusive because no cache looks the same."""
+    In every profile, a ratio above 100x fails; above 20x is inconclusive unless a hit-like cold probe corroborates cache service.
+    A veryquick hit-like cold region without ratio corroboration remains inconclusive because no cache looks the same."""
     found = VERDICTS[cache_state]
-    if vq and rate_status == "fail":
-        found = "fail"
-    elif vq and rate_status == "info":
-        found = "fail" if cache_state == "cold_hit_like" else "inconclusive"
-    elif vq and found == "fail":
+    # The ratio check is part of the verdict in every profile. Veryquick keeps
+    # its one profile-specific rule: a hit-like cold probe alone is not proof.
+    if vq and found == "fail":
         found = "inconclusive"
+    if rate_status == "fail":
+        found = "fail"
+    elif rate_status == "info":
+        found = "fail" if cache_state == "cold_hit_like" else "inconclusive"
     return {"verdict": found, "cache_state": cache_state}
 
 

@@ -93,6 +93,7 @@ class Stage:
     allotted_s: int
     required: bool = False
     note: str = ""
+    status: str = "planned"
 
 
 @dataclass(frozen=True)
@@ -110,14 +111,17 @@ class Allotment:
     def seconds(self, name: str) -> int:
         return next(s.allotted_s for s in self.stages if s.name == name)
 
+    def stage(self, name: str) -> Stage:
+        return next(s for s in self.stages if s.name == name)
+
     def as_dict(self) -> dict:
         return {"profile": self.profile, "budget_s": self.budget_s, "total_s": self.total, "ws_max_bytes": self.ws_max,
-                "stages": [{"name": s.name, "allotted_s": s.allotted_s, "required": s.required, "note": s.note}
+                "stages": [{"name": s.name, "allotted_s": s.allotted_s, "required": s.required, "note": s.note, "status": s.status}
                            for s in self.stages]}
 
 
 def cache_idle_delay(profile: str, override_s: float | None) -> float | None:
-    """The optional direct-read delay, bounded so its allotment still fits that profile's hard budget."""
+    """Validate the configured delay; plan_calibration may skip it when this geometry has no remaining budget."""
     if override_s is None:
         return float(CACHE_IDLE_DELAY_S[profile]) if profile in CACHE_IDLE_DELAY_S else None
     if profile not in CACHE_IDLE_DELAY_S:
@@ -127,7 +131,7 @@ def cache_idle_delay(profile: str, override_s: float | None) -> float | None:
     if (not isinstance(override_s, (int, float)) or isinstance(override_s, bool) or not math.isfinite(override_s)
             or override_s < 0 or override_s > maximum):
         raise Refusal("cache_idle_delay", f"cache idle delay {override_s!r} must be between 0 and {maximum} seconds for {profile}",
-                      f"pass a delay from 0 to {maximum} seconds for {profile}; this keeps the plan within its hard budget")
+                      f"pass a delay from 0 to {maximum} seconds for {profile}; the stage is still skipped if this geometry cannot fit it")
     return float(override_s) if override_s > 0 else None
 
 
@@ -150,11 +154,13 @@ def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: 
     n_rungs = len(base) if quick else len(base) + 2
     fill_s = ceil30(1.5 * ws / r_est_bps)
     stages = [Stage("S0", S0_S, True), Stage("S1", S1_S, True), Stage("fill", fill_s, True)]
+    cache_stage: Stage | None = None
     if not quick:
         stages.append(Stage("E-cold", 140, False, "QD32 70 s + QD1 histogram 60 s + setup"))
         if idle_s is not None:
-            stages.append(Stage("cache-evidence", math.ceil(idle_s) + 2 * CACHE_READ_S, False,
-                                f"after E-cold: {idle_s:g} s idle, then two direct QD1 reads of the last written GiB"))
+            requested_s = math.ceil(idle_s) + 2 * CACHE_READ_S
+            cache_stage = Stage("cache-evidence", requested_s, False,
+                                f"after E-cold: {idle_s:g} s idle, then two direct QD1 reads of the last written GiB")
     stages.append(Stage("ladder", n_rungs * 2 * RUNG_RUNTIME, True))
     if not quick:
         stages += [Stage("ladder-qd", 120 + (60 if thorough else 0), False, "largest rung QD1/QD8" + (" + QD64" if thorough else "")),
@@ -165,6 +171,13 @@ def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: 
         stages.append(Stage("observation", 1140 if thorough else 360))
     stages.append(Stage("S6", 160 if quick else 720))
     stages.append(Stage("S7", 120 if quick else 160))
+    if cache_stage is not None:
+        if sum(stage.allotted_s for stage in stages) + cache_stage.allotted_s > budget:
+            cache_stage = Stage("cache-evidence", 0, False,
+                                f"skipped:budget; requested {cache_stage.allotted_s} s does not fit the {budget} s profile plan",
+                                "skipped:budget")
+        e_cold_index = next(i for i, stage in enumerate(stages) if stage.name == "E-cold")
+        stages.insert(e_cold_index + 1, cache_stage)
     return Allotment(profile, budget, tuple(stages), ws, tuple(base))
 
 

@@ -21,6 +21,13 @@ NUMERIC_FIELDS = {
     "cold_region_bps": 0.0,
 }
 ROW_FIELDS = ("schema", "ts", "disk_key", "kind", "profile", "source", *NUMERIC_FIELDS, "write_burst_seen", "confidence", "note")
+KINDS = ceilings.KINDS
+
+
+class UnsupportedSchema(ValueError):
+    def __init__(self, version: Any) -> None:
+        self.version = version
+        super().__init__(f"unsupported capability schema {version!r}")
 
 
 def validate(row: Mapping[str, Any], digest: str | None = None) -> None:
@@ -71,24 +78,37 @@ def _header(text: str) -> Mapping[str, Any]:
     first = text.splitlines()[0]
     header = json.loads(first)
     schema = header.get("schema") if isinstance(header, dict) else None
-    if not isinstance(header, dict) or header.get("header") is not True or not isinstance(schema, int) or isinstance(schema, bool) or schema != SCHEMA:
+    if not isinstance(header, dict) or header.get("header") is not True or not isinstance(schema, int) or isinstance(schema, bool):
         raise ValueError("invalid capability header")
+    if schema != SCHEMA:
+        raise UnsupportedSchema(schema)
     return header
 
 
 def append(host: Host, path: str, row: Mapping[str, Any], digest: str) -> None:
-    """Validate and append one row; the first line binds the history to the disk-scope key."""
+    """Validate and append one row; the first line binds the history to the disk-scope key.
+
+    Calibrator.conclude is the only production caller and Runner holds the process-wide restore lock there, so first-header creation is serialized.
+    """
     validate(row, digest)
+    existing_text = ""
     if host.exists(path):
         try:
-            existing = _header(host.read_text(path))
+            existing_text = host.read_text(path)
+            existing = _header(existing_text)
+        except UnsupportedSchema as exc:
+            raise Refusal("capability_history_unsupported_schema",
+                          f"{path} uses capability schema {exc.version!r}, newer or older than this reader's schema {SCHEMA}",
+                          "use a version of iobench that supports the stored capability schema") from None
         except (OSError, ValueError, IndexError, TypeError):
             raise Refusal("capability_history_corrupt", f"{path} has no readable capability header", "move the unreadable history aside") from None
         if existing.get("identity_digest") != digest:
             raise Refusal("capability_identity_mismatch", f"{path} belongs to another disk identity", "move the old file aside before appending")
     else:
         host.write_atomic(path, header_line(digest) + "\n")
-    host.append_line(path, json.dumps(dict(row), sort_keys=True))
+        existing_text = header_line(digest) + "\n"
+    separator = "\n" if existing_text and not existing_text.endswith("\n") else ""
+    host.append_line(path, separator + json.dumps(dict(row), sort_keys=True))
 
 
 def rotate_foreign(host: Host, path: str, digest: str, stamp: str) -> str | None:
@@ -97,42 +117,50 @@ def rotate_foreign(host: Host, path: str, digest: str, stamp: str) -> str | None
         return None
     text = host.read_text(path)
     try:
-        if _header(text).get("identity_digest") == digest:
-            _, warnings = load(host, path, digest)
-            if not warnings:
-                return None
+        header = _header(text)
+    except UnsupportedSchema:
+        return None  # an older tool must not move a history whose schema it cannot read
     except (ValueError, IndexError, TypeError):
-        pass
+        header = None
+    if header is not None and header.get("identity_digest") == digest:
+        return None  # preserve valid rows when an individual JSONL row is damaged
     aside = f"{path}.superseded-{stamp.replace(':', '')}"
     host.write_atomic(aside, text)
     host.remove(path)
     return aside
 
 
-def load(host: Host, path: str, digest: str) -> tuple[list[dict[str, Any]], list[str]]:
+def load(host: Host, path: str, digest: str) -> tuple[list[dict[str, Any]], list[str], int]:
     """Read descriptive rows only; malformed or foreign history never invalidates calibration or supplies a value."""
     if not host.exists(path):
-        return [], []
+        return [], [], 0
     try:
         text = host.read_text(path)
-        header = _header(text)
-    except (OSError, ValueError, IndexError, TypeError):
-        return [], ["capability_history_corrupt"]
-    if header.get("identity_digest") != digest:
-        return [], ["capability_history_identity_differs"]
-    rows: list[dict[str, Any]] = []
+    except OSError:
+        return [], ["capability_history_corrupt"], 0
     try:
-        for line in text.splitlines()[1:]:
-            if not line.strip():
-                continue
+        header = _header(text)
+    except UnsupportedSchema as exc:
+        return [], [f"capability_history_unsupported_schema:{exc.version}"], 0
+    except (ValueError, IndexError, TypeError):
+        return [], ["capability_history_corrupt"], 0
+    if header.get("identity_digest") != digest:
+        return [], ["capability_history_identity_differs"], 0
+    rows: list[dict[str, Any]] = []
+    skipped_rows = 0
+    for line in text.splitlines()[1:]:
+        if not line.strip():
+            continue
+        try:
             row = json.loads(line)
             if not isinstance(row, dict):
                 raise ValueError("capability row is not an object")
             validate(row, digest)
             rows.append(row)
-    except (ValueError, TypeError, KeyError, Refusal):
-        return [], ["capability_history_corrupt"]
-    return rows, []
+        except (ValueError, TypeError, KeyError, Refusal):
+            skipped_rows += 1
+    warnings = [f"capability_history_rows_skipped:{skipped_rows}"] if skipped_rows else []
+    return rows, warnings, skipped_rows
 
 
 def select_since(rows: Sequence[Mapping[str, Any]], since: str | None) -> list[dict[str, Any]]:
@@ -145,8 +173,16 @@ def select_since(rows: Sequence[Mapping[str, Any]], since: str | None) -> list[d
     return [dict(row) for row in rows if ceilings.parse_iso(row["ts"]) >= cutoff]
 
 
-def latest_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    return {"count": len(rows), "latest": dict(rows[-1]) if rows else None}
+def latest_summary(rows: Sequence[Mapping[str, Any]], *, kinds: Sequence[str] = KINDS, skipped_rows: int = 0) -> dict[str, Any]:
+    """Summarise append order separately per evidence kind; timestamps do not reorder the durable history."""
+    by_kind: dict[str, dict[str, Any]] = {}
+    latest: dict[str, dict[str, Any] | None] = {}
+    for kind in kinds:
+        group = [row for row in rows if row.get("kind") == kind]
+        latest_row = dict(group[-1]) if group else None
+        latest[kind] = latest_row
+        by_kind[kind] = {"count": len(group), "latest": latest_row}
+    return {"count": len(rows), "latest": latest, "by_kind": by_kind, "skipped_rows": skipped_rows}
 
 
 def run_observation(cal: Mapping[str, Any], identity: Mapping[str, Any], profile: str, kind: str, ts: str) -> dict[str, Any]:
@@ -185,7 +221,8 @@ def run_observation(cal: Mapping[str, Any], identity: Mapping[str, Any], profile
             confidence = "high"
         else:
             confidence = "medium" if measured else "low"
-        note = "indirect evidence only; the guest cannot identify the cache layer"
+        note = ("no numeric burst or cache fields were measurable in this run" if not measured
+                else "indirect evidence only; the guest cannot identify the cache layer")
     row = {"schema": SCHEMA, "ts": ts, "disk_key": identity["disk_scope"]["key"], "kind": kind, "profile": profile,
            "source": "benchmark", **numeric, "write_burst_seen": write_burst_seen, "confidence": confidence, "note": note}
     validate(row, identity["disk_scope"]["key"])

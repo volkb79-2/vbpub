@@ -70,7 +70,7 @@ def calibrate_plan(host: Any, cfg: Config) -> dict[str, Any]:
         rungs += [run.job(f"rung-r32-{r // MIB}", "randread", 4096, 32, RUNG_S, 0, r),
                   run.job(f"rung-w32-{r // MIB}", "randwrite", 4096, 32, RUNG_S, 0, r, io_size=run.bound(RUNG_S))]
     per_stage = {"S1": [first], "fill": fills, "ladder": rungs}
-    if any(stage.name == "cache-evidence" for stage in alloc.stages):
+    if any(stage.name == "cache-evidence" and stage.status == "planned" for stage in alloc.stages):
         region = min(GIB, ws)
         offset = ws - region
         per_stage["cache-evidence"] = [run.job("cache-readback", "randread", 4096, 1, plan.CACHE_READ_S, offset, region, log_avg_ms=1000),
@@ -117,7 +117,8 @@ def plan_document(run: Any, cfg: Config, alloc: plan.Allotment, per_stage: dict[
     stages = []
     for st in alloc.stages:
         jobs = per_stage.get(st.name, [])
-        stages.append({"name": st.name, "allotted_s": st.allotted_s, "required": st.required, "jobs": [entry(run, j) for j in jobs],
+        stages.append({"name": st.name, "allotted_s": st.allotted_s, "required": st.required, "status": st.status,
+                       "jobs": [entry(run, j) for j in jobs],
                        "note": st.note or ("offered rates are percentages of the measured cap basis" if st.name == "S7" else "")})
     return {"command": "calibrate", "profile": cfg.profile, "budget_s": alloc.budget_s, "total_s": alloc.total, "r_est_bps": run.r_est,
             "ws_max_bytes": alloc.ws_max, "target": run.target.path, "stages": stages, **NOT_RUN}

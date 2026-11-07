@@ -78,7 +78,11 @@ def test_cli_11_capability_and_cache_delay_are_registered():
     code, out, err = run(host, "capability", "--json")
     assert code == 0 and not err
     report = json.loads(out)
-    assert report["count"] == 0 and report["latest"] is None and "calibration_identity_unavailable" in report["warnings"]
+    assert report["count"] == 0 and report["latest"] == {"raw": None, "file": None, "probe": None}
+    assert report["by_kind"]["raw"] == {"count": 0, "latest": None}
+    assert report["skipped_rows"] == 0 and "calibration_identity_unavailable" in report["warnings"]
+    parsed = registry.command_parsers["capability"].parse_args(["--kind", "probe"])
+    assert parsed.kind == "probe"
     assert (dict(host.files), list(host.write_log), list(host.argv_log), host.clock) == before
 
     args = ("calibrate", "--target", "/dev/vda7", "--work-dir", "/bench/w", "--dry-run", "--assume-r-est", "1.36e9", "--json")

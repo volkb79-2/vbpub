@@ -187,8 +187,9 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
         handler=lambda args, runtime: _check(args, runtime, host_factory)))
     registry.register(VerbSpec(
         "capability", None, "Read the append-only cache and burst observations for the calibrated disk.",
-        group=VerbGroup.EXPLORATION.value, examples=("iobench capability --json", "iobench capability --since 2026-11-01T00:00:00Z --json"),
-        options=(_value(("--since",), "Include observations at or after this UTC timestamp (YYYY-MM-DDTHH:MM:SSZ).", "TIMESTAMP"), STATE_DIR),
+        group=VerbGroup.EXPLORATION.value, examples=("iobench capability --json", "iobench capability --kind raw --since 2026-11-01T00:00:00Z --json"),
+        options=(_value(("--since",), "Include observations at or after this UTC timestamp (YYYY-MM-DDTHH:MM:SSZ).", "TIMESTAMP"),
+                 _value(("--kind",), "Show only this evidence kind; by default all kinds are summarised separately.", "KIND", choices=capability.KINDS), STATE_DIR),
         handler=lambda args, runtime: _capability(args, runtime, host_factory)))
     registry.register(VerbSpec(
         "show", None, "Print a stored object exactly (never recomputes, never modifies).", group=VerbGroup.EXPLORATION.value,
@@ -302,13 +303,16 @@ def _capability(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
     try:
         identity = _ceilings_identity(host, state)
         digest = ceilings.identity_digest(identity)
-        rows, warnings = capability.load(host, p["capability"], digest)
+        rows, warnings, skipped_rows = capability.load(host, p["capability"], digest)
     except (res.LoadError, Refusal):
-        rows, digest = [], None
+        rows, digest, skipped_rows = [], None, 0
         warnings.append("calibration_identity_unavailable")
     selected = capability.select_since(rows, args.since)
+    if args.kind is not None:
+        selected = [row for row in selected if row["kind"] == args.kind]
+    kinds = (args.kind,) if args.kind is not None else capability.KINDS
     out = {"schema": capability.SCHEMA, "identity_digest": digest, "since": args.since,
-           **capability.latest_summary(selected), "observations": selected}
+           **capability.latest_summary(selected, kinds=kinds, skipped_rows=skipped_rows), "observations": selected}
     if warnings:
         out["warnings"] = warnings
     _emit(runtime, out)

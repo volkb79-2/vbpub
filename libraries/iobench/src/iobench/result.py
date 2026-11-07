@@ -12,7 +12,7 @@ from .errors import Refusal
 from .host import Host
 
 SCHEMA = 1
-SCHEMA_MINOR = 2  # 1: disk-scope identity / cache plausibility / veryquick; 2: read-cache evidence hints and capability history
+SCHEMA_MINOR = 3  # 1: disk scope / plausibility / veryquick; 2: cache hints and capability history; 3: plan and cache-reference/status fields
 DEFAULT_DIR = "/var/lib/iobench"
 NOT_MEASURED = "not_measured"
 REQUIRED_TOP = ("schema", "schema_minor", "tool", "run", "identity", "targets", "evidence", "proposals", "quality", "restore")
@@ -305,10 +305,10 @@ def check(host: Host, state_dir: str, *, calibration: bool = False, sections: tu
     try:
         digest = ceilings.identity_digest(doc["identity"])
     except Refusal:
-        capability_rows, capability_warnings = [], []
+        capability_rows, capability_warnings, capability_skipped_rows = [], [], 0
     else:
-        capability_rows, capability_warnings = capability.load(host, p["capability"], digest)
-    res.capability = capability.latest_summary(capability_rows)
+        capability_rows, capability_warnings, capability_skipped_rows = capability.load(host, p["capability"], digest)
+    res.capability = capability.latest_summary(capability_rows, skipped_rows=capability_skipped_rows)
     res.warnings.extend(capability_warnings)
     if identity_differs(doc["identity"], live):
         res.state = "stale"

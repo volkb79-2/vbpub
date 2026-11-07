@@ -2446,6 +2446,58 @@ effects = ["Reads calibration identity and matching capability history; prints o
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-spelling.capability.--state-dir.--state-dir]"]
 
 [[cases]]
+id = "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/59a56e97bc"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b52e7e997775b96753dfc09c0497169028b990746431987ff3b018eb03925298"
+rationale = "--kind probe selects observations from read-only probes only."
+invocation = ["capability", "--kind", "probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "by_kind"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching probe capability history; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-choice.capability.--kind.59a56e97bc]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/9d8744a686"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:31ca65f45852e89f5c134559322a68aff239c08178bbdb803275ef05a49add94"
+rationale = "--kind raw selects observations from raw device benchmarks only."
+invocation = ["capability", "--kind", "raw", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "by_kind"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching raw capability history; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-choice.capability.--kind.9d8744a686]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/bfdde6f565"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7bfcdff1dd1d7c95404960ce0d2e635800369e2722a5c87526223bbde22e22e7"
+rationale = "--kind file selects observations from file benchmarks only."
+invocation = ["capability", "--kind", "file", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "by_kind"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching file capability history; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-choice.capability.--kind.bfdde6f565]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--kind/--kind"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ba26c52022b2669647812a6f992c2c79a1764d7d296f801e6622ebb3a375e0e9"
+rationale = "--kind is accepted by the read-only capability command to scope observations by evidence class."
+invocation = ["capability", "--kind", "raw", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "by_kind"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching capability history for the selected kind; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-spelling.capability.--kind.--kind]"]
+
+[[cases]]
 id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--cache-idle-delay-s/--cache-idle-delay-s"
 state = "active"
 decision = "accept"

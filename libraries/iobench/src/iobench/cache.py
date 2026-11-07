@@ -325,9 +325,9 @@ def _positive_rate(value: Any) -> float | None:
     return float(value)
 
 
-def read_cache_hints(delayed: Mapping[str, Any], repeated: Mapping[str, Any], cold_bps: float | None) -> dict[str, Any]:
-    """Summarise optional direct-read comparisons as hints; they never determine a cache state or proposal value."""
-    cold = _positive_rate(cold_bps)
+def read_cache_hints(delayed: Mapping[str, Any], repeated: Mapping[str, Any], cold_qd1_bps: float | None) -> dict[str, Any]:
+    """Summarise optional direct-read hints against the QD1 4 KiB cold reference; these never determine proposals."""
+    cold = _positive_rate(cold_qd1_bps)
     delayed_rate = _positive_rate(delayed.get("rate_bps")) if delayed.get("status") == "measured" else None
     if cold is not None and delayed_rate is not None:
         delayed_hint = "hit-like" if delayed_rate > READ_SPEEDUP_HINT * cold else "miss-like"
@@ -346,8 +346,9 @@ def read_cache_hints(delayed: Mapping[str, Any], repeated: Mapping[str, Any], co
         hint = "mixed"
     else:
         hint = available[0]
-    return {"hint": hint, "delayed_readback": delayed_hint, "repeat_pass": repeat_hint,
-            "speedup_threshold": READ_SPEEDUP_HINT, "source": "indirect_direct_io"}
+    status = "measured" if delayed.get("status") == "measured" or repeated.get("status") == "measured" else "not_measured"
+    return {"status": status, "hint": hint, "delayed_readback": delayed_hint, "repeat_pass": repeat_hint,
+            "delayed_reference": "cold_qd1_4k", "speedup_threshold": READ_SPEEDUP_HINT, "source": "indirect_direct_io"}
 
 
 # -- write time proof (IOB-CCH-07) --------------------------------------------------
