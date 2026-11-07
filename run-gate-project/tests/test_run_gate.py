@@ -25030,20 +25030,13 @@ class TestAwaitContainerProfilingWiring:
 
         process = Process()
         real_popen = run_gate.subprocess.Popen
-        spawn_options = []
-        process_group_signals = []
 
         def popen(argv, *args, **kwargs):
             if argv[1:3] == ["logs", "-f"]:
-                spawn_options.append(kwargs)
                 return process
             return real_popen(argv, *args, **kwargs)
 
         monkeypatch.setattr(run_gate.subprocess, "Popen", popen)
-        monkeypatch.setattr(
-            run_gate.os, "killpg",
-            lambda pid, signum: process_group_signals.append((pid, signum)))
-
         def fail_watch_setup(*args, **kwargs):
             raise RuntimeError("planted log-watch startup failure")
 
@@ -25054,8 +25047,7 @@ class TestAwaitContainerProfilingWiring:
                 {"kind": "command", "stall_timeout": "1s"}, "suite",
                 tmp_path, tmp_path, tmp_path)
 
-        assert spawn_options[0].get("start_new_session") is True
-        assert process_group_signals == [(process.pid, signal.SIGTERM)]
+        assert process.terminated
         assert process.waited
 
     def test_log_spawn_failure_still_removes_the_container(

@@ -8214,7 +8214,7 @@ def save_container_logs(docker: str, name: str,
 
 def terminate_process_group(proc: subprocess.Popen,
                            grace_seconds: int = LANE_KILL_GRACE_SECONDS) -> int:
-    """Stop a child process group and its descendants, then return its status."""
+    """Stop a bare-host lane and its descendants, then return its raw status."""
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -8774,8 +8774,8 @@ def preflight_control_socket_access(
     """Check the control socket's level identity before any connection.
 
     UID 0 can connect without supplementary group membership (the tester
-    runner uses `--user 0:0`). Other callers need the control socket GID in
-    their supplementary groups. Missing paths may be passed through to the
+    runner uses `--user 0:0`). Other callers need the control socket GID as
+    their effective GID or in their supplementary groups. Missing paths may be passed through to the
     transport so its existing unavailable-socket diagnosis remains intact.
     """
     if not socket_path:
@@ -15224,12 +15224,11 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
             proc = subprocess.Popen(
                 [docker, "logs", "-f", "--timestamps", name],
                 stdout=subprocess.PIPE, text=True, bufsize=1,
-                errors="replace", start_new_session=True)
+                errors="replace")
             log_watch = LogStreamWatch(
                 proc, budget_seconds(lane["stall_timeout"]), lane_name)
         else:
-            proc = subprocess.Popen([docker, "logs", "-f", name],
-                                    start_new_session=True)
+            proc = subprocess.Popen([docker, "logs", "-f", name])
         while True:
             try:
                 wait_for = tick
@@ -15413,11 +15412,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     run_record.setdefault("profile_ref", None)
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
         if proc is not None:
-            # The docker CLI may have descendants that inherited its output
-            # pipe (the stateful test shim polls with a child `sleep`). Give
-            # the follower a private process group so interruption and stall
-            # cleanup stop the whole stream process tree.
-            terminate_process_group(proc)
+            proc.terminate()   # no-op once it has exited; ends a stalled stream
+            proc.wait()
         if log_watch is not None:
             # Round-3 review: reached from EVERY exit of the try above,
             # stalled or not — by now `proc.terminate()` + `proc.wait()`
