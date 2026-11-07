@@ -20,7 +20,7 @@ from .actions import ActionError, HostActions
 from .config import (
     Config, ConfigError, load_config, persisted_config_data, require_notify_credentials, save_config,
 )
-from .customscript import build_customscript_bundle, describe_fetch_source
+from .customscript import build_customscript_bundle, describe_fetch_source, validate_repo_commit
 from .installer import Installer, InstallerError
 from .plan_preview import PlanPreviewError, format_table, resolve_plan
 from .notify import NotifyConfigError, validate_host_label, validate_webhook_url
@@ -409,6 +409,7 @@ def _build_customscript(args: Any, runtime: Any) -> int:
             repo_branch=args.repo_branch,
             bootstrap_url=args.bootstrap_url,
             controller_ssh_placeholder=args.controller_ssh_placeholder,
+            repo_commit=args.repo_commit,
         )
     except (ValueError, ConfigError) as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
@@ -416,6 +417,7 @@ def _build_customscript(args: Any, runtime: Any) -> int:
     # `main`, which silently ran old code on a feature-branch test).
     info_lines, warning_lines = describe_fetch_source(
         args.repo_url, args.repo_branch, checkout_dir=str(Path(__file__).resolve().parent),
+        repo_commit=validate_repo_commit(args.repo_commit),
     )
     for line in info_lines:
         runtime.output.info(line)
@@ -665,6 +667,12 @@ def build_cli():
                     group="BOOTSTRAP SOURCE",
                     metavar="BRANCH",
                     parser_kwargs={"default": "main"},
+                ),
+                OptionSpec(
+                    ("--repo-commit",),
+                    "full commit SHA the host must run instead of the moving branch head",
+                    group="BOOTSTRAP SOURCE",
+                    metavar="SHA",
                 ),
                 OptionSpec(
                     ("--bootstrap-url",),

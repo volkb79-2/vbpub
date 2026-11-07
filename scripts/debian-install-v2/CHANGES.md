@@ -4,6 +4,11 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Added (div2 fix 6): pin the reviewed commit in the customScript
+- `build-customscript --repo-commit SHA` (API: `build_customscript_bundle(repo_commit=...)`) exports `REPO_COMMIT` and names that
+  commit in the default bootstrap URL; `bootstrap-remote.py` fetches the commit by SHA, checks it out detached and refuses unless
+  `HEAD` equals it. Without the option behaviour is unchanged (branch head). A malformed `REPO_COMMIT` is refused before any download.
+
 ### Fixed (third review of div2-data-area-v2)
 - Refuse every `/usr/local` data mount because stage one writes installer executables there and the stage-two data mount does not seed them.
 - Refuse mounts intersecting `/var/lib/docker` or `/var/lib/containerd`; stage two runs after those services may have live state, with no stop or seed step.

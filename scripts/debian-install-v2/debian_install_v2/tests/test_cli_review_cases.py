@@ -498,6 +498,19 @@ def test_repo_branch_selects_the_default_bootstrap_url_and_git_branch(tmp_path, 
     ) in launcher
 
 
+@pytest.mark.cli_case(case_spelling("build-customscript", "--repo-commit"))
+def test_repo_commit_pins_the_bootstrap_url_and_exports_repo_commit(tmp_path, capsys):
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    result = bundle(capsys, tmp_path, "--repo-commit", commit)
+    environment, launcher = script_parts(result)
+    assert environment["REPO_BRANCH"] == "main"
+    assert environment["REPO_COMMIT"] == commit
+    assert f"/vbpub/{commit}/scripts/debian-install-v2/bootstrap-remote.py" in launcher
+    path, _ = write_config(tmp_path)
+    code, out, err = run(capsys, ["build-customscript", "--config", path, "--repo-commit", "main"])
+    assert code == 2 and out == "" and "repo_commit must be a full" in err
+
+
 @pytest.mark.cli_case(case_spelling("build-customscript", "--controller-ssh-placeholder"))
 def test_controller_ssh_placeholder_emits_the_provider_marker(tmp_path, capsys):
     result = bundle(capsys, tmp_path, "--controller-ssh-placeholder")
