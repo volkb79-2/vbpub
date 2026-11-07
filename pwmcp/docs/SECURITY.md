@@ -41,6 +41,30 @@ the loopback upstream values required by Playwright. The allowlist is a
 DNS-rebinding safeguard, not authentication; access from the trusted internal
 network remains unauthenticated as before.
 
+## MCP page evaluation
+
+`pwmcp eval URL EXPRESSION` invokes the already-exposed `browser_evaluate` MCP
+tool after `browser_navigate`. It executes the caller's JavaScript in the page
+context with that page origin's permissions. It can read the DOM, script data,
+and browser storage available to that page, and it can issue requests subject
+to the browser's same-origin and CORS rules. PWMCP does not sanitize the
+expression or give it a separate per-call permission prompt. Use it only for
+pages the user is authorized to inspect.
+
+This CLI uses the existing Streamable HTTP `/mcp` endpoint and does not invoke
+the upstream `browser_run_code_unsafe` tool. The same endpoint controls still
+apply: the internal Docker network is the access boundary in internal mode;
+external access uses TLS and basicAuth; and the MCP gateway's existing Host
+allowlist remains in force. That Host allowlist protects the MCP endpoint from
+DNS rebinding; it is not a destination-site allowlist. A caller with access to
+the MCP endpoint can already navigate and evaluate pages through the server's
+tool list. The client adds a command-line route to that capability, not a new
+server permission or network exposure.
+
+`inspect --format html` also uses `browser_evaluate`, but sends only fixed
+extraction and block-detection functions. It caps the returned HTML at 512 KiB
+and preserves `inspect`'s BLOCKED result for recognised challenges.
+
 ## External Mode Access Control
 
 In external mode, access is controlled by:

@@ -128,6 +128,161 @@
       "signature": "sha256:c3b7da443f20feb7c1e00e5ecfddf4616eb7ea17e30a027810a30fb5ed32a4f4"
     },
     {
+      "id": "case:route:entrypoint:pwmcp/eval/argument-shape/argument:route:entrypoint:pwmcp/eval/expression",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:pwmcp/eval/expression"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:pwmcp/eval/expression"
+      },
+      "signature": "sha256:73c4831d8becf945fd74aa111dbf2a1f04a16f7a9c71630077f2f5772452077b"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/argument-shape/argument:route:entrypoint:pwmcp/eval/url",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:pwmcp/eval/url"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:pwmcp/eval/url"
+      },
+      "signature": "sha256:a3c301a621e5be9fb2ccb722211ae663b3d6b3459a8aca470971ac0db6212913"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:pwmcp/eval/url",
+        "option:route:entrypoint:pwmcp/eval/--contract",
+        "option:route:entrypoint:pwmcp/eval/--all",
+        "option:route:entrypoint:pwmcp/eval/--timeout"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:pwmcp/eval/--contract",
+          "option:route:entrypoint:pwmcp/eval/--all",
+          "option:route:entrypoint:pwmcp/eval/--timeout"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:pwmcp/eval/url": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:pwmcp/eval/url"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:3da5a05e9fda701f071988e2e42c9693f88c1ffbba580416bcf642816230d8cf"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--all/--all",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/eval/--all"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/eval/--all",
+        "spelling": "--all"
+      },
+      "signature": "sha256:60173070beccbc900df0f3a4e0b0ed5b1df193cc1f35bff10def23ecb6ea3fc8"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--attr/--attr",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/eval/--attr"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/eval/--attr",
+        "spelling": "--attr"
+      },
+      "signature": "sha256:98de6f8d5d0add982254c2bf2cc98b930a583485a7979e1d6be3881b3a9e86ab"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--contract/--contract",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/eval/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/eval/--contract",
+        "spelling": "--contract"
+      },
+      "signature": "sha256:c46aa901d510b15d408dccf9adab9a0c1f70d3b069316b867fb435f58db35ab1"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/eval/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/eval/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:6539689cc11b93d42d6776ee3fb6464c543a2a53a7bda292d91b0f929d69e506"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/eval/--json"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/eval/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:dd01dfb0a9515b75c9f086b4c59e9e8357227644e655c319a966b6ca52732e10"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--property/--property",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/eval/--property"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/eval/--property",
+        "spelling": "--property"
+      },
+      "signature": "sha256:5f347e19046fe633ba7117ccdde283b3e0065a055430fe91dd3d8c68cbdda8fc"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--selector/--selector",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/eval/--selector"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/eval/--selector",
+        "spelling": "--selector"
+      },
+      "signature": "sha256:461975c6e67b067c80e9ab82843a81f652a7e9d987e57c930f185213c108c274"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--timeout/--timeout",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/eval/--timeout"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/eval/--timeout",
+        "spelling": "--timeout"
+      },
+      "signature": "sha256:1b055d5acc4dcb40a4f658e9e6e974a4103e6cd0c2e29e40ee5ec35439fc5716"
+    },
+    {
       "id": "case:route:entrypoint:pwmcp/inspect/argument-shape/argument:route:entrypoint:pwmcp/inspect/url",
       "kind": "argument-shape",
       "members": [
@@ -146,9 +301,10 @@
         "argument:route:entrypoint:pwmcp/inspect/url",
         "option:route:entrypoint:pwmcp/inspect/--contract",
         "option:route:entrypoint:pwmcp/inspect/--format",
+        "option:route:entrypoint:pwmcp/inspect/--html-mode",
+        "option:route:entrypoint:pwmcp/inspect/--max-html-bytes",
         "option:route:entrypoint:pwmcp/inspect/--wait-until",
         "option:route:entrypoint:pwmcp/inspect/--timeout-ms",
-        "option:route:entrypoint:pwmcp/inspect/--retries",
         "option:route:entrypoint:pwmcp/inspect/--full-page",
         "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors"
       ],
@@ -157,9 +313,10 @@
         "defaulted_options": [
           "option:route:entrypoint:pwmcp/inspect/--contract",
           "option:route:entrypoint:pwmcp/inspect/--format",
+          "option:route:entrypoint:pwmcp/inspect/--html-mode",
+          "option:route:entrypoint:pwmcp/inspect/--max-html-bytes",
           "option:route:entrypoint:pwmcp/inspect/--wait-until",
           "option:route:entrypoint:pwmcp/inspect/--timeout-ms",
-          "option:route:entrypoint:pwmcp/inspect/--retries",
           "option:route:entrypoint:pwmcp/inspect/--full-page",
           "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors"
         ],
@@ -172,7 +329,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:b4d6bf6312817e97b2da619d51ad4e8361731ee7ade079226df6f36d80994f63"
+      "signature": "sha256:9ded69f1556d5df571803f367427d62cf12b3627dc01c481f2dacf5fd81224c4"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d",
@@ -185,7 +342,7 @@
         "choice": "text",
         "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
       },
-      "signature": "sha256:38c1a425d6bd4c6b34f7decab05a6a66c085151cbacde9c50e7f8b1a8e786211"
+      "signature": "sha256:f4648ae94041eef225b68911f43d1098b886fd1323e01f7b55ea2aced045c930"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/20ccb3d1c6",
@@ -198,7 +355,20 @@
         "choice": "snapshot",
         "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
       },
-      "signature": "sha256:a5978cd6b93e04da4c8a81ecf411bc6fc3ca5d7b04fa7ef6eb4864c23ac7f062"
+      "signature": "sha256:7de63bbd0fb8c23f3dfabe3fa01d2e96d1f88f534793801ec59859260d4fe2e7"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/4e3c1a697b",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "html",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
+      },
+      "signature": "sha256:fa78915e9d8d9cdecce1d548be9e048d542f3b8fd46e18768fca2946b4695833"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/cd172ffb54",
@@ -211,7 +381,33 @@
         "choice": "screenshot",
         "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
       },
-      "signature": "sha256:67fec2ca65df8ba13aefb8f8f16dbbd0574012e29e9c29de4616da1cf8cb0816"
+      "signature": "sha256:2a62d988204569420089e2b06fb0e75fe8516defe6a65042e665969ade0e6f24"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--html-mode/0b17fc916c",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--html-mode"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "inner",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--html-mode"
+      },
+      "signature": "sha256:d9603af1d33e831fc2a34185ea64a538c585fd2bcc046617bcd13650015546fe"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--html-mode/cbe8e72277",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--html-mode"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "outer",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--html-mode"
+      },
+      "signature": "sha256:6d67a49a38dd18860e0bb12d69b8d1cbbffa9a7a45b186b7391c4da425d70754"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/528dd71551",
@@ -302,7 +498,7 @@
         "option_id": "option:route:entrypoint:pwmcp/inspect/--format",
         "spelling": "--format"
       },
-      "signature": "sha256:1205ae0ec91535292ce8c6f42e70a2a67b71c5a5e51a66ddb2d214a1d44d5b30"
+      "signature": "sha256:72798c7e9a11325f151e1dcc38b82308a4e0c9bf3e70a6824b59b0282dd74ee7"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--full-page/--full-page",
@@ -316,6 +512,19 @@
         "spelling": "--full-page"
       },
       "signature": "sha256:2ba90037d46ff98ce4d9a407a22cdf25a1f2a3dfbbedb24795630f2b3504e958"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--html-mode/--html-mode",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--html-mode"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--html-mode",
+        "spelling": "--html-mode"
+      },
+      "signature": "sha256:03de7a58815195a97a48e3d1e33e4fe0b744987b6605bdf554df04c03d4b2e0e"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--ignore-https-errors/--ignore-https-errors",
@@ -344,6 +553,19 @@
       "signature": "sha256:4e7b74620047c395a39709fbf1295774e8e2190cf1651538671df1d86fa95ef8"
     },
     {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--max-html-bytes/--max-html-bytes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--max-html-bytes"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--max-html-bytes",
+        "spelling": "--max-html-bytes"
+      },
+      "signature": "sha256:7b594487cf147629292a90a9b249a921a7cb1c8fdbdb9e226524f6bb4ed0fe2f"
+    },
+    {
       "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--output/--output",
       "kind": "option-spelling",
       "members": [
@@ -367,7 +589,20 @@
         "option_id": "option:route:entrypoint:pwmcp/inspect/--retries",
         "spelling": "--retries"
       },
-      "signature": "sha256:5386ba97182a8024aa8b87a6593f035ca4e402aee75c9d78cfe0247229c6cf41"
+      "signature": "sha256:525e1a25588b59f4e8c125a6ca5af1320acea252adea4499bc6bcbc41ae138a2"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--selector/--selector",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--selector"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--selector",
+        "spelling": "--selector"
+      },
+      "signature": "sha256:2087fc87d87f415dd74884e8f8bbcae5feb0864bd6a0ca73320385e6c6664603"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--storage-state/--storage-state",
@@ -1888,6 +2123,352 @@
           ],
           "help_group": "CONTRACT",
           "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/eval/--contract",
+          "kind": "option",
+          "metavar": "URL_OR_FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "http://pwmcp:3000/contract"
+          },
+          "parser_path": [
+            "eval"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "absolute HTTP or HTTPS page URL to open in the remote MCP browser",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:pwmcp/eval/url",
+          "kind": "argument",
+          "metavar": "URL",
+          "minimum_values": 1,
+          "name": "url",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "eval"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "JavaScript expression or function; omit when reading an element attribute or property",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:pwmcp/eval/expression",
+          "kind": "argument",
+          "metavar": "EXPRESSION",
+          "minimum_values": 0,
+          "name": "expression",
+          "nargs": "?",
+          "parser_kwargs": {
+            "default": null,
+            "nargs": "?"
+          },
+          "parser_path": [
+            "eval"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--selector",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "CSS selector for an element attribute or property read",
+          "dest": "selector",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--selector"
+          ],
+          "help_group": "ELEMENT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/eval/--selector",
+          "kind": "option",
+          "metavar": "CSS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "eval"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--attr",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read this attribute from the selected element(s)",
+          "dest": "attr",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--attr"
+          ],
+          "help_group": "ELEMENT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/eval/--attr",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "eval"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--property",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "read this property from the selected element(s)",
+          "dest": "property",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--property"
+          ],
+          "help_group": "ELEMENT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/eval/--property",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "eval"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--all",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "return a JSON array for every matching element instead of the first match",
+          "dest": "all_matches",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--all"
+          ],
+          "help_group": "ELEMENT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/eval/--all",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "dest": "all_matches"
+          },
+          "parser_path": [
+            "eval"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--timeout",
+          "choices": null,
+          "const": null,
+          "default": 30.0,
+          "default_present": true,
+          "description": "maximum time per MCP request for navigation and evaluation in seconds",
+          "dest": "timeout",
+          "effective_default": 30.0,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--timeout"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/eval/--timeout",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 30.0,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "eval"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "evaluate JavaScript in a page through PWMCP's browser_evaluate MCP tool and print JSON",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:pwmcp/eval",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "eval"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "eval"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "evaluate JavaScript in a page through PWMCP's browser_evaluate MCP tool and print JSON",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--contract",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "pwmcp contract URL or JSON file",
+          "dest": "contract",
+          "effective_default": "http://pwmcp:3000/contract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--contract"
+          ],
+          "help_group": "CONTRACT",
+          "hidden": false,
           "id": "option:route:entrypoint:pwmcp/inspect/--contract",
           "kind": "option",
           "metavar": "URL_OR_FILE",
@@ -1938,12 +2519,13 @@
           "choices": [
             "text",
             "snapshot",
+            "html",
             "screenshot"
           ],
           "const": null,
           "default": "text",
           "default_present": true,
-          "description": "output rendered body text, an ARIA snapshot, or a PNG/JPEG screenshot",
+          "description": "output rendered body text, an ARIA snapshot, bounded HTML, or a PNG/JPEG screenshot",
           "dest": "format",
           "effective_default": "text",
           "exclusive_group": null,
@@ -1962,6 +2544,7 @@
             "choices": [
               "text",
               "snapshot",
+              "html",
               "screenshot"
             ],
             "default": "text"
@@ -1977,6 +2560,130 @@
           "required": false,
           "scope": "verb-local",
           "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--selector",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "CSS selector whose HTML to return (default: the whole document)",
+          "dest": "selector",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--selector"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--selector",
+          "kind": "option",
+          "metavar": "CSS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--html-mode",
+          "choices": [
+            "outer",
+            "inner"
+          ],
+          "const": null,
+          "default": "outer",
+          "default_present": true,
+          "description": "return outerHTML or innerHTML when --format html is selected",
+          "dest": "html_mode",
+          "effective_default": "outer",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--html-mode"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--html-mode",
+          "kind": "option",
+          "metavar": "MODE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "outer",
+              "inner"
+            ],
+            "default": "outer"
+          },
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--max-html-bytes",
+          "choices": null,
+          "const": null,
+          "default": 524288,
+          "default_present": true,
+          "description": "maximum HTML bytes returned (1 to 524288; truncation is identified)",
+          "dest": "max_html_bytes",
+          "effective_default": 524288,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--max-html-bytes"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--max-html-bytes",
+          "kind": "option",
+          "metavar": "BYTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 524288,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
         },
         {
           "action": "argparse._StoreAction",
@@ -2148,11 +2855,11 @@
           "canonical": "--retries",
           "choices": null,
           "const": null,
-          "default": 0,
+          "default": null,
           "default_present": true,
-          "description": "retry up to N more times (fresh navigation each) when an attempt fails or the page text is still changing after a 0.5 s settle window; 0 = single attempt",
+          "description": "retry up to N more times (fresh navigation each) after a failure or unstable page; by default only a recognised browser crash is retried once; --retries 0 disables it",
           "dest": "retries",
-          "effective_default": 0,
+          "effective_default": null,
           "exclusive_group": null,
           "exclusive_required": false,
           "flags": [
@@ -2166,7 +2873,7 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {
-            "default": 0,
+            "default": null,
             "type": {
               "callable": "builtins.int"
             }

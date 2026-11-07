@@ -546,7 +546,7 @@ def test_retries_exhausted_reports_the_last_failure(
     assert len(calls["goto"]) == 2
 
 
-def test_default_has_no_retry_and_no_settle_read(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_generic_navigation_failure_is_not_retried_or_settled(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _install_cli_browser(monkeypatch, fail_navigations=1)
     assert cli_module.main(["inspect", "https://example.test"]) == 1
     assert len(calls["goto"]) == 1 and calls["settles"] == []

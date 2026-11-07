@@ -86,16 +86,31 @@ The Compose stack uses the exact version-pinned image from the local cache
 when available and pulls it on a cold host.
 
 The bundled `pwmcp` CLI can inspect a remote page without installing browser
-binaries in the devcontainer:
+binaries in the devcontainer. It returns rendered text, an accessibility
+snapshot, bounded HTML, or a screenshot; `pwmcp eval` reads a JSON value through
+the existing MCP page-evaluation tool:
 
 ```bash
 pwmcp inspect https://example.com --format text
 pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format html --selector main --output page.html
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 pwmcp inspect https://self-signed.example --ignore-https-errors
 pwmcp inspect https://example.com/app \
   --wait-until networkidle --wait-for '#content'
+pwmcp eval https://example.com 'document.title'
+pwmcp eval https://example.com --selector 'meta[name=description]' --attr content
 ```
+
+HTML is capped at 512 KiB by default and reports truncation. The first
+recognised page/browser crash is retried once; `--retries N` requests additional
+attempts and `--retries 0` disables the automatic retry. A page-crash hint says
+the MCP service replied and points to page load, memory, and `/dev/shm` checks.
+`pwmcp eval` requires no separately installed `mcp` Python package. It executes
+the expression supplied by the caller in the page context, so only use it on
+pages the user is authorized to inspect. See the [remote evaluation and HTML
+design](docs/DESIGN-GUIDE.md#mcp-backed-evaluation-and-bounded-html) and
+[consumer examples](docs/CONSUMERS.md#inspect-a-webpage).
 
 For pages that render content after the initial navigation event, use
 `--wait-until networkidle` and `--wait-for` a visible, page-specific content
@@ -121,18 +136,18 @@ does not inherit PATH.
 ## Client install and upgrade
 
 The client is **one wheel, `pwmcp-client`**, with two faces: the **`pwmcp` CLI** (console script
-`pwmcp_client.cli:main`: `contract`, `versions`, `doctor`, `inspect`, `ocr`, `skills`) and the
+`pwmcp_client.cli:main`: `contract`, `versions`, `doctor`, `inspect`, `eval`, `ocr`, `skills`) and the
 **`pwmcp_client` Python library** (`BrowserLease`, `load_contract`, `PwmcpContract`, `PwmcpError`,
 `PwmcpUnavailable`, `VersionMismatch`). Installing the wheel gives both.
 
 **Versioning: 1:1 with the server release.** The wheel version is generated at release time from the
 server release (`client/src/pwmcp_client/VERSION`, one mapping helper in `pwmcp_client/release.py`):
-`1.64.1-r2` becomes `1.64.1.post2` (PEP 440 reads `-rN` as the post-release segment, so
-`packaging.version.Version("1.64.1-r2") == Version("1.64.1.post2")`). Two wheels with different
+`1.64.1-r5` becomes `1.64.1.post5` (PEP 440 reads `-rN` as the post-release segment, so
+`packaging.version.Version("1.64.1-r5") == Version("1.64.1.post5")`). Two wheels with different
 content therefore never share a version, and `pip` can tell and upgrade. Roll the client out together
-with the server it talks to. `pwmcp --version` prints the exact network-free `pwmcp 1.64.1.post2`
+with the server it talks to. `pwmcp --version` prints the exact network-free `pwmcp 1.64.1.post5`
 line the shared CLI contract requires; **`pwmcp versions`** adds the server:
-`pwmcp 1.64.1.post2 (server 1.64.1-r2)` or `(server unreachable)`.
+`pwmcp 1.64.1.post5 (server 1.64.1-r5)` or `(server unreachable)`.
 
 **Compatibility policy** (what `pwmcp.contract.json` guarantees). The contract's
 `playwright.protocol` (`<major>.<minor>` of Playwright) is the wire-protocol guarantee: a client
@@ -158,9 +173,9 @@ venv with `pip install --no-index --require-hashes` (pwmcp-client plus its exact
 dependencies, including that release's Playwright) and links `~/.local/bin/pwmcp`:
 
 ```bash
-base=https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v1.64.1-r2
+base=https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v1.64.1-r5
 curl -fsSLO "$base/pwmcp-client-install.py"; curl -fsSL "$base/pwmcp-client-install.py.sha256"   # check it
-python3 pwmcp-client-install.py --version 1.64.1-r2      # private repo: --github-token-file FILE
+python3 pwmcp-client-install.py --version 1.64.1-r5      # private repo: --github-token-file FILE
 pwmcp skills install && pwmcp doctor --contract http://pwmcp-host:3000/contract
 ```
 
@@ -177,7 +192,7 @@ and `pwmcp-client-requirements.txt`, a hash-pinned requirements file whose lines
 `name @ <asset URL> --hash=sha256:...`. Plain `pip` install, one go, hashes enforced:
 
 ```bash
-rel=1.64.1-r3   # the server's release; the wheel version is 1.64.1.post3
+rel=1.64.1-r5   # the server's release; the wheel version is 1.64.1.post5
 curl -fsSLO https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v$rel/pwmcp-client-requirements.txt
 python3 -m venv ~/.venvs/pwmcp && ~/.venvs/pwmcp/bin/pip install --require-hashes -r pwmcp-client-requirements.txt
 ~/.venvs/pwmcp/bin/pwmcp versions --contract http://pwmcp-host:3000/contract
@@ -197,7 +212,7 @@ Operator procedure (do not run it from a release job; the instance is live). The
 fresh-install verb). Replace `$rel`:
 
 ```bash
-rel=1.64.1-r3
+rel=1.64.1-r5
 cd /tmp && base=https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v$rel
 curl -fsSLO $base/get.py && curl -fsSL $base/get.py.sha256 && sha256sum get.py     # compare
 XDG_DATA_HOME=/srv python3 get.py update --scope user --version pwmcp-v$rel

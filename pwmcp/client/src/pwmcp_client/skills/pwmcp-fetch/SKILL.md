@@ -3,11 +3,11 @@ name: pwmcp-fetch
 description: Read JavaScript-rendered pages when raw fetch returns empty, skeletal, or truncated content, using PWMCP's managed browser through its client CLI or MCP endpoint.
 ---
 
-> **Tool versions last checked (2026-09-09):** pwmcp bundles
-> `@playwright/mcp` behind an MCP HTTP/SSE server (port 8931); the recipe
-> below is pinned to `mcp` SDK `2.2.0`'s API shape (`streamable_http_client`
-> yielding a 2-tuple). Re-verify against the installed `mcp` package version
-> and PWMCP documentation if a call signature below errors.
+> **Tool versions last checked (2026-11-07):** pwmcp bundles
+> `@playwright/mcp` `0.0.80` behind an MCP HTTP/SSE server (port 8931).
+> The Python recipe was checked with `mcp` SDK `2.3.0`; its
+> `streamable_http_client` API still yields the 2-tuple `(read, write)`.
+> The server's `browser_click` tool requires a `target` argument.
 
 # Reading JavaScript-rendered pages with PWMCP
 
@@ -58,6 +58,45 @@ Avoid using a generic page shell as the selector. If the wait times out, inspect
 the page snapshot and determine whether the site is still loading, requires
 authentication, or is showing an error before reporting that content is absent.
 If the wait ended on a bot-protection page, `inspect` says so itself (exit 4).
+Do not treat a short result or zero expected records as proof that the page has
+no data. `inspect` warns when text is under 1 KiB without `--wait-for` and when
+page diagnostics report errors; read those stderr warnings, then wait for a
+page-specific selector and inspect again if the expected content is missing.
+
+Use bounded HTML when the rendered markup or embedded data is more useful than
+visible text. PWMCP returns the document by default, or one element with
+`--selector`; `--html-mode inner` omits the selected element's outer tag.
+
+```bash
+pwmcp inspect "$URL" --format html --selector main --html-mode outer --output page.html
+pwmcp inspect "$URL" --format html --selector 'script#__NEXT_DATA__' --html-mode inner
+```
+
+HTML is capped at 512 KiB by default. A truncated result is marked in JSON and
+announced on stderr; narrow the selector when you need one embedded data block.
+HTML inspection reports recognised bot-protection pages as BLOCKED (exit 4)
+without writing their challenge markup to the requested output file.
+
+For a specific page value or an element attribute/property, use `pwmcp eval`:
+
+```bash
+pwmcp eval "$URL" 'document.title'
+pwmcp eval "$URL" --selector 'meta[name=description]' --attr content
+pwmcp eval "$URL" --selector 'script#__NEXT_DATA__' --property textContent
+pwmcp eval "$URL" --selector '.card' --property textContent --all --timeout 60
+```
+
+It prints JSON and does not require the Python `mcp` SDK. JavaScript runs in
+the page context with that page's origin permissions; use it only on pages the
+user is authorized to inspect. The `--timeout` value is the limit for each MCP
+request.
+
+If `inspect` reports that the **page or browser crashed**, the MCP service has
+already replied; PWMCP retries that recognised first-navigation crash once by
+default and says so on stderr. Retry manually with `--retries N` when needed;
+`--retries 0` disables the automatic crash retry. Reduce page load and check
+browser memory and `/dev/shm` if it repeats. A separate endpoint connection
+error tells you to check PWMCP reachability instead.
 
 ## Blocked by bot protection: report it, do not work around it
 
@@ -133,7 +172,7 @@ does not send keys; re-run it yourself after each action you take.
 ## Recipe (Python, `mcp` SDK)
 
 ```bash
-pip install --quiet mcp   # if not already present; SDK version used below: 2.2.0
+pip install --quiet mcp   # if not already present; SDK version checked: 2.3.0
 ```
 
 ```python
@@ -141,8 +180,7 @@ import asyncio, json, os, sys
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 # ^ note the exact name: streamable_http_client (lowercase, underscored) —
-#   NOT streamablehttp_client. And it yields a 2-tuple (read, write) in SDK
-#   2.2.0, not 3 — don't unpack a third value.
+#   NOT streamablehttp_client. SDK 2.3.0 yields a 2-tuple (read, write).
 
 async def fetch(url: str) -> str:
     endpoint = os.environ.get("PWMCP_MCP_URL")
@@ -186,6 +224,12 @@ Useful other MCP tools on the same configured server if `innerText` isn't enough
 interactive elements), `browser_console_messages` (JS console errors —
 useful when a page is failing to render something), `browser_take_screenshot`,
 `browser_click`/`browser_type` for pages needing interaction first.
+After a fresh `browser_snapshot` identifies the intended control, pass the
+required `target` argument to `browser_click`:
+
+```python
+await session.call_tool("browser_click", {"target": "the unique Continue button from the snapshot"})
+```
 
 ## Gotchas hit in practice
 

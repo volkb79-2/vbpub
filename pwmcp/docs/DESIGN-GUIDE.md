@@ -48,7 +48,7 @@ internal-network access policy. See [security controls](SECURITY.md#internal-mod
 ## Client version projection
 
 The client wheel is versioned 1:1 with the server release: `client/src/pwmcp_client/VERSION` is generated
-by `scripts/resolve-playwright-version.py` from the release (`1.64.1-r2` -> `1.64.1.post2`, the PEP 440
+by `scripts/resolve-playwright-version.py` from the release (`1.64.1-r5` -> `1.64.1.post5`, the PEP 440
 spelling of the same string) through the one helper in `pwmcp_client/release.py`, which the resolver loads
 by path and the CLI imports. `--check` fails when the file differs from the mapped contract release, and the
 file is listed in `[project.release] commit_generated` beside the other generated client projections.
@@ -101,6 +101,44 @@ selectors do; PWMCP waits for the first visible match instead of treating
 multiple matches as an error. This keeps the wait tied to rendered content
 without adding a fixed delay to every inspection. See the
 [dynamic page example](CONSUMERS.md#inspect-a-webpage).
+
+### MCP-backed evaluation and bounded HTML
+
+`pwmcp eval` and `inspect --format html` use the existing `browser_navigate`
+and `browser_evaluate` tools from the pinned `@playwright/mcp` server. PWMCP
+adds no new server tool or gateway permission: arbitrary page evaluation is
+already part of the MCP tool surface. `eval` is an explicit caller-supplied
+JavaScript capability for reading values from the page; HTML extraction sends
+only fixed page-inspection code. Both speak the small Streamable HTTP subset
+they need (`initialize`, `tools/list`, `tools/call`, and session close) with the
+Python standard library. This avoids making the separately installed `mcp`
+SDK a dependency of the client wheel, while the tests exercise JSON and SSE
+responses against a local fake MCP endpoint.
+
+HTML is encoded in the browser before its response leaves the page context and
+is capped at 512 KiB of UTF-8 source bytes. That bounds the MCP response itself
+and provides an exact included-byte count; a byte boundary is shortened to the
+last valid UTF-8 sequence. The HTML format probes the title and bounded body
+text with the same existing block detector before returning markup, so a
+recognised challenge remains exit 4 and is never written as target HTML. The
+probe can use response status where Chromium exposes it through Navigation
+Timing; browser JavaScript cannot read arbitrary response headers, so HTML-mode
+detection has fewer signals than the native `inspect` path.
+
+The first recognized page/browser lifecycle crash receives one automatic retry
+when `--retries` is omitted. A crash delivered by a navigation/tool call proves
+that the service replied; this retry does not conceal endpoint connection
+failures or unrelated page errors. `--retries N` keeps its explicit broader
+retry behavior, and `--retries 0` disables the automatic crash retry. PWMCP's
+stack currently allocates 2 GiB for `/dev/shm`, has no service-specific memory
+limit on the unified browser container, and does not set
+`--disable-dev-shm-usage`. The OOM investigated in PWMCP-41 came from a test
+fake, not the service envelope. There is no confirmed cold-context crash defect
+or evidence for changing those resource settings; the retry is a bounded
+recovery for a transient renderer failure, and the operator hint points to page
+load, memory, and `/dev/shm` checks if it repeats. Host memory limits remain
+host-owned. See [consumer commands](CONSUMERS.md#inspect-a-webpage) and
+[evaluation trust boundary](SECURITY.md#mcp-page-evaluation).
 
 ### Certificate errors during inspection
 

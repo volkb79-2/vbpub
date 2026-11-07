@@ -5,7 +5,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+### Added
+- feat(pwmcp): add standard-library `pwmcp eval` for JSON-valued page JavaScript and `inspect --format html` for bounded selector/document HTML through the existing MCP tools; preserve BLOCKED handling for detected challenge pages (PWMCP-42)
+
 ### Fixed
+- fix(pwmcp): distinguish page/browser crashes from MCP or browser-service reachability errors and retry one recognized first-navigation crash by default with an explicit stderr note; document the 2 GiB `/dev/shm` allocation and the absence of a PWMCP-owned browser memory cap (PWMCP-42)
+- fix(pwmcp): update `pwmcp-fetch` for `mcp` SDK 2.3.0 and required `browser_click.target`; test skill tool names against the pinned server tool contract and its CLI flags against the registered parser (PWMCP-42)
 - test(pwmcp): close the 1.64.1-r4 R2 survivors with boundary, retry, diagnostics, and storage-state regressions; document four equivalent mutants (PWMCP-41)
 - test(pwmcp): make the rejected-body reader fake honor zero-byte reads and cap reads so drain mutants fail cleanly instead of growing the test's read log (PWMCP-41)
 - test(pwmcp): make the recognition-timeout and slot-release test independent of subprocess startup time (PWMCP-41)
