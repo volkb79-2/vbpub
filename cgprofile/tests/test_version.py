@@ -21,7 +21,7 @@ def _project_root(tmp_path: Path, prefix: str = "cgprofile-v") -> Path:
 
 def _tagged_git_project(tmp_path: Path, tag: str = "cgprofile-v1.2.3"):
     root = tmp_path / "repo"
-    project = root / "scripts" / "cgroup-profiler"
+    project = root / "cgprofile"
     project.mkdir(parents=True)
     (project / "cmru.toml").write_text(
         '[project]\nprefix = "cgprofile-v"\n', encoding="utf-8",
@@ -204,7 +204,7 @@ def test_dirty_checkout_at_release_tag_is_refused(tmp_path, monkeypatch):
     _git_tags(
         monkeypatch,
         stdout="cgprofile-v1.1.0\n",
-        status_stdout=" M scripts/cgroup-profiler/lib/serve.py\n",
+        status_stdout=" M cgprofile/lib/serve.py\n",
     )
 
     with pytest.raises(RuntimeError, match="tracked or untracked changes"):
@@ -330,7 +330,7 @@ def test_cmru_release_identity_refuses_an_empty_configured_prefix(
     (project / "cmru.toml").write_text(
         '[project]\nprefix = ""\n', encoding="utf-8",
     )
-    git("add", "scripts/cgroup-profiler/cmru.toml")
+    git("add", "cgprofile/cmru.toml")
     git("commit", "-q", "-m", "empty project prefix")
     commit = git("rev-parse", "HEAD")
     git("tag", "--delete", old_tag)

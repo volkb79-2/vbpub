@@ -130,7 +130,7 @@ class TestFixtureIdentity:
         mounts the whole worktree (a full git worktree checkout, not just
         this project directory) read-only at /work.
         """
-        worktree_root = Path(__file__).resolve().parents[3]
+        worktree_root = Path(__file__).resolve().parents[2]
         frozen = worktree_root / "run-gate-project" / "nyxloom-trove" / "fixtures" / "rg55"
         assert frozen.is_dir(), f"expected the frozen fixtures at {frozen}"
         diffs = _dircmp_diffs(filecmp.dircmp(str(frozen), str(FIXTURES)))

@@ -239,11 +239,11 @@ REMOVED = (
 
 #: Live documents that must not mention a removed name.
 LIVE_DOCS = (
-    "scripts/cgroup-profiler/README.md",
-    "scripts/cgroup-profiler/ATTACH-GUIDE.md",
-    "scripts/cgroup-profiler/DESIGN.md",
-    "scripts/cgroup-profiler/docs/DESIGN-GUIDE.md",
-    "scripts/cgroup-profiler/docs/PROTOCOL.md",
+    "cgprofile/README.md",
+    "cgprofile/ATTACH-GUIDE.md",
+    "cgprofile/DESIGN.md",
+    "cgprofile/docs/DESIGN-GUIDE.md",
+    "cgprofile/docs/PROTOCOL.md",
     "mdt-cockpit/host-setup/README.md",
     "mdt-cockpit/host-setup/scripts/check.sh",
     "mdt-cockpit/templates/devcontainer.json",
@@ -269,7 +269,7 @@ def _live_texts() -> Dict[str, str]:
         path = REPO / relative
         assert path.is_file(), f"live document list names a missing file: {relative}"
         texts[relative] = path.read_text(encoding="utf-8")
-    texts["scripts/cgroup-profiler/docs/CONSUMERS.md"] = _consumers_without_migration_table()
+    texts["cgprofile/docs/CONSUMERS.md"] = _consumers_without_migration_table()
     return texts
 
 

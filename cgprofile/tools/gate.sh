@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gate.sh — run cgroup-profiler's suite in the shared vbpub gate container.
+# gate.sh — run cgprofile's suite in the shared vbpub gate container.
 #
 #   tools/gate.sh <worktree> [target]
 #
@@ -38,7 +38,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="$(dirname "$here")"
-repo_root="$(cd "$project_dir/../.." && pwd)"
+repo_root="$(cd "$project_dir/.." && pwd)"
 project_rel="${project_dir#"$repo_root"/}"
 
 worktree="${1:-$repo_root}"
@@ -69,7 +69,7 @@ if command -v git >/dev/null 2>&1 && git -C "$project_dir" rev-parse --git-dir >
     while IFS= read -r ignored_path; do
       [ -n "$ignored_path" ] && printf '  %s\n' "$ignored_path" >&2
     done <<<"$ignored_src"
-    die "add an exception to .gitignore (see !scripts/damon-analysis/lib/ for precedent)"
+    die "add an exception to .gitignore (see !cgprofile/src/cgprofile/ for precedent)"
   fi
   [ -n "$untracked" ] && printf 'gate: warning — untracked source files:\n%s\n' "$untracked" >&2
 fi

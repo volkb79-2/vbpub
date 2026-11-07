@@ -68,7 +68,7 @@ ENV CGPROFILE_VERSION="${CGPROFILE_VERSION}"
 LABEL org.opencontainers.image.title="cgprofile" \
       org.opencontainers.image.description="RG-55 cgroup/DAMON profiling daemon (RG55-INTERFACE-CONTRACT.md)" \
       org.opencontainers.image.source="https://github.com/volkb79-2/vbpub" \
-      org.opencontainers.image.documentation="https://github.com/volkb79-2/vbpub/tree/main/scripts/cgroup-profiler" \
+      org.opencontainers.image.documentation="https://github.com/volkb79-2/vbpub/tree/main/cgprofile" \
       org.opencontainers.image.version="${CGPROFILE_VERSION}" \
       org.opencontainers.image.revision="${GIT_REVISION}"
 

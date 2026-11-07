@@ -162,7 +162,7 @@ def test_host_gate_mounts_linked_worktree_and_git_common_directory(tmp_path):
         ],
         ["type=bind", "source=/host/git-common", f"target={reported_common_dir}", "readonly"],
     ]
-    assert gate_run[gate_run.index("-w") + 1] == f"{worktree}/scripts/cgroup-profiler"
+    assert gate_run[gate_run.index("-w") + 1] == f"{worktree}/cgprofile"
     assert "tester-unified/build-image.sh" in (PROJECT_ROOT / "tools" / "gate.sh").read_text(
         encoding="utf-8"
     )
@@ -182,7 +182,7 @@ def test_host_gate_mounts_linked_worktree_and_git_common_directory(tmp_path):
         for call in calls
         if call[0] == "run"
         and any(arg.startswith("--memory=") for arg in call)
-        and call[call.index("-w") + 1] == f"{repo}/scripts/cgroup-profiler"
+        and call[call.index("-w") + 1] == f"{repo}/cgprofile"
     )
     assert "--init" in main_gate_run
     assert "--pids-limit=8192" in main_gate_run

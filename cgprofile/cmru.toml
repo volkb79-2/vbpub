@@ -1,16 +1,15 @@
 # =============================================================================
-# cgroup-profiler release contract — parsed ONLY by cmru (one parser per
+# cgprofile release contract — parsed ONLY by cmru (one parser per
 # format, D-110). Repository identity and targets are owned by the root
 # cmru.orchestration.toml; this is the project's lifecycle/build contract.
 #
 # `project.id` below MUST equal the key this project is registered under in
-# the root cmru.orchestration.toml ([orchestration.project.cgroup-profiler])
+# the root cmru.orchestration.toml ([orchestration.project.cgprofile])
 # — cmru's config loader errors ("config declares project.id=X, expected Y")
 # if they diverge; that key, not the id, is what drives change-detection
 # (the directory holding whatever `config = "..."` names). It equals this
 # directory's OWN basename by convention (run-gate-project/cmru.toml's own
-# header explains the same convention), even though the project actually
-# lives two levels down (scripts/cgroup-profiler/), not at the repo root.
+# header explains the same convention), and the project lives at the repo root.
 #
 # `strategy = "scm"`: the FIRST release must pass `--set-version 1.0.0`
 # (the controller cuts it, per the P1 handoff — this is a brand-new
@@ -26,7 +25,7 @@ kind = "ciu"
 [env]
 
 [project]
-id = "cgroup-profiler"
+id = "cgprofile"
 description = "cgprofile — cgroup/DAMON resource profiler: a wrap/attach CLI for ad hoc use, and the RG-55 host daemon run-gate talks to per lane"
 template_revision = 4
 prefix = "cgprofile-v"

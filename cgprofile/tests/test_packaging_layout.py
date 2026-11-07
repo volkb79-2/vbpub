@@ -111,7 +111,7 @@ def test_pyproject_wheel_facts():
     assert data["tool"]["setuptools"]["package-data"] == {
         "cgprofile": ["data/*", "skills/*/SKILL.md"]}
     scm = data["tool"]["setuptools_scm"]
-    assert scm["root"] == "../.."
+    assert scm["root"] == ".."
     assert "cgprofile-v" in scm["tag_regex"]
     assert "fallback_version" not in scm
 
