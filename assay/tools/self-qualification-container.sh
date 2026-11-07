@@ -22,23 +22,16 @@ die() {
   exit "$exit_status"
 }
 
-RESOURCE_OBSERVER_SOURCE=/run/cgprofile/observer/cgprofile.sock
-# This override names Docker's host-side bind source, not a translated target
-# path. Production uses the canonical host socket; the registered gate tests
-# inject the already-mounted observer source while substituting Docker.
-if [[ -v ASSAY_GATE_RESOURCE_OBSERVER_SOURCE ]]; then
-  RESOURCE_OBSERVER_SOURCE="$ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"
-fi
+lane="${2:-}"
+[[ -n ${CGPROFILE_OBSERVER_SOCKET:-} ]] \
+  || die 'CGPROFILE_OBSERVER_SOCKET is unset; log in again, or set -a; . /etc/host-endpoints.env, or run cgpd install'
+RESOURCE_OBSERVER_SOURCE="$CGPROFILE_OBSERVER_SOCKET"
 RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
-RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"
-RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/cgprofile.sock"
+RESOURCE_OBSERVER_TARGET_DIRECTORY="$RESOURCE_OBSERVER_DIRECTORY_SOURCE"
+RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_SOURCE"
 source "$(dirname "${BASH_SOURCE[0]}")/resource-observer-gid.sh"
 
 resource_observer_gid() {
-  case "$RESOURCE_OBSERVER_SOURCE" in
-    /run/cgprofile/observer/cgprofile.sock|/run/cgprofile-observer/cgprofile.sock) ;;
-    *) die "unsupported cgprofile observer source path: $RESOURCE_OBSERVER_SOURCE" ;;
-  esac
   assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" \
     || die 'host observer group identity check failed'
 }

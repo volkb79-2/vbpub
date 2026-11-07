@@ -35,7 +35,7 @@ PILOT_HOST_CHECK = PROJECT_ROOT / "tools" / "b110_pilot_host_check.py"
 ANALYSIS_PILOT_HOST_CHECK = PROJECT_ROOT / "tools" / "analysis_r2_pilot_host_check.py"
 CONTAINER_ID = "a" * 64
 ANALYSIS_PILOT_ATTESTATION = "f" * 64
-OBSERVER_SOURCE = "/run/cgprofile/observer/cgprofile.sock"
+OBSERVER_SOURCE = "/run/assay-observer/cgprofile.sock"
 _SHORT_OBSERVER_FIXTURE_DIRS: set[Path] = set()
 
 
@@ -675,10 +675,10 @@ def _prepare_observer_fixture(tmp_path: Path, fake_bin: Path, env: dict[str, str
     fake_stat.write_text(
         "#!/bin/bash\n"
         'if [[ "$#" == 3 && "$1" == "-Lc" ]]; then\n'
-        '  if [[ "$2" == "%u %g %a" && "$3" == "/run/cgprofile/observer" ]]; then\n'
+        '  if [[ "$2" == "%u %g %a" && "$3" == "${CGPROFILE_OBSERVER_SOCKET%/*}" ]]; then\n'
         "    printf '0 0 755\\n'; exit 0\n"
         "  fi\n"
-        '  if [[ "$2" == "%u %g %a" && "$3" == "/run/cgprofile/observer/cgprofile.sock" ]]; then\n'
+        '  if [[ "$2" == "%u %g %a" && "$3" == "$CGPROFILE_OBSERVER_SOCKET" ]]; then\n'
         "    printf '0 995 660\\n'; exit 0\n"
         "  fi\n"
         "fi\n"
@@ -687,7 +687,8 @@ def _prepare_observer_fixture(tmp_path: Path, fake_bin: Path, env: dict[str, str
     )
     fake_stat.chmod(0o755)
     env["ASSAY_TEST_OBSERVER_DIRECTORY"] = str(observer_dir)
-    env["ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"] = OBSERVER_SOURCE
+    env["CGPROFILE_OBSERVER_SOCKET"] = OBSERVER_SOURCE
+    env.pop("ASSAY_GATE_RESOURCE_OBSERVER_SOURCE", None)
 
 
 @lru_cache(maxsize=1)
@@ -726,8 +727,9 @@ def _isolated_launcher_command(env: dict[str, str], *argv: str) -> list[str]:
             "set -eu",
             f"{shlex.quote(mount)} --make-rprivate /",
             f"{shlex.quote(mount)} -t tmpfs -o mode=755,nosuid,nodev tmpfs /run",
-            f"{shlex.quote(mkdir)} -p /run/cgprofile/observer",
-            f"{shlex.quote(mount)} --bind \"$ASSAY_TEST_OBSERVER_DIRECTORY\" /run/cgprofile/observer",
+            'observer_dir="${CGPROFILE_OBSERVER_SOCKET%/*}"',
+            f"{shlex.quote(mkdir)} -p \"$observer_dir\"",
+            f"{shlex.quote(mount)} --bind \"$ASSAY_TEST_OBSERVER_DIRECTORY\" \"$observer_dir\"",
             'exec /bin/bash "$@"',
         )
     )
@@ -940,13 +942,6 @@ if '--archive-prior-snapshot' in sys.argv:
         "TIMEOUT_TRACE": str(tmp_path / "timeout.jsonl"),
         "FAST_DOCKER_TIMEOUT": "1" if fast_docker_timeout else "0",
     }
-    env["ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"] = os.environ.get(
-        "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
-        os.environ.get(
-            "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/observer/cgprofile.sock",
-        ),
-    )
     if inner_pilot_log is not None:
         env["ANALYSIS_PILOT_INNER_LOG"] = str(inner_pilot_log)
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
@@ -1008,13 +1003,6 @@ def launch_env(tmp_path: Path, *, mode: str):
         "TMPDIR": str(tmp_path),
         "DOCKER_WAIT_READY": str(tmp_path / "docker-wait-ready.fifo"),
     }
-    env["ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"] = os.environ.get(
-        "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
-        os.environ.get(
-            "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/observer/cgprofile.sock",
-        ),
-    )
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
     env.pop("ASSAY_GATE_ALLOW_SHARED_HOST", None)
     env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
@@ -1124,15 +1112,9 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     expected_mounts = [f"type=bind,src={host_workspace},dst={host_workspace}"]
     if host_workspace != "/workspaces/vbpub":
         expected_mounts.append(f"type=bind,src={host_workspace},dst=/workspaces/vbpub")
-    observer_source = os.environ.get(
-        "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
-        os.environ.get(
-            "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/observer/cgprofile.sock",
-        ),
-    )
+    observer_source = OBSERVER_SOURCE
     expected_mounts.append(
-        f"type=bind,src={Path(observer_source).parent},dst=/run/cgprofile-observer,readonly"
+        f"type=bind,src={Path(observer_source).parent},dst={Path(observer_source).parent},readonly"
     )
     assert mounts == expected_mounts
     assert all("docker.sock" not in mount for mount in mounts)
@@ -1158,7 +1140,7 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     ).stdout.strip()
     assert f"ASSAY_B105_GATE_EXPECTED_COMMIT={source_commit}" in env
     assert f"ASSAY_B105_GATE_EXPECTED_TREE={source_tree}" in env
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/cgprofile.sock" in env
+    assert f"ASSAY_RESOURCE_OBSERVER_SOCKET={OBSERVER_SOURCE}" in env
 
 
 @pytest.mark.parametrize(

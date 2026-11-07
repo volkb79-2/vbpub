@@ -38,6 +38,7 @@ from gate.tests.support import PROJECT_ROOT
 GATE_SCRIPT = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
 SELF_QUALIFICATION_SCRIPT = PROJECT_ROOT / "tools" / "self-qualification-container.sh"
 OBSERVER_GID_HELPER = PROJECT_ROOT / "tools" / "resource-observer-gid.sh"
+OBSERVER_SOURCE = "/run/assay-observer/cgprofile.sock"
 DISTRIBUTION = PROJECT_ROOT / "gate" / "distribution"
 LOCKED_ASSETS = PROJECT_ROOT / "nyxloom-trove" / "carve-assets" / "P24"
 AMBIENT_TESTER_VENV_PYTHON = "/opt/tester-venv/bin/python"
@@ -89,8 +90,12 @@ def _host_environ() -> dict[str, str]:
     `ASSAY_GATE_ALLOW_SHARED_HOST` must not flip a test's result. Tests of the opt-in
     set it explicitly on the environment they pass."""
     return {
-        **{k: v for k, v in os.environ.items() if k != "ASSAY_GATE_ALLOW_SHARED_HOST"},
+        **{
+            k: v for k, v in os.environ.items()
+            if k not in ("ASSAY_GATE_ALLOW_SHARED_HOST", "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE")
+        },
         "ASSAY_GATE_HOST_DOCKER_GID": "994",
+        "CGPROFILE_OBSERVER_SOCKET": OBSERVER_SOURCE,
     }
 
 
@@ -204,9 +209,13 @@ def test_observer_guards_use_the_new_paths_and_launcher_docker_gid() -> None:
         source = script.read_text(encoding="utf-8")
         assert 'resource-observer-gid.sh' in source
         assert 'assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE"' in source
-        assert "/run/cgprofile/observer/cgprofile.sock" in source
-        assert 'RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"' in source
-        assert '"$RESOURCE_OBSERVER_TARGET_DIRECTORY/cgprofile.sock"' in source
+        assert 'RESOURCE_OBSERVER_SOURCE="$CGPROFILE_OBSERVER_SOCKET"' in source
+        assert 'RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_SOURCE"' in source
+        assert 'RESOURCE_OBSERVER_TARGET_DIRECTORY="$RESOURCE_OBSERVER_DIRECTORY_SOURCE"' in source
+        assert '[[ -n ${CGPROFILE_OBSERVER_SOCKET:-} ]]' in source
+        assert "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE" not in source
+        assert "/run/cgprofile/observer/cgprofile.sock" not in source
+        assert "/run/cgprofile-observer" not in source
         assert "resource-observer.sock" not in source
         assert "ASSAY_GATE_HOST_DOCKER_GID" in source
     helper = OBSERVER_GID_HELPER.read_text(encoding="utf-8")
@@ -223,6 +232,32 @@ def test_observer_guards_use_the_new_paths_and_launcher_docker_gid() -> None:
     gate_source = GATE_SCRIPT.read_text(encoding="utf-8")
     assert 'stat -Lc %g "$docker_socket_local"' not in gate_source
     assert '"$docker_gid" =~ ^[1-9][0-9]*$' in gate_source
+
+
+@pytest.mark.parametrize(
+    ("script", "argv"),
+    [
+        (GATE_SCRIPT, ("/workspaces/vbpub",)),
+        (SELF_QUALIFICATION_SCRIPT, ("/workspaces/vbpub", "self-qualification-provisional")),
+    ],
+)
+def test_gate_launchers_name_the_missing_environment_endpoint_and_remedy(script, argv) -> None:
+    env = _host_environ()
+    env.pop("CGPROFILE_OBSERVER_SOCKET")
+    proc = subprocess.run(
+        ["bash", str(script), *argv],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+        check=False,
+    )
+
+    assert proc.returncode == 3
+    assert (
+        "CGPROFILE_OBSERVER_SOCKET is unset; log in again, or set -a; "
+        ". /etc/host-endpoints.env, or run cgpd install"
+    ) in proc.stderr
 
 
 @pytest.mark.parametrize(
@@ -245,7 +280,6 @@ def test_self_qualification_identity_guard_reads_the_observer_socket_gid(
             "#!/bin/bash\n"
             '[[ "$1" == "-c" && "$2" == "%g" ]] || exit 90\n'
             'case "$3" in\n'
-            '  /run/cgprofile-observer) printf "0\\n" ;;\n'
             '  "$ASSAY_RESOURCE_OBSERVER_SOCKET") printf "4242\\n" ;;\n'
             '  *) exit 91 ;;\n'
             'esac\n'
@@ -670,13 +704,13 @@ def test_registered_self_gate_tracks_container_by_owned_id_and_wait_exit(
     assert "--cpus=3" in run
     assert "--group-add" in run and "994" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/cgprofile.sock" in run
+    assert f"ASSAY_RESOURCE_OBSERVER_SOCKET={OBSERVER_SOURCE}" in run
     assert f"ASSAY_GATE_EXPECTED_COMMIT={HEX40}" in run
     assert "CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice" in run
     assert "--network=none" in run
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
-    assert "type=bind,source=/run/cgprofile/observer,target=/run/cgprofile-observer,readonly" in run
+    assert f"type=bind,source={Path(OBSERVER_SOURCE).parent},target={Path(OBSERVER_SOURCE).parent},readonly" in run
     assert not any("docker.sock" in value for value in run)
     assert run.index("tester-unified:local") < run.index("bash")
     container_id = "a" * 64
@@ -965,11 +999,11 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
     assert "--pids-limit=32" in run
     assert "--cgroup-parent=dev-gates.slice" in run
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in run
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/cgprofile.sock" in run
+    assert f"ASSAY_RESOURCE_OBSERVER_SOCKET={OBSERVER_SOURCE}" in run
     assert "ASSAY_B145_LOW_PIDS_PROBE=1" in run
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in run
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in run
-    assert "type=bind,source=/run/cgprofile/observer,target=/run/cgprofile-observer,readonly" in run
+    assert f"type=bind,source={Path(OBSERVER_SOURCE).parent},target={Path(OBSERVER_SOURCE).parent},readonly" in run
     assert "tester-unified:local" in run
     probe_command = run[run.index("bash") + 2]
     assert probe_command.startswith(
@@ -1277,7 +1311,6 @@ def test_gate_script_preserves_required_markers_and_hardens_the_build() -> None:
         "--no-index",
         "--cgroup-parent=",
         "ASSAY_RESOURCE_OBSERVER_SOCKET",
-        "cgprofile.sock",
     ):
         assert required in source, f"missing required gate flag: {required}"
 

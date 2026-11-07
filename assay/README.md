@@ -327,17 +327,17 @@ assay exists to close that gap mechanically, not by policy:
   Assay may use the explicitly configured
   `ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint, but only for that hidden-
   ancestor condition; all identity, ancestry, and attribution checks remain
-  fail-closed. Run-Gate's `resource_observer = "cgprofile"` mounts a
-  separate observer-only socket at host path
-  `/run/cgprofile/observer/cgprofile.sock`, mounted in the lane as
-  `/run/cgprofile-observer/cgprofile.sock`; it never mounts the control socket
-  at `/run/cgprofile/control/cgprofile.sock`. Assay's host launchers never
-  mount or stat the control socket; Run-Gate carries the control-GID preflight
-  because Run-Gate opens that endpoint for control requests. The observer
-  directory must be `root:root`, and launchers read the observer GID from the
-  socket inode. The new paths require the host socket cutover, so keep earlier
-  Run-Gate and Assay pins on hosts that still use the old layout. See the
-  [socket cutover rationale](docs/DESIGN-GUIDE.md#host-cgprofile-socket-cutover)
+  fail-closed. Run-Gate's `resource_observer = "cgprofile"` reads the observer
+  endpoint from `CGPROFILE_OBSERVER_SOCKET` and mounts its directory read-only
+  at the same path in the lane. The lane receives that identity path as
+  `ASSAY_RESOURCE_OBSERVER_SOCKET`; Assay's six observer-enabled lanes declare
+  it as required infrastructure, so an unset value is a named error. Launchers
+  do not carry a socket path default. They never mount or stat the separate
+  control endpoint; Run-Gate carries the control-GID preflight because it opens
+  that endpoint for control requests. The observer directory must be `root:root`,
+  and launchers read the observer GID from the socket inode. Use the installed
+  host endpoint environment before running these gates. See the
+  [endpoint rationale](docs/DESIGN-GUIDE.md#host-cgprofile-socket-endpoints)
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
   Assay's tester launchers require the host Docker GID as a numeric value:
   `ASSAY_GATE_HOST_DOCKER_GID` takes precedence over `MDT_HOST_DOCKER_GID`.
@@ -1593,9 +1593,9 @@ you're changing assay itself:
   [consumer guide](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
   The separately invoked `run-gate self-qualification` requires that receipt for
   its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; exit 3 means incomplete or infrastructure evidence and must be retried), then runs full-source
-  R0-R3 qualification in `tester-unified`. During the explicitly waived 10.0.x
-  release window, CMRU's Assay `run-tests` step also invokes
-  `run-gate self-qualification-provisional`, which runs R0, R1 and R3 and records
+  R0-R3 qualification in `tester-unified`. During the currently authorized
+  `assay >=10.0.0, <12.1.0` waiver window, CMRU's Assay `run-tests` step also invokes
+  `self-qualification-provisional`, which runs R0, R1 and R3 and records
   the R2 postponement in `.assay/mutation-postponed-assay.json`; its
   `cmru_release_gate_version_bound` field records whether the protected CMRU
   transaction version was received and matched. It never claims an R2 pass.
@@ -1605,6 +1605,14 @@ you're changing assay itself:
   CMRU's protected transaction version. A marker is current evidence only with
   a successful Run-Gate result for the same source tree; a Run-Gate admission
   refusal before the wrapper starts can leave a previous marker in place.
+  CMRU delegates only its two Assay gate commands according to the required
+  `ASSAY_RELEASE_GATE_HOST` setting (`local`, `v1001`, or `r1002`). The CMRU
+  release transaction, build, tag, and publish remain on the controller. A
+  delegated result is accepted only when the remote run metadata matches
+  `CMRU_RELEASE_GATE_COMMIT` and its verdict is `PASS`; extending the provisional
+  R2 window requires a new operator waiver decision. See the
+  [release host instructions](docs/CONSUMERS.md#assay-release-gate-host) and
+  [design rationale](docs/DESIGN-GUIDE.md#assay-release-gate-delegation).
   The B105 run-gate lanes use the
   bare-host `tools/self-qualification-container.sh` wrapper because the
   generic run-gate tester container has a private cgroup namespace. The
