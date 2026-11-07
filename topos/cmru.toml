@@ -33,12 +33,13 @@ commands = [
 quiet = true
 commands = [
   { label = "topos: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "topos: build daemon dependency lock", argv = ["python3", "tools/build_daemon_lock.py"], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "topos: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "topos", "--cwd", ".", "--notes-env", "TOPOS_RELEASE_NOTES"], cwd = "." },
+  { label = "topos: publish wheel and daemon lock", argv = ["cmru", "handler", "wheel-publish", "--prefix", "topos", "--cwd", ".", "--notes-env", "TOPOS_RELEASE_NOTES", "--extra-asset", "dist/topos-*-daemon.lock", "--extra-asset", "dist/topos-*-daemon.lock.sha256"], cwd = "." },
 ]
 
 [versions]

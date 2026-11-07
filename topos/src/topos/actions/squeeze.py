@@ -120,7 +120,7 @@ def _default_cgroup_text_reader(cgroup_path: str, filename: str) -> str | None:
 
 
 DEFAULT_CGROUP_ROOT = "/sys/fs/cgroup"
-DEFAULT_RECOVERY_DIR = Path("/run/topos/squeeze")
+DEFAULT_RECOVERY_DIR = Path("/run/topos/state/squeeze")
 
 
 def validate_relax_to(value: str) -> str | None:
@@ -328,7 +328,7 @@ class SqueezeConfig:
     """Typed confirmation value."""
 
     recovery_path: Path | None = None
-    """Recovery record path. None = default under /run/topos/squeeze when the
+    """Recovery record path. None = default under /run/topos/state/squeeze when the
     production cgroup writer is used, none when a writer is injected."""
 
     relax_explicit: bool = True

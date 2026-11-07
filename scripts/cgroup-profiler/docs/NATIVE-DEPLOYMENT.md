@@ -1,308 +1,338 @@
-# cgprofile native deployment: wheel, unit, install, upgrade, migration
+# cgprofile native deployment
 
-**Status.** Design for cgprofile 2.0.0. Replaces the ciu container deployment of
-`cgprofile-host-daemon`. The command-line half is [`CGPCTL-SPEC.md`](CGPCTL-SPEC.md), the wire half is
-[`PROTOCOL.md`](PROTOCOL.md) section 10. Backlog: CP-41 (wheel), CP-42 (unit), CP-43 (groups), CP-44
-(retirement), CP-46 to CP-49 (the 2.0 packages). The host-side installer is mdt host-setup (mdt-cockpit
-MDT-055, MDT-048); this file states what cgprofile provides and what host-setup must do with it.
+This guide covers the standalone cgprofile wheel, systemd socket activation,
+`cgpd install` / `uninstall`, upgrades, and the phase-1 cutover contract. The
+user-facing feature list is in [`README.md`](../README.md); the rationale for
+the socket ownership model is in [`DESIGN-GUIDE.md`](DESIGN-GUIDE.md); worked
+commands are in [`CONSUMERS.md`](CONSUMERS.md).
 
-Every number in the limits tables is a **proposal that needs measurement** (section 4.3) before it is
-final. Nothing in this design requires a particular host; names such as `dev-gates.slice` are config
-defaults, not assumptions.
+## 1. Rollout boundary
 
-## 1. Shape in one paragraph
+cgprofile 2.2.0 is the phase-1 service and client release. It serves only the
+new per-level layout below. It does not probe or serve old paths and it does
+not migrate an mdt host-setup installation. The install command refuses old
+state and prints the operator's manual removal list.
 
-One wheel, distribution `cgprofile`, installed by host-setup into a version-named directory under
-`/opt/cgprofile`, run by a systemd service `cgpd.service` inside a bounded `cgprofile.slice`, listening on
-`/run/cgprofile/ctl.sock` and `/run/cgprofile/observer/resource-observer.sock` (paths unchanged, so no
-consumer bind mount changes). The client `cgpctl` comes from the same wheel and is installed in the
-cockpit image. There is no container, no docker use by the daemon, and no helper image.
+Phase 1 is not deployed to cockpit hosts. Keep `CGPROFILE_WHEEL` below
+`2.2.0` until phase 2 updates mdt host-setup and the operator performs each
+host's drained cutover. Old and new clients and services do not interoperate.
 
-## 2. The wheel
+## 2. Runtime layout and access
 
-| Item | Decision |
-|---|---|
-| Distribution name | `cgprofile` (normalizes to the release prefix, closing the CP-41 name mismatch; the old `cgroup-profiler` distribution is retired, never published as a wheel) |
-| Version | scm-derived at build; wheel, installed metadata, `cgpctl --version`, `cgpd --version` and the release tag agree. No literal in `pyproject.toml`, no `CGPROFILE_VERSION` environment input |
-| Python | >= 3.11, `tomllib` and `argparse` only on the daemon path |
-| Runtime dependencies | `cli-extended>=0.5.1` (floor reason: CLI-EXT-30 collision filter). Nothing else. The daemon venv is stdlib plus cli-extended |
-| Extra `report` | `pandas`, `plotly`, `matplotlib`, `scipy`, `ruptures` with `>=` floors and a reason per floor. Not installed by host-setup and not part of the cockpit image's default closure |
-| Console scripts | `cgpctl = cgprofile.cli.cgpctl:main`, `cgpd = cgprofile.cli.cgpd:main` |
-| Package | `src/cgprofile/` absorbing `lib/` and `cgprofile.py`: the target grouping is `collect` (the stdlib collector and samplers), `daemon` (serve, store, placement, liveness, access), `client` (ctl client, export, report glue), `report` (analysis and renderers, imports the extra lazily), `cli`, `_damon`, `skills/cgpctl/SKILL.md`, `data/`. **Package 1 lands the 1.x modules flat under `cgprofile/`** (their names and relative imports unchanged, `cgprofile.cli.legacy` holding the old `cgprofile.py`) together with `cli/`, `_damon/` and `data/`; the grouping into `collect`/`daemon`/`client`/`report` happens in packages 2 and 3 as they split and rewrite those modules, so package 1 stays a behaviour-neutral move |
-| Vendored DAMON | `cgprofile._damon`, a copy of `scripts/damon-analysis` module(s) the profiler uses, with a sync test that fails when the source and the copy differ (recorded decision Q7: vendor, do not publish damon-analysis as its own wheel). The relative-path import (`lib/damon.py`) is deleted |
-| Package data | the unit templates for `cgpd unit print` (`data/cgprofile.slice.in`, `data/cgpd.service.in`), the packaged skill, nothing else. No checkout path appears anywhere in the built wheel (a test greps the wheel) |
-| Release artifacts | `cmru.toml` declares `artifacts = ["wheel"]` from 2.0.0: the wheel with a sha256 sidecar and `latest.json`, which the cockpit resolver reads as `cgprofile-latest`. The OCI image is no longer built or pushed (CP-44, CP-54); its Dockerfile and compose files stay in the tree until package 9 deletes them |
-| Install lanes | a clean-venv `pip install --no-index` of the built wheel runs `cgpctl --version`, `cgpctl doctor` (degraded), `cgpd --version`, `cgpd unit print`, `cgpd config check`; a metadata test pins the dependency closure |
-
-`cgpctl mark` runs inside commands that `cgpctl run` wraps. It is reached through the venv's `cgpctl`
-script, whose shebang is that venv's interpreter, so cli-extended is importable there; `mark` imports
-nothing else beyond the standard library (a test pins it). This closes CP-17's open question about the bare
-`python3` collector.
-
-## 3. On the host
-
-### 3.1 Layout
-
-```
-/opt/cgprofile/
-  2.0.0/                 # one directory per installed version, immutable once complete
-    venv/                # python venv; bin/cgpd, bin/cgpctl; installed from the pinned wheel only
-    MANIFEST             # wheel file name, sha256, install timestamp, installer id
-  2.0.1/
-  current -> 2.0.1       # the single mutable pointer, replaced atomically (symlink + rename)
-/etc/cgprofile/cgpd.toml       # root 0644, rendered by host-setup (or hand-written off mdt)
-/etc/systemd/system/cgprofile.slice   # rendered by `cgpd unit print`, installed by host-setup
-/etc/systemd/system/cgpd.service
-/var/lib/cgprofile/            # StateDirectory=cgprofile; sessions/ below it
-/var/lib/cgprofile/overrides.toml   # root 0600; runtime `config set --persist` overrides (CGPCTL-SPEC.md 3.5); daemon-owned, never rendered by host-setup
-/run/cgprofile/                # created by the host's tmpfiles rule, never by the unit
+```text
+/run/cgprofile/                         root:root 0755
+├── control/                            root:root 0755
+│   └── cgprofile.sock                  root:cgprofile-control 0660
+├── observer/                           root:root 0755
+│   └── cgprofile.sock                  root:cgprofile-observer 0660
+└── state/                              root:root 0700 (systemd RuntimeDirectory)
+    └── damon.lock
 ```
 
-`cgpd.service` runs `/opt/cgprofile/current/venv/bin/cgpd run`. Because the unit names the `current`
-symlink and not a version, a version change is "install the new directory, flip the symlink, restart"; the
-unit file itself changes only when the template changes (drift is detected by `cgpd unit check`). The
-client on a host that wants one is `/opt/cgprofile/current/venv/bin/cgpctl`; host-setup may link it into a
-system `PATH` directory. Keep the previous version directory for rollback (section 6.4); host-setup prunes
-to the two newest.
+Each socket has exactly one `ListenStream=` in its own systemd socket unit.
+The units pass descriptors named `control` and `observer`; the daemon adopts
+one descriptor per name. The service never binds, changes permissions on, or
+unlinks an activated socket. It also clears the activation environment before
+starting workers. If one descriptor is absent, cgpd logs the missing level
+and continues to serve the other one.
 
-### 3.2 Install and pin
+The config is `/etc/cgprofile/cgpd.toml`:
 
-Host-setup variables (names are proposals owned by MDT-055):
+```toml
+[sockets.control]
+path = "/run/cgprofile/control/cgprofile.sock"
+group = "cgprofile-control"
+mode = "0660"
 
-| Variable | Meaning |
-|---|---|
-| `CGPROFILE_ENABLE` | `0` / `1`; when `1` the install below runs, when `0` an existing install is left alone and reported by `check.sh` |
-| `CGPROFILE_WHEEL` | `<version>@sha256:<hex>`; refused as empty while enabled. The wheel is fetched from the release (or a local path for air-gapped hosts) and its sha256 verified before anything is unpacked |
-| `CGPROFILE_DRAIN_TIMEOUT` | drain wait, default `10m` (section 5) |
-| `CGPROFILE_ALLOW_UIDS`, `CGPROFILE_GATES_SLICE`, `CGPROFILE_OBSERVE_SLICES`, ... | rendered into `/etc/cgprofile/cgpd.toml` keys of the same names (lower case); the host-setup wizard keeps `host-setup.env` the single operator source on mdt hosts |
+[sockets.observer]
+path = "/run/cgprofile/observer/cgprofile.sock"
+group = "cgprofile-observer"
+mode = "0660"
 
-The install is idempotent: create `/opt/cgprofile/<ver>`, build the venv from the verified wheel with
-`pip install --no-index` plus the cli-extended wheel pinned by the same host-setup mechanism (no network
-at service start), write `MANIFEST`, run `cgpd --version` from the new venv and compare with the pin, then
-render the config and unit files and flip `current`. Nothing runs from a checkout and nothing is pip-
-installed into a system interpreter.
+damon_lock = "/run/cgprofile/state/damon.lock"
+```
 
-### 3.2.1 Declared state versus runtime overrides
+The socket keys are fixed at service start. Both level groups must be dedicated:
+neither may be named `docker`, resolve to GID 0 or the docker GID, or resolve to
+the other cgprofile level's GID. `config check` and `install` enforce this when
+the groups exist. The same refusal applies to flags, the saved install record,
+an existing config, and wizard answers; there is no override. Cross-service
+group distinctness is an estate check owned by host-setup, not cgpd's installer.
+The installer creates the default groups through the rendered sysusers file.
+Access to the observer group grants read-only observer operations, not control
+access.
 
-Host-setup owns `/etc/cgprofile/cgpd.toml`; it renders the file from `host-setup.env` and never touches
-`/var/lib/cgprofile/overrides.toml`. The daemon accepts runtime changes from uid 0 (`cgpctl config set KEY
-VALUE [--persist]`, runtime-tunable keys only, CGPCTL-SPEC.md section 3.5) and layers them above the file:
-override, then file, then default. Consequences host-setup must honour:
+Use repeatable `--add-user LEVEL=USER` flags to add existing accounts to a
+level group. The installer validates each account, adds it with `gpasswd -a`,
+and records the requested members in `install.toml`. Additions are cumulative:
+reruns keep the recorded users and append new ones. Membership takes effect at
+the user's next login or after a restarted service. Uninstall never removes
+users from groups individually; groups remain unless `--remove-groups` is
+requested, which deletes only cgpd-created groups.
 
-* Re-rendering the file and `systemctl reload cgpd` keep every override. Host-setup never passes
-  `--reset-overrides` on its own; only an operator does, deliberately (`cgpd reload --reset-overrides`).
-* The host-setup drift check compares the rendered file and the installed file, not effective values.
-  `check.sh` surfaces shadowing through `cgpctl doctor` (`overrides` check, a `warn`): an override that
-  hides a value host-setup declared is visible, never silent, and never a failed check.
-* `StateDirectory=cgprofile` already makes `/var/lib/cgprofile` writable under `ProtectSystem=strict`, so
-  persisted overrides need no extra unit setting; the file is created 0600 by the daemon.
-* The upgrade drain (section 5) is unaffected. A restart keeps persisted overrides and drops memory-only
-  ones; a rollback keeps the file, and a version that does not know an entry ignores it with a warning.
-* Every change is audit-logged by the daemon (journal line `config-audit ...`), so the journal answers who
-  changed the access list and when.
+`cgpd.service` requires and follows both socket units, uses
+`RuntimeDirectory=cgprofile/state` with mode `0700` and preservation enabled,
+and keeps `/run/cgprofile/state` in `ReadWritePaths`. The socket directories
+are created by systemd from the unit paths and `DirectoryMode=0755`. The VM
+acceptance must verify the actual directory ownership and modes on the target
+systemd version; do not infer the parent-directory behavior from unit text.
+`ExecStartPre` runs `cgpd -t`, the config-test alias for `cgpd config check`;
+it exits non-zero for invalid config before systemd starts the daemon.
 
-### 3.3 Groups and directories
+## 3. Install and upgrade
 
-Unchanged by this design and owned by CP-43 / MDT-055: `/run/cgprofile` is `0770 root:<ctl group>`
-(`mdt-docker`, gid 2751, on mdt hosts; `docker` until the regroup lands; any group off mdt, which the
-daemon adopts by `stat`), `/run/cgprofile/observer` is `0751 root:cgprofile-observer` with a dynamic gid
-that must differ from both docker-class gids. The unit never uses `RuntimeDirectory=` (that would
-recreate the mode and group).
+The installer is available as `cgpd install` from an installed wheel, and as a
+zipimport bootstrap from the two pinned wheels. It accepts pins of the form
+`<version>@sha256:<64 lowercase hex>`. The wheel source defaults to the
+project release base and may be an HTTPS release base or a directory holding
+both wheel files.
 
-### 3.4 Docker
+After installation, `cgpd` remains in the active versioned venv at
+`/opt/cgprofile/current/venv/bin/cgpd`; the installer does not add a global
+`cgpd` symlink. `cgpctl` is linked into `/usr/local/bin` for client use.
 
-The daemon does not use docker and the unit does not need the docker socket. Docker appears only as an
-optional client-side convenience: `cgpctl start --target container:NAME` calls `docker inspect` when the
-`docker` CLI and socket are reachable and otherwise accepts only `containerid:`, `cgroup:` and `slice:`.
+For an unattended install, acquire the two wheel files and run:
 
-### 3.5 One daemon per socket
+```bash
+CGPROFILE_WHEEL='./cgprofile-2.2.0-py3-none-any.whl'
+CLI_EXTENDED_WHEEL='./cli_extended-X.Y.Z-py3-none-any.whl'
+CGPROFILE_PIN='2.2.0@sha256:<cgprofile-sha256>'
+CLI_EXTENDED_PIN='X.Y.Z@sha256:<cli-extended-sha256>'
 
-`cgpd run` connects to `ctl_socket` before binding it. If a daemon answers `version` there, it exits 2
-with `another daemon already serves <path>` and the answering daemon's version and pid (from
-`SO_PEERCRED`). A stale socket file that nobody answers on is replaced as before (CP-34 keeps the
-no-steal rule for non-socket files and for sockets that still answer). This makes a forgotten container
-or a second unit an explicit failure and guards the container-to-native cutover (section 8). The
-observer socket gets the same check.
+PYTHONPATH="$CGPROFILE_WHEEL:$CLI_EXTENDED_WHEEL" \
+  python3 -m cgprofile.cli.cgpd install \
+  --wheel "$CGPROFILE_PIN" \
+  --cli-extended-wheel "$CLI_EXTENDED_PIN" \
+  --wheel-source ./wheels \
+  --control-group cgprofile-control \
+  --observer-group cgprofile-observer \
+  --add-user "control=$USER" \
+  --enable --yes
+```
 
-## 4. The systemd units
+Replace both example pins with the release's verified values. Each input comes
+from its flag, else from `/etc/cgprofile/install.toml` written by the previous
+run, else (on a TTY only) from a prompt: `cgpd install` asks for missing pins,
+group creation or mapping, users for each level, and whether to enable the service. A
+non-interactive run must provide each required value explicitly; use
+`--no-enable` for an install that should not start the service. A rerun with no
+flags therefore reapplies the recorded inputs, users included. `install` and
+`uninstall` ask for confirmation; `--yes` accepts it, and a pipe without
+`--yes` is refused.
 
-`cgpd unit print` renders both units from the wheel's templates; `cgpd unit check` compares installed
-files. Host-setup supplies only the install root and the wheel venv path; no checkout path, user name or
-host name is read.
+`/etc/cgprofile/cgpd.toml` is the operator's file once it exists. The
+installer creates it only when it is absent. On a rerun a socket group passed
+as a flag (`--control-group`, `--observer-group`) is applied; with no flag the
+file's value wins over the install record, so a hand edit is never reverted,
+and the record is updated from it. The file is kept byte for byte unless a
+flag changes something; then only the socket groups and the keys passed as
+flags (`--gates-slice`, `--observe-slices`, `--allow-uids`) are merged, the
+file is rewritten from its parsed keys (comments are not preserved), and the
+install output lists what changed as `config_changes`. The socket paths are
+fixed by the layout, so a file that sets another path is refused. A dry run
+never prompts and needs no `--enable`/`--no-enable`. `--config` is not supported for `install` and
+`uninstall`: they manage `/etc/cgprofile/cgpd.toml` only.
 
-### 4.1 `cgprofile.slice`
+Each level group must be dedicated: its name cannot be `docker`, its GID cannot
+be 0 or the docker GID, and the control and observer GIDs must differ. Both
+`cgpd config check` and `cgpd install` enforce this rule. Invalid saved records
+and existing config are refused even when a flag supplies a replacement; the
+wizard validates each answer and the pair before applying. No override exists.
+The installer checks only cgprofile's own levels; host-setup checks uniqueness
+across services. Repeat `--add-user LEVEL=USER` to add existing users. The
+installer validates each account, runs `gpasswd -a`, stores the names in
+`install.toml`, and adds recorded users on later installs. Dry-run output lists
+each requested membership. Memberships are never individually removed;
+`--remove-groups` explicitly deletes only groups created by cgpd.
 
-Top level, a sibling of the host's workload slices, never nested (the single unhyphenated token keeps it
-at cgroup root; a hyphenated name would nest under an auto-created parent with `MemoryMin=0`).
+The installer performs these steps:
 
-| Setting | Proposed value | Why |
-|---|---|---|
-| `MemoryMin` | 128M | protected reservation; at or below the daemon's measured resident set |
-| `MemoryHigh` | 768M | soft throttle for the daemon plus any transient helper |
-| `MemoryMax` | 1G | hard ceiling; 1.1.0's refusal to start on an unbounded slice stays and now has a real partner |
-| `CPUWeight` | 100 | |
-| `IOWeight` | 50 | the watcher must not compete with the workloads it measures |
-| `ManagedOOM*` | unset on purpose | an oomd policy that could kill the singleton watcher contradicts the slice's purpose |
+1. Validate both pins and the old-installation preflight, including that an
+   existing `/usr/local/bin/cgpctl` is the installer's own link (anything else
+   is refused, never replaced). `/opt/cgprofile/PENDING` is written now.
+2. Fetch both wheels, verify SHA-256 before unpacking, and create an immutable
+   `/opt/cgprofile/<version>/venv` with a `MANIFEST` recording both digests and
+   `installer=cgpd install <version>`.
+3. Render the config and run `cgpd config check`; render service, slice, socket
+   and sysusers resources with `cgpd unit print`.
+4. Compare version, config and each resource with the installation. If a
+   restart is needed, poll live sessions until drained or the requested
+   deadline. A timeout exits 3 and leaves `PENDING`; rerun `cgpd install` when
+   the sessions have ended. `--force-restart` skips the drain (the verb's
+   usual `--yes`/confirmation still applies) and reports the sessions it may
+   abort; when the session list cannot be read at all (a wedged daemon, a lost
+   socket, a missing `current`) it still proceeds and prints a warning that
+   the sessions are unknown. A failure up to this point (fetch,
+   pin, config check) removes `PENDING` again, because nothing on the host
+   has changed yet.
+5. Atomically write config and resources, update `current`, run
+   `systemd-sysusers`, reload systemd, and restart only the changed socket
+   units or service as required. The groups `systemd-sysusers` is about to
+   create are written to `PENDING` (`created_groups=`) before it runs, so
+   `cgpd uninstall --remove-groups` finds them even if the install fails
+   before `install.toml` exists. The wheels are installed with `--no-index
+   --no-deps`: exactly the two pinned wheels. From here a failure leaves
+   `PENDING` in place; with an install record the next `cgpd install` re-applies (it
+   reloads and restarts unconditionally), otherwise it refuses and points to
+   `cgpd uninstall --yes`.
+6. Wait for the selected daemon version and clean config status, prune older
+   version directories, write `install.toml`, and remove `PENDING` last.
 
-### 4.2 `cgpd.service`
+A downgrade is refused unless `--allow-downgrade` is supplied. When rolling
+back below the socket-unit release, the installer disables and removes the
+socket units and their nodes before starting the older service. That is an
+explicit rollback of the whole host stack; clients on the new paths do not
+fall back to old paths.
 
-| Setting | Proposed value | Notes |
-|---|---|---|
-| `Type` | `simple` | `cgpd run` binds its sockets before serving; readiness is "socket answers `version`" (a host-setup check, no `sd_notify` dependency) |
-| `ExecStart` | `/opt/cgprofile/current/venv/bin/cgpd run` | `--config` only when host-setup places the file elsewhere |
-| `ExecReload` | `/bin/kill -HUP $MAINPID` | CGPCTL-SPEC.md section 3.3 |
-| `Slice` | `cgprofile.slice` | |
-| `User` | root | placement, DAMON sysfs, `cgroup.kill` and `busctl` need it |
-| `MemoryHigh` / `MemoryMax` | 512M / 768M | below the slice cap, so the slice never becomes the first limit hit |
-| `MemorySwapMax` | 0 | a sampler that swaps stops observing the pressure it exists to see |
-| `CPUQuota` | 50% | |
-| `TasksMax` | 256 | measure first (section 4.3); handler threads are bounded in code too (CP-33) |
-| `IOWeight` | 50 | |
-| `LimitNOFILE` | 4096 | |
-| `OOMScoreAdjust` | **see 4.4; unset in the first release** | |
-| `Restart` | `on-failure`, `RestartSec=2s`, `RestartSteps=5`, `RestartMaxDelaySec=60`, `StartLimitIntervalSec=300`, `StartLimitBurst=5` | a crash loop backs off and then stops; consumers see a missing socket, which CP-31 keeps distinct from a refusing one |
-| `TimeoutStopSec` | 20s | covers the 4 s shutdown drain plus joins |
-| `KillMode` | `mixed` | SIGTERM to the main process first so the drain runs |
-| `PrivateNetwork` | yes | the container had `network_mode: none`; the D-Bus system socket is a filesystem socket and stays reachable |
-| `PrivateTmp`, `ProtectHome` | yes | |
-| `ProtectSystem` | `strict` with `ReadWritePaths=/run/cgprofile /var/lib/cgprofile /sys/fs/cgroup /sys/kernel/mm/damon` | the DAMON sysfs path is added to the plan's list; confirm by test |
-| `StateDirectory` | `cgprofile` | |
-| `CapabilityBoundingSet` | starts from what placement via `busctl`, cgroupfs writes, DAMON sysfs writes and `/proc/<pid>` reads of other uids need | shrunk by test; every removed capability is proven by a run, not guessed |
-| `NoNewPrivileges`, `RestrictAddressFamilies=AF_UNIX`, `LockPersonality`, `RestrictRealtime` | yes | |
+### Old-installation refusal and manual removal
 
-No `Environment=` lines: the daemon reads configuration from the file only, and a stale
-`CGPROFILE_*` variable is refused (CGPCTL-SPEC.md section 3.4).
+`cgpd install` refuses if it finds any of the following: `ctl_socket` or
+`observer_socket` in the config; tmpfiles rules or service drop-ins outside
+cgprofile that claim the service; `/run/cgprofile` or its expected level/state
+directories with the wrong type, owner or mode; a version `MANIFEST` naming
+any `installer=mdt...` installer, or an `/opt/cgprofile/<version>` tree without
+a cgpd `MANIFEST`; cgpd or cgprofile units without an install record; leftover
+`/opt/cgprofile/PENDING`, `current.new` or a staging directory (with an
+install record, `PENDING` and `current.new` mean "re-apply" and are accepted);
+or an old-layout socket node at `/run/cgprofile/ctl.sock` or
+`/run/cgprofile/observer/resource-observer.sock`. It does not chmod, chown,
+migrate, or delete those findings. Leftovers under `/opt/cgprofile` that come
+from an unfinished cgpd install get their own message: review them and rerun,
+or run `cgpd uninstall --yes`.
+The refusal prints the matching paths and this manual cleanup list:
 
-### 4.3 Measurements that gate the numbers
+- Remove `/etc/tmpfiles.d/mdt-cgprofile.conf` and
+  `/etc/tmpfiles.d/mdt-cgprofile-observer.conf`.
+- Remove host-setup drop-ins in `/etc/systemd/system/cgpd.service.d/`.
+- Remove `/etc/sysusers.d/mdt-cgprofile.conf`; keep the
+  `cgprofile-observer` group and its GID.
+- Remove `/usr/local/sbin/mdt-cgprofile-install.sh`, the old
+  `/opt/cgprofile` tree, and `/usr/local/bin/cgpctl` if it is the old link.
+- Remove old `/etc/systemd/system/cgpd.service` and
+  `/etc/systemd/system/cgprofile.slice` copies, plus the old
+  `/etc/cgprofile/cgpd.toml`.
+- Run `systemctl daemon-reload`, then remove `/run/cgprofile` after stopping
+  the old daemon. Keep `/var/lib/cgprofile` unless data purge is intended.
 
-Before any value above is final, a scratch host (not a production-shared one) records, for 1, 8 and 24
-concurrent sessions: resident set of the daemon, thread count, CPU, open files, and the slice's
-`memory.peak`; plus a deliberate runaway in a test build (a memory balloon, a fork bomb) proving the
-service limits contain it, the host and gates slice are unaffected, the service restarts with backoff and
-stops after the start-limit burst. The table goes into this file's appendix when measured. The
-`cgroup.kill` rule is unchanged and gets a test: no write to any cgroup other than an exact gates-slice
-container leaf with `populated 1` is possible from the unit's writable paths plus the code guard.
+Do not run the new install over an old host-setup tree. After manual removal,
+install fresh from the pinned wheels.
 
-### 4.4 The OOMScoreAdjust conflict
+## 4. Uninstall and doctor
 
-Two statements in the estate disagree and this design does not paper over it:
+`cgpd uninstall` only touches a host that cgpd install owns: it needs
+`/etc/cgprofile/install.toml` or `/opt/cgprofile/PENDING`. On any other host
+it either reports "nothing installed by cgpd install" or, when it finds an old
+host-setup install, unknown files under `/opt/cgprofile` or `/run/cgprofile`,
+or an old-layout path, refuses before changing anything and prints the manual
+removal list. On an owned host it stops and disables both socket units and the
+service, stops `cgprofile.slice`, removes the service, slice and socket unit
+files, sysusers file, a leftover mdt drop-in, the owned `/usr/local/bin/cgpctl`
+link, socket nodes, level directories and `/run/cgprofile/state`, then runs
+`daemon-reload` and `reset-failed`. Then it removes groups created by the
+install (`--remove-groups`; a group that no longer resolves is skipped, and a
+group that cannot be removed, for example because it is a user's primary
+group, is reported at the end while everything else still goes; the install
+record stays for manual cleanup), the
+data directory (`--purge-data`), the config, `/opt/cgprofile` and finally the
+ownership markers `PENDING` and `install.toml`, preserving the group list until
+cleanup is complete. If interrupted while the running version tree still
+exists, uninstall can be rerun from it; if the version tree was already
+removed, use the manual cleanup steps below. The version tree the command
+runs from (`/opt/cgprofile/current/venv/bin/cgpd uninstall --yes`) is removed
+after the result is printed. If this deferred removal fails, cgpd prints
+manual steps: remove any remaining `/opt/cgprofile` version tree and `current`
+link, run `groupdel` for any requested group that still exists, then remove
+`/etc/cgprofile/install.toml` and `/opt/cgprofile/PENDING` after verifying the
+owned files are gone. Do not rerun the cgpd binary from a version tree that has
+already been removed. Groups and memberships remain unless `--remove-groups`
+is given; `/var/lib/cgprofile` sessions and overrides remain unless
+`--purge-data` is given. `cgpd uninstall --dry-run` prints the plan; a
+`/usr/local/bin/cgpctl` that is not the installer's link is kept and reported.
 
-* `infra/cgprofile.slice` (and its D-29 rationale) says the daemon "must never itself be the thing that
-  gets OOM-killed mid-run", which argues for a **negative or zero** adjust and no oomd policy.
-* CP-42's proposal sets `OOMScoreAdjust=` to a moderate **positive** value (+200), so that under a
-  host-wide OOM the watcher is expendable before production workloads and gate lanes.
+`cgpd doctor` reports the following checks, each with a remedy on failure:
 
-Both are defensible: a killed watcher loses live session data and stalls lanes (run-gate sees a missing
-socket), while a killed production workload is the harm the whole slice exists to avoid. The per-service
-`MemoryMax` (768M) below the slice cap already bounds the daemon, so a host-wide OOM is not caused by it,
-and a positive adjust only decides who dies when something else exhausts the host. **Decision for the
-first 2.0.x release: leave `OOMScoreAdjust` unset (0)**, document that the daemon is expendable only in
-proportion to its small resident set, and revisit with the section 4.3 measurements and one observed
-host-wide OOM event. The value is a template parameter (`oom_score_adjust`, default unset) so changing it
-is a template edit, not a code change.
+`config-valid`, `units-current`, `groups`, `socket-units`, `socket-nodes`,
+`socket-dirs`, `state-dir`, `service`, `connect`, `foreign-rules`, and
+`caller-access`. A caller outside one socket group gets `skip` for that
+level's connection probe. A non-root caller who cannot read a required path
+gets `skip` with a run-as-root note. `cgpctl doctor` keeps its client checks
+and uses the new control and observer paths.
 
-## 5. Upgrade: drain before restart
+## 5. Phase-1 VM acceptance
 
-A restart finalizes live sessions as `daemon-stopped`, which wastes a run-gate lane's profile. Host-setup
-therefore restarts only on drift, and only after draining:
+Run these checks in the existing Debian VM harness, not on a cockpit host.
+Use a fresh VM without mdt host-setup for the successful install, and a
+separate disposable VM prepared with the old files for the refusal case. The
+controller runs the VM commands after the reviewed code is available:
 
-1. Compute drift: wanted version differs from `current`, or the rendered unit or config digest differs
-   from the installed one. No drift, no restart (a config-only change is a `systemctl reload`, never a
-   restart, unless a fixed key changed).
-2. Install the new version directory first (no effect on the running daemon), then wait up to
-   `CGPROFILE_DRAIN_TIMEOUT` (default 10 minutes), polling `cgpctl sessions --state live --json` as
-   uid 0 every 10 seconds for an empty list. New sessions started during the wait extend nothing: the wait
-   has one fixed deadline.
-3. Empty before the deadline: flip `current`, `daemon-reload` if the unit changed, restart.
-4. Not empty at the deadline: **refuse**. Host-setup leaves the old daemon and the old `current` in
-   place, prints the live session ids with owner uid and age, exits non-zero, and records the pending
-   version. `--force-restart` (an explicit option, never an environment default) proceeds anyway and
-   states in its output which sessions it aborted.
-5. After the restart, host-setup polls until `version` answers (bounded, 30 s), then asserts
-   `cgpctl status --json` reports the pinned version and `config.last_reload_error` null.
+```bash
+cd scripts/debian-install-v2/testing/vm
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+export MDT_VM_SOURCE_DIR="$REPO_ROOT"
+./run-vm-harness.sh prepare-base case-b
+./run-vm-harness.sh start cgprofile-sockets --case case-b
+./run-vm-harness.sh wait cgprofile-sockets
+```
 
-The drain wait is read-only toward cgprofile: it never stops a session, and run-gate lanes are not
-interrupted by it.
+`tools/vm-socket-acceptance.sh` automates the cases below inside the guest
+(`clean-guest` on the fresh VM, `old-layout-guest` on the seeded one); the TTY
+wizard install stays a manual step. Its header lists the exact `run-vm-harness.sh
+copy` and `ssh` commands. A VM is not proof of a disposable guest (the live
+netcup hosts are VMs), so the script refuses unless `CGP_DISPOSABLE_GUEST=yes`
+is set, the guest is a harness guest (hostname `vbpub-test`, user `tester`) and
+cgprofile is neither installed nor running; `guard-check` runs only that check. The extra cases beyond the commands in this section:
+`ActiveState` of `cgprofile.slice` after uninstall, uninstall run from
+`/opt/cgprofile/current/venv/bin/cgpd` and again through the zipimport route,
+a second uninstall as a no-op, uninstall refusing an mdt-style install, a
+rerun of `cgpd install --yes` over a record that lists users, and
+`systemctl enable cgprofile.slice` for a slice without `[Install]`.
 
-## 6. Install, upgrade, rollback via mdt host-setup
+Copy the two pinned wheels into the VM, then verify both the TTY wizard and a
+non-interactive install using explicit flags. After install, run:
 
-### 6.1 Fresh install
+```bash
+sudo /opt/cgprofile/current/venv/bin/cgpd doctor --json
+sudo cgpctl doctor --json
+sudo stat -c '%n inode=%i mode=%a owner=%U:%G' \
+  /run/cgprofile /run/cgprofile/control /run/cgprofile/observer \
+  /run/cgprofile/state /run/cgprofile/control/cgprofile.sock \
+  /run/cgprofile/observer/cgprofile.sock
+sudo systemd-analyze verify \
+  /etc/systemd/system/cgpd.service \
+  /etc/systemd/system/cgprofile-control.socket \
+  /etc/systemd/system/cgprofile-observer.socket
+```
 
-`CGPROFILE_ENABLE=1` plus a valid `CGPROFILE_WHEEL`: groups and tmpfiles (CP-43), the version directory
-(section 3.2), config and unit render, `systemctl enable --now cgprofile.slice cgpd.service`, then the
-`check.sh` assertions of section 6.3.
+Then prove the service and socket restart behavior, comparing socket inodes
+before and after each command:
 
-### 6.2 Upgrade
+```bash
+sudo systemctl restart cgpd.service
+sudo cgpctl status --json
+sudo systemctl restart cgprofile-control.socket
+sudo cgpctl status --json
+sudo systemctl restart cgprofile-observer.socket
+sudo /opt/cgprofile/current/venv/bin/cgpd doctor --check connect --json
+```
 
-Section 5, with the new `CGPROFILE_WHEEL` value. Host-setup keeps the two newest version directories.
+Also verify that a direct `/opt/cgprofile/current/venv/bin/cgpd run` with
+`LISTEN_FDS` unset and without `--self-bind` exits 2, while
+`/opt/cgprofile/current/venv/bin/cgpd run --self-bind` accepts explicitly
+provisioned test paths. Create a user in `cgprofile-observer` only; that user
+must complete the observer health probe and receive `EACCES` on control, with
+`/opt/cgprofile/current/venv/bin/cgpd doctor` reporting control `connect` as
+`skip`.
 
-### 6.3 `check.sh`
+On the old-layout VM, run the same install command and verify exit 2 plus the
+manual removal paths. After removing those files and runtime tree manually,
+verify install succeeds. Also verify a rollback below the socket-unit release
+fails without `--allow-downgrade`; do not run an actual rollback as part of
+this probe. Finally, run
+`sudo /opt/cgprofile/current/venv/bin/cgpd uninstall --yes` and assert no service, slice or
+socket unit, sysusers file, `/etc/cgprofile`, `/opt/cgprofile`, socket node,
+level directory, state directory, or failed unit remains. Confirm the groups
+and `/var/lib/cgprofile` remain by default.
 
-Replaces the directory-and-group-only check with `cgpctl doctor --json` run as root (against the local
-socket), asserting: no `fail` check (an `overrides` warning is reported, not asserted against), `daemon.version` equals the pinned version, the group and mode of
-both socket directories, `cgprofile.slice` bounded, and `systemd-analyze verify` clean on both units.
-Host-setup's `test-render.sh` pins the rendered config and the unit golden.
-
-### 6.4 Rollback
-
-Rollback is an upgrade to the previous pinned version: point `CGPROFILE_WHEEL` at it, run the same drain
-and restart path. The previous directory is still present, so no download is needed and `current` flips
-back atomically. The overrides file is kept across a rollback (entries the older version does not know are ignored with a
-warning, section 3.2.1). Config keys the old version does not know would be refused by the old `cgpd`, so each
-release documents the keys it adds and host-setup renders only the keys the pinned version supports (a
-version-to-keys table in the installer, tested). Rollback past 2.0.0 into the 1.x container is the section 8 rollback.
-
-## 7. What the helper and probe images become
-
-Dropped, with nothing replacing them in the product:
-
-| 1.x artifact | 2.0 |
-|---|---|
-| Privileged helper container (`CGPROFILE_HELPER_IMAGE`, `CGPROFILE_HELPER_CGROUP_PARENT`, `CGPROFILE_IN_HELPER`, `_collect`) | removed. A caller that cannot see host cgroups starts a daemon session with `cgpctl start` |
-| Placement probe container in `tester-unified:local` with the hard-coded `--user 1003:1003` | removed; placement is verified by the daemon on the host |
-| `docker logs -f` based `--log-tail` / `--log-match` | removed with the docker dependency |
-| `Dockerfile`, `docker-bake.hcl`, `ciu.compose.yml.j2`, the OCI image | retired by CP-44 after both hosts migrate |
-| `cgprofile` bash shim, `setup.sh` venv, `venv/` | removed; the wheel's scripts replace them |
-
-## 8. Migration from the ciu container deployment (CP-44)
-
-Window: one release cycle after 2.0.0, dated in the 2.0.0 release notes, never open-ended. No dual
-ownership beyond it; the single-daemon guard (section 3.5) turns any overlap into an explicit refusal.
-
-Per host (a test host first, then the shared host in an idle window; the load rules of the host apply):
-
-1. Announce on the host; confirm no live sessions (`cgpctl sessions --state live`, or the 1.x `ctl status`).
-2. `ciu down` the `cgprofile` host profile (stops `cgprofile-host-daemon`; its `cgprofile-sessions` named
-   volume stays on disk).
-3. Install through host-setup (section 6.1). Stored sessions in the old volume are **dropped by default**:
-   retention is 14 days and the data are profiling artefacts, not records. An operator who needs them
-   copies the volume's `sessions/` into `/var/lib/cgprofile/sessions` before the first start (a session
-   without `owner_uid` becomes uid-0-only for `stop` and `export`).
-4. Verify: both sockets, groups and modes, `cgpctl status` shows the pinned version, one run-gate lane and
-   one `cgpctl start` / `stop` / `report` session succeed.
-5. Rollback inside the window: `systemctl disable --now cgpd.service`, then `ciu up --profile host` at the
-   last 1.2.x image. The ciu compose and its hand-installed `cgprofile.slice` stay in the tree until the
-   window closes, which is why 1.2.x remains deployable.
-
-After the window (CP-44): delete `ciu.compose.yml.j2`, the host profile of `ciu.toml.j2`, the daemon
-sections of `ciu.defaults.toml.j2`, `ciu.global*.toml*`, the image build, `infra/cgprofile.slice` and the
-hand-install steps of `infra/README.md`, the "Deploy a published daemon image with CIU" chapter of
-CONSUMERS.md, and the RUNBOOK hand edits; add a grep test pinning the deletions. Release as 2.0.1 (2.1.0
-if anything is added).
-
-## 9. Tests this design requires
-
-* Golden `cgpd unit print` output; `systemd-analyze verify` on Debian 13 (a documented skip where systemd
-  is unavailable); no checkout path in either unit or in the wheel.
-* Clean-venv wheel install lane and the dependency-closure metadata test (section 2).
-* `cgpd run` preflight tests (each refusal), reload tests (valid, invalid, fixed key), single-daemon test,
-  group-adoption tests for gids 2751, 999 and 0 and an arbitrary group off mdt.
-* Fake-root host-setup install, upgrade, drain-refusal, `--force-restart` and rollback tests (in the
-  host-setup repo); native tests run against a scratch socket directory or in a VM harness, never against
-  the live daemon.
-* The release canary (R3) rewritten for a native daemon; R2 waived for the release wave and recorded.
-
-## 10. Safety rules for the implementing packages
-
-No package starts, stops or reconfigures the live `cgprofile-host-daemon`. Native tests use a scratch
-socket directory or a VM. Only the ops package touches a host, and it follows the host's load rule.
+The plan's phase-1 acceptance also covers the new Run-Gate and Assay releases
+against the new paths and their cutover refusal on an old-layout host. Those
+consumer preflights are owned by their respective phase-1 packages.

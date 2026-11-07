@@ -30,7 +30,7 @@ sleep that lets each session take exactly one sample.
 
 **The only normalization:** the test's own tmp paths are rewritten to the
 production defaults — the sessions directory to `/var/lib/cgprofile/sessions`
-and the socket to `/run/cgprofile/ctl.sock` (contract §1.8). Everything else
+and the socket to `/run/cgprofile/control/cgprofile.sock` (contract §1.8). Everything else
 is the live document.
 
 **Reading them together.** They come from ONE run of a single daemon, in

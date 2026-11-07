@@ -1,4 +1,4 @@
-"""Residual, deterministic boundaries for ``topos daemon serve``.
+"""Residual, deterministic boundaries for ``toposd run --self-bind``.
 
 The serve command normally owns privileged DAMON state.  These tests replace
 the collector, broker, server, and lifecycle at its composition boundary so
@@ -35,8 +35,11 @@ def test_daemon_serve_adopted_paddr_with_zero_stop_is_quiet_and_stopped(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """An adopted session may need no stop, but lifecycle health still closes cleanly."""
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     from topos.config import DamonConfig, ToposConfig
+    import topos.service.cli as service_cli
+    from topos.service.config import DEFAULTS
     import topos.daemon.paddr_lifecycle as lifecycle_module
     from topos.daemon.paddr_lifecycle import PaddrLifecycleOutcome
 
@@ -63,6 +66,12 @@ def test_daemon_serve_adopted_paddr_with_zero_stop_is_quiet_and_stopped(
             return 0
 
     class _Server:
+        class _Socket:
+            def getsockname(self) -> str:
+                return "/virtual/topos-observe.sock"
+
+        socket = _Socket()
+
         def serve_forever(self) -> None:
             raise KeyboardInterrupt
 
@@ -75,6 +84,7 @@ def test_daemon_serve_adopted_paddr_with_zero_stop_is_quiet_and_stopped(
         return broker
 
     monkeypatch.setattr(cli, "load", lambda _path: config)
+    monkeypatch.setattr(service_cli, "load_config", lambda _path: DEFAULTS)
     monkeypatch.setattr(cli, "Collector", _Collector)
     monkeypatch.setattr(cli, "FrameBroker", _make_broker)
     monkeypatch.setattr(cli, "DaemonApi", lambda *_args, **_kwargs: object())
@@ -83,7 +93,7 @@ def test_daemon_serve_adopted_paddr_with_zero_stop_is_quiet_and_stopped(
     )
     monkeypatch.setattr(lifecycle_module, "DaemonPaddrLifecycle", _Lifecycle)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
 
     output = capsys.readouterr().out
     assert "Daemon-owned paddr session adopted" in output

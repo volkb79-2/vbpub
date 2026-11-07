@@ -28,7 +28,7 @@ import socket
 import sys
 from typing import Any, Dict, List, Optional
 
-DEFAULT_SOCKET = "/run/cgprofile/observer/resource-observer.sock"
+DEFAULT_SOCKET = "/run/cgprofile/observer/cgprofile.sock"
 TIMEOUT_SECONDS = 6.0
 _PAIRS = (("pids_events", "pids_events_local"), ("memory_events", "memory_events_local"))
 

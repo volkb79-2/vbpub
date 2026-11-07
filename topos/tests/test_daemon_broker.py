@@ -5,8 +5,11 @@ import socket
 import threading
 from pathlib import Path
 
+import pytest
+
 from conftest import fixture_frame
 from topos.daemon import FrameBroker, serve_unix_socket
+from topos.daemon.broker import BrokerUnixServer
 from topos.model import Frame
 
 
@@ -82,3 +85,80 @@ def test_daemon_socket_permissions_are_group_read_write(tmp_path: Path) -> None:
         assert (tmp_path / "topos.sock").stat().st_mode & 0o777 == 0o660
     finally:
         server.server_close()
+
+
+def test_failed_unix_bind_leaves_the_existing_socket_node_untouched(tmp_path: Path) -> None:
+    socket_path = tmp_path / "owned.sock"
+    winner = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    winner.bind(str(socket_path))
+    winner.listen()
+    before = socket_path.lstat()
+    try:
+        with pytest.raises(OSError):
+            BrokerUnixServer(socket_path, FrameBroker([]), owned_path=socket_path)
+        after = socket_path.lstat()
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        assert socket_path.is_socket()
+    finally:
+        winner.close()
+        socket_path.unlink(missing_ok=True)
+
+
+def test_server_close_preserves_a_replacement_socket_node(tmp_path: Path) -> None:
+    socket_path = tmp_path / "owned.sock"
+    server = BrokerUnixServer(socket_path, FrameBroker([]), owned_path=socket_path)
+    replacement = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        socket_path.unlink()
+        replacement.bind(str(socket_path))
+        replacement.listen()
+        replacement_node = socket_path.lstat()
+
+        server.server_close()
+
+        after = socket_path.lstat()
+        assert (after.st_dev, after.st_ino) == (replacement_node.st_dev, replacement_node.st_ino)
+        assert socket_path.is_socket()
+    finally:
+        server.server_close()
+        replacement.close()
+        socket_path.unlink(missing_ok=True)
+
+
+def test_server_without_owned_path_never_unlinks_its_socket(tmp_path: Path) -> None:
+    socket_path = tmp_path / "unowned.sock"
+    server = BrokerUnixServer(socket_path, FrameBroker([]))
+    try:
+        assert server.owned_path is None
+        server.server_close()
+        assert socket_path.is_socket()
+    finally:
+        socket_path.unlink(missing_ok=True)
+
+
+def test_unreadable_node_after_bind_closes_the_server_and_claims_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    socket_path = tmp_path / "owned.sock"
+    original_lstat = Path.lstat
+
+    def lstat(path: Path, *args, **kwargs):
+        if path == socket_path:
+            raise PermissionError("lstat denied")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    with pytest.raises(PermissionError, match="lstat denied"):
+        BrokerUnixServer(socket_path, FrameBroker([]), owned_path=socket_path)
+    monkeypatch.undo()
+    # Ownership was never recorded, so the bound node is left in place.
+    assert socket_path.is_socket()
+    socket_path.unlink()
+
+
+def test_server_close_tolerates_an_already_removed_owned_node(tmp_path: Path) -> None:
+    socket_path = tmp_path / "owned.sock"
+    server = BrokerUnixServer(socket_path, FrameBroker([]), owned_path=socket_path)
+    socket_path.unlink()
+    server.server_close()
+    assert not socket_path.exists()

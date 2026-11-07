@@ -231,6 +231,7 @@ def test_hello_returns_protocol_versions_identity_and_limits(tmp_path: Path) -> 
         assert PROTOCOL_VERSION in hello["protocol_versions"]
         assert hello["identity"]["name"] == "topos-daemon"
         assert hello["identity"]["version"]  # non-empty build version
+        assert "socket_activation" not in hello
         lim = hello["limits"]
         assert lim["max_request_bytes"] == MAX_REQUEST_BYTES
         assert lim["max_response_items"] == MAX_STREAM_LIMIT

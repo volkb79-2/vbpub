@@ -206,7 +206,7 @@ bounded process union (top 20 CPU, top 20 IO, blocked, pinned; hard cap 64).
 ### 5.3 Reaching a host
 
 - **Daemon per host** is the normal mode: the TUI attaches and backfills history.
-- **Cockpit:** `mdt-cockpit` bind-mounts `/run/topos` into the container, and
+- **Cockpit:** `mdt-cockpit` bind-mounts `/run/topos/observe` into the container, and
   zero-argument `topos` finds it. Inside a container `topos` otherwise sees only
   its own cgroup namespace and must say so rather than show a one-row tree.
 - **Remote:** later.

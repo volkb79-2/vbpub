@@ -4,6 +4,21 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+- feat(toposd): add pinned `install`, `uninstall`, and `doctor` host-service workflows for topos 0.7.0 and later: immutable versioned venvs, recoverable install records, targeted observe-group config edits, activation-aware service checks, deferred removal of the running version, and safe partial cleanup when group removal fails
+- feat(toposd): refuse `docker`, GID 0 and the docker GID as the observe group on every input path (flag, install record, `toposd.toml`, prompt), exit 2, no override; `--add-user observe=USER` (repeatable, `gpasswd -a`, members never removed) replaces `--observe-users`; `toposd config check` and `-t` refuse such a group where it exists; the doctor `groups` check fails on those GIDs and lists members; a recorded user who no longer exists is dropped from the record and reported instead of blocking the install
+- feat(toposd): `toposd -t [--config PATH]` tests the config (same as `config check`, exit 0 or 2); `topos.service` runs it as its `ExecStartPre`
+- feat(topos/release): generate and publish the sha256-pinned daemon dependency lock beside each topos wheel
+- fix(topos): remove `topos daemon preflight` and `install-plan` without alias (use `toposd doctor` and `toposd install --dry-run`); `topos daemon status` stays as the client check, sends hello, and accepts any socket group unless `--group` names one
+- feat(topos/daemon): systemd owns the `observe` socket at `/run/topos/observe/topos.sock`; daemon state moves under `/run/topos/state/`; the old `/run/topos/topos.sock` is no longer served, so an upgrading host needs a fresh install
+- feat(toposd): add `run`, `unit print|check`, and `config check`, with explicit `--self-bind` for tests and development
+- fix(topos): point client defaults at the socket unit and remove `topos daemon serve`
+- fix(topos/deploy): render socket, service, slice, and sysusers files from `/etc/topos/toposd.toml`; remove the tmpfiles asset
+- fix(topos): route daemon BPF snapshots and squeeze recovery records under service `state_dir`
+- fix(toposd): preserve an existing or replacement socket node when self-bind fails or closes
+- fix(toposd): reject unsafe service-config paths before rendering systemd unit text
+- fix(toposd): reject `--self-bind` with an activated listener and report the bound address
+- fix(toposd): prevent systemd restart loops for exit status 2; a runtime OSError at startup exits 1 so systemd still restarts
+
 <!-- cmru: release history -->
 
 ## [0.6.0] - 2026-11-05
