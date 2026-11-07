@@ -157,11 +157,9 @@ class Policy:
 def _parse_bound(raw: Any, *, option: str, allow_none: bool) -> Union[str, float, None]:
     """``auto``/a positive number/(optionally) ``null``, or ``PolicyError``.
 
-    A numeric STRING is accepted because the exec carrier's ``--idle-bound``
-    is a string option (it has to be: ``auto`` is a legal value), and §8.1
-    rule 2 makes the in-image client a literal translator — it forwards what
-    it was given rather than deciding what is parsable. That decision is the
-    daemon's, so both carriers get the identical ``bad-policy`` refusal.
+    ``cgpctl`` accepts ``auto`` or seconds as CLI text and forwards the value
+    unchanged. Keeping policy parsing here gives CLI and socket callers the
+    same ``bad-policy`` response for malformed values.
     """
     if raw is None:
         return None if allow_none else AUTO

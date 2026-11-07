@@ -121,7 +121,7 @@ injectable authorization hook may deny with a typed error.
 flowchart LR
     RootDaemon[topos-daemon as root] --> Producer[background producer thread]
     Producer --> Store[bounded frame store with seq]
-    RootDaemon --> Socket[Unix socket 0660 group topos]
+    RootDaemon --> Socket[Unix socket 0660 group topos-observe]
     Store --> Socket
     Socket --> TUI[topos --attach]
     Socket --> AttachClient[attached TUI / CLI]

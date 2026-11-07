@@ -352,6 +352,40 @@ is implied (RG-56 remains separate). This ordering honors explicit placement
 without turning host contention, profiler availability, or measurement data
 into a functional or mutation result.
 
+## Host service sockets use a per-level layout
+
+Run-Gate uses cgprofile's control endpoint at
+`/run/cgprofile/control/cgprofile.sock`. Observer lanes use the separate host
+endpoint `/run/cgprofile/observer/cgprofile.sock`, mounted read-only into the
+lane at `/run/cgprofile-observer/cgprofile.sock`. Binding each level directory
+keeps the consumer's mount scoped to the access it needs and preserves the
+socket basename inside the lane.
+
+The level directories are `root:root` with mode `0755`; the socket inode's
+group grants access. Run-Gate runs inside the cockpit container, whose group
+database may map `docker` to another GID or omit it, so it never consults the
+group database. The host Docker GID comes from the explicit
+`RUN_GATE_HOST_DOCKER_GID` override first, then `MDT_HOST_DOCKER_GID` supplied
+by the host launcher. A set value must be a positive decimal GID; malformed
+values fail, and absence of both variables names both in the refusal. Run-Gate
+does not stat the Docker API socket to infer the Docker group: a proxy or relay
+may give that socket a separate access GID. The explicit override remains for
+deployments where the launcher-provided GID needs an intentional correction.
+Run-Gate refuses a control socket whose GID is zero or the Docker GID, and
+checks caller access before every control connection. UID 0 is accepted for
+the tester runner; other callers must have the socket GID as their effective
+GID or among their supplementary groups. An access refusal names
+`cgprofile-control` and says to recreate the devcontainer with its `--group-add`.
+The control GID is not passed
+to lane containers. The observer socket GID must be non-zero and distinct
+from both the Docker GID and control socket GID. The observer directory must be
+`root:root 0755`; its GID does not grant socket access. Observer preflight
+lstats the read-only-mounted directory and checks uid 0, gid 0, mode, and
+traversal permission without requiring the observer GID on the directory.
+Preflight checks only the new paths and names the required host socket cutover
+when an old layout is still installed. Hosts
+keep their earlier Run-Gate and Assay pins until that cutover.
+
 ## Private-namespace R2 uses a read-only cgroup observer
 
 Assay B145 must see every enforcing ancestor of a mutation worker. A private
@@ -365,7 +399,7 @@ read-only counter query.
 The existing cgprofile daemon already has the host proc and cgroup view
 required for its measurement and placement duties. Run-Gate's explicit
 resource_observer = "cgprofile" lane setting mounts a separate
-observer-only Unix socket, not ctl.sock, into the opted-in tester container.
+observer-only Unix socket, not the control socket, into the opted-in tester container.
 It is supported on native Assay lanes and command lanes whose resolved
 environment has `mode = "ephemeral"`. Its intended command use is a wrapper that
 launches an Assay campaign (such as Assay's B105 self-qualification driver).
@@ -401,15 +435,15 @@ path, sibling cgroup, or control operation. The explicit lane declaration is
 the grant; the command process is trusted with the same narrow query
 capability whether or not it passes the endpoint onward to Assay.
 The observer accepts only a resource-counter request; filesystem read-only
-alone would not constrain the existing control socket's verbs. Docker also
-receives the socket's observed GID as a supplementary group, and the socket
-path, type, owner, group, and mode are checked before launch. Missing service
-or unsafe socket state is an infrastructure refusal, never a reason to
-silently run without B145. To reject a socket that uses Docker's powerful
-group, Run-Gate reads the numeric GID from the root-owned `/run/cgprofile`
-control directory provisioned as `root:docker` by host setup. It does not use
-`getgrnam("docker")` from the devcontainer's potentially different group
-table, and it refuses when that host path cannot be verified.
+alone would not constrain the control socket's verbs. Docker also receives
+the socket's observed GID as a supplementary group, and the socket path, type,
+owner, group, and mode are checked before launch. Missing service or unsafe
+socket state is an infrastructure refusal, never a reason to silently run
+without B145. To reject a socket that uses Docker's powerful group, Run-Gate
+takes the host Docker GID from `RUN_GATE_HOST_DOCKER_GID` or
+`MDT_HOST_DOCKER_GID`, never a socket owner or group database. The observer
+group must also differ from the control socket group, which keeps the two APIs
+separately granted.
 
 The client sends only its native thread ID. The daemon binds that request to
 SO_PEERCRED, checks the thread's host/namespace PID mapping, verifies that

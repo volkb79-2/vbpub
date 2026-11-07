@@ -105,6 +105,6 @@ from a configured cgroup-v2 root, and atomically writes the P18 ``snapshot.json`
 contract with schema/version, generation timestamp, source/map metadata, ``maps``,
 and ``cgroup_map`` fields. The bridge enforces path confinement, output bounds,
 last-good preservation, and non-world-writable permissions. It integrates into
-``topos daemon serve`` behind an explicit ``--bpf-root`` CLI option or
+``toposd run`` behind an explicit ``--bpf-root`` CLI option or
 ``[bpf_snapshot]`` config section, both disabled by default. BPF program
 compilation and the privileged attach/pin/detach lifecycle remain future work.

@@ -76,7 +76,7 @@ def test_cgroup_capability_probe_uses_a_worker_thread(monkeypatch):
         or counters,
     )
 
-    observer_path = "/run/cgprofile-observer/resource-observer.sock"
+    observer_path = "/run/cgprofile-observer/cgprofile.sock"
     capability = resource_limits.inspect_current_cgroup_observation(
         observer_socket_path=observer_path
     )
@@ -1357,7 +1357,7 @@ def test_mutation_counter_reader_delegates_and_wraps_observer_failures(
         memory_oom_group_kill=0,
     )
 
-    observer_path = "/run/cgprofile-observer/resource-observer.sock"
+    observer_path = "/run/cgprofile-observer/cgprofile.sock"
     monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", observer_path)
     calls = []
 

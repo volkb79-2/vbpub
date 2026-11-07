@@ -17,22 +17,30 @@
         "tunable": false,
         "persisted": false
       },
-      "ctl_socket": {
-        "value": "/run/cgprofile/ctl.sock",
+      "sockets.control": {
+        "value": {
+          "path": "/run/cgprofile/control/cgprofile.sock",
+          "group": "cgprofile-control",
+          "mode": "0660"
+        },
         "source": "default",
         "reloadable": false,
         "tunable": false,
         "persisted": false
       },
-      "observer_socket": {
-        "value": "/run/cgprofile/observer/resource-observer.sock",
+      "sockets.observer": {
+        "value": {
+          "path": "/run/cgprofile/observer/cgprofile.sock",
+          "group": "cgprofile-observer",
+          "mode": "0660"
+        },
         "source": "default",
         "reloadable": false,
         "tunable": false,
         "persisted": false
       },
       "damon_lock": {
-        "value": "/run/cgprofile/damon.lock",
+        "value": "/run/cgprofile/state/damon.lock",
         "source": "default",
         "reloadable": false,
         "tunable": false,

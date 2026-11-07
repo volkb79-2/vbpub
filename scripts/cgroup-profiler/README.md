@@ -42,45 +42,54 @@ documents: [`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) (command line),
 
 ### 2. Commands
 
-`cgpctl [--socket PATH] [--json] <verb>`; the full table, flags, JSON shapes
-and exit codes are in [`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 2.
+`cgpctl [--socket PATH] [--json] <verb>`; the full client table, flags, JSON
+shapes and exit codes are in [`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md)
+section 2.
 
 | verb | what |
 |---|---|
-| `status` | daemon and client versions, contracts, uptime, slots, settings in effect |
-| `host` | host facts: load, memory, pressure, observed slices, gates slice, DAMON |
+| `status` | daemon and client versions, contracts, uptime, slots and settings in effect |
+| `host` | host facts: load, memory, pressure, observed slices, gates slice and DAMON |
 | `sessions` | one row per session; `--state live\|done\|all`, `--mine` |
-| `show` | live counters of a live session, the summary of a finished one |
+| `show` | live counters of a live session, or the summary of a finished one |
 | `start` | start a daemon session on a container, cgroup or slice; `--target`, `--scope`, `--place`, `--on-stall`, `--dry-run` |
 | `stop` | stop and finalize a session; prints the summary |
 | `watch` | stream readings until the session ends; `--watch-interval` |
-| `report` | export a stored session and render it locally; `--out`, `--html-only`, `--md-only`; `--run-dir` renders a standalone `run` result |
+| `report` | export a stored session and render it locally; `--out`, `--html-only`, `--md-only`, `--run-dir` |
 | `prune` | apply retention now; `--keep`, `--keep-days`, `--dry-run`, `--yes` |
 | `run` | profile one command locally, direct mode only; `--phase`, `--out-dir` |
 | `mark` | append a phase mark to the current run; stdlib-only, callable from inside a gate |
-| `doctor` | diagnose the install, the socket, the caller and the daemon; `--check` |
-| `config` | `config show`, `config set KEY VALUE [--persist]`, `config reset` (uid 0 for the last two) |
+| `doctor` | diagnose client access, daemon, observer endpoint and runtime; `--check` |
+| `config` | `config show`, `config set KEY VALUE [--persist]`, `config reset` (uid 0 for writes) |
 | `skills` | install, check, list or remove the packaged agent skill |
 
-`cgpd [--config PATH] <verb>` is root-only for `run` and read-only otherwise
-([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
+`cgpd [--config PATH] <verb>` is root-only for service changes and read-only
+for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
 
 | verb | what |
 |---|---|
-| `run` | explicit service entrypoint: preflight, bind both sockets, serve until SIGTERM |
-| `unit` | `unit print` renders `cgprofile.slice` and `cgpd.service` from the wheel; `unit check` reports drift |
-| `config` | `config check` validates the config file without starting anything |
+| `run` | explicit service entrypoint: serve systemd-passed sockets; `--self-bind` is for tests and development |
+| `install` | fetch pinned wheels, render config and systemd resources, drain before restart; repeatable `--add-user LEVEL=USER`, `--enable`, `--no-enable`, `--allow-downgrade` |
+| `uninstall` | stop and remove the service; `--remove-groups` and `--purge-data` are opt-in |
+| `doctor` | check config, units, groups, socket nodes, state, service, access and foreign rules |
+| `unit` | `unit print` renders the service, slice, two socket units and sysusers file; `unit check` reports drift |
+| `config` | `config check` validates the config file without starting anything; `cgpd -t` is the same exit-code check for service preflight |
 | `reload` | signal the running daemon to reload; `--reset-overrides` also drops runtime overrides |
 
-Daemon configuration is one TOML file, `/etc/cgprofile/cgpd.toml`, plus uid-0
-runtime overrides. A missing file means all defaults. Unknown keys are refused.
+After installation, run the service CLI from the active versioned venv at
+`/opt/cgprofile/current/venv/bin/cgpd`. The installer links the client command
+`cgpctl` into `/usr/local/bin` but does not add a global `cgpd` symlink.
+
+The daemon reads `/etc/cgprofile/cgpd.toml`, plus uid-0 runtime overrides.
+A missing file means all defaults. Unknown keys are refused. Socket settings
+are fixed and require a service restart:
 
 | key | default | change applies |
 |---|---|---|
 | `sessions_dir` | `/var/lib/cgprofile/sessions` | restart |
-| `ctl_socket` | `/run/cgprofile/ctl.sock` | restart |
-| `observer_socket` | `/run/cgprofile/observer/resource-observer.sock` | restart |
-| `damon_lock` | `/run/cgprofile/damon.lock` | restart |
+| `sockets.control` | `path=/run/cgprofile/control/cgprofile.sock; group=cgprofile-control; mode=0660` | restart |
+| `sockets.observer` | `path=/run/cgprofile/observer/cgprofile.sock; group=cgprofile-observer; mode=0660` | restart |
+| `damon_lock` | `/run/cgprofile/state/damon.lock` | restart |
 | `proc_root` | `/proc` | restart |
 | `busctl` | `busctl` | restart |
 | `export_max_bytes` | `268435456` | reload |
@@ -97,10 +106,25 @@ runtime overrides. A missing file means all defaults. Unknown keys are refused.
 
 ### 3. Sockets
 
-| socket | mode and group | speaks |
+| socket | owner and access | speaks |
 |---|---|---|
-| `/run/cgprofile/ctl.sock` | directory `0770 root:<ctl group>`, socket `0660`, group adopted from the directory | control protocol: ctl contract 2, contract 1 for older consumers ([`docs/PROTOCOL.md`](docs/PROTOCOL.md)) |
-| `/run/cgprofile/observer/resource-observer.sock` | directory `0751 root:cgprofile-observer` | observer contracts 2 and 3: peer-bound resource counters and measurement windows ([`docs/PROTOCOL.md`](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)) |
+| `/run/cgprofile/control/cgprofile.sock` | parent `0755 root:root`; socket mode `0660`, group `root:cgprofile-control` | control protocol contracts 1 and 2 ([`docs/PROTOCOL.md`](docs/PROTOCOL.md)) |
+| `/run/cgprofile/observer/cgprofile.sock` | parent `0755 root:root`; socket mode `0660`, group `root:cgprofile-observer` | observer contracts 2 and 3: resource counters and measurement windows ([`docs/PROTOCOL.md`](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)) |
+
+Each systemd socket unit has one `ListenStream` and passes one named fd to
+`cgpd.service`. Systemd owns the socket nodes across daemon restarts.
+The control and observer groups must be distinct dedicated groups: neither can
+be named `docker`, resolve to GID 0 or the docker GID, or share a GID with the
+other cgprofile level. The installer and config checker refuse these values
+from flags, saved records, existing config, and wizard answers, with no
+override. Cross-service group uniqueness belongs to host-setup.
+Repeatable `cgpd install --add-user
+LEVEL=USER` flags add existing users with `gpasswd -a`. A user named with
+`--add-user` must exist. The installer records and keeps additions, and
+uninstall never removes memberships. On reinstall, recorded users whose
+accounts no longer exist are dropped and reported; the install continues.
+`allow_uids` can further narrow control access. See the [access-group design](docs/DESIGN-GUIDE.md#dedicated-groups-for-each-socket-level)
+and [install examples](docs/CONSUMERS.md#install-and-run-the-native-service).
 
 The control socket is one carrier: there is no `exec` carrier. A version reply
 looks like this (the `cgprofile` field is the installed version):
@@ -109,7 +133,7 @@ looks like this (the `cgprofile` field is the installed version):
 {
   "ok": true,
   "contract": 1,
-  "cgprofile": "2.0.0",
+  "cgprofile": "2.2.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
     "started_at": "2026-09-12T10:15:00Z",
@@ -121,7 +145,7 @@ looks like this (the `cgprofile` field is the installed version):
   "resource_observer": {
     "contract": 2,
     "contracts": [2, 3],
-    "path": "/run/cgprofile/observer/resource-observer.sock",
+    "path": "/run/cgprofile/observer/cgprofile.sock",
     "listening": true
   }
 }
@@ -132,32 +156,37 @@ a monitoring context; see the
 [design guide](docs/DESIGN-GUIDE.md#damon-availability-is-not-session-readiness)
 and the [troubleshooting note](docs/CONSUMERS.md#host-damon_stat-exclusivity).
 
+The config and client defaults use only these new paths. Install refuses old
+config keys, foreign host-setup rules, mismatched runtime directories, old
+mdt installer manifests, and incomplete install markers. It prints the manual
+removal list; it never migrates or repairs old state in place. The exact
+reasoning is in the
+[systemd socket activation design](docs/DESIGN-GUIDE.md#systemd-owns-the-service-sockets).
+
 ### 4. Consumers
 
-* **Run-Gate** starts, watches and stops sessions per lane over the control
-  socket, and mounts only the observer directory into a native-R2 tester
-  container, never `ctl.sock`. Integrations use the installed Run-Gate wheel and
-  its SemVer identity; copied `run-gate.py` scripts are not a supported
-  consumer. See the
-  [design rationale](docs/DESIGN-GUIDE.md#run-gate-is-an-installed-semver-consumer)
+* **Run-Gate** starts, watches and stops sessions over the control socket and
+  mounts only the observer level directory into a native-R2 tester container.
+  Integrations use the installed Run-Gate wheel and its SemVer identity;
+  copied `run-gate.py` scripts are not a supported consumer. See the [rationale](docs/DESIGN-GUIDE.md#run-gate-is-an-installed-semver-consumer)
   and [adoption steps](docs/CONSUMERS.md#attach-a-run-gate-lane).
 * **Assay** reads event counters through the observer socket
   ([adoption](docs/CONSUMERS.md#native-r2-resource-observer)).
-* **mdt host-setup** installs, pins, upgrades and checks the service
-  ([`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md) section 6).
-* **Devcontainers and cockpits** install `cgpctl` and bind the control socket
-  directory; [`ATTACH-GUIDE.md`](ATTACH-GUIDE.md) is the operator walk-through.
+* **mdt host-setup** becomes a consumer in phase 2. Phase-1 releases are not
+  deployed to cockpit hosts; keep `CGPROFILE_WHEEL` below `2.2.0` until the
+  host-setup update and per-host cutover are complete. See
+  [`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md).
+* **Devcontainers and cockpits** mount level directories after cutover; they
+  do not mount the whole runtime root. See [`ATTACH-GUIDE.md`](ATTACH-GUIDE.md).
 
 ### 5. Access
 
-The ctl directory's group decides who may connect; the daemon identifies every
-peer by `SO_PEERCRED`. `allow_uids` narrows that group further (uid 0 is always
-allowed), and an access change is uid 0 only
-([`docs/PROTOCOL.md`](docs/PROTOCOL.md#4-authorisation-on-the-socket-81)).
-Sessions are owned by the uid that started them; other uids see them but only
-uid 0 stops them. The observer socket is reached by members of
-`cgprofile-observer`, which grants nothing on the control socket. Off an mdt
-host with no groups set up, the sockets are root-only.
+The control and observer socket groups are separate. The daemon identifies
+control peers by `SO_PEERCRED`; `allow_uids` narrows control access further
+(uid 0 is always allowed). Observer access is read-only and does not grant
+control access. Sessions are owned by the uid that started them; only uid 0
+can stop or export another uid's session. See
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md#4-authorisation-on-the-socket-81).
 
 ### 6. Protection
 
@@ -165,18 +194,21 @@ host with no groups set up, the sockets are root-only.
 start when its cgroup is not under that slice
 ([`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#the-daemon-proves-the-slice-it-is-in-not-a-slice-by-name)).
 Optional placement puts a lane into a delegated scope beneath the gates slice;
-`cgroup.kill` is written only for an exact container cgroup proven beneath that
-slice, or an exact placed leaf, and the daemon never signals a numeric PID
-([`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#daemon-safety-and-placement)).
-The service restarts on failure, and an upgrade drains live sessions before the
-restart ([`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md) section 5).
+`cgroup.kill` is written only for an exact container cgroup proven beneath
+that slice, or an exact placed leaf. The daemon never signals a numeric PID.
+An upgrade drains live sessions before restarting the service
+([`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md)).
 
 ### 7. Install
 
-The wheel is the deployed artifact: host-setup installs it into a versioned
-directory under `/opt/cgprofile`, renders the units with `cgpd unit print`, and
-flips a `current` pointer; nothing runs from a checkout. Steps, variables,
-upgrade and rollback are in [`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md).
+Bootstrap `cgpd install` from the cgprofile and cli-extended wheels, each
+pinned by version and SHA-256. The installer creates an immutable versioned
+venv, validates the config and rendered units, atomically updates `current`,
+and waits for the selected version to answer. It supports a TTY wizard and
+explicit flags for unattended installation. Install and uninstall steps,
+manual cleanup for an old host-setup install, doctor checks and VM acceptance
+are in [`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md). The design
+choices are in the [socket activation guide](docs/DESIGN-GUIDE.md#systemd-owns-the-service-sockets).
 Release identity (wheel version, tag, checksum) is described in the
 [release identity design](docs/DESIGN-GUIDE.md#release-identity).
 

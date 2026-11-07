@@ -18,7 +18,7 @@
   "transports": {
     "exec": false,
     "socket": {
-      "path": "/run/cgprofile/ctl.sock",
+      "path": "/run/cgprofile/control/cgprofile.sock",
       "listening": true,
       "allow_uids": [],
       "peer_cred": true
@@ -30,7 +30,7 @@
       2,
       3
     ],
-    "path": "/run/cgprofile/observer/resource-observer.sock",
+    "path": "/run/cgprofile/observer/cgprofile.sock",
     "listening": true
   }
 }

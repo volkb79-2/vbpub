@@ -48,6 +48,8 @@ collection is planned pending a proof of concept (D-026).
   evidence sources, live-host templates, and explicit non-claims.
 - `docs/DAEMON.md`, `docs/INSPECT-FILES.md`, `docs/WEB-UI-SCOPING.md` (parked),
   `docs/BACKLOG.md` (older narrative ledger).
+- `docs/DESIGN-GUIDE.md` — why the host daemon uses systemd socket activation.
+- `docs/CONSUMERS.md` — copyable service config, unit, and client examples.
 - `pwmcp-instance/README.md` — pinned browser-test service, CIU lifecycle and
   network/security constraints for future web acceptance.
 - `nyxloom-trove/` — handoffs, reports and decisions; finished ones are in
@@ -81,9 +83,36 @@ systemd service, not a container image: it observes the host cgroup hierarchy,
 Docker metadata, optional BPF state, and optional DAMON sysfs control.  Putting
 those powers in a privileged container would add an image boundary without
 meaningfully reducing host authority.  The installed `topos.service`,
-`topos.tmpfiles`, and `topos.slice` templates instead create a group-readable
-Unix socket for clients and bound the daemon to 256 MiB `MemoryHigh`, 512 MiB
-`MemoryMax`, 1 GiB swap, 512 tasks, and low CPU weight.
+`topos-observe.socket`, `topos.slice`, and sysusers files let systemd own the
+group-readable socket at `/run/topos/observe/topos.sock`; private daemon state
+lives under the configured `state_dir`. That directory also contains daemon
+BPF snapshots under `state_dir/bpf` and squeeze recovery records under
+`state_dir/squeeze`; the collector config's BPF `state_dir` does not choose
+the daemon output path. The daemon receives its `observe` listener through
+systemd socket activation. Its unit bounds it to 256 MiB `MemoryHigh`,
+512 MiB `MemoryMax`, 1 GiB swap, 512 tasks, and low CPU weight. See the
+[daemon state layout guide](docs/DESIGN-GUIDE.md#socket-and-state-layout) for the reasoning and
+[consumer guide](docs/CONSUMERS.md) for install and client examples.
+
+The `toposd` admin entry point provides `install`, `uninstall`, `doctor`,
+`run`, `unit print`, `unit check`, and `config check`. Install uses pinned
+topos and cli-extended wheels plus a version-matched, sha256-pinned daemon
+dependency lock. Each asset pin has the form
+`<version>@sha256:<64 lowercase hex>`; it records the pins and created groups in
+`/etc/topos/install.toml`. See [the consumer guide](docs/CONSUMERS.md) for
+copyable install commands and [the daemon design guide](docs/DESIGN-GUIDE.md#installation-and-removal)
+for the installer rationale. `toposd run` requires the activated socket; use
+`toposd run --self-bind --socket PATH` only for tests and development. The
+`toposd run --bpf-state-dir PATH` option overrides the BPF snapshot directory.
+Use `toposd doctor [--check NAME] [--json]` for host checks and
+`toposd install --dry-run` to preview an installation. An old layout is
+refused for manual removal; see [the removal steps](docs/DAEMON.md#manual-removal-of-an-old-installation).
+For non-interactive installs, the observe group comes from `--observe-group`,
+the existing config, or the install record; the doctor service check verifies
+that the running daemon uses the activated socket. See the
+[consumer guide](docs/CONSUMERS.md) for group-selection examples and the
+[design guide](docs/DESIGN-GUIDE.md#installation-and-removal) for the rationale.
+`topos daemon status` remains the client-side socket and protocol check.
 
 Without a daemon, the client still works in direct mode: `topos --once`, the
 live TUI, record/replay, report, query, and rootless readable metrics collect

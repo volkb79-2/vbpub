@@ -443,14 +443,31 @@ class BrokerUnixServer(socketserver.ThreadingUnixStreamServer):
         socket_path: Path,
         broker: FrameBroker,
         *,
+        owned_path: Path | None = None,
+        bind_and_activate: bool = True,
         request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
         max_clients: int = DEFAULT_MAX_CLIENTS,
     ) -> None:
         self.socket_path = socket_path
+        self._requested_owned_path = owned_path
+        self.owned_path: Path | None = None
+        self._owned_node: tuple[int, int] | None = None
         self.broker = broker
         self.request_timeout_s = request_timeout_s
         self._client_slots = threading.BoundedSemaphore(max_clients)
-        super().__init__(str(socket_path), _BrokerHandler)
+        super().__init__(str(socket_path), _BrokerHandler, bind_and_activate=bind_and_activate)
+
+    def server_bind(self) -> None:
+        super().server_bind()
+        if self._requested_owned_path is None:
+            return
+        try:
+            node = self._requested_owned_path.lstat()
+        except OSError:
+            self.server_close()
+            raise
+        self.owned_path = self._requested_owned_path
+        self._owned_node = (node.st_dev, node.st_ino)
 
     def busy_payload(self, request: socket.socket) -> dict[str, Any]:
         """Reply body for a rejected connection (legacy shape; envelope server overrides)."""
@@ -499,7 +516,14 @@ class BrokerUnixServer(socketserver.ThreadingUnixStreamServer):
 
     def server_close(self) -> None:
         super().server_close()
-        self.socket_path.unlink(missing_ok=True)
+        if self.owned_path is None or self._owned_node is None:
+            return
+        try:
+            node = self.owned_path.lstat()
+        except OSError:
+            return
+        if (node.st_dev, node.st_ino) == self._owned_node:
+            self.owned_path.unlink(missing_ok=True)
 
 
 class TotalDeadline:
@@ -583,6 +607,7 @@ def serve_unix_socket(
     server = BrokerUnixServer(
         socket_path,
         broker,
+        owned_path=socket_path,
         request_timeout_s=request_timeout_s,
         max_clients=max_clients,
     )

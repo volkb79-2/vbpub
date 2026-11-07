@@ -24,6 +24,63 @@ For test/dev without installing:
 PYTHONPATH=topos/src python3 -m topos.cli --once --json
 ```
 
+## Host daemon service
+
+The production daemon is started by `topos-observe.socket` and receives its
+`observe` listening descriptor from systemd. The default client path is
+`/run/topos/observe/topos.sock`; private daemon state lives under
+`/run/topos/state/` as `0700 root:root`. The old path
+`/run/topos/topos.sock` is no longer served, so an upgrading host needs a
+fresh install. The installer refuses the old layout without modifying it;
+follow [manual removal of an old installation](DAEMON.md#manual-removal-of-an-old-installation)
+before installing.
+
+Check the config and render the socket, service, slice, and sysusers files:
+
+```bash
+toposd config check --config /etc/topos/toposd.toml
+toposd unit print --config /etc/topos/toposd.toml
+```
+
+Install a release with pinned wheel and lock assets. Preview first:
+
+```bash
+sudo toposd install --dry-run \
+  --wheel 0.7.3@sha256:<topos-wheel-sha256> \
+  --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
+  --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
+  --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
+  --add-user observe=alice --enable
+```
+
+After reviewing the output, repeat the command with `--yes` and without
+`--dry-run`. Use `--no-enable` when installing files without starting service
+units. Each pin is `<version>@sha256:<64 lowercase hex>`; the daemon-lock
+version must equal the topos wheel version. A local `--wheel-source` directory
+holds both wheels, the lock, and third-party wheels needed by `--find-links`.
+The installer writes `/etc/topos/install.toml` with the pins and group choices.
+
+Inspect the completed install and access from the client account:
+
+```bash
+sudo toposd doctor --json
+topos daemon status
+```
+
+Uninstall while retaining groups and memberships by default:
+
+```bash
+toposd uninstall --dry-run
+sudo toposd uninstall --yes
+```
+
+Use `sudo toposd uninstall --remove-groups --yes` to remove groups recorded as
+created by the installer. For development without systemd socket activation,
+bind an explicit socket with `toposd run --self-bind --socket
+/tmp/topos-observe.sock`. Production `toposd run` requires the systemd-passed
+listener. Use `toposd doctor` for host checks and `toposd install --dry-run`
+to preview an install.
+
 ## Common Commands
 
 Collect one frame as JSON:
@@ -167,21 +224,7 @@ Attach to a running daemon (interactive TUI or one-shot):
 ```bash
 topos --attach                                   # default socket, interactive UI
 topos --attach --once --json                     # default socket, one frame
-topos --attach /run/topos/topos.sock             # explicit socket
-```
-
-Run the daemon deployment preflight check:
-
-```bash
-topos daemon preflight                           # default socket
-topos daemon preflight --socket /custom/path.sock --json
-```
-
-View the safe install plan for the packaged daemon templates:
-
-```bash
-topos daemon install-plan                        # text plan
-topos daemon install-plan --json                 # JSON plan
+topos --attach /run/topos/observe/topos.sock     # explicit socket
 ```
 
 Snapshots are written to `[snapshots].dir` when configured, otherwise
@@ -429,7 +472,7 @@ enabled = false
 root = "/sys/fs/bpf/topos"
 interval = 30.0
 map_name = "topos_cgroup_skb"
-state_dir = "/run/topos/bpf" # regular runtime state; never place JSON in bpffs
+state_dir = "/run/topos/state/bpf" # regular runtime state; never place JSON in bpffs
 ```
 
 ## What To Check Before A Release Claim

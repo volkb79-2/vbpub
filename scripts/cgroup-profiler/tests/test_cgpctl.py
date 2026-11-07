@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -774,9 +775,18 @@ def test_checks_degrade_when_the_daemon_is_missing(sockdir):
 
 def test_caller_group_fail_and_not_in_group(daemon, monkeypatch):
     d = daemon()
+    monkeypatch.setattr(cgpctl.os, "geteuid", lambda: 1000)
     monkeypatch.setattr(cgpctl, "caller_in_group", lambda gid: False)
     result = _check("caller-group", _ns(d.path))
     assert result.status == "fail" and "re-login" in result.remedy
+
+
+def test_root_has_administrative_socket_access_without_group_membership(daemon, monkeypatch):
+    d = daemon()
+    monkeypatch.setattr(cgpctl.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cgpctl, "caller_in_group", lambda gid: False)
+    result = _check("caller-group", _ns(d.path))
+    assert result.status == "ok" and "root has administrative access" in result.summary
 
 
 def test_daemon_version_equal_is_ok(daemon, monkeypatch):
@@ -832,19 +842,170 @@ def test_overrides_check_variants(daemon):
 
 
 def test_observer_dir_check(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
     ns = _ns(str(tmp_path / "absent.sock"))
     monkeypatch.setattr(cgpctl, "OBSERVER_DIR", str(tmp_path / "missing"))
     assert _check("observer-dir", ns).status == "skip"
     observer = tmp_path / "observer"
     observer.mkdir()
     monkeypatch.setattr(cgpctl, "OBSERVER_DIR", str(observer))
-    os.chmod(observer, 0o751)
-    monkeypatch.setattr(cgpctl, "socket_group", lambda path: {"group": "g", "gid": -5})
+    monkeypatch.setattr(cgpctl, "OBSERVER_SOCKET", str(observer / "cgprofile.sock"))
+    control_gid = 4242
+    observer_gid = 4243
+    real_lstat = os.lstat
+
+    def fake_lstat(path, *args, **kwargs):
+        if str(path) == str(observer):
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0)
+        if str(path) == str(observer / "cgprofile.sock"):
+            return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=observer_gid)
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
+    monkeypatch.setattr(cgpctl, "socket_group", lambda path: {"group": "control", "gid": control_gid})
+    monkeypatch.setattr(cgpctl.grp, "getgrgid", lambda gid: SimpleNamespace(gr_name="cgprofile-observer"))
     assert _check("observer-dir", ns).status == "ok"
-    os.chmod(observer, 0o755)
+
+    def invalid_directory(path, *args, **kwargs):
+        if str(path) == str(observer):
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=0)
+        return fake_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(cgpctl.os, "lstat", invalid_directory)
     assert "0751" in _check("observer-dir", ns).summary
-    monkeypatch.setattr(cgpctl, "socket_group", lambda path: {"group": "g", "gid": os.stat(observer).st_gid})
-    assert "ctl group" in _check("observer-dir", ns).summary
+
+    monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
+    monkeypatch.setattr(cgpctl, "socket_group", lambda path: {"group": "control", "gid": observer_gid})
+    assert "control socket group" in _check("observer-dir", ns).summary
+
+
+def test_observer_dir_check_uses_configured_path_group_and_mode(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    observer = tmp_path / "custom-observer"
+    observer.mkdir()
+    path = observer / "custom.sock"
+    control_gid, observer_gid = 4242, 4243
+    probe = SimpleNamespace(
+        path="/tmp/control.sock",
+        version={"resource_observer": {"path": str(path)}},
+        config=lambda: {"keys": {"sockets.observer": {
+            "value": {"path": str(path), "group": "custom-observer", "mode": "0600"},
+        }}},
+    )
+    monkeypatch.setattr(cgpctl, "_probe", lambda _args: probe)
+    real_lstat = os.lstat
+
+    def fake_lstat(target, *args, **kwargs):
+        if str(target) == str(observer):
+            return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0)
+        if str(target) == str(path):
+            return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o600, st_uid=0, st_gid=observer_gid)
+        return real_lstat(target, *args, **kwargs)
+
+    monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
+    monkeypatch.setattr(cgpctl, "socket_group", lambda _path: {"group": "control", "gid": control_gid})
+    def getgrnam(name):
+        if name != "custom-observer":
+            raise KeyError(name)
+        return SimpleNamespace(gr_gid=observer_gid)
+
+    monkeypatch.setattr(cgpctl.grp, "getgrnam", getgrnam)
+    monkeypatch.setattr(cgpctl.grp, "getgrgid", lambda gid: SimpleNamespace(gr_name="custom-observer"))
+
+    assert _check("observer-dir", _ns("/tmp/control.sock")).status == "ok"
+
+
+def test_observer_dir_check_reports_each_way_the_socket_can_be_wrong(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir()
+    path = observer_dir / "cgprofile.sock"
+    control_gid, observer_gid = 4242, 4243
+    state = {"config": {"keys": {"sockets.observer": {"value": {"group": "obs", "mode": "0660"}}}}}
+
+    def config():
+        if state["config"] is None:
+            raise WireFailure("no config", exit_code=1, code="daemon-error")
+        return state["config"]
+
+    probe = SimpleNamespace(path="/tmp/control.sock", version={"resource_observer": {"path": str(path)}},
+                            config=config)
+    monkeypatch.setattr(cgpctl, "_probe", lambda _args: probe)
+    nodes = {
+        str(observer_dir): SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0),
+        str(path): SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=observer_gid),
+    }
+    real_lstat = os.lstat
+
+    def fake_lstat(target, *args, **kwargs):
+        if str(target) in nodes:
+            return nodes[str(target)]
+        if str(target) in {str(observer_dir), str(path)}:
+            raise FileNotFoundError(target)
+        return real_lstat(target, *args, **kwargs)
+
+    monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
+    control = {"group": "control", "gid": control_gid}
+    monkeypatch.setattr(cgpctl, "socket_group", lambda _path: control)
+    names = {"obs": observer_gid, "docker": 99}
+
+    def getgrnam(name):
+        if name not in names:
+            raise KeyError(name)
+        return SimpleNamespace(gr_gid=names[name])
+
+    gid_names = {observer_gid: "obs", 99: "docker"}
+
+    def getgrgid(gid):
+        if gid not in gid_names:
+            raise KeyError(gid)
+        return SimpleNamespace(gr_name=gid_names[gid])
+
+    monkeypatch.setattr(cgpctl.grp, "getgrnam", getgrnam)
+    monkeypatch.setattr(cgpctl.grp, "getgrgid", getgrgid)
+    run = lambda: _check("observer-dir", _ns("/tmp/control.sock"))  # noqa: E731
+
+    assert run().status == "ok"
+    state["config"] = None  # the daemon cannot report its config: defaults apply
+    assert run().status == "ok"
+    state["config"] = {"keys": {"sockets.observer": {"value": {"group": 3, "mode": 4}}}}
+    assert run().status == "ok"
+    state["config"] = {"keys": {"sockets.observer": {"value": {"group": "obs", "mode": "0660"}}}}
+
+    nodes[str(path)] = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=5, st_gid=control_gid)
+    problems = run().summary
+    assert "not a root-owned socket" in problems and "mode is 0600, expected 0660" in problems
+    assert "uses the control socket group" in problems and "gid is 4242, expected obs (4243)" in problems
+    state["config"] = {"keys": {"sockets.observer": {"value": {"group": "obs", "mode": "bad"}}}}
+    assert "expected 0660" in run().summary  # an unparsable configured mode falls back to 0660
+    state["config"] = {"keys": {"sockets.observer": {"value": {"group": "gone", "mode": "0660"}}}}
+    nodes[str(path)] = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=99)
+    assert "'gone' does not exist" in run().summary and "docker group" in run().summary
+    nodes[str(path)] = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=777)
+    assert run().status == "warn"  # a gid with no name: nothing to say about docker, the group still mismatches
+    state["config"] = {"keys": {"sockets.observer": {"value": {"group": "docker-alias", "mode": "0660"}}}}
+    names["docker-alias"] = 99
+    gid_names[99] = "docker-alias"
+    nodes[str(path)] = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=99)
+    assert "docker GID" in run().summary
+    nodes[str(path)] = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=0)
+    gid_names[0] = "root"
+    assert "GID 0" in run().summary
+    control.update(group="docker", gid=99)
+    nodes[str(path)] = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=observer_gid)
+    state["config"] = {"keys": {"sockets.observer": {"value": {"group": "obs", "mode": "0660"}}}}
+    assert "control socket uses the docker group" in run().summary
+    control.update(group="control", gid=99)
+    assert "control socket group resolves to the docker GID" in run().summary
+    control.update(gid=0)
+    assert "control socket group resolves to GID 0" in run().summary
+    del nodes[str(path)]
+    assert run().status == "warn" and "is absent" in run().summary
+    del nodes[str(observer_dir)]
+    assert run().status == "skip"
 
 
 def test_slice_check(monkeypatch, tmp_path):

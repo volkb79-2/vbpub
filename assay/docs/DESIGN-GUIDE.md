@@ -882,6 +882,34 @@ record's outer shape. The v15 verdict shape adds B145's execution evidence
 only to native outcomes; ingested mutation reports do not claim local
 execution counters.
 
+#### Host cgprofile socket cutover
+
+Assay's tester launchers consume the observer socket from
+`/run/cgprofile/observer/cgprofile.sock` and bind its directory read-only at
+`/run/cgprofile-observer`. The host basename stays intact, so the
+`ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint is
+`/run/cgprofile-observer/cgprofile.sock`. The control endpoint stays at
+`/run/cgprofile/control/cgprofile.sock` and is never mounted for observation.
+Assay's host launchers do not mount or stat the control socket; Run-Gate carries
+the control-GID preflight because Run-Gate opens that endpoint for control
+requests.
+
+Systemd owns the per-level directories as `root:root`; the socket file's GID
+grants access. Assay's observer launch guard verifies uid 0, gid 0, and a safe
+mode on the observer directory, then reads the observer GID from the socket
+inode. The launch guard reads the host Docker GID from the strict
+`ASSAY_GATE_HOST_DOCKER_GID` override first, then `MDT_HOST_DOCKER_GID` from
+host-setup. Each selected value must be a positive decimal GID, and a malformed
+override refuses instead of falling through. The Docker API socket's GID is
+not an authority for the host Docker group: a proxy or relay may use a separate
+access group. `/run/cgprofile` and the observer directory are not GID sources
+either; the level directories are `root:root 0755`. The observer socket GID
+must be nonzero and different from Docker. Run-Gate also requires the observer
+and control socket GIDs to differ.
+These clients use the new paths only. A host still on the earlier layout needs
+its socket cutover before using the updated Assay or Run-Gate release, so its
+existing pins stay in place until that host is switched.
+
 #### Native R2 cgroup observation (B148/A-494)
 
 B145's full cgroup reader is the capability probe; a shallow check for a
