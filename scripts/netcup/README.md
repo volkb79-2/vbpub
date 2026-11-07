@@ -639,9 +639,12 @@ NIC, so the guest firewall must enforce the actual `wg0`-only service rule.
 
 ## Runner hosts
 
-[`runner/`](runner/README.md) holds the generic, reviewed scripts that turn an installed host into a parallel test runner (account, Btrfs CoW
-area, checkout sync, detached jobs, gate tools and images, cockpit, R2 campaign supervisor). Host-specific values come from a gitignored
-`runner/runner.env`. The runner account must be uid 1003 (backlog NC-04).
+[`runner/`](runner/README.md) holds the generic, reviewed scripts that turn an installed host into a parallel test runner
+(account, Btrfs CoW area, checkout sync, detached jobs, gate tools and images, cockpit, R2 campaign supervisor).
+Runner settings come from a gitignored `runner/runner.env`; cockpit socket paths and endpoint GIDs come from the
+host-published endpoint record and fail by variable name when missing. The runner account must be uid 1003 (backlog
+NC-04). See the [runner endpoint design](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record) and [host setup
+steps](CONSUMERS.md#runner-cockpit-endpoints).
 
 ## CustomScript source
 

@@ -392,3 +392,32 @@ a changed Dockerfile judges the new code with the host's existing image):
 remote-gate run r1002 /workspaces/dstdns/.worktrees/<name> run-gate-docs --project-dir .
 remote-gate run auto  /workspaces/dstdns/.worktrees/<name> release-r1 --project-dir . --detach
 ```
+
+### Runner cockpit endpoints
+
+After host-setup, cgprofile and topos have installed their services, check the
+host-published endpoint record before starting the cockpit. Its values supply
+the cockpit's socket paths and numeric GIDs; they do not belong in
+`runner/runner.env`.
+
+```bash
+set -e
+cat /etc/host-endpoints.env
+cd "$HOME/src/vbpub-current/mdt-cockpit/host-setup"
+sudo ./check.sh
+cd "$HOME/runner-scripts"
+./start-cockpit-runner.sh
+```
+
+The runner requires the Docker API and BuildKit facts from host-setup, the
+cgprofile control socket and GID, the cgprofile observer directory, and the
+topos observe socket and GID. If startup names a missing variable, repair it
+through the publisher that owns it: host-setup, `cgpd install`, or `toposd
+install`. Run that publisher's checker and inspect the aggregate record again,
+then retry startup. Do not copy a value from another host or add a local
+fallback. The cockpit binds each published socket directory read-only at the
+same path, receives the endpoint values in its environment, and gets numeric
+group access for Docker, cgprofile control, topos observe and BuildKit. It
+does not receive the observer GID; Run-Gate grants that to an observer lane
+when it starts the lane container. See the [design rationale](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record)
+and [`runner/README.md`](runner/README.md).
