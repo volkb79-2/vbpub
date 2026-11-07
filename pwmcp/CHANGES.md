@@ -9,6 +9,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - feat(pwmcp): add standard-library `pwmcp eval` for JSON-valued page JavaScript and `inspect --format html` for bounded selector/document HTML through the existing MCP tools; preserve BLOCKED handling for detected challenge pages (PWMCP-42)
 
 ### Fixed
+- fix(pwmcp): treat regex-prefix words after `.` and `?.` as member identifiers during JavaScript expression scanning; add scanner regressions for comments inside groups and trailing tokens after function expressions (PWMCP-42 fold-review follow-up)
 - fix(pwmcp): scan division and regex syntax inside template expressions, pass through only whole functions, keep bounded-wrapper closers beyond line comments, and handle lone-surrogate output safely; add third-review mutant and differential-fuzz regressions (PWMCP-42 fix round 3)
 - fix(pwmcp): refuse MCP redirects, ignore proxy environment variables, cap eval JSON in the page, classify transport overflow with a size hint, and put text truncation markers on stderr; add second-review regressions for URL credentials, JavaScript literals, comments, retry guards, cap boundaries, UTF-8 prefixes, and CRLF/CR SSE frames (PWMCP-42 fix round 2)
 - fix(pwmcp): distinguish page/browser crashes from MCP or browser-service reachability errors and retry one recognized first-navigation crash by default with an explicit stderr note; document the 2 GiB `/dev/shm` allocation and the absence of a PWMCP-owned browser memory cap (PWMCP-42)
