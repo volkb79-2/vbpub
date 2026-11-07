@@ -26,7 +26,7 @@ execution_mode = "project-first"
 # value only where it has a genuinely different requirement.
 [orchestration.defaults.env]
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
-CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
+CMRU_TESTER_UNIFIED_IMAGE = "${CMRU_TESTER_UNIFIED_IMAGE:-tester-unified:local}"
 CMRU_TESTER_MEMORY = "3g"
 CMRU_TESTER_MEMORY_SWAP = "16g"
 CMRU_TESTER_CPUS = "1.5"

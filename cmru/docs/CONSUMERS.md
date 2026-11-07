@@ -796,7 +796,7 @@ overrides a value only where it has a genuinely different requirement). The requ
 
 | variable | meaning |
 |---|---|
-| `CMRU_TESTER_UNIFIED_IMAGE` | the tester-unified gate container image |
+| `CMRU_TESTER_UNIFIED_IMAGE` | the tester-unified gate container image (default `tester-unified:local`; the environment wins, so export it inline for ONE release to use a side-tagged image; it selects the tester-gate steps' image only; run-gate lanes use `RUN_GATE_TESTER_UNIFIED_IMAGE`) |
 | `CMRU_TESTER_MEMORY` | gate container memory ceiling (no default — refuses unbounded) |
 | `CMRU_TESTER_MEMORY_SWAP` | combined mem+swap total (Docker semantics) |
 | `CMRU_TESTER_CPUS` | finite decimal CPU ceiling of at least `0.00001`; smaller values would remove Docker's per-container bound |
