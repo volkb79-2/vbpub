@@ -1,0 +1,16 @@
+[Unit]
+Description=topos daemon, observe access level
+# No PartOf=: it would propagate a service restart to the socket and recreate the inode.
+
+[Socket]
+ListenStream=/run/topos/observe/topos.sock
+SocketUser=root
+SocketGroup=topos-observe
+SocketMode=0660
+DirectoryMode=0755
+FileDescriptorName=observe
+RemoveOnStop=no
+Service=topos.service
+
+[Install]
+WantedBy=sockets.target

@@ -127,7 +127,7 @@ operator, not an anonymous "public metrics" dashboard.
 
 **Verdict: P67 is insufficient as written and must add four contract groups
 before dispatch.**  The current daemon's recommended production interface is a
-root-owned, non-client-writable local Unix socket at `0660 root:topos`
+root-owned, non-client-writable local Unix socket at `0660 root:topos-observe`
 [docs/DAEMON.md:15-21]; P52 relies on OS socket-group access and only a no-op
 default authorization hook [src/topos/daemon/api.py:177-183].  An HTTP listener
 turns that local Unix identity boundary into a browser-accessible network

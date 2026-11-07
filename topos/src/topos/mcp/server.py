@@ -32,11 +32,11 @@ from topos.daemon.client import (
     DaemonResponseError,
 )
 from topos.daemon.component_health import HealthSnapshot
-from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
+from topos.service.config import DEFAULTS as SERVICE_DEFAULTS
 from topos.model import Entity, EntityFrame, EntityKey
 from topos.registry import REGISTRY
 
-DEFAULT_SOCKET_PATH = DEFAULT_DAEMON_SOCKET
+DEFAULT_SOCKET_PATH = SERVICE_DEFAULTS.sockets.observe.path
 MAX_RESPONSE_BYTES = DEFAULT_MAX_RESPONSE_BYTES
 MAX_OVERVIEW_LIMIT = 50
 MAX_HISTORY_LIMIT = 100

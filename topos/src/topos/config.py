@@ -163,7 +163,8 @@ class BpfSnapshotConfig:
     root: Path | None = None  # BPF pin root, e.g. /sys/fs/bpf/topos
     interval: float = 30.0  # refresh interval in seconds
     map_name: str = "topos_cgroup_skb"  # pinned map name under root
-    state_dir: Path = Path("/run/topos/bpf")  # directory for snapshot.json output
+    state_dir: Path = Path("/run/topos/state/bpf")  # standalone snapshot output
+    # toposd run instead uses the service-config state_dir / "bpf".
 
 
 class ProcessConfigError(ValueError):
