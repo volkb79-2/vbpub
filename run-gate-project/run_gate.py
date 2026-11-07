@@ -3065,6 +3065,8 @@ class ProfilerWatch:
 
     def _read(self) -> None:
         try:
+            preflight_control_socket_access(
+                self.client.socket_path, missing_ok=True)
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             self._socket = sock
             sock.connect(self.client.socket_path)
@@ -8212,7 +8214,7 @@ def save_container_logs(docker: str, name: str,
 
 def terminate_process_group(proc: subprocess.Popen,
                            grace_seconds: int = LANE_KILL_GRACE_SECONDS) -> int:
-    """Stop a bare-host lane and its descendants, then return its raw status."""
+    """Stop a child process group and its descendants, then return its status."""
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -8800,6 +8802,7 @@ def preflight_control_socket_access(
                    "cgprofile-control must use its dedicated group, not the "
                    "host docker group")
     if (os.getuid() != 0
+            and control.st_gid != os.getegid()
             and control.st_gid not in os.getgroups()):
         fail_infra(f"this process cannot access the cgprofile control socket "
                    f"group cgprofile-control (gid {control.st_gid}); recreate "
@@ -8851,6 +8854,7 @@ def resource_observer_docker_flags(
     if (
         not stat.S_ISDIR(parent.st_mode)
         or parent.st_uid != 0
+        or parent.st_gid != 0
         or parent.st_mode & 0o022
         or not parent.st_mode & 0o010
     ):
@@ -15220,11 +15224,12 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
             proc = subprocess.Popen(
                 [docker, "logs", "-f", "--timestamps", name],
                 stdout=subprocess.PIPE, text=True, bufsize=1,
-                errors="replace")
+                errors="replace", start_new_session=True)
             log_watch = LogStreamWatch(
                 proc, budget_seconds(lane["stall_timeout"]), lane_name)
         else:
-            proc = subprocess.Popen([docker, "logs", "-f", name])
+            proc = subprocess.Popen([docker, "logs", "-f", name],
+                                    start_new_session=True)
         while True:
             try:
                 wait_for = tick
@@ -15408,8 +15413,11 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     run_record.setdefault("profile_ref", None)
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
         if proc is not None:
-            proc.terminate()   # no-op once it has exited; ends a stalled stream
-            proc.wait()
+            # The docker CLI may have descendants that inherited its output
+            # pipe (the stateful test shim polls with a child `sleep`). Give
+            # the follower a private process group so interruption and stall
+            # cleanup stop the whole stream process tree.
+            terminate_process_group(proc)
         if log_watch is not None:
             # Round-3 review: reached from EVERY exit of the try above,
             # stalled or not — by now `proc.terminate()` + `proc.wait()`

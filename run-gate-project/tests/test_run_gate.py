@@ -377,6 +377,8 @@ def set_cgprofile_plan(tmp_path: Path, monkeypatch, **verbs) -> Path:
     host_docker_gid = "995" if control_gid == 994 else "994"
     monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR,
                        host_docker_gid)
+    # Control-socket fixtures must not inherit the cockpit's group list.
+    monkeypatch.setattr(run_gate.os, "getgroups", lambda: [control_gid])
     monkeypatch.setattr(run_gate, "PROFILE_SOCKET_PATH_DEFAULT", daemon.path)
     return plan_dir
 
@@ -10404,6 +10406,7 @@ class TestResourceObserverLane:
                                control_mode=None, control_uid=0,
                                control_gid=995, control_missing=False,
                                docker_gid=994, process_uid=0,
+                               process_egid=1001,
                                process_groups=(),
                                missing=None):
         parent_mode = parent_mode or run_gate.stat.S_IFDIR | 0o755
@@ -10434,6 +10437,8 @@ class TestResourceObserverLane:
                     return fake_lstat
                 if name == "getuid":
                     return lambda: process_uid
+                if name == "getegid":
+                    return lambda: process_egid
                 if name == "getgroups":
                     return lambda: list(process_groups)
                 return getattr(real_os, name)
@@ -10703,17 +10708,33 @@ class TestResourceObserverLane:
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
-    def test_observer_preflight_does_not_require_a_directory_gid(
+    def test_observer_preflight_accepts_root_directory_gid_different_from_socket_gid(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
-        self._patch_socket_metadata(
-            monkeypatch, socket_path, parent_gid=1234)
+        self._patch_socket_metadata(monkeypatch, socket_path, parent_gid=0,
+                                    socket_gid=1234)
         flags = run_gate.resource_observer_docker_flags({
             "kind": "assay", "environment": "tester-unified",
             "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
         assert "--group-add" in flags
+
+    @pytest.mark.parametrize("parent_uid, parent_gid", [(1000, 0), (0, 1234)])
+    def test_observer_preflight_refuses_non_root_directory_identity(
+            self, tmp_path, monkeypatch, parent_uid, parent_gid):
+        socket_path = tmp_path / "cgprofile.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(monkeypatch, socket_path,
+                                    parent_uid=parent_uid,
+                                    parent_gid=parent_gid,
+                                    socket_gid=1234)
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"not a safe root-owned \(root:root\)"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     def test_observer_preflight_rejects_an_empty_control_socket_path(
             self, tmp_path, monkeypatch):
@@ -10897,6 +10918,14 @@ class TestResourceObserverLane:
             self, monkeypatch):
         monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
         monkeypatch.delenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, raising=False)
+        real_stat = os.stat
+
+        def reject_docker_socket_stat(path, *args, **kwargs):
+            if os.fspath(path) == "/var/run/docker.sock":
+                pytest.fail("host Docker GID must not stat the Docker API socket")
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.os, "stat", reject_docker_socket_stat)
         with pytest.raises(
                 run_gate.GateInfraError,
                 match="RUN_GATE_HOST_DOCKER_GID.*MDT_HOST_DOCKER_GID"):
@@ -10974,6 +11003,19 @@ class TestResourceObserverLane:
         self._patch_socket_metadata(
             monkeypatch, socket_path, control_gid=995, docker_gid=994,
             process_uid=1000, process_groups=(995,))
+        flags = run_gate.resource_observer_docker_flags({
+            "kind": "assay", "environment": "tester-unified",
+            "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+        assert "--group-add" in flags
+
+    def test_control_socket_primary_group_is_accepted_with_empty_supplementary_groups(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "cgprofile.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, control_gid=995, docker_gid=994,
+            process_uid=1000, process_egid=995, process_groups=())
         flags = run_gate.resource_observer_docker_flags({
             "kind": "assay", "environment": "tester-unified",
             "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
@@ -22955,6 +22997,7 @@ class TestProfilerClient:
         host_docker_gid = "995" if control_gid == 994 else "994"
         monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR,
                            host_docker_gid)
+        monkeypatch.setattr(run_gate.os, "getgroups", lambda: [control_gid])
         listener.listen(1)
         received = []
 
@@ -23152,6 +23195,16 @@ class TestProfilerClient:
             '"reason":"brief gap","readings":1}}\n')
         path, received, thread = self._socket_round_trip(
             short_socket_root, response, monkeypatch)
+        preflighted = []
+        original_preflight = run_gate.preflight_control_socket_access
+
+        def record_preflight(socket_path, control=None, *, missing_ok=False):
+            preflighted.append(socket_path)
+            return original_preflight(socket_path, control,
+                                      missing_ok=missing_ok)
+
+        monkeypatch.setattr(run_gate, "preflight_control_socket_access",
+                            record_preflight)
         client = run_gate.ProfilerClient(str(path))
         watch = client.watch("s-test", watch_interval=2)
         thread.join(timeout=2)
@@ -23160,6 +23213,7 @@ class TestProfilerClient:
         assert [kind for kind, _ in events] == ["event", "event", "end"]
         assert events[0][1]["event"] == "reading"
         assert events[1][1]["watch"]["verdict"] == "reported"
+        assert preflighted == [str(path)]
         wire = json.loads(received[0])
         assert wire == {"verb": "watch",
                         "args": {"session": "s-test", "watch_interval": 2},
@@ -24976,13 +25030,19 @@ class TestAwaitContainerProfilingWiring:
 
         process = Process()
         real_popen = run_gate.subprocess.Popen
+        spawn_options = []
+        process_group_signals = []
 
         def popen(argv, *args, **kwargs):
             if argv[1:3] == ["logs", "-f"]:
+                spawn_options.append(kwargs)
                 return process
             return real_popen(argv, *args, **kwargs)
 
         monkeypatch.setattr(run_gate.subprocess, "Popen", popen)
+        monkeypatch.setattr(
+            run_gate.os, "killpg",
+            lambda pid, signum: process_group_signals.append((pid, signum)))
 
         def fail_watch_setup(*args, **kwargs):
             raise RuntimeError("planted log-watch startup failure")
@@ -24994,7 +25054,8 @@ class TestAwaitContainerProfilingWiring:
                 {"kind": "command", "stall_timeout": "1s"}, "suite",
                 tmp_path, tmp_path, tmp_path)
 
-        assert process.terminated
+        assert spawn_options[0].get("start_new_session") is True
+        assert process_group_signals == [(process.pid, signal.SIGTERM)]
         assert process.waited
 
     def test_log_spawn_failure_still_removes_the_container(

@@ -2733,10 +2733,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   inherited endpoint variable for that process. The endpoint remains a
   read-only query bound to the command's own peer. Before launching the lane,
   Run-Gate queries the daemon's control version response and requires observer
-  contract 2, the fixed socket path, and `listening = true`. Before building Docker argv, Run-Gate
-  lstats `/run/cgprofile/observer` as a root-owned directory with no group or
-  world write access and group search permission; the directory's GID is not
-  an access grant and is not checked. The read-only mount lets this metadata
+  contract 2, the fixed socket path, and `listening = true`. Before building
+  Docker argv, Run-Gate lstats `/run/cgprofile/observer` as a `root:root`
+  directory with no group or world write access and group search permission.
+  The directory GID must be 0 but does not grant socket access or need to match
+  the socket GID. The read-only mount lets this metadata
   check run in the devcontainer without adding the observer GID. Its socket
   must be root-owned,
   group-connectable, and grant no access to other users. Its GID must be non-zero
@@ -2751,8 +2752,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   the source. Before every
   control-socket connection Run-Gate checks that its GID is non-zero and differs
   from the host Docker GID, and that the process has the control GID in its
-  supplementary groups; UID 0 is accepted because the tester runner uses
-  `--user 0:0`. A missing group reports `cgprofile-control` and tells the user
+  effective GID or supplementary groups; UID 0 is accepted because the tester
+  runner uses `--user 0:0`. A missing group reports `cgprofile-control` and
+  tells the user
   to recreate the devcontainer with its `--group-add`. The control socket GID
   is never added to a lane container. Missing or unsafe
   state is infrastructure ERROR; Docker must not invent a bind source. The

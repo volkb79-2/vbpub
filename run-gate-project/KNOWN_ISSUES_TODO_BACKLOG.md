@@ -6135,11 +6135,12 @@ If every other claim and evidence entry passed, map it to infrastructure
 `ERROR`. Preserve `BUDGET_EXCEEDED` when another result has that status, and
 preserve product `FAIL` when another result is `FAIL`, `INCONCLUSIVE`, or a
 different `NO_MEASUREMENT`. Malformed arrays or records map to `ERROR`; the raw
-Assay outcome and reason remain in the result. The observer launch guard
-derives the host Docker GID from the root-owned `/run/cgprofile` control
-directory's numeric group instead of the devcontainer's possibly unrelated
-`docker` group-name entry, and refuses if the source is not root-owned, has a
-non-root group, and mode `0770`.
+Assay outcome and reason remain in the result. **Historical rule, superseded
+by RG-243 (2026-11-07):** the observer launch guard derived the host Docker GID
+from the root-owned `/run/cgprofile` control directory's numeric group instead
+of the devcontainer's possibly unrelated `docker` group-name entry, and
+refused if that source was not root-owned with a non-root group and mode
+`0770`.
 
 **Oracle:** reason-specific tests prove an isolated R2 observer refusal maps
 to ERROR, independent R1/R3 failures and evidence failures remain FAIL, a
@@ -7549,8 +7550,11 @@ so the exec carrier has no target.
 `daemon` and `transport` keys, `PROFILE_DAEMON_DEFAULT`, `PROFILE_TRANSPORTS`, `RUN_GATE_PROFILE_TRANSPORT`, the
 `daemon_not_running_reason`/`daemon_broken_reason` docker-stderr classifiers, the `docker ps` doctor check, the `report`
 wire verb, and the `profile_daemon`/`profile_transport` inflight fields (`profile_ref` carries `socket_path`). Each removed
-key or variable is refused by name at exit 2. The socket path is `[profile] socket_path` (default `/run/cgprofile/ctl.sock`);
-`resource_observer_version_preflight` now uses it as well (it used the default regardless of config). When the socket is
+key or variable is refused by name at exit 2. **Historical socket default,
+superseded by RG-243 (2026-11-07):** `[profile] socket_path` formerly defaulted
+to `/run/cgprofile/ctl.sock`; the current default is
+`/run/cgprofile/control/cgprofile.sock`. `resource_observer_version_preflight`
+now uses the configured path rather than a second default. When the socket is
 unreachable run-gate degrades as for an absent profiler and the one warning names the CP-31 cause tag
 (`socket-not-mounted`, `socket-missing`, `daemon-refusing`, `socket-permission`), classified client-side from errno and the
 socket directory because the socket carries no tag when nobody answers.
@@ -7683,6 +7687,6 @@ Both runs also failed `TestHistoryStoreReadableByTheReleasedReader` deterministi
 
 **Status:** FIXED on branch `sockets-rg-20261105`, amended 2026-11-07 for the no-docker-groups ruling; pending controller gate and independent review. Severity: major (phase-1 clients require the host socket cutover).
 
-Run-Gate's control default is `/run/cgprofile/control/cgprofile.sock`. Observer lanes bind `/run/cgprofile/observer/cgprofile.sock` into the lane at `/run/cgprofile-observer/cgprofile.sock`. Their preflight lstats the observer directory and socket without requiring the directory's GID, reports the host cutover when a path is absent, and uses the explicit strict `RUN_GATE_HOST_DOCKER_GID` override followed by strict numeric `MDT_HOST_DOCKER_GID` from the host launcher. The prior Docker API socket-owner fallback is removed because that node's GID can be a proxy or relay access group, not the host Docker group; the Docker socket node check is therefore moot and no longer runs. With neither variable, refusal names both. The control socket must have a nonzero GID distinct from Docker, and every connection checks supplementary-group access (UID 0 is accepted for the tester runner); the observer GID must be nonzero and distinct from both Docker and control. The old `/run/cgprofile/ctl.sock` and `resource-observer.sock` names are not fallback paths. Hosts still on the old layout retain earlier Run-Gate and Assay pins until cutover.
+Run-Gate's control default is `/run/cgprofile/control/cgprofile.sock`. Observer lanes bind `/run/cgprofile/observer/cgprofile.sock` into the lane at `/run/cgprofile-observer/cgprofile.sock`. Their preflight lstats the observer directory and socket, requires a `root:root` directory that is not group or other writable, and does not require its GID to match the socket GID. It reports the host cutover when a path is absent and uses the explicit strict `RUN_GATE_HOST_DOCKER_GID` override followed by strict numeric `MDT_HOST_DOCKER_GID` from the host launcher. The prior Docker API socket-owner fallback is removed because that node's GID can be a proxy or relay access group, not the host Docker group; the Docker socket node check is therefore moot and no longer runs. With neither variable, refusal names both. The control socket must have a nonzero GID distinct from Docker, and every connection accepts the control GID as the caller's effective or supplementary GID (UID 0 is accepted for the tester runner); the observer GID must be nonzero and distinct from both Docker and control. The old `/run/cgprofile/ctl.sock` and `resource-observer.sock` names are not fallback paths. Hosts still on the old layout retain earlier Run-Gate and Assay pins until cutover.
 
 Regression tests cover both GID sources and strict malformed-value refusals, the lack-of-source refusal, control and observer metadata and group collisions, UID 0 and supplementary membership, empty `socket_path`, the mounted-directory lstat contract, missing-path cutover hints, the daemon-advertised observer path, and synchronized README, CONSUMERS, SPEC, DESIGN-GUIDE, and RG55 interface-contract text. The controller still runs the registered Run-Gate lane for fail-before/pass-after evidence, strict changed-line coverage and mutation proof.

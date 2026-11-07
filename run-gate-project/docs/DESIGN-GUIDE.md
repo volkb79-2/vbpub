@@ -373,15 +373,17 @@ may give that socket a separate access GID. The explicit override remains for
 deployments where the launcher-provided GID needs an intentional correction.
 Run-Gate refuses a control socket whose GID is zero or the Docker GID, and
 checks caller access before every control connection. UID 0 is accepted for
-the tester runner; other callers must have the socket GID among their
-supplementary groups. An access refusal names `cgprofile-control` and says to
-recreate the devcontainer with its `--group-add`. The control GID is not passed
+the tester runner; other callers must have the socket GID as their effective
+GID or among their supplementary groups. An access refusal names
+`cgprofile-control` and says to recreate the devcontainer with its `--group-add`.
+The control GID is not passed
 to lane containers. The observer socket GID must be non-zero and distinct
-from both the Docker GID and control socket GID. Directory GIDs do not grant
-socket access: observer preflight lstats the read-only-mounted directory and
-checks its owner, mode, and traversal permission without requiring the
-observer GID on the directory. Preflight checks only the new paths and names
-the required host socket cutover when an old layout is still installed. Hosts
+from both the Docker GID and control socket GID. The observer directory must be
+`root:root 0755`; its GID does not grant socket access. Observer preflight
+lstats the read-only-mounted directory and checks uid 0, gid 0, mode, and
+traversal permission without requiring the observer GID on the directory.
+Preflight checks only the new paths and names the required host socket cutover
+when an old layout is still installed. Hosts
 keep their earlier Run-Gate and Assay pins until that cutover.
 
 ## Private-namespace R2 uses a read-only cgroup observer

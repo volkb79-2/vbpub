@@ -844,9 +844,11 @@ declaration is the opt-in; command wrappers that launch Assay R2 preserve the
 inherited endpoint variable for that process. The observer remains a
 read-only query bound to the command's own peer. Before launch Run-Gate
 uses `lstat` on the `/run/cgprofile/observer` directory and socket. Host setup
-provisions the directory as `root:root 0755`; Run-Gate checks its type, root
-owner, non-writable mode, and traversal permission, without requiring a
-directory GID or connecting to the observer socket. The socket uses the
+provisions the directory as `root:root 0755`; Run-Gate checks its type, uid 0,
+gid 0, non-writable mode, and traversal permission without requiring the
+directory GID to match the socket GID or connecting to the observer socket.
+Inside the lane, the observer endpoint is
+`/run/cgprofile-observer/cgprofile.sock`. The socket uses the
 dedicated `cgprofile-observer` group, separate from Docker and control.
 Run-Gate mounts the directory read-only into the test container, so the socket
 path resolves again after daemon restart. It grants that dedicated GID and
@@ -858,7 +860,8 @@ namespaces, or add a Docker socket.
 Before every control connection, Run-Gate checks that the control socket has a
 non-zero GID distinct from the host Docker GID. It accepts UID 0 without a
 supplementary group because the tester runner uses `--user 0:0`; other callers
-must have the control GID in their supplementary groups. A refusal names
+must have the control GID as their effective GID or in their supplementary
+groups. A refusal names
 `cgprofile-control` and says to recreate the devcontainer with its
 `--group-add`. The host Docker GID comes from the explicit
 `RUN_GATE_HOST_DOCKER_GID` override first, then `MDT_HOST_DOCKER_GID` supplied

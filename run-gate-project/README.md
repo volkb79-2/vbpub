@@ -68,10 +68,11 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    the read-only observer directory to recover hidden cgroup ancestors for native
    R2. These lanes declare local memory and PID ceilings and cannot add arbitrary
    host mounts. Before launch, Run-Gate requires the daemon to advertise observer
-   contract 2, the configured socket path, and `listening = true`. A command wrapper that
+   contract 2, the configured socket path, and `listening = true`, and checks the
+   observer directory is `root:root` before mounting it. A command wrapper that
    invokes Assay must preserve the inherited observer-path variable for its
-   Assay process. It does not expose
-   control socket or change the lane's private cgroup namespace. See the
+   Assay process. It does not expose the control socket or change the lane's
+   private cgroup namespace. See the
    [R2 observer design](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer)
    and [consumer setup](CONSUMERS.md#native-r2-resource-observer).
    The project-level `[profile]` table also accepts `socket_path` (default
