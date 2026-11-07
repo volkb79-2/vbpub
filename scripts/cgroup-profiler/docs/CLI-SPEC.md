@@ -9,6 +9,8 @@ The surface is declared in [`../pyproject.toml`](../pyproject.toml) (`[tool.cli-
 The administrative daemon CLI `cgpd` is specified in
 [`CGPCTL-SPEC.md` section 3](CGPCTL-SPEC.md#3-cgpd), including its `-t`
 config-test option and repeatable `install --add-user LEVEL=USER` option.
+A user named with `--add-user` must exist; recorded users whose accounts no
+longer exist are dropped and reported on reinstall, which continues.
 
 <!-- cli-extended-surface:start -->
 ## Generated CLI surface and semantic review

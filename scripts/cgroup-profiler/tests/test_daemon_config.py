@@ -144,7 +144,8 @@ class TestFile:
 
     @pytest.mark.parametrize("control,observer,needle", [
         ({"path": "/control", "group": "same", "mode": "0660"},
-         {"path": "/observer", "group": "same", "mode": "0660"}, "sockets.control.group and sockets.observer.group must differ"),
+         {"path": "/observer", "group": "same", "mode": "0660"},
+         "control and observer groups must be distinct dedicated groups"),
         ({"path": "/same", "group": "control", "mode": "0660"},
          {"path": "/same", "group": "observer", "mode": "0660"}, "sockets.control.path and sockets.observer.path must differ"),
     ])
@@ -160,17 +161,17 @@ class TestFile:
             "observer": {"path": "/run/cgprofile/observer/cgprofile.sock", "group": "ops-observer", "mode": "0660"},
         }
         tables[level]["group"] = "docker"
-        with pytest.raises(dc.ConfigError, match=rf"sockets\.{level}\.group must not be docker"):
+        with pytest.raises(dc.ConfigError, match=rf"the {level} group 'docker' is the docker group"):
             dc.render_config({f"sockets.{name}": table for name, table in tables.items()})
 
     @pytest.mark.parametrize("control_group,observer_group,gids,needle", [
         ("root-level", "observer-level", {"root-level": 0, "observer-level": 100}, "GID 0"),
         ("control-level", "root-level", {"control-level": 100, "root-level": 0}, "GID 0"),
         ("control-level", "docker-alias", {"control-level": 100, "docker": 2375,
-                                                "docker-alias": 2375}, "docker GID"),
+                                                "docker-alias": 2375}, "docker group's GID 2375"),
         ("docker-alias", "observer-level", {"observer-level": 100, "docker": 2375,
-                                               "docker-alias": 2375}, "docker GID"),
-        ("control-alias", "observer-alias", {"control-alias": 500, "observer-alias": 500}, "same GID"),
+                                               "docker-alias": 2375}, "docker group's GID 2375"),
+        ("control-alias", "observer-alias", {"control-alias": 500, "observer-alias": 500}, "same GID 500"),
     ])
     def test_socket_groups_reject_root_docker_and_duplicate_gids(
             self, monkeypatch, control_group, observer_group, gids, needle):
@@ -203,7 +204,7 @@ class TestFile:
     def test_parse_table_checks_group_and_path_distinctness(self):
         same_group = ('[sockets.control]\npath = "/a"\ngroup = "g"\nmode = "0660"\n'
                       '[sockets.observer]\npath = "/b"\ngroup = "g"\nmode = "0660"\n')
-        with pytest.raises(dc.ConfigError, match="control.group and sockets.observer.group must differ"):
+        with pytest.raises(dc.ConfigError, match="control and observer groups must be distinct dedicated groups"):
             dc.parse_table(same_group)
         same_path = ('[sockets.control]\npath = "/a"\ngroup = "c"\nmode = "0660"\n'
                      '[sockets.observer]\npath = "/a"\ngroup = "o"\nmode = "0660"\n')
@@ -213,7 +214,7 @@ class TestFile:
     def test_socket_settings_refuses_the_docker_group_for_control(self):
         values = {"sockets.control": {"path": "/run/cgprofile/control/cgprofile.sock",
                                       "group": "docker", "mode": "0660"}}
-        with pytest.raises(dc.ConfigError, match="sockets.control.group must not be docker"):
+        with pytest.raises(dc.ConfigError, match="the control group 'docker' is the docker group"):
             dc.socket_settings(values)
 
 

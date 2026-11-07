@@ -156,6 +156,19 @@ def _fake_runtime_owner(monkeypatch):
     monkeypatch.setattr(installer, "RUNTIME_TREE_OWNER", (os.getuid(), os.getgid()))
 
 
+@pytest.fixture(autouse=True)
+def _fake_group_database(monkeypatch):
+    # Installer config paths must never consult the cockpit's real group table.
+    groups = {}
+
+    def getgrnam(name):
+        if name not in groups:
+            raise KeyError(name)
+        return SimpleNamespace(gr_name=name, gr_gid=groups[name], gr_mem=[])
+
+    monkeypatch.setattr(installer.grp, "getgrnam", getgrnam)
+
+
 class Host:
     """A fake root with injectable groups, users, systemctl state and command log."""
 
@@ -165,6 +178,14 @@ class Host:
         self.group_gids = dict(groups or {})
         self.active = active if active is not None else {}
         monkeypatch.setattr(installer, "_group_gid", lambda name: self.group_gids.get(name))
+
+        def getgrnam(name):
+            gid = self.group_gids.get(name)
+            if gid is None:
+                raise KeyError(name)
+            return SimpleNamespace(gr_name=name, gr_gid=gid, gr_mem=[])
+
+        monkeypatch.setattr(daemon_config.grp, "getgrnam", getgrnam)
         monkeypatch.setattr(installer.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
         extra = {} if running_prefix is None else {"running_prefix": running_prefix}
         self.subject = installer.Installer(
@@ -531,17 +552,17 @@ def test_mapped_group_must_exist_and_all_levels_reject_docker_root_and_duplicate
         installer._validate_group_mapping("missing", "cgprofile-observer")
     with pytest.raises(installer.InstallError, match="mapped observer group.*does not exist"):
         installer._validate_group_mapping("cgprofile-control", "gone")
-    with pytest.raises(installer.InstallError, match="must not be docker"):
+    with pytest.raises(installer.InstallError, match="the control group 'docker' is the docker group"):
         installer._validate_group_mapping("docker", "cgprofile-observer")
     with pytest.raises(installer.InstallError, match="GID 0"):
         installer._validate_group_mapping("root", "cgprofile-observer")
     with pytest.raises(installer.InstallError, match="GID 0"):
         installer._validate_group_mapping("cgprofile-control", "root")
-    with pytest.raises(installer.InstallError, match="docker GID"):
+    with pytest.raises(installer.InstallError, match="docker group's GID"):
         installer._validate_group_mapping("docker-alias", "cgprofile-observer")
-    with pytest.raises(installer.InstallError, match="docker GID"):
+    with pytest.raises(installer.InstallError, match="docker group's GID"):
         installer._validate_group_mapping("cgprofile-control", "docker-alias")
-    with pytest.raises(installer.InstallError, match="must differ"):
+    with pytest.raises(installer.InstallError, match="control and observer groups must be distinct"):
         installer._validate_group_mapping("same", "same")
     with pytest.raises(installer.InstallError, match="same GID"):
         installer._validate_group_mapping("control", "observer")
@@ -554,7 +575,7 @@ def test_every_saved_group_input_is_validated_even_when_a_flag_overrides_it(tmp_
     paths = _paths(tmp_path)
     Path(paths.install_record).parent.mkdir(parents=True)
     Path(paths.install_record).write_text('control_group = "docker"\n', encoding="utf-8")
-    with pytest.raises(installer.InstallError, match="must not be docker"):
+    with pytest.raises(installer.InstallError, match="the control group 'docker' is the docker group"):
         installer._gather_inputs(_args(control_group="safe"), _runtime(), paths)
 
 
@@ -573,7 +594,7 @@ def test_existing_config_group_is_not_overridden_when_unsafe(tmp_path, monkeypat
 def test_tty_group_prompt_is_subject_to_the_same_group_policy(monkeypatch):
     runtime = _runtime(interactive=True, prompts=Prompts(text_values=["docker"],
                                                         select_value="map an existing group"))
-    with pytest.raises(installer.InstallError, match="must not be docker"):
+    with pytest.raises(installer.InstallError, match="the control group 'docker' is the docker group"):
         installer._prompt_group(runtime, "control", "cgprofile-control", None, None)
 
 
@@ -842,6 +863,116 @@ def test_install_dry_run_reports_candidate_and_add_user_memberships(tmp_path, mo
     }
     assert "would add user alice to cgprofile-control" in installer._install_summary(body)
     assert not Path(_paths(tmp_path).opt).exists()
+
+
+def test_install_drops_and_reports_recorded_users_whose_accounts_are_gone(host, monkeypatch):
+    Path(host.paths.install_record).parent.mkdir(parents=True, exist_ok=True)
+    Path(host.paths.install_record).write_text(
+        'control_users = ["retired-user"]\nobserver_users = []\n', encoding="utf-8")
+
+    def getpwnam(name):
+        if name == "retired-user":
+            raise KeyError(name)
+        return SimpleNamespace(pw_name=name)
+
+    monkeypatch.setattr(installer.pwd, "getpwnam", getpwnam)
+
+    body = host.install()
+
+    assert body["users_forgotten"] == ["retired-user"]
+    assert "dropped recorded users that no longer exist: retired-user" in installer._install_summary(body)
+    assert not any(command[:2] == ["gpasswd", "-a"] and "retired-user" in command
+                   for command in host.commands)
+    record = Path(host.paths.install_record).read_text(encoding="utf-8")
+    assert "control_users = []" in record
+    assert "retired-user" not in record
+
+
+def test_install_dry_run_reports_recorded_users_whose_accounts_are_gone(host, monkeypatch):
+    Path(host.paths.install_record).parent.mkdir(parents=True, exist_ok=True)
+    Path(host.paths.install_record).write_text(
+        'observer_users = ["retired-observer"]\n', encoding="utf-8")
+
+    def getpwnam(name):
+        if name == "retired-observer":
+            raise KeyError(name)
+        return SimpleNamespace(pw_name=name)
+
+    monkeypatch.setattr(installer.pwd, "getpwnam", getpwnam)
+
+    body = host.install(runtime=_runtime(dry_run=True))
+
+    assert body["users_forgotten"] == ["retired-observer"]
+    assert "dropped recorded users that no longer exist: retired-observer" in installer._install_summary(body)
+    assert host.commands == []
+    assert not Path(host.paths.opt).exists()
+
+
+def test_install_still_refuses_a_missing_user_named_with_add_user(host, monkeypatch):
+    def getpwnam(name):
+        if name == "missing-user":
+            raise KeyError(name)
+        return SimpleNamespace(pw_name=name)
+
+    monkeypatch.setattr(installer.pwd, "getpwnam", getpwnam)
+
+    with pytest.raises(installer.InstallError, match="user 'missing-user' does not exist") as caught:
+        host.install(_args(add_user=["control=missing-user"]))
+
+    assert caught.value.exit_code == 2
+    assert host.commands == []
+    assert not Path(host.paths.pending).exists()
+    assert not Path(host.paths.config).exists()
+    assert not Path(host.paths.install_record).exists()
+    assert not Path(host.paths.opt).exists()
+
+
+@pytest.mark.parametrize(
+    "groups,overrides,needles",
+    [
+        ({"docker": 9001}, {"control_group": "docker"},
+         ("control group 'docker'", "docker group", "cgprofile-control")),
+        ({"docker": 9001}, {"observer_group": "docker"},
+         ("observer group 'docker'", "docker group", "cgprofile-observer")),
+        ({"docker": 9001, "docker-alias": 9001}, {"control_group": "docker-alias"},
+         ("control group 'docker-alias'", "docker group's GID 9001", "cgprofile-control")),
+        ({"docker": 9001, "docker-alias": 9001}, {"observer_group": "docker-alias"},
+         ("observer group 'docker-alias'", "docker group's GID 9001", "cgprofile-observer")),
+        ({"root-alias": 0}, {"control_group": "root-alias"},
+         ("control group 'root-alias'", "GID 0", "cgprofile-control")),
+        ({"root-alias": 0}, {"observer_group": "root-alias"},
+         ("observer group 'root-alias'", "GID 0", "cgprofile-observer")),
+        ({"shared": 9002}, {"control_group": "shared", "observer_group": "shared"},
+         ("control and observer groups must be distinct dedicated groups",)),
+        ({"control-alias": 9003, "observer-alias": 9003},
+         {"control_group": "control-alias", "observer_group": "observer-alias"},
+         ("control and observer groups", "same GID 9003")),
+    ],
+)
+def test_install_refuses_unsafe_group_flags_before_any_write(tmp_path, monkeypatch, groups, overrides, needles):
+    host = Host(tmp_path, monkeypatch, groups=groups)
+
+    with pytest.raises(installer.InstallError) as caught:
+        host.install(_args(**overrides))
+
+    assert caught.value.exit_code == 2
+    message = str(caught.value)
+    for needle in needles:
+        assert needle in message
+    assert host.commands == []
+    assert not Path(host.paths.pending).exists()
+    assert not Path(host.paths.config).exists()
+    assert not Path(host.paths.install_record).exists()
+    assert not Path(host.paths.opt).exists()
+    assert not Path(host.paths.unit_dir).exists()
+
+
+@pytest.mark.parametrize("level,group", [("control", "docker"), ("observer", "docker")])
+def test_explicit_group_flag_resolution_refuses_docker_by_name(monkeypatch, level, group):
+    monkeypatch.setattr(installer, "_group_gid", lambda name: {"docker": 9001}.get(name))
+
+    with pytest.raises(installer.InstallError, match=f"{level} group 'docker'.*dedicated group"):
+        installer._prompt_group(_runtime(), level, f"cgprofile-{level}", None, group)
 
 
 def test_install_applies_config_units_groups_links_and_start(tmp_path, monkeypatch):

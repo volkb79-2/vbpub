@@ -514,7 +514,7 @@ def _parse_uid_list(value: str) -> List[int]:
     return list(dict.fromkeys(result))
 
 
-def _validate_users(users: Sequence[str]) -> List[str]:
+def _validate_users(users: Sequence[str], forgotten: Optional[List[str]] = None) -> List[str]:
     result: List[str] = []
     for user in users:
         if not USER_RE.fullmatch(user):
@@ -522,7 +522,11 @@ def _validate_users(users: Sequence[str]) -> List[str]:
         try:
             pwd.getpwnam(user)
         except KeyError:
-            raise InstallError(f"user {user!r} does not exist") from None
+            if forgotten is None:
+                raise InstallError(f"user {user!r} does not exist") from None
+            if user not in forgotten:
+                forgotten.append(user)
+            continue
         if user not in result:
             result.append(user)
     return result
@@ -565,15 +569,17 @@ def _record_uids(value: Any) -> List[int]:
 
 
 def _resolve_users(runtime: CliRuntime, record: Mapping[str, Any], key: str, level: str,
-                   requested: Sequence[str]) -> List[str]:
-    """Accumulate saved and requested users; memberships are only ever added."""
+                   requested: Sequence[str], forgotten: List[str]) -> List[str]:
+    """Accumulate saved and requested users; forget deleted accounts, but validate new names strictly."""
     saved = _record_words(record[key], key) if key in record else []
     prompted: List[str] = []
     if not requested and key not in record:
         prompt = _prompt_missing(runtime, None, f"--add-user {level}=USER",
                                  f"Users to add to the {level} group (comma-separated)", required=False)
         prompted = _parse_words(prompt)
-    return _validate_users([*saved, *requested, *prompted])
+    saved_users = _validate_users(saved, forgotten)
+    new_users = _validate_users([*requested, *prompted])
+    return list(dict.fromkeys([*saved_users, *new_users]))
 
 
 def _prompt_missing(runtime: CliRuntime, value: Optional[str], flag: str, message: str,
@@ -672,8 +678,11 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         file_groups.get("observer", record.get("observer_group")), args.observer_group,
     )
     requested_users = _parse_add_users(getattr(args, "add_user", None))
-    control_users = _resolve_users(runtime, record, "control_users", "control", requested_users["control"])
-    observer_users = _resolve_users(runtime, record, "observer_users", "observer", requested_users["observer"])
+    users_forgotten: List[str] = []
+    control_users = _resolve_users(
+        runtime, record, "control_users", "control", requested_users["control"], users_forgotten)
+    observer_users = _resolve_users(
+        runtime, record, "observer_users", "observer", requested_users["observer"], users_forgotten)
     enable_now: Optional[bool] = None
     if args.enable and args.no_enable:
         raise InstallError("choose only one of --enable and --no-enable")
@@ -700,6 +709,7 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         "observer_group": observer_group,
         "control_users": control_users,
         "observer_users": observer_users,
+        "users_forgotten": users_forgotten,
         "users_to_add": {
             level: {"group": group, "users": users}
             for level, group, users in (
@@ -1191,6 +1201,7 @@ class Installer:
                 "config": config_path, "config_changes": config_changes,
                 "socket_mode": "activated" if has_socket_units(values["version"]) else "legacy rollback",
                 "users_to_add": values["users_to_add"],
+                "users_forgotten": values["users_forgotten"],
                 "message": "no files, wheels, groups, units, or services changed",
             }
         if not runtime.yes and not runtime.confirm("Install or upgrade the cgprofile host service?"):
@@ -1320,6 +1331,7 @@ class Installer:
             "forced_sessions": values.get("forced_sessions", []),
             "warnings": values.get("warnings", []),
             "users_to_add": values["users_to_add"],
+            "users_forgotten": values["users_forgotten"],
         }
 
     def _plan(self, values: Mapping[str, Any], config_path: str, config_text: str,
@@ -1670,6 +1682,8 @@ def _install_summary(body: Mapping[str, Any]) -> str:
             addition_count += 1
     if addition_count:
         lines.append("Membership applies on the user's next login or a restarted cgpd service.")
+    if body.get("users_forgotten"):
+        lines.append("dropped recorded users that no longer exist: " + ", ".join(body["users_forgotten"]))
     lines.extend(f"WARNING: {warning}" for warning in body.get("warnings", []))
     return "\n".join(lines)
 

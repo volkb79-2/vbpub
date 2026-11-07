@@ -223,15 +223,25 @@ def _validate_socket_group(level: str, name: str,
                            gid_lookup: Callable[[str], Optional[int]] = _group_gid,
                            docker_gid: Optional[int] = None) -> Optional[int]:
     """Validate one dedicated socket group and return its GID when it exists."""
+    default_group = KEYS[f"sockets.{level}"].default["group"]
     if name == "docker":
-        raise ConfigError(f"sockets.{level}.group must not be docker")
+        raise ConfigError(
+            f"the {level} group {name!r} is the docker group (membership is root-equivalent); "
+            f"use a dedicated group such as {default_group}"
+        )
     gid = gid_lookup(name)
     if gid == 0:
-        raise ConfigError(f"sockets.{level}.group must not resolve to GID 0")
+        raise ConfigError(
+            f"the {level} group {name!r} resolves to GID 0 (root-equivalent); "
+            f"use a dedicated group such as {default_group}"
+        )
     if docker_gid is None:
         docker_gid = gid_lookup("docker")
     if gid is not None and docker_gid is not None and gid == docker_gid:
-        raise ConfigError(f"sockets.{level}.group must not resolve to the docker GID")
+        raise ConfigError(
+            f"the {level} group {name!r} has the docker group's GID {gid} (membership is root-equivalent); "
+            f"use a dedicated group such as {default_group}"
+        )
     return gid
 
 
@@ -247,9 +257,16 @@ def validate_socket_groups(
         gids[level] = _validate_socket_group(
             level, sockets[level]["group"], gid_lookup, docker_gid)
     if sockets["control"]["group"] == sockets["observer"]["group"]:
-        raise ConfigError("sockets.control.group and sockets.observer.group must differ")
+        raise ConfigError(
+            f"the control and observer groups both name {sockets['control']['group']!r}; "
+            "use separate dedicated groups for the two access levels"
+        )
     if gids["control"] is not None and gids["control"] == gids["observer"]:
-        raise ConfigError("sockets.control.group and sockets.observer.group resolve to the same GID")
+        raise ConfigError(
+            f"the control group {sockets['control']['group']!r} and observer group "
+            f"{sockets['observer']['group']!r} resolve to the same GID {gids['control']}; "
+            "use separate dedicated groups for the two access levels"
+        )
 
 
 def parse_table(text: str, *, validate_groups: bool = True) -> Dict[str, Any]:

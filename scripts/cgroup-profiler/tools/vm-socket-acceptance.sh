@@ -18,7 +18,8 @@
 # user tester) and cgprofile is not installed or running yet; see need_guest.
 # Required environment: CGPROFILE_PIN and CLI_EXTENDED_PIN (<version>@sha256:<hex>).
 # Optional: WHEELS (default /root/wheels), OLD_WHEEL_PIN (an older cgprofile pin that exists
-# in WHEELS, for the real --allow-downgrade rollback), CONTROL_USER (default root).
+# in WHEELS, for the real --allow-downgrade rollback), CONTROL_USER (default root), and
+# FORGOTTEN_USER (default cgptest-retired), a disposable account removed during the rerun case.
 #
 # The TTY wizard install is not automated (questionary needs a pty and key input): run
 # `cgpd install` without flags once by hand on a TTY on the clean guest, and finish it with
@@ -27,6 +28,7 @@ set -u
 
 WHEELS="${WHEELS:-/root/wheels}"
 CONTROL_USER="${CONTROL_USER:-root}"
+FORGOTTEN_USER="${FORGOTTEN_USER:-cgptest-retired}"
 FAILED=0
 CASE=""
 
@@ -43,6 +45,9 @@ expect_exit() {  # expect_exit CODE "description" command...
     if [ "$got" -eq "$want" ]; then pass "$description (exit $got)"; else fail "$description (exit $got, wanted $want)"; sed 's/^/        /' /tmp/vm-accept.out; fi
 }
 inode() { stat -c %i "$1"; }
+group_has_member() {
+    getent group "$1" | cut -d: -f4 | tr ',' '\n' | grep -Fx "$2" >/dev/null
+}
 
 refuse() { echo "refusing: $1" >&2; exit 2; }
 
@@ -90,11 +95,81 @@ OBSERVER=/run/cgprofile/observer/cgprofile.sock
 install_flags=(--wheel "${CGPROFILE_PIN:-}" --cli-extended-wheel "${CLI_EXTENDED_PIN:-}" --wheel-source "$WHEELS"
                --control-group cgprofile-control --observer-group cgprofile-observer --enable --yes)
 
+p5_refusal() {
+    local description="$1" config_before record_before pending_before current_before opt_before
+    shift
+    config_before="$(sha256sum /etc/cgprofile/cgpd.toml)"
+    record_before="$(sha256sum /etc/cgprofile/install.toml)"
+    pending_before="$(if [ -e /opt/cgprofile/PENDING ]; then cat /opt/cgprofile/PENDING; else echo absent; fi)"
+    current_before="$(readlink /opt/cgprofile/current)"
+    opt_before="$(find /opt/cgprofile -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)"
+    expect_exit 2 "$description" "$CGPD" install --yes "$@"
+    if [ "$config_before" = "$(sha256sum /etc/cgprofile/cgpd.toml)" ] \
+        && [ "$record_before" = "$(sha256sum /etc/cgprofile/install.toml)" ] \
+        && [ "$pending_before" = "$(if [ -e /opt/cgprofile/PENDING ]; then cat /opt/cgprofile/PENDING; else echo absent; fi)" ] \
+        && [ "$current_before" = "$(readlink /opt/cgprofile/current)" ] \
+        && [ "$opt_before" = "$(find /opt/cgprofile -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)" ]; then
+        pass "$description leaves config, record and install tree untouched"
+    else
+        fail "$description changed an install file"
+    fi
+}
+
+p5_groups() {
+    local docker_gid observer_gid docker_created=no
+    if getent group docker >/dev/null; then
+        docker_gid="$(getent group docker | cut -d: -f3)"
+    else
+        groupadd --system docker || refuse "could not create the temporary docker group for P-5 acceptance"
+        docker_created=yes
+        docker_gid="$(getent group docker | cut -d: -f3)"
+    fi
+    observer_gid="$(getent group cgprofile-observer | cut -d: -f3)"
+    groupadd --non-unique --gid "$docker_gid" cgptest-docker-gid \
+        || refuse "could not create the temporary docker-GID alias group"
+    groupadd --non-unique --gid 0 cgptest-root-gid \
+        || refuse "could not create the temporary GID-0 alias group"
+    groupadd --non-unique --gid "$observer_gid" cgptest-observer-gid \
+        || refuse "could not create the temporary duplicate-GID group"
+
+    p5_refusal "control refuses the docker group by name" --control-group docker
+    if grep -q "the control group 'docker' is the docker group" /tmp/vm-accept.out; then
+        pass "control refusal names the unsafe group and dedicated default"
+    else
+        fail "control refusal does not explain the docker group"
+    fi
+    p5_refusal "observer refuses the docker group by name" --observer-group docker
+    if grep -q "the observer group 'docker' is the docker group" /tmp/vm-accept.out; then
+        pass "observer refusal names the unsafe group and dedicated default"
+    else
+        fail "observer refusal does not explain the docker group"
+    fi
+    p5_refusal "control refuses a group with the docker GID" --control-group cgptest-docker-gid
+    p5_refusal "observer refuses a group with the docker GID" --observer-group cgptest-docker-gid
+    p5_refusal "control refuses GID 0" --control-group cgptest-root-gid
+    p5_refusal "observer refuses GID 0" --observer-group cgptest-root-gid
+    p5_refusal "control refuses the observer group name" --control-group cgprofile-observer
+    p5_refusal "control refuses a duplicate level GID" --control-group cgptest-observer-gid
+
+    groupdel cgptest-docker-gid
+    groupdel cgptest-root-gid
+    groupdel cgptest-observer-gid
+    if [ "$docker_created" = yes ]; then
+        groupdel docker
+    fi
+}
+
 clean_guest() {
     CASE="1 install + doctor"
-    expect_exit 0 "unattended pinned install" bootstrap install "${install_flags[@]}" --add-user "control=$CONTROL_USER"
+    id "$FORGOTTEN_USER" >/dev/null 2>&1 && refuse "the temporary forgotten-user account already exists"
+    useradd --no-create-home --shell /usr/sbin/nologin "$FORGOTTEN_USER"
+    expect_exit 0 "unattended pinned install" bootstrap install "${install_flags[@]}" \
+        --add-user "control=$CONTROL_USER" --add-user "observer=$FORGOTTEN_USER"
     check "cgpd doctor --json is green" bash -c "$CGPD doctor --json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if all(c[\"status\"] in (\"ok\",\"skip\") for c in d[\"checks\"]) else 1)'"
     check "cgpctl doctor --json runs" bash -c "$CGPCTL doctor --json >/dev/null"
+
+    CASE="1 P-5 install flag refusals"
+    p5_groups
 
     CASE="2 layout + systemd verify"
     for path in /run/cgprofile /run/cgprofile/control /run/cgprofile/observer; do
@@ -187,9 +262,26 @@ EOF
     check "systemctl enable cgprofile.slice returns 0" systemctl enable cgprofile.slice
 
     CASE="10 rerun with a saved record that lists users (H2)"
+    check "control user is a member before the rerun" group_has_member cgprofile-control "$CONTROL_USER"
+    check "observer test user is a member before the rerun" group_has_member cgprofile-observer "$FORGOTTEN_USER"
     expect_exit 0 "cgpd install --yes with no other flag reapplies the recorded inputs" "$CGPD" install --yes
     check "install.toml still lists the control user" grep -q "control_users = \[\"$CONTROL_USER\"\]" /etc/cgprofile/install.toml
+    check "install.toml still lists the observer test user" grep -q "observer_users = \[\"$FORGOTTEN_USER\"\]" /etc/cgprofile/install.toml
+    check "rerun without --add-user keeps control membership" group_has_member cgprofile-control "$CONTROL_USER"
+    check "rerun without --add-user keeps observer membership" group_has_member cgprofile-observer "$FORGOTTEN_USER"
     check "a config edit survives the rerun" bash -c "echo '# kept' >> /etc/cgprofile/cgpd.toml && $CGPD install --yes && grep -q '^# kept' /etc/cgprofile/cgpd.toml"
+    userdel "$FORGOTTEN_USER"
+    expect_exit 0 "rerun drops a recorded user whose account was deleted" "$CGPD" install --yes
+    if grep -q "dropped recorded users that no longer exist: $FORGOTTEN_USER" /tmp/vm-accept.out; then
+        pass "install reports the deleted recorded user"
+    else
+        fail "install did not report the deleted recorded user"
+    fi
+    if grep -q "$FORGOTTEN_USER" /etc/cgprofile/install.toml; then
+        fail "install record still contains the deleted account"
+    else
+        pass "install record drops the deleted account"
+    fi
 
     CASE="8 uninstall contract (venv route, twice)"
     uninstall_checks "$CGPD"

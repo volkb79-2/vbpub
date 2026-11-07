@@ -157,6 +157,29 @@ class TestConfigCheck:
         captured = capsys.readouterr()
         assert "interval" in captured.err
 
+    def test_short_test_option_expands_only_for_supported_shapes(self):
+        assert cgpd._expand_config_test(["-t"]) == ["config", "check"]
+        assert cgpd._expand_config_test(["--config", "/tmp/cgpd.toml", "-t"]) == [
+            "config", "check", "--config", "/tmp/cgpd.toml",
+        ]
+        assert cgpd._expand_config_test(["-t", "--config=/tmp/cgpd.toml"]) == [
+            "config", "check", "--config=/tmp/cgpd.toml",
+        ]
+        for argv in (
+            ["uninstall", "-t"],
+            ["uninstall", "-t", "--yes"],
+            ["run", "-t"],
+            ["install", "--wheel-source", "-t"],
+        ):
+            assert cgpd._expand_config_test(argv) == argv
+
+    @pytest.mark.parametrize("argv", [["uninstall", "-t"], ["run", "-t"]])
+    def test_short_test_option_is_a_normal_argparse_error_outside_config_test(self, argv, capsys):
+        assert cgpd.main(argv) == 2
+        captured = capsys.readouterr()
+        assert "unrecognized arguments" in captured.err
+        assert "config check" not in captured.err
+
     def test_install_exposes_the_repeatable_add_user_flag(self, capsys):
         assert cgpd.build_cli().run(argv=["install", "--help"]) == 0
         captured = capsys.readouterr()

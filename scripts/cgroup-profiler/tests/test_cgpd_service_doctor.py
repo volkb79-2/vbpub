@@ -263,11 +263,12 @@ def test_groups_check_lists_actual_and_recorded_members(monkeypatch, tmp_path):
 
     groups["cgprofile-control"] = (10, ["other"])
     result = service_doctor._check_groups(_runtime(), _args(tmp_path, config))
-    assert result.status == "fail" and "alice" in result.summary and "cgpd install --add-user control=alice" in result.remedy
+    assert result.status == "warn" and "alice" in result.summary
+    assert result.remedy == "rerun cgpd install (recorded users are re-added) or --add-user LEVEL=USER"
     accounts["alice"] = False
     result = service_doctor._check_groups(_runtime(), _args(tmp_path, config))
-    assert "does not exist" in result.summary and "restore the recorded account" in result.remedy
-    assert "cgpd install --add-user control=alice" not in result.remedy
+    assert result.status == "warn" and "does not exist" in result.summary
+    assert result.remedy == "rerun cgpd install (recorded users are re-added) or --add-user LEVEL=USER"
 
 
 @pytest.mark.parametrize("level,group,gids,needle", [

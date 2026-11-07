@@ -173,6 +173,37 @@ def test_socket_group_user_and_config_test_contract_stays_in_sync():
     assert "ctl group is the Docker relay group" not in (ROOT / "docs" / "PROTOCOL.md").read_text(encoding="utf-8")
 
 
+def test_recorded_user_reconciliation_and_requested_user_validation_are_documented():
+    readme = README.read_text(encoding="utf-8")
+    cli_spec = (ROOT / "docs" / "CLI-SPEC.md").read_text(encoding="utf-8")
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+
+    for text in (readme, cli_spec, consumers):
+        normalized = " ".join(text.split())
+        assert "recorded users whose accounts no longer exist are dropped and reported" in normalized
+        assert "A user named with `--add-user` must exist" in normalized
+    assert "missing recorded accounts do not block later installs" in " ".join(design.split())
+    assert "dropped and reported; the install continues" in " ".join(spec.split())
+
+
+def test_group_examples_and_legacy_container_files_name_the_dedicated_model():
+    spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
+    serve = (ROOT / "src" / "cgprofile" / "serve.py").read_text(encoding="utf-8")
+    compose = (ROOT / "ciu.compose.yml.j2").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert '"group": "cgprofile-control", "gid": 999' in spec
+    assert "add yourself to cgprofile-control (gid 999) and re-login" in spec
+    assert "mdt-docker" not in spec and "2751" not in spec
+    assert "docker-group trust" not in serve
+    assert "dedicated socket group" in serve
+    assert "LEGACY cgprofile 1.x CONTAINER TEMPLATE ONLY" in compose
+    assert "obsolete /run/cgprofile 0770 root:docker layout" in " ".join(compose.split())
+    assert "LEGACY cgprofile container image" in dockerfile
+
+
 @pytest.mark.parametrize(
     "old,new",
     [

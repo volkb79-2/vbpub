@@ -23,6 +23,8 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - fix(cgprofile): `cgpd install --force-restart` proceeds with a warning when the session list is unavailable; groups created by an interrupted first install are named in `PENDING` so `uninstall --remove-groups` removes them; with no flag a hand-edited socket group in `cgpd.toml` wins over the install record; a dry run needs no `--enable`; the wheels install with `--no-deps`
 - fix(cgprofile): `cgpd uninstall` keeps `current` until the running tree is removed, continues past a `groupdel` failure and reports it, only ever removes the two default groups, and `install` never prunes the tree it runs from
 - fix(cgprofile): both socket groups reject Docker by name or GID, GID 0, and same-service duplicate GIDs on every install/config input path; `cgpd doctor groups` reports the group IDs and members, including recorded users
+- fix(cgprofile): reinstall drops and reports recorded users whose accounts are gone, while a user named with `--add-user` must still exist; `cgpd doctor groups` warns with a rerun remedy
+- fix(cgprofile): restrict `cgpd -t` to the standalone config check forms and describe P-5 refusals by group, root-equivalent cause, and dedicated-group remedy
 - fix(cgprofile): deferred uninstall failures give manual tree, `groupdel`, and install-record cleanup steps instead of asking operators to rerun a cgpd binary that may have been removed
 - refactor(cgprofile): remove the unused `damon.prepare_registry_lock_file`
 

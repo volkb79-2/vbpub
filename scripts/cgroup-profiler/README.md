@@ -118,9 +118,11 @@ GID 0 or the docker GID, or share a GID with the other cgprofile level. The
 installer and config checker refuse these values from flags, saved records,
 existing config, and wizard answers, with no override. Cross-service group
 uniqueness belongs to host-setup. Repeatable `cgpd install --add-user
-LEVEL=USER` flags add existing users with `gpasswd -a`; the installer records
-and keeps additions, and uninstall never removes memberships. `allow_uids` can
-further narrow control access. See the [access-group design](docs/DESIGN-GUIDE.md#dedicated-groups-for-each-socket-level)
+LEVEL=USER` flags add existing users with `gpasswd -a`. A user named with
+`--add-user` must exist. The installer records and keeps additions, and
+uninstall never removes memberships. On reinstall, recorded users whose
+accounts no longer exist are dropped and reported; the install continues.
+`allow_uids` can further narrow control access. See the [access-group design](docs/DESIGN-GUIDE.md#dedicated-groups-for-each-socket-level)
 and [install examples](docs/CONSUMERS.md#install-and-run-the-native-service).
 
 The control socket is one carrier: there is no `exec` carrier. A version reply

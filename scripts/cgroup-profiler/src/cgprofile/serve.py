@@ -129,8 +129,8 @@ STREAMING_VERBS = frozenset({"watch", "export"})
 # `mdt-cgprofile.conf`, NOT this daemon — the daemon only re-asserts).
 SOCKET_MODE = 0o660
 # The uid allowlist (§8.1) is the `allow_uids` setting (cgpd.toml, runtime
-# `config-set`). Empty = no uid restriction beyond the socket's own group mode
-# (docker-group trust, D-30).
+# `config-set`). Empty = no uid restriction beyond the dedicated socket group's
+# permissions (D-30).
 
 
 def _placement_block(sess: "_Session") -> Optional[Dict[str, Any]]:
@@ -602,8 +602,8 @@ class SessionServer:
         self.slice_unit_verifier = slice_unit_verifier or access.verify_systemd_slice
         self._gates_slice_verification: Optional[Tuple[float, bool]] = None
         self._gates_slice_verify_lock = threading.Lock()
-        # §8.1/§8.6: `None` = no uid allowlist (docker-group trust via the
-        # socket mode); a list = SO_PEERCRED uid must be 0 or listed.
+        # §8.1/§8.6: `None` = no uid allowlist (the dedicated socket group's
+        # permissions grant access); a list = SO_PEERCRED uid must be 0 or listed.
         self.allow_uids: Optional[List[int]] = list(allow_uids) if allow_uids is not None else None
         self.cgroup_root = cgroup_root
         self.proc_root = proc_root
@@ -1070,8 +1070,8 @@ class SessionServer:
             # answers on. `exec` is permanent (§8.1 rule 5) so it is a
             # literal `True`, not a probe; the socket half reports the real
             # listener state, the effective uid allowlist (`[]` = none
-            # configured, i.e. docker-group trust) and that SO_PEERCRED is
-            # enforced on every accepted connection.
+            # configured, so the dedicated socket group controls access) and
+            # that SO_PEERCRED is enforced on every accepted connection.
             "transports": {
                 "exec": False,
                 "socket": {
@@ -3469,11 +3469,11 @@ class SessionServer:
     def _peer_allowed(self, uid: Optional[int]) -> bool:
         """§8.1's authorisation rule. uid 0 is ALWAYS allowed (that is how
         the exec carrier arrives — `docker exec` runs as root inside the
-        daemon, D-30). With no allowlist configured, everyone the socket
-        mode already let connect is allowed (docker-group trust). With an
-        allowlist, only those uids — and an unreadable peer credential is
-        REFUSED in that case, because failing open would quietly void the
-        one control the operator explicitly asked for.
+        daemon, D-30). With no allowlist configured, any peer permitted by the
+        dedicated socket group's mode is allowed. With an allowlist, only
+        those uids are allowed. An unreadable peer credential is refused in
+        that case, because failing open would quietly void the one control the
+        operator explicitly asked for.
         """
         if self.allow_uids is None:
             return True

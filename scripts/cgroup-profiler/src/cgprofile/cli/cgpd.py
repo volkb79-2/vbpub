@@ -368,13 +368,25 @@ def _register_unit(registry: CliRegistry) -> None:
                                group=VerbGroup.MIXED.value, delegate=unit.build()))
 
 
+def _expand_config_test(argv: Sequence[str]) -> list[str]:
+    """Expand only ``cgpd -t`` and ``cgpd [--config PATH] -t``.
+
+    Other placements are left intact so the regular parser reports ``-t`` as
+    an invalid option for that verb instead of reinterpreting the command.
+    """
+    words = list(argv)
+    if words.count("-t") != 1:
+        return words
+    rest = [word for word in words if word != "-t"]
+    only_config = rest == [] or (len(rest) == 2 and rest[0] == "--config") or (
+        len(rest) == 1 and rest[0].startswith("--config=")
+    )
+    return ["config", "check", *rest] if only_config else words
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if "-t" in arguments:
-        # Match the conventional daemon config-test switch while keeping the
-        # cli-extended config checker as the one validation implementation.
-        arguments = ["config", "check", *(token for token in arguments if token != "-t")]
-    return build_cli().run(argv=arguments)
+    return build_cli().run(argv=_expand_config_test(arguments))
 
 
 if __name__ == "__main__":

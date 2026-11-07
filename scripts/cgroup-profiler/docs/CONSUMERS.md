@@ -51,8 +51,10 @@ must provide the pins, groups, and either `--enable` or `--no-enable`. Repeat
 `--add-user LEVEL=USER` for each existing account to add, for example
 `--add-user control=alice --add-user observer=runner`. The installer uses
 `gpasswd -a`, records these users, and only adds memberships; later installs
-retain them and uninstall never removes them. Dry-run output lists each user
-and level group it would add.
+retain them and uninstall never removes them. A user named with
+`--add-user` must exist. On reinstall, recorded users whose accounts no longer
+exist are dropped and reported; the install continues. Dry-run output lists
+each requested addition and any dropped recorded users.
 
 Both groups must be dedicated. `cgpd install` and `cgpd config check` refuse a
 group named `docker`, a group resolving to GID 0 or the docker GID, or two

@@ -204,15 +204,11 @@ def _check_groups(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
         summary = "; ".join(f"{level} group is missing recorded user {user}" for level, user in missing_members)
         summary += ("; " if summary and missing_accounts else "")
         summary += "; ".join(f"recorded user {user} for {level} does not exist" for level, user in missing_accounts)
-        remedies = ", ".join(f"--add-user {level}={user}" for level, user in missing_members)
-        steps = []
-        if missing_accounts:
-            steps.append("restore the recorded account(s) first: " + ", ".join(
-                f"{user} ({level})" for level, user in missing_accounts))
-        if missing_members:
-            steps.append(f"restore memberships with cgpd install {remedies}")
-        return CheckResult("fail", summary, remedy="; then ".join(steps),
-                           details={"groups": details, "gids": gids})
+        return CheckResult(
+            "warn", summary,
+            remedy="rerun cgpd install (recorded users are re-added) or --add-user LEVEL=USER",
+            details={"groups": details, "gids": gids},
+        )
     return CheckResult("ok", "control and observer groups are dedicated and their recorded members are present",
                        details={"groups": details, "gids": gids})
 

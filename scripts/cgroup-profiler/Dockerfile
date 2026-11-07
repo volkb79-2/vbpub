@@ -1,3 +1,7 @@
+# LEGACY cgprofile container image. Native deployments use `cgpd install` and
+# systemd-owned per-level sockets; do not use this image with cgpd 2.2.0+.
+# See docs/NATIVE-DEPLOYMENT.md.
+#
 # cgprofile — the RG-55 profiling daemon (RG55-INTERFACE-CONTRACT.md).
 #
 # Base: python:3.14-slim — matches this project's own dev environment
@@ -90,10 +94,7 @@ RUN find . -name '__pycache__' -type d -prune -exec rm -rf {} +
 # from even before a volume is attached.
 RUN mkdir -p /var/lib/cgprofile/sessions
 
-# No EXPOSE: the control socket is a Unix domain socket
-# (/run/cgprofile/ctl.sock, never a TCP port) and the daemon's own
-# network_mode is "none" (RG55-INTERFACE-CONTRACT.md §5) — there is
-# nothing to publish.
+# No EXPOSE: the legacy daemon uses Unix-domain sockets, not a TCP port.
 # 2.0: the daemon is `cgpd run` (config file, no flags, no CGPROFILE_* daemon
 # environment). This image path is superseded by the native wheel deployment
 # (docs/NATIVE-DEPLOYMENT.md); a container run needs cli-extended on the

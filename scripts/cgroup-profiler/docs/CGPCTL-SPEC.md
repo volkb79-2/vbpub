@@ -105,7 +105,7 @@ counts are integers, seconds are numbers, an unknown value is `null`.
  "daemon": {"version": "2.0.0", "contracts": [1, 2], "started_at": "...", "uptime_seconds": 0.0,
             "damon": "available|unavailable|disabled", "damon_default": "on|off",
             "sessions_live": 0, "max_sessions": 16},
- "socket": {"path": "...", "source": "flag|env|default", "group": "mdt-docker", "gid": 2751,
+ "socket": {"path": "...", "source": "flag|env|default", "group": "cgprofile-control", "gid": 999,
             "listening": true, "allow_uids": []},
  "resource_observer": {"contract": 2, "contracts": [2, 3], "path": "...", "listening": true},
  "config": {"file": "/etc/cgprofile/cgpd.toml", "digest": "sha256:...", "loaded_at": "...",
@@ -229,7 +229,7 @@ with a `pass|warn|fail|skip` status and a remedy on non-pass:
 
 `doctor` is in the degraded set: with no daemon access it still runs `socket`, `caller-group`,
 `report-extra` and `skills`, marks the rest `skip`, and the failing check prints the fix, for example
-`add yourself to mdt-docker (gid 2751) and re-login`, or `the socket is missing: systemctl start cgpd`.
+`add yourself to cgprofile-control (gid 999) and re-login`, or `the socket is missing: systemctl start cgpd`.
 
 **`config show`**
 
@@ -372,10 +372,12 @@ values from flags, saved `install.toml`, existing `cgpd.toml`, and wizard answer
 Cross-service group uniqueness belongs to host-setup.
 
 `cgpd install --add-user LEVEL=USER` is repeatable for `LEVEL=control` or `LEVEL=observer`. The installer
-requires each account to exist, adds it with `gpasswd -a`, and records the requested users in
-`/etc/cgprofile/install.toml`. Reinstalls retain and re-add recorded members; memberships are never
-individually removed on uninstall. `--dry-run` lists the user and target group for each addition. The
-`groups` doctor check reports both level GIDs, current group members and users named in the install record.
+requires each account named with `--add-user` to exist, adds it with `gpasswd -a`, and records the requested
+users in `/etc/cgprofile/install.toml`. On reinstall, recorded users whose accounts no longer exist are
+dropped and reported; the install continues. Reinstalls re-add the remaining recorded members, and
+memberships are never individually removed on uninstall. `--dry-run` lists each requested addition and any
+dropped recorded users. The `groups` doctor check warns when a recorded member has left or their account is
+gone, and recommends rerunning `cgpd install` or naming a replacement with `--add-user LEVEL=USER`.
 
 ### 3.3 Reload
 

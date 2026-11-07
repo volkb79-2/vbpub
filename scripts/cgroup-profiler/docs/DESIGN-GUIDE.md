@@ -802,6 +802,12 @@ Docker API access and leaves estate-wide group allocation to its owner. The
 parent and level directories remain `root:root 0755`, so traversal does not
 grant access by itself. The socket group is the access decision.
 
+Recorded memberships are re-applied on install because users can be removed
+from a host outside cgpd. Missing recorded accounts do not block later
+installs: cgpd drops and reports them, while a user newly named with
+`--add-user` must exist. This keeps a stale record from trapping an otherwise
+valid service upgrade and preserves strict validation for explicit requests.
+
 The service config is the single source for `unit print`, `install`, and
 `doctor`. Paths, groups, and octal modes live under `[sockets.control]` and
 `[sockets.observer]`; socket settings are fixed until restart. The former
