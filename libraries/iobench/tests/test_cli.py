@@ -61,11 +61,39 @@ def test_cli_02_messages_name_condition_and_remedy():
 def test_cli_10_surface_matches_registry():
     registry = cli.build_cli(IDENT)
     verbs = set(registry.handlers) | set(registry.delegates)
-    assert {"target", "calibrate", "matrix", "run", "check", "show", "ceilings", "restore"} <= verbs
+    assert {"target", "calibrate", "matrix", "run", "check", "show", "ceilings", "capability", "restore"} <= verbs
     for name in ("calibrate", "matrix", "run", "restore"):
         assert registry.command_parsers[name].parse_args  # registered with its own parser
     out, err = io.StringIO(), io.StringIO()
     assert registry.run(argv=["--version"], stdout=out, stderr=err) == 0 and "0.1.0" in out.getvalue()
+
+
+def test_cli_11_capability_and_cache_delay_are_registered():
+    registry = cli.build_cli(IDENT)
+    assert "capability" in registry.handlers
+    parsed = registry.command_parsers["calibrate"].parse_args(["--target", "/dev/vda7", "--cache-idle-delay-s", "15"])
+    assert parsed.cache_idle_delay_s == 15
+    host = make_host(cache=INVERSION)
+    before = (dict(host.files), list(host.write_log), list(host.argv_log), host.clock)
+    code, out, err = run(host, "capability", "--json")
+    assert code == 0 and not err
+    report = json.loads(out)
+    assert report["count"] == 0 and report["latest"] == {"raw": None, "file": None, "probe": None}
+    assert report["by_kind"]["raw"] == {"count": 0, "latest": None}
+    assert report["skipped_rows"] == 0 and "calibration_identity_unavailable" in report["warnings"]
+    parsed = registry.command_parsers["capability"].parse_args(["--kind", "probe"])
+    assert parsed.kind == "probe"
+    assert (dict(host.files), list(host.write_log), list(host.argv_log), host.clock) == before
+
+    args = ("calibrate", "--target", "/dev/vda7", "--work-dir", "/bench/w", "--dry-run", "--assume-r-est", "1.36e9", "--json")
+    code, out, err = run(host, *args, "--cache-idle-delay-s", "15")
+    assert code == 0, err
+    plan = json.loads(out)
+    cache_stage = next(stage for stage in plan["stages"] if stage["name"] == "cache-evidence")
+    assert cache_stage["allotted_s"] == 45 and len(cache_stage["jobs"]) == 2
+    code, out, err = run(host, *args, "--cache-idle-delay-s", "0")
+    assert code == 0, err
+    assert all(stage["name"] != "cache-evidence" for stage in json.loads(out)["stages"])
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -181,9 +209,15 @@ def test_cli_show_when_nothing_exists_and_when_corrupt():
 
 
 def test_cli_identity_comes_from_the_installed_distribution_only(monkeypatch):
+    from importlib.metadata import PackageNotFoundError
     from cli_extended import identity as ident_mod
+
+    def missing(name):
+        raise PackageNotFoundError(name)
+
+    monkeypatch.setattr(ident_mod, "installed_version", missing)
     with pytest.raises(ident_mod.VersionLookupError):
-        cli.identity()                                   # not installed in the test environment: no literal fallback
+        cli.identity()  # no literal fallback when the authoritative distribution metadata is absent
     monkeypatch.setattr(ident_mod, "installed_version", lambda name: "0.1.0")
     assert cli.identity().version == "0.1.0"
     monkeypatch.setattr(cli, "identity", lambda: IDENT)
