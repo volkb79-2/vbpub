@@ -82,6 +82,8 @@ def test_install_help_and_dry_run_work_before_any_venv_exists(tmp_path: Path) ->
             f"0.7.0@sha256:{digest}",
             "--wheel-source",
             str(tmp_path),
+            "--observe-group",
+            "topos-observe",
             "--no-enable",
         ],
     )

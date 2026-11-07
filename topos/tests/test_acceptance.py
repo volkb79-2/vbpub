@@ -555,14 +555,21 @@ def test_parse_ui_smoke_line_keeps_valid_fields_when_frames_is_malformed() -> No
     assert "frames" not in result
 
 
-def test_run_tui_smoke_fixture_replay() -> None:
-    """``run_tui_smoke`` with fixture replay returns ok=true with measurements."""
-    from topos.acceptance import run_tui_smoke
+def test_run_tui_smoke_fixture_replay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The TUI smoke adapter parses a successful child result deterministically."""
+    import topos.acceptance as acceptance
 
-    result = run_tui_smoke(
-        replay_path=FIXTURE_FRAME,
-        timeout_s=10,
-    )
+    def child(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs["timeout"] == 10
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="ui smoke ok frames=1 view=tree profile=auto\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(acceptance.subprocess, "run", child)
+    result = acceptance.run_tui_smoke(replay_path=FIXTURE_FRAME, timeout_s=10)
     assert result.ok is True
     assert result.exit_code == 0
     assert result.smoke_line is not None
@@ -588,14 +595,15 @@ def test_run_tui_smoke_bad_replay_path() -> None:
     assert result.smoke_line is None
 
 
-def test_run_tui_smoke_timeout() -> None:
-    """``run_tui_smoke`` reports a bounded failure when the child times out."""
-    from topos.acceptance import run_tui_smoke
+def test_run_tui_smoke_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``run_tui_smoke`` converts ``TimeoutExpired`` without sleeping for it."""
+    import topos.acceptance as acceptance
 
-    result = run_tui_smoke(
-        replay_path=FIXTURE_FRAME,
-        timeout_s=0.000001,
-    )
+    def timeout(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    monkeypatch.setattr(acceptance.subprocess, "run", timeout)
+    result = acceptance.run_tui_smoke(replay_path=FIXTURE_FRAME, timeout_s=10)
     assert result.ok is False
     assert result.exit_code == -1
     assert result.smoke_line is None

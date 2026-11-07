@@ -564,10 +564,16 @@ def _read_record(path: str) -> dict[str, Any]:
     return value
 
 
-def _record_created_groups(record: Mapping[str, Any]) -> list[str]:
+def _record_created_groups(record: Mapping[str, Any], path: str) -> list[str]:
     raw = record.get("created_groups", [])
     if not isinstance(raw, list) or any(not isinstance(name, str) or not USER_RE.fullmatch(name) for name in raw):
-        raise InstallError("the existing install record has an invalid created_groups list; repair it manually")
+        raise InstallError(f"install record {path} has an invalid created_groups list; repair it manually")
+    unsupported = [name for name in raw if name != DEFAULT_OBSERVE_GROUP]
+    if unsupported:
+        raise InstallError(
+            f"install record {path} contains unsupported created group {unsupported[0]!r}; "
+            "refusing to remove it"
+        )
     return list(dict.fromkeys(raw))
 
 
@@ -636,7 +642,7 @@ def _resolve_group(
 
 def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: InstallPaths) -> dict[str, Any]:
     record = _read_record(paths.install_record)
-    created_groups = _record_created_groups(record)
+    created_groups = _record_created_groups(record, paths.install_record)
 
     def required(flag: str, label: str, saved: Any) -> str:
         value = getattr(args, flag[2:].replace("-", "_"), None) or saved
@@ -684,7 +690,9 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         enable_now = False
     elif "enable_now" in record and isinstance(record["enable_now"], bool):
         enable_now = record["enable_now"]
-    elif runtime.dry_run or runtime.json_mode or not runtime.output.is_interactive:
+    elif runtime.dry_run:
+        enable_now = False
+    elif runtime.json_mode or not runtime.output.is_interactive:
         raise InstallError("missing required --enable or --no-enable on a non-interactive run")
     else:
         try:
@@ -1078,6 +1086,22 @@ class Installer:
             self._command(["systemd-sysusers", resource_paths["topos.sysusers"]], timeout=30)
             if group_missing_before and _group_gid(values["observe_group"]) is None:
                 raise InstallError(f"systemd-sysusers did not create configured group {values['observe_group']!r}")
+        created_groups = list(values["prior_created_groups"])
+        if group_missing_before and values["observe_group"] not in created_groups:
+            created_groups.append(values["observe_group"])
+        record = {
+            "wheel": values["wheel"],
+            "cli_extended_wheel": values["cli_extended_wheel"],
+            "daemon_lock": values["daemon_lock"],
+            "wheel_source": values["wheel_source"],
+            "observe_group": values["observe_group"],
+            "observe_users": values["observe_users"],
+            "enable_now": values["enable_now"],
+            "created_groups": created_groups,
+        }
+        record_text = _render_record(record)
+        # PENDING makes this complete record a recoverable failed first install.
+        _atomic_write(self.paths.install_record, record_text)
         for user in values["observe_users"]:
             self._command(["usermod", "-a", "-G", values["observe_group"], user], timeout=30)
 
@@ -1110,21 +1134,8 @@ class Installer:
         if was_active or enabled_now:
             self._wait_ready(self.paths.at(config.sockets.observe.path.as_posix()), values["version"])
 
-        created_groups = list(values["prior_created_groups"])
-        if group_missing_before and values["observe_group"] not in created_groups:
-            created_groups.append(values["observe_group"])
         removed = self._prune_versions(values["version"], running_version)
-        record = {
-            "wheel": values["wheel"],
-            "cli_extended_wheel": values["cli_extended_wheel"],
-            "daemon_lock": values["daemon_lock"],
-            "wheel_source": values["wheel_source"],
-            "observe_group": values["observe_group"],
-            "observe_users": values["observe_users"],
-            "enable_now": values["enable_now"],
-            "created_groups": created_groups,
-        }
-        _atomic_write(self.paths.install_record, _render_record(record))
+        _atomic_write(self.paths.install_record, record_text)
         os.unlink(self.paths.pending)
         return {
             "ok": True,
@@ -1192,6 +1203,17 @@ class Installer:
             if item != f"foreign rule or drop-in: {mdt_dropin}"
             and not (owned and item.startswith(_VERSION_ROOT_FINDINGS[:3]))
         ]
+        for unit in ("topos-observe.socket", "topos.service", "topos.slice"):
+            path = os.path.join(paths.unit_dir, unit)
+            try:
+                info = os.lstat(path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                problems.append(f"cannot inspect unit path {path}: {exc}")
+            else:
+                if stat.S_ISDIR(info.st_mode):
+                    problems.append(f"unit path is a directory: {path}")
         for directory, allowed in (
             (paths.runtime_root, {"observe", "state"}),
             (paths.observe_dir, {"topos.sock"}),
@@ -1254,10 +1276,11 @@ class Installer:
                 os.rmdir(paths.opt)
         except OSError as exc:
             raise InstallError(f"cannot remove {exc.filename or paths.opt}: {exc}") from None
-        try:
-            os.unlink(paths.install_record)
-        except FileNotFoundError:
-            pass
+        if not body.get("groups_kept"):
+            try:
+                os.unlink(paths.install_record)
+            except FileNotFoundError:
+                pass
         config_dir = os.path.dirname(paths.config)
         try:
             os.rmdir(config_dir)
@@ -1269,7 +1292,7 @@ class Installer:
 
     def uninstall(self, args: argparse.Namespace, runtime: CliRuntime) -> dict[str, Any]:
         record = _read_record(self.paths.install_record)
-        created_groups = _record_created_groups(record)
+        created_groups = _record_created_groups(record, self.paths.install_record)
         remove_groups = bool(getattr(args, "remove_groups", False))
         targets = self._uninstall_targets()
         if targets is None:
@@ -1310,6 +1333,8 @@ class Installer:
                 os.unlink(path)
             except FileNotFoundError:
                 pass
+            except OSError as exc:
+                raise InstallError(f"cannot remove {path}: {exc}") from None
         for directory in (paths.service_dropins, paths.observe_dir):
             try:
                 os.rmdir(directory)
@@ -1324,12 +1349,19 @@ class Installer:
                 raise InstallError(f"cannot remove runtime directory {directory}: {exc}") from None
 
         removed_groups: list[str] = []
+        groups_kept: list[str] = []
+        group_failures: list[str] = []
         if remove_groups:
             for group in created_groups:
                 # A rerun after a partial uninstall finds some groups already gone.
                 if _group_gid(group) is None:
                     continue
-                self._command(["groupdel", group], timeout=30)
+                try:
+                    self._command(["groupdel", group], timeout=30)
+                except InstallError as exc:
+                    groups_kept.append(group)
+                    group_failures.append(f"{group}: {exc}")
+                    continue
                 removed_groups.append(group)
         self._command([self.systemctl, "daemon-reload"], timeout=30)
         self._command([self.systemctl, "reset-failed", "topos.service", "topos-observe.socket", "topos.slice"],
@@ -1339,19 +1371,24 @@ class Installer:
         except FileNotFoundError:
             pass
         config_dir = os.path.dirname(paths.config)
-        try:
-            remaining = os.listdir(config_dir)
-        except FileNotFoundError:
-            remaining = []
-        except OSError as exc:
-            raise InstallError(f"cannot inspect {config_dir}: {exc}") from None
-        if any(name != os.path.basename(paths.install_record) for name in remaining):
+        if groups_kept:
             kept.append(config_dir)
+        else:
+            try:
+                remaining = os.listdir(config_dir)
+            except FileNotFoundError:
+                remaining = []
+            except OSError as exc:
+                raise InstallError(f"cannot inspect {config_dir}: {exc}") from None
+            if any(name != os.path.basename(paths.install_record) for name in remaining):
+                kept.append(config_dir)
         body: dict[str, Any] = {
-            "ok": True,
+            "ok": not group_failures,
             "dry_run": False,
-            "removed": targets,
+            "removed": [path for path in targets if not (groups_kept and path == paths.install_record)],
             "groups_removed": removed_groups,
+            "groups_kept": groups_kept,
+            "group_failures": group_failures,
             "kept": kept,
         }
         running = self._running_version_dir()
@@ -1414,6 +1451,12 @@ def _uninstall_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
         subject.finish_uninstall(body)
     except InstallError as exc:
         raise CliFailure(f"{exc}; rerun toposd uninstall --yes to finish", exit_code=exc.exit_code) from None
+    if body.get("group_failures"):
+        groups = ", ".join(body.get("groups_kept", []))
+        raise CliFailure(
+            f"could not remove groups {groups}; rerun toposd uninstall --yes without --remove-groups to finish",
+            exit_code=2,
+        )
     return 0
 
 
@@ -1435,6 +1478,8 @@ def _uninstall_summary(body: Mapping[str, Any]) -> str:
     lines = [f"{verb}: {path}" for path in body.get("removed", [])]
     lines.extend(f"{'would remove' if body.get('dry_run') else 'removed'} group: {group}"
                  for group in body.get("groups_removed", []))
+    lines.extend(f"kept group: {group}" for group in body.get("groups_kept", []))
+    lines.extend(f"group removal failed: {failure}" for failure in body.get("group_failures", []))
     lines.extend(f"kept (not written by toposd install): {path}" for path in body.get("kept", []))
     return "\n".join(lines) if lines else "nothing to remove"
 

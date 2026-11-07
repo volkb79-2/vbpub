@@ -278,6 +278,25 @@ def test_nonexistent_mapped_group_is_refused_and_docker_is_allowed(tmp_path: Pat
     assert values["observe_group"] == "docker"
 
 
+def test_install_rechecks_a_mapped_group_before_writing_anything(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    args, _wheels = _install_args(observe_group="docker", enable=False)
+    calls = []
+
+    def gid(_group: str) -> int | None:
+        calls.append(None)
+        return 991 if len(calls) == 1 else None
+
+    monkeypatch.setattr(install, "_group_gid", gid)
+    subject = Installer(paths, run=_fake_run([]), geteuid=lambda: 0)
+
+    with pytest.raises(InstallError, match="mapped observe group 'docker' does not exist"):
+        subject.install(args, _runtime(yes=True))
+
+    assert len(calls) == 2
+    assert not Path(paths.config).exists() and not Path(paths.opt).exists()
+
+
 def test_saved_record_resolves_group_users_and_pins(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
     record = Path(paths.install_record)
@@ -308,9 +327,11 @@ def test_tty_prompts_resolve_group_users_and_enable(tmp_path: Path, monkeypatch)
         def __init__(self, pins):
             self.calls = []
             self.pins = list(pins)
+            self.defaults = []
 
-        def select(self, message, choices, **_kwargs):
+        def select(self, message, choices, **kwargs):
             self.calls.append(("select", message))
+            self.defaults.append(kwargs.get("default"))
             return choices[1]
 
         def text(self, message, **_kwargs):
@@ -328,6 +349,7 @@ def test_tty_prompts_resolve_group_users_and_enable(tmp_path: Path, monkeypatch)
     args, _wheels = _install_args()
     prompts = Prompts((args.wheel, args.cli_extended_wheel, args.daemon_lock))
     args.wheel = args.cli_extended_wheel = args.daemon_lock = args.observe_users = None
+    args.observe_group = None
     args.enable = args.no_enable = False
     _groups(monkeypatch, {"docker": 991})
     monkeypatch.setattr(install.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
@@ -339,6 +361,7 @@ def test_tty_prompts_resolve_group_users_and_enable(tmp_path: Path, monkeypatch)
     assert values["observe_group"] == "docker"
     assert values["observe_users"] == ["alice"]
     assert values["enable_now"] is True
+    assert prompts.defaults == ["create topos-observe"]
     assert [name for name, _message in prompts.calls] == ["text", "text", "text", "select", "text", "text", "confirm"]
 
 
@@ -382,6 +405,58 @@ def test_install_verifies_pins_builds_venv_writes_files_and_records_created_grou
     assert not Path(paths.pending).exists() and not Path(paths.current_new).exists()
     assert any(command[:3] == ["systemctl", "start", "topos-observe.socket"] for command in commands)
     assert any(command[:3] == ["systemctl", "start", "topos.service"] for command in commands)
+
+
+def test_interrupted_first_install_records_created_group_for_uninstall(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args()
+    groups = _groups(monkeypatch)
+    commands = []
+    base_run = _fake_run(commands, groups)
+
+    def run(argv, **kwargs):
+        if argv and argv[0] == "groupdel":
+            commands.append(list(argv))
+            groups.pop(argv[1], None)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return base_run(argv, **kwargs)
+
+    def fail_ready(*_args, **_kwargs):
+        raise InstallError("ready timeout")
+
+    monkeypatch.setattr(Installer, "_wait_ready", fail_ready)
+    subject = Installer(paths, run=run, fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    with pytest.raises(InstallError, match="ready timeout"):
+        subject.install(args, _runtime(yes=True))
+    assert groups == {"topos-observe": 9101}
+    assert 'created_groups = ["topos-observe"]' in Path(paths.install_record).read_text(encoding="utf-8")
+    assert Path(paths.pending).is_file()
+
+    body = subject.uninstall(_args(remove_groups=True), _runtime(yes=True))
+
+    assert body["groups_removed"] == ["topos-observe"]
+    assert groups == {} and ["groupdel", "topos-observe"] in commands
+
+
+def test_interrupted_first_install_can_be_reapplied_from_its_early_record(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args()
+    groups = _groups(monkeypatch)
+    commands = []
+    subject = Installer(paths, run=_fake_run(commands, groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: (_ for _ in ()).throw(InstallError("ready timeout")))
+    with pytest.raises(InstallError, match="ready timeout"):
+        subject.install(args, _runtime(yes=True))
+    assert Path(paths.install_record).is_file() and Path(paths.pending).is_file()
+
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    body = subject.install(args, _runtime(yes=True))
+
+    assert body["ok"] is True and body["enabled"] is True
+    assert not Path(paths.pending).exists()
+    assert 'created_groups = ["topos-observe"]' in Path(paths.install_record).read_text(encoding="utf-8")
+    assert ["systemctl", "daemon-reload"] in commands
 
 
 def test_install_hash_mismatch_refuses_before_pip_unpack(tmp_path: Path, monkeypatch) -> None:
@@ -574,8 +649,6 @@ def test_existing_config_group_wins_without_flag_and_flag_equal_to_file_is_uncha
          'sockets.observe.group = "docker"\n'),
         ('state_dir = "/run/topos/state"\n[sockets]\nobserve.path = "/run/topos/observe/topos.sock"\n',
          'observe.group = "docker"\n'),
-        ('state_dir = "/run/topos/state"\n[sockets]\n',
-         '[sockets.observe]\ngroup = "docker"\n'),
         ('state_dir = "/run/topos/state"\n',
          '[sockets.observe]\ngroup = "docker"\n'),
     ),
@@ -590,7 +663,8 @@ def test_config_group_editor_adds_missing_group_without_losing_comments_or_dotte
     edited, config, changed = Installer(paths)._config("docker")
 
     assert changed and expected_line in edited
-    assert "preserve this comment" in edited
+    if "preserve this comment" in contents:
+        assert "preserve this comment" in edited
     assert config.sockets.observe.group == "docker"
 
 
@@ -612,6 +686,58 @@ def test_config_group_editor_refuses_unsafe_inline_table_and_invalid_edited_text
     Path(paths.config).write_text(install._render_config("docker"), encoding="utf-8")
     with pytest.raises(InstallError, match="editing sockets.observe.group would make .* invalid: invalid edited result"):
         Installer(paths)._config("redis")
+
+
+def test_config_group_editor_handles_parent_table_and_missing_final_newline(tmp_path: Path) -> None:
+    paths = InstallPaths(tmp_path)
+    parent_table = install._edit_config_group("[sockets]\n", "docker", paths.config)
+    assert parent_table == '[sockets]\n[sockets.observe]\ngroup = "docker"\n'
+    assert install.parse_config(parent_table).sockets.observe.group == "docker"
+
+    no_final_newline = '[sockets.observe]\npath = "/run/topos/observe/topos.sock"'
+    edited = install._edit_config_group(no_final_newline, "docker", paths.config)
+    assert edited == no_final_newline + '\ngroup = "docker"\n'
+    assert install.parse_config(edited).sockets.observe.group == "docker"
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        '[sockets.observe]\npath = "/run/topos/observe/topos.sock"\n[sockets.extra]\n',
+        '[sockets]\nobserve.path = "/run/topos/observe/topos.sock"\n[sockets.extra]\n',
+    ),
+)
+def test_config_group_editor_refuses_unsupported_nested_socket_tables(tmp_path: Path, text: str) -> None:
+    with pytest.raises(InstallError, match="cannot safely edit sockets.observe.group"):
+        install._edit_config_group(text, "docker", str(tmp_path / "toposd.toml"))
+
+
+def test_config_group_editor_refuses_nested_inline_observe_table(tmp_path: Path) -> None:
+    with pytest.raises(InstallError, match="cannot safely edit sockets.observe.group"):
+        install._edit_config_group(
+            '[sockets]\nobserve = { path = "/run/topos/observe/topos.sock" }\n',
+            "docker",
+            str(tmp_path / "toposd.toml"),
+        )
+
+
+def test_existing_config_group_reports_read_and_parse_failures(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    Path(paths.config).parent.mkdir(parents=True)
+    Path(paths.config).write_text("not = [valid\n", encoding="utf-8")
+    with pytest.raises(InstallError, match="is invalid: .*fix or remove it"):
+        install._existing_config_group(paths)
+
+    original = Path.read_text
+
+    def denied(path: Path, *args, **kwargs):
+        if os.fspath(path) == paths.config:
+            raise PermissionError("denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(InstallError, match="cannot read .*toposd.toml: denied"):
+        install._existing_config_group(paths)
 
 
 def test_config_group_edit_is_idempotent_and_duplicate_target_refuses(tmp_path: Path) -> None:
@@ -958,6 +1084,41 @@ def test_version_root_and_marker_helpers_accept_missing_paths_and_remove_symlink
     assert not link.exists() and not link.is_symlink()
 
 
+def test_version_root_removal_reports_unlink_error(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    Path(paths.opt).mkdir(parents=True)
+    leftover = Path(paths.opt, "current.new")
+    leftover.write_text("partial", encoding="utf-8")
+    original = install.os.unlink
+
+    def denied(path, *args, **kwargs):
+        if os.fspath(path) == str(leftover):
+            raise PermissionError(13, "denied", str(leftover))
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(install.os, "unlink", denied)
+    with pytest.raises(InstallError, match="cannot remove .*current.new: .*denied"):
+        Installer(paths)._remove_version_root(keep=None)
+
+
+def test_marker_removal_reports_version_root_error_and_keeps_nonempty_config_dir(tmp_path: Path) -> None:
+    paths = InstallPaths(tmp_path)
+    subject = Installer(paths)
+    Path(paths.opt).mkdir(parents=True)
+    Path(paths.current).symlink_to("0.7.3")
+    with pytest.raises(InstallError, match="cannot remove .*opt/topos: "):
+        subject._remove_markers({"kept": []})
+
+    Path(paths.current).unlink()
+    Path(paths.config).parent.mkdir(parents=True, exist_ok=True)
+    foreign = Path(paths.config).parent / "operator.conf"
+    foreign.write_text("keep", encoding="utf-8")
+    body = {"kept": []}
+    subject._remove_markers(body)
+    assert body["kept"] == [os.path.dirname(paths.config)]
+    assert foreign.is_file()
+
+
 def test_finish_uninstall_is_rerunnable_after_running_tree_was_already_removed(tmp_path: Path) -> None:
     paths = InstallPaths(tmp_path)
     _owned_host(paths)
@@ -970,6 +1131,41 @@ def test_finish_uninstall_is_rerunnable_after_running_tree_was_already_removed(t
 
     assert not Path(paths.current).exists() and not Path(paths.pending).exists()
     assert not Path(paths.opt).exists() and not Path(paths.install_record).exists()
+
+    Installer(paths).finish_uninstall({"kept": [], "deferred": str(Path(paths.opt, "0.7.3"))})
+    assert not Path(paths.current).exists() and not Path(paths.opt).exists()
+
+
+def test_finish_uninstall_reports_running_tree_and_current_removal_errors(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    version = Path(paths.opt, "0.7.3")
+    version.mkdir(parents=True)
+    Path(paths.current).symlink_to("0.7.3")
+    subject = Installer(paths)
+    original_rmtree = install.shutil.rmtree
+
+    def denied_tree(path, *args, **kwargs):
+        if os.fspath(path) == str(version):
+            raise PermissionError("tree busy")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(install.shutil, "rmtree", denied_tree)
+    with pytest.raises(InstallError, match="cannot remove .*0.7.3: tree busy"):
+        subject.finish_uninstall({"deferred": str(version), "kept": []})
+    assert version.is_dir() and Path(paths.current).is_symlink()
+
+    monkeypatch.setattr(install.shutil, "rmtree", original_rmtree)
+    original_unlink = install.os.unlink
+
+    def denied_current(path, *args, **kwargs):
+        if os.fspath(path) == paths.current:
+            raise PermissionError("current busy")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(install.os, "unlink", denied_current)
+    with pytest.raises(InstallError, match="cannot remove .*current: current busy"):
+        subject.finish_uninstall({"deferred": str(version), "kept": []})
+    assert not version.exists() and Path(paths.current).is_symlink()
 
 
 def test_uninstall_handler_prints_before_tree_removal_and_imports_nothing_after(
@@ -1010,10 +1206,10 @@ def test_uninstall_handler_prints_before_tree_removal_and_imports_nothing_after(
     runtime = _runtime(yes=True, json_mode=True)
     runtime.output.primary = lambda value: state["events"].append(("printed", value))
     try:
-        assert install._uninstall_handler(argparse.Namespace(root="/", remove_groups=False), runtime) == 0
+        result = install._uninstall_handler(argparse.Namespace(root="/", remove_groups=False), runtime)
     finally:
-        monkeypatch.setattr(builtins, "__import__", original_import)
-
+        builtins.__import__ = original_import
+    assert result == 0
     assert state["events"] and state["events"][0][0] == "printed"
     assert "deferred" not in state["events"][0][1]
     assert state["removed"] and state["imports"] == []
@@ -1063,14 +1259,128 @@ def test_pending_only_host_keeps_its_marker_until_the_end(tmp_path: Path, monkey
 
 def test_remove_groups_rerun_skips_groups_already_gone(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
-    _record(paths, 'created_groups = ["topos-observe", "topos-extra"]\n')
-    _groups(monkeypatch, {"topos-extra": 9102})
+    _record(paths, 'created_groups = ["topos-observe"]\n')
+    Path(paths.config).write_text("state_dir = '/run/topos/state'\n", encoding="utf-8")
+    _groups(monkeypatch, {})
     commands = []
     body = Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).uninstall(
         _args(remove_groups=True), _runtime(yes=True)
     )
-    assert body["groups_removed"] == ["topos-extra"]
+    assert body["groups_removed"] == []
     assert ["groupdel", "topos-observe"] not in commands
+
+
+def test_groupdel_failure_is_reported_after_cleanup_and_can_be_rerun_without_remove_groups(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from cli_extended import CliFailure
+
+    paths = InstallPaths(tmp_path)
+    _record(paths, 'created_groups = ["topos-observe"]\n')
+    Path(paths.config).write_text("state_dir = '/run/topos/state'\n", encoding="utf-8")
+    groups = _groups(monkeypatch, {"topos-observe": 9101})
+    commands = []
+    base_run = _fake_run(commands)
+
+    def run(argv, **kwargs):
+        if argv and argv[0] == "groupdel":
+            commands.append(list(argv))
+            return subprocess.CompletedProcess(argv, 1, "", "group is a primary group")
+        return base_run(argv, **kwargs)
+
+    base_installer = Installer
+    monkeypatch.setattr(install, "_handler_paths", lambda _args, _runtime: paths)
+    monkeypatch.setattr(
+        install, "Installer", lambda _paths: base_installer(paths, run=run, geteuid=lambda: 0)
+    )
+    runtime = _runtime(yes=True, json_mode=True)
+    printed = []
+    runtime.output.primary = printed.append
+
+    with pytest.raises(CliFailure, match="could not remove groups topos-observe.*without --remove-groups") as caught:
+        install._uninstall_handler(argparse.Namespace(root="/", remove_groups=True), runtime)
+
+    assert caught.value.exit_code == 2
+    result = printed[0]
+    assert result["ok"] is False
+    assert result["groups_kept"] == ["topos-observe"]
+    assert result["group_failures"] and "primary group" in result["group_failures"][0]
+    assert paths.install_record not in result["removed"]
+    assert paths.install_record in [str(path) for path in Path(paths.config).parent.iterdir()]
+    assert paths.config in result["removed"] and not Path(paths.config).exists()
+    assert ["systemctl", "daemon-reload"] in commands
+    assert "kept group: topos-observe" in install._uninstall_summary(result)
+    assert "group removal failed:" in install._uninstall_summary(result)
+
+    retry = base_installer(paths, run=_fake_run([]), geteuid=lambda: 0)
+    retry.uninstall(_args(remove_groups=False), _runtime(yes=True))
+    assert not Path(paths.install_record).exists()
+    assert groups == {"topos-observe": 9101}
+
+
+def test_created_group_record_refuses_any_group_topos_did_not_create(tmp_path: Path) -> None:
+    paths = InstallPaths(tmp_path)
+    _record(paths, 'created_groups = ["docker"]\n')
+    commands = []
+
+    with pytest.raises(InstallError, match=r"install record .*etc/topos/install.toml contains unsupported created group 'docker'"):
+        Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).uninstall(
+            _args(remove_groups=True), _runtime(yes=True)
+        )
+
+    assert commands == [] and Path(paths.install_record).is_file()
+
+
+def test_uninstall_refuses_a_directory_at_an_owned_unit_before_commands(tmp_path: Path) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    unit = Path(paths.unit_dir, "topos.service")
+    unit.mkdir(parents=True)
+    commands = []
+
+    with pytest.raises(InstallError, match="unit path is a directory: .*topos.service"):
+        Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).uninstall(_args(), _runtime(yes=True))
+
+    assert commands == [] and unit.is_dir() and Path(paths.install_record).is_file()
+
+
+def test_uninstall_refuses_when_an_owned_unit_cannot_be_inspected(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    unit = Path(paths.unit_dir, "topos.service")
+    unit.parent.mkdir(parents=True)
+    unit.write_text("owned\n", encoding="utf-8")
+    original = install.os.lstat
+
+    def denied(path, *args, **kwargs):
+        if os.fspath(path) == str(unit):
+            raise PermissionError("denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(install.os, "lstat", denied)
+    commands = []
+    with pytest.raises(InstallError, match="cannot inspect unit path .*topos.service: denied"):
+        Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).uninstall(_args(), _runtime(yes=True))
+    assert commands == [] and unit.is_file()
+
+
+def test_uninstall_reports_unit_unlink_oserror_with_its_path(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    unit = Path(paths.unit_dir, "topos.service")
+    unit.parent.mkdir(parents=True)
+    unit.write_text("owned\n", encoding="utf-8")
+    original = install.os.unlink
+
+    def denied(path, *args, **kwargs):
+        if os.fspath(path) == str(unit):
+            raise PermissionError("denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(install.os, "unlink", denied)
+    with pytest.raises(InstallError, match="cannot remove .*topos.service.*denied"):
+        Installer(paths, run=_fake_run([]), geteuid=lambda: 0).uninstall(_args(), _runtime(yes=True))
+    assert unit.is_file()
 
 
 def test_a_failed_upgrade_is_reapplied_by_rerunning_install(tmp_path: Path, monkeypatch) -> None:
@@ -1150,7 +1460,6 @@ def _record(paths: InstallPaths, text: str) -> None:
         ({"observe_users": "ghost"}, "user 'ghost' does not exist"),
         ({"observe_group": "Bad Group"}, "not a usable observe group name"),
         ({"enable": True, "no_enable": True}, "choose only one of --enable and --no-enable"),
-        ({"enable": False, "no_enable": False}, "missing required --enable or --no-enable"),
     ),
 )
 def test_gather_inputs_refuses_bad_values(tmp_path: Path, monkeypatch, overrides, message) -> None:
@@ -1170,13 +1479,26 @@ def test_gather_inputs_requires_matching_lock_version_and_accepts_no_enable(tmp_
         install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
 
 
+def test_dry_run_defaults_enable_false_but_a_noninteractive_install_still_requires_a_choice(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _groups(monkeypatch)
+    args, _wheels = _install_args(enable=False)
+    args.no_enable = False
+
+    values = install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
+    assert values["enable_now"] is False
+    with pytest.raises(InstallError, match="missing required --enable or --no-enable"):
+        install._gather_inputs(args, _runtime(), InstallPaths(tmp_path))
+
+
 @pytest.mark.parametrize(
     ("record", "message"),
     (
         ("wheel = [\n", "cannot read prior install record"),
         ('created_groups = ["Bad Group"]\n', "invalid created_groups list"),
         ("observe_group = 5\n", "saved observe_group value is invalid"),
-        ("observe_users = [1]\n", "saved observe_users value is invalid"),
+        ('observe_group = "topos-observe"\nobserve_users = [1]\n', "saved observe_users value is invalid"),
     ),
 )
 def test_a_damaged_install_record_is_refused(tmp_path: Path, monkeypatch, record, message) -> None:

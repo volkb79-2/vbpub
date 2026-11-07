@@ -100,10 +100,11 @@ its own symlink into `/opt/topos`. Move such a file away before installing.
 
 The installer resolves missing pins in this order: command-line flag, saved
 `/etc/topos/install.toml`, interactive TTY prompt, then an error naming the
-missing flag. Dry runs never prompt. The install record stores the three pins,
-release source, observe group and users, enable choice, and groups created by
-the installer. Version trees under `/opt/topos/<version>` are immutable once
-their `MANIFEST` exists. The active version is `/opt/topos/current`.
+missing flag. Dry runs never prompt and default to `enabled = false` when no
+enable choice is supplied. The install record stores the three pins, release
+source, observe group and users, enable choice, and groups created by the
+installer. Version trees under `/opt/topos/<version>` are immutable once their
+`MANIFEST` exists. The active version is `/opt/topos/current`.
 
 Install checks socket nodes, old paths, tmpfiles rules, service drop-ins,
 runtime directory ownership and modes, systemd files without an install
@@ -135,7 +136,10 @@ sudo toposd uninstall --remove-groups --yes
 ```
 
 Uninstall keeps groups and memberships by default. `--remove-groups` removes
-only groups that the install record says `toposd install` created.
+only groups that the install record says `toposd install` created. If
+`groupdel` refuses a group, uninstall finishes the service, config, and version
+cleanup, keeps that group and the install record, prints the failure, and exits
+2. Rerun without `--remove-groups` to finish.
 
 Uninstall acts only on a host where `toposd install` left its record
 (`/etc/topos/install.toml`) or its `PENDING` marker; otherwise it reports that
@@ -159,9 +163,14 @@ A failed upgrade of a finished install leaves `PENDING` next to the install
 record. Rerunning `toposd install` after fixing the cause re-applies the
 requested version: it rewrites every resource, reloads systemd and restarts the
 running service, because the failed attempt may already have written the files.
-Only a first install that failed part way (`PENDING` without a record) is
-refused. A host where an interrupted uninstall left the record can likewise be
-reinstalled over, or the uninstall rerun.
+After the sysusers step, install writes the complete record, including any
+created observe group, before readiness can fail. A first install interrupted
+after that point can be rerun to re-apply, or uninstalled with
+`--remove-groups` to remove the group. A `PENDING` without a record means the
+install stopped before writing that ownership record; uninstall can clear the
+partial files, while install refuses the unfinished state. A host where an
+interrupted uninstall left the record can likewise be reinstalled over, or the
+uninstall rerun.
 
 ### Manual removal of an old installation
 

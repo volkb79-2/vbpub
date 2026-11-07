@@ -54,6 +54,13 @@ installer writes `/etc/topos/install.toml` with those pins, the source, observe
 group, requested users, enable choice, and the groups it created. A mapped
 group must already exist; `docker` is allowed.
 
+If `/etc/topos/toposd.toml` already selects an observe group, omit
+`--observe-group` from both install commands above: the file's group is used and
+saved into the install record. If the flag is supplied, it updates only
+`sockets.observe.group`; the dry-run result reports that field when it changes.
+With no config group, install record, or flag, a non-interactive install fails
+with a request to supply `--observe-group`.
+
 The service receives its listener from `topos-observe.socket`. The configured
 `state_dir` is private to root (mode `0700`) and becomes the systemd runtime directory. The
 daemon writes BPF snapshots under `state_dir/bpf` and squeeze recovery records
@@ -99,7 +106,9 @@ sudo toposd uninstall --yes
 ```
 
 `--remove-groups` removes only groups listed as created by `toposd install` in
-the install record. The old path `/run/topos/topos.sock` is no longer served.
+the install record. If group removal fails, the command prints which group was
+kept, exits 2, and leaves the record; rerun without `--remove-groups` to finish.
+The old path `/run/topos/topos.sock` is no longer served.
 
 ## Manual removal of an old installation
 

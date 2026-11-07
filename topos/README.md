@@ -107,6 +107,11 @@ for the installer rationale. `toposd run` requires the activated socket; use
 Use `toposd doctor [--check NAME] [--json]` for host checks and
 `toposd install --dry-run` to preview an installation. An old layout is
 refused for manual removal; see [the removal steps](docs/DAEMON.md#manual-removal-of-an-old-installation).
+For non-interactive installs, the observe group comes from `--observe-group`,
+the existing config, or the install record; the doctor service check verifies
+that the running daemon uses the activated socket. See the
+[consumer guide](docs/CONSUMERS.md) for group-selection examples and the
+[design guide](docs/DESIGN-GUIDE.md#installation-and-removal) for the rationale.
 `topos daemon status` remains the client-side socket and protocol check.
 
 Without a daemon, the client still works in direct mode: `topos --once`, the

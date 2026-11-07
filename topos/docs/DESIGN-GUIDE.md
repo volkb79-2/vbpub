@@ -72,6 +72,24 @@ Uninstall removes the service and volatile runtime state; it keeps groups and
 memberships unless `--remove-groups` is requested and the install record says
 the installer created them.
 
+On a non-interactive run, the group must come from an explicit flag, the
+existing config, or the install record. This keeps unattended installs tied to
+an existing operator choice and makes absence an actionable error. When the
+flag is supplied, the installer patches only `sockets.observe.group`, keeping
+other config lines and comments intact; without it, the file remains the
+source of truth. The doctor service check compares the hello version and then
+requires one activated listener, so a matching daemon started with development
+self-bind cannot appear healthy.
+
+Uninstall prints its result before deleting the version tree that contains its
+running interpreter. It keeps `current` through that output, then removes the
+running tree, pointer, `PENDING`, version root, record, and empty config
+directory. Those ownership markers remain until the end so a partial finish can
+be retried. The installer writes its complete record after sysusers creates a
+group and before the readiness wait, which preserves the group's ownership on
+an interrupted first install. A failed `groupdel` does not block service and
+file cleanup; the record stays so a rerun without `--remove-groups` can finish.
+
 The topos-specific differences from cgpd are listed in the
 [daemon operator guide](DAEMON.md#differences-from-cgpd). They follow from
 topos's single read-only observe socket, volatile-only daemon state, and its
