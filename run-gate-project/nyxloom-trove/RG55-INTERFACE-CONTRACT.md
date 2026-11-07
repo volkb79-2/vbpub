@@ -39,7 +39,7 @@ compatibility checks use the installed `run-gate --version`.
 Parties: **producer** = cgroup-profiler's daemon (`cgprofile serve`) and its
 client verb (`cgprofile ctl`); **consumer** = the installed Run-Gate wheel
 (stdlib-only runtime), which talks to the daemon over its control socket
-`/run/cgprofile/ctl.sock` (§8.1) from any devcontainer, worktree or
+`/run/cgprofile/control/cgprofile.sock` (§8.1) from any devcontainer, worktree or
 instance. **RG-156 (2026-11-04):** the socket is the only carrier Run-Gate
 uses; its former `docker exec cgprofile-host-daemon cgprofile ctl <verb>
 [args] --json` fallback, the `[profile] transport` and `[profile] daemon`
@@ -52,7 +52,7 @@ operator interface and the reference translator of the socket protocol.
 ## 1. Transport and I/O rules
 
 1. run-gate always passes `--json`. The daemon image puts `cgprofile` on
-   `PATH`; `ctl` talks to the serve loop over `/run/cgprofile/ctl.sock`
+   `PATH`; `ctl` talks to the serve loop over `/run/cgprofile/control/cgprofile.sock`
    inside the daemon container (never exposed).
 2. **stdout is exactly one JSON object** (UTF-8, no other output). stderr is
    free text for diagnostics; run-gate ignores it except that on a failure
@@ -334,7 +334,7 @@ and the `footprint` manifest.
    ```
 7. **Config:** `[profile]` top-level table (central or project, whole-table
    shadowing per R-09): `enabled` (bool, default true), `socket_path`
-   (absolute path, default `/run/cgprofile/ctl.sock`), `admission_wait`,
+   (absolute path, default `/run/cgprofile/control/cgprofile.sock`), `admission_wait`,
    `interval` (duration grammar of
    `budget`, default `"1s"`, passed as `--interval`), `damon` (bool, default
    true → `--damon on`). The former `daemon` and `transport` keys are
@@ -479,15 +479,16 @@ stay byte-identical.
 ### 8.1 Two carriers, one protocol (D-30)
 
 The serve loop speaks newline-delimited JSON, one request per connection,
-on ONE listener `/run/cgprofile/ctl.sock`. The daemon stack bind-mounts the
-directory `/run/cgprofile` to the same host path; at every start the daemon
-asserts `root:docker 0770` on the directory and `0660` on the socket
-(belt and braces to the host's `tmpfiles.d` entry shipped by mdt host-setup).
+on ONE control listener `/run/cgprofile/control/cgprofile.sock`. Its systemd
+socket unit creates the level directory as `root:root 0755` and the socket as
+`root:<configured-control-group> 0660`. A consumer bind-mounts only the level
+directory it uses; the service root and other access levels stay outside that
+mount.
 
 | carrier | how a request travels | who is authorised | default |
 |---|---|---|---|
 | `exec` | `docker exec cgprofile-host-daemon cgprofile ctl <verb> … --json` (v1, unchanged; the producer keeps it for operators, Run-Gate no longer uses it since RG-156) | anyone who can use the docker socket; arrives as uid 0 inside the daemon | no (operators only) |
-| `socket` | the consumer connects to `/run/cgprofile/ctl.sock` (mounted into its container or on the host) and writes ONE request line `{"verb": "<verb>", "args": {…}, "contract": 1}\n`; the daemon answers with the same JSON object stdout would carry, then closes (streaming verbs: one object per line until end) | members of the `docker` group (socket mode 0660) and, when `CGPROFILE_ALLOW_UIDS` is set on the daemon, only the listed uids (`SO_PEERCRED`); a refused peer gets `{"ok": false, "contract": 1, "error": {"code": "peer-refused", …}}` and the connection closes | opt-in |
+| `socket` | the consumer connects to `/run/cgprofile/control/cgprofile.sock` (mounted into its container or on the host) and writes ONE request line `{"verb": "<verb>", "args": {…}, "contract": 1}\n`; the daemon answers with the same JSON object stdout would carry, then closes (streaming verbs: one object per line until end) | members of the configured dedicated `cgprofile-control` group (never `docker`; socket mode 0660) and, when `CGPROFILE_ALLOW_UIDS` is set on the daemon, only the listed uids (`SO_PEERCRED`); a refused peer gets `{"ok": false, "contract": 1, "error": {"code": "peer-refused", …}}` and the connection closes | opt-in |
 
 Rules: (1) every verb, response, error code and the `contract` field are
 IDENTICAL on both carriers — a consumer may diff them; (2) `args` on the
@@ -662,13 +663,13 @@ is not installed — `ctl host` and run-gate `doctor` say "unbounded").
 ### 8.6 `version.transports`
 
 ```json
-"transports": {"exec": true, "socket": {"path": "/run/cgprofile/ctl.sock", "listening": true,
+"transports": {"exec": true, "socket": {"path": "/run/cgprofile/control/cgprofile.sock", "listening": true,
                "allow_uids": [] , "peer_cred": true}}
 ```
 
 The additive `version.resource_observer` object advertises the separate
 native-R2 listener: `{"contract": 2,
-"path": "/run/cgprofile/observer/resource-observer.sock", "listening": true}`.
+"path": "/run/cgprofile/observer/cgprofile.sock", "listening": true}`.
 This contract number is independent of the control protocol's `contract: 1`;
 `listening` reflects whether the observer socket was bound successfully.
 
@@ -735,8 +736,8 @@ bounded-admission limit or shutting down; retry shortly).
 ## 9. Native-R2 resource observer (RW-484–RW-487)
 
 The daemon exposes a second AF_UNIX listener at
-`/run/cgprofile/observer/resource-observer.sock`. It is distinct from
-`/run/cgprofile/ctl.sock`; a read-only bind of the control socket would still
+`/run/cgprofile/observer/cgprofile.sock`. It is distinct from
+`/run/cgprofile/control/cgprofile.sock`; a read-only bind of the control socket would still
 expose its control verbs. The observer listener belongs to the existing
 cgprofile daemon and performs no placement or cgroup write.
 
@@ -842,15 +843,32 @@ for an Assay lane or command lane in an ephemeral environment. The explicit lane
 declaration is the opt-in; command wrappers that launch Assay R2 preserve the
 inherited endpoint variable for that process. The observer remains a
 read-only query bound to the command's own peer. Before launch Run-Gate
-validates the root-owned, non-writable `/run/cgprofile/observer` directory
-and its socket. Host setup provisions that directory as mode `0751` with the
-dedicated `cgprofile-observer` group; it is separate from the Docker group.
+uses `lstat` on the `/run/cgprofile/observer` directory and socket. Host setup
+provisions the directory as `root:root 0755`; Run-Gate checks its type, uid 0,
+gid 0, non-writable mode, and traversal permission without requiring the
+directory GID to match the socket GID or connecting to the observer socket.
+Inside the lane, the observer endpoint is
+`/run/cgprofile-observer/cgprofile.sock`. The socket uses the
+dedicated `cgprofile-observer` group, separate from Docker and control.
 Run-Gate mounts the directory read-only into the test container, so the socket
 path resolves again after daemon restart. It grants that dedicated GID and
 sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container path. Observer-backed
 lanes declare per-container memory and PID ceilings and refuse arbitrary extra
-mounts. They do not mount `ctl.sock`, change PID/cgroup/network namespaces, or
-add a Docker socket.
+mounts. They do not mount the control socket, change PID/cgroup/network
+namespaces, or add a Docker socket.
+
+Before every control connection, Run-Gate checks that the control socket has a
+non-zero GID distinct from the host Docker GID. It accepts UID 0 without a
+supplementary group because the tester runner uses `--user 0:0`; other callers
+must have the control GID as their effective GID or in their supplementary
+groups. A refusal names
+`cgprofile-control` and says to recreate the devcontainer with its
+`--group-add`. The host Docker GID comes from the explicit
+`RUN_GATE_HOST_DOCKER_GID` override first, then `MDT_HOST_DOCKER_GID` supplied
+by the host launcher. A malformed selected value fails; when neither exists,
+the refusal names both variables. Run-Gate does not infer this group from the
+Docker API socket owner or its own group database, because a proxy or relay may
+use a different GID on that socket.
 
 Assay first attempts its existing local B145 reader. It uses the configured
 observer only when the local reader specifically proves that the private
