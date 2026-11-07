@@ -1,11 +1,11 @@
 """The ``cgpd`` configuration: schema, file, runtime overrides, effective values.
 
-Authority: ``docs/CGPCTL-SPEC.md`` sections 3.2 to 3.5. One flat table of keys
-(``/etc/cgprofile/cgpd.toml``), one validation function shared by the file
-loader, ``cgpd config check`` and the ``config-set`` verb, and a layer of
-runtime overrides above the file (uid 0 only, optionally persisted to
-``/var/lib/cgprofile/overrides.toml``). Precedence, highest first: override,
-file, built-in default.
+Authority: ``docs/CGPCTL-SPEC.md`` sections 3.2 to 3.5. Root keys and fixed
+``[sockets.<level>]`` tables in ``/etc/cgprofile/cgpd.toml``, one validation
+function shared by the file loader, ``cgpd config check`` and the
+``config-set`` verb, and runtime overrides above the file (uid 0 only,
+optionally persisted to ``/var/lib/cgprofile/overrides.toml``). Precedence,
+highest first: override, file, built-in default.
 
 Stdlib only (``tomllib``). Nothing here touches the sockets or the sessions;
 :class:`cgprofile.serve.SessionServer` reads the effective values.
@@ -14,10 +14,12 @@ Stdlib only (``tomllib``). Nothing here touches the sockets or the sessions;
 from __future__ import annotations
 
 import difflib
+import grp
 import hashlib
 import json
 import math
 import os
+import re
 import stat
 import tempfile
 import threading
@@ -29,6 +31,11 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 DEFAULT_CONFIG_PATH = "/etc/cgprofile/cgpd.toml"
 DEFAULT_OVERRIDES_PATH = "/var/lib/cgprofile/overrides.toml"
+DEFAULT_CONTROL_SOCKET = "/run/cgprofile/control/cgprofile.sock"
+DEFAULT_OBSERVER_SOCKET = "/run/cgprofile/observer/cgprofile.sock"
+DEFAULT_CONTROL_GROUP = "cgprofile-control"
+DEFAULT_OBSERVER_GROUP = "cgprofile-observer"
+SOCKET_LEVELS = ("control", "observer")
 
 
 class ConfigError(ValueError):
@@ -59,10 +66,13 @@ def _spec(name: str, kind: str, default: Any, *, reloadable: bool = True,
 KEYS: Dict[str, KeySpec] = {
     spec.name: spec for spec in (
         _spec("sessions_dir", "path", "/var/lib/cgprofile/sessions", reloadable=False),
-        _spec("ctl_socket", "path", "/run/cgprofile/ctl.sock", reloadable=False),
-        _spec("observer_socket", "path",
-              "/run/cgprofile/observer/resource-observer.sock", reloadable=False),
-        _spec("damon_lock", "path", "/run/cgprofile/damon.lock", reloadable=False),
+        _spec("sockets.control", "socket", {
+            "path": DEFAULT_CONTROL_SOCKET, "group": DEFAULT_CONTROL_GROUP, "mode": "0660",
+        }, reloadable=False),
+        _spec("sockets.observer", "socket", {
+            "path": DEFAULT_OBSERVER_SOCKET, "group": DEFAULT_OBSERVER_GROUP, "mode": "0660",
+        }, reloadable=False),
+        _spec("damon_lock", "path", "/run/cgprofile/state/damon.lock", reloadable=False),
         _spec("proc_root", "path", "/proc", reloadable=False),
         _spec("busctl", "string", "busctl", reloadable=False),
         _spec("export_max_bytes", "int", 256 * 1024 * 1024, tunable=True, low=1),
@@ -137,6 +147,29 @@ def validate(key: str, value: Any) -> Any:
         hint = f"; did you mean {near!r}?" if near else ""
         raise ConfigError(f"unknown key {key!r}{hint}")
     kind = spec.kind
+    if kind == "socket":
+        if not isinstance(value, dict):
+            raise ConfigError(f"{key} must be a table with path, group and mode")
+        required = {"path", "group", "mode"}
+        if set(value) != required:
+            missing = sorted(required - set(value))
+            extra = sorted(set(value) - required)
+            detail = []
+            if missing:
+                detail.append("missing " + ", ".join(missing))
+            if extra:
+                detail.append("unknown " + ", ".join(extra))
+            raise ConfigError(f"{key}: " + "; ".join(detail))
+        path = value["path"]
+        group = value["group"]
+        mode = value["mode"]
+        if not isinstance(path, str) or not path.startswith("/") or not path.strip():
+            raise ConfigError(f"{key}.path must be an absolute path")
+        if not isinstance(group, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*\$?", group):
+            raise ConfigError(f"{key}.group is not a usable group name: {group!r}")
+        if not isinstance(mode, str) or not re.fullmatch(r"0?[0-7]{3}", mode):
+            raise ConfigError(f"{key}.mode must be an octal mode string such as \"0660\"")
+        return {"path": path, "group": group, "mode": mode.zfill(4)}
     if kind in ("path", "string"):
         if not isinstance(value, str) or not value.strip():
             raise ConfigError(f"{key} must be a non-empty string")
@@ -179,13 +212,118 @@ def validate(key: str, value: Any) -> Any:
     return uids
 
 
-def parse_table(text: str) -> Dict[str, Any]:
+def _group_gid(name: str) -> Optional[int]:
+    try:
+        return grp.getgrnam(name).gr_gid
+    except KeyError:
+        return None
+
+
+def _validate_socket_group(level: str, name: str,
+                           gid_lookup: Callable[[str], Optional[int]] = _group_gid,
+                           docker_gid: Optional[int] = None) -> Optional[int]:
+    """Validate one dedicated socket group and return its GID when it exists."""
+    default_group = KEYS[f"sockets.{level}"].default["group"]
+    if name == "docker":
+        raise ConfigError(
+            f"the {level} group {name!r} is the docker group (membership is root-equivalent); "
+            f"use a dedicated group such as {default_group}"
+        )
+    gid = gid_lookup(name)
+    if gid == 0:
+        raise ConfigError(
+            f"the {level} group {name!r} resolves to GID 0 (root-equivalent); "
+            f"use a dedicated group such as {default_group}"
+        )
+    if docker_gid is None:
+        docker_gid = gid_lookup("docker")
+    if gid is not None and docker_gid is not None and gid == docker_gid:
+        raise ConfigError(
+            f"the {level} group {name!r} has the docker group's GID {gid} (membership is root-equivalent); "
+            f"use a dedicated group such as {default_group}"
+        )
+    return gid
+
+
+def validate_socket_groups(
+    sockets: Mapping[str, Mapping[str, str]],
+    *,
+    gid_lookup: Callable[[str], Optional[int]] = _group_gid,
+) -> None:
+    """Reject Docker/root access groups and duplicate same-service level GIDs."""
+    docker_gid = gid_lookup("docker")
+    gids: Dict[str, Optional[int]] = {}
+    for level in SOCKET_LEVELS:
+        gids[level] = _validate_socket_group(
+            level, sockets[level]["group"], gid_lookup, docker_gid)
+    if sockets["control"]["group"] == sockets["observer"]["group"]:
+        raise ConfigError(
+            f"the control and observer groups both name {sockets['control']['group']!r}; "
+            "use separate dedicated groups for the two access levels"
+        )
+    if gids["control"] is not None and gids["control"] == gids["observer"]:
+        raise ConfigError(
+            f"the control group {sockets['control']['group']!r} and observer group "
+            f"{sockets['observer']['group']!r} resolve to the same GID {gids['control']}; "
+            "use separate dedicated groups for the two access levels"
+        )
+
+
+def parse_table(text: str, *, validate_groups: bool = True) -> Dict[str, Any]:
     """Parse and validate one flat TOML table (the file and the overrides)."""
     try:
         raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"not valid TOML: {exc}") from None
-    return {key: validate(key, value) for key, value in raw.items()}
+    old = sorted(set(raw) & {"ctl_socket", "observer_socket"})
+    if old:
+        replacements = {"ctl_socket": "[sockets.control] path", "observer_socket": "[sockets.observer] path"}
+        key = old[0]
+        raise ConfigError(f"{key} was removed; use {replacements[key]}")
+    flattened: Dict[str, Any] = {}
+    for key, value in raw.items():
+        if key != "sockets":
+            flattened[key] = value
+            continue
+        if not isinstance(value, dict):
+            raise ConfigError("sockets must contain [sockets.control] and [sockets.observer] tables")
+        for level, socket_values in value.items():
+            flattened[f"sockets.{level}"] = socket_values
+    values = {key: validate(key, value) for key, value in flattened.items()}
+    control = values.get("sockets.control", KEYS["sockets.control"].default)
+    observer = values.get("sockets.observer", KEYS["sockets.observer"].default)
+    if validate_groups:
+        validate_socket_groups({"control": control, "observer": observer})
+    if os.path.normpath(control["path"]) == os.path.normpath(observer["path"]):
+        raise ConfigError("sockets.control.path and sockets.observer.path must differ")
+    return values
+
+
+def socket_settings(values: Mapping[str, Any]) -> Dict[str, Dict[str, str]]:
+    """Return validated control and observer socket settings from config values."""
+    result = {}
+    for level in SOCKET_LEVELS:
+        key = f"sockets.{level}"
+        result[level] = validate(key, values.get(key, KEYS[key].default))
+    validate_socket_groups(result)
+    if os.path.normpath(result["control"]["path"]) == os.path.normpath(result["observer"]["path"]):
+        raise ConfigError("sockets.control.path and sockets.observer.path must differ")
+    return result
+
+
+def render_config(values: Mapping[str, Any]) -> str:
+    """Render TOML with root keys before entering the socket tables."""
+    sockets = socket_settings(values)
+    flat = {key: value for key, value in values.items() if not key.startswith("sockets.")}
+    lines: List[str] = list(render_table(flat).splitlines(keepends=True))
+    if lines:
+        lines.append("\n")
+    for level in SOCKET_LEVELS:
+        lines.append(f"[sockets.{level}]\n")
+        for name in ("path", "group", "mode"):
+            lines.append(f"{name} = {_toml_value(sockets[level][name])}\n")
+        lines.append("\n")
+    return "".join(lines)
 
 
 def _toml_value(value: Any) -> str:
@@ -204,7 +342,7 @@ def digest_of(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def read_config_file(path: str, *, explicit: bool) -> Tuple[Dict[str, Any], str]:
+def read_config_file(path: str, *, explicit: bool, validate_groups: bool = True) -> Tuple[Dict[str, Any], str]:
     """``(values, digest)`` for ``path``; a missing default file is empty."""
     try:
         with open(path, "rb") as fh:
@@ -220,7 +358,7 @@ def read_config_file(path: str, *, explicit: bool) -> Tuple[Dict[str, Any], str]
     except UnicodeDecodeError:
         raise ConfigError(f"config file {path} is not UTF-8") from None
     try:
-        return parse_table(text), digest_of(data)
+        return parse_table(text, validate_groups=validate_groups), digest_of(data)
     except ConfigError as exc:
         raise ConfigError(f"{path}: {exc}") from None
 

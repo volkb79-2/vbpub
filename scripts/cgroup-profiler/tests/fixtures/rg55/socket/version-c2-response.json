@@ -17,7 +17,7 @@
   },
   "transports": {
     "socket": {
-      "path": "/run/cgprofile/ctl.sock",
+      "path": "/run/cgprofile/control/cgprofile.sock",
       "listening": false,
       "allow_uids": [],
       "peer_cred": true
@@ -29,12 +29,19 @@
       2,
       3
     ],
-    "path": "/run/cgprofile/observer/resource-observer.sock",
+    "path": "/run/cgprofile/observer/cgprofile.sock",
     "listening": false
   },
   "config": {
     "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "last_reload_error": null,
     "overrides": 0
+  },
+  "socket_activation": {
+    "mode": "self-bind",
+    "fds": {
+      "control": 0,
+      "observer": 0
+    }
   }
 }

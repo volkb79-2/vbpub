@@ -3,10 +3,16 @@
 # commented out because an absent file means exactly these defaults.
 #
 # Fixed (restart required):
-# sessions_dir     = "/var/lib/cgprofile/sessions"
-# ctl_socket       = "/run/cgprofile/ctl.sock"
-# observer_socket  = "/run/cgprofile/observer/resource-observer.sock"
-# damon_lock       = "/run/cgprofile/damon.lock"
+# sessions_dir = "/var/lib/cgprofile/sessions"
+# [sockets.control]
+# path = "/run/cgprofile/control/cgprofile.sock"
+# group = "cgprofile-control"
+# mode = "0660"
+# [sockets.observer]
+# path = "/run/cgprofile/observer/cgprofile.sock"
+# group = "cgprofile-observer"
+# mode = "0660"
+# damon_lock       = "/run/cgprofile/state/damon.lock"
 # proc_root        = "/proc"
 # busctl           = "busctl"
 #
