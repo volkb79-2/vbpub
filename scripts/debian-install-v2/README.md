@@ -318,13 +318,14 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   label, never by number.
 - **Mount policy**: exact mounts on `/`, `/var`, `/var/lib`, `/srv`, or `/home`
   are refused. A mount equal to, inside, or above a protected OS-state tree is
-  also refused: `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`,
+  also refused: `/usr` (except `/usr/local` and its descendants), `/etc`,
+  `/boot`, `/root`, `/tmp`, `/proc`, `/sys`,
   `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/var/lib/dpkg`, `/var/lib/apt`,
   `/var/cache/apt`, `/var/log`, `/srv/tree-cache`, and `/srv/tree-upper`.
   The refusal names the requested mount and protected path. Data mounts such as
-  `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, `/srv/data`, and
-  `/home/runner` are allowed when they do not cover a protected tree. Equal
-  and nested planned mounts are refused.
+  `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, `/srv/data`,
+  `/home/runner`, and `/usr/local` are allowed when they do not cover a
+  protected tree. Equal and nested planned mounts are refused.
 - **Not supported**: `fs: zfs` as a managed filesystem (refused with a clear message; deferred),
   btrfs `subvol`.
 - **Safety**: `mkfs`/`pvcreate` only touch a BLANK device (the same filesystem again is kept, any

@@ -142,13 +142,14 @@ Automatic swap sizing uses
 `min(ceil(RAM × 2), round-half-up(20% of disk capacity))`, in GiB.
 
 Exact mounts on `/`, `/var`, `/var/lib`, `/srv`, and `/home` are refused. A
-mount equal to, inside, or above protected OS-state trees `/usr`, `/etc`,
+mount equal to, inside, or above protected OS-state trees `/usr` (except
+`/usr/local` and its descendants), `/etc`,
 `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`,
 `/lib`, `/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt`, `/var/log`,
 `/srv/tree-cache`, and `/srv/tree-upper` is also refused. The refusal names the
 requested mount and protected path. Data mounts such as `/var/lib/docker`,
-`/var/lib/containerd`, `/srv/cow`, `/srv/data`, and `/home/runner` are allowed
-when they do not cover a protected tree.
+`/var/lib/containerd`, `/srv/cow`, `/srv/data`, `/home/runner`, and
+`/usr/local` are allowed when they do not cover a protected tree.
 See [README](../README.md#disk-layout) for filesystem and ordering details and
 [DESIGN-GUIDE](DESIGN-GUIDE.md#root-and-swap-policies) for why the plan has one
 sizing authority.

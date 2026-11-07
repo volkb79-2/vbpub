@@ -138,15 +138,16 @@ before root, including the Debian genericcloud boot partitions numbered 14
 and 15 before root partition 1. Unknown partitions after root are refused.
 
 Exact mounts on `/`, `/var`, `/var/lib`, `/srv`, and `/home` are refused.
-Mounts equal to, inside, or above protected OS-state trees (`/usr`, `/etc`,
+Mounts equal to, inside, or above protected OS-state trees (`/usr` except
+`/usr/local` and its descendants, `/etc`,
 `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`,
 `/lib`, `/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt`, `/var/log`,
 `/srv/tree-cache`, `/srv/tree-upper`) are refused with the protected path in
 the message. This protects operating-system state while allowing dedicated
 data children such as `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`,
-and `/home/runner`; the Docker systemd dependency is attached when a data
-filesystem holds Docker's data root. The runner finds that planned partition
-by PARTLABEL `MDT_COW`; it does not carve or guess a partition number.
+`/home/runner`, and `/usr/local`; the Docker systemd dependency is attached
+when a data filesystem holds Docker's data root. The runner finds that planned
+partition by PARTLABEL `MDT_COW`; it does not carve or guess a partition number.
 Copyable configs and offline previews are in
 [CONSUMERS.md](CONSUMERS.md#disk-plan-and-offline-preview).
 

@@ -28,9 +28,10 @@ All notable changes to debian-install-v2 are recorded here.
 - Fixed root/data sizes cannot mix with percentage sizes; a numeric fixed reserve can accompany a percentage pool. The offline resolver
   accepts `--root-start-sector` and `--root-number` (netcup: `2500608`, `3`). Config load and both planners enforce GPT's 128-entry limit.
 - Mount refusals name the protected OS-state path. Exact `/`, `/var`, `/var/lib`, `/srv`, and `/home` mounts are refused, as are mounts
-  covering `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/var/lib/dpkg`,
+  covering `/usr` (except `/usr/local` and its descendants), `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`,
+  `/sbin`, `/lib`, `/var/lib/dpkg`,
   `/var/lib/apt`, `/var/cache/apt`, `/var/log`, `/srv/tree-cache`, or `/srv/tree-upper`; dedicated data children such as
-  `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, and `/home/runner` remain allowed.
+  `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, `/home/runner`, and `/usr/local` remain allowed.
 - Tests cover boundary behavior with swap on/off, raw partition geometry and wipe ordering, PARTLABEL-only recognition, static invalid
   plans, protected and allowed mounts, offline root geometry, and the GPT partition-number limit. `test_data_area_vm.py` remains in `r1-vm-real-commit`.
 

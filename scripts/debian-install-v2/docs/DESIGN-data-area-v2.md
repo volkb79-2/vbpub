@@ -119,14 +119,16 @@ root-growth step is documented in [CHANGES.md](../CHANGES.md).
 
 Data mounts are validated during config load. The exact paths `/`, `/var`,
 `/var/lib`, `/srv`, and `/home` are refused. A mount equal to, inside, or
-above a protected OS-state tree is also refused: `/usr`, `/etc`, `/boot`,
+above a protected OS-state tree is also refused: `/usr` (except `/usr/local`
+and its descendants), `/etc`, `/boot`,
 `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`, `/lib`,
 `/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt`, `/var/log`,
 `/srv/tree-cache`, and `/srv/tree-upper`. Refusals name the requested mount
 and the protected path it would hide. Data children such as
-`/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, `/srv/data`, and
-`/home/runner` are allowed when they do not cover one of those protected
-trees. The installer does not pre-populate protected system filesystems.
+`/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, `/srv/data`,
+`/home/runner`, and `/usr/local` are allowed when they do not cover one of
+those protected trees. The installer does not pre-populate protected system
+filesystems.
 
 Mounts must be absolute, cannot collide with each other, and are written to
 fstab by UUID. A mount equal to or containing `/var/lib/docker` gets a systemd

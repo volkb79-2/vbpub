@@ -116,6 +116,9 @@ _RESERVED_MOUNT_TREES = (
     # runner tree-cache paths (mdt-cockpit): a data area must never shadow them
     "/srv/tree-cache", "/srv/tree-upper",
 )
+# Admin-installed software and its data are allowed below /usr/local even
+# though the rest of /usr is protected operating-system state.
+_ALLOWED_DATA_MOUNT_SUBTREES = ("/usr/local",)
 # These paths themselves contain or anchor OS state. Child data mounts are
 # allowed unless they intersect one of the protected trees above.
 _RESERVED_MOUNT_POINTS = ("/var", "/var/lib", "/srv", "/home")
@@ -301,6 +304,11 @@ def _check_mount(mount: object, what: str) -> str:
     if mount in PREPOPULATED_SYSTEM_MOUNTS:
         return mount
     for protected in _RESERVED_MOUNT_TREES:
+        if protected == "/usr" and any(
+            mount == allowed or mount.startswith(allowed + "/")
+            for allowed in _ALLOWED_DATA_MOUNT_SUBTREES
+        ):
+            continue
         if mount == protected or mount.startswith(protected + "/") or protected.startswith(mount + "/"):
             raise LayoutPolicyError(
                 f"{what} mount {mount!r} would hide protected system path {protected!r}"

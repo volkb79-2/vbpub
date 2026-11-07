@@ -143,7 +143,7 @@ def test_impossible_pool_shapes_are_refused_at_schema_validation(partitioning, m
         ("/var/lib/apt", "/var/lib/apt"), ("/var/lib/apt/lists", "/var/lib/apt"),
         ("/var/cache/apt", "/var/cache/apt"), ("/var/log", "/var/log"),
         ("/srv", "/srv"), ("/home", "/home"),
-        ("/usr", "/usr"), ("/usr/local", "/usr"),
+        ("/usr", "/usr"),
         ("/etc", "/etc"), ("/etc/vbpub", "/etc"),
         ("/boot", "/boot"), ("/boot/efi", "/boot"),
         ("/tmp", "/tmp"), ("/root", "/root"), ("/proc/cpuinfo", "/proc"),
@@ -165,9 +165,10 @@ def test_mounts_that_cover_protected_system_state_are_refused(mount, protected):
         "/var/lib/docker", "/var/lib/docker/volumes", "/var/lib/containerd",
         "/var/lib/containerd/io.containerd", "/var/cache/vbpub",
         "/srv/cow", "/srv/data/archive", "/home/runner", "/home/runner/cache",
+        "/usr/local", "/usr/local/share",
     ],
 )
-def test_data_mounts_under_var_srv_and_home_are_allowed(mount):
+def test_data_mounts_under_var_usr_srv_and_home_are_allowed(mount):
     assert lp.disk_spec(parts(vol(mount=mount), root=10)).data.volumes[0].mount == mount
 
 
