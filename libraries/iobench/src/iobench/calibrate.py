@@ -78,7 +78,9 @@ class Calibrator(Runner):
         self.writes: list[dict[str, Any]] = []
         self.depth: dict[str, dict[int, float]] = {"read": {}, "write": {}}
         self.depth_unsteady: set[str] = set()  # directions with an unsteady depth rung: QD90 would rest on a drifting figure
-        self.qd1_p99: dict[str, float] = {}
+        self.qd1_p99: dict[str, float | None] = {}
+        self.little_rungs: list[dict[str, Any]] = []
+        self.depth_rungs: list[dict[str, Any]] = []
         self.evidence: dict[str, Any] = {"histograms": {}}
         self.refs: dict[str, dict[str, float]] = {}
         self.ref_tag: str | None = None
@@ -94,8 +96,10 @@ class Calibrator(Runner):
         self.fresh_ok = False
         self.fresh_note: str | None = None
         self.budget_limited = False
+        self.fill_limit: str | None = None
         self.fill_info: dict[str, Any] = {}
         self.cells: list[dict[str, Any]] = []
+        self.vq_cold_diagnostic_class: str | None = None
         self.cold_raw: dict[str, Any] | None = None
         self.delayed_readback: dict[str, Any] = {"status": "not_measured", "reason": "profile"}
         self.repeat_pass: dict[str, Any] = {"status": "not_measured", "reason": "profile"}
@@ -169,7 +173,7 @@ class Calibrator(Runner):
         budget = self.cfg.budget_s(plan.PROFILE_BUDGET_S[self.profile])
         self.start_budget(budget)
         alloc = plan.plan_calibration(self.profile, self.target.size_bytes, self.r_est, budget,
-                                      cache_idle_delay_s=self.cfg.cache_idle_delay_s)
+                                      cache_idle_delay_s=self.cfg.cache_idle_delay_s, target_kind=self.target.kind)
         self.alloc = alloc
         ws, fresh_len = alloc.ws_max, 0
         if self.target.kind == "file":
@@ -257,6 +261,7 @@ class Calibrator(Runner):
         fill_budget_s = self.fill_budget_s(alloc.budget_s)
         rates: list[float] = []
         replanned, aborted = False, None
+        time_budget_truncated = self.budget_limited
         while pos < ws and self.host.now() < deadline:
             n = min(chunk, ws - pos)
             runtime = math.ceil(3 * n / self.r_est) + 10
@@ -266,15 +271,23 @@ class Calibrator(Runner):
             pos += done
             k += 1
             if done == 0 or (done < n and out.stats.runtime_s < runtime - 1):
+                aborted = "fio_short"
+                if pos > 0:
+                    self.fill_limit = "limited-by-fio-short"
                 break  # fio exited early: the extent is what it reported written
-            if self.target.kind == "file" and guard.fs_info(self.host, self.target.path.rsplit("/", 1)[0]).free < self.margin:
+            if self.target.kind == "file" and pos < ws and guard.fs_info(self.host, self.target.path.rsplit("/", 1)[0]).free < self.margin:
                 aborted = "free_space"
+                self.fill_limit = "limited-by-space"
                 break
             tail = rates[-10:]
             if not replanned and len(tail) >= 10 and statistics.median(tail) < FILL_REPLAN_FACTOR * self.r_est:
                 replanned, self.r_est = True, statistics.median(tail)
-                ws = min(ws, ladder.align(pos + self.r_est * max(0.0, fill_budget_s - (self.host.now() - started))))
+                replanned_ws = min(ws, ladder.align(pos + self.r_est * max(0.0, fill_budget_s - (self.host.now() - started))))
+                time_budget_truncated = time_budget_truncated or replanned_ws < ws
+                ws = replanned_ws
                 chunk = max(MIN_FILL_CHUNK, ladder.align(self.r_est * FILL_CHECK_S))
+        if pos < self.ws_planned and self.host.now() >= deadline:
+            time_budget_truncated = True
         if pos == 0:
             raise RunFailed("the fill wrote no bytes")
         self.ws = pos
@@ -283,9 +296,11 @@ class Calibrator(Runner):
         self.touch.maps["fill"] = [pos / 8.0] * 8
         self.fill_info = {"fill_bps": pos / max(self.host.now() - started, 1e-9), "fill_replanned": replanned, "fill_aborted": aborted,
                           "bytes": pos, "planned_bytes": self.ws_planned}
-        if pos < self.ws_planned or replanned or aborted or self.budget_limited:
+        if time_budget_truncated:
             self.budget_limited = True
             self.limits.append("limited-by-budget")
+        elif self.fill_limit:
+            self.limits.append(self.fill_limit)
 
     # -- E-cold (IOB-CCH-01) ----------------------------------------------------------------------------
     def e_cold(self) -> None:
@@ -319,21 +334,32 @@ class Calibrator(Runner):
         if rec["state"] == "unsteady" and qd == 32 and not self.vq and self.fits(EXTEND_S + 60):
             out = self.run_job(label + "-ext", rw, 4096, qd, EXTEND_S, 0, ws, key="ladder")
             rec = {**ladder.rung_record(out, ws), "extended": True}
-        return self.judged(out, rec, qd)
+        return self.judged(out, rec, qd, depth_only=(tag == "-d"))
 
-    def judged(self, out: FioResult, rec: dict[str, Any], qd: int) -> dict[str, Any]:
-        """Little's law on a rung's run (IOB-PLA-06): a broken or faked fio makes the rung unusable."""
-        check = plausibility.pla_06(out.stats.iops, out.stats.clat_mean_us, qd)
+    def judged(self, out: FioResult, rec: dict[str, Any], qd: int, *, depth_only: bool = False) -> dict[str, Any]:
+        """Little's law uses reported total latency; a failed depth rung affects only QD90, not capability caps."""
+        rec.update(qd=qd, job=out.job.name)
+        check = plausibility.pla_06(out.stats.iops, out.stats.lat_mean_us, qd, job_name=out.job.name,
+                                    degrade_caps=not depth_only, clat_mean_us=out.stats.clat_mean_us,
+                                    slat_mean_us=out.stats.slat_mean_us, fio_version=out.stats.fio_version,
+                                    latency_expected=devio.fio_version_reports_latency(out.stats.fio_version))
         self.little.append(check)
+        metrics = {"job": out.job.name, "qd": qd, "iops": out.stats.iops,
+                   "clat_mean_us": out.stats.clat_mean_us, "slat_mean_us": out.stats.slat_mean_us,
+                   "lat_mean_us": out.stats.lat_mean_us, "status": check.status, "value": check.value}
+        self.little_rungs.append(metrics)
+        if depth_only:
+            self.depth_rungs.append(metrics)
         if check.status == "fail":
-            rec["little_failed"] = True  # a broken or faked fio: the rung is unusable and is dropped before ANY consumer sees it
+            rec["little_failed"] = True  # depth runs feed QD90; main QD32 rungs feed capability values too
         self.last_started = out.started
         return rec
 
     def usable(self, rec: dict[str, Any]) -> bool:
         """A rung that failed Little's law (IOB-PLA-06) never reaches the ladder, the cliff, ``cached_ref``, ``best_read_rung`` or E1."""
         if rec.get("little_failed"):
-            self.excluded_rungs.append({"dir": rec["dir"], "ws_bytes": rec["ws_bytes"], "check": "IOB-PLA-06"})
+            self.excluded_rungs.append({"dir": rec["dir"], "ws_bytes": rec["ws_bytes"], "qd": rec["qd"],
+                                        "job": rec["job"], "check": "IOB-PLA-06"})
             return False
         return True
 
@@ -357,11 +383,15 @@ class Calibrator(Runner):
         for direction in ("read", "write"):
             for qd in (1, 8) + ((64,) if self.profile == "thorough" else ()):
                 rec = self.rung(ws, direction, qd, RUNG_S, "-d")
-                self.depth[direction][qd] = rec["steady_iops"]
-                if rec["state"] == "unsteady" or rec.get("little_failed"):
+                if rec.get("little_failed"):
+                    self.excluded_rungs.append({"dir": rec["dir"], "ws_bytes": rec["ws_bytes"], "qd": rec["qd"],
+                                                "job": rec["job"], "check": "IOB-PLA-06"})
+                else:
+                    self.depth[direction][qd] = rec["steady_iops"]
+                if qd in (1, 8) and (rec["state"] == "unsteady" or rec.get("little_failed")):
                     self.depth_unsteady.add(direction)
                 if qd == 1:
-                    self.qd1_p99[direction] = rec["lat_us"]["p99"]
+                    self.qd1_p99[direction] = None if rec.get("little_failed") else rec["lat_us"]["p99"]
 
     def run_ladder(self) -> None:
         queue = list(self.rung_sizes)
@@ -381,7 +411,8 @@ class Calibrator(Runner):
             if self.usable(rec):
                 self.reads.append(rec)
             if ws == largest:
-                self.depth["read"][32] = rec["steady_iops"]
+                if not rec.get("little_failed"):
+                    self.depth["read"][32] = rec["steady_iops"]
                 if rec["state"] == "unsteady" or rec.get("little_failed"):
                     self.depth_unsteady.add("read")
                 if not self.quick:
@@ -396,7 +427,8 @@ class Calibrator(Runner):
                 # the smallest rung has been read AND written: a QD1 run on it is the cache-HIT reference (hit_ref_us)
                 self.stage("hit_ref", self.hit_ref, min_s=HIST_S)
             if ws == largest:
-                self.depth["write"][32] = wrec["steady_iops"]
+                if not wrec.get("little_failed"):
+                    self.depth["write"][32] = wrec["steady_iops"]
                 if wrec["state"] == "unsteady" or wrec.get("little_failed"):
                     self.depth_unsteady.add("write")
             if not densified and len(self.reads) > MIN_RUNGS and not rec.get("little_failed"):
@@ -494,8 +526,8 @@ class Calibrator(Runner):
             self.writes.append(rec)
 
     def s6_vq(self) -> None:
-        """Four 12 s cells.  The 4 KiB random read cell, QD32 over the whole written extent, is also the read rung of the analysis."""
-        for n, cell in enumerate(shape.vq_grid(plan.VQ_CELL_S, plan.VQ_SEQ_BS)):
+        """Four veryquick cells; the sequential write gets a longer 24 s steadiness window."""
+        for n, cell in enumerate(shape.vq_grid(plan.VQ_CELL_S, plan.VQ_SEQ_BS, sequential_write_seconds=plan.VQ_SEQ_WRITE_S)):
             out = self.run_job(f"s6-{n}", cell.rw, cell.bs, cell.qd, cell.seconds, 0, self.ws, key="ladder", **self.sampling())
             self.cells.append(shape.cell_record(out, cell, warmup_s=self.warmup()))
             if (cell.dir, cell.pattern, cell.bs) == ("read", "rand", 4096):
@@ -541,6 +573,9 @@ class Calibrator(Runner):
         cold = None
         if self.cold_raw is not None:
             cold = cache.cold_probe(self.cold_raw["reading"], self.cold_raw["modes"], self.hit_ref_us, self.cold_raw["region_bytes"])
+            if self.vq:
+                self.vq_cold_diagnostic_class = cold.cls
+                cold = replace(cold, cls="not_assessed")
         e2 = None
         if self.e2_raw is not None:
             e2 = cache.e2_estimate(largest["steady_iops"], self.e2_raw["modes"], self.e2_raw["qd32_start"], self.e2_raw["qd1_start"])
@@ -549,6 +584,10 @@ class Calibrator(Runner):
         e1 = cache.e1_fit(post, statistics.median(before) if before else None)
         state = cache.classify_cache(cold, e2, cliff_bytes=cliff, largest_rung=largest["ws_bytes"], quick=self.quick,
                                     cached_ref=None if self.vq else cached_ref, cache_excludable=self.target.kind == "device")
+        if self.vq:
+            # A missing/skipped cold probe may otherwise leave only quick_profile. The profile never assesses cache class.
+            state = replace(state, state="undetermined", status="unproven", r=None,
+                            reasons=tuple(dict.fromkeys((*state.reasons, "cache_model_undetermined"))))
         # veryquick has no cached tier to compare the cold region with (its one read rung IS the cold-ish region): the cold probe alone
         # decides, against the cache-hit reference; "as fast as the warm rung" would hold by construction
         if self.target.kind == "file" and state.state == "cold_hit_like" and cliff is None:
@@ -571,7 +610,12 @@ class Calibrator(Runner):
                         plausibility.pla_05([f"{r['dir']}-{r['ws_bytes'] // MIB}M" for r in classes + writes if r["rate_limited"] is True]),
                         plausibility.pla_10(state.state, list(state.reasons))]
         failing = [c for c in self.little if c.status == "fail"]
-        self.checks.append(replace(failing[0], detail="; ".join(c.detail for c in failing)) if failing else self.little[0])
+        if failing:
+            degrades = tuple(dict.fromkeys(x for check in failing for x in check.degrades))
+            effects = tuple(dict.fromkeys(x for check in failing for x in check.effects))
+            self.checks.append(replace(failing[0], detail="; ".join(c.detail for c in failing), degrades=degrades, effects=effects))
+        else:
+            self.checks.append(self.little[0])
         # read basis
         if largest["state"] == "unsteady":
             read = _basis(None, [], "basis_unsteady")
@@ -621,9 +665,12 @@ class Calibrator(Runner):
 
     # -- run-level plausibility checks that need S6 and the history (IOB-PLA-07, -09, -17, -18) -------------------------
     def cell_bps(self, direction: str, pattern: str, bs: int, block_state: str = "rewrite") -> float | None:
-        cell = next((c for c in self.cells if (c["dir"], c["pattern"], c["bs"], c["block_state"]) == (direction, pattern, bs, block_state)
-                     and not c["repeat"] and shape.certified(c)), None)
-        return None if cell is None else cell["steady_bps"]
+        cell = self.cell_record(direction, pattern, bs, block_state)
+        return None if cell is None or not shape.certified(cell) else cell["steady_bps"]
+
+    def cell_record(self, direction: str, pattern: str, bs: int, block_state: str = "rewrite") -> dict[str, Any] | None:
+        return next((c for c in self.cells if (c["dir"], c["pattern"], c["bs"], c["block_state"]) == (direction, pattern, bs, block_state)
+                     and not c["repeat"]), None)
 
     def bytes_checks(self, history: dict[str, Any]) -> list[plausibility.Check]:
         """PLA-07 (random-4K bytes/s vs sequential, per direction), PLA-09 (fill vs sequential rewrite), PLA-17 (steady vs the ceiling
@@ -733,6 +780,8 @@ class Calibrator(Runner):
         cold_doc = a["cold"].as_dict() if a["cold"] else None
         if cold_doc is not None and self.cold_raw is not None:
             cold_doc["R_cold_qd1_bps"] = self.cold_raw["qd1_bps"]
+            if self.vq:
+                cold_doc["diagnostic_class"] = self.vq_cold_diagnostic_class
         cal = {
             "id": self.calibration_id,
             "target": {"kind": self.target.kind, "path": self.target.path, "size_bytes": self.target.size_bytes,
@@ -742,7 +791,8 @@ class Calibrator(Runner):
             "fresh_extent": list(self.fresh) if self.fresh_ok else None, "fill_bps": self.fill_info["fill_bps"], "R_est_bps": self.r_est,
             "fill": self.fill_info,
             "ladder": {"excluded_rungs": self.excluded_rungs, "rungs": a["classes"] + a["writes"], "cliff_bytes": a["cliff"], "cached_ref_iops": a["cached_ref"],
-                       "qd90": self.qd90_doc(), "idle_qd1_p99_us": dict(self.qd1_p99), "cached_tier_factor": ladder.cached_tier_factor(a["classes"]),
+                       "qd90": self.qd90_doc(), "idle_qd1_p99_us": dict(self.qd1_p99), "depth_rungs": list(self.depth_rungs),
+                       "cached_tier_factor": ladder.cached_tier_factor(a["classes"]),
                        "best_read_rung_iops": a["best"], "measured_largest": {"read": a["largest"]["steady_iops"], "write": a["writes"][-1]["steady_iops"]}},
             "cache": {"read": {**state.as_dict(), "e_cold": cold_doc,
                                "E2": a["e2"].as_dict() if a["e2"] else None, "E1": a["e1"].as_dict(), "hit_ref_us": self.hit_ref_us,
@@ -764,7 +814,12 @@ class Calibrator(Runner):
             "stages": dict(self.stages),
         }
         seq_bs = plan.VQ_SEQ_BS if self.vq else (shape.QUICK_SIZES[-1] if self.profile == "quick" else shape.SIZES[-1])
-        p19 = plausibility.pla_19(self.cell_bps("read", "seq", seq_bs), self.cell_bps("write", "seq", seq_bs), cache_state=state.state)
+        read_seq = self.cell_record("read", "seq", seq_bs)
+        write_seq = self.cell_record("write", "seq", seq_bs)
+        p19 = plausibility.pla_19(self.cell_bps("read", "seq", seq_bs), self.cell_bps("write", "seq", seq_bs), cache_state=state.state,
+                                  veryquick=self.vq,
+                                  read_state=read_seq["state"] if read_seq else None, read_cv=read_seq["cv"] if read_seq else None,
+                                  write_state=write_seq["state"] if write_seq else None, write_cv=write_seq["cv"] if write_seq else None)
         self.checks.append(p19)
         rate_status = p19.status
         if self.vq:
@@ -772,7 +827,8 @@ class Calibrator(Runner):
             cal["coarse_model"] = self.coarse_model()
             # a burst that ends inside the 30 s series shows; one that outlives it cannot be seen (and no write value is proven either way)
             cal["veryquick"] = {"series_s": plan.VQ_SERIES_S, "write_burst_seen": wl["state"] != "unsteady" and bool(wl["knee_s"]) and wl["burst_units"] > 0,
-                                "write_knee_s": wl["knee_s"], "write_state": wl["state"]}
+                                "write_knee_s": wl["knee_s"], "write_state": wl["state"],
+                                "intended_use": "install-time identity, sanity, read/write IOPS"}
         props = proposals.build_calibration_proposals(cal, self.cfg.targets, value_history)
         props = plausibility.apply_effects(props, self.checks)
         cal["proposals"] = props
@@ -782,6 +838,7 @@ class Calibrator(Runner):
         cold_qd1_bps = self.cold_raw["qd1_bps"] if self.cold_raw else None
         cache_state_hint = cache.read_cache_hints(self.delayed_readback, self.repeat_pass, cold_qd1_bps)
         quality = {"cache_proof": self.cache_proof(), "cache_state": cache_state_hint, "limits": limits, "checks": run_checks,
+                   "little_law_rungs": list(self.little_rungs),
                    "plausibility": plausibility.verdict(state.state, vq=self.vq, rate_status=rate_status)}
         tgt = dict(proposals.DEFAULT_TARGETS)
         targets = {**self.cfg.targets, "source": "default" if self.cfg.targets == tgt else "operator"}
@@ -816,12 +873,25 @@ class Calibrator(Runner):
     def cache_proof(self) -> str:
         if self.budget_limited:
             return "limited-by-budget"
+        if self.fill_limit:
+            return self.fill_limit
         return "working-set" if self.a["state"].status == "proven" else "none"
 
     def failed_doc(self, status: str, message: str, report: Any) -> dict[str, Any]:
+        partial = {"status": "incomplete", "stages": dict(self.stages), "extent_written": self.read_extent.as_list(),
+                   "fill": dict(self.fill_info), "ladder": {"rungs": list(self.reads) + list(self.writes),
+                                                               "excluded_rungs": list(self.excluded_rungs),
+                                                               "depth_rungs": list(self.depth_rungs)},
+                   "cells": list(self.cells), "latency_curve": list(self.curve), "evidence": dict(self.evidence),
+                   "little_law_checks": [check.as_dict() for check in self.little],
+                   "little_law_rungs": list(self.little_rungs)}
+        if self.cold_raw is not None:
+            partial["cold_probe"] = {"reading": dict(self.cold_raw["reading"].__dict__), "modes": self.cold_raw["modes"].as_dict(),
+                                      "region_bytes": self.cold_raw["region_bytes"], "qd1_bps": self.cold_raw["qd1_bps"]}
+        partial["cache_evidence"] = {"delayed_readback": self.delayed_readback, "repeat_pass": self.repeat_pass}
         return {"schema": res.SCHEMA, "schema_minor": res.SCHEMA_MINOR, "tool": self.tool(), "run": self.run_record(status, message, None),
                 "identity": self.identity, "quality": {"cache_proof": "none", "limits": proposals.dedupe(self.limits), "checks": []},
-                "restore": report.as_dict()}
+                "partial": partial, "restore": report.as_dict()}
 
     def conclude(self, status: str, message: str, code: int) -> Outcome:
         report = self.safety.report
@@ -848,23 +918,46 @@ class Calibrator(Runner):
         # Validate the optional row before rotating or writing any durable history or result record.
         self.history_rotated = ceilings.rotate_foreign(self.host, p["ceilings"], digest, ceilings.iso(self.host.now()))
         result["evidence"]["history_rotated"] = self.history_rotated
+        record_capability = capability_error is None
+
+        def capability_warning(condition: str) -> None:
+            warning = f"capability_not_recorded:{condition}"
+            for quality in (calibration["quality"], result["quality"]):
+                warnings = quality.setdefault("warnings", [])
+                if warning not in warnings:
+                    warnings.append(warning)
+
         if capability_error is not None:
             condition = capability_error.condition if isinstance(capability_error, Refusal) else type(capability_error).__name__
-            calibration["quality"].setdefault("warnings", []).append(f"capability_not_recorded:{condition}")
+            capability_warning(condition)
         else:
             try:
                 assert cap_row is not None
                 self.capability_history_rotated = capability.rotate_foreign(
                     self.host, p["capability"], digest, ceilings.iso(self.host.now()))
                 calibration["calibration"]["capability_history_rotated"] = self.capability_history_rotated
+            except Exception as exc:  # noqa: BLE001 -- descriptive history cannot invalidate a completed calibration
+                condition = exc.condition if isinstance(exc, Refusal) else type(exc).__name__
+                capability_warning(condition)
+                record_capability = False
+        calibration["calibration"]["capability_history_rotated"] = self.capability_history_rotated
+        result["evidence"]["capability_history_rotated"] = self.capability_history_rotated
+        # Publish the complete core records before the optional final history row.
+        # A killed run may omit a capability row, but can never leave one without its result.
+        res.write_json(self.host, p["calibration"], calibration)
+        res.write_json(self.host, p["result"], result)
+        if record_capability:
+            try:
+                assert cap_row is not None
                 capability.append(self.host, p["capability"], cap_row, digest)
             except Exception as exc:  # noqa: BLE001 -- descriptive history cannot invalidate a completed calibration
                 condition = exc.condition if isinstance(exc, Refusal) else type(exc).__name__
-                calibration["quality"].setdefault("warnings", []).append(f"capability_not_recorded:{condition}")
-        calibration["calibration"]["capability_history_rotated"] = self.capability_history_rotated
-        result["evidence"]["capability_history_rotated"] = self.capability_history_rotated
-        res.write_json(self.host, p["calibration"], calibration)
-        res.write_json(self.host, p["result"], result)
+                capability_warning(condition)
+                try:
+                    res.write_json(self.host, p["calibration"], calibration)
+                    res.write_json(self.host, p["result"], result)
+                except Exception:  # noqa: BLE001 -- the already-written result remains useful if warning persistence itself fails
+                    pass
         ts = ceilings.iso(self.host.now())
         plateaus = [{"dir": d, "workload": "rand4k", "plateau_bps": self.obs[d].steady * 4096, "observation_s": self.obs[d].observation_s,
                      "state": self.obs[d].state} for d in ("read", "write") if d in self.obs]

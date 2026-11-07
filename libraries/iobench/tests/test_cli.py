@@ -263,3 +263,27 @@ def test_cli_10_audit_and_surface_pass(monkeypatch):
     items = run_audit(entry, project)
     assert [i.checklist_id for i in items if i.status == "fail"] == []
     assert {i.status for i in items} <= {"pass", "manual", "warn"}
+
+
+def test_tgt_10_cli_rejects_unaligned_file_size_during_argument_parsing():
+    made_host = []
+
+    def factory():
+        made_host.append(True)
+        return make_host()
+
+    out, err = io.StringIO(), io.StringIO()
+    size = 6 * (1 << 30) + 1
+    code = cli.build_cli(IDENT, host_factory=factory).run(
+        argv=["target", "init", "--file", "/bench/target.img", "--size", str(size),
+              "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222"],
+        stdout=out, stderr=err)
+    corrected = size // (1 << 20) * (1 << 20)
+    assert code == 2 and not made_host
+    assert "multiple of 1 MiB" in err.getvalue() and str(corrected) in err.getvalue()
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.build_cli(IDENT, host_factory=factory).run(
+        argv=["target", "init", "--file", "/bench/target.img", "--size", "not-bytes",
+              "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222"],
+        stdout=out, stderr=err)
+    assert code == 2 and not made_host and "integer number of bytes" in err.getvalue()

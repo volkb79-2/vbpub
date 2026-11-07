@@ -110,7 +110,7 @@ def vq_stages(run: Any, ws: int) -> dict[str, list[FioJob]]:
                        run.job("hitref", "randread", 4096, 1, plan.VQ_HITREF_S, ws - min(GIB, ws), min(GIB, ws), hist=True, log_avg_ms=ms)],
             "series": [run.job(f"rung-w32-{ws // MIB}-vq", "randwrite", 4096, 32, plan.VQ_SERIES_S, 0, ws, io_size=run.bound(plan.VQ_SERIES_S), log_avg_ms=ms)],
             "S6": [run.job(f"s6-{n}", c.rw, c.bs, c.qd, c.seconds, 0, ws, io_size=run.bound(c.seconds) if c.dir == "write" else None, log_avg_ms=ms)
-                   for n, c in enumerate(shape.vq_grid(plan.VQ_CELL_S, plan.VQ_SEQ_BS))]}
+                   for n, c in enumerate(shape.vq_grid(plan.VQ_CELL_S, plan.VQ_SEQ_BS, sequential_write_seconds=plan.VQ_SEQ_WRITE_S))]}
 
 
 def plan_document(run: Any, cfg: Config, alloc: plan.Allotment, per_stage: dict[str, list[FioJob]]) -> dict[str, Any]:

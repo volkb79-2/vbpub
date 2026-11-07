@@ -1,10 +1,11 @@
 """IOB-BL-06 (review r3 SHOULDs, safety): abort stops the probe unit, bounded reaping, exclusive device writers, tighter fio allowlist."""
 import ctypes
 import os
+import queue
 import shlex
 import signal
 import subprocess
-import time
+import threading
 
 import pytest
 
@@ -29,11 +30,12 @@ def _set_child_subreaper(enabled):
     return bool(previous.value)
 
 
-def _detached_sleep_script(pidfile, seconds):
+def _detached_pipe_holder_script(pidfile, ready_fifo, release_fifo):
     # Record the PID from inside the process that entered the new session.
     # `$!` names the outer `setsid` command, which may fork before exec when
     # its caller is already a process-group leader.
-    child = f"echo $$ > {shlex.quote(str(pidfile))}; exec sleep {seconds}"
+    child = (f"echo $$ > {shlex.quote(str(pidfile))}; printf 'ready\\n' > {shlex.quote(str(ready_fifo))}; "
+             f"read release < {shlex.quote(str(release_fifo))}; exit 0")
     # Replace the outer shell with its foreground sleeper. If SIGKILL hits a
     # shell and its child together, the shell cannot reap that child; pytest's
     # subreaper then inherits a zombie that outlives the session.
@@ -103,49 +105,106 @@ def test_bl06_stop_is_allowlisted_only_for_probe_units():
 def test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run(tmp_path, monkeypatch):
     from iobench.errors import Aborted
     monkeypatch.setattr(host_mod, "REAP_TIMEOUT_S", 0.5)
-    pidfiles = (tmp_path / "abort.pid", tmp_path / "timeout.pid")
-    # the grandchild leaves the process group (setsid), so killpg misses it and it keeps the stdout pipe open
-    real = RealHost()
-    real._escalated = True
-    started = time.time()
+    events = queue.Queue()
+    state = {"events": events}
+    in_reap = threading.local()
+    real_popen = subprocess.Popen
+    real_reap = host_mod._reap
+
+    def recording_popen(*args, **kwargs):
+        # The command signals readiness through a FIFO before _run_polled starts
+        # its timeout accounting, so scheduler delay cannot make setup flaky.
+        proc = real_popen(*args, **kwargs)
+        with open(state["ready_fifo"], encoding="utf-8") as ready:
+            assert ready.readline() == "ready\n"
+        communicate = proc.communicate
+
+        def recorded_communicate(*, timeout=None):
+            if getattr(in_reap, "active", False):
+                state["events"].put(("communicate", timeout))
+            return communicate(timeout=timeout)
+
+        proc.communicate = recorded_communicate
+        state["events"].put(("child_ready", proc))
+        return proc
+
+    def observed_reap(proc):
+        state["events"].put(("reap", proc))
+        in_reap.active = True
+        try:
+            real_reap(proc)
+        finally:
+            in_reap.active = False
+            state["events"].put(("reaped", (proc.stdout.closed, proc.stderr.closed)))
+
+    monkeypatch.setattr(host_mod.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(host_mod, "_reap", observed_reap)
     previous_subreaper = _set_child_subreaper(True)
     try:
-        script = _detached_sleep_script(pidfiles[0], 29)
-        with pytest.raises(Aborted, match="second signal"):
-            real._run_polled(["sh", "-c", script], None)
-        assert time.time() - started < 10
-        assert pidfiles[0].exists()
-        pid = int(pidfiles[0].read_text().strip())
-        assert os.getsid(pid) == pid
+        for label, escalated in (("abort", True), ("timeout", False)):
+            pidfile = tmp_path / f"{label}.pid"
+            ready_fifo = tmp_path / f"{label}.ready"
+            release_fifo = tmp_path / f"{label}.release"
+            os.mkfifo(ready_fifo)
+            os.mkfifo(release_fifo)
+            state.update(events=queue.Queue(), ready_fifo=ready_fifo)
+            real = RealHost()
+            real._escalated = False
+            result = {}
 
-        real._escalated = False
-        started = time.time()
-        script = _detached_sleep_script(pidfiles[1], 29)
-        with pytest.raises(subprocess.TimeoutExpired):
-            real._run_polled(["sh", "-c", script], 1.0)
-        assert time.time() - started < 10
-        assert pidfiles[1].exists()
-        pid = int(pidfiles[1].read_text().strip())
-        assert os.getsid(pid) == pid
+            def invoke():
+                try:
+                    result["value"] = real._run_polled(
+                        ["sh", "-c", _detached_pipe_holder_script(pidfile, ready_fifo, release_fifo)],
+                        None if escalated else 1.0,
+                    )
+                except BaseException as exc:
+                    result["error"] = exc
+                finally:
+                    state["events"].put(("done", None))
+
+            worker = threading.Thread(target=invoke)
+            worker.start()
+            proc = None
+            pid = None
+            try:
+                event, proc = state["events"].get()
+                assert event == "child_ready"
+                assert pidfile.exists()
+                pid = int(pidfile.read_text().strip())
+                assert os.getsid(pid) == pid  # the pipe holder escaped the process group
+                if escalated:
+                    real._escalated = True
+
+                event, reap_proc = state["events"].get()
+                assert event == "reap" and reap_proc is proc
+                event, timeout = state["events"].get()
+                assert event == "communicate" and timeout == host_mod.REAP_TIMEOUT_S
+                event, closed = state["events"].get()
+                assert event == "reaped" and closed == (True, True)
+                event, _ = state["events"].get()
+                assert event == "done"
+                if escalated:
+                    assert isinstance(result.get("error"), Aborted)
+                else:
+                    assert isinstance(result.get("error"), subprocess.TimeoutExpired)
+            finally:
+                with open(release_fifo, "w", encoding="utf-8") as release:
+                    release.write("release\n")
+                worker.join()
+                if proc is not None:
+                    proc.wait()  # reap the killed command after _reap closes its inherited-pipe descriptors
+                if pid is not None:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        os.waitpid(pid, 0)
+                    except ChildProcessError as exc:
+                        raise AssertionError(f"detached test child {pid} was not adopted for cleanup") from exc
     finally:
-        try:
-            for pidfile in pidfiles:
-                raw_pid = pidfile.read_text().strip() if pidfile.exists() else ""
-                if not raw_pid:
-                    continue
-                pid = int(raw_pid)
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                try:
-                    os.waitpid(pid, 0)
-                except ChildProcessError as exc:
-                    raise AssertionError(
-                        f"detached test child {pid} was not adopted for cleanup"
-                    ) from exc
-        finally:
-            _set_child_subreaper(previous_subreaper)
+        _set_child_subreaper(previous_subreaper)
 
 
 # -- N-r3-3: a device writer must be exclusive -----------------------------------------------------------------------------------

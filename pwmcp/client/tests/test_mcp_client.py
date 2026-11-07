@@ -1661,6 +1661,34 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
         evaluation_function("1", max_bytes=0)
 
 
+def test_evaluation_scanner_treats_regex_keywords_after_member_access_as_properties() -> None:
+    node = require_binary("node", "Node.js executes JavaScript member-access division cases")
+    expressions = (
+        "o.in / 2;",
+        "(o.in / 2);",
+        "o?.of / 2;",
+        "a.typeof / 2;",
+        "x => o.do / 2",
+        "x => (o.in / 2)",
+    )
+    functions = [evaluation_function(expression) for expression in expressions]
+    program = (
+        "const fs = require('fs'); const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+        "globalThis.o = {in: 6, of: 8, do: 12}; globalThis.a = {typeof: 10}; "
+        "const values = input.functions.map((source) => { "
+        "const fn = eval('(' + source + ')'); return fn(0); }); "
+        "console.log(JSON.stringify(values));"
+    )
+    completed = subprocess.run(
+        [node, "-e", program],
+        input=json.dumps({"functions": functions}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == [3, 3, 4, 5, 6, 3]
+
+
 @pytest.mark.parametrize(
     ("expression", "expected"),
     [
@@ -1678,6 +1706,8 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
         ("`value ${a / b}`;", "value 3"),
         ("`value ${(6) / 2}`;", "value 3"),
         ("`value ${[6][0] / 2}`;", "value 3"),
+        ("`value ${a // c\n}`;", "value 6"),
+        ("(a // c\n);", 6),
         (r"`value ${/a\//.test('a/')}`;", "value true"),
         ("`outer ${`inner ${6 / 2}`}`;", "outer inner 3"),
         (r"/a;\/\/b/.test('a;//b');", True),
@@ -1752,7 +1782,10 @@ def test_passthrough_call_wrapper_keeps_closers_after_a_line_comment() -> None:
         ("x => { return x + 1; }", [2], "value", 3),
         ("x => /a,b/.test(x)", ["a,b"], "value", True),
         ("x => 'a,b'", [], "value", "a,b"),
+        ("(a // c\n) => 6", [], "value", 6),
         ("function () { return 5; }", [], "value", 5),
+        ("function(){return 1}()", [], "value", 1),
+        ("function(){} + 1", [], "value", "function(){}1"),
         ("function* () { yield 5; }", [], "generator", {"value": 5, "done": False}),
         ("functionality()", [], "value", 9),
     ],
@@ -1791,7 +1824,20 @@ def test_only_whole_function_expressions_pass_through(
 def test_javascript_scanner_differential_fuzz_matches_node_for_fixed_seeds() -> None:
     node = require_binary("node", "Node.js compares original and transformed JavaScript expressions")
     seeds = (0xC0FFEE, 0x5EED, 0xA11CE)
-    expressions = ["`value ${a / b}`;"]
+    expressions = [
+        "`value ${6 / 2}`;",
+        "`value ${a // c\n}`;",
+        "(a // c\n);",
+        "o.in / 2;",
+        "(o.in / 2);",
+        "o?.of / 2;",
+        "a.typeof / 2;",
+        "x => o.do / 2",
+        "x => (o.in / 2)",
+        "(a // c\n) => 6",
+        "function(){return 1}()",
+        "function(){} + 1",
+    ]
 
     def make_expression(rng: random.Random, depth: int = 0) -> str:
         if depth >= 3 or rng.randrange(4) == 0:
@@ -1822,10 +1868,13 @@ def test_javascript_scanner_differential_fuzz_matches_node_for_fixed_seeds() -> 
     functions = [evaluation_function(expression) for expression in expressions]
     program = (
         "const fs = require('fs'); const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
-        "globalThis.a = 6; globalThis.b = 2; "
+        "globalThis.a = {typeof: 10}; globalThis.b = 2; "
+        "globalThis.o = {in: 6, of: 8, do: 12}; "
         "const pairs = input.expressions.map((source, index) => { "
-        "const original = eval(source); const fn = eval('(' + input.functions[index] + ')'); "
-        "return [original, fn()]; }); console.log(JSON.stringify(pairs));"
+        "const original = source.startsWith('function') ? eval('(' + source + ')') : eval(source); "
+        "const fn = eval('(' + input.functions[index] + ')'); "
+        "const expected = typeof original === 'function' ? original() : original; "
+        "return [expected, fn()]; }); console.log(JSON.stringify(pairs));"
     )
     completed = subprocess.run(
         [node, "-e", program],

@@ -4,6 +4,7 @@ Only this module imports ``cli_extended``; the core stays standard-library only.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import posixpath
 import sys
@@ -37,6 +38,19 @@ def _flag(flags: tuple[str, ...], text: str, group: str = "OPTIONS", **kw: Any) 
 
 def _value(flags: tuple[str, ...], text: str, metavar: str, group: str = "OPTIONS", **kw: Any) -> OptionSpec:
     return OptionSpec(flags, text, group=group, metavar=metavar, parser_kwargs={"default": None, **kw})
+
+
+def _file_size_arg(value: str) -> int:
+    """Parse and validate the file extent before target init can create or preallocate it."""
+    try:
+        size = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("--size must be an integer number of bytes") from None
+    mib = 1 << 20
+    if size <= 0 or size % mib:
+        aligned = max(mib, size // mib * mib)
+        raise argparse.ArgumentTypeError(f"--size must be a positive multiple of 1 MiB; use {aligned} bytes or another 1 MiB multiple")
+    return size
 
 
 STATE_DIR = _value(("--state-dir",), "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).", "DIR", "STATE")
@@ -145,11 +159,11 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
                  _value(("--expect-partuuid",), "The PARTUUID; must equal the actual one.", "PARTUUID", "DEVICE TARGET"),
                  _value(("--expect-serial",), "The serial, when the device reports one.", "SERIAL", "DEVICE TARGET"),
                  _value(("--file",), "Create a file target at this path on an existing filesystem.", "PATH", "FILE TARGET"),
-                 _value(("--size",), "File target size in bytes (required; the upper bound of everything iobench writes there).", "BYTES", "FILE TARGET", type=int),
+                 _value(("--size",), "File target size in bytes (required; upper bound of writes; must be a positive 1 MiB multiple).", "BYTES", "FILE TARGET", type=_file_size_arg),
                  _flag(("--i-own-this-file",), "You own this path and accept that iobench creates and overwrites it.", "FILE TARGET"),
                  _value(("--expect-fs-uuid",), "The filesystem UUID; must equal the actual one.", "UUID", "FILE TARGET"),
                  _flag(("--confirm-quiet-window",), "Required for a file target on the root filesystem.", "FILE TARGET"),
-                 _flag(("--allow-large-root-target",), "Allow --size above 10 % of the free space of the root filesystem.", "FILE TARGET")),
+                 _flag(("--allow-large-root-target",), "Allow --size above one tenth of the free space of the root filesystem.", "FILE TARGET")),
         handler=lambda args, runtime: _target_init(args, runtime, host_factory)))
     target_registry.register(VerbSpec(
         "show", None, "Read the marker and live facts of a prepared target.", group=VerbGroup.EXPLORATION.value,
