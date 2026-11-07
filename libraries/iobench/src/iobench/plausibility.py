@@ -92,17 +92,32 @@ def pla_05(flat_cells: Sequence[str]) -> Check:
 
 
 def pla_06(iops: float, mean_latency_us: float | None, qd: int, *, job_name: str | None = None,
-           degrade_caps: bool = True) -> Check:
+           degrade_caps: bool = True, clat_mean_us: float | None = None, slat_mean_us: float | None = None,
+           fio_version: str | None = None, latency_expected: bool = False) -> Check:
+    def show(value: float | None) -> str:
+        return "unreported" if value is None else f"{value:.3f} us"
+
+    observed = (f"iops={iops:.3f}, mean clat={show(clat_mean_us)}, mean slat={show(slat_mean_us)}, "
+                f"mean lat={show(mean_latency_us)}, QD{qd}")
+    subject = f"job {job_name} QD{qd}" if job_name else f"QD{qd} job"
     if mean_latency_us is None or not math.isfinite(mean_latency_us):
-        subject = f"job {job_name} QD{qd}" if job_name else f"QD{qd} job"
-        return Check("IOB-PLA-06", "not_applicable", f"{subject} has no reported total latency (slat + clat); Little's law was not assessed")
+        reason = "fio did not report lat/slat" if mean_latency_us is None else "fio reported a non-finite lat/slat mean"
+        missing = f"not_applicable: {reason} for {subject}"
+        if latency_expected:
+            degrades = ("caps",) if degrade_caps else ()
+            effects = (("caps", "absent", "stage_failed"),) if degrade_caps else ()
+            version = fio_version or "fio >= 3.30"
+            return Check("IOB-PLA-06", "fail", f"{missing}; measurement defect: {version} is expected to report a latency mean ({observed})",
+                         degrades, effects)
+        return Check("IOB-PLA-06", "not_applicable", f"{missing}; Little's law was not assessed ({observed})")
     ratio = iops * mean_latency_us / 1e6 / qd
-    subject = f"job {job_name} QD{qd}: " if job_name else ""
+    detail_subject = f"job {job_name} QD{qd}: " if job_name else ""
     if LITTLE[0] <= ratio <= LITTLE[1]:
-        return Check("IOB-PLA-06", "pass", f"{subject}Little's law using mean total latency (slat + clat) holds ({ratio:.2f})", value=round(ratio, 3))
+        return Check("IOB-PLA-06", "pass", f"{detail_subject}Little's law using mean total latency (slat + clat) holds ({ratio:.2f}; {observed})",
+                     value=round(ratio, 3))
     degrades = ("caps",) if degrade_caps else ()
     effects = (("caps", "absent", "stage_failed"),) if degrade_caps else ()
-    return Check("IOB-PLA-06", "fail", f"{subject}iops x mean total latency / QD = {ratio:.3f} is outside [0.7, 1.3]: broken or faked fio; the rung is unusable",
+    return Check("IOB-PLA-06", "fail", f"{detail_subject}iops x mean total latency / QD = {ratio:.3f} is outside [0.7, 1.3] ({observed}): broken or faked fio; the rung is unusable",
                  degrades, effects, value=round(ratio, 3))
 
 

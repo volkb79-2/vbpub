@@ -191,6 +191,11 @@ def find_disk(host: Host, *, model: str | None, serial: str | None, wwn: str | N
 def backing_disk(host: Host, path: str) -> str | None:
     """The single disk behind ``path``; refuse btrfs when its member set is not exactly one device."""
     fs = fs_info(host, posixpath.dirname(path))
+    return backing_disk_for_fs(host, fs, path)
+
+
+def backing_disk_for_fs(host: Host, fs: FsInfo, path: str) -> str | None:
+    """Resolve a filesystem already looked up at the path itself to its single backing disk."""
     devno = fs.devno
     if fs.fstype == "btrfs":
         members = btrfs_member_devnos(host, fs.uuid)
@@ -668,7 +673,7 @@ def check_workdir(host: Host, path: str, *, planned_volume: int, installer: bool
           "pass --confirm-quiet-window in an agreed window")
     check_namespaces(host, {fs.devno, fs.raw_devno} - {None}, {fs.source}, path)
     if fs.fstype == "btrfs":
-        disk = backing_disk(host, path) or ""
+        disk = backing_disk_for_fs(host, fs, path) or ""
     else:
         has_disk = host.exists(f"/sys/dev/block/{fs.devno}")
         disk = device_chain(host, fs.devno).disk_name if has_disk else ""

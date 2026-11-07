@@ -42,6 +42,17 @@ def test_a_mount_entry_touches_a_device_by_its_number_or_by_its_source_name_alon
     assert {e.devno for e in touching} == {"254:7"}
 
 
+def test_a_mount_entry_touches_a_device_by_its_resolved_devno_alone():
+    from test_tgt import btrfs_file_host
+
+    host, _ = btrfs_file_host()
+    # 0:52 is not a sysfs block number, but this source resolves to 254:8.
+    resolved_only = guard.MountEntry("0:52", "/resolved-only", "btrfs", "/dev/vda8", "rw")
+    touching = guard._touching(host, [resolved_only], {"254:8"}, set())
+    assert {entry.mountpoint for entry in touching} == {"/resolved-only"}
+    assert {entry.devno for entry in touching} == {"254:8"}
+
+
 # -- the violation set -----------------------------------------------------------------------------------------------
 def test_an_unmounted_holder_is_reported_as_active_and_a_mounted_one_only_as_a_holder():
     host = standard_host()

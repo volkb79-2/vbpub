@@ -12,7 +12,7 @@ from .errors import Refusal
 from .host import Host
 
 SCHEMA = 1
-SCHEMA_MINOR = 4  # 1: disk scope / plausibility / veryquick; 2: cache hints and capability history; 3: plan/cache-reference fields; 4: partial runs and veryquick cache diagnostics
+SCHEMA_MINOR = 5  # 1: disk scope / plausibility / veryquick; 2: cache hints and capability history; 3: plan/cache-reference fields; 4: partial runs and veryquick cache diagnostics; 5: persisted PLA-06 rung measurements
 DEFAULT_DIR = "/var/lib/iobench"
 NOT_MEASURED = "not_measured"
 REQUIRED_TOP = ("schema", "schema_minor", "tool", "run", "identity", "targets", "evidence", "proposals", "quality", "restore")

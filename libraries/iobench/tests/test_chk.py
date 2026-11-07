@@ -68,7 +68,7 @@ def test_res_01_files_are_written_through_the_host_atomically(world):
 def test_res_02_versioning(world):
     host, _ = world
     doc = read_json(host, f"{STATE}/result.json")
-    assert res.SCHEMA_MINOR == doc["schema_minor"] == 4
+    assert res.SCHEMA_MINOR == doc["schema_minor"] == 5
     h = fresh_copy(host)
     # an unknown major is refused with exit 5 / schema_unsupported
     h.put(f"{STATE}/result.json", json.dumps({**doc, "schema": 2}))

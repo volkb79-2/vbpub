@@ -47,7 +47,7 @@ S3_S = 90
 RDC_S = 50
 S0_S = 30
 S1_S = 30
-QUICK_STARTUP_ALLOWANCE_S = 18  # one retained IB-VQ quick run took 18 s longer than the 670 s plan
+QUICK_STARTUP_ALLOWANCE_S = 18  # max of four IB-VQ runs was 688 s vs 670 s planned; 4% tolerance is 26.8 s, within the 720 s budget
 SWEEP_CELLS = 6
 FULL_SWEEP_CELLS = 8
 

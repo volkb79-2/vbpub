@@ -62,12 +62,33 @@ def test_arc_05_parse_outputs():
     submitted = '{"jobs": [{"write": {"iops": 1600.0, "bw_bytes": 6553600, "io_bytes": 4096000, "runtime": 10000, "slat_ns": {"mean": 621500.0}, "clat_ns": {"mean": 3500.0, "percentile": {"50.000000": 3200}}}}]}'
     st = devio.parse_fio_json(submitted, "write")
     assert st.slat_mean_us == 621.5 and st.lat_mean_us == 625.0 and st.clat_mean_us == 3.5
-    clat_only = '{"jobs": [{"read": {"iops": 10.0, "bw_bytes": 40960, "io_bytes": 409600, "runtime": 10000, "clat_ns": {"mean": 3000.0, "percentile": {"50.000000": 2000}}}}]}'
-    assert devio.parse_fio_json(clat_only, "read").lat_mean_us is None
+    clat_only = '{"fio version": "fio-3.36", "jobs": [{"read": {"iops": 10.0, "bw_bytes": 40960, "io_bytes": 409600, "runtime": 10000, "clat_ns": {"mean": 3000.0, "percentile": {"50.000000": 2000}}}}]}'
+    missing = devio.parse_fio_json(clat_only, "read")
+    assert missing.lat_mean_us is None and missing.slat_mean_us is None and missing.fio_version == "fio-3.36"
     series = devio.parse_rate_log("2000, 100, 0, 4096, 0\n4000, 200, 0, 4096, 0\n", "iops")
     assert series == [(2.0, 100.0), (4.0, 200.0)]
     assert devio.parse_rate_log("1000, 4, 1, 4096, 0\n", "bw") == [(1.0, 4096.0)]
     assert devio.parse_hist_log("1000, 0, 4096, 1, 2, 3\n") == [(1.0, [1, 2, 3])]
+
+
+def test_arc_05_fake_fio_reports_distinct_completion_submission_and_total_latency():
+    from helpers import job, run_job
+    from iobench.testing import DirScenario, Scenario, standard_host
+
+    host = standard_host(Scenario(write=DirScenario(iops_max=2600, qd_iops={1: 1600}, lat_us=3.5, slat_us=621.5)))
+    host.devices["/dev/vda7"].written.add(0, 1 << 30)
+    result = run_job(host, job("randwrite", size=1 << 30, qd=1, rt=10, name="slat-replay"))
+    assert result.stats.clat_mean_us == pytest.approx(3.5)
+    assert result.stats.slat_mean_us == pytest.approx(621.5)
+    assert result.stats.lat_mean_us == pytest.approx(625.0)
+
+
+def test_arc_05_fio_version_indicates_when_latency_fields_are_expected():
+    assert not devio.fio_version_reports_latency(None)
+    assert not devio.fio_version_reports_latency("unknown")
+    assert not devio.fio_version_reports_latency("fio-3.29")
+    assert devio.fio_version_reports_latency("fio-3.30")
+    assert devio.fio_version_reports_latency("fio-3.36-12-gabcd")
 
 
 def test_arc_05_bin_values():

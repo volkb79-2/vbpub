@@ -165,6 +165,7 @@ class DirScenario:
     qd_iops: dict[int, float] | None = None
     qd_half: float = 2.0
     c_byte_ns: float = 0.25
+    slat_us: float = 0.0
     seq_io_ratio: float = 0.2
     iops_cap: float | None = None
     bps_cap_rand: float | None = None
@@ -316,7 +317,9 @@ class FakeFio:
 
     def _rate(self, d: DirScenario, job: FioJob, h1: float, h2: float, cache: CacheModel | None) -> float:
         if job.iodepth == 1:
-            return 1e6 / self._service_us(d, job, h1, h2)
+            if d.qd_iops and 1 in d.qd_iops:
+                return d.qd_iops[1]
+            return 1e6 / (self._service_us(d, job, h1, h2) + d.slat_us)
         sat = self._sat(d, job)
         if cache is not None and not job.writes:
             scale = sat / self._sat(d, job.with_(rw="randread", bs=PAGE))
@@ -407,7 +410,8 @@ class FakeFio:
         elif job.iodepth == 1:
             factor = 1.0 / mult  # a slower disk takes proportionally longer per IO
         else:
-            factor = job.iodepth / iops * 1e6 * self.s.little_factor / mean_raw
+            total_latency_us = job.iodepth / iops * 1e6 * self.s.little_factor
+            factor = max(0.01, (total_latency_us - d.slat_us) / mean_raw)
         return [(w, lat * factor) for w, lat in comps]
 
     @staticmethod
@@ -428,9 +432,10 @@ class FakeFio:
         runtime = max(sim.runtime, 1e-9)
         iops = sim.io_bytes / job.bs / runtime
         pct = {f"{q:.6f}": percentile_us(sim.weights, q) * 1000.0 for q in PERCENTILES}
+        d = self.s.write if job.writes else self.s.read
         body = {"io_bytes": int(sim.io_bytes), "bw_bytes": int(sim.io_bytes / runtime), "bw": int(sim.io_bytes / runtime / 1024),
                 "iops": iops, "runtime": int(round(sim.runtime * 1000)),
-                "slat_ns": {"mean": 0.0}, "lat_ns": {"mean": sim.mean_us * 1000.0},
+                "slat_ns": {"mean": d.slat_us * 1000.0}, "lat_ns": {"mean": (sim.mean_us + d.slat_us) * 1000.0},
                 "clat_ns": {"mean": sim.mean_us * 1000.0, "N": int(sim.io_bytes / job.bs), "percentile": pct}}
         empty = {"io_bytes": 0, "bw_bytes": 0, "bw": 0, "iops": 0.0, "runtime": 0,
                  "slat_ns": {"mean": 0.0}, "lat_ns": {"mean": 0.0},

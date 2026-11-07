@@ -692,11 +692,30 @@ def test_tgt_05_a_work_dir_on_multi_device_btrfs_is_refused_like_a_file_target()
     assert err.value.condition == "target_fs_multi_device"
 
 
+def test_tgt_05_a_work_dir_that_is_the_multi_device_btrfs_mountpoint_is_refused():
+    host, _ = btrfs_file_host(multi_device=True)
+    with pytest.raises(Refusal) as err:
+        guard.check_workdir(host, "/bench", planned_volume=GIB, installer=False,
+                            confirm_quiet_window=False, target_disk="vda")
+    assert err.value.condition == "target_fs_multi_device"
+
+
 def test_tgt_05_namespace_check_uses_raw_and_resolved_btrfs_devnos():
     host, _ = btrfs_file_host()
     # PID 1 has an additional mount of the same btrfs device, but under another source spelling.
     host.devices["/dev/btrfs-alias"] = host.devices["/dev/vda8"]
     host.add_mount("0:52", "/bench/other-view", "/dev/btrfs-alias", "btrfs", ns="init")
+    with pytest.raises(Refusal) as err:
+        guard.check_workdir(host, "/bench/w", planned_volume=GIB, installer=False,
+                            confirm_quiet_window=False, target_disk="vda")
+    assert err.value.condition == "namespace_mismatch"
+
+
+def test_tgt_05_workdir_namespace_check_keeps_a_raw_only_mount_match():
+    host, _ = btrfs_file_host()
+    # The work mount resolves 0:52 through /dev/vda8 to 254:8. PID 1 also has a
+    # different mount with the raw 0:52 number and an unresolved source name.
+    host.add_mount("0:52", "/bench/other-view", "/dev/unresolved-btrfs-source", "btrfs", ns="init")
     with pytest.raises(Refusal) as err:
         guard.check_workdir(host, "/bench/w", planned_volume=GIB, installer=False,
                             confirm_quiet_window=False, target_disk="vda")

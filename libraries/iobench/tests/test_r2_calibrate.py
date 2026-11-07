@@ -4,7 +4,7 @@ import math
 import pytest
 
 from iobench import calibrate as cal_mod
-from iobench import guard, ladder
+from iobench import guard, ladder, plan
 from iobench.calibrate import Calibrator, TouchMap
 from iobench.errors import Refusal
 from iobench.series import SeriesError
@@ -72,6 +72,28 @@ def test_r2_cal_a_fill_chunk_that_fio_cut_short_ends_the_fill_at_once():
     assert len(jobs) == 3 and cal["fill"]["bytes"] == cal["extent_written"][0][1]
     assert cal["fill"]["bytes"] == pytest.approx(2.5 * chunk, rel=0.01) and cal["fill"]["bytes"] < cal["fill"]["planned_bytes"]
     assert "limited-by-budget" not in out.result["quality"]["limits"]
+
+
+def test_r2_cal_a_free_space_drop_after_the_last_planned_fill_chunk_is_not_a_limit(monkeypatch):
+    host = file_host()
+    run = Calibrator(host, config(target="/bench/target.img", work_dir="/bench/w"))
+    run.s0(need_workdir=False)
+    run.target = guard.load_target(host, "/bench/target.img")
+    fill_seconds = plan.FILL_BUDGET_FRACTION * run.cfg.budget_s(plan.PROFILE_BUDGET_S[run.profile])
+    run.r_est = 10 * MIB / fill_seconds
+    run.make_plan()
+    run.safety.release()
+    actual_fs_info = guard.fs_info
+
+    def low_space(host, path):
+        fs = actual_fs_info(host, path)
+        return guard.FsInfo(fs.mountpoint, fs.source, fs.fstype, fs.options, fs.devno, fs.uuid,
+                            fs.total, run.margin - 1, fs.raw_devno)
+
+    monkeypatch.setattr(guard, "fs_info", low_space)
+    run.fill(run.alloc)
+    assert run.fill_info["bytes"] == run.ws_planned
+    assert run.fill_limit is None and "limited-by-space" not in run.limits
 
 
 def test_r2_cal_an_untouched_fill_that_wrote_everything_is_not_limited_by_budget():

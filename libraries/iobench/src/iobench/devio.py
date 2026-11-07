@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import posixpath
+import re
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
@@ -215,6 +216,7 @@ class FioStats:
     pct_us: dict[str, float]
     slat_mean_us: float | None = None
     lat_mean_us: float | None = None
+    fio_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -247,7 +249,18 @@ def parse_fio_json(text: str, ddir: str) -> FioStats:
         runtime_s=job["runtime"] / 1000.0, clat_mean_us=clat_mean_us,
         pct_us={k: v / 1000.0 for k, v in clat["percentile"].items()},
         slat_mean_us=slat_mean_us, lat_mean_us=lat_mean_us,
+        fio_version=doc.get("fio version") if isinstance(doc.get("fio version"), str) else None,
     )
+
+
+def fio_version_reports_latency(version: str | None) -> bool:
+    """Whether this fio version is expected to report ``lat_ns`` or ``slat_ns`` means in JSON."""
+    if version is None:
+        return False
+    match = re.search(r"\bfio-(\d+)\.(\d+)(?:\D|$)", version)
+    if match is None:
+        return False
+    return (int(match.group(1)), int(match.group(2))) >= (3, 30)
 
 
 def parse_rate_log(text: str, metric: str) -> list[tuple[float, float]]:

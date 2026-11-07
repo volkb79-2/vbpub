@@ -78,7 +78,9 @@ class Calibrator(Runner):
         self.writes: list[dict[str, Any]] = []
         self.depth: dict[str, dict[int, float]] = {"read": {}, "write": {}}
         self.depth_unsteady: set[str] = set()  # directions with an unsteady depth rung: QD90 would rest on a drifting figure
-        self.qd1_p99: dict[str, float] = {}
+        self.qd1_p99: dict[str, float | None] = {}
+        self.little_rungs: list[dict[str, Any]] = []
+        self.depth_rungs: list[dict[str, Any]] = []
         self.evidence: dict[str, Any] = {"histograms": {}}
         self.refs: dict[str, dict[str, float]] = {}
         self.ref_tag: str | None = None
@@ -273,7 +275,7 @@ class Calibrator(Runner):
                 if pos > 0:
                     self.fill_limit = "limited-by-fio-short"
                 break  # fio exited early: the extent is what it reported written
-            if self.target.kind == "file" and guard.fs_info(self.host, self.target.path.rsplit("/", 1)[0]).free < self.margin:
+            if self.target.kind == "file" and pos < ws and guard.fs_info(self.host, self.target.path.rsplit("/", 1)[0]).free < self.margin:
                 aborted = "free_space"
                 self.fill_limit = "limited-by-space"
                 break
@@ -338,8 +340,16 @@ class Calibrator(Runner):
         """Little's law uses reported total latency; a failed depth rung affects only QD90, not capability caps."""
         rec.update(qd=qd, job=out.job.name)
         check = plausibility.pla_06(out.stats.iops, out.stats.lat_mean_us, qd, job_name=out.job.name,
-                                    degrade_caps=not depth_only)
+                                    degrade_caps=not depth_only, clat_mean_us=out.stats.clat_mean_us,
+                                    slat_mean_us=out.stats.slat_mean_us, fio_version=out.stats.fio_version,
+                                    latency_expected=devio.fio_version_reports_latency(out.stats.fio_version))
         self.little.append(check)
+        metrics = {"job": out.job.name, "qd": qd, "iops": out.stats.iops,
+                   "clat_mean_us": out.stats.clat_mean_us, "slat_mean_us": out.stats.slat_mean_us,
+                   "lat_mean_us": out.stats.lat_mean_us, "status": check.status, "value": check.value}
+        self.little_rungs.append(metrics)
+        if depth_only:
+            self.depth_rungs.append(metrics)
         if check.status == "fail":
             rec["little_failed"] = True  # depth runs feed QD90; main QD32 rungs feed capability values too
         self.last_started = out.started
@@ -381,7 +391,7 @@ class Calibrator(Runner):
                 if qd in (1, 8) and (rec["state"] == "unsteady" or rec.get("little_failed")):
                     self.depth_unsteady.add(direction)
                 if qd == 1:
-                    self.qd1_p99[direction] = rec["lat_us"]["p99"]
+                    self.qd1_p99[direction] = None if rec.get("little_failed") else rec["lat_us"]["p99"]
 
     def run_ladder(self) -> None:
         queue = list(self.rung_sizes)
@@ -600,7 +610,12 @@ class Calibrator(Runner):
                         plausibility.pla_05([f"{r['dir']}-{r['ws_bytes'] // MIB}M" for r in classes + writes if r["rate_limited"] is True]),
                         plausibility.pla_10(state.state, list(state.reasons))]
         failing = [c for c in self.little if c.status == "fail"]
-        self.checks.append(replace(failing[0], detail="; ".join(c.detail for c in failing)) if failing else self.little[0])
+        if failing:
+            degrades = tuple(dict.fromkeys(x for check in failing for x in check.degrades))
+            effects = tuple(dict.fromkeys(x for check in failing for x in check.effects))
+            self.checks.append(replace(failing[0], detail="; ".join(c.detail for c in failing), degrades=degrades, effects=effects))
+        else:
+            self.checks.append(self.little[0])
         # read basis
         if largest["state"] == "unsteady":
             read = _basis(None, [], "basis_unsteady")
@@ -776,7 +791,8 @@ class Calibrator(Runner):
             "fresh_extent": list(self.fresh) if self.fresh_ok else None, "fill_bps": self.fill_info["fill_bps"], "R_est_bps": self.r_est,
             "fill": self.fill_info,
             "ladder": {"excluded_rungs": self.excluded_rungs, "rungs": a["classes"] + a["writes"], "cliff_bytes": a["cliff"], "cached_ref_iops": a["cached_ref"],
-                       "qd90": self.qd90_doc(), "idle_qd1_p99_us": dict(self.qd1_p99), "cached_tier_factor": ladder.cached_tier_factor(a["classes"]),
+                       "qd90": self.qd90_doc(), "idle_qd1_p99_us": dict(self.qd1_p99), "depth_rungs": list(self.depth_rungs),
+                       "cached_tier_factor": ladder.cached_tier_factor(a["classes"]),
                        "best_read_rung_iops": a["best"], "measured_largest": {"read": a["largest"]["steady_iops"], "write": a["writes"][-1]["steady_iops"]}},
             "cache": {"read": {**state.as_dict(), "e_cold": cold_doc,
                                "E2": a["e2"].as_dict() if a["e2"] else None, "E1": a["e1"].as_dict(), "hit_ref_us": self.hit_ref_us,
@@ -822,6 +838,7 @@ class Calibrator(Runner):
         cold_qd1_bps = self.cold_raw["qd1_bps"] if self.cold_raw else None
         cache_state_hint = cache.read_cache_hints(self.delayed_readback, self.repeat_pass, cold_qd1_bps)
         quality = {"cache_proof": self.cache_proof(), "cache_state": cache_state_hint, "limits": limits, "checks": run_checks,
+                   "little_law_rungs": list(self.little_rungs),
                    "plausibility": plausibility.verdict(state.state, vq=self.vq, rate_status=rate_status)}
         tgt = dict(proposals.DEFAULT_TARGETS)
         targets = {**self.cfg.targets, "source": "default" if self.cfg.targets == tgt else "operator"}
@@ -863,9 +880,11 @@ class Calibrator(Runner):
     def failed_doc(self, status: str, message: str, report: Any) -> dict[str, Any]:
         partial = {"status": "incomplete", "stages": dict(self.stages), "extent_written": self.read_extent.as_list(),
                    "fill": dict(self.fill_info), "ladder": {"rungs": list(self.reads) + list(self.writes),
-                                                               "excluded_rungs": list(self.excluded_rungs)},
+                                                               "excluded_rungs": list(self.excluded_rungs),
+                                                               "depth_rungs": list(self.depth_rungs)},
                    "cells": list(self.cells), "latency_curve": list(self.curve), "evidence": dict(self.evidence),
-                   "little_law_checks": [check.as_dict() for check in self.little]}
+                   "little_law_checks": [check.as_dict() for check in self.little],
+                   "little_law_rungs": list(self.little_rungs)}
         if self.cold_raw is not None:
             partial["cold_probe"] = {"reading": dict(self.cold_raw["reading"].__dict__), "modes": self.cold_raw["modes"].as_dict(),
                                       "region_bytes": self.cold_raw["region_bytes"], "qd1_bps": self.cold_raw["qd1_bps"]}

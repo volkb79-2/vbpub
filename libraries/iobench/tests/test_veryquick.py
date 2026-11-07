@@ -204,16 +204,22 @@ def test_prf_03_pla19_names_an_unsteady_write_cell_and_uses_a_longer_window():
 
 
 def test_prf_03_plan_is_checked_against_independent_ib_vq_wall_clock_fixtures():
-    # The retained IB-VQ report recorded 188-189 s for eight veryquick runs (173 s planned)
-    # and 688 s for one quick run (670 s planned); the other quick runs were 626-627 s.
+    # The retained IB-VQ report recorded four quick runs across both hosts:
+    # r1002 = 626/688 s and v1001 = 627/627 s. The plan matches the observed
+    # maximum. Its 4% forecast tolerance is below the 4.65% remaining inside
+    # the 720 s hard budget after the 688 s maximum.
     observed_vq = (188, 189)
-    observed_quick_max = 688
+    observed_quick = {"r1002": (626, 688), "v1001": (627, 627)}
+    observed_quick_max = max(value for runs in observed_quick.values() for value in runs)
+    quick_tolerance = 0.04
     vq = plan.plan_calibration("veryquick", 435853320192, 1.36e9)
     quick = plan.plan_calibration("quick", 435853320192, 1.36e9)
     # Veryquick's 24 s sequential-write job adds 12 s to the old measured profile runtime.
     assert vq.total == max(observed_vq) + (plan.VQ_SEQ_WRITE_S - plan.VQ_CELL_S) == 201
     assert vq.total <= vq.budget_s == 210
-    assert quick.total == observed_quick_max == 688 and quick.total <= quick.budget_s == 720
+    assert quick.total == observed_quick_max == 688
+    assert all(actual <= quick.total for runs in observed_quick.values() for actual in runs)
+    assert quick.total * (1 + quick_tolerance) <= quick.budget_s == 720
 
 
 def test_prf_03_the_series_is_one_30_second_write_run_and_the_grid_is_four_cells(clean):
