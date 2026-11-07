@@ -138,16 +138,30 @@ before root, including the Debian genericcloud boot partitions numbered 14
 and 15 before root partition 1. Unknown partitions after root are refused.
 
 Exact mounts on `/`, `/var`, `/var/lib`, `/srv`, and `/home` are refused.
-Mounts equal to, inside, or above protected OS-state trees (`/usr` except
-`/usr/local` and its descendants, `/etc`,
-`/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`,
-`/lib`, `/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt`, `/var/log`,
-`/srv/tree-cache`, `/srv/tree-upper`) are refused with the protected path in
-the message. This protects operating-system state while allowing dedicated
-data children such as `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`,
-`/home/runner`, and `/usr/local`; the Docker systemd dependency is attached
-when a data filesystem holds Docker's data root. The runner finds that planned
-partition by PARTLABEL `MDT_COW`; it does not carve or guess a partition number.
+## Data mount safety
+
+The data filesystem is configured in stage two. By then stage one has already
+written installer executables under `/usr/local/sbin` and, when enabled, has
+installed and started Docker. The installer does not copy existing contents
+onto a new data filesystem or stop and seed those services. Mounts under
+`/usr/local` are refused as protected `/usr` state because they would hide
+stage-one files. Mounts that intersect `/var/lib/docker` or
+`/var/lib/containerd` are refused with a stage-order explanation. This keeps a
+successful mount from hiding files or live container state that the installer
+assumes is present.
+
+Other protected trees include `/usr`, `/etc`, `/boot`, `/root`, `/tmp`,
+`/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/lib32`,
+`/libx32`, `/var/lib/dpkg`, `/var/lib/apt`, `/var/lib/systemd`,
+`/var/lib/cloud`, `/var/cache/apt`, `/var/log`, `/srv/tree-cache`, and
+`/srv/tree-upper`. A proposed mount equal to, inside, or above one of those
+trees is refused. `/var/log/journal` is the narrow exception: journal files
+are generated service data, and a dedicated data volume there is a supported
+persistent-journal pattern. `/var/log` itself and other log subtrees remain
+protected.
+
+The runner finds its planned CoW partition by GPT PARTLABEL `MDT_COW`; it does
+not carve or guess a partition number.
 Copyable configs and offline previews are in
 [CONSUMERS.md](CONSUMERS.md#disk-plan-and-offline-preview).
 

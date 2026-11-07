@@ -112,13 +112,21 @@ PERCENT_RE = re.compile(r"(0|[1-9][0-9]{0,2})(?:\.([0-9]{1,2}))?%")
 RESERVED_LABELS = frozenset({"esp", "efi", "boot", "root", "swap", LVM_PV_PARTLABEL, IOBENCH_PARTLABEL})
 _RESERVED_MOUNT_TREES = (
     "/boot", "/etc", "/usr", "/root", "/tmp", "/proc", "/sys", "/dev", "/run", "/bin", "/sbin", "/lib",
-    "/var/lib/dpkg", "/var/lib/apt", "/var/cache/apt", "/var/log",
+    "/lib64", "/lib32", "/libx32",
+    "/var/lib/dpkg", "/var/lib/apt", "/var/lib/systemd", "/var/lib/cloud", "/var/cache/apt", "/var/log",
     # runner tree-cache paths (mdt-cockpit): a data area must never shadow them
     "/srv/tree-cache", "/srv/tree-upper",
 )
-# Admin-installed software and its data are allowed below /usr/local even
-# though the rest of /usr is protected operating-system state.
-_ALLOWED_DATA_MOUNT_SUBTREES = ("/usr/local",)
+# A separate data filesystem is a supported home for generated journald data.
+# Keep the exception limited to /var/log/journal; other /var/log state remains protected.
+_MOUNT_SUBTREE_EXCEPTIONS = {"/var/log": ("/var/log/journal",)}
+# The installer configures the data filesystem in stage two, after stage one
+# installs and starts Docker. It neither stops those services nor seeds their
+# live stores, so mounts intersecting these paths must be rejected.
+_UNSEEDED_RUNTIME_MOUNT_TREES = (
+    ("/var/lib/docker", "Docker"),
+    ("/var/lib/containerd", "containerd"),
+)
 # These paths themselves contain or anchor OS state. Child data mounts are
 # allowed unless they intersect one of the protected trees above.
 _RESERVED_MOUNT_POINTS = ("/var", "/var/lib", "/srv", "/home")
@@ -304,14 +312,21 @@ def _check_mount(mount: object, what: str) -> str:
     if mount in PREPOPULATED_SYSTEM_MOUNTS:
         return mount
     for protected in _RESERVED_MOUNT_TREES:
-        if protected == "/usr" and any(
+        if any(
             mount == allowed or mount.startswith(allowed + "/")
-            for allowed in _ALLOWED_DATA_MOUNT_SUBTREES
+            for allowed in _MOUNT_SUBTREE_EXCEPTIONS.get(protected, ())
         ):
             continue
         if mount == protected or mount.startswith(protected + "/") or protected.startswith(mount + "/"):
             raise LayoutPolicyError(
                 f"{what} mount {mount!r} would hide protected system path {protected!r}"
+            )
+    for path, service in _UNSEEDED_RUNTIME_MOUNT_TREES:
+        if mount == path or mount.startswith(path + "/") or path.startswith(mount + "/"):
+            raise LayoutPolicyError(
+                f"{what} mount {mount!r} intersects live {service} state at {path!r}; data-area mounts are "
+                "configured in stage two, after stage one installs or starts these services, and the installer "
+                "does not stop or seed their state. Choose a separate mount point."
             )
     for protected in _RESERVED_MOUNT_POINTS:
         if mount == protected or protected.startswith(mount + "/"):

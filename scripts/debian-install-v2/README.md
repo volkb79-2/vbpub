@@ -318,19 +318,24 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   label, never by number.
 - **Mount policy**: exact mounts on `/`, `/var`, `/var/lib`, `/srv`, or `/home`
   are refused. A mount equal to, inside, or above a protected OS-state tree is
-  also refused: `/usr` (except `/usr/local` and its descendants), `/etc`,
-  `/boot`, `/root`, `/tmp`, `/proc`, `/sys`,
-  `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/var/lib/dpkg`, `/var/lib/apt`,
+  also refused: `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`,
+  `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/lib32`, `/libx32`,
+  `/var/lib/dpkg`, `/var/lib/apt`, `/var/lib/systemd`, `/var/lib/cloud`,
   `/var/cache/apt`, `/var/log`, `/srv/tree-cache`, and `/srv/tree-upper`.
-  The refusal names the requested mount and protected path. Data mounts such as
-  `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, `/srv/data`,
-  `/home/runner`, and `/usr/local` are allowed when they do not cover a
-  protected tree. Equal and nested planned mounts are refused.
+  `/usr/local` stays protected because stage one writes installer executables
+  there before the data filesystem is mounted. Docker and containerd state
+  paths are refused because stage two mounts data after those services are
+  installed or started, without a stop or seed step. The supported journal
+  exception is `/var/log/journal` and its descendants; `/var/log` and other log
+  paths stay protected. The refusal names the requested mount and reason. Data
+  mounts such as `/srv/cow`, `/srv/data`, `/home/runner`, and
+  `/var/log/journal` are allowed when they do not cover protected state. Equal
+  and nested planned mounts are refused. See
+  [Data mount safety](docs/DESIGN-GUIDE.md#data-mount-safety) for the rationale.
 - **Not supported**: `fs: zfs` as a managed filesystem (refused with a clear message; deferred),
   btrfs `subvol`.
 - **Safety**: `mkfs`/`pvcreate` only touch a BLANK device (the same filesystem again is kept, any
-  other signature is refused); fstab uses `UUID=` and `nofail` (btrfs `noatime,user_subvol_rm_allowed`),
-  a mount that holds `/var/lib/docker` also gets `x-systemd.required-by=docker.service`; another
+  other signature is refused); fstab uses `UUID=` and `nofail` (btrfs `noatime,user_subvol_rm_allowed`); another
   device with the same label is refused; a `blkid` failure other than "no signature" is never
   treated as blank; a rerun that would delete or move a data partition holding a signature is
   refused with no wipe override; preserve the signature and resolve data

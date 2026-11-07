@@ -119,20 +119,23 @@ root-growth step is documented in [CHANGES.md](../CHANGES.md).
 
 Data mounts are validated during config load. The exact paths `/`, `/var`,
 `/var/lib`, `/srv`, and `/home` are refused. A mount equal to, inside, or
-above a protected OS-state tree is also refused: `/usr` (except `/usr/local`
-and its descendants), `/etc`, `/boot`,
+above a protected OS-state tree is also refused: `/usr`, `/etc`, `/boot`,
 `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`, `/lib`,
-`/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt`, `/var/log`,
+`/lib64`, `/lib32`, `/libx32`, `/var/lib/dpkg`, `/var/lib/apt`,
+`/var/lib/systemd`, `/var/lib/cloud`, `/var/cache/apt`, `/var/log`,
 `/srv/tree-cache`, and `/srv/tree-upper`. Refusals name the requested mount
-and the protected path it would hide. Data children such as
-`/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, `/srv/data`,
-`/home/runner`, and `/usr/local` are allowed when they do not cover one of
-those protected trees. The installer does not pre-populate protected system
-filesystems.
+and the protected path it would hide. `/usr/local` remains protected: stage
+one writes installer executables there before stage two mounts the data
+filesystem, and no seeding step copies those files onto a new volume.
 
-Mounts must be absolute, cannot collide with each other, and are written to
-fstab by UUID. A mount equal to or containing `/var/lib/docker` gets a systemd
-dependency so Docker waits for it.
+Mounts intersecting `/var/lib/docker` or `/var/lib/containerd` are also
+refused. Stage one installs or starts those services, while stage two neither
+stops them nor seeds their stores. `/var/log/journal` and its descendants are
+the one protected-tree exception because journal files are generated service
+data and a dedicated volume there is a supported persistent-journal pattern;
+`/var/log` itself and other log paths remain protected. Other supported data
+mounts include `/srv/cow`, `/srv/data`, and `/home/runner`. Mounts must be
+absolute, cannot collide with each other, and are written to fstab by UUID.
 
 ## Partition recognition and limits
 

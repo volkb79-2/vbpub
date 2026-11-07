@@ -142,6 +142,10 @@ def test_impossible_pool_shapes_are_refused_at_schema_validation(partitioning, m
         ("/var/lib/dpkg", "/var/lib/dpkg"), ("/var/lib/dpkg/status", "/var/lib/dpkg"),
         ("/var/lib/apt", "/var/lib/apt"), ("/var/lib/apt/lists", "/var/lib/apt"),
         ("/var/cache/apt", "/var/cache/apt"), ("/var/log", "/var/log"),
+        ("/var/log/audit", "/var/log"),
+        ("/lib64", "/lib64"), ("/lib32", "/lib32"), ("/libx32", "/libx32"),
+        ("/var/lib/systemd", "/var/lib/systemd"), ("/var/lib/systemd/random-seed", "/var/lib/systemd"),
+        ("/var/lib/cloud", "/var/lib/cloud"), ("/var/lib/cloud/instance", "/var/lib/cloud"),
         ("/srv", "/srv"), ("/home", "/home"),
         ("/usr", "/usr"),
         ("/etc", "/etc"), ("/etc/vbpub", "/etc"),
@@ -153,23 +157,46 @@ def test_impossible_pool_shapes_are_refused_at_schema_validation(partitioning, m
 )
 def test_mounts_that_cover_protected_system_state_are_refused(mount, protected):
     with pytest.raises(lp.LayoutPolicyError) as exc:
-        lp.disk_spec(parts(vol(mount=mount)))
+        lp.disk_spec(parts(vol(mount=mount), root=10))
     assert mount in str(exc.value)
     assert protected in str(exc.value)
     assert "would hide protected system path" in str(exc.value)
 
 
+@pytest.mark.parametrize("mount", ["/usr/local", "/usr/local/sbin", "/usr/local/bin", "/usr/local/share", "/usr/localx"])
+def test_usr_local_and_prefix_mounts_remain_protected(mount):
+    with pytest.raises(lp.LayoutPolicyError, match="protected system path '/usr'"):
+        lp.disk_spec(parts(vol(mount=mount), root=10))
+
+
+@pytest.mark.parametrize("mount", ["/var/lib/docker", "/var/lib/docker/volumes", "/var/lib/containerd", "/var/lib/containerd/io.containerd"])
+def test_live_container_storage_mounts_are_refused_with_stage_order_reason(mount):
+    with pytest.raises(lp.LayoutPolicyError, match=r"stage two.*stage one|stage one.*stage two"):
+        lp.disk_spec(parts(vol(mount=mount), root=10))
+
+
+def test_var_cache_parent_is_refused_when_it_would_cover_apt_cache():
+    with pytest.raises(lp.LayoutPolicyError, match=r"/var/cache.*protected system path '/var/cache/apt'"):
+        lp.disk_spec(parts(vol(mount="/var/cache")))
+
+
 @pytest.mark.parametrize(
     "mount",
     [
-        "/var/lib/docker", "/var/lib/docker/volumes", "/var/lib/containerd",
-        "/var/lib/containerd/io.containerd", "/var/cache/vbpub",
+        "/var/cache/vbpub",
         "/srv/cow", "/srv/data/archive", "/home/runner", "/home/runner/cache",
-        "/usr/local", "/usr/local/share",
+        "/var/log/journal", "/var/log/journal/host",
     ],
 )
-def test_data_mounts_under_var_usr_srv_and_home_are_allowed(mount):
+def test_data_mounts_under_allowed_paths_are_accepted(mount):
     assert lp.disk_spec(parts(vol(mount=mount), root=10)).data.volumes[0].mount == mount
+
+
+def test_journal_data_mount_exception_is_limited_to_journald_tree():
+    with pytest.raises(lp.LayoutPolicyError, match="protected system path '/var/log'"):
+        lp.disk_spec(parts(vol(mount="/var/log/audit")))
+    with pytest.raises(lp.LayoutPolicyError, match="protected system path '/var/log'"):
+        lp.disk_spec(parts(vol(mount="/var/log")))
 
 
 def test_fixed_reserve_is_subtracted_before_percent_sizes():
@@ -178,6 +205,32 @@ def test_fixed_reserve_is_subtracted_before_percent_sizes():
     assert plan.root_size == (total * 40 // 100) // 2048 * 2048
     assert plan.root_size + plan.extents[0][1] == total
     assert plan.reserve_sectors == 5 * S
+
+
+@pytest.mark.parametrize(
+    ("partitioning", "reserve_gib"),
+    [
+        ({"root": "100%", "reserve_gb": 5, "iobench_raw_gb": False}, 5),
+        ({
+            "root": "30%", "reserve_gb": 4, "iobench_raw_gb": False,
+            "data": {
+                "kind": "lvm", "vg": "vg", "pv_size": "70%",
+                "volumes": [{"name": "data", "size": "*", "fs": "none"}],
+            },
+        }, 4),
+    ],
+)
+def test_fixed_reserve_with_percent_sizes_is_supported_without_data_or_with_lvm(partitioning, reserve_gib):
+    plan, pool_end = pool(partitioning)
+    total = pool_end - BOOT_END - reserve_gib * S
+    assert plan.reserve_sectors == reserve_gib * S
+    assert plan.root_size + sum(size for _start, size in plan.extents) == total
+    if partitioning.get("data", {}).get("kind") == "lvm":
+        expected_root = (total * 30 // 100) // 2048 * 2048
+        assert plan.root_size == expected_root
+        assert plan.extents[0][1] == total - expected_root
+    else:
+        assert plan.root_size == total
 
 
 def test_keep_without_an_entry_refuses_instead_of_indexing_an_empty_list():
@@ -335,6 +388,31 @@ def test_config_load_refuses_more_than_128_gpt_partitions():
     assert load_config(raw_json=raw_config(122)).partitioning["root"] == "*"
     with pytest.raises(ConfigError, match=r"above the GPT limit of 128"):
         load_config(raw_json=raw_config(123))
+
+
+def test_partition_limit_uses_the_smaller_swap_count_or_total():
+    import json
+
+    volumes = [{"size": 1, "fs": "none", "label": f"V{index}"} for index in range(124)]
+    config = load_config(raw_json=json.dumps({
+        "swap_disk_total_gb": 2,
+        "swap_partition_count": 4,
+        "partitioning": {"root": "*", "data": {"kind": "partitions", "volumes": volumes}},
+    }))
+    assert config.swap_partition_count == 4
+
+
+def test_partition_limit_counts_no_swap_slots_when_swap_is_off():
+    import json
+
+    volumes = [{"size": 1, "fs": "none", "label": f"V{index}"} for index in range(126)]
+    config = load_config(raw_json=json.dumps({
+        "swap_policy": "off",
+        "swap_disk_total_gb": 2,
+        "swap_partition_count": 4,
+        "partitioning": {"root": "*", "data": {"kind": "partitions", "volumes": volumes}},
+    }))
+    assert config.swap_policy == "off"
 
 
 def test_mixed_percent_and_fixed_without_star_is_ambiguous():

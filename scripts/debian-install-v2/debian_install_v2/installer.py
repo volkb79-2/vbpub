@@ -3447,10 +3447,6 @@ MaxFileSec=1month
 
     def _data_mount_entry(self, source: str, mount: str, fs: str) -> str:
         options = "noatime,user_subvol_rm_allowed,nofail" if fs == "btrfs" else "defaults,nofail"
-        docker = "/var/lib/docker"
-        if mount == docker or mount.startswith(docker + "/") or docker.startswith(mount + "/"):
-            # nofail alone would let docker start and fill the root fs when this mount is missing
-            options += ",x-systemd.required-by=docker.service"
         return f"{source} {mount} {fs} {options} 0 2" if fs == "ext4" else f"{source} {mount} {fs} {options} 0 0"
 
     def _configure_data_area(self) -> None:

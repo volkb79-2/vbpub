@@ -142,17 +142,40 @@ Automatic swap sizing uses
 `min(ceil(RAM × 2), round-half-up(20% of disk capacity))`, in GiB.
 
 Exact mounts on `/`, `/var`, `/var/lib`, `/srv`, and `/home` are refused. A
-mount equal to, inside, or above protected OS-state trees `/usr` (except
-`/usr/local` and its descendants), `/etc`,
+mount equal to, inside, or above protected OS-state trees `/usr`, `/etc`,
 `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`,
-`/lib`, `/var/lib/dpkg`, `/var/lib/apt`, `/var/cache/apt`, `/var/log`,
+`/lib`, `/lib64`, `/lib32`, `/libx32`, `/var/lib/dpkg`, `/var/lib/apt`,
+`/var/lib/systemd`, `/var/lib/cloud`, `/var/cache/apt`, `/var/log`,
 `/srv/tree-cache`, and `/srv/tree-upper` is also refused. The refusal names the
-requested mount and protected path. Data mounts such as `/var/lib/docker`,
-`/var/lib/containerd`, `/srv/cow`, `/srv/data`, `/home/runner`, and
-`/usr/local` are allowed when they do not cover a protected tree.
-See [README](../README.md#disk-layout) for filesystem and ordering details and
-[DESIGN-GUIDE](DESIGN-GUIDE.md#root-and-swap-policies) for why the plan has one
-sizing authority.
+requested mount and protected path. `/usr/local` remains protected because the
+installer writes executables there in stage one. Mounts intersecting
+`/var/lib/docker` or `/var/lib/containerd` are refused because the installer
+mounts data in stage two, after Docker may be running, and it does not stop or
+seed that state.
+
+`/var/log/journal` and its descendants are supported for persistent journal
+data; `/var/log` itself and other log paths remain protected. For example, a
+formatted ext4 volume can use this mount in `partitioning.data.volumes`:
+
+```json
+{
+  "schema_version": 1,
+  "partitioning": {
+    "root": 40,
+    "data": {
+      "kind": "partitions",
+      "volumes": [
+        {"size": "*", "fs": "ext4", "mount": "/var/log/journal", "label": "JOURNAL"}
+      ]
+    }
+  }
+}
+```
+
+Other supported data mounts include `/srv/cow`, `/srv/data`, and
+`/home/runner`. See [README](../README.md#disk-layout) for filesystem and
+ordering details and [DESIGN-GUIDE](DESIGN-GUIDE.md#data-mount-safety) for why
+these paths differ.
 
 ## Cloud-init cache policy
 

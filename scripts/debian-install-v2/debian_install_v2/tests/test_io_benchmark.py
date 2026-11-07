@@ -11,7 +11,7 @@ from debian_install_v2 import installer as installer_module
 from debian_install_v2.actions import ActionError, HostActions, PlannedAction
 from debian_install_v2.config import Config
 from debian_install_v2.installer import Installer, InstallerError
-from debian_install_v2.layout_policy import IOBENCH_PARTLABEL
+from debian_install_v2.layout_policy import IOBENCH_PARTLABEL, ZFS_TYPE_GUID
 from debian_install_v2.state import StateStore
 
 GIB = 1024 ** 3
@@ -185,6 +185,34 @@ def test_benchmark_refuses_when_the_planned_partlabel_geometry_disagrees(tmp_pat
         raise AssertionError("raw benchmark partition with a foreign PARTLABEL was accepted")
 
 
+def test_benchmark_refuses_when_raw_partition_has_the_wrong_gpt_type(tmp_path, monkeypatch):
+    installer, disk = make(tmp_path)
+    planned = installer._plan_swap_partitions()
+    monkeypatch.setattr(installer, "_plan_swap_partitions", lambda: planned)
+    raw_number = next(number for number, entry in disk.table.items() if entry.get("name") == IOBENCH_PARTLABEL)
+    disk.table[raw_number]["type"] = ZFS_TYPE_GUID
+
+    with pytest.raises(InstallerError, match="does not match PARTLABEL=iobench-raw"):
+        installer._run_io_benchmark()
+
+    assert not any(Path(action.argv[0]).name == "wipefs" for action in disk.planned)
+
+
+def test_benchmark_checks_raw_partlabel_at_the_planned_partition_number(tmp_path, monkeypatch):
+    installer, disk = make(tmp_path)
+    planned = installer._plan_swap_partitions()
+    monkeypatch.setattr(installer, "_plan_swap_partitions", lambda: planned)
+    raw_number = next(number for number, entry in disk.table.items() if entry.get("name") == IOBENCH_PARTLABEL)
+    planned_entry = dict(disk.table[raw_number])
+    disk.table[raw_number]["name"] = "FOREIGN"
+    disk.table[raw_number + 20] = {**planned_entry, "name": IOBENCH_PARTLABEL}
+
+    with pytest.raises(InstallerError, match="does not match PARTLABEL=iobench-raw"):
+        installer._run_io_benchmark()
+
+    assert not any(Path(action.argv[0]).name == "wipefs" for action in disk.planned)
+
+
 @pytest.mark.parametrize("geometry_field", ["start", "size"])
 def test_benchmark_geometry_mismatch_stops_before_wipefs(tmp_path, geometry_field):
     installer, disk = make(tmp_path)
@@ -229,7 +257,13 @@ def test_mounted_or_active_swap_raw_partition_is_never_wiped(tmp_path, guard):
 
 
 def test_stage_two_benchmark_result_is_consumed_by_iocost_after_the_table_write(tmp_path, monkeypatch):
-    installer, disk = make(tmp_path, iocost_enabled=True)
+    installer, disk = make(
+        tmp_path,
+        iocost_enabled=True,
+        partitioning={"root": 10, "data": {"kind": "partitions", "volumes": [
+            {"size": "*", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+        ]}},
+    )
     disk.mkdir = lambda path: disk.planned.append(PlannedAction(("/usr/bin/mkdir", "-p", path), "fake mkdir"))
     disk.exists = lambda _path: False
     events: list[str] = []
@@ -251,6 +285,7 @@ def test_stage_two_benchmark_result_is_consumed_by_iocost_after_the_table_write(
     monkeypatch.setattr(installer, "_configure_iocost", lambda: (events.append("iocost"), configure_iocost())[1])
     monkeypatch.setattr(installer, "_grow_root_to_plan", lambda: events.append("root-grow"))
     monkeypatch.setattr(installer, "_activate_swap_partitions", lambda: events.append("swap-active"))
+    monkeypatch.setattr(installer, "_configure_data_area", lambda: events.append("data-area-format"))
     monkeypatch.setattr(installer, "_health_gate_swap_devices", lambda: None)
     monkeypatch.setattr(installer, "_run_cpu_benchmark", lambda: None)
     monkeypatch.setattr(installer, "_release_apt_timers", lambda: None)
@@ -260,6 +295,7 @@ def test_stage_two_benchmark_result_is_consumed_by_iocost_after_the_table_write(
 
     assert events.index("table-write") < events.index("benchmark") < events.index("iocost")
     assert events.index("iocost") < events.index("root-grow") < events.index("swap-active")
+    assert events.index("benchmark") < events.index("data-area-format")
     iocost = step(installer, "iocost")
     assert iocost["status"] == "success"
     assert f"rbps={RESULTS['rbps']}" in iocost["detail"]

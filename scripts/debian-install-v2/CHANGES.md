@@ -4,6 +4,12 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Fixed (third review of div2-data-area-v2)
+- Refuse every `/usr/local` data mount because stage one writes installer executables there and the stage-two data mount does not seed them.
+- Refuse mounts intersecting `/var/lib/docker` or `/var/lib/containerd`; stage two runs after those services may have live state, with no stop or seed step.
+- Protect `/lib64`, `/lib32`, `/libx32`, `/var/lib/systemd`, and `/var/lib/cloud`. Allow `/var/log/journal` as the documented persistent-journal exception while keeping other `/var/log` mounts protected.
+- Add regression coverage for mount boundaries, raw-partition type/name/size checks, offline root-number reporting, GPT slot arithmetic, fixed reserves, and benchmark-before-data formatting order.
+
 ### Changed (BREAKING, div2-data-area-v2): one explicit `partitioning` plan, partition numbers follow disk position
 - Live finding 2026-11-05 (v1001): data partition numbered 8 although it sat before swaps 4-7, and a 166.8 GiB hole between root
   and data (rule-sized `dev-host`: root 5/16, data 1/3, rest "reserve").
@@ -17,8 +23,8 @@ All notable changes to debian-install-v2 are recorded here.
 - Root behaviour derives from `partitioning.root`; `root_resize_policy` is removed with no plan-less path. A plan accepts `swap_policy`
   `on`/`off` (not `untouched`).
 - LVM: LV sizes GiB / percent of the VG (`-l` extents) / `"*"` (`-l 100%FREE`, created last); `vg_free_gib` keeps VG space.
-  Raw partitions (`fs: none`, optional `type: zfs`) are planned but never formatted. A mount holding `/var/lib/docker` requires its
-  mount for `docker.service`. Allowlist: `lvcreate -l`.
+  Raw partitions (`fs: none`, optional `type: zfs`) are planned but never formatted. Docker and containerd state paths are not valid
+  data mount targets because the data filesystem is configured after those services may have started. Allowlist: `lvcreate -l`.
 - REMOVED, no migration: `disk_layout`, `root_max_size_gb`, `data_area`, `data_partition`, `data_lvm` (a config with one is
   refused with a pointer to `partitioning`), and the rule sizing (`recommended_root_gib`, 1/3 data, `min_root_gib` floor).
   Migration by hand: the old `dev-host` + runner-created CoW layout is
@@ -28,10 +34,10 @@ All notable changes to debian-install-v2 are recorded here.
 - Fixed root/data sizes cannot mix with percentage sizes; a numeric fixed reserve can accompany a percentage pool. The offline resolver
   accepts `--root-start-sector` and `--root-number` (netcup: `2500608`, `3`). Config load and both planners enforce GPT's 128-entry limit.
 - Mount refusals name the protected OS-state path. Exact `/`, `/var`, `/var/lib`, `/srv`, and `/home` mounts are refused, as are mounts
-  covering `/usr` (except `/usr/local` and its descendants), `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`,
-  `/sbin`, `/lib`, `/var/lib/dpkg`,
-  `/var/lib/apt`, `/var/cache/apt`, `/var/log`, `/srv/tree-cache`, or `/srv/tree-upper`; dedicated data children such as
-  `/var/lib/docker`, `/var/lib/containerd`, `/srv/cow`, `/home/runner`, and `/usr/local` remain allowed.
+  covering `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`, `/dev`, `/run`, `/bin`, `/sbin`, `/lib`, `/lib64`, `/lib32`,
+  `/libx32`, `/var/lib/dpkg`, `/var/lib/apt`, `/var/lib/systemd`, `/var/lib/cloud`, `/var/cache/apt`, `/var/log`, `/srv/tree-cache`,
+  or `/srv/tree-upper`. `/var/log/journal` and its descendants are allowed for persistent journal data; Docker/containerd state mounts
+  and all `/usr/local` mounts are refused.
 - Tests cover boundary behavior with swap on/off, raw partition geometry and wipe ordering, PARTLABEL-only recognition, static invalid
   plans, protected and allowed mounts, offline root geometry, and the GPT partition-number limit. `test_data_area_vm.py` remains in `r1-vm-real-commit`.
 

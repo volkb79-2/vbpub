@@ -70,6 +70,15 @@ def test_raw_iobench_partition_can_only_be_disabled_when_benchmark_is_off():
         load_config(raw_json='{"partitioning":{"iobench_raw_gb":false},"run_io_benchmark":true}')
 
 
+def test_iobench_raw_upper_bound_is_checked_at_config_load():
+    from debian_install_v2.layout_policy import MAX_GIB
+
+    accepted = load_config(raw_json=json.dumps({"partitioning": {"iobench_raw_gb": MAX_GIB}}))
+    assert accepted.partitioning["iobench_raw_gb"] == MAX_GIB
+    with pytest.raises(ConfigError, match=rf"iobench_raw_gb must be an integer GiB value from 2 to {MAX_GIB}"):
+        load_config(raw_json=json.dumps({"partitioning": {"iobench_raw_gb": MAX_GIB + 1}}))
+
+
 @pytest.mark.parametrize("policy", ["on", "off"])
 def test_swap_policy_accepts_each_documented_value(policy):
     assert load_config(raw_json=json.dumps({"swap_policy": policy})).swap_policy == policy

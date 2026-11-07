@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from debian_install_v2 import bootstrap
 from debian_install_v2.config import Config
 from debian_install_v2.layout_policy import GPT_LAST_USABLE_OFFSET, IOBENCH_PARTLABEL
 from debian_install_v2.plan_preview import PlanPreviewError, disk_size_bytes, resolve_plan
@@ -134,3 +137,84 @@ def test_offline_resolver_accepts_partition_128_and_refuses_129():
     assert accepted["plan_table"][-1]["number"] == 128
     with pytest.raises(PlanPreviewError, match="above the GPT limit of 128"):
         resolve_plan(config(128), disk_size="512GiB")
+
+
+def test_offline_resolver_defaults_to_root_partition_one_at_sector_2048():
+    config = Config(partitioning={"root": "*", "iobench_raw_gb": False}, swap_policy="off")
+
+    result = resolve_plan(config, disk_size="20GiB")
+
+    assert result["root_number"] == 1
+    assert result["root_start_sector"] == 2048
+    assert result["plan_table"][0]["number"] == 1
+    assert result["plan_table"][0]["start"] == 2048
+
+
+@pytest.mark.parametrize("root_number", [0, 129, True])
+def test_offline_resolver_rejects_root_numbers_outside_gpt_range(root_number):
+    config = Config(partitioning={"root": "*", "iobench_raw_gb": False}, swap_policy="off")
+
+    with pytest.raises(PlanPreviewError, match="root partition number must be an integer from 1 to 128"):
+        resolve_plan(config, disk_size="20GiB", root_number=root_number)
+
+
+def test_json_plan_includes_the_selected_root_number(monkeypatch):
+    config = Config(partitioning={"root": "*", "iobench_raw_gb": False}, swap_policy="off")
+    installer = SimpleNamespace(config=config)
+    monkeypatch.setattr(bootstrap, "_make_installer", lambda *args, **kwargs: installer)
+
+    class Output:
+        def primary(self, value):
+            self.value = value
+
+    output = Output()
+    runtime = SimpleNamespace(json_mode=True, output=output)
+    args = SimpleNamespace(
+        disk_size="20GiB", ram_gib=None, root_start_sector=4096, root_number=3,
+        root_current_size_gib=None,
+    )
+
+    assert bootstrap._plan(args, runtime) == 0
+    assert output.value["root_number"] == 3
+    assert output.value["plan_table"][0]["number"] == 3
+
+
+def test_live_plan_failure_diagnostic_uses_detected_root_number(monkeypatch):
+    from debian_install_v2.installer import InstallerError
+
+    config = Config(
+        partitioning={"root": "*", "iobench_raw_gb": False},
+        swap_policy="off",
+    )
+
+    class FakeInstaller:
+        root_number = 3
+
+        def __init__(self, installer_config):
+            self.config = installer_config
+
+        def show_plan(self):
+            raise InstallerError("test diagnostic path")
+
+        def _disk_facts(self):
+            return 512 * 1024**3 // 512, 2_500_608, 40 * 1024**3 // 512
+
+        def _memory_total_bytes(self):
+            return 8 * 1024**3
+
+    installer = FakeInstaller(config)
+    monkeypatch.setattr(bootstrap, "_make_installer", lambda *args, **kwargs: installer)
+    original_resolve_plan = bootstrap.resolve_plan
+    observed = {}
+
+    def record_root_number(*args, **kwargs):
+        observed["root_number"] = kwargs["root_number"]
+        return original_resolve_plan(*args, **kwargs)
+
+    monkeypatch.setattr(bootstrap, "resolve_plan", record_root_number)
+    runtime = SimpleNamespace(json_mode=False, output=SimpleNamespace(primary=lambda _value: None))
+    args = SimpleNamespace(disk_size=None)
+
+    with pytest.raises(bootstrap.CliFailure, match="test diagnostic path"):
+        bootstrap._plan(args, runtime)
+    assert observed["root_number"] == 3
