@@ -11,6 +11,26 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [25.3.0] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=a620a668945454a24cef2343bf3e3fd7c4957951 -->
+
+### Added
+- feat(run-gate): per-level cgprofile socket layout, new-only preflight, host Docker GID from override or docker.sock (RG-243) (4f049b8df)
+
+### Fixed
+- fix(run-gate): close host socket review findings (0f84d4243)
+- fix(run-gate): strict Docker GID source (override rules shared with Assay, non-unix DOCKER_HOST and root-group socket refused), GID-bearing collision messages, cockpit-mapping test, cutover wording, RG-152/RG-243 reconciliation (b6a21beb3)
+
+### Changed
+- run-gate: drop the out-of-scope docker-logs process-group change (broke 10 fake-Process tests); effective GID wording in preflight docstring (a6e513f2e)
+- run-gate: apply host service socket amendment (f9d34a449)
+- Merge origin/main into sockets-rg-20261105 (CHANGES.md: keep both Changed bullets) (0807db258)
+
+### Documentation
+- docs: reconcile RG55 socket contract text (98c0a860c)
+- docs: reconcile RG55 socket contract mirrors (651d0c39f)
+
 ## [25.2.1] - 2026-11-06
 <!-- cmru: generated -->
 <!-- cmru: source-end=9e802ce2b0bebd09ee88805e49b7ddb51bab269c -->
