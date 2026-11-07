@@ -87,7 +87,9 @@ thresholds justified by a measured `watch` comparison, or accept read-only evide
 `iobench ceilings add` (the adapter lives in host-tuning, so iogovmon needs neither iobench nor fio). It never writes outside its state dir and never runs
 a subprocess (the static no-write test must stay green). The mapping of the 64 KiB sequential lanes to iobench's `seq1m|rand4k` workload names needs an
 explicit decision (a new workload name, or a documented approximation carrying the `file`-kind label of IOB-TGT-09, since iogovmon measures a file, not
-the device).
+the device). Since iobench's disk-scope identity change (iobench-wp0), `iobench ceilings add --source governor` REQUIRES `--kind` (`file` for these
+observations; `raw`/`probe` are not valid for iogovmon's scratch-file measurements), and old iobench records without a `disk_scope` are stale: the
+exporter must emit the kind and never seed history from before iobench schema minor 1.
 
 **Acceptance:** a test that a journal with a confirmed downward shift yields export lines whose `plateau_bps` equals the window's median
 durable rate and whose `note` carries the recommendation key; `iobench ceilings add` accepts a printed line in a dry run (checked in host-tuning's
