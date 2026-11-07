@@ -19,7 +19,9 @@ plan 2026-11 host-service-sockets: per-level socket layout, dedicated groups,
 no exec carrier, no legacy path fallback; WP-E3 (2026-11-07): Run-Gate reads
 control and observer endpoints only from
 `CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET`, respectively;
-`[profile].socket_path` is refused; observer mounts use the host directory's
+`[profile].socket_path` is refused; each endpoint value must be an absolute
+path over `[A-Za-z0-9_./:@+-]` without `..`, empty or `.` components and not
+ending in `/`, and the observer's directory is never `/`; observer mounts use the host directory's
 identity path and pass `ASSAY_RESOURCE_OBSERVER_SOCKET` to the lane.
 **v1.1 (RW-34, 2026-09-12, §8 below):** additive under `contract: 1` —
 the socket-only control carrier (§8.1), `watch` (§8.2), placement (§8.3),
@@ -487,8 +489,9 @@ passes one descriptor named `control` to `cgpd`. The default control group is
 `cgprofile-control`; the observer has its own socket unit, dedicated group,
 level directory and `observer` descriptor. These level groups are distinct,
 and neither may be the Docker group or use its GID. Consumers mount only the
-level directory they are entitled to. The supported host layout uses the
-new per-level paths; no client falls back to the pre-cutover socket paths.
+level directory they are entitled to. Clients take each
+per-level endpoint only from its environment variable; no client falls back to
+a built-in socket path.
 
 | carrier | how a request travels | who is authorised | default |
 |---|---|---|---|

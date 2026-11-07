@@ -2790,9 +2790,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   endpoint, grant the Docker socket,
   or change the container's
   private PID/cgroup/network namespaces.
-  This release requires the new host socket layout. On a host still using the
-  old layout, preflight reports that the host socket cutover is required;
-  keep the earlier Run-Gate and Assay pins there until cutover.
+  This release takes both endpoints only from the `CGPROFILE_CONTROL_SOCKET`
+  and `CGPROFILE_OBSERVER_SOCKET` environment variables. A host or session
+  that does not deliver the variables a lane needs fails preflight naming the
+  variable, with the remedy to check it, run `cgpd doctor`, and repair the
+  host endpoints record; there is no built-in path to fall back to.
   - The observer listener belongs to the existing cgprofile daemon and accepts
     exactly one `resource-limits` request with a positive native thread ID.
     It has no `start`, `stop`, `place`, or other control verbs. The daemon

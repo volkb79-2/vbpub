@@ -505,6 +505,11 @@ CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
 CGPROFILE_CONTROL_SOCKET_ENV_VAR = "CGPROFILE_CONTROL_SOCKET"
 CGPROFILE_OBSERVER_SOCKET_ENV_VAR = "CGPROFILE_OBSERVER_SOCKET"
 ASSAY_RESOURCE_OBSERVER_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
+SOCKET_ENDPOINT_PATTERN = re.compile(r"[A-Za-z0-9_./:@+-]{1,4096}")
+# Observer directory mode bits the preflight enforces (root:root directory):
+# the group-search bit must be set, group/other write must be clear.
+CGPROFILE_OBSERVER_DIRECTORY_SEARCH = 0o010
+CGPROFILE_OBSERVER_DIRECTORY_WRITE_MASK = 0o022
 # `host` (default) and `bare-host` (opt-out) swapped roles in the
 # host/bare-host flip (RG-43) — `host`
 # now routes through the same container machinery every named environment
@@ -957,7 +962,34 @@ def _socket_endpoint_from_env(variable: str) -> str:
         fail_infra(f"{variable} is unset or empty: run 'cgpd doctor', repair "
                    "the host endpoints record, then start a session that has "
                    "received the updated environment")
+    problem = _socket_endpoint_shape_problem(value)
+    if problem is not None:
+        # The value is deliberately not echoed: it may carry newlines or
+        # mount-option text, and it flows into docker argv.
+        fail_infra(f"{variable} is not a valid socket endpoint: {problem}; "
+                   "run 'cgpd doctor' and repair the host endpoints record")
     return value
+
+
+def _socket_endpoint_shape_problem(value: str) -> str | None:
+    """Name the first rule an endpoint value breaks, or None when it is sound.
+
+    The alphabet is the host endpoint record's (design 2.1). It admits ':'
+    that Docker's mount grammars cannot carry; a colon never reaches the
+    mounted directory because `validate_docker_mount_path` still screens the
+    derived directory before any mount argv is built.
+    """
+    if not SOCKET_ENDPOINT_PATTERN.fullmatch(value):
+        return ("only [A-Za-z0-9_./:@+-] are allowed (no whitespace, comma, "
+                "newline or other characters) and the length is at most 4096")
+    if not value.startswith("/"):
+        return "the path must be absolute"
+    if value.endswith("/"):
+        return "the path must end in a socket file name, not a directory"
+    components = value.split("/")[1:]
+    if any(part in ("", ".", "..") for part in components):
+        return "empty, '.' and '..' path components are not allowed"
+    return None
 
 
 def control_socket_from_env() -> str:
@@ -966,8 +998,39 @@ def control_socket_from_env() -> str:
 
 
 def observer_socket_from_env() -> str:
-    """Return the required cgprofile observer endpoint from the environment."""
-    return _socket_endpoint_from_env(CGPROFILE_OBSERVER_SOCKET_ENV_VAR)
+    """Return the required cgprofile observer endpoint from the environment.
+
+    The observer's directory is bind-mounted into the lane, so it must be a
+    real directory below the filesystem root, never `/` itself.
+    """
+    value = _socket_endpoint_from_env(CGPROFILE_OBSERVER_SOCKET_ENV_VAR)
+    directory = posixpath.dirname(value)
+    if directory == "/":
+        fail_infra(f"{CGPROFILE_OBSERVER_SOCKET_ENV_VAR} is not a valid "
+                   "socket endpoint: its directory would be the filesystem "
+                   "root, which must never be mounted into a lane; run "
+                   "'cgpd doctor' and repair the host endpoints record")
+    return value
+
+
+def recorded_profile_endpoint(pending: dict) -> tuple[str | None, str | None]:
+    """The control endpoint a run's profiler session was started against.
+
+    Recovery (a re-attach, a promoted follower) must stop the session on the
+    daemon that owns it, so it uses the endpoint recorded with the run, never
+    the current environment: that may be unset or point elsewhere by now. A
+    record without a usable endpoint is reported, not guessed at.
+    """
+    recorded = pending.get("profile_control_socket")
+    if not isinstance(recorded, str) or not recorded:
+        return None, ("the run record carries no recorded profiler control "
+                      "endpoint (profile_control_socket), so this client "
+                      "cannot stop its profiler session")
+    if _socket_endpoint_shape_problem(recorded) is not None:
+        return None, ("the recorded profiler control endpoint "
+                      "(profile_control_socket) is not a valid socket path, "
+                      "so the profiler session cannot be stopped")
+    return recorded, None
 
 
 def preflight_profile_endpoints(lane: dict, profiling_enabled: bool) -> None:
@@ -2827,12 +2890,12 @@ def socket_unreachable_cause(socket_path: str, exc: BaseException) -> str:
             return ("socket-not-mounted: the control socket directory does not "
                     f"exist here (bind-mount {control_directory}, or the host "
                     "has no cgprofile daemon runtime directory); "
-                    "if this host runs the cgprofile service, complete the "
-                    "host cgprofile socket cutover")
+                    f"check ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, run "
+                    "'cgpd doctor', and repair the host endpoints record")
         return ("socket-missing: the directory exists but the socket node is "
                 "gone (the cgprofile daemon is not running, or the node was "
-                "removed); if this host runs the cgprofile service on the old "
-                "layout, complete the host cgprofile socket cutover")
+                f"removed); check ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, run "
+                "'cgpd doctor', and repair the host endpoints record")
     if isinstance(exc, ConnectionRefusedError):
         return ("daemon-refusing: a socket node exists but nothing is "
                 "listening (the daemon exited, is restarting, or refuses to "
@@ -8868,6 +8931,11 @@ def resource_observer_docker_flags(
     socket_path = Path(observer_socket_path)
     directory_path = socket_path.parent
     try:
+        validate_docker_mount_path(
+            directory_path, f"${CGPROFILE_OBSERVER_SOCKET_ENV_VAR} directory")
+    except GateError as exc:
+        fail_infra(str(exc))
+    try:
         parent = os.lstat(directory_path)
         observed = os.lstat(socket_path)
     except OSError as exc:
@@ -8886,8 +8954,8 @@ def resource_observer_docker_flags(
         not stat.S_ISDIR(parent.st_mode)
         or parent.st_uid != 0
         or parent.st_gid != 0
-        or parent.st_mode & 0o022
-        or not parent.st_mode & 0o010
+        or parent.st_mode & CGPROFILE_OBSERVER_DIRECTORY_WRITE_MASK
+        or not parent.st_mode & CGPROFILE_OBSERVER_DIRECTORY_SEARCH
     ):
         fail_infra(f"cgprofile resource observer directory is not a safe "
                    f"root-owned (root:root), group-searchable directory: "
@@ -10979,14 +11047,28 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
            f"interval={profile_settings['interval']} "
            f"damon={profile_settings['damon']} "
            f"(source: {profile_settings['source']}){ambient_note}")
+    control_endpoint = None
+    control_endpoint_error = None
+    if profile_settings["enabled"]:
+        # An unset or malformed endpoint is exactly what doctor exists to
+        # report: a WARN naming the variable, never an abort of the run.
+        try:
+            control_endpoint = control_socket_from_env()
+        except GateInfraError as exc:
+            control_endpoint_error = str(exc)
     if not profile_settings["enabled"]:
         record("WARN", "profiler daemon",
                "profiling disabled — no lane will be profiled; see "
                "'profile config' above for why")
+    elif control_endpoint_error is not None:
+        record("WARN", "profiler endpoint",
+               f"{control_endpoint_error} — container/exec lanes fall back "
+               f"to basic (in-lane) sampling, bare-host lanes to coarse "
+               f"rusage accounting (R-43i)")
     else:
         # RG-156: the control socket is the only carrier, so doctor needs
         # no docker. An unreachable socket carries its CP-31 cause tag.
-        client = ProfilerClient(control_socket_from_env())
+        client = ProfilerClient(control_endpoint)
         version_doc, reason = client.version()
         if version_doc is None:
             record("WARN", "profiler daemon",
@@ -15538,8 +15620,14 @@ def promote_follower(docker: str, name: str, lane_name: str,
     # here either (its samples died with the owner's process).
     if run_record is not None:
         session = pending.get("profile_session")
-        if session:
-            socket_path = control_socket_from_env()
+        socket_path, endpoint_problem = recorded_profile_endpoint(pending)
+        if session and socket_path is None:
+            run_record["resources"] = None
+            run_record["profile_error"] = f"promoted: {endpoint_problem}"
+            run_record["profile_ref"] = None
+            print(f"run-gate: WARNING profiling: {endpoint_problem} — no "
+                  f"profile recorded", file=sys.stderr, flush=True)
+        elif session:
             stop_doc, reason = ProfilerClient(socket_path).stop(session)
             if stop_doc is not None:
                 run_record["resources"] = stop_doc["summary"]
@@ -15892,8 +15980,13 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         # or the original run degraded to basic) gets a named `profile_error`
         # instead of a fabricated resume.
         session = pending.get("profile_session")
-        if session:
-            socket_path = control_socket_from_env()
+        socket_path, endpoint_problem = recorded_profile_endpoint(pending)
+        if session and socket_path is None:
+            profiler_state = {"mode": None, "client": None, "socket_path": None,
+                              "session": None, "session_line": None,
+                              "warning": f"re-attach: {endpoint_problem}",
+                              "sampler": None, "profiler_status": None}
+        elif session:
             profiler_state = {"mode": "daemon",
                               "client": ProfilerClient(socket_path),
                               "socket_path": socket_path, "session": session,
@@ -16370,6 +16463,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             # adds the session id now that `start` succeeded (contract Sec
             # 4.1's "and, after start, profile_session").
             inflight_payload["profile_session"] = profiler_state["session"]
+            inflight_payload["profile_control_socket"] = (
+                profiler_state.get("socket_path"))
             if profiler_state.get("placement") is not None:
                 inflight_payload["placement"] = profiler_state["placement"]
                 if run_record is not None:
@@ -16736,6 +16831,9 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
         # `start` already answered, so there is no "second write" step).
         "profile_session": (profiler_state["session"]
                            if profiler_state["mode"] == "daemon" else None),
+        "profile_control_socket": (profiler_state.get("socket_path")
+                                   if profiler_state["mode"] == "daemon"
+                                   else None),
     }
     if run_record is not None:
         run_record["_inflight"] = inflight_payload
@@ -17125,6 +17223,9 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
                 preflight=profile_preflight)
         except GateInfraError:
+            # The placement barrier child may already be running: abandon it
+            # before the infrastructure error leaves this frame.
+            abandon_placement_launch(proc, barrier_nonce)
             raise
         except Exception as exc:
             # B1d (round-1 review precedent, same call-site defense in

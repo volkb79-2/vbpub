@@ -17,6 +17,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   `ASSAY_RESOURCE_OBSERVER_SOCKET`. Missing required variables name
   `cgpd doctor` and the host endpoints record as the remedy. `RUN_GATE_PROFILE=off`
   explicitly opts out of profiling; observer lanes still require both endpoints.
+  Endpoint values are shape-validated (absolute path over `[A-Za-z0-9_./:@+-]`,
+  no `..`/empty/`.` components, no trailing `/`, observer directory never `/`)
+  before they reach any Docker argument. `run-gate doctor` reports an unusable
+  control endpoint as a WARN and continues. Recovery (re-attach, promoted
+  follower) stops a profiler session on the control endpoint recorded in the
+  run record (`profile_control_socket`) and reports a record without one.
 
 <!-- cmru: release history -->
 

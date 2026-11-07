@@ -373,9 +373,13 @@ observer access level and avoids a second path that could drift from the host
 endpoint record.
 
 The level directories are `root:root`; the socket inode's group grants access.
-The host's usual directory mode is `0755`, but Run-Gate does not require that
-exact mode: it accepts a group-searchable directory with no group or other
-write permission, so a stricter mode such as `0750` is valid too. Run-Gate
+The supported observer directory mode is `0755`. The preflight accepts the
+exact set of modes with `mode & 0o010 != 0` (the group-search bit is set) and
+`mode & 0o022 == 0` (neither group nor other may write); it does not test the
+other-search bit. The directory is owned by `root:root`, so the group-search
+bit applies to GID 0, not to the observer GID: `0750` passes the preflight but
+is not usable by a non-root lane user that holds only the observer GID, which
+needs the other-search bit (`0755`) to traverse the directory. Run-Gate
 runs inside the cockpit container, whose group
 database may map `docker` to another GID or omit it, so it never consults the
 group database. The host Docker GID comes from the explicit
