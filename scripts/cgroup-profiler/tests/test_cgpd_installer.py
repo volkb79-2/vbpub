@@ -2223,6 +2223,16 @@ def test_duplicate_users_are_listed_once(monkeypatch):
     assert installer._validate_users(["alice", "bob", "alice"]) == ["alice", "bob"]
 
 
+def test_duplicate_missing_users_are_forgotten_once(monkeypatch):
+    def missing_user(name):
+        raise KeyError(name)
+
+    monkeypatch.setattr(installer.pwd, "getpwnam", missing_user)
+    forgotten = []
+    assert installer._validate_users(["retired-user", "retired-user"], forgotten) == []
+    assert forgotten == ["retired-user"]
+
+
 def test_a_command_that_cannot_run_is_a_bounded_failure(tmp_path):
     def broken(argv, **_kwargs):
         raise subprocess.TimeoutExpired(argv, 1)
