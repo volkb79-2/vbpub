@@ -5165,9 +5165,23 @@ def test_the_shared_transport_caps_a_response_body(monkeypatch):
         net._urlopen_bytes("https://github.com/x", max_bytes=10)
 
 
-def _published_build(tmp_path, sidecar_text):
+def _published_build(tmp_path, sidecar_text, *, delayed_identity_parser=False):
     """build-image.sh --run-gate-published against a stub fetcher that stages a wheel and, optionally, a sidecar."""
     script, env, log, _wheel_dir = _stub_docker_tree(tmp_path)
+    if delayed_identity_parser:
+        python = script.parent.parent.parent / "bin" / "python3"
+        python.write_text(
+            "#!/bin/bash\n"
+            f"{shlex.quote(sys.executable)} \"$@\"\n"
+            "status=$?\n"
+            "if [[ ${1:-} == -c ]]; then\n"
+            "  exec 1>&-\n"
+            "  sleep 0.5\n"
+            "fi\n"
+            "exit \"$status\"\n",
+            encoding="utf-8",
+        )
+        python.chmod(0o755)
     fetcher = script.with_name("fetch-run-gate-wheel.py")
     sidecar = "" if sidecar_text is None else (
         f"(dest / 'run_gate-1.0.0-py3-none-any.whl.sha256').write_text({sidecar_text!r})\n")
@@ -5191,6 +5205,16 @@ def test_build_image_requires_the_fetchers_digest_to_equal_its_own_hash(tmp_path
     assert result.returncode == 2 and "does not match the digest the fetcher verified" in result.stderr
     result = _published_build(tmp_path / "none", None)
     assert result.returncode == 2 and "left no run_gate-1.0.0-py3-none-any.whl.sha256" in result.stderr
+
+
+def test_build_image_waits_for_identity_parser_before_refusing_bad_digest(tmp_path):
+    result = _published_build(
+        tmp_path,
+        "0" * 64 + "  run_gate-1.0.0-py3-none-any.whl\n",
+        delayed_identity_parser=True,
+    )
+    assert result.returncode == 2
+    assert "does not match the digest the fetcher verified" in result.stderr
 
 
 def _promote(tmp_path, *args, present=None, tag_log=None):

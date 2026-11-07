@@ -2910,3 +2910,70 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 ## KI-128 - `cmru versions resolve` cannot use the operator's Docker credential store, so a shared-IP host stays stuck on the anonymous Docker Hub limit
 
 **Status:** OPEN; severity: enhancement. Found in netcup-api-filter (`netcup-api-filter@68ea380`, cmru 7.2.1). `resolve` for three Docker Hub targets (mailpit, pdns-auth, python) fails with HTTP 429 `TOOMANYREQUESTS ... unauthenticated pull rate limit` (exit 3 here, exit 5 for a bare 429 per the docs) on a host whose IP is shared by many consumers; retrying every 15 minutes did not clear it. Credentials can only be supplied as `username_env`/`password_env` source keys, so an operator who is logged in through the Docker credential store (`~/.docker/config.json` `auths` or `credsStore`/`credHelpers`) must also export a second copy of the secret into the environment. Wanted: an opt-in per-source (or per-run) `auth = "docker-config"` that asks the Docker credential helper for the registry host, without ever printing the secret, plus the exit code being 5 for every rate-limit refusal (this run exited 3 although the message is a pull-limit 429).
+
+## KI-129 - R2 shard s1 survivors in CMRU 7.2.2
+
+**Status:** FIXED 2026-11-06 on branch `cmru-surv1-20261106` (unreleased); severity: test strength plus fail-closed precondition defects. Campaign `cmru-r2c-s1` judged 304 candidates from CMRU 7.2.2 sources: 248 killed, 56 survived. Evidence: `/home/vscode/vbpub-release-program-20261027/r1002/r2-closeouts-20261105/cmru-r2c-s1/` and section 12 of `reports/r2-board-20261105b-REPORT.md`; source line numbers below refer to the 7.2.2 source and map to the same code on the closeout branch. Root-cause classes: (a) ordinary behavioral gaps (input validation, immutable records, subprocess flags/output handling, serialization, and preflight failure reporting); (b) three equivalent/dead-code survivors, removed or simplified at source; and (c) the Run-Gate image preflight accepted a missing version by substituting `unknown`, now refused as FAIL. Review also found the adjacent missing-wheel-digest fallback could print `unknown` on PASS; the preflight now requires a valid 64-character lowercase SHA-256 and fails closed when it is absent or malformed. Each new behavioral oracle was checked with its individual mutation or controlled wrong implementation hand-applied in a scratch copy. `test_assay_lane_inventory.py` also checks that both whole-target lanes list exactly executable modules; `src/cmru/__init__.py` was removed because it contains only a docstring and Assay reports `TARGET_NOT_MEASURED` for that target.
+
+| Survivor (7.2.2 line) | Mutation | Class | Test / change |
+| --- | --- | --- | --- |
+| `config.py:92` | `frozen=True`->False (`GitHubS2Config`) | gap | `test_config_and_precondition_records_reject_field_mutation[GitHubS2Config]` |
+| `config.py:97` | `compare=False`->True (secret token) | gap | `test_github_config_equality_does_not_depend_on_its_secret_token` |
+| `config.py:101` | `frozen=True`->False (`TargetsConfig`) | gap | `test_config_and_precondition_records_reject_field_mutation[TargetsConfig]` |
+| `config.py:107` | `frozen=True`->False (`VersionConfig`) | gap | `test_config_and_precondition_records_reject_field_mutation[VersionConfig]` |
+| `config.py:115` | `frozen=True`->False (`InstallerWheel`) | gap | `test_config_and_precondition_records_reject_field_mutation[InstallerWheel]` |
+| `config.py:122` | `frozen=True`->False (`InstallerConfig`) | gap | `test_config_and_precondition_records_reject_field_mutation[InstallerConfig]` |
+| `config.py:157` | `frozen=True`->False (`InstallerQuestion`) | gap | `test_config_and_precondition_records_reject_field_mutation[InstallerQuestion]` |
+| `config.py:165` | `required=True`->False | gap | `test_installer_question_model_defaults_to_required` |
+| `config.py:211` | default `True`->False for a local bool type check | equivalent/dead | Removed the unused local default; type-check only an explicitly present `required` value. |
+| `config.py:225` | `Eq`->`NotEq` (choice-only diagnostic) | gap | `test_question_type_error_lists_choices_only_for_choice_questions` |
+| `config.py:238` | `None`->`[]` for valid relative path | gap | `test_relative_path_validator_returns_none_for_valid_paths` |
+| `config.py:304` | `Or`->`And` (absolute installer path/control character) | gap | `test_installer_system_path_rejects_control_characters_even_when_absolute` |
+| `config.py:364` | `frozen=True`->False (`VariantConfig`) | gap | `test_config_and_precondition_records_reject_field_mutation[VariantConfig]` |
+| `config.py:393` | `frozen=True`->False (`ToolDependency`) | gap | `test_config_and_precondition_records_reject_field_mutation[ToolDependency]` |
+| `config.py:425` | `frozen=True`->False (`ProjectS2Config`) | gap | `test_config_and_precondition_records_reject_field_mutation[ProjectS2Config]` |
+| `config.py:434` | `frozen=True`->False (`CleanupS2Config`) | gap | `test_config_and_precondition_records_reject_field_mutation[CleanupS2Config]` |
+| `config.py:443` | `frozen=True`->False (`ForgeConfig`) | gap | `test_config_and_precondition_records_reject_field_mutation[ForgeConfig]` |
+| `config.py:621` | `And`->`Or` (empty `file:` strategy suffix) | gap | `test_version_strategy_requires_a_supported_value_and_nonempty_suffix` |
+| `config.py:621` | `Gt`->`GtE` (empty `file:` strategy suffix) | gap | same test |
+| `config.py:622` | `And`->`Or` (empty `external:` strategy suffix) | gap | same test |
+| `config.py:622` | `Gt`->`GtE` (empty `external:` strategy suffix) | gap | same test |
+| `config.py:629` | `Or`->`And` (version bump type) | gap | `test_version_bump_must_be_a_nonempty_string` |
+| `config.py:828` | empty-list default `[]`->`None` | gap | `test_installer_extensions_default_to_an_empty_list` |
+| `config.py:837` | `Or`->`And` (Windows-rooted extension path) | gap | `test_installer_extensions_refuse_windows_rooted_and_traversal_paths` |
+| `config.py:839` | `Or`->`And` (extension traversal) | gap | same test |
+| `config.py:963` | `Or`->`And` (tool dependency path type) | gap | `test_tool_dependency_path_must_be_a_nonempty_string` |
+| `config.py:1100` | default `reject_credentials=False`->True | gap/default hazard | Removed the default; `_scalar_env` now requires each call site to choose its credential policy. `test_scalar_env_requires_the_call_site_to_choose_credential_policy` |
+| `config.py:1108` | `Or`->`And` (environment key validation) | gap | `test_scalar_env_rejects_non_string_keys` |
+| `config.py:1132` | `Or`->`And` (empty GitHub owner; token column 34, 0-based) | gap | `test_github_config_rejects_an_empty_owner` |
+| `config.py:1132` | second `Or`->`And` (owner/repo grouping; token column 55, 0-based) | gap | same test |
+| `config.py:1138` | `Is`->`IsNot` (missing token source diagnostic) | gap | `test_missing_github_token_source_is_reported_as_missing` |
+| `config.py:1214` | `text=True`->False (`gh auth token`) | gap | `test_gh_token_reads_text_output_without_echoing_the_secret` |
+| `config.py:1215` | `check=False`->True (`gh auth token`) | gap | `test_gh_token_reports_the_nonzero_exit_code` |
+| `config.py:1228` | `Eq`->`NotEq` (non-zero `gh` diagnostic) | gap | same test |
+| `config.py:1288` | `And`->`Or` (deep-merge shape collision) | gap | `test_deep_merge_replaces_values_when_the_shapes_do_not_both_match` |
+| `config.py:1297` | empty token `''`->`None` | gap | `test_empty_resolved_secret_token_is_an_empty_string` |
+| `config.py:1377` | `Or`->`And` (runner steps must be non-empty) | gap | `test_runner_steps_must_be_a_nonempty_table` |
+| `config.py:1386` | `Or`->`And` (runner step name type; token column 42, 0-based) | gap | `test_runner_step_names_must_be_strings` |
+| `config.py:1386` | second `Or`->`And` (runner step name non-empty; token column 59, 0-based) | gap | `test_runner_step_names_must_not_be_empty` |
+| `config.py:1399` | `Or`->`And` (runner cwd type) | gap | `test_runner_command_cwd_must_be_a_nonempty_string` |
+| `config.py:1490` | `Lt`->`LtE` (template revision one) | gap | `test_template_revision_one_is_valid` |
+| `config.py:1512` | `Or`->`And` (release build-step type) | gap | `test_project_release_build_step_type_errors_are_configuration_refusals` |
+| `config.py:1686` | `Or`->`And` (empty orchestration project table) | gap | `test_orchestration_project_table_cannot_be_empty` |
+| `config.py:1773` | `GtE`->`Gt` (dependency order) | equivalent | Replaced `>=` with `>`; self-dependencies are rejected earlier and unique positions cannot be equal for distinct project ids. |
+| `config.py:1913` | `require_orchestration=True`->False | equivalent | Removed the redundant argument; this branch already selects only `cmru.orchestration.toml`, whose filename selects the orchestration grammar. |
+| `record_step.py:63` | JSON indentation `2`->`1` | gap | `test_record_inventory_keeps_two_space_json_indentation` |
+| `release_preconditions.py:33` | `frozen=True`->False (`GatePrecondition`) | gap | `test_config_and_precondition_records_reject_field_mutation[GatePrecondition]` |
+| `release_preconditions.py:48` | `text=True`->False (`git show`) | gap | `test_git_blob_reader_returns_text_and_handles_git_failure_as_a_runtime_error` |
+| `release_preconditions.py:49` | `check=False`->True (`git show`) | gap | same test |
+| `release_preconditions.py:52` | `Or`->`And` (stderr/stdout error detail) | gap | `test_git_blob_reader_uses_stdout_when_git_has_no_stderr` |
+| `release_preconditions.py:121` | `Or`->`And` (empty project table) | gap | `test_gate_identity_config_refuses_an_empty_project_table` |
+| `release_preconditions.py:124` | `exist_ok=True`->False (destination directory) | gap | `test_gate_identity_config_materialization_creates_nested_parents_and_is_repeatable` |
+| `release_preconditions.py:143` | `parents=True`->False (nested config parent; `True` token column 36, 0-based) | gap | same test |
+| `release_preconditions.py:143` | `exist_ok=True`->False (repeat materialization; `True` token column 51, 0-based) | gap | same test |
+| `release_preconditions.py:169` | `Is`->`IsNot` (image error extraction) | gap | `test_gate_identity_preflight_extracts_the_selected_image_from_its_error` |
+| `release_preconditions.py:210` | `Or`->`And` (missing version fallback) | gap/fail-closed defect | Reject a missing, empty, or non-string version in the check result; `test_gate_identity_preflight_fails_when_the_check_returns_an_invalid_version` |
+
+**Additional fixes.** `assay-first-release` and `assay-first-release-r2` included the docstring-only `src/cmru/__init__.py`, so Assay refused to measure the baseline. Both target lists now omit it. `test_assay_lane_inventory.py` derives executable modules from AST and requires exact equality with both target lists; its controlled wrong-target case was verified red after adding the initializer back. The same Run-Gate preflight now rejects a missing or malformed published-wheel digest instead of reporting `sha256 unknown` in a PASS row; its controlled wrong-digest oracle was also verified red. The one full-suite run exposed that `test_estate_python_callers_import_only_what_cmru_exports` read `mdt-cockpit/build-push.py` from a shared COW overlay; its asserted contract is the checked commit. The oracle now reads that tracked blob with `git show HEAD:<path>` and checks its import with AST, so harmless import formatting does not cause a false failure. Assay runs the baseline command for an R1+ lane inside a private Git snapshot; R0-only lanes use the direct path. The snapshot has `.git`, `HEAD` points at the judged commit, and its shallow boundary retains that commit's complete tree, so `git show HEAD:<path>` needs no history or refs. The final-lane attempt confirmed this oracle passes in the snapshot. The same run exposed three `TYPE_CHECKING`-excluded lines in `tool_deps.py`, which violate the lane's strict whole-target exclusion policy. `ToolDependency` is now imported at runtime so the type reference is measurable. The original closeout's full lane failed before these follow-up corrections; the fix-round report records the final-commit rerun.
+
+The reusable closeout oracles live in `tests/test_r2_survivors_s1.py`; the inventory oracle is in `tests/test_assay_lane_inventory.py`. The source/test changes and focused tester-unified gate are recorded in `/home/vscode/vbpub-release-program-20261027/reports/cmru-surv1-REPORT.md`.

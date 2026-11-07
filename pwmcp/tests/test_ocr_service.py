@@ -18,6 +18,7 @@ import json
 import os
 import socket
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -708,14 +709,37 @@ def test_truncated_pixel_data_is_415(running: Running) -> None:
 
 
 @needs_pil
-def test_recognition_timeout_is_504_and_the_slot_is_released(fake: Fake) -> None:
-    fake.mode("block")  # never released: only the service's own timeout can end it
-    quick = start(fake, timeout_s=0.4)
+def test_recognition_timeout_is_504_and_the_slot_is_released(
+    fake: Fake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = svc.TesseractEngine(str(fake.binary))
+    recognition_calls = 0
+
+    def run(
+        argv: list[str], timeout_s: float, stdin: bytes | None = None
+    ) -> subprocess.CompletedProcess[bytes]:
+        nonlocal recognition_calls
+        command = [str(fake.binary), *argv]
+        if argv == ["--version"]:
+            return subprocess.CompletedProcess(command, 0, b"tesseract 5.3.4\n", b"")
+        if argv == ["--list-langs"]:
+            return subprocess.CompletedProcess(command, 0, b"List of available languages (2):\neng\nosd\n", b"")
+        assert stdin is not None
+        recognition_calls += 1
+        assert timeout_s == 0.4
+        if recognition_calls == 1:
+            raise subprocess.TimeoutExpired(command, timeout_s)
+        return subprocess.CompletedProcess(command, 0, TSV.encode("utf-8"), b"")
+
+    monkeypatch.setattr(engine, "_run", run)
+    quick = Running(
+        svc.Config(host="127.0.0.1", port=0, timeout_s=0.4, socket_timeout_s=2), {"tesseract": engine}
+    )
     try:
         status, body, _ = quick.request("POST", "/v1/ocr", png())
         assert (status, body["code"]) == (504, "timeout")
-        fake.mode("ok")
         assert quick.request("POST", "/v1/ocr", png())[0] == 200
+        assert recognition_calls == 2
     finally:
         quick.close()
 

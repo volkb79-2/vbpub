@@ -103,6 +103,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - `tools/local_baseline_facts.py` + `docs/CONSUMERS.md`: how to start the `mutation` lane outside a release (builds `CMRU_ASSAY_BASELINE_FACTS`
   from local `cmru-v*` tags; the R1 pin must equal the selected tag).
+- fix(cmru): close the 56 surviving R2 s1 mutants (KI-129), require complete Run-Gate identity evidence, add hand-discriminating regression oracles, and omit the unmeasurable package initializer from first-release Assay targets.
+- test(cmru): read the estate import oracle's sibling consumer from the judged Git commit so shared COW overlays cannot supply stale source bytes.
+- fix(cmru): keep the strict first-release whole-target coverage lane measurable by importing the tool dependency type at runtime.
 <!-- cmru: pending release notes end -->
 
 ## [7.2.1] - 2026-11-04

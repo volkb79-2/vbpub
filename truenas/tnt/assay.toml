@@ -20,12 +20,20 @@ argv = [
   "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q", "-x", "-p", "no:xdist",
   "--cov=tnt", "--cov-branch", "--cov-report=json:coverage.json",
 ]
-env = { PYTHONPATH = "src:../../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
+env = { PYTHONPATH = "src:../../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1", TNT_TEST_ALLOW_MISSING_TMUX_FOR_LOCAL_DEV = "0" }
 env_passthrough = ["PATH"]
-# PLACEHOLDER pending a bounded pilot (assay --pilot-jobs / run-gate pilot): the
-# 2026-11-05 release gate ran r0-r1 in under 20 minutes serially, candidate count
-# and rate are unmeasured. Re-set after `assay plan --json`.
-budget = "12h"
+# 2026-11-06 plan: 2,990 candidates; the pilot measured about 257 s/candidate
+# at one worker and about 47 candidates/hour at three workers (~64 hours total).
+# Each operator-started assay invocation is capped at 24h. After each
+# BUDGET_EXCEEDED result, the operator must run `run-gate r2` again against the
+# same committed worktree and commit. `--resume` plus the same
+# `--state-dir .assay/mutation-state-r2` carries completed candidate records
+# forward. Run-Gate's corresponding invocation has a 25h hard bound, including
+# setup. No `--campaign-deadline` is passed, so the campaign has no shared clock.
+# A timed-out attempt is incomplete and ends BUDGET_EXCEEDED; only the final
+# complete attempt can pass. Expect about three invocations for the ~64h
+# campaign; progress appends to .assay/progress-r2.jsonl.
+budget = "24h"
 allow_argv_append = false
 
 [lanes.tnt.isolation]

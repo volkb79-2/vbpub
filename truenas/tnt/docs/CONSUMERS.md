@@ -635,6 +635,27 @@ unavailable fields. VM console info includes configured display bind/port endpoi
 available, without embedding a VNC client. Use the TUI command palette (`ctrl+p`) to open each implemented workflow
 and plan actions.
 
+## Run the test gates
+
+From `truenas/tnt`, run the full suite and the focused terminal suite through Run-Gate:
+
+```sh
+run-gate r0-r1
+run-gate ux-focused
+```
+
+Both lanes use `tester-unified`; neither contacts a TrueNAS host. That image installs `tmux`, which the real-terminal
+tests require. A missing `tmux` fails the registered R0/R1, UX, and R2 lanes. On a developer's own local workstation
+outside the devcontainer cockpit, an inner-loop run may skip only the tmux cases when `tmux` cannot be installed:
+
+```sh
+export TNT_TEST_ALLOW_MISSING_TMUX_FOR_LOCAL_DEV=1
+```
+
+Use this opt-out only for local development. Registered Run-Gate commands disable it, so it cannot turn a missing
+tester-image dependency into a passing lane. The [design guide](DESIGN.md#9-test-strategy) explains why tmux is
+mandatory for gate evidence; the [README test summary](../README.md#tests) lists the covered suites.
+
 ## Explicit live lane
 
 The default pytest config deselects tests marked `live`; `tests/test_live_lane_config.py` asserts that registration and
