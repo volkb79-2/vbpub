@@ -26,6 +26,7 @@ PR_GET_CHILD_SUBREAPER = 37
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SGR_RE = re.compile(r"\x1b\[([0-9:;]*)m")
 HELPER = Path(__file__).with_name("tui_tmux_helper.py")
+LOCAL_MISSING_TMUX_OPT_OUT = "TNT_TEST_ALLOW_MISSING_TMUX_FOR_LOCAL_DEV"
 
 
 def _argv(executable: str | Sequence[str]) -> list[str]:
@@ -88,6 +89,18 @@ def _wait_pids_gone(pids: Sequence[int], pgids: set[int], timeout: float) -> lis
         time.sleep(POLL_INTERVAL_SECONDS)
 
 
+def _tmux_executable() -> str | None:
+    executable = shutil.which("tmux")
+    if executable is not None:
+        return executable
+    if os.environ.get(LOCAL_MISSING_TMUX_OPT_OUT) == "1":
+        return None
+    raise RuntimeError(
+        "tmux is required for the tnt terminal tests; install tmux, or set "
+        f"{LOCAL_MISSING_TMUX_OPT_OUT}=1 only on a local development machine"
+    )
+
+
 @pytest.fixture(scope="session")
 def tmux_child_subreaper():
     """Adopt tmux's orphaned descendants so this test session can wait for them."""
@@ -98,6 +111,11 @@ def tmux_child_subreaper():
     changed = not prior.value
     if changed and libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER failed")
+    active = ctypes.c_int(0)
+    if libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(active), 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_GET_CHILD_SUBREAPER verification failed")
+    if active.value != 1:
+        raise AssertionError("tmux test session must be a child subreaper")
     try:
         yield
     finally:
@@ -162,9 +180,12 @@ def _stop_private_server(command: PrivateTmux) -> None:
 @pytest.fixture
 def tmux_command(tmux_child_subreaper):
     """A tmux command bound to a private socket, so the test never touches (or leaks) the default server."""
-    executable = shutil.which("tmux")
+    try:
+        executable = _tmux_executable()
+    except RuntimeError as exc:
+        pytest.fail(str(exc), pytrace=False)
     if executable is None:
-        pytest.skip("tmux is not installed in tester-unified; package Debian trixie tmux there (TNT-54)")
+        pytest.skip(f"tmux is missing and {LOCAL_MISSING_TMUX_OPT_OUT}=1 is set for local development")
     # AF_UNIX paths are short; pytest's tmp_path can exceed the limit, so use a dedicated short directory.
     socket_dir = Path(tempfile.mkdtemp(prefix="tnt-tmux-"))
     command = PrivateTmux((executable, "-f", "/dev/null", "-S", str(socket_dir / "sock")))
@@ -540,6 +561,28 @@ def test_tui_in_real_tmux_terminal(size, tmp_path, tmux_command):
         # The tmux_command fixture kills the whole private server and waits for it; this only
         # ends the session early so a failing test does not keep a TUI running while it unwinds.
         _tmux(executable, "kill-session", "-t", session, check=False)
+
+
+def test_missing_tmux_fails_without_local_development_opt_out(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.delenv(LOCAL_MISSING_TMUX_OPT_OUT, raising=False)
+
+    with pytest.raises(RuntimeError, match="tmux is required"):
+        _tmux_executable()
+
+
+def test_local_development_opt_out_is_required_to_allow_missing_tmux(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setenv(LOCAL_MISSING_TMUX_OPT_OUT, "1")
+
+    assert _tmux_executable() is None
+
+
+def test_tmux_child_subreaper_fixture_sets_the_flag(tmux_child_subreaper):
+    libc = ctypes.CDLL(None, use_errno=True)
+    active = ctypes.c_int(0)
+    assert libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(active), 0, 0, 0) == 0
+    assert active.value == 1
 
 
 def test_private_server_teardown_reaps_server_and_pane(tmux_command):

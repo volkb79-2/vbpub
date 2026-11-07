@@ -3,10 +3,10 @@
 ## [Unreleased]
 
 ### Fixed
-- TNT-64: tmux teardown now runs under a test-session child subreaper, waits for server and pane process groups, reaps adopted children, and treats zombies as processes that remain until `waitpid` removes them. The R2 argv continues to include `tests/test_tui_tmux.py`.
+- TNT-64: tmux teardown verifies the test session is a child subreaper, reaps server and pane process groups, and treats zombies as present until `waitpid` removes them. Missing tmux now fails the registered lanes; only local development can opt out. The lock-owner test now isolates its `os` mock so unrelated filesystem calls keep using real `stat_result` values.
 
 ### Changed
-- TNT-30: set the R2 attempt budget to 24 hours from the measured 2,990-candidate plan (~47 candidates/hour at three workers, about 64 hours total); retries resume from the same candidate state.
+- TNT-30: set the R2 Assay budget to 24 hours per invocation from the measured 2,990-candidate plan (~47 candidates/hour at three workers, about 64 hours total). The operator reruns `run-gate r2` against the same committed worktree after each BUDGET_EXCEEDED result; `--resume` and `.assay/mutation-state-r2` carry candidate state. Run-Gate bounds each invocation at 25 hours; no `--campaign-deadline` is set.
 
 <!-- cmru: release history -->
 
