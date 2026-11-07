@@ -796,7 +796,7 @@ check_campaign_wheel_digest \
 
 # The R2 waiver is keyed to an explicit operator decision and the prepared
 # release heading, never the pre-tag wheel version: the provisional lane is
-# valid only for assay 10.0.x, and refuses if release tags cannot be inspected
+# valid only for assay >=10.0.0 and <12.1.0, and refuses if release tags cannot be inspected
 # or an assay release at or above the window's upper bound exists. The full
 # `self-qualification` lane deletes any marker so a postponement can never
 # stand in for an R2 result.
@@ -894,7 +894,8 @@ if not WINDOW[0] <= release_version_tuple < WINDOW[1]:
     raise SystemExit(
         f"the R2 postponement B169 is authorized only for {WINDOW_TEXT}; "
         f"prepared changelog release is {prepared_release_version}. "
-        "Run the full self-qualification lane."
+        "Extending this window requires a new operator R2-waiver decision; "
+        "run the full self-qualification lane for R2."
     )
 
 try:
@@ -923,9 +924,10 @@ if newest is None:
 newest_version, newest_tag = newest
 if newest_version >= WINDOW[1]:
     raise SystemExit(
-        f"the R2 postponement {TRACKING_ID} is valid only below assay "
-        f"{'.'.join(map(str, WINDOW[1]))}; tag {newest_tag} exists. "
-        "Run the full self-qualification lane."
+        f"the R2 postponement {TRACKING_ID} is authorized only for {WINDOW_TEXT}; "
+        f"tag {newest_tag} exists. "
+        "Extending this window requires a new operator R2-waiver decision; "
+        "run the full self-qualification lane for R2."
     )
 document = {
     "schema_version": 1,

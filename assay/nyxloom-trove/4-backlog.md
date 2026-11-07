@@ -181,7 +181,7 @@ items:
   - {id: B199, title: "Cleanup-only failures after a finished measurement are ERROR, not an advisory", type: improvement, component: runner, context_estimate: small}
   - {id: B200, title: "CoW parity test lacks git status/index and has never run on a real btrfs area in CI", type: improvement, component: tests, context_estimate: small}
   - {id: B201, title: "Optional packed-object reflink path on XFS", type: improvement, component: workspace, context_estimate: small}
-  - {id: B522, title: "Move Assay observer launchers to the new per-level cgprofile socket path and check the socket-group separation", type: feature, component: gate, context_estimate: small}
+  - {id: B522, title: "Use environment-only cgprofile endpoints and delegate Assay release gates", type: feature, component: gate, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14296,6 +14296,10 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 **Interim in the projects.** tnt omits both files (TNT-63, with `tests/test_assay_lane_inventory.py`); the cmru lane (`src/cmru/__init__.py`, `assay.toml` lines 114 and 195) needs the same omission or this fix.
 
-## B522 — Move Assay observer launchers to the new per-level cgprofile socket path
+## B522 — Assay environment-only observer endpoints and delegated release gates
 
-**Status: FIXED on branch `sockets-assay-20261105`, pending controller gate evidence and independent review; amended 2026-11-07.** The registered tester and self-qualification launchers use `/run/cgprofile/observer/cgprofile.sock` on the host and `/run/cgprofile-observer/cgprofile.sock` in the container. The shared guard requires the observer directory to be `root:root` and reads the observer GID from the socket inode. It reads the host Docker GID from `ASSAY_GATE_HOST_DOCKER_GID` first, then `MDT_HOST_DOCKER_GID`, with strict positive-decimal validation; if neither exists it names both. The Docker API socket-owner fallback from the first implementation is removed because a proxy or relay can own the socket with an unrelated access GID. The guard does not infer a Docker GID from `/run/cgprofile` or the observer directory. It requires a nonzero observer GID distinct from Docker and reports the host cutover when the new socket is absent. Assay never mounts or stats the control socket; its control-GID rule is carried by Run-Gate, which opens that endpoint for control requests. README, DESIGN-GUIDE, CONSUMERS and CHANGES describe the source order, no-fallback rule, and new paths.
+**Status: IMPLEMENTED on `x02-e4-20261107`; focused controller evidence and independent review pending.** The registered tester and self-qualification launchers require `CGPROFILE_OBSERVER_SOCKET`; unset or empty fails with the variable name and the host endpoint remedy. Each mounts the endpoint's parent directory read-only at the identical path and passes that socket path as `ASSAY_RESOURCE_OBSERVER_SOCKET`. There is no default, translation, path allowlist, or `ASSAY_GATE_RESOURCE_OBSERVER_SOURCE` override. The existing shared guard remains responsible for the `root:root` directory, root-owned socket, non-root observer GID, and observer-vs-Docker GID separation; Docker GID source order remains `ASSAY_GATE_HOST_DOCKER_GID` then `MDT_HOST_DOCKER_GID`.
+
+All six observer-enabled lanes declare `ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"` under `[lanes.<lane>.infrastructure]`; `src/assay` already consumes the endpoint through the environment and contains no socket-path default. `tools/release-gate.sh` requires `ASSAY_RELEASE_GATE_HOST` (`local`, `v1001`, or `r1002`). Local mode runs the previous lane command; remote mode uses attached `remote-gate.py` with the candidate worktree and accepts only a matching `meta.json` SHA plus a `PASS` in `result.json`, returning a failed lane's exit code. CMRU's release transaction, build, tag, publish and credentials stay on the controller.
+
+The provisional waiver remains `assay >=10.0.0, <12.1.0`. Its code bound is unchanged; refusal now says that extending it needs a new operator R2-waiver decision and directs the caller to full self-qualification. `README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and `CHANGES.md` describe the endpoint contract, host selection, and fixed waiver window.
