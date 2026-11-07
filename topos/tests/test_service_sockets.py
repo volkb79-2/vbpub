@@ -307,6 +307,10 @@ def test_rendered_default_units_match_packaged_assets_byte_for_byte() -> None:
     }
     assert assets == render_units(DEFAULTS)
     assert "RestartPreventExitStatus=2\n" in assets["topos.service"]
+    # RestartPreventExitStatus does not cover a failed ExecStartPre, so the start limit
+    # (in [Unit], before [Service]) is what ends the retries of a refused config.
+    unit_section = assets["topos.service"].split("[Service]")[0]
+    assert "StartLimitIntervalSec=300\n" in unit_section and "StartLimitBurst=5\n" in unit_section
     # The config test runs before the daemon, so a refused config never starts it.
     lines = assets["topos.service"].splitlines()
     assert lines.index("ExecStartPre=/opt/topos/current/venv/bin/toposd -t --config /etc/topos/toposd.toml") < next(

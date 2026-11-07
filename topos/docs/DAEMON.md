@@ -49,7 +49,9 @@ slice, and sysusers files from the config. `toposd unit check [--config PATH]
 PATH]` is the same check in the `nginx -t` style (exit 0, or 2 with the error on
 stderr); `topos.service` runs it as its `ExecStartPre`, so a config that fails the
 check (including a group with GID 0 or the docker GID) never starts the daemon.
-`toposd install`,
+`RestartPreventExitStatus=2` covers only the main process, so a failing check is
+retried every 5 s until the unit's start limit (5 starts in 300 s) ends it; read
+the cause with `journalctl -u topos.service`. `toposd install`,
 `uninstall`, and `doctor` manage and inspect the host service. The client-side
 `topos daemon status` command remains available for socket and protocol checks.
 The old path `/run/topos/topos.sock` is no longer served, and `topos daemon

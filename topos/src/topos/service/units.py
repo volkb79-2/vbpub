@@ -38,6 +38,10 @@ def render_units(cfg: ServiceConfig) -> dict[str, str]:
             "Description=topos read-only daemon",
             "Requires=topos-observe.socket",
             "After=network.target topos-observe.socket",
+            # RestartPreventExitStatus matches only the main process, so a config error
+            # caught by the ExecStartPre check is bounded by the start limit instead.
+            "StartLimitIntervalSec=300",
+            "StartLimitBurst=5",
             "",
             "[Service]",
             "Type=simple",

@@ -2,6 +2,8 @@
 Description=topos read-only daemon
 Requires=topos-observe.socket
 After=network.target topos-observe.socket
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
