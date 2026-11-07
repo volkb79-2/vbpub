@@ -242,8 +242,10 @@ class TestRealEstate:
         assert report.levels["nyxloom"] == 1
         assert report.levels["mdt-cockpit"] == max(report.levels.values()) == 4
         assert all(report.levels[name] == 0 for name in (
-            "assay", "topos", "tls-edge", "tester-base",
+            "assay", "tls-edge", "tester-base",
         ))
+        # toposd (host service) uses the shared service CLI: topos requires cli-extended>=0.5.2, a real wheel edge, so L1.
+        assert report.levels["topos"] == 1
         # ciu consumes the cli-extended wheel (CIU-114 adoption): a real wheel edge, so L1.
         assert report.levels["ciu"] == 1
         # pwmcp's client wheel requires cli-extended (PWMCP-02, CX-D1): a real wheel edge, so L1.
