@@ -245,7 +245,10 @@ export MDT_VM_SOURCE_DIR="$REPO_ROOT"
 `tools/vm-socket-acceptance.sh` automates the cases below inside the guest
 (`clean-guest` on the fresh VM, `old-layout-guest` on the seeded one); the TTY
 wizard install stays a manual step. Its header lists the exact `run-vm-harness.sh
-copy` and `ssh` commands. The extra cases beyond the commands in this section:
+copy` and `ssh` commands. A VM is not proof of a disposable guest (the live
+netcup hosts are VMs), so the script refuses unless `CGP_DISPOSABLE_GUEST=yes`
+is set, the guest is a harness guest (hostname `vbpub-test`, user `tester`) and
+cgprofile is neither installed nor running; `guard-check` runs only that check. The extra cases beyond the commands in this section:
 `ActiveState` of `cgprofile.slice` after uninstall, uninstall run from
 `/opt/cgprofile/current/venv/bin/cgpd` and again through the zipimport route,
 a second uninstall as a no-op, uninstall refusing an mdt-style install, a
