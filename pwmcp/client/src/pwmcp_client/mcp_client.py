@@ -81,6 +81,7 @@ def _sse_message(body: bytes, expected_id: int) -> dict[str, object]:
     except UnicodeDecodeError as exc:
         raise McpError("MCP server returned non-UTF-8 event data") from exc
     data_lines: list[str] = []
+    mismatched_response: dict[str, object] | None = None
     for line in (*text.splitlines(), ""):
         if line == "":
             if data_lines:
@@ -92,11 +93,16 @@ def _sse_message(body: bytes, expected_id: int) -> dict[str, object]:
                     message = json.loads(data)
                 except JSONDecodeError as exc:
                     raise McpError("MCP server returned invalid JSON event data") from exc
-                if isinstance(message, dict) and message.get("id") == expected_id:
-                    return message
+                if isinstance(message, dict):
+                    if message.get("id") == expected_id:
+                        return message
+                    if "id" in message and ("result" in message or "error" in message):
+                        mismatched_response = message
             continue
         if line.startswith("data:"):
             data_lines.append(line[5:].lstrip())
+    if mismatched_response is not None:
+        return mismatched_response
     raise McpError(f"MCP event stream had no response for request {expected_id}")
 
 
