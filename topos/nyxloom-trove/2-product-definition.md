@@ -102,7 +102,7 @@ features:
   - id: F017
     title: Daemon attach and deployment UX
     acceptance:
-      - When `--attach` is used with no explicit socket, it defaults to `/run/topos/topos.sock`; `topos daemon preflight|install-plan|current|status` and daemon client error messages give actionable next steps without performing installation or mutation.
+      - When `--attach` is used with no explicit socket, it defaults to `/run/topos/observe/topos.sock`; `toposd doctor`, `toposd install --dry-run`, `topos daemon current|status`, and daemon client errors provide actionable host and client checks.
     status: shipped
     milestone: M4
   - id: F018
@@ -265,7 +265,7 @@ non_goals:
   - Cloning unbounded specialist-tool breadth (a second `top`/`iostat`/BPF suite) instead of closing named `docs/OPERATOR-QUESTIONS.md` gaps.
   - A second aggregation engine built independently in the MCP frontend, HTTP gateway, or browser instead of consuming the shared `topos/query/` core.
   - Multi-user daemon authorization beyond socket/token permissions before an explicitly shared (non-single-operator) deployment is decided.
-  - Unattended or silent daemon installation. The packaged templates and the non-mutating install-plan renderer exist today; an interactive install wizard (offering the daemon envelope of D-024 and `task_delayacct` per D-029) is planned, and every step it takes stays visible and confirmed.
+  - Unattended or silent daemon installation. `toposd install` runs only on an explicit root call, prints every step (`--dry-run` shows them without changing anything), and refuses an old installation instead of migrating it.
   - Live BPF attach/pin/detach lifecycle ownership before the daemon/helper measurement and privilege work is done.
   - CIU-aware or other environment-specific action authorization implemented as an inferred special case ahead of the lifecycle owner-chain protocol (F033).
   - Any distro-matrix hardening work before the v2 cut is otherwise complete.

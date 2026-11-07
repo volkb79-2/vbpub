@@ -102,7 +102,7 @@ def _unavailable(monkeypatch) -> None:
 
 
 def test_preflight_passes_explicit_observer_setting(monkeypatch):
-    observer_path = "/run/cgprofile-observer/resource-observer.sock"
+    observer_path = "/run/cgprofile-observer/cgprofile.sock"
     monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", observer_path)
     calls = []
     capability = resource_limits.ResourceObservationCapability(available=True)

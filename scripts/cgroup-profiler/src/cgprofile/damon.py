@@ -60,7 +60,7 @@ except Exception:
     Classifier = None  # type: ignore[assignment]
     KDAMONDS_DIR = "/sys/kernel/mm/damon/admin/kdamonds"
 
-DAMON_REGISTRY_LOCK_PATH = "/run/cgprofile/damon.lock"
+DAMON_REGISTRY_LOCK_PATH = "/run/cgprofile/state/damon.lock"
 DAMON_HELPER_LOCK_PATH = "/tmp/cgprofile-damon.lock"
 
 
@@ -179,37 +179,6 @@ class _DamonRegistryLock:
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.release()
-
-
-def prepare_registry_lock_file() -> str:
-    """Create/validate the shared file before a helper bind-mounts it.
-
-    The host-setup `/run/cgprofile` directory must already exist. The helper
-    binds only this file, not the daemon control socket.
-    """
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(DAMON_REGISTRY_LOCK_PATH, flags, 0o660)
-    except OSError as exc:
-        raise DamonSessionError(
-            f"cannot prepare shared DAMON lock {DAMON_REGISTRY_LOCK_PATH}: {exc}"
-        ) from exc
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise DamonSessionError(
-                f"shared DAMON lock is not a regular file: {DAMON_REGISTRY_LOCK_PATH}"
-            )
-        _set_registry_lock_permissions(fd, DAMON_REGISTRY_LOCK_PATH)
-    except DamonSessionError:
-        raise
-    except OSError as exc:
-        raise DamonSessionError(
-            f"cannot prepare shared DAMON lock {DAMON_REGISTRY_LOCK_PATH}: {exc}"
-        ) from exc
-    finally:
-        os.close(fd)
-    return DAMON_REGISTRY_LOCK_PATH
 
 
 def _set_registry_lock_permissions(fd: int, path: str) -> None:

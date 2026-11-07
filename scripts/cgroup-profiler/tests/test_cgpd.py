@@ -72,7 +72,7 @@ def test_help_lists_the_verbs_and_no_doctor_or_skills(cli):
     _code, out, _err = cli("--help")
     for verb in ("run", "reload", "config"):
         assert verb in out
-    assert "doctor" not in out and "skills" not in out
+    assert "doctor" in out and "skills" not in out
 
 
 def test_malformed_arguments_never_start_the_service(cli, monkeypatch):
@@ -142,6 +142,57 @@ class TestConfigCheck:
         code, out, _ = cli("--config", write_config(sockdir, ""), "config", "check")
         assert code == 0 and "0 key(s)" in out
 
+    @pytest.mark.parametrize("argv_order", ["before", "after"])
+    def test_short_test_option_validates_config_without_starting_daemon(self, capsys, sockdir, argv_order):
+        path = write_config(sockdir, "interval = 2\n")
+        args = ["--config", path, "-t"] if argv_order == "before" else ["-t", "--config", path]
+        assert cgpd.main(args) == 0
+        captured = capsys.readouterr()
+        assert f"config ok: {path}" in captured.out
+        assert "event=start" not in captured.err
+
+    def test_short_test_option_returns_nonzero_for_invalid_config(self, capsys, sockdir):
+        path = write_config(sockdir, "interval = 'fast'\n")
+        assert cgpd.main(["--config", path, "-t"]) == 2
+        captured = capsys.readouterr()
+        assert "interval" in captured.err
+
+    def test_short_test_option_expands_only_for_supported_shapes(self):
+        assert cgpd._expand_config_test(["-t"]) == ["config", "check"]
+        assert cgpd._expand_config_test(["--config", "/tmp/cgpd.toml", "-t"]) == [
+            "config", "check", "--config", "/tmp/cgpd.toml",
+        ]
+        assert cgpd._expand_config_test(["-t", "--config=/tmp/cgpd.toml"]) == [
+            "config", "check", "--config=/tmp/cgpd.toml",
+        ]
+        for argv in (
+            ["uninstall", "-t"],
+            ["uninstall", "-t", "--yes"],
+            ["run", "-t"],
+            ["install", "--wheel-source", "-t"],
+        ):
+            assert cgpd._expand_config_test(argv) == argv
+
+    def test_short_test_option_expansion_requires_exactly_one_occurrence(self):
+        assert cgpd._expand_config_test([]) == []
+        assert cgpd._expand_config_test(["--config", "/tmp/cgpd.toml"]) == [
+            "--config", "/tmp/cgpd.toml",
+        ]
+        assert cgpd._expand_config_test(["-t", "-t"]) == ["-t", "-t"]
+
+    @pytest.mark.parametrize("argv", [["uninstall", "-t"], ["run", "-t"]])
+    def test_short_test_option_is_a_normal_argparse_error_outside_config_test(self, argv, capsys):
+        assert cgpd.main(argv) == 2
+        captured = capsys.readouterr()
+        assert "unrecognized arguments" in captured.err
+        assert "config check" not in captured.err
+
+    def test_install_exposes_the_repeatable_add_user_flag(self, capsys):
+        assert cgpd.build_cli().run(argv=["install", "--help"]) == 0
+        captured = capsys.readouterr()
+        assert "--add-user LEVEL=USER" in captured.out
+        assert "--control-users" not in captured.out and "--observer-users" not in captured.out
+
 
 # ── preflight ──────────────────────────────────────────────────────────────
 
@@ -151,11 +202,16 @@ class Host:
     def __init__(self, sockdir, monkeypatch):
         self.sockdir = sockdir
         self.sessions = os.path.join(sockdir, "sessions")
-        self.socket = os.path.join(sockdir, "ctl.sock")
+        self.socket = os.path.join(sockdir, "control", "cgprofile.sock")
+        os.makedirs(os.path.dirname(self.socket))
+        observer = os.path.join(sockdir, "observer", "cgprofile.sock")
+        os.makedirs(os.path.dirname(observer))
         self.config = write_config(sockdir, f'sessions_dir = "{self.sessions}"\n'
-                                            f'ctl_socket = "{self.socket}"\n'
-                                            f'observer_socket = "{sockdir}/obs/o.sock"\n'
-                                            f'damon_lock = "{sockdir}/damon.lock"\n')
+                                            f'damon_lock = "{sockdir}/damon.lock"\n'
+                                            f'\n[sockets.control]\npath = "{self.socket}"\n'
+                                            'group = "test-control"\nmode = "0660"\n'
+                                            f'\n[sockets.observer]\npath = "{observer}"\n'
+                                            'group = "test-observer"\nmode = "0660"\n')
         self.pid_ns = (7, 7)
         self.slice_problem = None
         monkeypatch.setattr(os, "geteuid", lambda: 0)
@@ -226,21 +282,16 @@ class TestPreflight:
             host.preflight()
         assert "is not writable" in str(caught.value)
 
-    def test_6_another_daemon_is_a_refusal_naming_version_and_pid(self, host):
-        daemon = _fakectl.FakeDaemon(host.socket, {"version": lambda a, c: dict(_fakectl.V2_VERSION)})
-        try:
-            with pytest.raises(cgpd.CliFailure) as caught:
-                host.preflight()
-        finally:
-            daemon.close()
-        assert f"another daemon already serves {host.socket} (version 2.0.0, pid {os.getpid()})" in str(caught.value)
-
-    def test_7_socket_directory_must_exist(self, host):
-        host.config = write_config(host.sockdir, f'sessions_dir = "{host.sessions}"\n'
-                                                 f'ctl_socket = "{host.sockdir}/missing/ctl.sock"\n', "c3.toml")
-        with pytest.raises(cgpd.CliFailure) as caught:
-            host.preflight()
-        assert "directory of ctl_socket does not exist" in str(caught.value)
+    def test_6_socket_path_is_not_probed_by_preflight(self, host):
+        host.config = write_config(
+            host.sockdir,
+            f'sessions_dir = "{host.sessions}"\n\n[sockets.control]\n'
+            f'path = "{host.sockdir}/not-created/control.sock"\ngroup = "test-control"\nmode = "0660"\n'
+            '\n[sockets.observer]\npath = "/tmp/not-created/observer.sock"\n'
+            'group = "test-observer"\nmode = "0660"\n',
+            "unbound.toml",
+        )
+        assert host.preflight().get("sockets.control")["path"].endswith("control.sock")
 
 
 class TestProbe:
@@ -297,11 +348,11 @@ class TestRun:
         return host
 
     def test_run_builds_the_server_from_the_settings(self, cli, wired, capsys):
-        code, _out, err = cli("--config", wired.config, "run")
+        code, _out, err = cli("--config", wired.config, "run", "--self-bind")
         assert code == 0
         kwargs = StubServer.built[0].kwargs
         assert kwargs["sessions_dir"] == wired.sessions and kwargs["socket_path"] == wired.socket
-        assert kwargs["observer_socket_path"].endswith("/obs/o.sock")
+        assert kwargs["observer_socket_path"].endswith("/observer/cgprofile.sock")
         assert kwargs["proc_root"] == "/proc" and kwargs["settings"].digest
         assert "cgpd: event=start" in err and f"socket={wired.socket}" in err
         assert os.environ["CGPROFILE_PROC_ROOT"] == "/proc"
@@ -309,30 +360,84 @@ class TestRun:
         assert os.environ["CGPROFILE_BUSCTL"] == "busctl"
 
     def test_allow_uids_come_from_the_config_not_the_environment(self, cli, wired):
-        with open(wired.config, "a") as fh:
-            fh.write("allow_uids = [0, 1000]\n")
-        assert cli("--config", wired.config, "run")[0] == 0
+        # a top-level key must precede the [sockets.*] tables of the fixture config
+        with open(wired.config) as fh:
+            existing = fh.read()
+        with open(wired.config, "w") as fh:
+            fh.write("allow_uids = [0, 1000]\n" + existing)
+        assert cli("--config", wired.config, "run", "--self-bind")[0] == 0
         assert StubServer.built[0].kwargs["settings"].get("allow_uids") == [0, 1000]
 
     def test_a_stale_allow_uids_variable_refuses_to_start(self, cli, wired, monkeypatch):
         monkeypatch.setenv("CGPROFILE_ALLOW_UIDS", "0,1000")
-        code, _out, err = cli("--config", wired.config, "run")
+        code, _out, err = cli("--config", wired.config, "run", "--self-bind")
         assert code == 2 and "CGPROFILE_ALLOW_UIDS is no longer read; set allow_uids in" in err
         assert StubServer.built == []
 
     def test_a_lost_socket_exit_code_is_returned(self, cli, wired):
         StubServer.result = 3
-        assert cli("--config", wired.config, "run")[0] == 3
+        assert cli("--config", wired.config, "run", "--self-bind")[0] == 3
 
     def test_a_socket_that_cannot_be_bound_is_a_refusal(self, cli, wired):
         StubServer.error = serve.ControlSocketError(0, "another daemon still answers")
-        code, _out, err = cli("--config", wired.config, "run")
+        code, _out, err = cli("--config", wired.config, "run", "--self-bind")
         assert code == 2 and "cgpd refuses to start: another daemon still answers" in err
 
     def test_a_failed_preflight_never_builds_a_server(self, cli, wired, monkeypatch):
         monkeypatch.setattr(os, "geteuid", lambda: 1000)
-        assert cli("--config", wired.config, "run")[0] == 2
+        assert cli("--config", wired.config, "run", "--self-bind")[0] == 2
         assert StubServer.built == []
+
+    def test_run_without_activation_or_self_bind_is_refused(self, cli, wired):
+        code, _out, err = cli("--config", wired.config, "run")
+        assert code == 2 and "no systemd listening descriptors" in err
+        assert StubServer.built == []
+
+    def test_run_passes_activated_descriptors_to_the_server(self, cli, wired, monkeypatch):
+        sockets = {"control": object()}
+        monkeypatch.setattr(serve, "adopt_systemd_sockets", lambda environ: sockets)
+        assert cli("--config", wired.config, "run")[0] == 0
+        assert StubServer.built[0].kwargs["activated_sockets"] is sockets
+
+    def test_run_refuses_empty_systemd_socket_set(self, cli, wired, monkeypatch):
+        monkeypatch.setattr(serve, "adopt_systemd_sockets", lambda environ: {})
+        code, _out, err = cli("--config", wired.config, "run")
+        assert code == 2 and "LISTEN_FDS=0" in err and StubServer.built == []
+
+    def test_run_refuses_invalid_socket_activation_by_name(self, cli, wired, monkeypatch):
+        def invalid(environ):
+            raise serve.SocketActivationError("duplicate descriptor name control")
+
+        monkeypatch.setattr(serve, "adopt_systemd_sockets", invalid)
+        code, _out, err = cli("--config", wired.config, "run")
+        assert code == 2 and "invalid systemd socket activation: duplicate descriptor name control" in err
+        assert StubServer.built == []
+
+    def test_self_bind_cannot_be_combined_with_activation_and_closes_the_descriptors(self, cli, wired, monkeypatch):
+        class Listener:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        listener = Listener()
+        monkeypatch.setattr(serve, "adopt_systemd_sockets", lambda environ: {"control": listener})
+        code, _out, err = cli("--config", wired.config, "run", "--self-bind")
+        assert code == 2 and "--self-bind cannot be combined with LISTEN_FDS" in err
+        assert listener.closed and StubServer.built == []
+
+    def test_a_failed_preflight_closes_the_adopted_descriptors(self, cli, wired, monkeypatch):
+        class Listener:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        listener = Listener()
+        monkeypatch.setattr(serve, "adopt_systemd_sockets", lambda environ: {"control": listener})
+        monkeypatch.setattr(os, "geteuid", lambda: 1000)
+        assert cli("--config", wired.config, "run")[0] == 2
+        assert listener.closed and StubServer.built == []
 
 
 # ── reload ─────────────────────────────────────────────────────────────────
@@ -352,7 +457,9 @@ class TestReload:
         return _fakectl.FakeDaemon(os.path.join(sockdir, "r.sock"), table)
 
     def _config(self, sockdir):
-        return write_config(sockdir, f'ctl_socket = "{sockdir}/r.sock"\n')
+        return write_config(sockdir, '[sockets.control]\n'
+                                      f'path = "{sockdir}/r.sock"\n'
+                                      'group = "control"\nmode = "0660"\n')
 
     def test_needs_root(self, cli, sockdir, monkeypatch):
         monkeypatch.setattr(os, "geteuid", lambda: 1000)
@@ -369,8 +476,10 @@ class TestReload:
 
     def test_default_socket_when_the_file_does_not_name_one(self, cli, sockdir, signalled, monkeypatch):
         monkeypatch.setattr(daemon_config, "DEFAULT_CONFIG_PATH", write_config(sockdir, ""))
-        monkeypatch.setitem(daemon_config.KEYS, "ctl_socket", daemon_config.KeySpec(
-            "ctl_socket", "path", os.path.join(sockdir, "r.sock"), False, False, None, None))
+        monkeypatch.setitem(daemon_config.KEYS, "sockets.control", daemon_config.KeySpec(
+            "sockets.control", "socket", {"path": os.path.join(sockdir, "r.sock"),
+                                           "group": "control", "mode": "0660"},
+            False, False, None, None))
         daemon = self._daemon(sockdir)
         try:
             code, out, _ = cli("reload")

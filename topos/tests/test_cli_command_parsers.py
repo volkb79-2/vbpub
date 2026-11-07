@@ -20,7 +20,9 @@ from topos.cli import (
     parse_squeeze_args,
 )
 from topos.acceptance import build_parser as build_acceptance_parser
-from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
+from topos.service.config import DEFAULTS
+
+DEFAULT_DAEMON_SOCKET = DEFAULTS.sockets.observe.path
 from topos.damon.control import APPROVAL_TEXT
 from topos.cli_diagnostics import cli_headline
 

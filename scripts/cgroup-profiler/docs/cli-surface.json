@@ -2424,7 +2424,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -2624,7 +2624,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -2848,7 +2848,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -2981,7 +2981,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -3125,7 +3125,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -3230,7 +3230,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -3441,7 +3441,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -3635,7 +3635,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -3951,7 +3951,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -4196,7 +4196,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -4386,7 +4386,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -4558,7 +4558,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -4779,7 +4779,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -5043,7 +5043,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -5264,7 +5264,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -5528,7 +5528,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -6194,7 +6194,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -6299,7 +6299,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -6430,7 +6430,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "ctl socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/ctl.sock)",
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,

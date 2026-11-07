@@ -7,12 +7,14 @@
 # reads its configuration from the file only (CGPCTL-SPEC.md section 3.4).
 [Unit]
 Description=cgprofile resource-profiling daemon
-After=local-fs.target
+Requires=cgprofile-control.socket cgprofile-observer.socket
+After=local-fs.target cgprofile-control.socket cgprofile-observer.socket
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
 Type=simple
+ExecStartPre=@WHEEL_VENV@/bin/cgpd -t
 ExecStart=@WHEEL_VENV@/bin/cgpd run
 ExecReload=/bin/kill -HUP $MAINPID
 Slice=cgprofile.slice
@@ -25,6 +27,7 @@ TasksMax=256
 IOWeight=50
 LimitNOFILE=4096
 Restart=on-failure
+RestartPreventExitStatus=2
 RestartSec=2s
 RestartSteps=5
 RestartMaxDelaySec=60
@@ -34,7 +37,11 @@ PrivateNetwork=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/run/cgprofile /var/lib/cgprofile /sys/fs/cgroup /sys/kernel/mm/damon
+Sockets=cgprofile-control.socket cgprofile-observer.socket
+RuntimeDirectory=cgprofile/state
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=/run/cgprofile/state /var/lib/cgprofile /sys/fs/cgroup /sys/kernel/mm/damon
 StateDirectory=cgprofile
 NoNewPrivileges=yes
 RestrictAddressFamilies=AF_UNIX

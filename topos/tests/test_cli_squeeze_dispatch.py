@@ -102,6 +102,73 @@ def test_gated_runner_receives_parsed_safety_configuration(
     assert config.audit_path == tmp_path / "custom-audit.jsonl"
 
 
+def test_squeeze_and_recover_use_custom_service_state_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import topos.service.config as service_config
+
+    service_config_path = tmp_path / "toposd.toml"
+    service_config_path.write_text('state_dir = "/run/topos/custom-state"\n', encoding="utf-8")
+    monkeypatch.setattr(service_config, "DEFAULT_CONFIG_PATH", service_config_path)
+
+    configs: list[SqueezeConfig] = []
+    monkeypatch.setattr(
+        "topos.actions.squeeze.run_squeeze_gated",
+        lambda config: configs.append(config) or _result(tmp_path, stop_reason="floor"),
+    )
+    assert _main_squeeze(["--target", "/test.scope"]) == 0
+    assert configs[0].recovery_path == Path("/run/topos/custom-state/squeeze/test.scope.json")
+
+    monkeypatch.setattr("os.geteuid", lambda: 0)
+    recovery_dirs: list[Path] = []
+    monkeypatch.setattr(
+        "topos.actions.squeeze.recover_squeeze",
+        lambda _target, *, recovery_dir: recovery_dirs.append(recovery_dir) or [],
+    )
+    assert _main_squeeze(["--recover"]) == 0
+    assert recovery_dirs == [Path("/run/topos/custom-state/squeeze")]
+    assert "nothing to recover" in capsys.readouterr().out
+
+
+def test_squeeze_recovery_uses_default_when_service_config_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recovery_dirs: list[Path] = []
+    monkeypatch.setattr("os.geteuid", lambda: 0)
+    monkeypatch.setattr(
+        "topos.actions.squeeze.recover_squeeze",
+        lambda _target, *, recovery_dir: recovery_dirs.append(recovery_dir) or [],
+    )
+
+    assert _main_squeeze(["--recover"]) == 0
+    assert recovery_dirs == [Path("/run/topos/state/squeeze")]
+
+
+@pytest.mark.parametrize("argv", [["--recover"], ["--target", "/test.scope"]])
+def test_squeeze_refuses_invalid_service_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    import topos.service.config as service_config
+
+    invalid_config = tmp_path / "invalid-toposd.toml"
+    invalid_config.write_text("state_dir = 'relative'\n", encoding="utf-8")
+    monkeypatch.setattr(service_config, "DEFAULT_CONFIG_PATH", invalid_config)
+    monkeypatch.setattr(
+        "topos.actions.squeeze.recover_squeeze",
+        lambda *_args, **_kwargs: pytest.fail("invalid service config must stop before recovery"),
+    )
+    monkeypatch.setattr(
+        "topos.actions.squeeze.run_squeeze_gated",
+        lambda *_args, **_kwargs: pytest.fail("invalid service config must stop before squeezing"),
+    )
+
+    assert _main_squeeze(argv) == 2
+    assert "state_dir must be absolute" in capsys.readouterr().err
+
+
 def test_error_result_is_stderr_and_exit_two(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -180,7 +247,7 @@ def test_recover_requires_root_and_does_nothing_otherwise(
     monkeypatch.setattr("os.geteuid", lambda: 1000)
     monkeypatch.setattr(
         "topos.actions.squeeze.recover_squeeze",
-        lambda target: pytest.fail("recovery must not run without root"),
+        lambda target, **_kwargs: pytest.fail("recovery must not run without root"),
     )
     assert _main_squeeze(["--recover"]) == 2
     assert "requires root" in capsys.readouterr().err
@@ -193,7 +260,10 @@ def test_recover_reports_nothing_success_and_failure_exit_codes(
 
     monkeypatch.setattr("os.geteuid", lambda: 0)
     outcomes: list = []
-    monkeypatch.setattr("topos.actions.squeeze.recover_squeeze", lambda target: outcomes)
+    monkeypatch.setattr(
+        "topos.actions.squeeze.recover_squeeze",
+        lambda target, **_kwargs: outcomes,
+    )
 
     assert _main_squeeze(["--recover"]) == 0
     assert "nothing to recover" in capsys.readouterr().out

@@ -9,7 +9,8 @@ description = "Host pressure inspector and cgroup forensics collector"
 requires-python = ">=3.11"
 # textual>=8.2.8: current baseline with no upper ceiling (docs/ROADMAP.md P43, replaced the
 # obsolete >=0.58,<1 range); pinned by tests/test_packaging_metadata.py.
-dependencies = ["textual>=8.2.8"]
+# cli-extended>=0.5.2: toposd uses the shared service CLI; this is our tool, so use the latest.
+dependencies = ["textual>=8.2.8", "cli-extended>=0.5.2"]
 
 [project.optional-dependencies]
 # zstandard>=0.22: record/reader.py relies on ZstdDecompressor.stream_reader(read_across_frames=True);
@@ -29,6 +30,7 @@ dev = [
 
 [project.scripts]
 topos = "topos.cli:main"
+toposd = "topos.service.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -43,4 +45,4 @@ git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--mat
 fallback_version = "0.1.0"
 
 [tool.setuptools.package-data]
-topos = ["assets/systemd/topos.service", "assets/systemd/topos.tmpfiles", "assets/systemd/topos.slice"]
+topos = ["assets/systemd/topos-observe.socket", "assets/systemd/topos.service", "assets/systemd/topos.slice", "assets/systemd/topos.sysusers"]

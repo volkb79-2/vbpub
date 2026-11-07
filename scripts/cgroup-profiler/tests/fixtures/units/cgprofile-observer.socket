@@ -1,0 +1,16 @@
+# cgprofile-observer.socket: systemd-owned observer access endpoint.
+[Unit]
+Description=cgprofile daemon, observer access level
+
+[Socket]
+ListenStream=/run/cgprofile/observer/cgprofile.sock
+SocketUser=root
+SocketGroup=cgprofile-observer
+SocketMode=0660
+DirectoryMode=0755
+FileDescriptorName=observer
+RemoveOnStop=no
+Service=cgpd.service
+
+[Install]
+WantedBy=sockets.target

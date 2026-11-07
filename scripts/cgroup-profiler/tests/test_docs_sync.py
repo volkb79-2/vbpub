@@ -70,6 +70,8 @@ def _registry_verbs(registry) -> Dict[str, Set[str]]:
 def _default_text(spec) -> str:
     if spec.kind == "onoff":
         return f'"{spec.default}"'
+    if spec.kind == "socket":
+        return "; ".join(f"{key}={value}" for key, value in spec.default.items())
     if spec.kind in ("slice", "string"):
         return f'"{spec.default}"' if spec.kind == "slice" else str(spec.default)
     if spec.kind in ("slices", "uids"):
@@ -116,11 +118,11 @@ def readme_problems(text: str) -> List[str]:
 
     sockets = _tables(_section(text, "3. Sockets"))[0]
     socket_cells = " ".join(row[0] for row in sockets)
-    for path in (daemon_config.KEYS["ctl_socket"].default, daemon_config.KEYS["observer_socket"].default):
+    for path in (daemon_config.DEFAULT_CONTROL_SOCKET, daemon_config.DEFAULT_OBSERVER_SOCKET):
         if f"`{path}`" not in socket_cells:
             problems.append(f"sockets table lacks {path}")
-    if ctlwire.DEFAULT_SOCKET != daemon_config.KEYS["ctl_socket"].default:
-        problems.append("ctlwire default socket differs from the ctl_socket default")
+    if ctlwire.DEFAULT_SOCKET != daemon_config.DEFAULT_CONTROL_SOCKET:
+        problems.append("ctlwire default socket differs from the sockets.control default")
     if OBSERVER_GROUP not in " ".join(" ".join(row) for row in sockets):
         problems.append(f"sockets table does not name the {OBSERVER_GROUP} group")
     return problems
@@ -133,7 +135,7 @@ def test_readme_overview_matches_the_shipped_surface():
 def test_socket_paths_and_group_names_agree_across_the_documents():
     protocol = PROTOCOL.read_text(encoding="utf-8")
     native = (ROOT / "docs" / "NATIVE-DEPLOYMENT.md").read_text(encoding="utf-8")
-    for path in (daemon_config.KEYS["ctl_socket"].default, daemon_config.KEYS["observer_socket"].default):
+    for path in (daemon_config.DEFAULT_CONTROL_SOCKET, daemon_config.DEFAULT_OBSERVER_SOCKET):
         assert path in protocol, path
         assert path in native, path
     for text in (protocol, native, README.read_text(encoding="utf-8")):
@@ -148,6 +150,62 @@ def test_cgpd_run_is_explicit_in_the_spec_and_the_readme():
     assert "explicit service entrypoint" in README.read_text(encoding="utf-8")
 
 
+def test_socket_group_user_and_config_test_contract_stays_in_sync():
+    design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
+    cli_spec = (ROOT / "docs" / "CLI-SPEC.md").read_text(encoding="utf-8")
+    native = (ROOT / "docs" / "NATIVE-DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "--add-user LEVEL=USER" in README.read_text(encoding="utf-8")
+    assert "cgpd -t" in README.read_text(encoding="utf-8")
+    assert "GID 0 or the docker GID" in design
+    assert "host-setup owns uniqueness across services" in design
+    assert "--add-user control=alice --add-user observer=runner" in consumers
+    assert "gpasswd -a" in consumers and "uninstall never removes them" in consumers
+    assert "--add-user LEVEL=USER" in spec and "gpasswd -a" in spec
+    assert "memberships are never" in spec and "Cross-service group uniqueness belongs to host-setup" in spec
+    assert "cgpd -t" in spec and "ExecStartPre" in spec
+    assert "CGPCTL-SPEC.md` section 3" in cli_spec and "config-test option" in cli_spec
+    assert "No override exists" in native and "manual cleanup" in native
+    assert "Do not rerun the cgpd binary from a version tree" in native
+    assert "root-equivalent on mdt hosts" not in spec
+    assert "ctl group is the Docker relay group" not in (ROOT / "docs" / "PROTOCOL.md").read_text(encoding="utf-8")
+
+
+def test_recorded_user_reconciliation_and_requested_user_validation_are_documented():
+    readme = README.read_text(encoding="utf-8")
+    cli_spec = (ROOT / "docs" / "CLI-SPEC.md").read_text(encoding="utf-8")
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+
+    for text in (readme, cli_spec, consumers):
+        normalized = " ".join(text.split())
+        assert "recorded users whose accounts no longer exist are dropped and reported" in normalized
+        assert "A user named with `--add-user` must exist" in normalized
+    assert "missing recorded accounts do not block later installs" in " ".join(design.split()).lower()
+    assert "dropped and reported; the install continues" in " ".join(spec.split())
+
+
+def test_group_examples_and_legacy_container_files_name_the_dedicated_model():
+    spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
+    serve = (ROOT / "src" / "cgprofile" / "serve.py").read_text(encoding="utf-8")
+    compose = (ROOT / "ciu.compose.yml.j2").read_text(encoding="utf-8")
+    compose_text = " ".join(
+        line.lstrip().removeprefix("#").strip() for line in compose.splitlines())
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert '"group": "cgprofile-control", "gid": 999' in spec
+    assert "add yourself to cgprofile-control (gid 999) and re-login" in spec
+    assert "mdt-docker" not in spec and "2751" not in spec
+    assert "docker-group trust" not in serve
+    assert "dedicated socket group" in serve
+    assert "LEGACY cgprofile 1.x CONTAINER TEMPLATE ONLY" in compose
+    assert "obsolete /run/cgprofile 0770 root:docker layout" in compose_text
+    assert "LEGACY cgprofile container image" in dockerfile
+
+
 @pytest.mark.parametrize(
     "old,new",
     [
@@ -157,7 +215,7 @@ def test_cgpd_run_is_explicit_in_the_spec_and_the_readme():
         ("| `max_watchers` | `32` | reload |", "| `max_watchers` | `33` | reload |"),
         ("| `busctl` | `busctl` | restart |", "| `busctl` | `busctl` | reload |"),
         ("| `allow_uids` | `[]` | reload |\n", ""),
-        ("`/run/cgprofile/ctl.sock` | directory", "`/run/cgprofile/ctl2.sock` | directory"),
+        ("`/run/cgprofile/control/cgprofile.sock`", "`/run/cgprofile/control/cgprofile2.sock`"),
         ("root:cgprofile-observer` |", "root:observers` |"),
     ],
 )

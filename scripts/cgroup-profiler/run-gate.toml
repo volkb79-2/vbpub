@@ -50,6 +50,37 @@ argv = [
 clean_tree = false
 budget = "20m"
 
+# Focused regression work uses the requested partial CLI-case check. The
+# coverage-partial lane exercises the suite with the same option while
+# retaining the repository's 100% line and branch coverage threshold. It
+# deselects the cross-project byte-mirror assertion; the release lane below
+# runs it, as does Run-Gate's selftest when the monorepo sibling is present.
+[lanes.focused]
+kind = "command"
+environment = "tester-unified"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/cgroup-profiler && PYTHONPATH={worktree}/scripts/cgroup-profiler/src:{worktree}/scripts/cgroup-profiler:{worktree}/libraries/cli-extended/src exec /opt/tester-venv/bin/python -m pytest tests/test_daemon_config.py tests/test_cgpd_installer.py tests/test_cgpd_service_doctor.py tests/test_cgpd.py tests/test_cgpd_units.py tests/test_cgpctl.py tests/test_docs_sync.py -q -p no:cacheprovider --cli-case-partial",
+]
+clean_tree = false
+budget = "10m"
+[lanes.focused.resources]
+memory = "2g"
+cpus = "3"
+
+[lanes.coverage-partial]
+kind = "command"
+environment = "tester-unified"
+argv = [
+    "bash", "-c",
+    "cd {worktree}/scripts/cgroup-profiler && export PYTHONPATH={worktree}/scripts/cgroup-profiler/src:{worktree}/scripts/cgroup-profiler:{worktree}/libraries/cli-extended/src COVERAGE_FILE=/tmp/.coverage && mkdir -p /tmp/pt && /opt/tester-venv/bin/python -m coverage run -m pytest tests/ -q -p no:cacheprovider --basetemp=/tmp/pt --cli-case-partial -k 'not test_package_contract_mirrors_canonical_contract_byte_for_byte' && /opt/tester-venv/bin/python -m coverage report --fail-under=100",
+]
+clean_tree = false
+budget = "20m"
+[lanes.coverage-partial.resources]
+memory = "3g"
+cpus = "3"
+
 # Mutation testing via a live worktree assay (never a pinned zipapp for an
 # in-repo consumer — assay/docs/INTERNAL-CONSUMERS.md), executed inside
 # tester-unified since this project's report-tier modules need

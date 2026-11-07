@@ -14,11 +14,227 @@ unchanged — see "Protocol compatibility" below.
 
 ## Socket
 
-Recommended production path: `/run/topos/topos.sock`.
+The production listener is owned by the systemd socket unit
+`topos-observe.socket` at `/run/topos/observe/topos.sock`. The unit creates the socket
+node as `root:topos-observe`, mode `0660` by default, and its parent directory as
+`root:root` mode `0755`. It passes its
+listening descriptor to `topos.service` with the name `observe`. Daemon state
+is kept under the configured `state_dir`, created as `root:root` mode
+`0700` by systemd's `RuntimeDirectory=`.
 
-Recommended ownership: `root:topos`, mode `0660`. Users who may read
-daemon-approved full telemetry join the `topos` group. The socket directory
-should be root-owned and not writable by clients.
+`/etc/topos/toposd.toml` configures `state_dir` and the observe socket's path,
+group, and mode. The state directory is the base for daemon BPF snapshots
+(`state_dir/bpf`) and squeeze recovery records (`state_dir/squeeze`). The
+`toposd run --bpf-state-dir PATH` option overrides the BPF snapshot directory.
+The BPF `state_dir` in the collector's config does not select the daemon's
+snapshot directory. `topos squeeze` and `topos squeeze --recover` read this
+service config as well. If the default config file is absent, built-in defaults
+apply; an invalid file stops the command with a config error. Clients need
+membership in the configured observe group to read daemon-approved telemetry.
+
+## Service entry point
+
+`toposd run` adopts the named socket passed by systemd and refuses to start
+without it. For tests and development, use
+`toposd run --self-bind --socket PATH`; `--socket` is valid only with
+`--self-bind`. The self-bind mode uses the configured mode, removes only a
+stale socket node, and unlinks the node it owns at shutdown. It never changes
+the parent directory's owner or mode. `--self-bind` is refused when this
+process also has a systemd-passed listener.
+
+`toposd unit print [--config PATH] [--unit NAME]` renders the socket, service,
+slice, and sysusers files from the config. `toposd unit check [--config PATH]
+[--root DIR] [--diff]` compares them with installed files. `toposd config check
+[--config PATH] [--json]` validates the service config; `toposd -t [--config
+PATH]` is the same check in the `nginx -t` style (exit 0, or 2 with the error on
+stderr); `topos.service` runs it as its `ExecStartPre`, so a config that fails the
+check (including a group with GID 0 or the docker GID) never starts the daemon.
+`RestartPreventExitStatus=2` covers only the main process, so a failing check is
+retried every 5 s until the unit's start limit (5 starts in 300 s) ends it; read
+the cause with `journalctl -u topos.service`. `toposd install`,
+`uninstall`, and `doctor` manage and inspect the host service. The client-side
+`topos daemon status` command remains available for socket and protocol checks.
+The old path `/run/topos/topos.sock` is no longer served, and `topos daemon
+serve` has been removed. There is no migration or in-place repair: an old
+installation must be removed manually before installing this layout.
+
+## Install and uninstall
+
+Every asset is pinned by its release version and lowercase SHA-256 digest:
+`<version>@sha256:<64 hex>`. The daemon lock pin must use the same version as
+the topos wheel. The lock itself contains the fully hashed third-party runtime
+dependency wheels. Release assets use tag `topos-v<version>`; a local
+`--wheel-source` directory must contain the two wheels, the daemon lock, and
+the dependency wheels used by pip's `--find-links` resolver.
+
+Preview the exact inputs and resources first:
+
+```bash
+sudo toposd install --dry-run \
+  --wheel 0.7.3@sha256:<topos-wheel-sha256> \
+  --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
+  --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
+  --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
+  --add-user observe=alice --add-user observe=bob --enable
+```
+
+After checking the preview, run the same command with `--yes` and without
+`--dry-run`. On an interactive TTY, the observe-group prompt offers
+`topos-observe` as its default. A non-interactive run must pass
+`--observe-group` (unless an existing config or install record supplies it).
+A mapped group must already exist. The observe group is refused, with exit 2 and
+no override, when it is named `docker`, has GID 0, or has the docker group's GID;
+the flag, the install record, `toposd.toml` and the prompt answer are all
+checked before anything changes (its membership would be root-equivalent). Put
+operator accounts into `topos-observe` with `--add-user observe=USER`, or map
+another dedicated group. A `toposd.toml` that names `docker` is refused even when
+`--observe-group` is given, so change that line by hand first; one that names a
+group with GID 0 or the docker GID is replaced by the flag's group. `toposd config
+check` and `toposd -t` refuse such a group on the host too.
+`--add-user observe=USER` (repeatable; `observe` is topos's only level) adds an
+existing user to the observe group with `gpasswd -a` after the group exists.
+Members are only ever added: a rerun without the flag keeps every recorded user,
+a further flag adds to them, and neither install nor uninstall removes a member.
+A recorded user who no longer exists is dropped from the record and reported
+instead of blocking the install; a user named on the command line must exist.
+The result names the users added; a new membership applies to the user's next
+login session or after a service restart, not to running sessions.
+`--no-enable` writes the service files without enabling or starting the
+socket/service.
+
+`toposd install` supports topos 0.7.0 and later; older releases have no
+`toposd` or daemon lock. Installing a version older than the current one needs
+`--allow-downgrade`.
+
+`/etc/topos/toposd.toml` is written only when it is absent. With
+`--observe-group`, the installer updates only `sockets.observe.group`, preserves
+the other lines and comments, and reports the change in the install result and
+dry-run summary; a rewrite keeps the file's mode. Without the flag, a group the
+existing config names wins over the install record and is saved back into the
+record; a config without a `group` key names none, so the record or a prompt
+decides, and a pipe run with neither errors. A mapped group must already
+exist; `topos-observe` may be created by the installer. If the config uses a
+form the installer cannot safely edit, it refuses and tells you what to change
+by hand. The config's `state_dir` and socket `path` must keep the fixed layout
+(`/run/topos/state`, `/run/topos/observe/topos.sock`); only the group and mode
+are host choices.
+
+The installer refuses an entry in `/usr/local/bin/topos` or `toposd` that is not
+its own symlink into `/opt/topos`. Move such a file away before installing.
+
+The installer resolves missing pins in this order: command-line flag, saved
+`/etc/topos/install.toml`, interactive TTY prompt, then an error naming the
+missing flag. Dry runs never prompt and default to `enabled = false` when no
+enable choice is supplied. The install record stores the three pins, release
+source, observe group and users, enable choice, and groups created by the
+installer. Version trees under `/opt/topos/<version>` are immutable once their
+`MANIFEST` exists. The active version is `/opt/topos/current`.
+
+Install checks socket nodes, old paths, tmpfiles rules, service drop-ins,
+runtime directory ownership and modes, systemd files without an install
+record, version manifests, and interrupted-install markers before changing
+anything. It refuses an old or unknown installation and prints the manual
+removal commands. It never migrates, repairs, or chmods old state.
+
+`/opt/topos/PENDING` marks an install in progress. A failed download, pin check
+or venv build removes its version tree and the marker, so a retry starts clean.
+A failure after that point, while units, links and services change, leaves
+`PENDING` in place (see below for how a rerun treats it).
+
+`toposd doctor [--check NAME] [--json]` runs `config-valid`, `units-current`,
+`groups`, `socket-units`, `socket-nodes`, `socket-dirs`, `state-dir`,
+`service`, `connect`, `foreign-rules`, and `caller-access`. The `groups` check
+fails when the observe group is missing, has GID 0 or the docker GID, and lists
+the members; it warns when a user recorded in `install.toml` is no longer a
+member. A non-root caller
+without observe-group access gets `skip` for `connect`; checks that cannot
+inspect a root-owned resource report `skip` with `run as root`.
+The `service` check compares the running hello version with the installed
+version and requires `socket_activation.mode = "activated"` with exactly one
+listener. If the daemon is self-bound or is an older daemon without this hello
+field, the remedy is `systemctl restart topos-observe.socket`.
+
+```bash
+toposd doctor --json
+toposd doctor --check connect
+toposd uninstall --dry-run
+sudo toposd uninstall --yes
+sudo toposd uninstall --remove-groups --yes
+```
+
+Uninstall keeps groups and memberships by default. `--remove-groups` removes
+only groups that the install record says `toposd install` created. If
+`groupdel` refuses a group, uninstall finishes the service, config, and version
+cleanup, keeps that group and the install record, prints the failure, and exits
+2. The `toposd` that ran is removed with its version tree, so it cannot be
+rerun: run `groupdel` for the kept group once it is free, then delete
+`/etc/topos/install.toml`. If removing the version tree itself fails, remove
+`/opt/topos` and the install record by hand.
+
+Uninstall acts only on a host where `toposd install` left its record
+(`/etc/topos/install.toml`) or its `PENDING` marker; otherwise it reports that
+nothing is installed. It checks everything before the first change and refuses,
+with the manual removal steps, when it finds old-layout or unknown paths under
+`/run/topos` or `/opt/topos`. It removes the socket and service units (socket
+first), the slice, the sysusers file, its own `/usr/local/bin` links, the runtime
+tree, `/opt/topos`, and the leftover host-setup drop-in
+`topos.service.d/50-mdt-socket-group.conf`. Other files in `/usr/local/bin` or
+`/etc/topos` are kept and listed; `/etc/topos/toposd.toml` is removed even when
+it predates the install. When the uninstall process runs from a version tree
+under `/opt/topos`, it keeps that tree and the `current` symlink while printing
+the result. It then removes the running tree, `current`, `PENDING`, `/opt/topos`,
+the install record, and `/etc/topos` if empty, in that order. Otherwise the
+version tree and `current` are removed in the main pass before `PENDING`, the
+`/opt/topos` directory, the install record, and the empty `/etc/topos` directory.
+The ownership markers are last, so an uninstall interrupted before the version
+tree is removed can be rerun; after that point finish by hand as described above.
+`--dry-run` lists the paths and groups it would remove.
+
+A failed upgrade of a finished install leaves `PENDING` next to the install
+record. Rerunning `toposd install` after fixing the cause re-applies the
+requested version: it rewrites every resource, reloads systemd and restarts the
+running service, because the failed attempt may already have written the files.
+After the sysusers step, install writes the complete record, including any
+created observe group, before readiness can fail. A first install interrupted
+after that point can be rerun to re-apply, or uninstalled with
+`--remove-groups` to remove the group. A `PENDING` without a record means the
+install stopped before writing that ownership record; uninstall can clear the
+partial files, while install refuses the unfinished state. A host where an
+interrupted uninstall left the record can likewise be reinstalled over (and then
+uninstalled again).
+
+### Manual removal of an old installation
+
+When install refuses an old layout, stop and disable its service, remove the
+host-setup rules and old units, reload systemd, then remove the old runtime
+tree. Recreate containers that bind-mount `/run/topos` after removing it.
+
+```bash
+sudo systemctl stop topos.service
+sudo systemctl disable topos.service
+sudo rm -f /etc/tmpfiles.d/mdt-topos.conf
+sudo rm -f /etc/systemd/system/topos.service.d/50-mdt-socket-group.conf
+sudo rm -f /etc/systemd/system/topos.service /etc/systemd/system/topos.slice
+sudo systemctl daemon-reload
+sudo rm -rf /run/topos
+# Recreate containers that bind-mount /run/topos.
+```
+
+## Differences from cgpd
+
+- topos has one read-only `observe` socket. It has no control level, slices, or
+  `allow_uids` access list.
+- There is no live-session drain or exit code 3; topos clients only read
+  telemetry, and there is no mutating daemon session to drain.
+- topos has no `/var/lib` daemon data, so uninstall has no `--purge-data` mode.
+- Like cgprofile, topos refuses `docker` as the observe group; an observe group
+  may map to any other existing group.
+- Readiness uses a bounded hello request on the configured observe socket and
+  requires the reply to report the expected topos version.
+- There is no downgrade below the socket-unit release: topos before 0.7.0 has
+  no `toposd` or daemon lock, so `toposd install` refuses those versions.
+  `--allow-downgrade` covers rollbacks between 0.7.0 and later releases, which
+  all use the same socket units.
 
 ## Protocol
 
@@ -105,7 +321,7 @@ and attached to the connection context; it appears in every audit/rate-limit
 record produced for that client. An authorization hook
 (`Callable[[PeerCredentials, str], tuple[ErrorCode, str] | None]`) is
 injectable for tests. Default policy: socket-group read access enforced by
-the OS (mode 0660 root:topos). The hook receives `(peer, op)` and may deny
+the OS (mode 0660 root:topos-observe). The hook receives `(peer, op)` and may deny
 with a typed error. Mutation-shaped ops are rejected before the hook runs.
 
 **Peer-credential read failure** (platform or race): the connection is served
@@ -276,7 +492,7 @@ group-protected socket:
 
 ```bash
 topos gateway serve \
-  --daemon-socket /run/topos/topos.sock \
+  --daemon-socket /run/topos/observe/topos.sock \
   --principal dashboard:operational
 ```
 
@@ -324,7 +540,7 @@ traces.
 
 ## Background Producer
 
-On `topos daemon serve` the daemon creates a `FrameBroker` with the live
+On `toposd run` the daemon creates a `FrameBroker` with the live
 collector stream and immediately starts a background producer thread. The
 producer continuously advances the collector, publishing each frame into a
 bounded sequenced history (`--history-size`, default 120).  The producer runs
@@ -336,34 +552,6 @@ broker captures the failure and returns a `FrameUnavailableError` to clients
 without crashing the Unix server. The daemon continues to serve cached frames
 from history.
 
-## Socket
-
-Recommended production path: `/run/topos/topos.sock`.
-
-Recommended ownership: `root:topos`, mode `0660`. Users who may read
-daemon-approved full telemetry join the `topos` group. The socket directory
-should be root-owned and not writable by clients.
-
-## Protocol
-
-One JSON request per connection:
-
-```json
-{"op":"current"}
-{"op":"stream","limit":3}
-```
-
-Responses are JSON lines:
-
-```json
-{"type":"frame","frame":{...canonical Frame JSON...}}
-{"type":"end","count":1}
-```
-
-Unsupported requests return an error object. The protocol has no arbitrary file
-read, command execution, admin, Docker mutation, systemd mutation, BPF, or DAMON
-mutation verb.
-
 ## Attach Client
 
 `topos --attach SOCKET` consumes daemon frames through the same UI model used by
@@ -371,7 +559,7 @@ live collection. The attach client is read-only and only speaks the P16 broker
 protocol.
 
 When no explicit socket path is given, `--attach` defaults to the packaged
-default daemon socket (`/run/topos/topos.sock`).
+default daemon socket (`/run/topos/observe/topos.sock`).
 
 Common forms:
 
@@ -379,9 +567,9 @@ Common forms:
 topos --attach                              # default socket, interactive UI
 topos --attach --once --json                # default socket, one canonical frame
 topos --attach --ui-smoke                   # default socket, UI smoke test
-topos --attach /run/topos/topos.sock        # explicit socket, interactive UI
-topos --attach /run/topos/topos.sock --once --json
-topos --attach /run/topos/topos.sock --ui-smoke
+topos --attach /run/topos/observe/topos.sock        # explicit socket, interactive UI
+topos --attach /run/topos/observe/topos.sock --once --json
+topos --attach /run/topos/observe/topos.sock --ui-smoke
 ```
 
 `--attach --once --json` prints one canonical frame JSON payload and is the
@@ -406,25 +594,28 @@ collection.
 
 ## Daemon Status Command
 
-`topos daemon status --socket PATH --group NAME [--json] [--pretty-json]`
-combines deployment preflight checks with a protocol current-frame check to
-answer "is the daemon deployment usable from this account, and is it speaking
-the expected topos frame protocol?"
+`topos daemon status [--socket PATH] [--group NAME] [--json] [--pretty-json]`
+checks that the socket node is a socket owned by root with mode `0660`, then
+sends hello and current requests to verify client access and the topos frame
+protocol. Any socket group is accepted unless `--group` names one: a container
+usually cannot resolve the host's group names. Use `toposd doctor` for host-wide
+install checks.
 
 ```bash
-topos daemon status                              # default socket and group
+topos daemon status                              # default socket, any group
 topos daemon status --json                       # JSON output
 topos daemon status --pretty-json                # indented JSON
-topos daemon status --socket /custom/path.sock --group mygroup
+topos daemon status --group topos-observe        # also require the socket group
+topos daemon status --socket /custom/path.sock
 ```
 
 Exit codes:
-- `0` when preflight is usable and the current-frame protocol check succeeds.
-- `1` when preflight or protocol check fails (with guidance in the output).
+- `0` when socket metadata and the current-frame protocol check succeed.
+- `1` when socket metadata or protocol check fails (with guidance in the output).
 - `2` for argument/usage errors.
 
-The command is read-only: it inspects filesystem metadata, group membership,
-and makes one `current` request over the existing P16 daemon protocol. It
+The command is read-only: it inspects filesystem metadata and makes one
+`hello` and one `current` request over the daemon protocol. It
 never runs systemd, mutates files, or changes ownership/modes.
 
 Current slice limitations:
@@ -476,45 +667,33 @@ Key characteristics:
 
 ## Deployment Checklist
 
-Before deploying, run `topos daemon install-plan` to see the ordered
-operator steps, exact commands, and destination paths for the packaged
-templates. The plan is read-only — it describes what to do without
-changing any host state.
+The packaged default rendering lives under `src/topos/assets/systemd/`:
 
-After reviewing the plan, proceed with the checklist below.
+- `topos-observe.socket` creates `/run/topos/observe/topos.sock` as
+  `root:topos-observe`, mode `0660`, and passes it to the service as `observe`.
+- `topos.service` starts `toposd run --config /etc/topos/toposd.toml` and
+  creates `/run/topos/state` as `0700 root:root`.
+- `topos.slice` bounds the host daemon, and `topos.sysusers` declares the
+  default observe group.
 
-The packaged operator templates live under `src/topos/assets/systemd/`:
-
-- `topos.service` starts `topos daemon serve --socket /run/topos/topos.sock`
-  as a root daemon with a group-readable socket.
-- `topos.tmpfiles` creates `/run/topos` with `0750 root:topos`.
-
-Before enabling the service:
-
-1. Create the `topos` group.
-2. Add the approved non-root users who should attach to the daemon socket.
-3. Install the service and tmpfiles templates.
-4. Start the daemon.
-5. Run `topos daemon preflight --socket /run/topos/topos.sock` from the client
-   account to confirm that the runtime directory, socket permissions, and
-   group membership are usable.
-
-The preflight command is read-only. It inspects the socket path, parent
-directory, group membership, and local connectability without mutating host
-state or invoking systemd.
+Use `toposd install` with pinned topos, cli-extended, and daemon-lock assets to
+install these files and the isolated runtime. Then run `toposd doctor --json`
+as root for the host checks and `topos daemon status` from a client account for
+socket and protocol access. `toposd install --dry-run` prints the planned
+version and service resources without fetching assets or changing host state.
 
 ## Troubleshooting Daemon Client Errors
 
 When `topos --attach ...` or `topos daemon current ...` fails, the CLI prints
 the original error followed by actionable guidance:
 
-### Default socket (`/run/topos/topos.sock`)
+### Default socket (`/run/topos/observe/topos.sock`)
 
 ```
-cannot connect to /run/topos/topos.sock: No such file or directory
+cannot connect to /run/topos/observe/topos.sock: No such file or directory
 
-Try: topos daemon preflight
-If the daemon is not installed: topos daemon install-plan
+Try: toposd doctor --check connect
+If the daemon is not installed: see toposd install --help (docs/DAEMON.md)
 ```
 
 ### Custom socket
@@ -522,13 +701,13 @@ If the daemon is not installed: topos daemon install-plan
 ```
 cannot connect to /tmp/custom.sock: Connection refused
 
-Try: topos daemon preflight --socket /tmp/custom.sock
+Try: topos daemon status --socket /tmp/custom.sock
 ```
 
 ### Protocol/response errors
 
 ```
-daemon at /run/topos/topos.sock returned malformed JSON on line 1
+daemon at /run/topos/observe/topos.sock returned malformed JSON on line 1
 
 Check that the process at the socket is a compatible topos daemon
 and review the daemon logs for errors.

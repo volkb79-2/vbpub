@@ -79,7 +79,8 @@ def test_daemon_serve_continues_if_lifecycle_reports_disabled_after_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The daemon remains available if a lifecycle collaborator becomes disabled."""
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    from conftest import run_toposd_self_bind
     import topos.daemon.paddr_lifecycle as lifecycle_module
 
     config = ToposConfig(cgroup_root=tmp_path / "cgroup", damon=DamonConfig(paddr_enabled=True))
@@ -130,7 +131,7 @@ def test_daemon_serve_continues_if_lifecycle_reports_disabled_after_start(
     monkeypatch.setattr(cli, "serve_versioned_unix_socket", lambda *_args, **_kwargs: Server())
     monkeypatch.setattr(lifecycle_module, "DaemonPaddrLifecycle", Lifecycle)
 
-    assert cli._main_daemon(["serve", "--socket", str(tmp_path / "topos.sock")]) == 0
+    assert run_toposd_self_bind(tmp_path / "topos.sock") == 0
 
 
 def test_ui_smoke_retries_until_its_monotonic_deadline_without_a_frame(

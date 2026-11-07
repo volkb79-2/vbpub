@@ -8,6 +8,14 @@ Spec: the `§` references in this file are to the 2026-07 spec,
 
 ## 1. Repository layout
 
+The host daemon service lifecycle is owned by `topos.service`: `toposd install`
+and `uninstall` manage the pinned host runtime, and `toposd doctor` reports
+service health. The install record at `/etc/topos/install.toml` stores the
+sha256 pins for the topos wheel, cli-extended wheel, and version-matched daemon
+lock, along with the source and group-creation facts. There are no legacy
+deployment command aliases. See
+`docs/DAEMON.md` for the install and manual-removal contracts.
+
 ```
 topos/
   pyproject.toml            # package: topos; console script: topos
@@ -291,7 +299,12 @@ duplicating registry prose.
 ### Read-only ops
 
 - `hello` — protocol version(s), capabilities, daemon identity, and current
-  limits (max request bytes, max response items, history capacity).
+  limits (max request bytes, max response items, history capacity). A daemon
+  started through `run_daemon` additively reports
+  `socket_activation: {mode, listeners}`: `mode` is `activated` when a
+  systemd-passed listener was supplied and `self-bind` otherwise;
+  `listeners` counts the supplied listeners. A directly constructed `DaemonApi`
+  may omit this field.
 - `current` — latest atomic `(sequence, frame)` plus `metrics_meta`.
 - `history` — bounded by sequence cursor OR by time window (`since_ts`
   inclusive, `until_ts` exclusive); each form returns explicit
@@ -310,7 +323,7 @@ duplicating registry prose.
   audit/rate-limit record produced for that client.
 - An authorization hook (`Callable[[PeerCredentials, str], tuple[ErrorCode,
   str] | None]`) is injectable for tests. Default policy: socket-group read
-  access enforced by the OS (mode 0660 root:topos). The hook receives
+  access enforced by the OS (mode 0660 root:topos-observe). The hook receives
   `(peer, op)` and may deny with a typed error. Mutation-shaped ops are
   rejected before the hook runs.
 - Peer-credential read failure (platform or race): the connection is served
