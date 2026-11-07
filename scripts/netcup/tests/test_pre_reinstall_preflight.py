@@ -297,7 +297,17 @@ def _expected_payload(preflight, bundle_path, host="v1001", ssh_key_ids=(31415,)
 
 
 def _wizard_summary(payload):
-    return "INSTALLATION PARAMETERS SUMMARY\n" + json.dumps(payload, indent=2) + "\n[dry-run] Preflight OK\n"
+    """Mimic the REAL wizard summary: customScript redacted + digest line."""
+    import hashlib
+
+    script = payload["customScript"]
+    shown = dict(payload, customScript=f"***REDACTED customScript (len={len(script)})***")
+    return (
+        "INSTALLATION PARAMETERS SUMMARY\n"
+        + json.dumps(shown, indent=2) + "\n"
+        + f"[payload] customScript sha256={hashlib.sha256(script.encode()).hexdigest()} len={len(script)}\n"
+        + "[dry-run] Preflight OK\n"
+    )
 
 
 class _FakeProcess:

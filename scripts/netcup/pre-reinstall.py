@@ -466,6 +466,52 @@ def _provider_payload_from_wizard_output(output: str) -> dict:
     return payload
 
 
+CUSTOM_SCRIPT_DIGEST_RE = re.compile(
+    r"(?m)^\[payload\] customScript sha256=([0-9a-f]{64}) len=([0-9]+)$"
+)
+
+
+def validate_wizard_preview(
+    host: str,
+    output: str,
+    *,
+    expected_custom_script: str,
+    expected_ssh_key_ids: list[int],
+) -> None:
+    """Validate the payload summary the REAL wizard dry-run printed.
+
+    The wizard redacts ``customScript`` in every printed summary (a
+    length-only marker), so the script is bound through the SHA-256 digest
+    line the wizard prints next to it, never through the redacted text.
+    """
+    payload = _provider_payload_from_wizard_output(output)
+    shown = payload.get("customScript")
+    if isinstance(shown, str) and shown.startswith("***REDACTED customScript"):
+        digests = CUSTOM_SCRIPT_DIGEST_RE.findall(output)
+        if len(digests) != 1:
+            raise PreflightError(
+                "wizard dry-run did not print exactly one customScript digest line; "
+                "cannot bind the provider payload to the reviewed customScript"
+            )
+        digest, length = digests[0]
+        expected_digest = hashlib.sha256(expected_custom_script.encode("utf-8")).hexdigest()
+        if (
+            digest != expected_digest
+            or int(length) != len(expected_custom_script)
+            or shown != f"***REDACTED customScript (len={len(expected_custom_script)})***"
+        ):
+            raise PreflightError(
+                "provider payload mismatch: customScript digest differs from the reviewed bundle"
+            )
+        payload = {**payload, "customScript": expected_custom_script}
+    validate_provider_payload(
+        host,
+        payload,
+        expected_custom_script=expected_custom_script,
+        expected_ssh_key_ids=expected_ssh_key_ids,
+    )
+
+
 def run_logged(log_path: str | Path, action: Callable) -> int:
     path = Path(log_path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -576,10 +622,9 @@ def run_reinstall(
         )
         if preview.returncode != 0:
             return preview
-        provider_payload = _provider_payload_from_wizard_output(preview.stdout)
-        validate_provider_payload(
+        validate_wizard_preview(
             host,
-            provider_payload,
+            preview.stdout,
             expected_custom_script=checked.bundle["customScript"],
             expected_ssh_key_ids=ssh_key_ids,
         )

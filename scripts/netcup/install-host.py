@@ -26,6 +26,7 @@ script handles getting/refreshing short-lived access tokens itself for every
 other mode - no further manual steps needed.
 """
 
+import hashlib
 import os
 import sys
 import json
@@ -725,6 +726,32 @@ def _confirm_install(prompt: str, args: argparse.Namespace) -> bool:
 
 def _display_redaction(value: Any) -> Any:
     return value if netcup_scp_client.DEBUG_RAW else _redact_for_log(value)
+
+
+def _print_custom_script_digests(
+    displayed: Dict[str, Any], to_send: Optional[Dict[str, Any]] = None
+) -> None:
+    """Print verifiable SHA-256 digests for the redacted customScript.
+
+    The summary replaces the script text with a length-only marker, so an
+    automated reviewer (scripts/netcup/pre-reinstall.py) cannot otherwise
+    prove that the payload about to be sent carries the reviewed script.  The
+    digest of the script is not secret.  The first line is the loaded script
+    (placeholders unexpanded); the second is the exact text the POST sends.
+    """
+    shown = displayed.get("customScript")
+    if not isinstance(shown, str):
+        return
+    print(
+        "[payload] customScript sha256="
+        f"{hashlib.sha256(shown.encode('utf-8')).hexdigest()} len={len(shown)}"
+    )
+    sent = (to_send or {}).get("customScript")
+    if isinstance(sent, str):
+        print(
+            "[payload] sent customScript (placeholders expanded) sha256="
+            f"{hashlib.sha256(sent.encode('utf-8')).hexdigest()} len={len(sent)}"
+        )
 
 
 def _http_failure_message(exc: HTTPStatusError) -> str:
@@ -1985,6 +2012,7 @@ def install_from_payload(
     print("PAYLOAD SUMMARY")
     print("=" * 70)
     print(json.dumps(_display_redaction(installation_payload), indent=2))
+    _print_custom_script_digests(installation_payload, installation_payload_to_send)
     print()
 
     if args.dry_run:
@@ -2842,6 +2870,7 @@ def _run_install_workflow_body(args, runtime):
         print("INSTALLATION PARAMETERS SUMMARY")
         print("=" * 70)
         print(json.dumps(_display_redaction(installation_payload), indent=2))
+        _print_custom_script_digests(installation_payload, installation_payload_to_send)
         print()
 
         explicit_output_path = getattr(args, "config_path", None)
