@@ -2379,3 +2379,146 @@ expected_stdout_contains = "\"history\""
 expected_stderr_contains = ""
 effects = ["Reads the ceiling history; prints the summary of the observations of that one evidence class, whatever they count for, and each class apart; changes nothing"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.summary.option-spelling.ceilings.summary.--kind.--kind]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:da817ed8c4daec179e209e4049ddb6bcf702188b919bde1541dd204e59a5958e"
+rationale = "The read verb lists the calibrated disk's capability observations; absent history is an empty result with a warning."
+invocation = ["capability"]
+expected_exit_status = 0
+expected_stdout_contains = "observations"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching capability history; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c2603fd9c727ac67423b18ae2e2af17b680bc11085889934c18200fd78762b27"
+rationale = "The shared --debug-raw diagnostic option is accepted by the read-only capability verb."
+invocation = ["capability", "--debug-raw", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "observations"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching capability history; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-spelling.capability.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1824175e236bec3828e623102950980bef4149759d190509a62348daefc8f2f3"
+rationale = "--json prints the capability history as the command's structured primary output."
+invocation = ["capability", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "observations"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching capability history; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-spelling.capability.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--since/--since"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5b4ed8e9abd4ef2e71ada35913fff66f111665a0d74936f31d335e5cb009636a"
+rationale = "--since filters the history to observations at or after the supplied UTC timestamp."
+invocation = ["capability", "--since", "2026-11-01T00:00:00Z", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "observations"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching capability history; prints filtered observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-spelling.capability.--since.--since]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--state-dir/--state-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cec6ab4dc75b5277282aa34e80b6c88ac58a03e1d7d25c82dc29bef9835b01b3"
+rationale = "--state-dir selects the source directory of the stored calibration identity and capability history."
+invocation = ["capability", "--state-dir", "/var/lib/iobench", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "observations"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching capability history; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-spelling.capability.--state-dir.--state-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/59a56e97bc"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b52e7e997775b96753dfc09c0497169028b990746431987ff3b018eb03925298"
+rationale = "--kind probe selects observations from read-only probes only."
+invocation = ["capability", "--kind", "probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "by_kind"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching probe capability history; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-choice.capability.--kind.59a56e97bc]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/9d8744a686"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:31ca65f45852e89f5c134559322a68aff239c08178bbdb803275ef05a49add94"
+rationale = "--kind raw selects observations from raw device benchmarks only."
+invocation = ["capability", "--kind", "raw", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "by_kind"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching raw capability history; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-choice.capability.--kind.9d8744a686]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-choice/option:route:entrypoint:iobench/capability/--kind/bfdde6f565"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7bfcdff1dd1d7c95404960ce0d2e635800369e2722a5c87526223bbde22e22e7"
+rationale = "--kind file selects observations from file benchmarks only."
+invocation = ["capability", "--kind", "file", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "by_kind"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching file capability history; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-choice.capability.--kind.bfdde6f565]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/capability/option-spelling/option:route:entrypoint:iobench/capability/--kind/--kind"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ba26c52022b2669647812a6f992c2c79a1764d7d296f801e6622ebb3a375e0e9"
+rationale = "--kind is accepted by the read-only capability command to scope observations by evidence class."
+invocation = ["capability", "--kind", "raw", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "by_kind"
+expected_stderr_contains = ""
+effects = ["Reads calibration identity and matching capability history for the selected kind; prints observations; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[capability.option-spelling.capability.--kind.--kind]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--cache-idle-delay-s/--cache-idle-delay-s"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bea1065879211927e2acfdc298bb00460aa9a71ecd0d3b958715e63f14f1e174"
+rationale = "--cache-idle-delay-s changes the idle interval for the optional advisory cache-read stage and is visible in the dry-run plan."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--cache-idle-delay-s", "30"]
+expected_exit_status = 0
+expected_stdout_contains = "cache-evidence"
+expected_stderr_contains = ""
+effects = ["Dry run: prints the cache-evidence stage and its read jobs; writes nothing to the target and changes no runtime setting"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--cache-idle-delay-s.--cache-idle-delay-s]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--cache-idle-delay-s/--cache-idle-delay-s"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:939dbdbf538bee345575c402a61cda2b1009c7d28f0988175556501b1233ab49"
+rationale = "--cache-idle-delay-s is used if run must create a calibration; a current calibration means the dry run describes matrix only."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--cache-idle-delay-s", "30"]
+expected_exit_status = 0
+expected_stdout_contains = "preflight"
+expected_stderr_contains = ""
+effects = ["Dry run: prints the current matrix plan or the calibration plan that would run; writes nothing and changes no runtime setting"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--cache-idle-delay-s.--cache-idle-delay-s]"]

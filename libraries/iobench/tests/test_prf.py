@@ -14,13 +14,13 @@ def test_prf_01_dry_run_plan_complete_and_writes_nothing():
     files, dev = dict(host.files), host.devices["/dev/vda7"]
     written_before = (dev.write_bytes, list(dev.log), dev.written.as_list(), dev.marker)
     out = dryrun.calibrate_plan(host, config(assume_r_est=1.36e9))
-    assert out["total_s"] == 3340 and out["profile"] == "standard" and out["r_est_bps"] == 1.36e9
+    assert out["total_s"] == 3400 and out["profile"] == "standard" and out["r_est_bps"] == 1.36e9
     names = [s["name"] for s in out["stages"]]
-    assert names == ["S0", "S1", "fill", "E-cold", "ladder", "ladder-qd", "E2", "fresh-vs-rewrite", "fresh-observation", "rearm",
+    assert names == ["S0", "S1", "fill", "E-cold", "cache-evidence", "ladder", "ladder-qd", "E2", "fresh-vs-rewrite", "fresh-observation", "rearm",
                      "reference", "observation", "S6", "S7"]
     by = {s["name"]: s for s in out["stages"]}
     assert all("allotted_s" in s for s in out["stages"])
-    for name in ("S1", "fill", "E-cold", "ladder", "ladder-qd", "E2", "fresh-vs-rewrite", "fresh-observation", "reference", "observation", "S6"):
+    for name in ("S1", "fill", "cache-evidence", "E-cold", "ladder", "ladder-qd", "E2", "fresh-vs-rewrite", "fresh-observation", "reference", "observation", "S6"):
         assert by[name]["jobs"], name
         for job in by[name]["jobs"]:
             assert job["argv"][0] == "fio" and "--name=" in " ".join(job["argv"])

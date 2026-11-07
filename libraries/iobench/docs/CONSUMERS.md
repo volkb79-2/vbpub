@@ -36,9 +36,11 @@ root refusals can never be overridden. Without a marker no `calibrate` or `matri
 iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
 
-* Hard budgets: `veryquick` 3.5 min (173 s planned), `quick` 12 min, `standard` 60 min, `thorough` 75 min. Skipped stages are recorded, never shortened silently.
+* Hard budgets: `veryquick` 3.5 min (173 s planned), `quick` 12 min, `standard` 60 min (3400 s planned on the reference r1002 geometry), `thorough` 75 min (4270 s planned on the reference r1002 geometry). Skipped stages are recorded, never shortened silently.
+* Standard and thorough can include an optional direct-read cache-evidence stage after E-cold: 30 s idle + two 15 s reads in standard, 60 s idle + two 15 s reads in thorough. Set `--cache-idle-delay-s 0` to skip it. The accepted maximum delay is 230 s for standard and 290 s for thorough, but the stage is planned only when it fits the profile's remaining budget for the selected geometry. Otherwise the plan and both cells say `skipped:budget`, and dry-run contains no read jobs for it. Quick and veryquick omit it. The idle wait checks signals and the abort guard at one-second intervals. These are indirect hints: the guest cannot see which hypervisor/provider cache layer served a read, and the hints do not supply proposals. See the [design rationale](DESIGN-GUIDE.md#73-cache-and-burst-observations).
 * A live host REQUIRES `--confirm-quiet-window`, `--protect-cgroup` and `--abort-psi` (no defaults; the run refuses without them). Unlisted systemd units are not detected: you are the guard.
 * Output: `/var/lib/iobench/calibration.json`. Re-run on an identity change (`check` exit 3) or when `check` warns `recalibrate_recommended`.
+* Result and calibration records use schema 1 minor 3. The calibration contains its planned stages, including any `skipped:budget` cache-evidence stage; `quality.cache_state.status` is `not_measured` if neither optional read ran, and `delayed_reference` names the QD1 cold rate used.
 * `quick` reports every cache-dependent value as `unproven: quick_profile` (honest, not absent).
 * `veryquick` (about 3 minutes, for an installer that wants a binding and a plausibility check, not tuning values): S1, a 20 s fill, a cold probe, one 30 s write series and four 12 s cells. **Every cap and model value is `unproven: veryquick_profile`**; the model is a coarse estimate (`metering: coarse`, also `formula_only`: bps = the 128 KiB sequential rate, randiops = the 4 KiB random rate), QoS latencies and writeback are `absent: stage_skipped`, and it adds nothing to the ceiling history. Use it for: the disk binding (`identity.disk_scope`), `quality.plausibility.verdict` (`pass`, `fail`, `inconclusive`: refuse an operator model that contradicts a `fail`), and `calibration.veryquick.write_burst_seen`. Prove nothing from it: a `proven` value needs `standard` or `thorough`. If the default state directory already contains a fuller result, use a separate path:
 
@@ -47,7 +49,17 @@ iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile st
   ```
 
   `veryquick` refuses to replace `calibration.json` or `result.json` if either contains a non-veryquick or unreadable record.
-* Every calibration records `quality.plausibility = {verdict, cache_state}`. For veryquick, a read/write ratio up to 20x passes IOB-PLA-19; above 20x through 100x is `info` and the verdict is inconclusive without a hit-like cold probe, which makes both the check and verdict fail; above 100x fails on its own. These thresholds are inferred and IOB-ACC-01 must calibrate them. A veryquick `pass` describes only the available probe evidence; it does not prove that no cache exists.
+* Every profile that has sequential read and write cells records IOB-PLA-19 using matching block size, queue depth and region. A ratio up to 20x passes; above 20x through 100x is inconclusive unless a hit-like cold probe corroborates cache service, which fails; above 100x fails without corroboration. This check changes the plausibility verdict in all profiles. A veryquick hit-like cold probe without a ratio warning remains inconclusive, and a veryquick `pass` describes only its available evidence; it does not prove that no cache exists. The thresholds are inferred and IOB-ACC-01 must calibrate them.
+
+Read the append-only cache/burst history with:
+
+```bash
+iobench capability --json
+iobench capability --since 2026-11-01T00:00:00Z --json
+iobench capability --kind raw --json
+```
+
+Calibration rows are keyed to the whole-disk scope and carry their `raw`, `file`, or `probe` evidence kind. By default, `capability` and `check --json` report counts and the last appended row separately for each kind; `--kind` selects one kind, and `--since` filters each history inclusively. `latest` follows append order within a kind. Malformed rows are skipped and counted in `skipped_rows`; a newer schema is reported as unsupported with its version and preserved. These records describe observations only: they never feed the io.cost coefficients or other proposal values. Veryquick stores only its measured `write_burst_seen` boolean; numeric capability fields are null because that short profile does not measure them. If a calibration has no measurable capability fields, its low-confidence row says so in `note`.
 
 ## 3. Matrix iteration (the fast path)
 
@@ -75,7 +87,9 @@ Also from `iobench`: `1` runtime failure, `2` refusal or usage, `8` run aborted 
 ```json
 {"state": "current_unproven", "reasons": [], "warnings": ["scheduler_changed"], "limits": ["bucket_exclusion_s<=240"], "identity_strength": "weak",
  "sections": {"caps": {"proven": 0, "unproven": [{"key": "RIOPS", "reasons": ["cache_model_undetermined"]}], "absent": []}},
- "result": "/var/lib/iobench/result.json", "calibration_id": "cal-20261021T020000Z-7b2d0c1e"}
+ "result": "/var/lib/iobench/result.json", "calibration_id": "cal-20261021T020000Z-7b2d0c1e",
+ "capability": {"count": 0, "latest": {"raw": null, "file": null, "probe": null},
+                "by_kind": {"raw": {"count": 0, "latest": null}, "file": {"count": 0, "latest": null}, "probe": {"count": 0, "latest": null}}, "skipped_rows": 0}}
 ```
 
 The `proposals` object (schema 1). Every value has its own status, rule and inputs:
