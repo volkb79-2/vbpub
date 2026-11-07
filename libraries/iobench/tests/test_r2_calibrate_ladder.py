@@ -89,17 +89,16 @@ def test_r2_cal_pla_06_merges_degradation_from_every_failing_rung(monkeypatch, d
 
 def test_r2_cal_a_v1001_qd1_write_replay_uses_total_latency_and_produces_a_depth_verdict():
     # The retained v1001 record supplies 1.6k IOPS, 3.5 us mean clat and 3.888 us p99.
-    # Its slat/lat fields were not retained; 621.5 us slat is the replay assumption used by the
-    # existing 625 us fio JSON fixture, so the test asserts the actual calibration verdict rather
-    # than treating the inferred submission time as measured evidence.
-    write = DirScenario(iops_max=2600, qd_iops={1: 1600, 8: 2600, 32: 2600}, lat_us=3.5, slat_us=621.5)
+    # Its slat/lat fields were not retained; about 620 us slat is a replay assumption, not
+    # measured evidence. The end-to-end oracle asserts the resulting calibration verdict.
+    write = DirScenario(iops_max=2600, qd_iops={1: 1600, 8: 2600, 32: 2600}, lat_us=3.5, slat_us=620.0)
     run, out = _file_calibration_with_write(write)
     job_suffix = f"rung-w1-{run.ws // MIB}-d"
     replay = next(row for row in out.result["quality"]["little_law_rungs"] if row["job"].endswith(job_suffix))
     assert replay["qd"] == 1 and replay["iops"] == pytest.approx(1600.0, rel=0.01)
     assert replay["clat_mean_us"] == pytest.approx(3.5)
-    assert replay["slat_mean_us"] == pytest.approx(621.5)
-    assert replay["lat_mean_us"] == pytest.approx(625.0)
+    assert replay["slat_mean_us"] == pytest.approx(620.0)
+    assert replay["lat_mean_us"] == pytest.approx(623.5)
     assert replay["status"] == "pass"
     assert out.calibration["calibration"]["ladder"]["qd90"]["write"] == 8
     assert not any(row.get("job", "").endswith(job_suffix) for row in out.calibration["calibration"]["ladder"]["excluded_rungs"])
