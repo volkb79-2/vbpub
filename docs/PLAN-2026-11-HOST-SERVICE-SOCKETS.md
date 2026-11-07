@@ -83,12 +83,12 @@ cockpit. The current split of responsibilities breaks that:
   group of another level of the same service. This generalises the existing observer
   refusal (`host-setup/install.sh:193-201`) to every level and moves it into
   `cgpd install` and `toposd install`. run-gate and assay rely on it for the observer
-  (`run_gate.py:~8801`; `assay/tools/resource-observer-gid.sh:44-47`), and from
+  (`run_gate.py:8800`; `assay/tools/resource-observer-gid.sh:44-47`), and from
   phase 1 also for the control level (5.5, 5.6).
   - Groups are tool-specific, so no two estate socket levels share a group, across
     services too (e.g. `topos-observe` ≠ `cgprofile-observer`, `mdt-buildkit` ≠
     `cgprofile-control`). A service installer can only check its own levels; the
-    cross-service check lives in host-setup's wizard and `check.sh` (5.3.4, 5.3.5).
+    cross-service check lives in host-setup's wizard and `check.sh` (5.3.4, 5.3.8).
   - The installers run on the host as root, so they take the docker GID from
     `getent group docker`. Consumers inside a container cannot trust their own group
     table (`run_gate.py:8796-8798`). They take it from a numeric value in their
@@ -442,8 +442,10 @@ Safety therefore comes from the order below, with each host switched in one boun
    the host login user and the runner user where `host-setup.env` says so, and none
    of these GIDs is the docker GID.
 6. Make the new memberships live:
-   - the host login user logs out and in again (this also restarts the VS Code server
-     on the host, so `${localEnv:...}` sees the GID exports of 5.4);
+   - the host login user logs out and in again, and the VS Code server on the host is
+     restarted (kill it, or "Remote-SSH: Kill VS Code Server on Host"): a Remote-SSH
+     server can outlive the login session and keep its old environment. Only then
+     does `${localEnv:...}` see the GID exports (5.3.8, 5.4);
    - restart the runner service and recreate the runner cockpit container
      (`scripts/netcup/runner/start-cockpit-runner.sh`, 5.7).
 7. Pin the phase-1 run-gate and assay releases for that host's lanes.
@@ -684,12 +686,13 @@ rule, user-facing docs ship in the same change as the code.
      the templates document today (`templates/devcontainer.json:216-220`), and
      `initializeCommand` names it when the values are missing.
    - A group of a role that is not enabled has no GID. Its variable gets an inert
-     value instead, the GID of `nogroup` (`getent group nogroup`, 65534 on Debian), so
-     `--group-add` never receives an empty string (Dev Containers substitutes an unset
-     `localEnv` as empty, and Docker refuses `--group-add ""`). By convention no file
-     is owned by `nogroup`, so the value grants nothing; `check.sh` warns if a socket
-     or directory under `/run` has that group. A user's own primary GID would not do:
-     `/etc/environment` applies to every user.
+     value instead, the GID of `nogroup` (`getent group nogroup`, 65534 on Debian; else
+     `nobody`; host-setup refuses when neither group exists), so `--group-add` never
+     receives an empty string (Dev Containers substitutes an unset `localEnv` as empty,
+     and Docker refuses `--group-add ""`). That group conventionally owns nothing
+     sensitive (NFS-squashed files are `nobody:nogroup`), so the value grants nothing
+     of note; `check.sh` warns if a socket or directory under `/run` has that group. A
+     user's own primary GID would not do: `/etc/environment` applies to every user.
    - add `g mdt-buildkit` to host-setup's sysusers file and `MDT_BUILDKIT_USERS` (same
      default as above). Every other host user that builds through `mdt-managed`
      (`mdt-buildkit.sh` sets `BUILDKIT_HOST` for all login shells) must be listed
@@ -746,8 +749,9 @@ rule, user-facing docs ship in the same change as the code.
      VS Code needs the exports in its own environment" (the `--group-add` would
      otherwise get an empty or stale value).
    - A level whose group does not exist on the host is an error only when that level
-     is declared `required`; for an `optional` one the inert value (5.3.8) is accepted
-     with a warning.
+     is declared `required`; for an `optional` one the variable must equal the inert
+     value (5.3.8), which is accepted with a warning. Any other value is stale and an
+     error.
    - A level GID equal to the docker GID is an error (P-5).
    Then, for each declared socket:
    - path exists and is a socket;
