@@ -328,14 +328,25 @@ be complete before the destructive sequence starts.
 The read-only evidence exporter verifies API identity first, uses the pinned
 SSH helper, checks the host name and server-ID file remotely, and writes an
 allowlisted snapshot under each host's `pre-reinstall-<date>/` directory. It
-redacts token, password, pass, passwd, private, API key, PAT, and related secret
-fields, including quoted JSON/YAML/INI pairs in arbitrary filenames, JSONC
-comments, bearer headers, URL userinfo, command-line options, and private-key
-blocks. Files larger than 1 MiB are listed and skipped by default;
-`--max-file-bytes` can set an explicit cap. The iogovmon `scratch/` tree and
-Docker volume contents are excluded. Verify every exported file against
-`SHA256SUMS` before continuing. Run v1001 first, then r1002 only after v1001
-passes post-install checks.
+redacts token, password, passphrase, pass/passwd suffixes, PWD, PresharedKey,
+API key, PAT, webhook URL fields and related secret values. Covered examples
+include quoted JSON/YAML/INI pairs, same-indent YAML secret sequences,
+multi-word plain values, JSONC comments, `.netrc` passwords, `curl -u` and
+`--user` credentials, URL userinfo and `/hooks/<token>` paths, command-line
+options, bearer headers, and private-key blocks.
+
+The fixed total file budget is 1 MiB and the line budget is 64 KiB. Files over
+either limit are skipped and listed in `meta/collection.txt`; the
+`--max-file-bytes` option can lower the file budget. The remote SSH collection
+has a 300-second wall-clock timeout and removes its partial local output on
+failure. The iogovmon `scratch/` tree and Docker volume contents are excluded.
+Known gaps include secret-like INI section names, bare `key`/
+`encryption_key`/`signing_key`/`tls_key`, bare `auth` or `cookie` fields,
+raw JWTs, PGP private-key blocks, and multiline or encoded secret forms outside
+the listed shapes. `-p` followed by a path or a 1–5 digit number is kept for
+path/port uses. Review the exported file names and contents, then verify every
+exported file against `SHA256SUMS` before continuing. Run v1001 first, then
+r1002 only after v1001 passes post-install checks.
 
 From `scripts/netcup`, use the exact saved root geometry for the host and
 reviewed config/bundle. The following uses the recorded 512 GiB disk, root

@@ -32,6 +32,7 @@ HOSTS = {
 }
 
 MAX_FILE_BYTES = 1024 * 1024
+SSH_TIMEOUT_SECONDS = 300
 
 # The redaction logic lives in ONE file that is both imported here (controller
 # side pass) and embedded verbatim into the remote collector (host side pass).
@@ -234,6 +235,10 @@ archive.close()
 def remote_collector(host: str, *, max_file_bytes: int = MAX_FILE_BYTES) -> str:
     if isinstance(max_file_bytes, bool) or not isinstance(max_file_bytes, int) or max_file_bytes <= 0:
         raise ValueError("max_file_bytes must be a positive integer")
+    if max_file_bytes > export_redaction.MAX_REDACTION_FILE_BYTES:
+        raise ValueError(
+            f"max_file_bytes cannot exceed the {export_redaction.MAX_REDACTION_FILE_BYTES}-byte redaction limit"
+        )
     if host not in HOSTS:
         raise ValueError("host must be r1002 or v1001")
     expectation = HOSTS[host]
@@ -322,6 +327,10 @@ def export_snapshot(
         raise ValueError("host must be r1002 or v1001")
     if isinstance(max_file_bytes, bool) or not isinstance(max_file_bytes, int) or max_file_bytes <= 0:
         raise ValueError("max_file_bytes must be a positive integer")
+    if max_file_bytes > export_redaction.MAX_REDACTION_FILE_BYTES:
+        raise ValueError(
+            f"max_file_bytes cannot exceed the {export_redaction.MAX_REDACTION_FILE_BYTES}-byte redaction limit"
+        )
     try:
         parsed_date = dt.datetime.strptime(date, "%Y%m%d")
     except ValueError as exc:
@@ -339,13 +348,19 @@ def export_snapshot(
 
     try:
         command = ssh_command(host)
-        completed = runner(
-            ["bash", "-lc", command],
-            input=remote_collector(host, max_file_bytes=max_file_bytes).encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        try:
+            completed = runner(
+                ["bash", "-lc", command],
+                input=remote_collector(host, max_file_bytes=max_file_bytes).encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=SSH_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"read-only evidence export SSH collection timed out after {SSH_TIMEOUT_SECONDS:g} seconds"
+            ) from exc
         if completed.returncode != 0:
             detail = completed.stderr.decode("utf-8", errors="replace")
             raise RuntimeError(f"read-only evidence export failed ({completed.returncode}): {detail[-2000:]}")
@@ -369,7 +384,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--date", default=dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d"))
     parser.add_argument(
         "--max-file-bytes", type=int, default=MAX_FILE_BYTES,
-        help=f"maximum bytes read/exported per regular file (default {MAX_FILE_BYTES})",
+        help=(
+            f"maximum bytes read/exported per regular file; may lower but not exceed "
+            f"the {export_redaction.MAX_REDACTION_FILE_BYTES}-byte redaction limit "
+            f"(default {MAX_FILE_BYTES})"
+        ),
     )
     args = parser.parse_args(argv)
     try:

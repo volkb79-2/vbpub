@@ -33,15 +33,17 @@ PRIVATE_KEY_MARKER = "***REDACTED PRIVATE KEY***"
 # Stems matched as substrings of the normalised key (camelCase split, separators
 # removed) and short words matched only as whole words.
 LONG_STEMS = (
-    "token", "passw", "secret", "credential", "authorization", "private",
-    "apikey", "accesskey", "jwt", "psk", "bearer",
+    "token", "passw", "passph", "passcode", "secret", "credential",
+    "authorization", "private", "apikey", "accesskey", "jwt", "psk",
+    "presharedkey", "bearer",
 )
-SHORT_WORDS = ("pass", "pat", "pw")
+SHORT_WORDS = ("pass", "pat", "pw", "pwd")
 
-PRIVATE_KEY_RE = re.compile(
-    r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----",
-    re.DOTALL,
-)
+MAX_REDACTION_FILE_BYTES = 1024 * 1024
+MAX_REDACTION_LINE_BYTES = 64 * 1024
+
+PRIVATE_KEY_RE = re.compile(r"-----BEGIN [^-\r\n]*PRIVATE KEY-----")
+PRIVATE_KEY_END_RE = re.compile(r"-----END [^-\r\n]*PRIVATE KEY-----")
 SENSITIVE_PATH_RE = re.compile(
     r"(?i)(?:token|password|passwd|secret|private.?key|credential|api.?key|(?<![a-z0-9])pass(?![a-z0-9])|\.ssh)"
 )
@@ -61,7 +63,18 @@ _AUTHORIZATION_RE = re.compile(
 _BEARER_RE = re.compile(r"""(?i)(?P<prefix>\bbearer[ \t]+)(?P<value>[^\s,;"']+)""")
 _OPTION_RE = re.compile(r"""(?<![A-Za-z0-9_-])--(?P<name>[A-Za-z0-9][A-Za-z0-9_-]*)(?P<sep>=|[ \t]+)""")
 _SHORT_P_RE = re.compile(r"""(?<![\w-])-p(?:(?P<space>[ \t]+)|(?=[^\s-]))""")
-_URL_USERINFO_RE = re.compile(r"""(?i)(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#"']*@""")
+_URL_USERINFO_RE = re.compile(
+    r"""(?i)(?<![A-Za-z0-9+.-])(?P<scheme>[A-Za-z][A-Za-z0-9+.-]{0,31}://)[^\s/?#"']*@"""
+)
+_WEBHOOK_PATH_RE = re.compile(
+    r"""(?i)(?P<prefix>https?://[^/\s?#]+/(?:[^/?#\s]+/)*hooks/)(?P<token>[^/?#\s]+)"""
+)
+_NETRC_PASSWORD_RE = re.compile(
+    r"""(?i)(?<![A-Za-z0-9_-])(?P<prefix>password|passwd)(?P<space>[ \t]+)(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s]+)"""
+)
+_CURL_USER_RE = re.compile(
+    r"""(?i)(?<![A-Za-z0-9_-])(?P<prefix>--user(?:[ \t]*=[ \t]*|[ \t]+)|-u(?:[ \t]+|(?=[^ \t])))(?P<quote>["']?)(?P<user>[^:\s"']+):(?P<password>[^,\s"']+)(?P=quote)"""
+)
 _TOKEN_FORMAT_RE = re.compile(
     r"""\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}"""
     r"""|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,})"""
@@ -82,6 +95,10 @@ def key_is_sensitive(key):
     words = _words(key)
     joined = "".join(words)
     if any(stem in joined for stem in LONG_STEMS):
+        return True
+    if joined.endswith(("pass", "pw")):
+        return True
+    if "webhook" in joined and "url" in joined:
         return True
     return any(word in SHORT_WORDS for word in words)
 
@@ -106,6 +123,49 @@ def _indent(line):
     return len(line) - len(line.lstrip(" \t"))
 
 
+def _redact_private_key_blocks(text):
+    """Mask PEM blocks in one forward pass, keeping incomplete blocks visible."""
+    output = []
+    pending = []
+    inside = False
+    for raw in text.splitlines(keepends=True):
+        body = raw.rstrip("\r\n")
+        eol = raw[len(body):]
+        position = 0
+        if inside:
+            end = PRIVATE_KEY_END_RE.search(body, position)
+            if end is None:
+                pending.append(raw)
+                continue
+            output.append(PRIVATE_KEY_MARKER)
+            pending.clear()
+            inside = False
+            position = end.end()
+        while True:
+            start = PRIVATE_KEY_RE.search(body, position)
+            if start is None:
+                output.append(body[position:] + eol)
+                break
+            end = PRIVATE_KEY_END_RE.search(body, start.end())
+            if end is None:
+                output.append(body[position:start.start()])
+                pending = [body[start.start():] + eol]
+                inside = True
+                break
+            output.append(body[position:start.start()])
+            output.append(PRIVATE_KEY_MARKER)
+            position = end.end()
+    if pending:
+        output.extend(pending)
+    return "".join(output)
+
+
+def _same_indent_sequence(line, indent):
+    return len(line) > indent and line[indent] == "-" and (
+        len(line) == indent + 1 or line[indent + 1] in " \t"
+    )
+
+
 def _redact_line(line):
     """Return (new_line, opens_block, heredoc_delimiter) for one line (no EOL)."""
     heredoc = None
@@ -115,7 +175,16 @@ def _redact_line(line):
         found = _HEREDOC_RE.search(line)
         if found:
             heredoc = found.group("delimiter")
+    line = _NETRC_PASSWORD_RE.sub(
+        lambda m: m.group("prefix") + m.group("space") + _mask(m.group("value")),
+        line,
+    )
+    line = _CURL_USER_RE.sub(
+        lambda m: m.group("prefix") + m.group("quote") + m.group("user") + ":" + MARKER + m.group("quote"),
+        line,
+    )
     line = _URL_USERINFO_RE.sub(lambda m: m.group("scheme"), line)
+    line = _WEBHOOK_PATH_RE.sub(lambda m: m.group("prefix") + MARKER, line)
     line = _TOKEN_FORMAT_RE.sub(MARKER, line)
     line = _AUTHORIZATION_RE.sub(lambda m: m.group("prefix") + MARKER, line)
     line = _BEARER_RE.sub(lambda m: m.group("prefix") + MARKER, line)
@@ -185,6 +254,13 @@ def _redact_line(line):
             out.append(MARKER)
             position = len(line)
             break
+        value_start = found.end()
+        while value_start < len(line) and line[value_start] in " \t":
+            value_start += 1
+        if value_start < len(line) and line[value_start] not in "\"'":
+            out.append(MARKER)
+            position = len(line)
+            break
         out.append(_mask(value.group()))
         position = value.end()
     out.append(line[position:])
@@ -193,7 +269,7 @@ def _redact_line(line):
 
 def redact_text(text):
     """Redact secret-looking values in free text (per line, with block state)."""
-    text = PRIVATE_KEY_RE.sub(PRIVATE_KEY_MARKER, text)
+    text = _redact_private_key_blocks(text)
     output = []
     block_indent = None
     heredoc = None
@@ -215,6 +291,12 @@ def redact_text(text):
                 continue
             if indent > block_indent:
                 output.append(body[:indent] + MARKER + eol)
+                continue
+            if indent == block_indent and _same_indent_sequence(body, indent):
+                dash_end = indent + 1
+                while dash_end < len(body) and body[dash_end] in " \t":
+                    dash_end += 1
+                output.append(body[:dash_end] + MARKER + eol)
                 continue
             block_indent = None
         new, opens_block, delimiter = _redact_line(body)
@@ -244,8 +326,9 @@ def redact_json(value, key=""):
 # ---------------------------------------------------------------------------
 
 _STEM_SCAN = re.compile(
-    r"(?i)token|passw|secret|credential|authorization|private|api[-_]?key|access[-_]?key|jwt|psk|bearer"
-    r"|(?<![A-Za-z0-9])(?:pass|pat|pw)(?![A-Za-z0-9])|(?-i:(?<=[a-z0-9])(?:Pass|Pat|Pw)(?![a-z]))"
+    r"(?i)token|passw|passph|passcode|secret|credential|authorization|private|api[-_]?key|access[-_]?key|jwt|psk|preshared[-_]?key|bearer|webhook[-_]?url"
+    r"|(?<![A-Za-z0-9])(?:pass|pat|pw|pwd)(?![A-Za-z0-9])|(?-i:(?<=[a-z0-9])(?:Pass|Pat|Pw|Pwd)(?![a-z]))"
+    r"|(?i:[A-Za-z0-9_.-]+(?:pass|pw|pwd))(?![A-Za-z0-9])"
 )
 
 
@@ -253,9 +336,16 @@ def _is_marker(rest):
     return rest.lstrip("\"'").startswith(MARKER)
 
 
+def _is_marker_at(line, index):
+    while index < len(line) and line[index] in " \t\"'":
+        index += 1
+    return line.startswith(MARKER, index)
+
+
 def _stem_leaks(line):
+    option_spans = [match.span() for match in re.finditer(r"(?<!\S)--[\w-]+", line)]
+    option_index = 0
     for found in _STEM_SCAN.finditer(line):
-        before = line[:found.start()]
         index = found.end()
         # rest of the identifier (db_password_file), optional closing quote
         while index < len(line) and (line[index].isalnum() or line[index] in "_.-"):
@@ -266,16 +356,22 @@ def _stem_leaks(line):
         while spaces_end < len(line) and line[spaces_end] in " \t":
             spaces_end += 1
         if spaces_end < len(line) and line[spaces_end] in ":=":
-            value = line[spaces_end + 1:].strip()
-            if value and not value.startswith("#") and not _is_marker(value):
+            value_start = spaces_end + 1
+            while value_start < len(line) and line[value_start] in " \t":
+                value_start += 1
+            if value_start < len(line) and line[value_start] != "#" and not _is_marker_at(line, value_start):
                 return True
             continue
         # option / bearer forms: whitespace then a value
-        after = line[spaces_end:]
-        if spaces_end > index and after:
+        if spaces_end > index and spaces_end < len(line):
             word = found.group().lower()
-            optionish = bool(re.search(r"(?<!\S)--[\w-]*$", before)) or word == "bearer"
-            if optionish and not after.startswith("-") and not _is_marker(after):
+            while option_index < len(option_spans) and option_spans[option_index][1] <= found.start():
+                option_index += 1
+            optionish = (
+                option_index < len(option_spans)
+                and option_spans[option_index][0] <= found.start() < option_spans[option_index][1]
+            ) or word == "bearer"
+            if optionish and line[spaces_end] != "-" and not _is_marker_at(line, spaces_end):
                 return True
     return False
 
@@ -291,6 +387,40 @@ def _short_p_leaks(line):
             value = token[2:]
             if not _benign_short_p_value(value.strip("'\"")) and not _is_marker(value):
                 return True
+    return False
+
+
+def _netrc_password_leaks(line):
+    words = line.split()
+    for index, word in enumerate(words[:-1]):
+        if word.lower() not in ("password", "passwd"):
+            continue
+        value = words[index + 1].strip("\"'")
+        if value not in (":", "=") and value and not _is_marker(value):
+            return True
+    return False
+
+
+def _curl_user_leaks(line):
+    words = line.split()
+    index = 0
+    while index < len(words):
+        option = words[index]
+        value = None
+        lowered = option.lower()
+        if lowered in ("-u", "--user") and index + 1 < len(words):
+            index += 1
+            value = words[index]
+        elif lowered.startswith("--user="):
+            value = option.split("=", 1)[1]
+        elif lowered.startswith("-u") and not lowered.startswith("--") and len(option) > 2:
+            value = option[2:]
+        if value is not None:
+            username_password = value.strip("\"'")
+            _username, separator, password = username_password.partition(":")
+            if separator and password and not _is_marker(password):
+                return True
+        index += 1
     return False
 
 
@@ -310,13 +440,22 @@ def has_unredacted(text):
                 return True
             continue
         if block_indent is not None:
-            if stripped and indent > block_indent:
-                if not _is_marker(stripped):
+            same_indent_sequence = indent == block_indent and stripped.startswith("-") and (
+                len(stripped) == 1 or stripped[1] in " \t"
+            )
+            if stripped and (indent > block_indent or same_indent_sequence):
+                child = stripped[1:].strip() if same_indent_sequence else stripped
+                if child and not _is_marker(child):
                     return True
                 continue
             if stripped:
                 block_indent = None
         if re.search(r"://[^\s/?#\"']*@", raw):
+            return True
+        if re.search(
+            r"(?i)https?://[^/\s?#]+/(?:[^/?#\s]+/)*hooks/(?!\*{3}REDACTED\*{3})[^/?#\s]+",
+            raw,
+        ):
             return True
         if re.search(
             r"(?<![A-Za-z0-9])(?:gh[pousr]_|github_pat_|glpat-|xox[abprs]-|AKIA|sk-)[A-Za-z0-9_-]{8,}", raw
@@ -330,7 +469,12 @@ def has_unredacted(text):
             found = re.search(r"<<-?\s*['\"]?([A-Za-z0-9_]+)", raw)
             if found:
                 heredoc = found.group(1)
-        if _stem_leaks(raw) or _short_p_leaks(raw):
+        if (
+            _stem_leaks(raw)
+            or _short_p_leaks(raw)
+            or _netrc_password_leaks(raw)
+            or _curl_user_leaks(raw)
+        ):
             return True
         # a secret-named parent (empty, block scalar or masked) opens a block whose
         # deeper lines must all be masked
@@ -383,10 +527,23 @@ def strip_jsonc_comments(text):
     return "".join(output)
 
 
+def _check_redaction_budgets(name, content):
+    if len(content) > MAX_REDACTION_FILE_BYTES:
+        raise ValueError(
+            f"file exceeds the {MAX_REDACTION_FILE_BYTES}-byte redaction limit: {name}"
+        )
+    for line in content.splitlines():
+        if len(line) > MAX_REDACTION_LINE_BYTES:
+            raise ValueError(
+                f"line exceeds the {MAX_REDACTION_LINE_BYTES}-byte redaction limit: {name}"
+            )
+
+
 def redact_bytes(name, content):
     """Return redacted bytes, or raise ValueError (the caller must skip the file)."""
     if SENSITIVE_PATH_RE.search(name):
         raise ValueError("sensitive export path refused: " + name)
+    _check_redaction_budgets(name, content)
     if b"\x00" in content:
         raise ValueError("binary NUL content refused: " + name)
     try:
