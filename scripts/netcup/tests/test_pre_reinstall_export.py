@@ -100,17 +100,29 @@ def test_export_uses_a_real_ssh_timeout_and_reports_timeout_by_name(tmp_path, mo
     fake_ssh.chmod(0o755)
     monkeypatch.setattr(exporter, "SSH_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(exporter, "ssh_command", lambda _host: f"exec {fake_ssh}")
+    real_killpg = os.killpg
+    killed_groups = []
+
+    def record_group_kill(pgid, sig):
+        child_pgid = None
+        if child_pid_file.exists():
+            try:
+                child_pgid = os.getpgid(int(child_pid_file.read_text(encoding="utf-8")))
+            except ProcessLookupError:
+                pass
+        killed_groups.append((pgid, sig, child_pgid))
+        return real_killpg(pgid, sig)
+
+    monkeypatch.setattr(exporter.os, "killpg", record_group_kill)
 
     try:
         with pytest.raises(RuntimeError, match=r"SSH collection timed out after 1 seconds"):
             exporter.export_snapshot("v1001", "20261107", root=tmp_path)
         assert child_pid_file.exists(), "fake ssh did not start its grandchild"
-        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
-        proc_stat = Path(f"/proc/{child_pid}/stat")
-        state = None
-        if proc_stat.exists():
-            state = proc_stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
-        assert state in (None, "Z"), "ssh grandchild survived the collection timeout"
+        assert len(killed_groups) == 1
+        pgid, sig, child_pgid = killed_groups[0]
+        assert sig == signal.SIGKILL
+        assert child_pgid == pgid
         assert not (tmp_path / "v1001" / "pre-reinstall-20261107").exists()
     finally:
         release_child.touch()
