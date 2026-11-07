@@ -534,8 +534,8 @@ pids = 8192
 
 Before starting the lane, Run-Gate queries cgprofile's control `version`
 response and requires observer contract 2, the fixed observer socket path,
-and `listening = true`. It checks that the observer directory is owned by
-`root:root` and is not writable by group or other users, then mounts it
+and `listening = true`. It lstats the observer directory as root-owned and
+non-writable by group or other users, then mounts it
 read-only at `/run/cgprofile-observer`.
 The host path is `/run/cgprofile/observer/cgprofile.sock`, and the directory
 bind keeps the basename in the lane as
@@ -550,16 +550,21 @@ existing daemon's separate observer listener accepts only a resource-limit
 query bound to the caller's peer credentials and native thread ID; it returns
 the caller cgroup's ancestry under the configured gates slice, without PIDs or
 sibling cgroups. Run-Gate's launch guard takes the host Docker GID from the
-explicit `RUN_GATE_HOST_DOCKER_GID` override, else from the owning GID of the
-mounted Docker API socket (`DOCKER_HOST` `unix://` path, default
-`/var/run/docker.sock`), never from the cockpit's group database, and refuses
-naming both sources when neither is available. The override must be a plain
-non-root decimal GID (set-but-empty or malformed is an error); a non-`unix://`
-`DOCKER_HOST` or a socket owned by group 0 is refused with the override hint,
-not guessed. It requires the observer socket
-GID to be non-zero and distinct from both the Docker GID and the control
-socket GID. Level directories are
-`root:root`, so their GIDs do not identify socket access groups.
+explicit `RUN_GATE_HOST_DOCKER_GID` override first, then
+`MDT_HOST_DOCKER_GID` supplied by the host launcher. Both are strict positive
+decimal values; an empty or malformed selected value is refused, and if both
+are absent the error names both variables. Run-Gate never infers the host
+Docker group from the Docker API socket's owning GID or the cockpit's group
+database: a proxy or relay can assign that API socket a different access GID.
+The control socket must use a non-root GID distinct from the host Docker GID.
+Before each control connection, Run-Gate requires that GID in the caller's
+supplementary groups, or accepts UID 0 (the tester runner uses `--user 0:0`).
+When access is missing, the error names `cgprofile-control` and asks the user to
+recreate the devcontainer with its `--group-add`. The control GID is never
+added to a lane. The observer socket GID must be non-zero and distinct from
+both the Docker GID and control socket GID. The observer directory's GID does
+not identify socket access; Run-Gate checks only its directory type, owner,
+mode, and traversal permission before mounting it read-only.
 
 Assay uses local counters when its own hierarchy view is complete. Remote
 observation is used only when the local error specifically indicates hidden

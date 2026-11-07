@@ -279,6 +279,8 @@ class _FakeCgprofileDaemon:
         self.listener = run_gate.socket.socket(run_gate.socket.AF_UNIX,
                                                run_gate.socket.SOCK_STREAM)
         self.listener.bind(self.path)
+        if os.getuid() == 0:
+            os.chown(self.path, 0, 995)
         self.listener.listen(16)
         # RG-162: closing a listener while another thread is blocked in
         # accept() does not wake it, and the freed fd NUMBER is reused by the
@@ -371,6 +373,10 @@ def set_cgprofile_plan(tmp_path: Path, monkeypatch, **verbs) -> Path:
     if daemon is None:
         daemon = _FAKE_CGPROFILE_DAEMONS[str(plan_dir)] = \
             _FakeCgprofileDaemon(plan_dir)
+    control_gid = os.lstat(daemon.path).st_gid
+    host_docker_gid = "995" if control_gid == 994 else "994"
+    monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR,
+                       host_docker_gid)
     monkeypatch.setattr(run_gate, "PROFILE_SOCKET_PATH_DEFAULT", daemon.path)
     return plan_dir
 
@@ -10341,22 +10347,39 @@ class TestResourceObserverLane:
 
         project = Path(__file__).resolve().parents[1]
         doc_paths = {
-            "README.md": ("/run/cgprofile/control/cgprofile.sock",),
+            "README.md": (
+                "/run/cgprofile/control/cgprofile.sock",
+                "RUN_GATE_HOST_DOCKER_GID",
+                "MDT_HOST_DOCKER_GID",
+            ),
             "CONSUMERS.md": (
                 "/run/cgprofile/control/cgprofile.sock",
                 "/run/cgprofile/observer/cgprofile.sock",
                 "/run/cgprofile-observer/cgprofile.sock",
                 "host socket cutover",
+                "RUN_GATE_HOST_DOCKER_GID",
+                "MDT_HOST_DOCKER_GID",
             ),
             "SPEC.md": (
                 "/run/cgprofile/control/cgprofile.sock",
                 "/run/cgprofile/observer/cgprofile.sock",
                 "/run/cgprofile-observer/cgprofile.sock",
+                "RUN_GATE_HOST_DOCKER_GID",
+                "MDT_HOST_DOCKER_GID",
             ),
             "docs/DESIGN-GUIDE.md": (
                 "/run/cgprofile/control/cgprofile.sock",
                 "/run/cgprofile/observer/cgprofile.sock",
                 "/run/cgprofile-observer/cgprofile.sock",
+                "RUN_GATE_HOST_DOCKER_GID",
+                "MDT_HOST_DOCKER_GID",
+            ),
+            "nyxloom-trove/RG55-INTERFACE-CONTRACT.md": (
+                "/run/cgprofile/control/cgprofile.sock",
+                "/run/cgprofile/observer/cgprofile.sock",
+                "/run/cgprofile-observer/cgprofile.sock",
+                "RUN_GATE_HOST_DOCKER_GID",
+                "MDT_HOST_DOCKER_GID",
             ),
         }
         obsolete_paths = (
@@ -10368,6 +10391,8 @@ class TestResourceObserverLane:
             content = (project / relative).read_text()
             assert all(value in content for value in expected), relative
             assert not any(value in content for value in obsolete_paths), relative
+            assert "owning GID of the Docker API socket" not in content, relative
+            assert "default `/var/run/docker.sock`" not in content, relative
         readme = (project / "README.md").read_text()
         assert "docs/DESIGN-GUIDE.md#host-service-sockets-use-a-per-level-layout" in readme
 
@@ -10378,7 +10403,8 @@ class TestResourceObserverLane:
                                control_socket_path=None,
                                control_mode=None, control_uid=0,
                                control_gid=995, control_missing=False,
-                               docker_gid=994, docker_socket_missing=False,
+                               docker_gid=994, process_uid=0,
+                               process_groups=(),
                                missing=None):
         parent_mode = parent_mode or run_gate.stat.S_IFDIR | 0o755
         socket_mode = socket_mode or run_gate.stat.S_IFSOCK | 0o660
@@ -10400,25 +10426,22 @@ class TestResourceObserverLane:
                 return self._stat(control_mode, control_uid, control_gid)
             raise AssertionError(f"unexpected lstat path: {path}")
 
-        def fake_stat(path):
-            if str(path) != run_gate.DOCKER_SOCKET_DEFAULT:
-                return real_os.stat(path)
-            if docker_socket_missing:
-                raise OSError("docker socket missing")
-            return SimpleNamespace(st_gid=docker_gid)
-
         real_os = run_gate.os
 
         class OsProxy:
             def __getattr__(self, name):
                 if name == "lstat":
                     return fake_lstat
-                if name == "stat":
-                    return fake_stat
+                if name == "getuid":
+                    return lambda: process_uid
+                if name == "getgroups":
+                    return lambda: list(process_groups)
                 return getattr(real_os, name)
 
         monkeypatch.setattr(run_gate, "os", OsProxy())
         monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
+        monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR,
+                           str(docker_gid))
         monkeypatch.delenv("DOCKER_HOST", raising=False)
 
     def test_disabled_observer_adds_no_docker_flags(self):
@@ -10667,18 +10690,43 @@ class TestResourceObserverLane:
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
-    def test_observer_directory_must_be_root_group_owned(
+    def test_control_socket_must_use_a_non_root_group(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "cgprofile.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, control_gid=0)
+        with pytest.raises(run_gate.GateInfraError,
+                           match="control socket must use a non-root group"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_observer_preflight_does_not_require_a_directory_gid(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
         self._patch_socket_metadata(
             monkeypatch, socket_path, parent_gid=1234)
+        flags = run_gate.resource_observer_docker_flags({
+            "kind": "assay", "environment": "tester-unified",
+            "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+        assert "--group-add" in flags
+
+    def test_observer_preflight_rejects_an_empty_control_socket_path(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "cgprofile.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(monkeypatch, socket_path)
         with pytest.raises(run_gate.GateInfraError,
-                           match="not a safe root-owned"):
+                           match="control socket path is empty"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
-                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"},
+                control_socket_path="")
 
     @pytest.mark.parametrize("parent_mode, parent_uid, socket_mode, socket_uid, socket_gid, message", [
         (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 1234, "not a safe root-owned"),
@@ -10754,16 +10802,32 @@ class TestResourceObserverLane:
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
+    def test_observer_refuses_when_control_group_matches_docker_group(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "cgprofile.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, socket_gid=1234, control_gid=994,
+            docker_gid=994)
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"control socket gid 994 equals the host docker gid 994"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
     def test_observer_refuses_when_no_host_docker_gid_source_exists(
             self, tmp_path, monkeypatch):
         socket_path = tmp_path / "cgprofile.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
         self._patch_socket_metadata(
-            monkeypatch, socket_path, docker_socket_missing=True)
+            monkeypatch, socket_path)
+        monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, raising=False)
         with pytest.raises(
                 run_gate.GateInfraError,
-                match="RUN_GATE_HOST_DOCKER_GID.*/var/run/docker.sock"):
+                match="RUN_GATE_HOST_DOCKER_GID.*MDT_HOST_DOCKER_GID"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
@@ -10773,11 +10837,8 @@ class TestResourceObserverLane:
         socket_path = tmp_path / "cgprofile.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
-        # The Docker socket is unreadable: the override alone is enough, and
-        # it wins over the socket's own GID (994 here).
         self._patch_socket_metadata(
-            monkeypatch, socket_path, socket_gid=1234,
-            docker_socket_missing=True)
+            monkeypatch, socket_path, socket_gid=1234, docker_gid=994)
         monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, "1234")
         with pytest.raises(run_gate.GateInfraError,
                            match=r"gid 1234 equals the host docker gid 1234 "
@@ -10795,8 +10856,9 @@ class TestResourceObserverLane:
                   "٤٥"])
     def test_host_docker_gid_override_must_be_a_strict_non_root_integer(
             self, monkeypatch, value):
-        # Same rule as Assay's ASSAY_GATE_HOST_DOCKER_GID: a SET variable is
-        # either a plain non-root decimal GID or an error (empty included).
+        # A malformed override is an error even if the host launcher supplied
+        # a valid MDT_HOST_DOCKER_GID.
+        monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, "994")
         monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, value)
         with pytest.raises(run_gate.GateInfraError,
                            match="must be a verified non-root numeric GID"):
@@ -10805,89 +10867,117 @@ class TestResourceObserverLane:
     def test_host_docker_gid_override_is_returned_with_its_source(
             self, monkeypatch):
         monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, "994")
+        monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, "995")
         assert run_gate.host_docker_gid() == (
             994, run_gate.HOST_DOCKER_GID_ENV_VAR)
 
-    def _proxy_stat(self, monkeypatch, gids):
-        """Replace os.stat in run_gate with a fake keyed by path; returns the
-        list of stat'ed paths."""
-        seen = []
-        real_os = run_gate.os
-
-        def fake_stat(path):
-            seen.append(str(path))
-            if str(path) not in gids:
-                raise FileNotFoundError(str(path))
-            return SimpleNamespace(st_gid=gids[str(path)])
-
-        class OsProxy:
-            def __getattr__(self, name):
-                return fake_stat if name == "stat" else getattr(real_os, name)
-
-        monkeypatch.setattr(run_gate, "os", OsProxy())
-        return seen
-
-    def test_host_docker_gid_reads_the_configured_docker_socket_owner(
-            self, monkeypatch):
-        monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
-        seen = self._proxy_stat(monkeypatch, {
-            "/run/docker-api/docker.sock": 994,
-            run_gate.DOCKER_SOCKET_DEFAULT: 777})
-        monkeypatch.setenv("DOCKER_HOST", "unix:///run/docker-api/docker.sock")
-        assert run_gate.host_docker_gid() == (
-            994, "/run/docker-api/docker.sock")
-        monkeypatch.delenv("DOCKER_HOST")
-        assert run_gate.host_docker_gid() == (
-            777, run_gate.DOCKER_SOCKET_DEFAULT)
-        assert seen == ["/run/docker-api/docker.sock",
-                        run_gate.DOCKER_SOCKET_DEFAULT]
-
     @pytest.mark.parametrize(
-        "docker_host", ["unix://", "tcp://127.0.0.1:2375", "ssh://host"])
-    def test_host_docker_gid_refuses_a_non_unix_docker_host(
-            self, monkeypatch, docker_host):
+        "value", ["docker", "-3", "1.5", "0", "", " 994", "994 ",
+                  "+5", "1_0", "٤٥"])
+    def test_host_docker_gid_mdt_value_must_be_a_strict_non_root_integer(
+            self, monkeypatch, value):
         monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
-        seen = self._proxy_stat(
-            monkeypatch, {run_gate.DOCKER_SOCKET_DEFAULT: 777})
-        monkeypatch.setenv("DOCKER_HOST", docker_host)
-        with pytest.raises(
-                run_gate.GateInfraError,
-                match="DOCKER_HOST=.*not a unix:// socket.*RUN_GATE_HOST_DOCKER_GID"):
+        monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, value)
+        with pytest.raises(run_gate.GateInfraError,
+                           match="MDT_HOST_DOCKER_GID.*non-root numeric GID"):
             run_gate.host_docker_gid()
-        # No silent fallback to the default socket.
-        assert seen == []
-        # The explicit override still works with such a DOCKER_HOST.
-        monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, "994")
-        assert run_gate.host_docker_gid()[0] == 994
 
-    def test_host_docker_gid_refuses_a_root_group_docker_socket(
+    def test_host_docker_gid_reads_mdt_value_without_inspecting_docker_socket(
             self, monkeypatch):
         monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
-        monkeypatch.delenv("DOCKER_HOST", raising=False)
-        self._proxy_stat(monkeypatch, {run_gate.DOCKER_SOCKET_DEFAULT: 0})
+        monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, "994")
+        monkeypatch.setenv("DOCKER_HOST", "tcp://docker-proxy.invalid:2375")
+        monkeypatch.setattr(
+            run_gate.os, "stat",
+            lambda _path: pytest.fail("Docker API socket must not be stat'ed"))
+        assert run_gate.host_docker_gid() == (
+            994, run_gate.MDT_HOST_DOCKER_GID_ENV_VAR)
+
+    def test_host_docker_gid_refuses_when_both_environment_sources_are_absent(
+            self, monkeypatch):
+        monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
+        monkeypatch.delenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, raising=False)
         with pytest.raises(
                 run_gate.GateInfraError,
-                match="/var/run/docker.sock is owned by group 0.*RUN_GATE_HOST_DOCKER_GID"):
+                match="RUN_GATE_HOST_DOCKER_GID.*MDT_HOST_DOCKER_GID"):
             run_gate.host_docker_gid()
-        # An explicit override is the way out.
-        monkeypatch.setenv(run_gate.HOST_DOCKER_GID_ENV_VAR, "999")
-        assert run_gate.host_docker_gid() == (
-            999, run_gate.HOST_DOCKER_GID_ENV_VAR)
 
-    def test_observer_allows_control_group_equal_to_docker_group(
+    def test_control_socket_preflight_rejects_empty_path(self):
+        client = run_gate.ProfilerClient("")
+        document, reason = client.version()
+        assert document is None
+        assert reason == "cgprofile control socket path is empty"
+
+    def test_control_socket_preflight_lstats_and_requires_socket_node(
+            self, monkeypatch):
+        monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, "994")
+        monkeypatch.setattr(
+            run_gate.os, "lstat",
+            lambda _path: SimpleNamespace(
+                st_mode=run_gate.stat.S_IFREG | 0o660, st_gid=995))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="control path is not a Unix socket"):
+            run_gate.preflight_control_socket_access("/tmp/control")
+
+    def test_control_socket_preflight_distinguishes_missing_and_uninspectable(
+            self, monkeypatch):
+        def missing(_path):
+            raise FileNotFoundError("missing control")
+
+        monkeypatch.setattr(run_gate.os, "lstat", missing)
+        assert run_gate.preflight_control_socket_access(
+            "/tmp/missing.sock", missing_ok=True) is None
+        with pytest.raises(run_gate.GateInfraError,
+                           match="complete the host cgprofile socket cutover"):
+            run_gate.preflight_control_socket_access("/tmp/missing.sock")
+
+        def uninspectable(_path):
+            raise PermissionError("denied metadata")
+
+        monkeypatch.setattr(run_gate.os, "lstat", uninspectable)
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect cgprofile control socket.*denied metadata"):
+            run_gate.preflight_control_socket_access("/tmp/control.sock")
+
+    def test_observer_accepts_a_root_control_socket_caller_without_group_add(
             self, tmp_path, monkeypatch):
-        # Cockpit mapping (plan D2): the control socket uses the docker group;
-        # only the observer must differ from it.
         socket_path = tmp_path / "cgprofile.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
         self._patch_socket_metadata(
-            monkeypatch, socket_path, socket_gid=1234, control_gid=994,
-            docker_gid=994)
+            monkeypatch, socket_path, socket_gid=1234, control_gid=995,
+            docker_gid=994, process_uid=0, process_groups=())
         flags = run_gate.resource_observer_docker_flags({
             "kind": "assay", "environment": "tester-unified",
             "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
         assert flags[flags.index("--group-add") + 1] == "1234"
+
+    def test_control_socket_caller_needs_supplementary_control_group(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "cgprofile.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, control_gid=995, docker_gid=994,
+            process_uid=1000, process_groups=(1234,))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cgprofile-control.*gid 995.*--group-add"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_control_socket_caller_with_supplementary_group_is_accepted(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "cgprofile.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, control_gid=995, docker_gid=994,
+            process_uid=1000, process_groups=(995,))
+        flags = run_gate.resource_observer_docker_flags({
+            "kind": "assay", "environment": "tester-unified",
+            "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+        assert "--group-add" in flags
 
     def test_observer_refuses_extra_mounts(self, monkeypatch):
         monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, "/var/run/docker.sock=/docker.sock")
@@ -22847,13 +22937,24 @@ class TestLastSuccessful:
 # ---------------------------------------------------------------------------
 
 class TestProfilerClient:
-    def _socket_round_trip(self, short_socket_root: Path, response: str):
+    @pytest.fixture(autouse=True)
+    def _host_docker_gid_environment(self, monkeypatch):
+        monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, "994")
+
+    def _socket_round_trip(
+            self, short_socket_root: Path, response: str, monkeypatch):
         path = short_socket_root / "cgprofile.sock"
         assert len(os.fsencode(path)) < 108, \
             "AF_UNIX fixture path must be short"
         listener = run_gate.socket.socket(run_gate.socket.AF_UNIX,
                                           run_gate.socket.SOCK_STREAM)
         listener.bind(str(path))
+        if os.getuid() == 0:
+            os.chown(path, 0, 995)
+        control_gid = os.lstat(path).st_gid
+        host_docker_gid = "995" if control_gid == 994 else "994"
+        monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR,
+                           host_docker_gid)
         listener.listen(1)
         received = []
 
@@ -22937,6 +23038,14 @@ class TestProfilerClient:
         assert run_gate.socket_unreachable_cause(
             "/run/cgprofile/control/cgprofile.sock", ValueError("x")) == ""
 
+    def test_missing_control_mount_hint_names_the_control_directory(
+            self, monkeypatch):
+        monkeypatch.setattr(run_gate.os.path, "isdir", lambda _path: False)
+        hint = run_gate.socket_unreachable_cause(
+            "/run/cgprofile/control/cgprofile.sock", FileNotFoundError())
+        assert "/run/cgprofile/control" in hint
+        assert "bind-mount /run/cgprofile/control" in hint
+
     def test_a_node_with_no_listener_is_daemon_refusing(self, short_socket_root):
         path = short_socket_root / "ctl.sock"
         stale = run_gate.socket.socket(run_gate.socket.AF_UNIX,
@@ -22975,10 +23084,11 @@ class TestProfilerClient:
         valid, valid_reason = client.version()
         assert valid_reason is None and valid == {"ok": True, "contract": 1}
 
-    def test_socket_start_emits_the_v11_request_shape(self, short_socket_root):
+    def test_socket_start_emits_the_v11_request_shape(
+            self, short_socket_root, monkeypatch):
         response = '{"ok": true, "contract": 1, "session": "s-test"}\n'
         path, received, thread = self._socket_round_trip(
-            short_socket_root, response)
+            short_socket_root, response, monkeypatch)
         client = run_gate.ProfilerClient(str(path))
         meta = {"lane": "rg55-fixture-lane", "expected": None}
         doc, reason = client.start(
@@ -23018,9 +23128,9 @@ class TestProfilerClient:
          '{"ok": true, "contract": 1, "summary": {}}\n'),
     ])
     def test_socket_request_uses_wire_args_for_non_start_verbs(
-            self, short_socket_root, verb, args, body):
+            self, short_socket_root, monkeypatch, verb, args, body):
         path, received, thread = self._socket_round_trip(
-            short_socket_root, body)
+            short_socket_root, body, monkeypatch)
         client = run_gate.ProfilerClient(str(path))
         doc, reason = client._ctl(verb, *args)
         thread.join(timeout=2)
@@ -23033,7 +23143,7 @@ class TestProfilerClient:
         assert wire["args"] == ({"session": args[0]} if args else {})
 
     def test_socket_watch_stream_is_single_reader_and_preserves_events(
-            self, short_socket_root):
+            self, short_socket_root, monkeypatch):
         response = (
             '{"contract":1,"session":"s-test","event":"reading",'
             '"reading":{"memory_current_bytes":7}}\n'
@@ -23041,7 +23151,7 @@ class TestProfilerClient:
             '"watch":{"state":"stalled","verdict":"reported",'
             '"reason":"brief gap","readings":1}}\n')
         path, received, thread = self._socket_round_trip(
-            short_socket_root, response)
+            short_socket_root, response, monkeypatch)
         client = run_gate.ProfilerClient(str(path))
         watch = client.watch("s-test", watch_interval=2)
         thread.join(timeout=2)
@@ -23102,13 +23212,13 @@ class TestProfilerClient:
          "malformed verdict"),
     ])
     def test_watch_rejects_foreign_or_malformed_kill_before_consumer(
-            self, short_socket_root, line, expected):
+            self, short_socket_root, monkeypatch, line, expected):
         later_kill = (
             '{"contract":1,"session":"s-test","event":"verdict",'
             '"watch":{"state":"stalled","verdict":"killed",'
             '"reason":"later line","readings":2}}')
         path, received, server = self._socket_round_trip(
-            short_socket_root, line + "\n" + later_kill + "\n")
+            short_socket_root, line + "\n" + later_kill + "\n", monkeypatch)
         client = run_gate.ProfilerClient(str(path))
         watch = client.watch("s-test")
         server.join(timeout=60)

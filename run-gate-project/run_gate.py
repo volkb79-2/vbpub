@@ -530,7 +530,7 @@ ENV_USER_INVOKER = "invoker"
 DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest"
 EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
 HOST_DOCKER_GID_ENV_VAR = "RUN_GATE_HOST_DOCKER_GID"
-DOCKER_SOCKET_DEFAULT = "/var/run/docker.sock"
+MDT_HOST_DOCKER_GID_ENV_VAR = "MDT_HOST_DOCKER_GID"
 MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
 # RG-NARROW: a container lane sees only the judged worktree + the git metadata
 # it needs. The plain (main) checkout has no narrower view, so it is refused
@@ -2798,10 +2798,11 @@ def socket_unreachable_cause(socket_path: str, exc: BaseException) -> str:
     (the same rule `cgprofile ctl` applied; the socket itself carries no tag
     because there is nobody to answer). Empty for any other failure."""
     if isinstance(exc, FileNotFoundError):
-        if not os.path.isdir(os.path.dirname(socket_path) or "."):
+        control_directory = os.path.dirname(socket_path) or "."
+        if not os.path.isdir(control_directory):
             return ("socket-not-mounted: the control socket directory does not "
-                    "exist here (bind-mount the configured control directory, "
-                    "or the host has no cgprofile daemon runtime directory); "
+                    f"exist here (bind-mount {control_directory}, or the host "
+                    "has no cgprofile daemon runtime directory); "
                     "if this host runs the cgprofile service, complete the "
                     "host cgprofile socket cutover")
         return ("socket-missing: the directory exists but the socket node is "
@@ -2814,7 +2815,8 @@ def socket_unreachable_cause(socket_path: str, exc: BaseException) -> str:
                 "start)")
     if isinstance(exc, PermissionError):
         return ("socket-permission: the socket exists but this user may not "
-                "connect (join the socket's group)")
+                "connect (join cgprofile-control and recreate the devcontainer "
+                "with its cgprofile-control --group-add)")
     return ""
 
 
@@ -2932,6 +2934,7 @@ class ProfilerClient:
         return result
 
     def _socket_request(self, verb: str, args: tuple[str, ...]) -> str:
+        preflight_control_socket_access(self.socket_path, missing_ok=True)
         payload = {"verb": verb, "args": self._wire_args(verb, args),
                    "contract": PROFILE_CONTRACT}
         request = json.dumps(
@@ -2965,6 +2968,8 @@ class ProfilerClient:
         except OSError as exc:
             return None, (f"cgprofile socket carrier failed for ctl {verb}: "
                           f"{exc}")
+        except GateInfraError as exc:
+            return None, str(exc)
         except Exception as exc:
             return None, (f"cgprofile socket ctl {verb} failed unexpectedly: "
                           f"{exc}")
@@ -8739,43 +8744,67 @@ def host_docker_gid() -> tuple[int, str]:
 
     Run-gate runs in a container whose group database may map `docker` to a
     different GID or omit it, so the group database is never consulted.
-    Order: (1) the explicit `RUN_GATE_HOST_DOCKER_GID` override (a non-root
-    decimal GID; same rule as Assay's `ASSAY_GATE_HOST_DOCKER_GID`, so a set
-    but empty or malformed value is an error), (2) the owning GID of the Docker
-    API socket that `DOCKER_HOST` names (`unix://<path>`; unset means
-    /var/run/docker.sock), which must be non-root. A non-unix `DOCKER_HOST`,
-    an unreadable socket or a root-owned socket is refused with the override
-    hint: the observer-versus-Docker comparison would otherwise be vacuous or
-    read an unrelated socket.
-    Returns (gid, source) where source is the variable name or the socket path.
+    Order: (1) the explicit `RUN_GATE_HOST_DOCKER_GID` override, then
+    (2) `MDT_HOST_DOCKER_GID`, the numeric value supplied by the host launcher.
+    Both must be non-root decimal GIDs; a set but empty or malformed value is
+    an error. A Docker API socket's owning GID is not a source for the host
+    Docker group: a proxy or relay can give that socket a different access
+    group. Returns (gid, source), where source is the variable name.
     """
-    if HOST_DOCKER_GID_ENV_VAR in os.environ:
-        override = os.environ[HOST_DOCKER_GID_ENV_VAR]
-        if not re.fullmatch(r"[1-9][0-9]*", override, re.ASCII):
-            fail_infra(f"${HOST_DOCKER_GID_ENV_VAR} must be a verified "
-                       f"non-root numeric GID, got {override!r}")
-        return int(override), HOST_DOCKER_GID_ENV_VAR
-    hint = (f"set ${HOST_DOCKER_GID_ENV_VAR} to the host docker group's "
-            "numeric GID")
-    docker_host = os.environ.get("DOCKER_HOST", "")
-    if not docker_host:
-        socket_path = DOCKER_SOCKET_DEFAULT
-    elif docker_host.startswith("unix://") and docker_host[len("unix://"):]:
-        socket_path = docker_host[len("unix://"):]
-    else:
-        fail_infra(f"DOCKER_HOST={docker_host!r} is not a unix:// socket, so "
-                   f"no Docker socket GID can be read; {hint}")
-    try:
-        gid = os.stat(socket_path).st_gid
-    except OSError as exc:
-        fail_infra(f"cannot determine the host Docker GID: {hint}, or mount "
-                   f"the Docker API socket at {socket_path} so its owning GID "
-                   f"can be read: {exc}")
-    if gid == 0:
-        fail_infra(f"the Docker API socket {socket_path} is owned by group 0, "
-                   "which cannot identify the host docker group (the observer "
-                   f"separation check would be vacuous); {hint}")
-    return gid, socket_path
+    for variable in (HOST_DOCKER_GID_ENV_VAR,
+                     MDT_HOST_DOCKER_GID_ENV_VAR):
+        if variable not in os.environ:
+            continue
+        value = os.environ[variable]
+        if not re.fullmatch(r"[1-9][0-9]*", value, re.ASCII):
+            fail_infra(f"${variable} must be a verified non-root numeric GID, "
+                       f"got {value!r}")
+        return int(value), variable
+    fail_infra("host Docker GID is unavailable; set "
+               f"${HOST_DOCKER_GID_ENV_VAR} or "
+               f"${MDT_HOST_DOCKER_GID_ENV_VAR} to the host Docker group's "
+               "numeric GID")
+
+
+def preflight_control_socket_access(
+        socket_path: str, control: os.stat_result | None = None, *,
+        missing_ok: bool = False) -> tuple[int, str] | None:
+    """Check the control socket's level identity before any connection.
+
+    UID 0 can connect without supplementary group membership (the tester
+    runner uses `--user 0:0`). Other callers need the control socket GID in
+    their supplementary groups. Missing paths may be passed through to the
+    transport so its existing unavailable-socket diagnosis remains intact.
+    """
+    if not socket_path:
+        fail_infra("cgprofile control socket path is empty")
+    if control is None:
+        try:
+            control = os.lstat(socket_path)
+        except FileNotFoundError as exc:
+            if missing_ok:
+                return None
+            fail_infra(f"cannot inspect cgprofile control socket {socket_path}: "
+                       f"{exc}; complete the host cgprofile socket cutover")
+        except OSError as exc:
+            fail_infra(f"cannot inspect cgprofile control socket {socket_path}: "
+                       f"{exc}")
+    if not stat.S_ISSOCK(control.st_mode):
+        fail_infra(f"cgprofile control path is not a Unix socket: {socket_path}")
+    if control.st_gid == 0:
+        fail_infra("cgprofile control socket must use a non-root group")
+    docker_gid, docker_gid_source = host_docker_gid()
+    if control.st_gid == docker_gid:
+        fail_infra(f"cgprofile control socket gid {control.st_gid} equals the "
+                   f"host docker gid {docker_gid} (from {docker_gid_source}); "
+                   "cgprofile-control must use its dedicated group, not the "
+                   "host docker group")
+    if (os.getuid() != 0
+            and control.st_gid not in os.getgroups()):
+        fail_infra(f"this process cannot access the cgprofile control socket "
+                   f"group cgprofile-control (gid {control.st_gid}); recreate "
+                   "the devcontainer with its cgprofile-control --group-add")
+    return docker_gid, docker_gid_source
 
 
 def resource_observer_docker_flags(
@@ -8802,7 +8831,10 @@ def resource_observer_docker_flags(
                    "extra mounts could expose host control interfaces")
     socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
     directory_path = socket_path.parent
-    control_socket_path = control_socket_path or PROFILE_SOCKET_PATH_DEFAULT
+    if control_socket_path is None:
+        control_socket_path = PROFILE_SOCKET_PATH_DEFAULT
+    elif not control_socket_path:
+        fail_infra("cgprofile control socket path is empty")
     try:
         parent = os.lstat(directory_path)
         observed = os.lstat(socket_path)
@@ -8819,7 +8851,6 @@ def resource_observer_docker_flags(
     if (
         not stat.S_ISDIR(parent.st_mode)
         or parent.st_uid != 0
-        or parent.st_gid != 0
         or parent.st_mode & 0o022
         or not parent.st_mode & 0o010
     ):
@@ -8834,12 +8865,13 @@ def resource_observer_docker_flags(
     if not stat.S_ISSOCK(control.st_mode):
         fail_infra(f"cgprofile control path is not a Unix socket: "
                    f"{control_socket_path}")
+    docker_gid, docker_gid_source = preflight_control_socket_access(
+        control_socket_path, control)
     if observed.st_mode & 0o007 or not observed.st_mode & 0o020:
         fail_infra("cgprofile resource observer socket must be group-connectable "
                    "and not accessible to other users")
     if observed.st_gid == 0:
         fail_infra("cgprofile resource observer socket must use a non-root group")
-    docker_gid, docker_gid_source = host_docker_gid()
     if observed.st_gid == docker_gid:
         fail_infra(f"cgprofile observer socket gid {observed.st_gid} equals "
                    f"the host docker gid {docker_gid} (from "

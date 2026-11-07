@@ -78,6 +78,10 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `/run/cgprofile/control/cgprofile.sock`) and bounded `admission_wait`. Run-Gate
    uses the per-level host socket layout; a host still on the old layout must
    keep its earlier Run-Gate and Assay pins until the host service cutover.
+   Host Docker GID checks use the explicit `RUN_GATE_HOST_DOCKER_GID` override,
+   then `MDT_HOST_DOCKER_GID` from the host launcher; the Docker API socket's
+   owning GID is not a substitute. Run-Gate refuses a control socket in the
+   Docker group and checks that the caller can access `cgprofile-control`.
    See the [socket layout rationale](docs/DESIGN-GUIDE.md#host-service-sockets-use-a-per-level-layout)
    and [consumer setup](CONSUMERS.md#native-r2-resource-observer). The control socket
    is the only carrier; the former `transport` and `daemon` keys and

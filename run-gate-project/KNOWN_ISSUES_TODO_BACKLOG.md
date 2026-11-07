@@ -7445,35 +7445,28 @@ one tester-lane smoke on the real image; regression tests for RG-106's `invoker`
 **Dependencies and order.** First package of the lane-uid rollout (RG-151, then TB-13, then B211 and KI-114 in parallel, then RG-153).
 Independent of RG-152. After branch fix-r1002-gate-ownership merges (RG-150).
 
-## RG-152 — docker and observer gids are derived by `stat` of the sockets actually used; the negative assertion covers both docker-class gids
+## RG-152 — observer and Docker GID sources follow the host launcher contract; level groups stay distinct
 
-**Status:** PARTLY SUPERSEDED by RG-243 (2026-11-06). RG-243 implements the `stat`-of-the-mounted-socket derivation (`DOCKER_HOST` `unix://`, else `/var/run/docker.sock`; no group-database lookup, no `DOCKER_GID`/`getgrnam`), and the observer assertion against the Docker GID and the control socket GID. Obsolete here: the `/run/cgprofile` and `/run/cgprofile/observer` directory-GID clauses (level directories are `root:root` in the new layout) and the `docker exec` carrier fallback (removed by RG-156). Changed on purpose: the explicit `RUN_GATE_HOST_DOCKER_GID` override is KEPT as an escape hatch for a proxied or relayed socket whose GID is not the host docker group, and for a root-owned or non-unix endpoint (operator decision reversed for the override only: the 2026-11-04 line "nothing reads a configured docker gid" no longer holds for it; flag to the operator when closing). Remaining open scope: the non-mdt, no-cgprofile acceptance (docker works, observer features report unavailable cleanly) and the table test over (docker gid, observer gid) pairs beyond what RG-243 covers.
+**Status:** PARTLY SUPERSEDED by RG-243 (2026-11-06), amended 2026-11-07. The current source order is the explicit `RUN_GATE_HOST_DOCKER_GID` override, then `MDT_HOST_DOCKER_GID` from the host launcher. RG-243's Docker API socket-owner fallback is dropped: the API socket's GID describes access to that socket and can differ from the host Docker group when a proxy or relay owns it. If neither variable is set, Run-Gate refuses and names both; it does not inspect the Docker socket node. Therefore the old Docker-socket-node checks are moot and removed. The new preflight still rejects control and observer socket GIDs equal to Docker, rejects a control socket in group 0, and requires the observer GID to differ from both Docker and control. Obsolete here: the `/run/cgprofile` directory-GID clauses (level directories are root-owned in the new layout) and the `docker exec` carrier fallback (removed by RG-156). Remaining open scope: non-mdt, no-cgprofile acceptance and broader table coverage beyond RG-243.
 
 **Original status:** OPEN. Filed 2026-11-04.
 
-**Problem.** `run_gate.py:8700-8712` asserts the observer gid differs from the docker gid, derived by `stat` (correct), and `ctl.sock` is reached
-through the cockpit's inherited `docker` gid. With the fixed `mdt-docker` group (mdt-cockpit MDT-053, gid 2751) there are two docker-class gids on
-an mdt host (`mdt-docker` and the host `docker` group), and on a non-mdt host there is only one, possibly under a different name.
+**Problem (original filing).** `run_gate.py` asserted observer separation using socket and directory GIDs, while `ctl.sock` access depended on the cockpit's inherited `docker` GID. The original proposal addressed proxy sockets by statting the socket node; the 2026-11-07 amendment instead uses the launcher's host Docker GID as the authority.
 
-**Decision record (operator, 2026-11-04).** Every consumer derives gids by `stat` on the socket it mounts or connects to; nothing reads a
-configured docker gid and nothing requires the mdt group. Requirement: repo tools must keep working when the user does NOT use the mdt cockpit.
+**Decision record (operator, 2026-11-04; amended 2026-11-07).** Original decision: derive GIDs from socket nodes, never group names. Current decision: consumers receive the host Docker GID as numeric `MDT_HOST_DOCKER_GID`; Run-Gate retains `RUN_GATE_HOST_DOCKER_GID` as an explicit override. Neither group databases nor the Docker API socket owner are authoritative. This keeps non-mdt use while avoiding a proxy socket's unrelated GID.
 
 **Design.**
 
-- Replace any docker-gid lookup (including the fallbacks that read `DOCKER_GID` or `getgrnam("docker")`) with `os.stat()` on the
-  resolved docker socket (`DOCKER_HOST` when `unix://`, else the default) and on the `/run/cgprofile` and `/run/cgprofile/observer` directories.
-- The observer assertion becomes: observer gid differs from the docker-socket gid AND from the `/run/cgprofile` directory gid
-  (which is `mdt-docker` on an mdt host, per CP-43). On a host without cgprofile the existing infrastructure refusal stays.
-- ctl access: try `ctl.sock`; on `EACCES` fall back to the existing `docker exec` carrier (`run_gate.py:688,711`) while the container deployment
-  exists, then report a clear "add yourself to the directory's group or CGPROFILE_ALLOW_UIDS" message naming the gid read by `stat`.
+- Current source order: `RUN_GATE_HOST_DOCKER_GID`, then `MDT_HOST_DOCKER_GID`; both are positive decimal values. If neither exists or the selected value is malformed, refuse by name. Do not stat or otherwise inspect the Docker API socket: its GID may be assigned by a proxy and is not the host Docker group fact.
+- The observer assertion is: observer gid differs from the launcher-provided Docker GID AND from the control socket GID. Level-directory GIDs are irrelevant to socket access. On a host without cgprofile the existing infrastructure refusal stays.
+- Control access: require a non-root control-socket GID distinct from Docker, then require the caller's supplementary groups to include the control GID unless its UID is 0. On `EACCES` or missing membership, name `cgprofile-control` and the devcontainer `--group-add` remedy. The `docker exec` carrier remains removed by RG-156.
 - Forwarding to lanes: only the observer gid is added as a supplementary group, never the socket group (unchanged).
 
 **Acceptance criteria.**
 
-- Table tests over (docker gid, mdt-docker dir gid, observer gid) cases: equal observer gid is refused; distinct passes.
+- Table tests over Docker, control, observer, process UID and supplementary-group cases: Docker collisions and repeated level GIDs refuse; UID 0 and a caller with the control GID pass.
 - No reference to `DOCKER_GID`, `getgrnam("docker")` or the name `mdt-docker` in `run_gate.py` outside docs/tests.
-- **Non-mdt path.** A test with a fake docker socket of an arbitrary gid and no `/run/cgprofile` shows: docker use works, the cgprofile
-  features report "observer unavailable" cleanly (no mdt hint required), and no code path needs the mdt group.
+- **Non-mdt path.** A test with the host launcher-provided numeric GID and no `/run/cgprofile` shows Docker use works and cgprofile features report "observer unavailable" cleanly; no mdt group name or Docker API socket stat is required.
 
 **Test plan.** Unit tests with temp sockets and directories chowned to test gids where permitted, otherwise injected `stat` results.
 
@@ -7688,8 +7681,8 @@ Both runs also failed `TestHistoryStoreReadableByTheReleasedReader` deterministi
 
 ## RG-243 — Run-Gate's cgprofile preflight and defaults need the per-level host socket layout
 
-**Status:** FIXED on branch `sockets-rg-20261105`, pending independent review; severity: major (phase-1 clients require the host socket cutover).
+**Status:** FIXED on branch `sockets-rg-20261105`, amended 2026-11-07 for the no-docker-groups ruling; pending controller gate and independent review. Severity: major (phase-1 clients require the host socket cutover).
 
-Run-Gate's control default is `/run/cgprofile/control/cgprofile.sock`. Observer lanes bind `/run/cgprofile/observer/cgprofile.sock` into the lane at `/run/cgprofile-observer/cgprofile.sock`. Their preflight checks the new paths, reports the required host cutover when a path is absent, takes the host Docker GID from `RUN_GATE_HOST_DOCKER_GID` (strict non-root decimal, same rule as Assay's `ASSAY_GATE_HOST_DOCKER_GID`) or else the owning GID of the Docker API socket named by a `unix://` `DOCKER_HOST` (default `/var/run/docker.sock`); never the cockpit's group database, no silent fallback for a non-unix `DOCKER_HOST`, and a root-group socket is refused with the override hint (this implements the `stat` derivation of RG-152 and keeps the override RG-152 proposed dropping; see RG-152's status), and requires the observer socket GID to be non-zero and distinct from both Docker and the control socket. The old `/run/cgprofile/ctl.sock` and `resource-observer.sock` names are not fallback paths. Hosts still on the old layout retain earlier Run-Gate and Assay pins until cutover.
+Run-Gate's control default is `/run/cgprofile/control/cgprofile.sock`. Observer lanes bind `/run/cgprofile/observer/cgprofile.sock` into the lane at `/run/cgprofile-observer/cgprofile.sock`. Their preflight lstats the observer directory and socket without requiring the directory's GID, reports the host cutover when a path is absent, and uses the explicit strict `RUN_GATE_HOST_DOCKER_GID` override followed by strict numeric `MDT_HOST_DOCKER_GID` from the host launcher. The prior Docker API socket-owner fallback is removed because that node's GID can be a proxy or relay access group, not the host Docker group; the Docker socket node check is therefore moot and no longer runs. With neither variable, refusal names both. The control socket must have a nonzero GID distinct from Docker, and every connection checks supplementary-group access (UID 0 is accepted for the tester runner); the observer GID must be nonzero and distinct from both Docker and control. The old `/run/cgprofile/ctl.sock` and `resource-observer.sock` names are not fallback paths. Hosts still on the old layout retain earlier Run-Gate and Assay pins until cutover.
 
-The regression tests cover socket metadata, missing-path cutover refusals, the daemon-advertised observer path, Docker/control group collisions, and paths in README, CONSUMERS, SPEC and DESIGN-GUIDE. Gate execution and changed-line coverage remain part of the controller's registered Run-Gate lane.
+Regression tests cover both GID sources and strict malformed-value refusals, the lack-of-source refusal, control and observer metadata and group collisions, UID 0 and supplementary membership, empty `socket_path`, the mounted-directory lstat contract, missing-path cutover hints, the daemon-advertised observer path, and synchronized README, CONSUMERS, SPEC, DESIGN-GUIDE, and RG55 interface-contract text. The controller still runs the registered Run-Gate lane for fail-before/pass-after evidence, strict changed-line coverage and mutation proof.

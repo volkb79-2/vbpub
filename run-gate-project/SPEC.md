@@ -2734,17 +2734,27 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   read-only query bound to the command's own peer. Before launching the lane,
   Run-Gate queries the daemon's control version response and requires observer
   contract 2, the fixed socket path, and `listening = true`. Before building Docker argv, Run-Gate
-  validates `/run/cgprofile/observer` as a `root:root` directory with no group
-  or world write access and group search permission; other users may traverse
-  the known socket path but cannot list or connect. Its socket must be root-owned,
+  lstats `/run/cgprofile/observer` as a root-owned directory with no group or
+  world write access and group search permission; the directory's GID is not
+  an access grant and is not checked. The read-only mount lets this metadata
+  check run in the devcontainer without adding the observer GID. Its socket
+  must be root-owned,
   group-connectable, and grant no access to other users. Its GID must be non-zero
   and differ from the host Docker GID and the control socket GID. The host Docker
-  GID is `$RUN_GATE_HOST_DOCKER_GID` (a plain non-root decimal GID; set but empty or
-  malformed is an error) when set, else the owning GID of the Docker API socket
-  (`$DOCKER_HOST` `unix://` path, default `/var/run/docker.sock`); the cockpit's
-  group database is never used. With neither source, a non-`unix://` `DOCKER_HOST`,
-  or a socket owned by group 0, the preflight refuses with the override hint.
-  Collision messages print both GIDs and the Docker GID source. Missing or unsafe
+  GID is `$RUN_GATE_HOST_DOCKER_GID` (the explicit strict non-root decimal
+  override) when set, else `$MDT_HOST_DOCKER_GID` (the strict numeric value
+  supplied by the host launcher). The Docker API socket and the cockpit's group
+  database are never used to infer it; the socket's owning GID can belong to a
+  proxy or relay instead of the host Docker group. If neither variable is set,
+  preflight refuses and names both variables; a malformed selected value names
+  the variable that failed validation. Collision messages print both GIDs and
+  the source. Before every
+  control-socket connection Run-Gate checks that its GID is non-zero and differs
+  from the host Docker GID, and that the process has the control GID in its
+  supplementary groups; UID 0 is accepted because the tester runner uses
+  `--user 0:0`. A missing group reports `cgprofile-control` and tells the user
+  to recreate the devcontainer with its `--group-add`. The control socket GID
+  is never added to a lane container. Missing or unsafe
   state is infrastructure ERROR; Docker must not invent a bind source. The
   lane must declare `resources.memory` and positive-integer `resources.pids`,
   which become `--memory` and `--pids-limit`; observer lanes refuse

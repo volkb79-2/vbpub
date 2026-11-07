@@ -488,7 +488,7 @@ mount.
 | carrier | how a request travels | who is authorised | default |
 |---|---|---|---|
 | `exec` | `docker exec cgprofile-host-daemon cgprofile ctl <verb> … --json` (v1, unchanged; the producer keeps it for operators, Run-Gate no longer uses it since RG-156) | anyone who can use the docker socket; arrives as uid 0 inside the daemon | no (operators only) |
-| `socket` | the consumer connects to `/run/cgprofile/control/cgprofile.sock` (mounted into its container or on the host) and writes ONE request line `{"verb": "<verb>", "args": {…}, "contract": 1}\n`; the daemon answers with the same JSON object stdout would carry, then closes (streaming verbs: one object per line until end) | members of the configured control group (`docker` on cockpit hosts; socket mode 0660) and, when `CGPROFILE_ALLOW_UIDS` is set on the daemon, only the listed uids (`SO_PEERCRED`); a refused peer gets `{"ok": false, "contract": 1, "error": {"code": "peer-refused", …}}` and the connection closes | opt-in |
+| `socket` | the consumer connects to `/run/cgprofile/control/cgprofile.sock` (mounted into its container or on the host) and writes ONE request line `{"verb": "<verb>", "args": {…}, "contract": 1}\n`; the daemon answers with the same JSON object stdout would carry, then closes (streaming verbs: one object per line until end) | members of the configured dedicated `cgprofile-control` group (never `docker`; socket mode 0660) and, when `CGPROFILE_ALLOW_UIDS` is set on the daemon, only the listed uids (`SO_PEERCRED`); a refused peer gets `{"ok": false, "contract": 1, "error": {"code": "peer-refused", …}}` and the connection closes | opt-in |
 
 Rules: (1) every verb, response, error code and the `contract` field are
 IDENTICAL on both carriers — a consumer may diff them; (2) `args` on the
@@ -843,15 +843,29 @@ for an Assay lane or command lane in an ephemeral environment. The explicit lane
 declaration is the opt-in; command wrappers that launch Assay R2 preserve the
 inherited endpoint variable for that process. The observer remains a
 read-only query bound to the command's own peer. Before launch Run-Gate
-validates the root-owned, non-writable `/run/cgprofile/observer` directory
-and its socket. Host setup provisions that directory as mode `0751` with the
-dedicated `cgprofile-observer` group; it is separate from the Docker group.
+uses `lstat` on the `/run/cgprofile/observer` directory and socket. Host setup
+provisions the directory as `root:root 0755`; Run-Gate checks its type, root
+owner, non-writable mode, and traversal permission, without requiring a
+directory GID or connecting to the observer socket. The socket uses the
+dedicated `cgprofile-observer` group, separate from Docker and control.
 Run-Gate mounts the directory read-only into the test container, so the socket
 path resolves again after daemon restart. It grants that dedicated GID and
 sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container path. Observer-backed
 lanes declare per-container memory and PID ceilings and refuse arbitrary extra
 mounts. They do not mount the control socket, change PID/cgroup/network
 namespaces, or add a Docker socket.
+
+Before every control connection, Run-Gate checks that the control socket has a
+non-zero GID distinct from the host Docker GID. It accepts UID 0 without a
+supplementary group because the tester runner uses `--user 0:0`; other callers
+must have the control GID in their supplementary groups. A refusal names
+`cgprofile-control` and says to recreate the devcontainer with its
+`--group-add`. The host Docker GID comes from the explicit
+`RUN_GATE_HOST_DOCKER_GID` override first, then `MDT_HOST_DOCKER_GID` supplied
+by the host launcher. A malformed selected value fails; when neither exists,
+the refusal names both variables. Run-Gate does not infer this group from the
+Docker API socket owner or its own group database, because a proxy or relay may
+use a different GID on that socket.
 
 Assay first attempts its existing local B145 reader. It uses the configured
 observer only when the local reader specifically proves that the private
