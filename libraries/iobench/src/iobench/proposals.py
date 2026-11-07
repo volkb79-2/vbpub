@@ -19,7 +19,8 @@ ABSENT_REASONS = ("stage_skipped", "stage_failed", "basis_unsteady", "basis_miss
 CACHE_STATES = ("cold_measured", "rate_cap", "no_cache_observed", "cold_hit_like", "undetermined")
 METERING = ("byte", "iops", "mixed", "undetermined", "coarse")
 FITS = ("good", "poor", "insufficient", "plateau")
-LIMIT_FIXED = ("quick-profile", "very-quick-profile", "limited-by-budget", "short-observation", "single-run", "filesystem_layer", "fresh_semantics_filesystem")
+LIMIT_FIXED = ("quick-profile", "very-quick-profile", "limited-by-budget", "limited-by-space", "limited-by-fio-short",
+               "short-observation", "single-run", "filesystem_layer", "fresh_semantics_filesystem")
 LIMIT_PATTERNS = (re.compile(r"^stage_skipped:S[0-9]$"), re.compile(r"^bucket_exclusion_s<=[0-9]+$"))
 BASES = ("measured", "confirmed-by-sweep", "ratio-inferred", "formula-only", "single-run")
 SECTIONS = ("writeback", "caps", "iocost_model", "iocost_qos")

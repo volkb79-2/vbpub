@@ -91,12 +91,19 @@ def pla_05(flat_cells: Sequence[str]) -> Check:
     return Check("IOB-PLA-05", "info", "rate_limited (flat-line) series: " + (", ".join(flat_cells) or "none"), value=list(flat_cells))
 
 
-def pla_06(iops: float, mean_clat_us: float, qd: int) -> Check:
-    ratio = iops * mean_clat_us / 1e6 / qd
+def pla_06(iops: float, mean_latency_us: float | None, qd: int, *, job_name: str | None = None,
+           degrade_caps: bool = True) -> Check:
+    if mean_latency_us is None or not math.isfinite(mean_latency_us):
+        subject = f"job {job_name} QD{qd}" if job_name else f"QD{qd} job"
+        return Check("IOB-PLA-06", "not_applicable", f"{subject} has no reported total latency (slat + clat); Little's law was not assessed")
+    ratio = iops * mean_latency_us / 1e6 / qd
+    subject = f"job {job_name} QD{qd}: " if job_name else ""
     if LITTLE[0] <= ratio <= LITTLE[1]:
-        return Check("IOB-PLA-06", "pass", f"Little's law holds ({ratio:.2f})", value=round(ratio, 3))
-    return Check("IOB-PLA-06", "fail", f"iops x mean clat / QD = {ratio:.2f} is outside [0.7, 1.3]: broken or faked fio; the rung is unusable",
-                 ("caps",), (("caps", "absent", "stage_failed"),), value=round(ratio, 3))
+        return Check("IOB-PLA-06", "pass", f"{subject}Little's law using mean total latency (slat + clat) holds ({ratio:.2f})", value=round(ratio, 3))
+    degrades = ("caps",) if degrade_caps else ()
+    effects = (("caps", "absent", "stage_failed"),) if degrade_caps else ()
+    return Check("IOB-PLA-06", "fail", f"{subject}iops x mean total latency / QD = {ratio:.3f} is outside [0.7, 1.3]: broken or faked fio; the rung is unusable",
+                 degrades, effects, value=round(ratio, 3))
 
 
 def pla_07(rand_bps: float, seq_bps: float, moved: bool) -> Check:
@@ -134,7 +141,7 @@ READ_OVER_WRITE_WARN = 20.0  # [I] inferred: above this, flag the ratio for revi
 READ_OVER_WRITE_FAIL = 100.0  # [I] inferred: a gross mismatch fails without corroboration
 
 
-def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str | None = None,
+def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str | None = None, veryquick: bool = False,
            read_state: str | None = None, read_cv: float | None = None,
            write_state: str | None = None, write_cv: float | None = None) -> Check:
     """An inferred gross cache-inflation check for every profile with sequential read and write cells.
@@ -153,8 +160,11 @@ def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str 
         return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.0f}x the sequential write (> {READ_OVER_WRITE_FAIL:.0f}x): a cache is serving the reads; inferred threshold, calibrate with IOB-ACC-01",
                      value=round(ratio, 1))
     if ratio > READ_OVER_WRITE_WARN:
-        if cache_state == "cold_hit_like":
+        if cache_state == "cold_hit_like" and not veryquick:
             return Check("IOB-PLA-19", "fail", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x) and the cold probe is hit-like: cache inflation is corroborated; inferred threshold, calibrate with IOB-ACC-01",
+                         value=round(ratio, 1))
+        if veryquick:
+            return Check("IOB-PLA-19", "info", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x): inconclusive; veryquick cold class is not assessed and cannot corroborate a hit-like cache; inferred threshold, calibrate with IOB-ACC-01",
                          value=round(ratio, 1))
         return Check("IOB-PLA-19", "info", f"sequential read is {ratio:.1f}x the sequential write (> {READ_OVER_WRITE_WARN:.0f}x): inconclusive without a hit-like cold probe; inferred threshold, calibrate with IOB-ACC-01",
                      value=round(ratio, 1))
@@ -165,7 +175,7 @@ def verdict(cache_state: str, *, vq: bool = False, rate_status: str = "pass") ->
     """The plausibility verdict of a calibration (``quality.plausibility``).
 
     In every profile, a ratio above 100x fails; above 20x is inconclusive unless a hit-like cold probe corroborates cache service.
-    A veryquick hit-like cold region without ratio corroboration remains inconclusive because no cache looks the same."""
+    Veryquick's cold class is not assessed, so a 20x-100x ratio remains inconclusive and cannot be corroborated by that probe."""
     found = VERDICTS[cache_state]
     # The ratio check is part of the verdict in every profile. Veryquick keeps
     # its one profile-specific rule: a hit-like cold probe alone is not proof.

@@ -47,6 +47,7 @@ S3_S = 90
 RDC_S = 50
 S0_S = 30
 S1_S = 30
+QUICK_STARTUP_ALLOWANCE_S = 18  # one retained IB-VQ quick run took 18 s longer than the 670 s plan
 SWEEP_CELLS = 6
 FULL_SWEEP_CELLS = 8
 
@@ -161,7 +162,9 @@ def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: 
     base = rung_plan(ws, quick=quick)
     n_rungs = len(base) if quick else len(base) + 2
     fill_s = ceil30(1.5 * ws / r_est_bps)
-    stages = [Stage("S0", S0_S, True), Stage("S1", S1_S, True), Stage("fill", fill_s, True)]
+    s0_s = S0_S + (QUICK_STARTUP_ALLOWANCE_S if quick else 0)
+    s0_note = "30 s setup + 18 s observed runtime allowance" if quick else ""
+    stages = [Stage("S0", s0_s, True, s0_note), Stage("S1", S1_S, True), Stage("fill", fill_s, True)]
     cache_stage: Stage | None = None
     if not quick:
         stages.append(Stage("E-cold", 140, False, "QD32 70 s + QD1 histogram 60 s + setup"))

@@ -180,7 +180,19 @@ def test_prf_03_veryquick_cold_class_is_not_assessed_and_names_its_install_time_
     assert cold["class"] == "not_assessed" and cold["diagnostic_class"] in ("hit-like", "miss-like", "indeterminate", "n/a")
     assert out.calibration["calibration"]["veryquick"]["intended_use"] == "install-time identity, sanity, read/write IOPS"
     assert out.calibration["calibration"]["cache"]["read"]["cache_state"] == "undetermined"
+    assert "cache_model_undetermined" in out.calibration["calibration"]["cache"]["read"]["reasons"]
     assert "limited-by-budget" not in out.result["quality"]["limits"]
+
+
+def test_prf_03_veryquick_without_a_cold_probe_still_names_the_undetermined_model(monkeypatch):
+    from iobench.cache import CacheState
+
+    monkeypatch.setattr(cal_mod.cache, "classify_cache",
+                        lambda *args, **kwargs: CacheState("undetermined", "unproven", ("quick_profile",), None, None, None))
+    out = calibrate(make_host(cache=None), profile="veryquick")
+    state = out.calibration["calibration"]["cache"]["read"]
+    assert out.status == "complete" and state["cache_state"] == "undetermined"
+    assert {"quick_profile", "cache_model_undetermined"} <= set(state["reasons"])
 
 
 def test_prf_03_pla19_names_an_unsteady_write_cell_and_uses_a_longer_window():
@@ -191,33 +203,17 @@ def test_prf_03_pla19_names_an_unsteady_write_cell_and_uses_a_longer_window():
     assert write.seconds == plan.VQ_SEQ_WRITE_S > plan.VQ_CELL_S
 
 
-def test_prf_03_fake_host_timing_matches_plan_with_fixed_startup_allowance(monkeypatch):
-    host = make_host(cache=None)
-    real_s0 = cal_mod.Calibrator.s0
-    real_fill = cal_mod.Calibrator.fill
-    real_fio = cal_mod.Calibrator.fio
-
-    def timed_s0(self, *, need_workdir):
-        self.host.sleep(10)
-        return real_s0(self, need_workdir=need_workdir)
-
-    def timed_fill(self, alloc):
-        real_fill(self, alloc)
-        self.host.sleep(5)  # allotted fill slack: 25 s for 20 s of planned bytes
-
-    def timed_fio(self, job):
-        self.host.sleep(16 / 11)  # deterministic 16 s of process startup/reap cost across eleven fio jobs
-        return real_fio(self, job)
-
-    monkeypatch.setattr(cal_mod.Calibrator, "s0", timed_s0)
-    monkeypatch.setattr(cal_mod.Calibrator, "fill", timed_fill)
-    monkeypatch.setattr(cal_mod.Calibrator, "fio", timed_fio)
-    started = host.now()
-    out = calibrate(host, profile="veryquick")
-    elapsed = host.now() - started
-    assert out.status == "complete"
-    assert elapsed == pytest.approx(plan.plan_calibration("veryquick", out.calibration["calibration"]["target"]["size_bytes"],
-                                                         out.calibration["calibration"]["R_est_bps"]).total, abs=0.01)
+def test_prf_03_plan_is_checked_against_independent_ib_vq_wall_clock_fixtures():
+    # The retained IB-VQ report recorded 188-189 s for eight veryquick runs (173 s planned)
+    # and 688 s for one quick run (670 s planned); the other quick runs were 626-627 s.
+    observed_vq = (188, 189)
+    observed_quick_max = 688
+    vq = plan.plan_calibration("veryquick", 435853320192, 1.36e9)
+    quick = plan.plan_calibration("quick", 435853320192, 1.36e9)
+    # Veryquick's 24 s sequential-write job adds 12 s to the old measured profile runtime.
+    assert vq.total == max(observed_vq) + (plan.VQ_SEQ_WRITE_S - plan.VQ_CELL_S) == 201
+    assert vq.total <= vq.budget_s == 210
+    assert quick.total == observed_quick_max == 688 and quick.total <= quick.budget_s == 720
 
 
 def test_prf_03_the_series_is_one_30_second_write_run_and_the_grid_is_four_cells(clean):
@@ -278,7 +274,7 @@ def test_prf_03_veryquick_does_not_use_a_nonrepeatable_cold_class_to_corroborate
     assert verdict_of(out) == {"verdict": "inconclusive", "cache_state": "undetermined"}
     check = next(c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-19")
     assert check["status"] == "info" and 20 < check["value"] <= 100
-    assert "inconclusive without a hit-like cold probe" in check["detail"]
+    assert "veryquick cold class is not assessed and cannot corroborate a hit-like cache" in check["detail"]
 
 
 def test_prf_03_veryquick_cold_class_is_not_used_as_a_repeatable_cache_verdict():

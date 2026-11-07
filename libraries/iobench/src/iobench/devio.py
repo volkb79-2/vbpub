@@ -213,6 +213,8 @@ class FioStats:
     runtime_s: float
     clat_mean_us: float
     pct_us: dict[str, float]
+    slat_mean_us: float | None = None
+    lat_mean_us: float | None = None
 
 
 @dataclass(frozen=True)
@@ -230,10 +232,21 @@ def parse_fio_json(text: str, ddir: str) -> FioStats:
     doc = json.loads(text)
     job = doc["jobs"][0][ddir]
     clat = job["clat_ns"]
+    clat_mean_us = float(clat["mean"]) / 1000.0
+    slat = (job.get("slat_ns") or {}).get("mean")
+    lat = (job.get("lat_ns") or {}).get("mean")
+    slat_mean_us = float(slat) / 1000.0 if slat is not None else None
+    if lat is not None:
+        lat_mean_us = float(lat) / 1000.0
+    elif slat_mean_us is not None:
+        lat_mean_us = slat_mean_us + clat_mean_us
+    else:
+        lat_mean_us = None
     return FioStats(
         ddir=ddir, iops=float(job["iops"]), bw_bps=float(job["bw_bytes"]), io_bytes=int(job["io_bytes"]),
-        runtime_s=job["runtime"] / 1000.0, clat_mean_us=float(clat["mean"]) / 1000.0,
+        runtime_s=job["runtime"] / 1000.0, clat_mean_us=clat_mean_us,
         pct_us={k: v / 1000.0 for k, v in clat["percentile"].items()},
+        slat_mean_us=slat_mean_us, lat_mean_us=lat_mean_us,
     )
 
 

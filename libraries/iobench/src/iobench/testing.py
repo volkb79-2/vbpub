@@ -430,8 +430,10 @@ class FakeFio:
         pct = {f"{q:.6f}": percentile_us(sim.weights, q) * 1000.0 for q in PERCENTILES}
         body = {"io_bytes": int(sim.io_bytes), "bw_bytes": int(sim.io_bytes / runtime), "bw": int(sim.io_bytes / runtime / 1024),
                 "iops": iops, "runtime": int(round(sim.runtime * 1000)),
+                "slat_ns": {"mean": 0.0}, "lat_ns": {"mean": sim.mean_us * 1000.0},
                 "clat_ns": {"mean": sim.mean_us * 1000.0, "N": int(sim.io_bytes / job.bs), "percentile": pct}}
         empty = {"io_bytes": 0, "bw_bytes": 0, "bw": 0, "iops": 0.0, "runtime": 0,
+                 "slat_ns": {"mean": 0.0}, "lat_ns": {"mean": 0.0},
                  "clat_ns": {"mean": 0.0, "N": 0, "percentile": {f"{q:.6f}": 0 for q in PERCENTILES}}}
         doc = {"fio version": "fio-3.36", "jobs": [{"jobname": job.name, "read": empty if job.writes else body,
                                                     "write": body if job.writes else empty}]}

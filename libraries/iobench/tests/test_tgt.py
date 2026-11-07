@@ -615,6 +615,8 @@ def test_tgt_10_fill_aborts_when_free_space_falls():
     assert cal["fill"]["bytes"] < cal["fill"]["planned_bytes"] and host.statfs("/bench")[1] < margin + GIB
     assert cal["extent_written"][0][1] == cal["fill"]["bytes"]  # WS_max shrank to the extent so far
     assert "limited-by-budget" not in out.result["quality"]["limits"]
+    assert "limited-by-space" in out.result["quality"]["limits"]
+    assert out.result["quality"]["cache_proof"] == "limited-by-space"
 
 
 def test_tgt_10_a_file_fio_cut_short_does_not_claim_budget_truncation():
@@ -624,6 +626,8 @@ def test_tgt_10_a_file_fio_cut_short_does_not_claim_budget_truncation():
     fill = out.calibration["calibration"]["fill"]
     assert out.status == "complete" and 0 < fill["bytes"] < fill["planned_bytes"]
     assert "limited-by-budget" not in out.result["quality"]["limits"]
+    assert "limited-by-fio-short" in out.result["quality"]["limits"]
+    assert out.result["quality"]["cache_proof"] == "limited-by-fio-short"
 
 
 def btrfs_file_host(*, multi_device=False):
@@ -659,6 +663,18 @@ def test_tgt_06_btrfs_mount_source_and_single_member_resolve_the_same_disk():
     assert s0_identity(host, target, "/bench/w")["disk_scope"]["name"] == "vda"
 
 
+def test_tgt_06_btrfs_member_devno_overrides_a_different_mount_source_devno(monkeypatch):
+    host, uuid = btrfs_file_host()
+    host.add_disk("vdb", 253, 200 * GIB)
+    host.add_partition("vdb", "vdb8", 253, 8, 100 * GIB, "00000000-0000-0000-0000-000000000008")
+    devices = f"/sys/fs/btrfs/{uuid}/devices"
+    host.symlinks[f"{devices}/1"] = host.realpath("/sys/dev/block/253:8")
+    real_devno = host.devno
+    monkeypatch.setattr(host, "devno", lambda path: "254:7" if path == "/dev/vda8" else real_devno(path))
+    assert guard.fs_info(host, "/bench").devno == "254:7"
+    assert guard.backing_disk(host, "/bench/target.img") == "vdb"
+
+
 def test_tgt_06_multi_device_btrfs_is_refused_before_file_creation():
     host, uuid = btrfs_file_host(multi_device=True)
     with pytest.raises(Refusal) as err:
@@ -666,6 +682,25 @@ def test_tgt_06_multi_device_btrfs_is_refused_before_file_creation():
                         confirm_quiet_window=False, allow_large_root_target=False, created=CREATED)
     assert err.value.condition == "target_fs_multi_device"
     assert not host.exists("/bench/target.img") and not host.exists("/bench/target.img.iobench-target")
+
+
+def test_tgt_05_a_work_dir_on_multi_device_btrfs_is_refused_like_a_file_target():
+    host, _ = btrfs_file_host(multi_device=True)
+    with pytest.raises(Refusal) as err:
+        guard.check_workdir(host, "/bench/w", planned_volume=GIB, installer=False,
+                            confirm_quiet_window=False, target_disk="vda")
+    assert err.value.condition == "target_fs_multi_device"
+
+
+def test_tgt_05_namespace_check_uses_raw_and_resolved_btrfs_devnos():
+    host, _ = btrfs_file_host()
+    # PID 1 has an additional mount of the same btrfs device, but under another source spelling.
+    host.devices["/dev/btrfs-alias"] = host.devices["/dev/vda8"]
+    host.add_mount("0:52", "/bench/other-view", "/dev/btrfs-alias", "btrfs", ns="init")
+    with pytest.raises(Refusal) as err:
+        guard.check_workdir(host, "/bench/w", planned_volume=GIB, installer=False,
+                            confirm_quiet_window=False, target_disk="vda")
+    assert err.value.condition == "namespace_mismatch"
 
 
 def test_tgt_06_calibration_refuses_a_file_when_btrfs_gains_a_second_member():

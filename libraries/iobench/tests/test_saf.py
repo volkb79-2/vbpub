@@ -318,6 +318,7 @@ def test_saf_02_restore_on_signal_in_a_run():
     assert not host.exists(restore.JOURNAL)
     failed = read_json(host, f"{STATE}/result.last-failed.json")
     assert failed["run"]["status"] == "aborted" and failed["restore"]["verified"] is True
+    assert failed["schema_minor"] == 4 and failed["partial"]["status"] == "incomplete"
 
 
 def test_saf_02_restore_at_the_start_of_the_next_run():

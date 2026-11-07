@@ -4,6 +4,7 @@ import json
 import pytest
 
 from iobench import matrix as matrix_mod
+from iobench.errors import RunFailed
 from iobench import proposals, testing
 
 from helpers import INVERSION, calibrate, config, fio_jobs, make_host, matrix, read_json
@@ -84,6 +85,24 @@ def test_a_complete_sweep_records_its_r4_check():
     host = calibrated()
     out = matrix(host)
     assert out.result["run"]["stages"]["S4"] == "ok" and "r4" in out.result["evidence"]["sweep"]
+
+
+@pytest.mark.parametrize(("stage", "method"), (("S3", "s3"), ("S4", "s4"), ("S5", "s5")))
+def test_a_failed_matrix_stage_persists_the_partial_evidence(monkeypatch, stage, method):
+    host = calibrated()
+    m = matrix_mod.Matrixer(host, config())
+
+    def fail():
+        m.evidence["failure_probe"] = {"stage": stage}
+        raise RunFailed(f"controlled {stage} failure")
+
+    monkeypatch.setattr(m, method, fail)
+    out = m.execute()
+    failed = read_json(host, f"{STATE}/result.last-failed.json")
+    partial = failed["partial"]
+    assert out.status == "failed" and partial["status"] == "incomplete"
+    assert partial["stages"][stage] == f"failed: controlled {stage} failure"
+    assert partial["evidence"]["failure_probe"] == {"stage": stage}
 
 
 # -- S5: read cost ------------------------------------------------------------------------------------------------------------

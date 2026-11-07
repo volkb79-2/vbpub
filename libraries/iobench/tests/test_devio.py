@@ -56,9 +56,14 @@ def test_arc_05_builders_allowed_and_forbidden():
 
 
 def test_arc_05_parse_outputs():
-    text = '{"jobs": [{"read": {"iops": 10.0, "bw_bytes": 40960, "io_bytes": 409600, "runtime": 10000, "clat_ns": {"mean": 3000.0, "percentile": {"50.000000": 2000}}}}]}'
+    text = '{"jobs": [{"read": {"iops": 10.0, "bw_bytes": 40960, "io_bytes": 409600, "runtime": 10000, "lat_ns": {"mean": 7000.0}, "clat_ns": {"mean": 3000.0, "percentile": {"50.000000": 2000}}}}]}'
     st = devio.parse_fio_json(text, "read")
-    assert st.iops == 10 and st.clat_mean_us == 3 and st.pct_us["50.000000"] == 2 and st.runtime_s == 10
+    assert st.iops == 10 and st.clat_mean_us == 3 and st.lat_mean_us == 7 and st.pct_us["50.000000"] == 2 and st.runtime_s == 10
+    submitted = '{"jobs": [{"write": {"iops": 1600.0, "bw_bytes": 6553600, "io_bytes": 4096000, "runtime": 10000, "slat_ns": {"mean": 621500.0}, "clat_ns": {"mean": 3500.0, "percentile": {"50.000000": 3200}}}}]}'
+    st = devio.parse_fio_json(submitted, "write")
+    assert st.slat_mean_us == 621.5 and st.lat_mean_us == 625.0 and st.clat_mean_us == 3.5
+    clat_only = '{"jobs": [{"read": {"iops": 10.0, "bw_bytes": 40960, "io_bytes": 409600, "runtime": 10000, "clat_ns": {"mean": 3000.0, "percentile": {"50.000000": 2000}}}}]}'
+    assert devio.parse_fio_json(clat_only, "read").lat_mean_us is None
     series = devio.parse_rate_log("2000, 100, 0, 4096, 0\n4000, 200, 0, 4096, 0\n", "iops")
     assert series == [(2.0, 100.0), (4.0, 200.0)]
     assert devio.parse_rate_log("1000, 4, 1, 4096, 0\n", "bw") == [(1.0, 4096.0)]

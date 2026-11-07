@@ -1,7 +1,7 @@
 """IOB-R2-01: calibration oracles for the cold region, the idle QD1 latency, ladder densification and file-target planning."""
 import pytest
 
-from iobench import guard, ladder, plan
+from iobench import guard, ladder, plan, plausibility
 from iobench.calibrate import RUNG_S, Calibrator
 
 from helpers import INVERSION, calibrate, config, make_host
@@ -40,6 +40,31 @@ def test_r2_cal_the_idle_qd1_p99_is_the_latency_of_the_qd1_run_not_of_a_deeper_o
     for direction in ("read", "write"):
         assert run.qd1_p99[direction] == depth[(direction, 1)]
         assert depth[(direction, 1)] != depth[(direction, 8)]
+
+
+def test_r2_cal_a_failed_write_depth_rung_only_invalidates_write_qd90(monkeypatch):
+    real = Calibrator.rung
+
+    def fail_write_qd1(self, ws, direction, qd, runtime=RUNG_S, tag=""):
+        rec = real(self, ws, direction, qd, runtime, tag)
+        if tag == "-d" and direction == "write" and qd == 1:
+            rec["little_failed"] = True
+            self.little[-1] = plausibility.pla_06(1600.0, 3.5, 1, job_name=rec["job"], degrade_caps=False)
+        return rec
+
+    monkeypatch.setattr(Calibrator, "rung", fail_write_qd1)
+    run = Calibrator(make_host(cache=INVERSION), config())
+    out = run.execute()
+    assert out.status == "complete"
+    ladder_doc = out.calibration["calibration"]["ladder"]
+    assert ladder_doc["qd90"]["write"] is None and ladder_doc["qd90"]["read"] is not None
+    excluded = [r for r in ladder_doc["excluded_rungs"] if r.get("job", "").endswith(f"rung-w1-{run.ws // (1 << 20)}-d")]
+    assert len(excluded) == 1 and excluded[0] == {"dir": "write", "ws_bytes": run.ws, "qd": 1,
+                                                  "job": excluded[0]["job"], "check": "IOB-PLA-06"}
+    check = next(c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-06" and c["status"] == "fail")
+    assert f"rung-w1-{run.ws // (1 << 20)}-d" in check["detail"] and "QD1" in check["detail"]
+    caps = out.result["proposals"]["caps"]["dev_aggregate"]
+    assert all(v.get("reason") != "stage_failed" for v in caps.values())
 
 
 def test_r2_cal_a_ladder_that_falls_below_the_cliff_ratio_is_densified_once_between_the_last_good_rung_and_the_largest():

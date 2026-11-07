@@ -266,23 +266,33 @@ class Runner:
             return False
         try:
             fn()
-        except S.IntegrityError:
+        except Aborted as exc:
+            self.mark(name, f"aborted: {exc}")
+            raise
+        except S.IntegrityError as exc:
+            self.mark(name, f"failed: {exc}")
             raise
         except StageSkipped as exc:
             if required:
+                self.mark(name, f"failed: required stage skipped: {exc.why}")
                 raise
             self.skip(name, exc.why)
             return False
         except S.TooFewPoints:
             if required:
+                self.mark(name, "failed: insufficient_points")
                 raise
             self.mark(name, "failed: insufficient_points")
             return False
         except S.SeriesError:
             if required:
+                self.mark(name, "failed: unusable_series")
                 raise
             self.mark(name, "failed: unusable_series")
             return False
+        except (IobenchError, HostError) as exc:
+            self.mark(name, f"failed: {exc}")
+            raise
         self.mark(name, "ok")
         return True
 
