@@ -502,14 +502,8 @@ class RunGateArgumentParser(argparse.ArgumentParser):
 
 
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
-CGPROFILE_RESOURCE_OBSERVER_DIRECTORY = "/run/cgprofile/observer"
-CGPROFILE_RESOURCE_OBSERVER_SOURCE = (
-    f"{CGPROFILE_RESOURCE_OBSERVER_DIRECTORY}/cgprofile.sock"
-)
-CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY = "/run/cgprofile-observer"
-CGPROFILE_RESOURCE_OBSERVER_TARGET = (
-    f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY}/cgprofile.sock"
-)
+CGPROFILE_CONTROL_SOCKET_ENV_VAR = "CGPROFILE_CONTROL_SOCKET"
+CGPROFILE_OBSERVER_SOCKET_ENV_VAR = "CGPROFILE_OBSERVER_SOCKET"
 ASSAY_RESOURCE_OBSERVER_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
 # `host` (default) and `bare-host` (opt-out) swapped roles in the
 # host/bare-host flip (RG-43) — `host`
@@ -721,11 +715,13 @@ PROFILE_STOP_RETRY_SECONDS = 2.0
 PROFILE_REMOVED_ENV_VAR = "RUN_GATE_PROFILE_TRANSPORT"
 PROFILE_REMOVED_KEYS = {
     "transport": "the control socket is the only carrier; delete the key "
-                 "(set 'socket_path' to use a non-default socket)",
+                 f"(the endpoint comes from ${CGPROFILE_CONTROL_SOCKET_ENV_VAR})",
     "daemon": "run-gate no longer execs into a daemon container; delete the "
-              "key (the daemon is reached through 'socket_path')",
+              f"key (the endpoint comes from ${CGPROFILE_CONTROL_SOCKET_ENV_VAR})",
+    "socket_path": f"use the host-provided ${CGPROFILE_CONTROL_SOCKET_ENV_VAR} "
+                   "environment variable; run 'cgpd doctor' and refresh the "
+                   "host endpoints record",
 }
-PROFILE_SOCKET_PATH_DEFAULT = "/run/cgprofile/control/cgprofile.sock"
 PROFILE_ADMISSION_WAIT_DEFAULT = "10m"
 # Self-target discovery is optional profiling preflight, so neither Docker
 # identity probe may hold a lane longer than the ctl status/version probes.
@@ -947,6 +943,40 @@ def fail(msg: str) -> None:
 def fail_infra(msg: str) -> None:
     """Execution-infrastructure failure (ERROR 2)."""
     raise GateInfraError(msg)
+
+
+def _socket_endpoint_from_env(variable: str) -> str:
+    """Read one host-published endpoint from this process environment.
+
+    Endpoint paths have one authority: the host endpoint record delivered to
+    the process environment. Run-Gate neither reads that record nor guesses a
+    path when a variable is absent.
+    """
+    value = os.environ.get(variable)
+    if not value:
+        fail_infra(f"{variable} is unset or empty: run 'cgpd doctor', repair "
+                   "the host endpoints record, then start a session that has "
+                   "received the updated environment")
+    return value
+
+
+def control_socket_from_env() -> str:
+    """Return the required cgprofile control endpoint from the environment."""
+    return _socket_endpoint_from_env(CGPROFILE_CONTROL_SOCKET_ENV_VAR)
+
+
+def observer_socket_from_env() -> str:
+    """Return the required cgprofile observer endpoint from the environment."""
+    return _socket_endpoint_from_env(CGPROFILE_OBSERVER_SOCKET_ENV_VAR)
+
+
+def preflight_profile_endpoints(lane: dict, profiling_enabled: bool) -> None:
+    """Require only the host endpoints this lane's selected behavior needs."""
+    observer_lane = lane.get("resource_observer") is not None
+    if profiling_enabled or observer_lane:
+        control_socket_from_env()
+    if observer_lane:
+        observer_socket_from_env()
 
 
 # ---------------------------------------------------------------------------
@@ -1583,10 +1613,11 @@ def _validate_profile_policy(table: object, where: str) -> None:
         fail(f"{where}: 'profile' must be a table")
     for removed, remedy in PROFILE_REMOVED_KEYS.items():
         if removed in table:
-            fail(f"{where} [profile]: '{removed}' was removed (RG-156): "
+            decision = "WP-E3 / RG-244" if removed == "socket_path" \
+                else "RG-156"
+            fail(f"{where} [profile]: '{removed}' was removed ({decision}): "
                  f"{remedy}")
-    _check_keys(table, {"enabled", "interval", "damon", "socket_path",
-                        "admission_wait"},
+    _check_keys(table, {"enabled", "interval", "damon", "admission_wait"},
                 f"{where} [profile]")
     if "enabled" in table and not isinstance(table["enabled"], bool):
         fail(f"{where} [profile]: 'enabled' must be a boolean")
@@ -1594,10 +1625,6 @@ def _validate_profile_policy(table: object, where: str) -> None:
         _validate_budget(table["interval"], f"{where} [profile]", "interval")
     if "damon" in table and not isinstance(table["damon"], bool):
         fail(f"{where} [profile]: 'damon' must be a boolean")
-    if "socket_path" in table and (not isinstance(table["socket_path"], str)
-                                    or not table["socket_path"].strip()
-                                    or not table["socket_path"].startswith("/")):
-        fail(f"{where} [profile]: 'socket_path' must be a non-empty absolute path")
     if "admission_wait" in table:
         _validate_budget(table["admission_wait"], f"{where} [profile]",
                          "admission_wait")
@@ -1682,8 +1709,7 @@ def _validate_assay_policy(table: object, where: str) -> None:
 def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
                              central: dict, central_path: Path | None) -> dict:
     """Always-fully-populated `[profile]` settings for ONE lane:
-    `{'enabled', 'interval', 'damon', 'socket_path',
-    'admission_wait', 'source'}`. Project
+    `{'enabled', 'interval', 'damon', 'admission_wait', 'source'}`. Project
     `[profile]` shadows the central one WHOLE-TABLE (R-09,
     `resolve_history_keep`'s pattern — never a per-key merge), then the
     documented defaults, then the lane's own `profile` key on top (a bool
@@ -1704,8 +1730,8 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
     the exact hazard a named refusal exists to catch)."""
     if os.environ.get(PROFILE_REMOVED_ENV_VAR, "") != "":
         fail(f"{PROFILE_REMOVED_ENV_VAR} was removed (RG-156): the control "
-             "socket is the only carrier; unset it (a non-default socket is "
-             "'socket_path' in [profile])")
+             "socket is the only carrier; unset it (the endpoint comes from "
+             f"${CGPROFILE_CONTROL_SOCKET_ENV_VAR})")
     ambient = os.environ.get(PROFILE_AMBIENT_ENV_VAR)
     if ambient == "":
         # RW-23c (round-1 review S3): an exported-but-empty value counts as
@@ -1722,7 +1748,6 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
         return {"enabled": False,
                "interval": PROFILE_INTERVAL_DEFAULT,
                "damon": PROFILE_DAMON_DEFAULT,
-               "socket_path": PROFILE_SOCKET_PATH_DEFAULT,
                "admission_wait": PROFILE_ADMISSION_WAIT_DEFAULT,
                "source": f"${PROFILE_AMBIENT_ENV_VAR}=off",
                "disabled_reason": f"disabled ({PROFILE_AMBIENT_ENV_VAR}=off)"}
@@ -1736,7 +1761,6 @@ def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
         "enabled": table.get("enabled", PROFILE_ENABLED_DEFAULT),
         "interval": table.get("interval", PROFILE_INTERVAL_DEFAULT),
         "damon": table.get("damon", PROFILE_DAMON_DEFAULT),
-        "socket_path": table.get("socket_path", PROFILE_SOCKET_PATH_DEFAULT),
         "admission_wait": table.get("admission_wait",
                                       PROFILE_ADMISSION_WAIT_DEFAULT),
         "source": source,
@@ -3785,10 +3809,12 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                          preflight: dict | None = None) -> dict:
     """Contract Sec 4 obligations 1-3, called once per lane invocation AFTER
     the container/runner id is resolved (`docker inspect`) and BEFORE the
-    caller's wait loop. Tries the daemon exactly once (`version` then
-    `start`); ANY failure at either step degrades to `BasicSampler`, which
-    takes its first sample (the baseline, contract Sec 7's `s_0`)
-    immediately — never raises, never itself decides a verdict (R-04/R-36h).
+    caller's wait loop. The required endpoint is read from the environment;
+    if absent, the infrastructure error is raised before any daemon request.
+    Then it tries the daemon exactly once (`version` then `start`); ANY
+    failure at either step degrades to `BasicSampler`, which takes its first
+    sample (the baseline, contract Sec 7's `s_0`) immediately — it never
+    decides a verdict (R-04/R-36h).
 
     Returns a profiler STATE dict:
       mode              "disabled" | "daemon" | "basic"
@@ -3804,7 +3830,7 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
                         (RW-17: names `RUN_GATE_PROFILE` when that is why)
     """
     state = {"mode": "disabled", "client": None,
-             "socket_path": plan.get("socket_path"),
+             "socket_path": None,
              "session": None, "session_line": None, "warning": None,
              "sampler": None, "profiler_status": None,
              "placement": None, "admission": None,
@@ -3812,9 +3838,10 @@ def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
              "disabled_reason": plan.get("disabled_reason", "disabled")}
     if not plan["enabled"]:
         return state
+    socket_path = control_socket_from_env()
+    state["socket_path"] = socket_path
     client = (preflight["client"] if preflight is not None else
-              ProfilerClient(plan.get("socket_path",
-                                      PROFILE_SOCKET_PATH_DEFAULT)))
+              ProfilerClient(socket_path))
     state["client"] = client
     version_doc = (preflight.get("version") if preflight is not None
                    else None)
@@ -3991,7 +4018,8 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     `container-shared` (RG55-INTERFACE-CONTRACT.md Sec 3 — a bare-host
     invocation shares its devcontainer's cgroup with everything else
     running in it, the same relationship an exec lane's persistent runner
-    has). On ANY failure — docker missing, not running in a container,
+    has). An unset required endpoint raises an infrastructure error. On
+    daemon/start failures — docker missing, not running in a container,
     `ctl version` failing, `ctl start` failing — this NEVER falls back to a
     `BasicSampler` (RW-27b: explicit and deliberate — there is no cgroup
     here safely attributable to just this lane's own child the way a fresh
@@ -4008,11 +4036,16 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
     VERBATIM for the daemon sub-case — only how the target id and the scope
     were decided differs, not what happens afterward."""
     state = {"mode": "rusage", "client": None,
-             "socket_path": plan.get("socket_path"),
+             "socket_path": None,
              "session": None, "session_line": None, "warning": None,
              "sampler": None, "profiler_status": None,
              "placement": None, "admission": None,
              "disabled_reason": plan.get("disabled_reason", "disabled")}
+    if not plan.get("enabled"):
+        state["mode"] = "disabled"
+        return state
+    socket_path = control_socket_from_env()
+    state["socket_path"] = socket_path
     if not docker:
         state["warning"] = "docker not found on PATH"
         return state
@@ -4021,8 +4054,7 @@ def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
         state["warning"] = skip_reason
         return state
     client = (preflight.get("client") if preflight is not None else
-              ProfilerClient(plan.get("socket_path",
-                                      PROFILE_SOCKET_PATH_DEFAULT)))
+              ProfilerClient(socket_path))
     state["client"] = client
     if preflight is not None:
         version_doc = preflight.get("version")
@@ -4307,7 +4339,7 @@ def print_profile_plan_dry_run(plan: dict, scope: str,
         return
     print(f"run-gate: DRY RUN — profile plan: "
          f"scope {scope!r}, damon {'on' if plan['damon'] else 'off'}, "
-         f"socket {plan.get('socket_path', PROFILE_SOCKET_PATH_DEFAULT)!r}, "
+         f"socket from ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, "
          f"admission_wait {plan.get('admission_wait', PROFILE_ADMISSION_WAIT_DEFAULT)}, "
          f"token env {PROFILE_TOKEN_ENV}", flush=True)
     if placement is not None and scope != "container":
@@ -6075,8 +6107,7 @@ def prepare_profile_start(lane: dict, lane_name: str, project_dir: Path,
     """
     if not plan.get("enabled"):
         return None
-    client = ProfilerClient(plan.get(
-        "socket_path", PROFILE_SOCKET_PATH_DEFAULT))
+    client = ProfilerClient(control_socket_from_env())
     try:
         version_doc, reason = client.version()
     except Exception as exc:
@@ -8787,7 +8818,8 @@ def preflight_control_socket_access(
             if missing_ok:
                 return None
             fail_infra(f"cannot inspect cgprofile control socket {socket_path}: "
-                       f"{exc}; complete the host cgprofile socket cutover")
+                       f"{exc}; check ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, "
+                       "run 'cgpd doctor', and repair the host endpoints record")
         except OSError as exc:
             fail_infra(f"cannot inspect cgprofile control socket {socket_path}: "
                        f"{exc}")
@@ -8811,8 +8843,7 @@ def preflight_control_socket_access(
 
 
 def resource_observer_docker_flags(
-        lane: dict, environment: dict,
-        control_socket_path: str | None = None) -> list[str]:
+        lane: dict, environment: dict) -> list[str]:
     """Mount only cgprofile's read-only resource-observer socket.
 
     The observer protocol is a separate daemon listener; never mount the
@@ -8832,25 +8863,25 @@ def resource_observer_docker_flags(
     if os.environ.get(EXTRA_MOUNT_ENV_VAR):
         fail_infra(f"${EXTRA_MOUNT_ENV_VAR} is incompatible with an observer lane; "
                    "extra mounts could expose host control interfaces")
-    socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
+    control_socket_path = control_socket_from_env()
+    observer_socket_path = observer_socket_from_env()
+    socket_path = Path(observer_socket_path)
     directory_path = socket_path.parent
-    if control_socket_path is None:
-        control_socket_path = PROFILE_SOCKET_PATH_DEFAULT
-    elif not control_socket_path:
-        fail_infra("cgprofile control socket path is empty")
     try:
         parent = os.lstat(directory_path)
         observed = os.lstat(socket_path)
     except OSError as exc:
         fail_infra(f"cgprofile resource observer directory or socket is unavailable: "
-                   f"{directory_path}, {socket_path}: {exc}; complete the host "
-                   "cgprofile socket cutover and verify the service is installed")
+                   f"{directory_path}, {socket_path}: {exc}; check "
+                   f"${CGPROFILE_OBSERVER_SOCKET_ENV_VAR}, run 'cgpd doctor', "
+                   "and repair the host endpoints record")
     try:
         control = os.lstat(control_socket_path)
     except OSError as exc:
         fail_infra("cannot inspect cgprofile control socket "
-                   f"{control_socket_path}: {exc}; complete the host cgprofile "
-                   "socket cutover and verify the service is installed")
+                   f"{control_socket_path}: {exc}; check "
+                   f"${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, run 'cgpd doctor', "
+                   "and repair the host endpoints record")
     if (
         not stat.S_ISDIR(parent.st_mode)
         or parent.st_uid != 0
@@ -8888,11 +8919,9 @@ def resource_observer_docker_flags(
                    "distinct from the control socket group")
     return [
         "--mount",
-        f"type=bind,source={directory_path},target="
-        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly",
+        f"type=bind,source={directory_path},target={directory_path},readonly",
         "--group-add", str(observed.st_gid),
-        "-e", f"{ASSAY_RESOURCE_OBSERVER_ENV}="
-        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET}",
+        "-e", f"{ASSAY_RESOURCE_OBSERVER_ENV}={observer_socket_path}",
     ]
 
 
@@ -8905,6 +8934,7 @@ def resource_observer_version_preflight(socket_path: str) -> None:
     that cannot establish the exact read-only observer capability Run-Gate
     will mount.
     """
+    observer_endpoint = observer_socket_from_env()
     version, reason = ProfilerClient(socket_path).version()
     if version is None:
         fail_infra(f"cgprofile resource-observer preflight failed: {reason}")
@@ -8915,9 +8945,10 @@ def resource_observer_version_preflight(socket_path: str) -> None:
     if type(contract) is not int or contract != 2:
         fail_infra("cgprofile resource observer contract must be 2 "
                    f"(got {contract!r})")
-    if observer.get("path") != CGPROFILE_RESOURCE_OBSERVER_SOURCE:
+    if observer.get("path") != observer_endpoint:
         fail_infra("cgprofile resource observer advertises an unexpected "
-                   f"socket path: {observer.get('path')!r}")
+                   f"socket path for ${CGPROFILE_OBSERVER_SOCKET_ENV_VAR}: "
+                   f"{observer.get('path')!r}")
     if observer.get("listening") is not True:
         fail_infra("cgprofile resource observer is not listening")
 
@@ -10944,7 +10975,7 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
                     f"override active" if ambient_profile else "")
     record("OK" if profile_settings["enabled"] else "WARN", "profile config",
            f"enabled={profile_settings['enabled']} "
-           f"socket={profile_settings['socket_path']!r} "
+           f"endpoint=${CGPROFILE_CONTROL_SOCKET_ENV_VAR} "
            f"interval={profile_settings['interval']} "
            f"damon={profile_settings['damon']} "
            f"(source: {profile_settings['source']}){ambient_note}")
@@ -10955,7 +10986,7 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     else:
         # RG-156: the control socket is the only carrier, so doctor needs
         # no docker. An unreachable socket carries its CP-31 cause tag.
-        client = ProfilerClient(profile_settings["socket_path"])
+        client = ProfilerClient(control_socket_from_env())
         version_doc, reason = client.version()
         if version_doc is None:
             record("WARN", "profiler daemon",
@@ -15507,9 +15538,8 @@ def promote_follower(docker: str, name: str, lane_name: str,
     # here either (its samples died with the owner's process).
     if run_record is not None:
         session = pending.get("profile_session")
-        socket_path = (pending.get("profile_socket_path")
-                       or PROFILE_SOCKET_PATH_DEFAULT)
         if session:
+            socket_path = control_socket_from_env()
             stop_doc, reason = ProfilerClient(socket_path).stop(session)
             if stop_doc is not None:
                 run_record["resources"] = stop_doc["summary"]
@@ -15863,8 +15893,7 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
         # instead of a fabricated resume.
         session = pending.get("profile_session")
         if session:
-            socket_path = (pending.get("profile_socket_path")
-                           or PROFILE_SOCKET_PATH_DEFAULT)
+            socket_path = control_socket_from_env()
             profiler_state = {"mode": "daemon",
                               "client": ProfilerClient(socket_path),
                               "socket_path": socket_path, "session": session,
@@ -16070,10 +16099,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         preload_flags, preload_file = relaxed_io_sync_mount_flags(
             docker, env["image"], repo)
     if not dry_run and lane.get("resource_observer") is not None:
-        resource_observer_version_preflight(
-            (profile_plan or {}).get("socket_path")
-            or PROFILE_SOCKET_PATH_DEFAULT,
-        )
+        resource_observer_version_preflight(control_socket_from_env())
     # RG-NARROW: only the judged worktree + the git metadata it needs (dual,
     # RG-3), never the whole repo; the same set also reaches doctor and
     # Assay-state probes through build_env_probe_argv().
@@ -16084,10 +16110,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         *extra_flags,
         *cowtree_mount_flags(resource_settings, "ephemeral"),
         *preload_flags,
-        *resource_observer_docker_flags(
-            lane, env,
-            (profile_plan or {}).get("socket_path")
-            or PROFILE_SOCKET_PATH_DEFAULT)]
+        *resource_observer_docker_flags(lane, env)]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
@@ -16280,8 +16303,6 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                       if run_record is not None else None),
         "admission_deadline": (run_record.get("admission_deadline")
                                 if run_record is not None else None),
-        "profile_socket_path": (profile_plan.get("socket_path")
-                                if profiling else None),
         "watch": None,
         "placement": None,
     }
@@ -16585,6 +16606,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             profile_preflight = prepare_profile_start(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
                 "container-shared")
+        except GateInfraError:
+            raise
         except Exception as exc:
             # R-36h: an unexpected optional preflight failure is disclosed by
             # the normal fallback and never prevents the lane from running.
@@ -16705,10 +16728,6 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                     if run_record is not None else None),
         "revision": __revision__,
         "profile_token": profile_plan["token"] if profiling else None,
-        "profile_socket_path": (profiler_state["client"].socket_path
-                                if profiler_state.get("mode") == "daemon"
-                                and profiler_state.get("client") is not None
-                                else None),
         "watch": None,
         "placement": profiler_state.get("placement"),
         # RW-14/RG-35's own pattern, one field over (matches
@@ -17058,6 +17077,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             profile_preflight = prepare_profile_start(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
                 "container-shared")
+        except GateInfraError:
+            raise
         except Exception as exc:
             profile_preflight = {
                 "client": None, "version": None, "host": None,
@@ -17103,6 +17124,8 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             profiler_state = start_bare_host_profiling(
                 lane, lane_name, project_dir, worktree, docker, profile_plan,
                 preflight=profile_preflight)
+        except GateInfraError:
+            raise
         except Exception as exc:
             # B1d (round-1 review precedent, same call-site defense in
             # depth as run_container_lane/run_exec_lane): the whole point
@@ -17110,7 +17133,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             # against anything unanticipated reaching the lane's own run.
             msg = f"profiling crashed unexpectedly: {exc}"
             profiler_state = {"mode": "rusage", "client": None,
-                              "socket_path": profile_plan.get("socket_path"),
+                              "socket_path": None,
                               "session": None, "session_line": None,
                               "warning": msg, "sampler": None,
                               "profiler_status": None,
@@ -17792,11 +17815,16 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "              the command's own bound is all there is",
         "",
         "profiling (RG-55/P5) — optional resource telemetry, never judgment:",
-        "  [profile]   enabled, interval, damon, socket_path (default",
-        "              /run/cgprofile/control/cgprofile.sock; the only carrier),",
-        "              and bounded",
-        "              admission_wait (default 10m); 'daemon' and 'transport' were",
-        "              removed (RG-156)",
+        "  [profile]   enabled, interval, damon, admission_wait (default 10m);",
+        f"              ${CGPROFILE_CONTROL_SOCKET_ENV_VAR} is required when",
+        "              profiling is enabled or for observer lanes;",
+        f"              ${CGPROFILE_OBSERVER_SOCKET_ENV_VAR} is required only",
+        "              for observer lanes. RUN_GATE_PROFILE=off opts out of",
+        "              profiling but does not remove observer preflight needs.",
+        "              Endpoints come from the host process environment;",
+        "              no path config or fallback is used.",
+        "              'daemon' and 'transport' were removed (RG-156);",
+        "              'socket_path' is removed (WP-E3).",
         "  watch       one daemon reader per session records readings/verdicts;",
         "              killed follows the declared stall path, reported warns once;",
         "              an ended/failed watch retries once, then falls back to the",
@@ -19009,6 +19037,7 @@ def _dispatch(argv: list[str] | None = None, *,
         # sub-path that starts no session for the token to identify.
         profile_plan = resolve_profile_settings(lane, cfg, cfg_path, central,
                                                 central_path)
+        preflight_profile_endpoints(lane, profile_plan["enabled"])
         profile_plan["token"] = (generate_profile_token()
                                  if profile_plan["enabled"] else None)
         lock_deadline = (None if args.dry_run else

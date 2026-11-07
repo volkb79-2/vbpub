@@ -4,7 +4,6 @@ schema_version = 1
 enabled = true
 interval = "1s"
 damon = false
-socket_path = "/run/cgprofile/control/cgprofile.sock"
 admission_wait = "1s"
 
 [environments.probe-runner]

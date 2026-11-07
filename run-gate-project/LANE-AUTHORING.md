@@ -280,8 +280,14 @@ with sqlfluff in a command lane if the project wants it.
   host is shared). A daemon-backed lane waits for gates-slice headroom before
   starting and then proceeds after its bounded `admission_wait` with one
   warning; host load never becomes a lane verdict.
-- The project-level `[profile]` table may set `socket_path` (the only
-  carrier; RG-156 removed `transport` and `daemon`) and `admission_wait`.
+- The project-level `[profile]` table configures profiling policy and
+  `admission_wait`; it cannot choose a socket path. Run-Gate reads
+  `CGPROFILE_CONTROL_SOCKET` from its process environment when profiling is
+  enabled, and observer lanes also require `CGPROFILE_OBSERVER_SOCKET` for
+  their version preflight and read-only mount. Missing endpoints fail by
+  name; `RUN_GATE_PROFILE=off` is the explicit profiling opt-out. Keep the
+  environment endpoint setup and `required-env:ASSAY_RESOURCE_OBSERVER_SOCKET`
+  forwarding documented for any Assay lane that uses the observer.
   The daemon watch is one reader per session; if it is
   unavailable, the in-process assay watch bounds the R2 baseline by Assay's
   heartbeat (`300s` minimum; run-gate requests a 60 s heartbeat, so an assay
@@ -392,9 +398,12 @@ a yes/no.
 - [ ] Floors measured before set; R2 has `budget`, `budget_per_candidate`
       and (23.4.0) `stall_timeout`; `memory` declared, with `memory_max`
       where daemon placement of an exec/bare-host lane needs a ceiling.
-- [ ] If profiling is configured, `[profile]`'s socket_path/admission
-      fields are documented for the adopter and exercised by `doctor` or
-      `--dry-run`; no consumer starts or stops the daemon.
+- [ ] If profiling is configured, `[profile]` policy and `admission_wait` are
+      documented for the adopter; endpoint environment setup and the explicit
+      `RUN_GATE_PROFILE=off` opt-out are documented and exercised by `doctor`
+      or `--dry-run`; no consumer starts or stops the daemon.
+- [ ] Observer Assay lanes pass `ASSAY_RESOURCE_OBSERVER_SOCKET` with
+      `required-env:` so an unset host fact fails before the judge runs.
 - [ ] Artifacts declared if the lane may run remotely.
 - [ ] `run-gate doctor` clean; the lane runs once from a clean checkout with
       the Run-Gate wheel installed.

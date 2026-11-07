@@ -79,14 +79,16 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    the host-setup consumer; see the [native deployment guide](../scripts/cgroup-profiler/docs/NATIVE-DEPLOYMENT.md).
    It is never per-project, and never something a consumer's own gate config
    starts or stops. A runner
-   without access to the daemon's control socket (a locked-down CI box, a
-   sandboxed agent) should set `RUN_GATE_PROFILE=off`; run-gate reaches the
-   daemon only through `/run/cgprofile/control/cgprofile.sock` (RG-156: no `docker exec`
-   carrier, no `transport`/`daemon` keys), so a lane needs the control level
-   directory `/run/cgprofile/control` bind-mounted and the socket's group.
-   A Run-Gate or Assay release using these paths requires the
-   host socket cutover; retain the earlier pins on a host still using the
-   old layout.
+   without access to the daemon's control endpoint (a locked-down CI box, a
+   sandboxed agent) should set `RUN_GATE_PROFILE=off`. Run-Gate gets the
+   endpoint only from `CGPROFILE_CONTROL_SOCKET` in its process environment
+   (RG-156: no `docker exec` carrier, no `transport`/`daemon` keys, and no
+   path default). `CGPROFILE_OBSERVER_SOCKET` is read only by observer lanes.
+   The host launcher provides these values and the corresponding socket access.
+   When a required value is absent or empty, Run-Gate fails with that variable
+   named; run `cgpd doctor`, repair the host endpoints record, then start a
+   process that has received the updated environment. There is no old-layout
+   or config-file fallback.
    `doctor`'s "profiler" check reports
    the socket's reachability; an unreachable socket is named by its cause tag
    (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
@@ -146,7 +148,6 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    damon = true                   # default true; DAMON hot-set classification
                                   # when the daemon supports it (basic-path
                                   # sampling never has DAMON data either way)
-   socket_path = "/run/cgprofile/control/cgprofile.sock"  # the only carrier (RG-156)
    admission_wait = "10m"          # wait bound; then proceed with one warning
 
    # run-gate.toml or run-gate.root.toml — [footprint]: same whole-table
@@ -492,6 +493,49 @@ incomplete/looser read-back exits as an infrastructure refusal before the
 body runs; it is not a candidate verdict. A profiler/transport failure before
 any placement result follows the disclosed R-36h fallback instead.
 
+### Profiling endpoints from the host environment
+
+The host publishes cgprofile endpoints through the Run-Gate process
+environment. Run-Gate reads no host endpoint file and has no built-in socket
+paths or fallback. `CGPROFILE_CONTROL_SOCKET` is required while profiling is
+enabled and for every observer lane, whose version preflight uses the control
+endpoint. `CGPROFILE_OBSERVER_SOCKET` is required only for observer lanes.
+An unset or empty value is an infrastructure error naming the variable and
+the `cgpd doctor` / host endpoints record remedy. `RUN_GATE_PROFILE=off` is the
+explicit profiling opt-out; an observer lane still needs both endpoint
+variables. These variables are supplied by the host launcher, not declared as
+Run-Gate config keys.
+
+The profiling policy remains ordinary project configuration:
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[profile]
+enabled = true
+interval = "1s"
+damon = true
+admission_wait = "10m"
+```
+
+For an observer lane, Run-Gate bind-mounts the directory containing
+`CGPROFILE_OBSERVER_SOCKET` read-only at that same path. The in-lane
+`ASSAY_RESOURCE_OBSERVER_SOCKET` is set to the same endpoint. When an Assay
+lane or command declares an infrastructure fact that must reach a command,
+use Assay's host-owned `required-env:` declaration rather than
+`env_passthrough`, which silently omits an unset variable:
+
+<!-- assay-config -->
+```toml
+[lanes.r2.infrastructure]
+ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
+```
+
+Run-Gate sets that value when it creates the observer lane. The Assay
+declaration makes a missing value fail by name before the judge runs; it does
+not choose or invent an endpoint.
+
 ### Native R2 resource observer
 
 Native Assay R2 must inspect the candidate cgroup and every enforcing
@@ -533,19 +577,17 @@ pids = 8192
 ```
 
 Before starting the lane, Run-Gate queries cgprofile's control `version`
-response and requires observer contract 2, the fixed observer socket path,
-and `listening = true`. It lstats the observer directory as `root:root` and
-non-writable by group or other users, then mounts it
-read-only at `/run/cgprofile-observer`.
-The host path is `/run/cgprofile/observer/cgprofile.sock`, and the directory
-bind keeps the basename in the lane as
-`/run/cgprofile-observer/cgprofile.sock`. Run-Gate grants the dedicated
-observer socket GID and sets
-`ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container socket path. Observer
+response and requires observer contract 2, the path advertised by
+`CGPROFILE_OBSERVER_SOCKET`, and `listening = true`. It lstats the directory
+containing that variable as `root:root`, group-searchable, and not writable by
+group or other users, then mounts the directory read-only at the same path.
+The identity mount keeps the endpoint path unchanged inside the lane. Run-Gate
+grants the dedicated observer socket GID and sets
+`ASSAY_RESOURCE_OBSERVER_SOCKET` to `CGPROFILE_OBSERVER_SOCKET`. Observer
 lanes require explicit per-container `resources.memory` and `resources.pids`
 ceilings so candidate-local `memory.events` and `pids.events` can support
 attribution. `RUN_GATE_EXTRA_MOUNTS` is refused for these lanes. It does not mount
-`/run/cgprofile/control/cgprofile.sock`, the Docker socket, or any host namespace. The
+control endpoint, the Docker socket, or any host namespace. The
 existing daemon's separate observer listener accepts only a resource-limit
 query bound to the caller's peer credentials and native thread ID; it returns
 the caller cgroup's ancestry under the configured gates slice, without PIDs or

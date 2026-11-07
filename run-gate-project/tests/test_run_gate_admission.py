@@ -958,9 +958,14 @@ def test_disabled_cli_accepts_flags_with_one_notice_and_no_admission_docker_call
     invoke_dir.mkdir()
     invoke = invoke_dir / "run_gate.py"
     invoke.symlink_to(Path(run_gate.__file__))
+    child_env = dict(os.environ)
+    child_env["RUN_GATE_PROFILE"] = "off"
+    child_env.pop("CGPROFILE_CONTROL_SOCKET", None)
+    child_env.pop("CGPROFILE_OBSERVER_SOCKET", None)
     proc = subprocess.run([sys.executable, str(invoke), "unit",
                            "--admission-wait", "3m", "--override-admission"],
-                          cwd=project, capture_output=True, text=True)
+                          cwd=project, env=child_env,
+                          capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.count("admission is disabled") == 1
     calls = log.read_text().splitlines()
