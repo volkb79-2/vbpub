@@ -21,6 +21,39 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.24.0] - 2026-11-06
+<!-- cmru: generated -->
+<!-- cmru: source-end=13cff77c1c7f5a3de59a74af8791a01a8723cd6b -->
+
+### Added
+- feat(ciu): complete one-shot run acceptance (0aabfe009)
+- feat(ciu): reap and protect one-shot runs (e9aca3f54)
+- feat(ciu): launch one-shot compose runs (b1a77a80d)
+- feat(ciu): add one-shot run plans (c827130d1)
+
+### Fixed
+- fix(ciu): clean pre-validation reports an undeterminable compose project instead of a traceback (R3-1) (698bf65c1)
+- fix(ciu): reap floor from State.FinishedAt, wider --extend deny list, doc dry-run preparation (R2-3, R2-4, R2-5) (327f1a6c7)
+- fix(ciu): ciu clean evaluates the one-shot guard before step 1 removes anything (R2-1) (8cb3f7782)
+- fix(ciu): ciu run never removes a container it did not create; harden extension, dry-run, launch semantics (F1-F6, F8, F10) (eed62e5b6)
+- fix(ciu): global-only root clean keeps --vanilla and identity-network removal; direct predicate tests (CIU-202 review fixes) (a0a529289)
+- fix(ciu): keep up --dry-run free of compose input evaluation (F7) (4857bed7d)
+- fix(ciu): handle global-only roots in sibling cleanup (58a2b4420)
+
+### Changed
+- Merge origin/main into ciu-run-20261105 (CIU-202); keep both sides' CHANGES/backlog entries, drop absolute report path (70b4d9a96)
+- Merge origin/main into ciu-sibling-roots-20261105 (c427dd084)
+- Merge origin/main into ciu-run-20261105 (b70c8849c)
+- chore: retire modern-debian-tools-python-debug; mdt-cockpit is its successor (2015c4e00)
+- refactor(ciu): expose stack preparation inputs (069d081d3)
+
+### Documentation
+- docs(ciu): document ciu run name-collision refusal, extension limits, launch semantics; add collision case to real-docker acceptance (F1-F9 docs) (ccd25d5ea)
+
+### Testing
+- test(ciu): close the 100% coverage gap on the CIU-141/138/202 refusal paths (worktree rm, ciu run CLI, clean one-shot guard, global-only clean, procutil.popen) (4bbf8d49a)
+- test(ciu): pin reap floor boundary, non-UTC FinishedAt offsets and nanosecond truncation (R3-2); backlog header wording (R3-3) (781b1a01e)
+
 ## [7.23.2] - 2026-11-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=3f5283109f50e0467a2aea61009a0b41c8098520 -->
