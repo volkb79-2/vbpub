@@ -9,15 +9,30 @@ from pathlib import Path
 import pytest
 
 from pwmcp_client.mcp_client import StreamableHttpClient, decode_tool_value
+from _testdeps import optional_local_data
 
 FIXTURE = Path(__file__).parent / "fixtures" / "playwright-mcp-skill-tools-0.0.80.json"
 
 
-@pytest.mark.pwmcp_live
-def test_live_pinned_mcp_tools_list_and_call_response_shapes() -> None:
+class _LiveEndpointMissing(Exception):
+    pass
+
+
+def _live_endpoint() -> str:
     endpoint = os.environ.get("PWMCP_LIVE_MCP_URL")
     if not endpoint:
-        pytest.skip("set PWMCP_LIVE_MCP_URL to run the pinned @playwright/mcp integration check")
+        raise _LiveEndpointMissing("PWMCP_LIVE_MCP_URL is not set")
+    return endpoint
+
+
+@pytest.mark.pwmcp_live
+def test_live_pinned_mcp_tools_list_and_call_response_shapes() -> None:
+    endpoint = optional_local_data(
+        _live_endpoint,
+        _LiveEndpointMissing,
+        description="the pinned live @playwright/mcp endpoint",
+        require_env="PWMCP_REQUIRE_LIVE_MCP",
+    )
     page_url = os.environ.get("PWMCP_LIVE_PAGE_URL", "https://example.com")
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     expected_tools = {tool["name"]: tool for tool in fixture["tools"]}

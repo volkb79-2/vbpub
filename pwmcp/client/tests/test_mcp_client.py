@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import http.client
 import json
-import shutil
 import subprocess
 import sys
 import threading
@@ -32,6 +31,7 @@ from pwmcp_client.mcp_client import (
     page_diagnostics_function,
     visible_selector_function,
 )
+from _testdeps import require_binary
 
 
 class _McpState:
@@ -1146,9 +1146,7 @@ def test_html_capture_javascript_and_python_byte_prefix_oracle_agree() -> None:
 
 
 def test_generated_html_capture_javascript_executes_in_node_when_available() -> None:
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node is not installed in the tester environment; Python mirror covers UTF-8 cap rules")
+    node = require_binary("node", "Node.js executes the generated HTML truncation function")
     for source, limit in (
         ("Aé中𝄞", 7),
         ("é" * 9, 10),
