@@ -1614,9 +1614,15 @@ verification list, so treat values above a few hundred bytes as untested.
 These keys are reserved and refused at `plan`, `publish` and `check`, because
 they change how every login shell, ssh, sudo, su or cron session behaves
 (`pam_env` applies `/etc/environment` to all of them) or are read-only in a
-POSIX shell: `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `BASH_ENV`, `ENV`,
+POSIX shell. The rule is: a key is reserved when it is one of `PATH`, `ENV`,
 `IFS`, `UID`, `EUID`, `PPID`, `SHELLOPTS`, `BASHOPTS`, `HOME`, `USER`,
-`LOGNAME`, `SHELL`, `PWD`, `OLDPWD`.
+`LOGNAME`, `SHELL`, `PWD`, `OLDPWD`, `PROMPT_COMMAND` (bash executes its value),
+`SHLVL`, `GROUPS`, `RANDOM`, `SECONDS`, `LINENO`, `TMPDIR`, `CDPATH`,
+`GLOBIGNORE`, `NODE_OPTIONS`, `SSH_AUTH_SOCK`, or starts with a reserved
+family prefix: `LD_` (dynamic loader: `LD_PRELOAD`, `LD_LIBRARY_PATH`,
+`LD_AUDIT`, ...), `PYTHON` (interpreter: `PYTHONPATH`, `PYTHONSTARTUP`, ...),
+`BASH_` (`BASH_ENV`, `BASH_XTRACEFD`, ...) or `LC_` (locale). Use a
+service-specific prefix such as `CGPROFILE_`.
 
 The `/etc/environment` block uses these exact marker lines:
 
@@ -1636,10 +1642,18 @@ Withdrawing the final fragment removes the block; the aggregate then contains
 only its version header.
 
 Unmanaged bytes are preserved exactly, including CRLF, NUL and non-UTF-8
-bytes and the file's trailing-newline state: when the file had no final
-newline, the block's END line is written without one, and removing the block
-returns the original bytes. Another writer must therefore not append to a
-file whose last line is an END marker without a newline.
+bytes and the file's trailing-newline state. Every line of the block, END
+included, ends with a newline, so a later `echo X >> /etc/environment` (or a
+`printf` without newline) never glues onto a marker. When the file had no
+final newline, the END line is written as
+`# END host-endpoints (no final newline)`; removing a block that is still the
+last thing in the file then returns the original bytes exactly. If other text
+was appended after the block, the newline is kept (`A=1` + block + `NEW=1\n`
+withdraws to `A=1\nNEW=1\n`). If an editor strips the END line's newline and
+text is glued after the marker, publish, withdraw and `check` refuse with
+`BEGIN marker without END (line N starts with the END marker but has text
+glued after it; put the marker alone on its line)`; restoring the newline
+heals it.
 
 The profile script is:
 
@@ -1664,8 +1678,14 @@ next publish or withdraw heals it, and `check` reports it. `publish` and
 the lock and `check` reports them.
 
 Damage is isolated per owner: one damaged fragment does not block another
-owner's publish or withdraw (it stays in place and `check` reports it); an
-operation on the damaged owner itself is refused without rewriting the file.
+owner's publish or withdraw (it stays in place and `check` reports it). The
+damaged owner itself is healed by re-running its install verb: `publish`
+replaces and `withdraw` removes a hand-edited or corrupt own fragment without
+parsing it (only an unsafe target, such as a symlink, is refused).
+
+On the real `/`, a root `publish` or `withdraw` also repairs wrong ownership:
+a managed file whose uid/gid is not root:root is rewritten even when its bytes
+and mode already match (fake roots keep the caller's ownership).
 
 ### Sharing `/etc/environment` with other managed blocks
 

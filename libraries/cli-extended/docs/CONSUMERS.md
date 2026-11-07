@@ -72,9 +72,11 @@ python3 -m cli_extended.hostcfg.endpoints withdraw --owner cgprofile
 ```
 
 Owner names match `^[a-z][a-z0-9-]{0,62}$` (`cgprofile`, not `CgProfile`), and
-the keys `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `BASH_ENV`, `ENV`, `IFS`,
-`UID`, `EUID`, `PPID`, `SHELLOPTS`, `BASHOPTS`, `HOME`, `USER`, `LOGNAME`,
-`SHELL`, `PWD` and `OLDPWD` are reserved: use service-specific keys.
+the shell and loader keys (`PATH`, `HOME`, `IFS`, `PROMPT_COMMAND`, `SHLVL`,
+`TMPDIR`, ... and every `LD_*`, `PYTHON*`, `BASH_*` and `LC_*` key; the full
+rule is in [`SPEC.md` §16](../SPEC.md#16-host-endpoint-records)) are reserved:
+use service-specific keys such as `CGPROFILE_...`. A hand-edited fragment of
+your own owner is healed by re-running the install verb.
 `withdraw` of an owner that never published is a no-op that reports so.
 
 `plan` performs the same alphabet, collision, symlink, and marker checks

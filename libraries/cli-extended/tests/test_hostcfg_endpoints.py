@@ -231,6 +231,10 @@ def test_key_value_alphabet_and_length_are_enforced(tmp_path, key, value, expect
         "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "BASH_ENV", "ENV", "IFS",
         "UID", "EUID", "PPID", "SHELLOPTS", "BASHOPTS", "HOME", "USER",
         "LOGNAME", "SHELL", "PWD", "OLDPWD",
+        "PROMPT_COMMAND", "SHLVL", "GROUPS", "RANDOM", "SECONDS", "LINENO", "TMPDIR",
+        "CDPATH", "GLOBIGNORE", "NODE_OPTIONS", "SSH_AUTH_SOCK",
+        "LD_AUDIT", "LD_DEBUG", "PYTHONPATH", "PYTHONSTARTUP", "BASH_XTRACEFD",
+        "BASH_FUNC_X", "LC_ALL", "LC_CTYPE",
     ],
 )
 def test_reserved_environment_keys_are_rejected_by_plan_and_publish(tmp_path, key):
@@ -346,7 +350,10 @@ def test_duplicate_environment_assignment_outside_block_is_refused(tmp_path):
 
 @pytest.mark.parametrize(
     "line",
-    ["  SVC_SOCKET=/old", "\tSVC_SOCKET=/old", "export SVC_SOCKET=/old", "  export SVC_SOCKET=/old"],
+    [
+        "  SVC_SOCKET=/old", "\tSVC_SOCKET=/old", "export SVC_SOCKET=/old", "  export SVC_SOCKET=/old",
+        "SVC_SOCKET = /old", "SVC_SOCKET\t=/old", "export SVC_SOCKET = /old",
+    ],
 )
 def test_duplicate_detection_accepts_leading_space_and_export_forms(tmp_path, line):
     root = fake_root(tmp_path, (line + "\n").encode())
@@ -674,18 +681,42 @@ def test_damaged_fragment_does_not_block_other_owner_publish_or_withdraw(tmp_pat
     assert any("broken" in problem for problem in endpoints.check(root=root))
 
 
-def test_operation_on_damaged_owner_refuses_without_rewriting_it(tmp_path):
+@pytest.mark.parametrize("damage", [b"not a fragment\n", b"# hand edit\n"])
+def test_damaged_own_fragment_is_healed_by_republishing(tmp_path, damage):
     root = fake_root(tmp_path)
-    directory = root / "etc" / "host-endpoints.d"
-    directory.mkdir(mode=0o755)
-    damaged = directory / "broken.env"
-    damaged.write_bytes(b"not a fragment\n")
-    damaged.chmod(0o644)
-    with pytest.raises(CliFailure, match="invalid header"):
-        endpoints.publish("broken", {"GOOD_SOCKET": "/run/good.sock"}, writer="good install 1.0", root=root)
-    with pytest.raises(CliFailure, match="invalid header"):
-        endpoints.withdraw("broken", root=root)
-    assert damaged.read_bytes() == b"not a fragment\n"
+    publish(root)
+    damaged = root / "etc" / "host-endpoints.d" / "svc.env"
+    damaged.write_bytes(damaged.read_bytes() + damage if damage.startswith(b"#") else damage)
+    assert any(problem.owner == "svc" for problem in endpoints.check(root=root))
+    publish(root, entries={"SVC_SOCKET": "/run/healed.sock"})
+    assert "SVC_SOCKET=/run/healed.sock" in damaged.read_text()
+    assert endpoints.check(root=root) == []
+
+
+@pytest.mark.parametrize("damage", [b"not a fragment\n", b"# hand edit\n"])
+def test_damaged_own_fragment_is_removed_by_withdraw(tmp_path, damage):
+    root = fake_root(tmp_path)
+    publish(root)
+    damaged = root / "etc" / "host-endpoints.d" / "svc.env"
+    damaged.write_bytes(damaged.read_bytes() + damage if damage.startswith(b"#") else damage)
+    assert endpoints.withdraw("svc", root=root) is True
+    assert not damaged.exists()
+    assert endpoints.check(root=root) == []
+
+
+def test_unsafe_own_fragment_target_is_still_refused(tmp_path):
+    root = fake_root(tmp_path)
+    publish(root)
+    fragment = root / "etc" / "host-endpoints.d" / "svc.env"
+    outside = tmp_path / "outside.env"
+    outside.write_text("victim\n")
+    fragment.unlink()
+    fragment.symlink_to(outside)
+    with pytest.raises(CliFailure, match="symlinked target"):
+        publish(root)
+    with pytest.raises(CliFailure, match="symlinked target"):
+        endpoints.withdraw("svc", root=root)
+    assert outside.read_text() == "victim\n"
 
 
 def test_publish_uses_created_directory_modes_independent_of_umask(tmp_path):
@@ -1747,7 +1778,7 @@ def test_environment_without_final_newline_round_trips_through_two_blocks(tmp_pa
     environment = root / "etc" / "environment"
     publish(root)
     first = environment.read_bytes()
-    assert first.endswith(b"# END host-endpoints") and not first.endswith(b"\n")
+    assert first.endswith(b"# END host-endpoints (no final newline)\n")
     assert endpoints.check(root=root) == []
     publish(root, owner="other", entries={"OTHER_KEY": "v"})
     assert endpoints.check(root=root) == []
@@ -1905,3 +1936,168 @@ def test_path_refusals_carry_machine_readable_kind_and_path(tmp_path):
     with pytest.raises(_fs.PathRefusal) as outside:
         _fs.safe_components(root, tmp_path / "elsewhere")
     assert outside.value.kind == "outside"
+
+
+# ------------------------------------------------------------- second round
+
+
+def test_appending_a_line_after_a_no_final_newline_block_does_not_break_it(tmp_path):
+    root = fake_root(tmp_path, b"A=1")
+    environment = root / "etc" / "environment"
+    publish(root)
+    # What `echo NEW=1 >> /etc/environment` does: append text plus a newline.
+    environment.write_bytes(environment.read_bytes() + b"NEW=1\n")
+    assert endpoints.check(root=root) == []
+    publish(root, entries={"SVC_SOCKET": "/run/other.sock"})
+    assert endpoints.check(root=root) == []
+    endpoints.withdraw("svc", root=root)
+    assert environment.read_bytes() == b"A=1\nNEW=1\n"
+
+
+def test_appending_without_newline_after_a_block_does_not_glue_onto_the_marker(tmp_path):
+    root = fake_root(tmp_path, b"A=1")
+    environment = root / "etc" / "environment"
+    publish(root)
+    # printf 'NEW=1' >> file: no newline of its own, but ours ended the END line.
+    environment.write_bytes(environment.read_bytes() + b"NEW=1")
+    assert endpoints.check(root=root) == []
+    endpoints.withdraw("svc", root=root)
+    assert environment.read_bytes() == b"A=1\nNEW=1"
+
+
+def test_glued_end_marker_is_refused_with_a_specific_repair_hint(tmp_path):
+    root = fake_root(tmp_path, b"A=1\n")
+    environment = root / "etc" / "environment"
+    publish(root)
+    rendered = environment.read_bytes()
+    environment.write_bytes(rendered[:-1] + b"NEW=1\n")  # editor stripped the newline, then appended
+    messages = [str(problem) for problem in endpoints.check(root=root)]
+    assert any("glued after it" in message and "put the marker alone on its line" in message for message in messages)
+    with pytest.raises(CliFailure, match="glued after it"):
+        publish(root)
+    with pytest.raises(CliFailure, match="glued after it"):
+        endpoints.withdraw("svc", root=root)
+    environment.write_bytes(rendered)
+    assert endpoints.check(root=root) == []
+
+
+def test_publish_writes_fragment_then_aggregate_then_environment_then_profile(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    order = []
+    real_write = _fs.atomic_write
+    real_unlink = _fs.unlink_and_sync
+
+    def record_write(root_arg, path, *args, **kwargs):
+        order.append(("write", path.relative_to(root).as_posix()))
+        return real_write(root_arg, path, *args, **kwargs)
+
+    def record_unlink(root_arg, path):
+        order.append(("unlink", path.relative_to(root).as_posix()))
+        return real_unlink(root_arg, path)
+
+    monkeypatch.setattr(_fs, "atomic_write", record_write)
+    monkeypatch.setattr(_fs, "unlink_and_sync", record_unlink)
+    publish(root)
+    assert order == [
+        ("write", "etc/host-endpoints.d/svc.env"),
+        ("write", "etc/host-endpoints.env"),
+        ("write", "etc/environment"),
+        ("write", "etc/profile.d/host-endpoints.sh"),
+    ]
+    order.clear()
+    endpoints.withdraw("svc", root=root)
+    assert order == [
+        ("unlink", "etc/host-endpoints.d/svc.env"),
+        ("write", "etc/host-endpoints.env"),
+        ("write", "etc/environment"),
+        ("write", "etc/profile.d/host-endpoints.sh"),
+    ]
+
+
+def test_republish_repairs_a_wrong_mode_file_with_identical_bytes(tmp_path):
+    root = fake_root(tmp_path)
+    publish(root)
+    aggregate = root / "etc" / "host-endpoints.env"
+    before = aggregate.read_bytes()
+    aggregate.chmod(0o666)
+    assert any("wrong mode" in problem for problem in endpoints.check(root=root))
+    publish(root)
+    assert aggregate.read_bytes() == before
+    assert stat.S_IMODE(aggregate.stat().st_mode) == 0o644
+    assert endpoints.check(root=root) == []
+
+
+def test_atomic_write_repairs_ownership_even_when_bytes_and_mode_match(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    target = root / "etc" / "owned.env"
+    target.write_bytes(b"same\n")
+    target.chmod(0o644)
+    info = target.stat()
+    chowned = []
+    monkeypatch.setattr(_fs, "_fchown", lambda descriptor, uid, gid: chowned.append((uid, gid)))
+    assert _fs.atomic_write(root, target, b"same\n", 0o644, temp_prefix="t-", owner=(info.st_uid, info.st_gid)) is False
+    assert chowned == []
+    wrong = (info.st_uid + 1, info.st_gid)
+    assert _fs.atomic_write(root, target, b"same\n", 0o644, temp_prefix="t-", owner=wrong) is True
+    assert chowned == [wrong]
+    assert _fs.atomic_write(root, target, b"same\n", 0o644, temp_prefix="t-") is False
+    assert chowned == [wrong]
+
+
+def test_apply_plan_requests_root_ownership_only_on_the_real_root(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    assert endpoints._target_owner(root) is None
+    monkeypatch.setattr(endpoints.os, "geteuid", lambda: 0)
+    assert endpoints._target_owner(root) is None
+    assert endpoints._target_owner(Path("/")) == (0, 0)
+    monkeypatch.setattr(endpoints.os, "geteuid", lambda: 1000)
+    assert endpoints._target_owner(Path("/")) is None
+
+    seen = []
+    monkeypatch.setattr(endpoints, "_target_owner", lambda _root: (os.getuid(), os.getgid()))
+    real_write = _fs.atomic_write
+    monkeypatch.setattr(
+        _fs, "atomic_write", lambda *args, **kwargs: seen.append(kwargs["owner"]) or real_write(*args, **kwargs)
+    )
+    publish(root)
+    assert seen == [(os.getuid(), os.getgid())] * 4
+
+
+def test_directory_fsync_opens_with_o_directory(tmp_path):
+    flags = []
+    real_open = _fs._open
+
+    def record(path, open_flags, mode=0o777):
+        flags.append(open_flags)
+        return real_open(path, open_flags, mode)
+
+    _fs.fsync_directory(tmp_path, open_fn=record)
+    assert flags[0] & getattr(os, "O_DIRECTORY", 0)
+    assert flags[0] & os.O_ACCMODE == os.O_RDONLY
+
+
+def test_unlink_and_sync_refuses_symlinks_and_non_files_itself(tmp_path):
+    root = fake_root(tmp_path)
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    link = root / "etc" / "link.env"
+    link.symlink_to(victim)
+    with pytest.raises(_fs.PathRefusal, match="symlinked target"):
+        _fs.unlink_and_sync(root, link)
+    assert victim.read_text() == "keep" and link.is_symlink()
+    with pytest.raises(_fs.PathRefusal, match="not a regular file"):
+        _fs.unlink_and_sync(root, root / "etc" / "profile.d")
+    assert (root / "etc" / "profile.d").is_dir()
+
+
+def test_relative_fake_root_is_resolved_to_absolute_paths(tmp_path, monkeypatch):
+    fake_root(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    plan = endpoints.render(
+        "svc", {"SVC_SOCKET": "/run/s"}, writer="svc install 1.0",
+        current_environment=b"", existing_fragments={}, root="root",
+    )
+    assert all(path.is_absolute() and path.is_relative_to(tmp_path / "root") for path in plan)
+    endpoints.publish("svc", {"SVC_SOCKET": "/run/s"}, writer="svc install 1.0", root="root")
+    assert endpoints.check(root="root") == []
+    assert endpoints.withdraw("svc", root="root") is True

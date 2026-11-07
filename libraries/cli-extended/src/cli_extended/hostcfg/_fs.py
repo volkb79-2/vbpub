@@ -23,6 +23,7 @@ _DIR_MODE = 0o755
 _open = os.open
 _fstat = os.fstat
 _fchmod = os.fchmod
+_fchown = os.fchown
 _close = os.close
 _fdopen = os.fdopen
 _fsync = os.fsync
@@ -157,14 +158,22 @@ def atomic_write(
     mode: int,
     *,
     temp_prefix: str,
+    owner: tuple[int, int] | None = None,
 ) -> bool:
     """Atomically replace a regular file and durably sync its parent.
 
-    Returns ``False`` without touching the file when bytes and mode already match.
+    Returns ``False`` without touching the file when bytes, mode and (when
+    ``owner`` is given as ``(uid, gid)``) ownership already match; otherwise
+    the replacement is created with that owner.
     """
 
     info = regular_or_missing(root, path)
-    if info is not None and path.read_bytes() == data and stat.S_IMODE(info.st_mode) == mode:
+    if (
+        info is not None
+        and path.read_bytes() == data
+        and stat.S_IMODE(info.st_mode) == mode
+        and (owner is None or (info.st_uid, info.st_gid) == owner)
+    ):
         return False
     ensure_directory(root, path.parent)
     descriptor, temporary_name = _mkstemp(prefix=temp_prefix, dir=path.parent)
@@ -172,6 +181,8 @@ def atomic_write(
     descriptor_owned = True
     try:
         _fchmod(descriptor, mode)
+        if owner is not None:
+            _fchown(descriptor, owner[0], owner[1])
         stream = _fdopen(descriptor, "wb")
         descriptor_owned = False
         with stream:

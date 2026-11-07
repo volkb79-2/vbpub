@@ -25,8 +25,9 @@ know when upgrading; it is not generated.
   process environment. A service installer publishes only its own fragment
   from the service's configured value; this helper does not supply endpoint
   defaults. Duplicate owners, malformed records, damaged markers, external
-  duplicate assignments (including `export KEY=` and indented forms), reserved
-  keys (`PATH`, `LD_PRELOAD`, `IFS`, `HOME`, ... see SPEC section 16) and
+  duplicate assignments (including `export KEY=`, `KEY = v` and indented
+  forms), reserved keys (`PATH`, `IFS`, `HOME`, `PROMPT_COMMAND`, every `LD_*`,
+  `PYTHON*`, `BASH_*` and `LC_*` key, ... see SPEC section 16) and
   symlinked managed targets are refused.
 - **Concurrency and recovery.** `check` takes the shared lock, so it never
   reports false drift during a publish; created directories are `0755`
