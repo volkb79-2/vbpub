@@ -74,9 +74,9 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    in bytes, with no cgroup/pressure/DAMON/events data, RG-57) when no daemon
    answers, every time, unless
    `[profile] enabled = false` or `RUN_GATE_PROFILE=off`. For the PRECISE
-   path (exact `memory.peak`, DAMON hot-set), the **cgroup-profiler daemon
-   is host infrastructure**, installed through its `cgpd install` verb or
-   the host-setup consumer; see the [native deployment guide](../scripts/cgroup-profiler/docs/NATIVE-DEPLOYMENT.md).
+   path (exact `memory.peak`, DAMON hot-set), the **cgprofile daemon
+   is host infrastructure**, installed through its `cgprofiled install` verb or
+   the host-setup consumer; see the [native deployment guide](../cgprofile/docs/NATIVE-DEPLOYMENT.md).
    It is never per-project, and never something a consumer's own gate config
    starts or stops. A runner
    without access to the daemon's control socket (a locked-down CI box, a

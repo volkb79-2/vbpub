@@ -32,7 +32,7 @@
   "kind": "assay-lane",
   "lane": "assay-r3",
   "outcome": "PASS",
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "r2": null,
   "reason": null,

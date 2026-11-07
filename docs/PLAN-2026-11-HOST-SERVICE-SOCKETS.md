@@ -6,6 +6,14 @@ implemented. Reviewed by an independent reviewer; the findings are folded in. sy
 marked "recheck" were reasoned from the man pages, not run, because `sd_listen_fds(3)` is
 not installed here. Verify them in the phase-1 VM acceptance before relying on them.
 Owner of the plan: operator. Implementation is distributed by a cross-tool agent.
+
+Naming note (2026-11-07, cgprofile 3.0.0): this plan was written against the 2.x names and is not
+rewritten. Read `cgroup-profiler` as `cgprofile` (directory `cgprofile/`, was `scripts/cgroup-profiler/`),
+`cgpd` as `cgprofiled`, `cgpctl` as `cgprofilectl`, and `cgpd.service` / `/etc/cgprofile/cgpd.toml` as
+`cgprofiled.service` / `/etc/cgprofile/cgprofiled.toml`; the local verbs (`run`, `mark`, `report`, `skills`)
+moved to the new `cgprofile` client. Slice, socket units and paths are unchanged. Authority for the names:
+`reports/hostcfg-AUGEAS-AND-BOUNDARIES-DESIGN.md` section E and `cgprofile/docs/CGPROFILECTL-SPEC.md`.
+
 Tools touched: topos, cgroup-profiler (cgpd/cgpctl), mdt-cockpit (host-setup and
 devcontainer templates), run-gate-project, assay tools, the Netcup runner script,
 vbpub `.devcontainer`, debian-install-v2 (optional phase), cli-extended (optional helper).

@@ -10,7 +10,7 @@
   "labels": [],
   "machine_classes": [],
   "perf": [],
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "qualifications": {},
   "results": [
     {
@@ -60,7 +60,7 @@
         "sidecar_sha256": null
       },
       "targets": {
-        "cgroup-profiler": "6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f"
+        "cgprofile": "6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f"
       },
       "toolset": "t1",
       "verdict_sha256": "1111111111111111111111111111111111111111111111111111111111111111",

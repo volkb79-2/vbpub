@@ -777,7 +777,7 @@ becomes local when `pids_localevents` or `memory_localevents` is enabled. For
 each active controller in that mode, Assay requires the candidate cgroup to
 have no child cgroups, so the local file still covers its execution; an
 inactive controller's mount option alone does not block a candidate. The
-cgroup-profiler observer uses contract 2 to provide both scopes to a private
+cgprofile observer uses contract 2 to provide both scopes to a private
 cgroup namespace. Assay refuses contract 1 because that response cannot
 distinguish a sibling's subtree event from a shared ancestor's own limit event.
 Contract 2 is the only supported resource-observer contract; the daemon's

@@ -22101,7 +22101,7 @@ class TestRG55FixtureByteIdentity:
 class TestProfileParsers:
     """Contract Sec 4.3's ported parsers, string variants (run-gate reads
     via `docker exec ... cat`, never a path directly) -- attributed to
-    scripts/cgroup-profiler/lib/util.py in run_gate.py's own docstrings."""
+    cgprofile/src/cgprofile/util.py in run_gate.py's own docstrings."""
 
     def test_parse_int_reads_a_plain_integer(self):
         assert run_gate._profile_parse_int("524288000\n") == 524288000
@@ -32932,12 +32932,16 @@ class TestUserDocumentationOracles:
         RUN_GATE_DIR.parent / "libraries" / "iobench" / "docs" / "DESIGN-GUIDE.md",
     )
 
-    def test_cgroup_profiler_contract_mirror_when_monorepo_is_present(self):
-        cgp_copy = (RUN_GATE_DIR.parent / "scripts" / "cgroup-profiler" /
+    def test_cgprofile_contract_mirror_when_monorepo_is_present(self):
+        if not (RUN_GATE_DIR.parent / "cmru.orchestration.toml").is_file():
+            # testdeps-exception: standalone Run-Gate has no monorepo, so no sibling contract.
+            pytest.skip("not the vbpub monorepo layout (standalone Run-Gate)")
+        # In the monorepo the sibling MUST exist: when this test built the old
+        # scripts/cgroup-profiler path and skipped on its absence, the project
+        # move silently disabled the mirror check.
+        cgp_copy = (RUN_GATE_DIR.parent / "cgprofile" /
                     "docs" / "RG55-INTERFACE-CONTRACT.md")
-        if not cgp_copy.is_file():
-            # testdeps-exception: the sibling contract is monorepo-only.
-            pytest.skip("cgroup-profiler sibling is absent outside the monorepo")
+        assert cgp_copy.is_file(), f"monorepo layout without {cgp_copy}"
         run_gate_copy = (RUN_GATE_DIR / "nyxloom-trove" /
                          "RG55-INTERFACE-CONTRACT.md")
         assert cgp_copy.read_bytes() == run_gate_copy.read_bytes()

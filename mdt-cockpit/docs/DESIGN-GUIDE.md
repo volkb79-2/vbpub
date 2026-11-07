@@ -138,7 +138,7 @@ decision and could again leave user state behind.
 
 ### Agent skills of the first-party CLIs
 
-The first-party CLIs that package agent skills (`cmru`, `ciu`, `pwmcp`, `topos`, `cgpctl`;
+The first-party CLIs that package agent skills (`cmru`, `ciu`, `pwmcp`, `topos`, `cgprofile`;
 the constant `SKILLS_CLIS` in `finalize_container_environment.py`) install them
 with `<cli> skills install` into `~/.claude/skills` and `~/.agents/skills`, which
 are user state, so the image cannot ship them. A fresh home has none, and
@@ -664,7 +664,7 @@ installed packages are determined by `PATH`.
 
 `DAMON_STAT` and cgprofile's generic DAMON sysfs sessions are mutually
 exclusive kernel consumers. MDT asks the host operator whether to disable
-`DAMON_STAT`. mdt defaults to disabling it (operator decision 2026-10-20: the cgroup-profiler
+`DAMON_STAT`. mdt defaults to disabling it (operator decision 2026-10-20: the cgprofile
 daemon needs the DAMON sysfs interface), `DAMON_STAT_DISABLE_DEFAULT="yes"` also in the
 non-wizard example, and applies the choice through a boot-time tmpfiles rule. This keeps a host-wide monitoring policy out of cgprofile's
 runtime and gives the operator a clear way to preserve `DAMON_STAT` when it is

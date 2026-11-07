@@ -94,18 +94,18 @@ __revision__ = 68  # rev 68: pin worktree Git pointers and harden host Git reade
 # (mandatory for every R2 lane from now on -- a hung mutation candidate
 # blocks the whole run otherwise, nothing else bounds ONE candidate).
 # rev 41: RG-55 wave, package P2 (the run-gate client side
-# of the cgroup-profiler integration; contract-first against
+# of the cgprofile integration; contract-first against
 # RG55-INTERFACE-CONTRACT.md, alongside P1's daemon in a separate worktree)
 # -- per-lane resource profiling: peak memory (+baseline, p90, DAMON
 # hot-set), CPU cores and memory-full stall now ride alongside duration in
 # history schema 2 (`resources`/`profile_error`/`profile_ref` per entry,
 # five new `series_stats` series -- median, never mean, same RG-27 reasoning
-# `duration_stats` already used). Precisely from native `cgpd` over the
+# `duration_stats` already used). Precisely from native `cgprofiled` over the
 # control socket (`ProfilerClient`) when reachable, or a coarser in-lane
 # `docker exec` cgroup sample (`method: "basic"`,
 # `BasicSampler`/`ResourceAccumulator`,
 # the three cgroupfs parsers ported verbatim from
-# scripts/cgroup-profiler/lib/util.py) when it is not -- never nothing,
+# cgprofile/src/cgprofile/util.py) when it is not -- never nothing,
 # short of `RUN_GATE_PROFILE=off`/`[profile] enabled = false`/a lane's own
 # `profile = false`. Live acceptance, real docker: an ephemeral lane
 # allocating >= 100 MiB measured a peak of 115523584 bytes (110.17 MiB, no
@@ -690,7 +690,7 @@ ASSAY_STALL_FLOOR_SECONDS = 2 * ASSAY_PROGRESS_HEARTBEAT_SECONDS
 # (evaluate_r1 runs there, unheartbeated; 253 s measured, so 600 s is >2x).
 POST_COMMAND_BOUND_SECONDS = 600.0
 
-# RG-55 / SPEC R-43: cgroup-profiler daemon client
+# RG-55 / SPEC R-43: cgprofile daemon client
 # (RG55-INTERFACE-CONTRACT.md, contract 1). run-gate never depends on the
 # daemon being present -- every daemon-shaped constant here governs the
 # OPTIONAL `cgprofile ctl` path; a lane still gets a "basic" (in-lane
@@ -2614,7 +2614,7 @@ def lane_environment_name(lane: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# RG-55 / SPEC R-43: cgroup-profiler daemon client + basic-path fallback
+# RG-55 / SPEC R-43: cgprofile daemon client + basic-path fallback
 # (RG55-INTERFACE-CONTRACT.md). This section is the self-contained,
 # docker-agnostic-where-possible core: the ported cgroupfs parsers,
 # ProfilerClient (talks to the optional daemon), ResourceAccumulator (pure
@@ -2635,7 +2635,7 @@ def generate_profile_token() -> str:
 
 
 def _profile_parse_int(text: str | None) -> int | None:
-    """Ported from scripts/cgroup-profiler/lib/util.py:read_int (STRING
+    """Ported from cgprofile/src/cgprofile/util.py:read_int (STRING
     variant — run-gate reads via `docker exec ... cat`, never a path
     directly). 'max' and empty read back as None (absent is never zero,
     contract Sec 1.7)."""

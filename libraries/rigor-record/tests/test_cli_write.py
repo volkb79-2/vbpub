@@ -37,7 +37,7 @@ def common(w, *extra):
 
 
 def sync(w, *extra):
-    return run("sync", "--project", "cgroup-profiler", "--tag", TAG, "--gh", str(w.gh), *common(w), *extra)
+    return run("sync", "--project", "cgprofile", "--tag", TAG, "--gh", str(w.gh), *common(w), *extra)
 
 
 def fragments(w, tmp_path, fn=None):
@@ -84,7 +84,7 @@ def test_sync_failures_exit_1(w, monkeypatch):
     code, out = sync(w, "--push")
     assert code == 1 and "HTTP 404" in out
     monkeypatch.delenv("FAKE_GH_FAIL")
-    code, out = run("sync", "--project", "cgroup-profiler", "--tag", TAG, "--gh", str(w.gh), *common(w), "--push", "--remote", "nowhere")
+    code, out = run("sync", "--project", "cgprofile", "--tag", TAG, "--gh", str(w.gh), *common(w), "--push", "--remote", "nowhere")
     assert code == 1 and "git fetch failed" in out
 
 
@@ -212,7 +212,7 @@ def publish_replacement(w):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(canonical_json(replacement))
     git(other, "add", "-A")
-    git(other, "commit", "-q", "-m", f"chore(rigor): {REPLACEMENT} synced\n\nRigor-Record: cgroup-profiler@{commit} rev=1 fragments=aaaaaaaaaaaa")
+    git(other, "commit", "-q", "-m", f"chore(rigor): {REPLACEMENT} synced\n\nRigor-Record: cgprofile@{commit} rev=1 fragments=aaaaaaaaaaaa")
     git(other, "push", "-q", "origin", "main")
     return commit
 

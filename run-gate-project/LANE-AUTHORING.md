@@ -310,7 +310,7 @@ with sqlfluff in a command lane if the project wants it.
   container capacity.
 - **Let `run-gate.footprint.json` set the budget, not a guess (RG-55).**
   Every lane kind is profiled now, bare-host included (RG-57) — a
-  bare-host lane without the cgroup-profiler daemon reachable gets a
+  bare-host lane without the cgprofile daemon reachable gets a
   coarser `os.wait4()`-based number (`method: "rusage"`, peak memory is
   that lane's own child's peak RSS, not a cgroup read, not a sum across
   children, and never borrowed from another child; `footprint`/`doctor`

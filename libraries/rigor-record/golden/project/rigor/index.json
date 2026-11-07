@@ -116,7 +116,7 @@
     "cgprofile-v2.1.0": "4444444444444444444444444444444444444444"
   },
   "latest": "cgprofile-v2.1.0",
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "schema": "urn:vbpub:rigor-index:1",
   "stable": "cgprofile-v2.0.0"
 }

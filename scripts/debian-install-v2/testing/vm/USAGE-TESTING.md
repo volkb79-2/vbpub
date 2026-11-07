@@ -394,7 +394,7 @@ DAMON off:
 VM_RUNNER=debian-install-vm-harness-REPLACE_WITH_PRINTED_FINGERPRINT
 RUNNER_ID="$(docker inspect --format '{{.Id}}' "$VM_RUNNER")"
 PROFILE_META='{"lane":"manual-geekbench-tcg","project":"debian-install-v2","worktree":"manual","commit":null,"run_gate_revision":0,"kind":"command","expected":null}'
-PROFILE_START="$(cgpctl start \
+PROFILE_START="$(cgprofilectl start \
   --target "containerid:$RUNNER_ID" --scope container --damon off \
   --interval 5.0 --meta "$PROFILE_META" --json)"
 PROFILE_SESSION="$(printf '%s' "$PROFILE_START" | python3 -c 'import json,sys; print(json.load(sys.stdin)["session"])')"
@@ -405,13 +405,13 @@ After Geekbench and the guest have stopped, finish the session and render the
 profile on the client (the report extra must be installed):
 
 ```bash
-cgpctl stop "$PROFILE_SESSION" --json
+cgprofilectl stop "$PROFILE_SESSION" --json
 PROFILE_ARTIFACTS="$REPO_ROOT/scripts/debian-install-v2/artifacts/vm-lab/cgprofile-$PROFILE_SESSION"
 mkdir -p "$PROFILE_ARTIFACTS"
-cgpctl report "$PROFILE_SESSION" --out "$PROFILE_ARTIFACTS" --md-only
+cgprofile report "$PROFILE_SESSION" --out "$PROFILE_ARTIFACTS" --md-only
 ```
 
-`cgpctl report` exports the stored session and renders it locally, so the
+`cgprofile report` exports the stored session and renders it locally, so the
 daemon never renders. Rendering HTML can need more memory than a small
 container offers; `--md-only` is the light form. Keep `report.md` beside its
 `charts/` directory so the relative chart links work.

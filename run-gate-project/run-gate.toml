@@ -76,7 +76,7 @@ cpus = "3"
 # RG-55 wave, package P2, C2: assay lanes (D-11). `selftest` above stays the
 # direct pytest and diff-coverage gate, without depending on Assay; these
 # lanes are the SECOND,
-# stricter judge, same reasoning cmru/scripts-cgroup-profiler already apply
+# stricter judge, same reasoning cmru/cgprofile already apply
 # in this repo. Judged scope is DELIBERATELY WIDER than selftest's:
 # `assay.toml`'s `source_roots = ["."]` (RW-8, run-gate-WAVE-RG55-
 # CONTROLLER-LOG.md) judges `tools/coverage_gate.py` too, not just

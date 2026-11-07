@@ -73,7 +73,6 @@ lib64/
 # needs an explicit exception here. `git add -A` reports success either way —
 # the files simply never appear.
 !scripts/damon-analysis/lib/
-!scripts/cgroup-profiler/lib/
 parts/
 sdist/
 var/

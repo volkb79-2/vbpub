@@ -127,7 +127,7 @@
       "window": "this-run"
     }
   ],
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "qualifications": {},
   "results": [
     {
@@ -140,7 +140,7 @@
       },
       "note": "declared, not judged",
       "targets": {
-        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        "cgprofile": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "toolset": "t1",
       "verdict_sha256": null

@@ -33,7 +33,7 @@ schema_version = 2
 # lane in every unrelated project. See assay/docs/CONSUMERS.md's "A
 # monorepo lane: omitting declared unsafe symlinks" for the full mechanism
 # and the maintenance obligation this list creates (identical list to
-# cmru/assay.toml and scripts/cgroup-profiler/assay.toml — same repository,
+# cmru/assay.toml and cgprofile/assay.toml — same repository,
 # same three fixtures).
 [lanes.r1]
 scope = "S1"
@@ -113,7 +113,7 @@ language = "python"
 source_roots = ["."]
 base_source = "request"
 
-# Operators and max_mutants exactly as scripts/cgroup-profiler/
+# Operators and max_mutants exactly as cgprofile/
 # assay.toml's [lanes.r2] (handoff §2 C2) — the same four python families.
 # The RG-89 tester-unified lane has one cgroup leaf, even though Assay gives
 # each mutant its own scratch snapshot and pytest basetemp. Since assay 11/12 B157,
@@ -133,7 +133,7 @@ jobs_max = 2
 # pytest finish its tests and hang at interpreter exit on the thread join
 # (0% CPU, no crash, no timeout signal of its own) -- assay has no default
 # per-candidate bound, so a single such candidate blocks the WHOLE run
-# forever (P1 hit this for real 2026-09-12 13:22Z, cgroup-profiler's own
+# forever (P1 hit this for real 2026-09-12 13:22Z, cgprofile's own
 # r2 lane; filed to assay's backlog per the cross-repo convention). 900s
 # is ~7x this lane's own measured per-candidate cost (~130s, RW-25) --
 # generous headroom for a genuinely slow candidate, still a real bound on

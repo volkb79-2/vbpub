@@ -24,7 +24,7 @@ zsh cases, when `MDT_REQUIRE_SHELLS=1` and it is absent), Node.js with npm and n
 from the digest-pinned official `node:26.x-trixie` image; pwmcp's runtime-gateway tests run `node`), Go
 (copied from the image selected by `wings-patchstack/stack.conf`; Wings' registered gate runs Go directly
 inside tester-unified instead of launching a nested toolchain container), and
-the uid-1003 identity, and the real `systemctl` client (Debian's `systemd` package: the cgroup-profiler
+the uid-1003 identity, and the real `systemctl` client (Debian's `systemd` package: the cgprofile
 placement probe `tools/gate.sh` / `lib/access.py` runs `systemctl show <slice>` inside this image against
 the host system bus, which it can reach only when the bus socket and `/run/systemd/system` are mounted;
 in a plain container it exits 1, and no systemd runs here). There is deliberately no *fake* `systemctl`:

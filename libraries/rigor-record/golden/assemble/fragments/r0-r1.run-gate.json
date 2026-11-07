@@ -120,7 +120,7 @@
       "window": "this-run"
     }
   ],
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "run_gate": {
     "version": "25.0.1",

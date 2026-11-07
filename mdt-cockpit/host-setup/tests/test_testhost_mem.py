@@ -435,11 +435,11 @@ echo "LIVE=$MDT_DED_LIVE_UNITS"
         self.assertTrue((sysdir / "docker.service.d/50-mdt-dedicated-dev.conf").exists())
 
     def test_narrowing_the_protected_list_removes_the_dropins_of_units_that_left(self) -> None:
-        _, sysdir = self.run_dropins(True, "docker.service cgpd.service")
-        self.assertTrue((sysdir / "cgpd.service.d/50-mdt-dedicated-dev.conf").exists())
+        _, sysdir = self.run_dropins(True, "docker.service cgprofiled.service")
+        self.assertTrue((sysdir / "cgprofiled.service.d/50-mdt-dedicated-dev.conf").exists())
         r, _ = self.run_dropins(True, "docker.service")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertFalse((sysdir / "cgpd.service.d").exists())
+        self.assertFalse((sysdir / "cgprofiled.service.d").exists())
         self.assertTrue((sysdir / "docker.service.d/50-mdt-dedicated-dev.conf").exists())
         r, _ = self.run_dropins(True, "")
         self.assertFalse((sysdir / "docker.service.d").exists())

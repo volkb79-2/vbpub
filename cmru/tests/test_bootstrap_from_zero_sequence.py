@@ -518,9 +518,9 @@ def test_the_guide_names_the_log_interface_and_the_exact_cgroup_inputs():
     assert "`CMRU_DOCKER_CGROUP_PARENT` or `$CGROUP_PARENT_DEV_BACKGROUND`" in flat
     # each release command pins its own image
     cgprofile = next(
-        block for block in _step_blocks(4) if "cmru release cgroup-profiler" in block
+        block for block in _step_blocks(4) if "cmru release cgprofile" in block
     )
-    assert "RUN_GATE_TESTER_UNIFIED_IMAGE=" in cgprofile.split("cmru release cgroup-profiler")[0]
+    assert "RUN_GATE_TESTER_UNIFIED_IMAGE=" in cgprofile.split("cmru release cgprofile")[0]
     assert "RUN_GATE_TESTER_CLI_EXTENDED_SHA256=" in cgprofile
 
 
@@ -629,7 +629,7 @@ def test_step_four_gives_run_gate_exactly_the_tester_inputs_its_release_tooling_
     cgprofile, run_gate = calls
     # CGProfile's release builds no tester image: it gets the image and nothing that
     # would be silently ignored.
-    assert cgprofile["argv"] == "release cgroup-profiler --set-version 1.0.0"
+    assert cgprofile["argv"] == "release cgprofile --set-version 1.0.0"
     assert cgprofile["env"] == {"RUN_GATE_TESTER_UNIFIED_IMAGE": STEP_FOUR_IMAGE}
     assert run_gate["argv"].startswith("release run-gate-project --set-version ")
     expected = {
@@ -874,7 +874,7 @@ def test_the_release_commands_follow_the_declared_graph_and_one_set_of_versions(
         releases += re.findall(r"cmru release (\S+) --set-version (\S+)", block)
     order = [project for project, _ in releases]
     versions = dict(releases)
-    assert order == ["cli-extended", "cgroup-profiler", "run-gate-project", "cmru"]
+    assert order == ["cli-extended", "cgprofile", "run-gate-project", "cmru"]
     declared = tomllib.loads((REPO_ROOT / "cmru.orchestration.toml").read_text(encoding="utf-8"))
     for index, project in enumerate(order):
         providers = declared["orchestration"]["project"][project]["depends_on"]

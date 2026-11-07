@@ -1,15 +1,15 @@
-# RG-55 interface contract — cgroup-profiler daemon ⇄ run-gate (contract 1)
+# RG-55 interface contract — cgprofile daemon ⇄ run-gate (contract 1)
 
 **Status: FROZEN 2026-09-12** by the vbpub controller (plan of record:
 `WAVE-PLAN-2026-09-12-rg55-profiling.md` §4). Both packages code against
 this file. A change after dispatch is a numbered controller ruling (RW-n in
 `reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`) delivered to BOTH
 implementers; nobody edits this file unilaterally. A verbatim copy lives at
-`scripts/cgroup-profiler/docs/RG55-INTERFACE-CONTRACT.md`. The cgroup-profiler
+`cgprofile/docs/RG55-INTERFACE-CONTRACT.md`. The cgprofile
 `test_docs.py` mirror test checks byte identity in its `r0-r1` lane; its
 `coverage-partial` lane deselects that test. Run-Gate's `selftest` also checks
-the copies byte-for-byte when the sibling cgroup-profiler docs exist in the
-monorepo layout, and skips that check when the sibling file is absent.
+the copies byte-for-byte in the monorepo layout (a monorepo without the sibling
+file fails; only a standalone Run-Gate without the monorepo skips).
 
 **Amendments:** RW-11 (2026-09-12, §4.3 basic-path file list: +`memory.max`,
 +`memory.high`, 10 → 12 files); RW-21 (2026-09-12, scope `container`:
@@ -39,13 +39,13 @@ also serves observer contract 3 (`window-open`/`window-close`,
 `docs/PROTOCOL.md` §9), which Run-Gate does not use; observer contract-1
 requests receive an explicit unsupported-contract refusal. The control
 protocol has its own contracts 1 and 2 (`docs/PROTOCOL.md` §10). The combined
-first cgroup-profiler release is 1.0.0.
+first cgprofile release is 1.0.0.
 **RW-570 (2026-10-14):** the supported Run-Gate consumer is its installed
 SemVer wheel. A copied project-local `run-gate.py` script is not supported;
 compatibility checks use the installed `run-gate --version`.
 
-Parties: **producer** = cgroup-profiler's daemon (`cgpd`) and its client
-(`cgpctl`); **consumer** = the installed Run-Gate wheel (stdlib-only
+Parties: **producer** = cgprofile's daemon (`cgprofiled`) and its client
+(`cgprofilectl`); **consumer** = the installed Run-Gate wheel (stdlib-only
 runtime), whose `ProfilerClient` sends control-protocol requests directly over
 `/run/cgprofile/control/cgprofile.sock` (§8.1), or the configured socket path,
 from any devcontainer, worktree or instance. **RG-156 (2026-11-04):** the
@@ -53,30 +53,30 @@ socket is the only carrier Run-Gate uses; its former `docker exec
 cgprofile-host-daemon cgprofile ctl <verb> [args] --json` fallback, the
 `[profile] transport` and `[profile] daemon` settings and
 `RUN_GATE_PROFILE_TRANSPORT` were removed. Run-Gate never sends `report` or
-`gc`. The `cgpctl` client remains the producer's own operator interface and
+`gc`. The `cgprofilectl` client remains the producer's own operator interface and
 reference translator of the socket protocol.
 
 ---
 
 ## 1. Transport and I/O rules
 
-1. The control protocol is newline-delimited JSON. `cgpctl` translates its
+1. The control protocol is newline-delimited JSON. `cgprofilectl` translates its
    command-line requests to this protocol; Run-Gate's stdlib-only
    `ProfilerClient` builds the same wire requests directly and connects to
    `/run/cgprofile/control/cgprofile.sock` (or the configured socket path).
    Consumers mount the corresponding control-level directory at that path.
-2. **`cgpctl` CLI output:** stdout is exactly one JSON object (UTF-8, no
+2. **`cgprofilectl` CLI output:** stdout is exactly one JSON object (UTF-8, no
    other output). stderr is free text for diagnostics.
-3. **`cgpctl` CLI exit codes:** `0` ok; `2` bad request (the JSON still carries
+3. **`cgprofilectl` CLI exit codes:** `0` ok; `2` bad request (the JSON still carries
    `"ok": false, "error": {"code": "<kebab-code>", "message": "..."}`);
    `3` daemon fault (serve loop unreachable, sysfs error). Any non-zero
-   exit, timeout, or unparsable stdout is a failed `cgpctl` invocation.
-   Run-Gate does not invoke `cgpctl`; it makes direct socket requests and
+   exit, timeout, or unparsable stdout is a failed `cgprofilectl` invocation.
+   Run-Gate does not invoke `cgprofilectl`; it makes direct socket requests and
    handles unavailable profiling as specified in §8.1 (R-04, R-36h).
 4. **Every response carries `"contract": 1`.** run-gate accepts contract
    major 1 only; a different value is "unavailable" (warning names both).
 5. **Timeouts:** `version` and `host` 5 s; `start` 10 s; `status` 5 s;
-   `stop` 30 s. Run-Gate applies these as socket timeouts; `cgpctl` applies
+   `stop` 30 s. Run-Gate applies these as socket timeouts; `cgprofilectl` applies
    them to its CLI requests. The daemon MUST answer `stop` within 30 s for a
    session of any length: the summary is maintained incrementally at sampling
    time, never recomputed from the series at stop.
@@ -86,9 +86,9 @@ reference translator of the socket protocol.
    from microseconds to seconds (`*_stall_seconds`).
 7. **Absent is never zero.** A measurement the daemon could not take is
    `null`. Counters that were read but never incremented are `0`.
-8. Names: native systemd service `cgpd.service`; reported `daemon.name`
+8. Names: native systemd service `cgprofiled.service`; reported `daemon.name`
    remains `cgprofile-host-daemon`; sessions root
-   `/var/lib/cgprofile/sessions`; deployment authority is cgroup-profiler's
+   `/var/lib/cgprofile/sessions`; deployment authority is cgprofile's
    `docs/NATIVE-DEPLOYMENT.md`; session ids `s-<YYYYMMDDTHHMMSSZ>-<4 hex>`.
 
 ## 2. Verbs
@@ -259,7 +259,7 @@ watcher (`0` when read and unchanged, `null` only when unreadable).
 
 **Golden example:** `fixtures/rg55/summary-v1.json` (next to this file and
 vendored byte-identical into `run-gate-project/tests/fixtures/rg55/` and
-`scripts/cgroup-profiler/tests/fixtures/contract/`). The daemon's tests
+`cgprofile/tests/fixtures/contract/`). The daemon's tests
 assert a fake-cgroupfs session produces exactly this shape; run-gate's
 tests assert this exact document round-trips into `history.json` schema 2
 and the `footprint` manifest.
@@ -286,7 +286,7 @@ and the `footprint` manifest.
    and `memory.high` are required so the basic path can compute
    `events.limit_drift` the same way the daemon does) under
    `/sys/fs/cgroup/`, parsed with the
-   three parsers ported verbatim from `scripts/cgroup-profiler/lib/util.py`
+   three parsers ported verbatim from `cgprofile/src/cgprofile/util.py`
    (`read_int`, `read_kv`, `read_pressure` — string variants; attributed in
    a comment). The basic summary uses the §3 key set with `method:
    "basic"`, `session: null`, `daemon: null`, `damon: null`,
@@ -360,12 +360,12 @@ enumerated in §8.3; each placement cgroup write is checked by the D-25
 whitelist and recorded. The daemon reads process metadata through the
 configured `proc_root`; numeric PID signalling is never used for enforcement.
 
-The production daemon is the native systemd service `cgpd.service`, not a
+The production daemon is the native systemd service `cgprofiled.service`, not a
 container. Its unit runs as `root`, sets `PrivateNetwork=yes` and
 `Slice=cgprofile.slice`, and permits writes through `ReadWritePaths` including
 `/sys/fs/cgroup` and `/sys/kernel/mm/damon`. The service's proc view comes
-from the `proc_root` configuration, which cgpd exports as
-`CGPROFILE_PROC_ROOT`. cgroup-profiler's `docs/NATIVE-DEPLOYMENT.md` is the
+from the `proc_root` configuration, which cgprofiled exports as
+`CGPROFILE_PROC_ROOT`. cgprofile's `docs/NATIVE-DEPLOYMENT.md` is the
 deployment authority. Run-Gate never passes `--cgroupns=host` or `--pid=host`
 to lane, gate, workload, helper, or test containers.
 
@@ -469,11 +469,11 @@ stay byte-identical.
 
 ### 8.1 Socket-only carrier (D-30)
 
-The `cgpd` serve loop speaks newline-delimited JSON, one request per
+The `cgprofiled` serve loop speaks newline-delimited JSON, one request per
 connection, on `/run/cgprofile/control/cgprofile.sock`. Its systemd socket
 unit creates a `root:root` level directory with mode `0755` and a
 `root:<configured dedicated control group>` socket with mode `0660`, then
-passes one descriptor named `control` to `cgpd`. The default control group is
+passes one descriptor named `control` to `cgprofiled`. The default control group is
 `cgprofile-control`; the observer has its own socket unit, dedicated group,
 level directory and `observer` descriptor. These level groups are distinct,
 and neither may be the Docker group or use its GID. Consumers mount only the
@@ -488,7 +488,7 @@ Rules: (1) the control and observer levels are separate endpoints; the
 control endpoint accepts daemon control verbs and the observer endpoint
 accepts only read-only observer requests; (2) `args` are the long-option
 names without dashes (`scope`, `token`, `damon`, `interval`, `meta` as a JSON
-object not a string, `place`, `memory_high`, …); `cgpctl` is the reference translator;
+object not a string, `place`, `memory_high`, …); `cgprofilectl` is the reference translator;
 (2a) on `start`, omitting `damon` selects the daemon's configured
 `damon_default`; if the key is present its value must be `on` or `off`, and
 `null` is refused with `bad-argument`;
@@ -670,7 +670,7 @@ native-R2 listener: `{"contract": 2, "contracts": [2, 3],
 Its contract numbers are independent of the control protocol's contract
 number; `listening` reflects whether the observer socket was bound
 successfully. Control contract 2 adds `export`, `config`, `config-set`, and
-`config-reset`, removes `report`, and is specified in cgroup-profiler's
+`config-reset`, removes `report`, and is specified in cgprofile's
 `docs/PROTOCOL.md` section 10.
 
 ### 8.7 Summary additions (schema 1, optional keys)

@@ -34,7 +34,7 @@ The checked-in level view must match the graph:
 
 ```project-order
 L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
-L1: tnt, cgroup-profiler, ciu, topos, nyxloom, pwmcp, iobench, rigor-record
+L1: tnt, cgprofile, ciu, topos, nyxloom, pwmcp, iobench, rigor-record
 L2: run-gate-project
 L3: cmru
 L4: mdt-cockpit
@@ -325,7 +325,7 @@ supplies the whole-source line-and-branch qualification.
 
    ```bash
    RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:cli-extended-released)" \
-     cmru release cgroup-profiler --set-version 1.0.0
+     cmru release cgprofile --set-version 1.0.0
    run_gate_tester_env=(
      RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie
      RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE="${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}"

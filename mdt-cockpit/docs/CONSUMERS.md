@@ -81,7 +81,7 @@ sudo ./host-setup/install.sh --wizard
 sudo mdt-host-check.sh
 ```
 
-mdt defaults to disabling `DAMON_STAT` so the cgroup-profiler daemon can use the DAMON sysfs
+mdt defaults to disabling `DAMON_STAT` so the cgprofile daemon can use the DAMON sysfs
 interface: `DAMON_STAT_DISABLE_DEFAULT="yes"` in the example, also without the wizard.
 The wizard asks for `DAMON_STAT_DISABLE_DEFAULT=yes|no`. Enter accepts the
 default `yes`: MDT writes `N` to the kernel's
@@ -171,9 +171,9 @@ this command when provisioning is missing. It also refuses if
 [host-escape consumer guidance](#host-commands-from-an-mdt-devcontainer)
 shows how to run host commands from the cockpit. Deploy the daemon with
 `sudo ./install.sh --cgprofile-only` (or the full install) once `CGPROFILE_ENABLE=1` and the wheel pins are set in
-`/etc/mdt/host-setup.env`: host-setup installs and pins the released cgprofile wheel as the native `cgpd.service`
+`/etc/mdt/host-setup.env`: host-setup installs and pins the released cgprofile wheel as the native `cgprofiled.service`
 (MDT-055; the host-setup README "Install, pin and upgrade the cgprofile service" has the keys, the drain and the
-checks). The cockpit image carries the `cgpctl` client wheel (MDT-048) and nothing of the daemon's `report` extra.
+checks). The cockpit image carries the `cgprofile` wheel's clients (`cgprofile`, `cgprofilectl`; MDT-048) and nothing of the daemon's `report` extra.
 
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount

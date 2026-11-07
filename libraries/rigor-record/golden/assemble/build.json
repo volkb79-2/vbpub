@@ -14,7 +14,7 @@
   "build_id": "20261104T180000Z_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "kind": "cmru-local-build",
   "logs": [],
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "publication": "eligible",
   "schema_version": 1,
   "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

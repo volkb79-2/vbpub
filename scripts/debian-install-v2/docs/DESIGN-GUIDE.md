@@ -338,7 +338,7 @@ comparable: changing workload duration can change the measured metric.
 
 Preserve cgprofile's Markdown report beside its `charts/` directory and raw
 samples. In this host setup, HTML rendering was killed with exit 137 under
-a small container memory limit, while `cgpctl report --md-only` succeeded;
+a small container memory limit, while `cgprofile report --md-only` succeeded;
 the daemon never renders. The usage guide gives the render sequence.
 
 The free Linux binary automatically uploads to Geekbench Browser and, in our

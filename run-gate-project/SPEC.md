@@ -993,7 +993,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   shared-infra rules only — naming WHY when the cause is a PRIVATE cgroup
   namespace (RG-55/C7, rev 10: `/proc/self/cgroup` reading exactly `0::/`,
   the devcontainer/CI default) rather than a wrong `$RUN_GATE_CGROUPFS_ROOT`:
-  host-side slice truth is then reachable ONLY through the cgroup-profiler
+  host-side slice truth is then reachable ONLY through the cgprofile
   daemon, `doctor`'s own "profiler" check (`R-30c`) being exactly that path.
   This counts EVERYTHING in the slice (kernel truth), so no cross-process
   bookkeeping can drift. **CPU half (RG-48):** `resources.cpus` (lane, or
@@ -2290,7 +2290,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   for correctness, not required.
 
 - `R-43` **Per-lane resource profiling (RG-55/RG-57), against the
-  cgroup-profiler daemon contract (`RG55-INTERFACE-CONTRACT.md`, contract
+  cgprofile daemon contract (`RG55-INTERFACE-CONTRACT.md`, contract
   1).** run-gate NEVER depends on the daemon being present: every lane
   still gets a profile — "daemon" (precise, DAMON hot-set included) when
   the daemon answers, "basic" (in-lane cgroup sampling, container/exec
@@ -2338,7 +2338,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     implementations agree, because `events.limit_drift` and the golden
     basic-path fixture both require them; flagged as a contract-text drift,
     not a behavior one). Parsed with three string parsers PORTED from
-    `scripts/cgroup-profiler/lib/util.py` (`read_int`, `read_kv`,
+    `cgprofile/src/cgprofile/util.py` (`read_int`, `read_kv`,
     `read_pressure`, attributed in a comment). `method: "basic"`,
     `session`/`daemon`/`damon`/`host.slice`/`target.targets_seen` all
     `null` — the fields ONLY the daemon can fill; host PSI comes from

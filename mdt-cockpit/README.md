@@ -168,7 +168,7 @@ and `isort`, so neither is installed.
 > repo's AI instruction files.
 
 Debian packages come from [`apt/packages.list`](apt/packages.list); first-party wheels
-(`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, and `cgprofile`, the `cgpctl` client without its `report` extra) are staged from their GitHub releases into
+(`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, and `cgprofile`, the `cgprofile` and `cgprofilectl` clients without the `report` extra) are staged from their GitHub releases into
 [`pip/`](pip/). Their runtime dependencies are deliberately installed in the primary
 toolkit before the wheel layer, because that layer uses `pip --no-index`; the
 `rich>=15.0.0` and `pygments>=2.21.0` floors in `requirements/toolkit.txt` are part of
@@ -532,7 +532,7 @@ sudo mdt-host-check.sh
 ```
 
 On a host that already has `/run/cgprofile` configured, provision only
-cgroup-profiler's read-only resource-observer directory with
+cgprofile's read-only resource-observer directory with
 `sudo host-setup/install.sh --observer-only`. It creates the dedicated
 `cgprofile-observer` group and applies `/run/cgprofile/observer` permissions;
 the host checker verifies the group is distinct from `docker`, the directory
