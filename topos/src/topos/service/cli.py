@@ -117,7 +117,7 @@ def _config_check(args: argparse.Namespace, runtime: CliRuntime) -> int:
 
     cfg = _config_or_refuse(args.config)
     # The GID checks run where the group exists (plan 3.2): a root-equivalent group is
-    # an error here, so `toposd -t` as an ExecStartPre stops a start that would expose it.
+    # an error here, as it is for `toposd install` and the doctor `groups` check.
     group = cfg.sockets.observe.group
     gid = _group_gid(group)
     reason = None if gid is None else unsafe_group_reason(gid)

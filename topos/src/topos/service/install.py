@@ -161,7 +161,8 @@ def _validate_users(users: Sequence[str], forgotten: list[str] | None = None) ->
         except KeyError:
             if forgotten is None:
                 raise InstallError(f"user {user!r} does not exist") from None
-            forgotten.append(user)
+            if user not in forgotten:
+                forgotten.append(user)
             continue
         if user not in result:
             result.append(user)

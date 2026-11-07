@@ -478,6 +478,15 @@ def test_a_deleted_recorded_user_is_forgotten_not_fatal_but_a_flag_user_must_exi
     with pytest.raises(InstallError, match="user 'ghost' does not exist"):
         subject.install(bad, _runtime(yes=True))
 
+    # Only a deleted user is forgiven: a damaged name in the record is still an error, and a
+    # user listed twice is reported once.
+    Path(paths.install_record).write_text('observe_users = ["ghost", "ghost"]\n', encoding="utf-8")
+    plain, _wheels = _install_args(add_user=None)
+    assert subject.install(plain, _runtime(dry_run=True))["users_forgotten"] == ["ghost"]
+    Path(paths.install_record).write_text('observe_users = ["Bad User"]\n', encoding="utf-8")
+    with pytest.raises(InstallError, match="not a usable Unix user name"):
+        subject.install(plain, _runtime(dry_run=True))
+
 
 def test_a_group_with_the_docker_gid_typed_at_the_prompt_is_refused(tmp_path: Path, monkeypatch) -> None:
     class Prompts:
