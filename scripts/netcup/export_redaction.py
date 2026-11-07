@@ -343,13 +343,10 @@ def _is_marker_at(line, index):
 
 
 def _stem_leaks(line):
-    option_spans = [match.span() for match in re.finditer(r"(?<!\S)--[\w-]+", line)]
-    option_index = 0
-    for found in _STEM_SCAN.finditer(line):
-        index = found.end()
-        # rest of the identifier (db_password_file), optional closing quote
-        while index < len(line) and (line[index].isalnum() or line[index] in "_.-"):
-            index += 1
+    for token in re.finditer(r"[A-Za-z0-9_.-]+", line):
+        if not _STEM_SCAN.search(token.group()):
+            continue
+        index = token.end()
         if index < len(line) and line[index] in "\"'":
             index += 1
         spaces_end = index
@@ -364,13 +361,11 @@ def _stem_leaks(line):
             continue
         # option / bearer forms: whitespace then a value
         if spaces_end > index and spaces_end < len(line):
-            word = found.group().lower()
-            while option_index < len(option_spans) and option_spans[option_index][1] <= found.start():
-                option_index += 1
-            optionish = (
-                option_index < len(option_spans)
-                and option_spans[option_index][0] <= found.start() < option_spans[option_index][1]
-            ) or word == "bearer"
+            word = token.group().lower()
+            optionish = word.startswith("--") and (
+                token.start() == 0 or line[token.start() - 1].isspace()
+            )
+            optionish = optionish or word == "bearer"
             if optionish and line[spaces_end] != "-" and not _is_marker_at(line, spaces_end):
                 return True
     return False

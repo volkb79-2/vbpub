@@ -94,6 +94,20 @@ def test_export_uses_a_real_ssh_timeout_and_reports_timeout_by_name(tmp_path, mo
     assert not (tmp_path / "v1001" / "pre-reinstall-20261107").exists()
 
 
+def test_file_cap_override_cannot_exceed_the_redaction_budget(tmp_path):
+    exporter = _load_exporter()
+    too_large = exporter.export_redaction.MAX_REDACTION_FILE_BYTES + 1
+    with pytest.raises(ValueError, match="cannot exceed.*redaction limit"):
+        exporter.remote_collector("v1001", max_file_bytes=too_large)
+    calls = []
+    with pytest.raises(ValueError, match="cannot exceed.*redaction limit"):
+        exporter.export_snapshot(
+            "v1001", "20261107", root=tmp_path, runner=lambda *a, **k: calls.append(a),
+            max_file_bytes=too_large,
+        )
+    assert calls == []
+
+
 def test_export_redacts_sensitive_values_and_hashes_every_exported_data_file(tmp_path):
     exporter = _load_exporter()
     data = _archive({
@@ -405,6 +419,20 @@ def test_collector_skips_a_fifo_instead_of_hanging_forever(tmp_path):
     assert "iogovmon/state/ok.txt" in names
     assert "iogovmon/state/pipe" not in names
     assert "skipped non-regular file: /var/lib/iogovmon/pipe" in notes
+
+
+def test_collector_skips_and_lists_a_line_over_the_redaction_cap(tmp_path):
+    def populate(root):
+        directory = root / "var/lib/vbpub/bootstrap"
+        directory.mkdir(parents=True)
+        (directory / "single-line.env").write_bytes(b"A" * (1024 * 1024))
+
+    names, _files, notes = _run_collector(tmp_path, populate)
+    assert not any(name.endswith("single-line.env") for name in names)
+    assert (
+        "skipped binary, sensitive or unredactable file: /var/lib/vbpub/bootstrap/single-line.env "
+        "(line exceeds the 65536-byte redaction limit"
+    ) in notes
 
 
 def test_collector_skips_sockets_and_symlinked_files_and_directories(tmp_path):

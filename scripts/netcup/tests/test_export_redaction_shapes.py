@@ -227,6 +227,55 @@ def test_total_file_budget_rejects_many_short_lines_before_scanning(monkeypatch)
         redaction.redact_bytes("etc/example/many-lines.txt", content)
 
 
+def test_second_pass_uses_one_stem_lookup_for_a_long_identifier(monkeypatch):
+    original = redaction._STEM_SCAN
+
+    class CountedStemScan:
+        steps = 0
+
+        def search(self, value):
+            self.steps += 1
+            return original.search(value)
+
+        def finditer(self, value):
+            for match in original.finditer(value):
+                self.steps += 1
+                if self.steps > 2:
+                    pytest.fail("second pass revisited sensitive stems in one identifier")
+                yield match
+
+    counted = CountedStemScan()
+    monkeypatch.setattr(redaction, "_STEM_SCAN", counted)
+    text = "token_" * 10000 + "\n"
+    assert len(text.encode()) < redaction.MAX_REDACTION_LINE_BYTES
+    assert not redaction.has_unredacted(text)
+    assert counted.steps <= 2
+
+
+def test_incomplete_pem_headers_are_scanned_once_per_file_line(monkeypatch):
+    class CountedPattern:
+        def __init__(self, pattern):
+            self.pattern = pattern
+            self.calls = 0
+
+        def search(self, text, position=0):
+            self.calls += 1
+            return self.pattern.search(text, position)
+
+    start = CountedPattern(redaction.PRIVATE_KEY_RE)
+    end = CountedPattern(redaction.PRIVATE_KEY_END_RE)
+    monkeypatch.setattr(redaction, "PRIVATE_KEY_RE", start)
+    monkeypatch.setattr(redaction, "PRIVATE_KEY_END_RE", end)
+    header = b"-----BEGIN PRIVATE KEY-----\n"
+    content = header * (redaction.MAX_REDACTION_FILE_BYTES // len(header))
+    line_count = len(content.splitlines())
+
+    with pytest.raises(ValueError, match="unredacted"):
+        redaction.redact_bytes("etc/example/incomplete.pem", content)
+    assert start.calls == 1
+    assert end.calls <= line_count
+
+
 def test_unredactable_content_is_refused_not_exported(monkeypatch):
     monkeypatch.setattr(redaction, "redact_text", lambda text: text)
     with pytest.raises(ValueError, match="unredacted"):
