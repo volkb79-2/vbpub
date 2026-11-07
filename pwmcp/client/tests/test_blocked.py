@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 from blocked_support import LONG_FILLER, load_page
 
@@ -170,3 +172,54 @@ def test_weak_text_with_a_blocking_status_or_a_near_empty_page_is_a_block(status
     assert verdict.provider == "Generic CAPTCHA" and "text:'Are you a robot'" in verdict.signals
     near = blocked.detect(status=200, headers={}, title="x", text="Protected by DataDome")
     assert near.provider == "DataDome"
+
+
+def test_block_verdict_cannot_be_mutated() -> None:
+    verdict = blocked.BlockVerdict("Cloudflare", "block", ("status:403",))
+    with pytest.raises(FrozenInstanceError):
+        verdict.provider = "Generic CAPTCHA"  # type: ignore[misc]
+
+
+def test_signal_at_the_clip_limit_is_preserved_in_full() -> None:
+    title = "Just a moment" + "x" * (blocked.MAX_SIGNAL_TEXT - len("Just a moment"))
+    assert len(title) == blocked.MAX_SIGNAL_TEXT
+    verdict = blocked.detect(status=200, headers={}, title=title, text="")
+    assert verdict is not None
+    assert verdict.signals == (f"title:{title!r}",)
+
+
+def test_cf_mitigated_challenge_header_is_definitive_by_itself() -> None:
+    verdict = blocked.detect(status=200, headers={"cf-mitigated": "challenge"}, title="", text="")
+    assert verdict is not None
+    assert (verdict.provider, verdict.kind, verdict.signals) == (
+        "Cloudflare", "managed challenge", ("header:cf-mitigated=challenge",)
+    )
+
+
+def test_definitive_text_at_the_character_limit_still_counts() -> None:
+    marker = "Performing security verification"
+    text = marker + "x" * (blocked.MAX_CHALLENGE_TEXT - len(marker))
+    assert len(text) == blocked.MAX_CHALLENGE_TEXT
+    verdict = blocked.detect(status=200, headers={}, title="", text=text)
+    assert verdict is not None and verdict.provider == "Cloudflare"
+    assert "text:'Performing security verification'" in verdict.signals
+
+
+def test_frame_on_a_page_at_the_near_empty_limit_still_counts() -> None:
+    text = "x" * blocked.NEAR_EMPTY_TEXT
+    verdict = blocked.detect(
+        status=200, headers={}, title="", text=text, frames=["https://hcaptcha.com/widget"]
+    )
+    assert verdict is not None
+    assert verdict.signals == ("frame:hcaptcha.com",)
+
+
+def test_named_provider_outranks_generic_when_both_hits_are_non_definitive() -> None:
+    verdict = blocked.detect(
+        status=403,
+        headers={"server": "cloudflare"},
+        title="",
+        text="Please verify you are human",
+    )
+    assert verdict is not None
+    assert verdict.provider == "Cloudflare"
