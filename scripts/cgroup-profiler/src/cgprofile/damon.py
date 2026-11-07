@@ -181,38 +181,6 @@ class _DamonRegistryLock:
         self.release()
 
 
-def prepare_registry_lock_file() -> str:
-    """Create/validate the shared file before a helper bind-mounts it.
-
-    The lock file lives in the root-only `/run/cgprofile/state` directory,
-    which systemd creates for `cgpd.service` (mode 0700), so only the daemon
-    side calls this. The helper binds only this file, not a daemon socket.
-    """
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(DAMON_REGISTRY_LOCK_PATH, flags, 0o660)
-    except OSError as exc:
-        raise DamonSessionError(
-            f"cannot prepare shared DAMON lock {DAMON_REGISTRY_LOCK_PATH}: {exc}"
-        ) from exc
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise DamonSessionError(
-                f"shared DAMON lock is not a regular file: {DAMON_REGISTRY_LOCK_PATH}"
-            )
-        _set_registry_lock_permissions(fd, DAMON_REGISTRY_LOCK_PATH)
-    except DamonSessionError:
-        raise
-    except OSError as exc:
-        raise DamonSessionError(
-            f"cannot prepare shared DAMON lock {DAMON_REGISTRY_LOCK_PATH}: {exc}"
-        ) from exc
-    finally:
-        os.close(fd)
-    return DAMON_REGISTRY_LOCK_PATH
-
-
 def _set_registry_lock_permissions(fd: int, path: str) -> None:
     """Make the shared file usable by the host daemon and docker-group caller.
 
