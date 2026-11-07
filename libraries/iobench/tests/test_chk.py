@@ -90,27 +90,57 @@ def test_res_03_identity_validity(world):
     host, _ = world
     base = do_check(host)
     assert base.state in ("current", "current_unproven")
-    cases = {
+    # IOB-CEI-06: the partition that was measured is no part of the identity, the disk it was on is
+    partition = {
         "partuuid": lambda h: setattr(h.devices["/dev/vda7"], "partuuid", "00000000-0000-0000-0000-0000deadbeef"),
         "size": lambda h: (setattr(h.devices["/dev/vda7"], "size", h.devices["/dev/vda7"].size + 1048576),
                            h.put("/sys/dev/block/254:7/size", f"{h.devices['/dev/vda7'].size // 512}\n")),
     }
-    for name, flip in cases.items():
+    for name, flip in partition.items():
         h = fresh_copy(host)
         flip(h)
         c = do_check(h)
-        assert c.state == "stale" and c.exit_code == 3, name
-    # a vanished device is a changed identity, not an unreadable result
+        assert c.state in ("current", "current_unproven") and "target_changed" in c.warnings, name
+    # a deleted (or formatted, marker-less) partition is still current: the disk is found by its size and model alone
     gone = fresh_copy(host)
     del gone.devices["/dev/vda7"]
     gone.symlinks.pop("/sys/dev/block/254:7", None)
-    assert do_check(gone).state == "stale"
+    c = do_check(gone)
+    assert c.state in ("current", "current_unproven") and "target_changed" in c.warnings and c.exit_code in (0, 7)
+    # a changed or a vanished DISK is stale (3)
+    disk = {
+        "resized disk": lambda h: h.put("/sys/devices/pci0/block/vda/size", f"{(500 << 30) // 512 + 2048}\n"),
+        "disk of another host": lambda h: h.put("/etc/machine-id", "ffffffffffffffffffffffffffffffff\n"),
+    }
+    for name, flip in disk.items():
+        for partition_gone in (False, True):  # with the target still there, and found by the disk alone
+            h = fresh_copy(host)
+            flip(h)
+            if partition_gone:
+                del h.devices["/dev/vda7"]
+            c = do_check(h)
+            assert (c.state, c.exit_code) == ("stale", 3), (name, partition_gone)
+    # a weak scope cannot prove that a disk which reports a new serial is still the same disk
+    gained = fresh_copy(host)
+    gained.put("/sys/devices/pci0/block/vda/device/serial", "SER-B\n")
+    assert (do_check(gained).state, do_check(gained).exit_code) == ("stale", 3)
+    # ... and the disk is gone when nothing on the host has its size and model
+    vanished = fresh_copy(host)
+    del vanished.devices["/dev/vda7"]
+    vanished.symlinks.pop("/sys/block/vda")
+    assert (do_check(vanished).state, do_check(vanished).exit_code) == ("stale", 3)
     # the strict model/serial/wwn fields count only when non-null in the stored record
     strict = fresh_copy(host)
     doc = read_json(strict, f"{STATE}/result.json")
-    doc["identity"]["disk"]["serial"] = "SER-A"
+    doc["identity"]["disk_scope"]["serial"] = "SER-A"
     strict.put(f"{STATE}/result.json", json.dumps(doc))
     assert do_check(strict).state == "stale"  # the live disk reports no serial
+    # a record from before the disk scope cannot be shown to describe this disk
+    legacy = fresh_copy(host)
+    doc = read_json(legacy, f"{STATE}/result.json")
+    del doc["identity"]["disk_scope"]
+    legacy.put(f"{STATE}/result.json", json.dumps(doc))
+    assert do_check(legacy).state == "stale"
     # advisory fields only warn
     adv = fresh_copy(host)
     adv.put("/proc/sys/kernel/osrelease", "7.3.1\n")
@@ -167,7 +197,7 @@ def test_chk_01_exit_codes(world):
     assert do_check(h, sections=("caps",)).state == "current" and do_check(h, sections=("iocost_model",)).exit_code == 7
     # stale (3)
     s = fresh_copy(host)
-    s.devices["/dev/vda7"].partuuid = "x"
+    s.put("/sys/devices/pci0/block/vda/size", f"{(500 << 30) // 512 + 2048}\n")  # the disk was resized: a changed partuuid alone is not stale
     assert do_check(s).exit_code == 3
     # exit 5: corrupt, schema_unsupported, unreadable, calibration_missing
     k = fresh_copy(host)
@@ -245,7 +275,7 @@ def test_chk_02_show_is_read_only_and_exact(world):
             res.show(empty, STATE, what, now=empty.now())
         assert err.value.reason == "absent"
     stale = fresh_copy(host)
-    stale.devices["/dev/vda7"].partuuid = "x"
+    stale.put("/sys/devices/pci0/block/vda/size", f"{(500 << 30) // 512 + 2048}\n")
     assert res.show(stale, STATE, "proposals", now=stale.now())["stale"] is True
     bad = fresh_copy(host)
     bad.put(f"{STATE}/result.json", "{ nope")

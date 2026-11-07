@@ -75,6 +75,20 @@ def test_selector_resolution_is_shared_and_exact():
         deploy.select_service(identities, "work")
 
 
+@pytest.mark.parametrize("selector", ["", None, 7, "tools/runner:", ":"])
+def test_selector_grammar_refuses_empty_and_malformed_selectors(selector):
+    with pytest.raises(ValueError, match=r"\[S18\] service selector must be"):
+        deploy.split_service_selector(selector)
+
+
+def test_service_selection_refuses_no_stack_and_more_than_one_stack():
+    with pytest.raises(ValueError, match="selected stack has no rendered services"):
+        deploy.select_service({}, "worker")
+    two_stacks = {"tools/a": {"worker": {}}, "tools/b": {"worker": {}}}
+    with pytest.raises(ValueError, match="resolved more than one stack"):
+        deploy.select_service(two_stacks, "worker")
+
+
 def test_run_name_and_label_validation_preserves_label_values():
     assert oneshot.validate_container_name("run-1_test") == "run-1_test"
     assert oneshot.parse_run_label("run-gate.note=value with spaces=kept") == (

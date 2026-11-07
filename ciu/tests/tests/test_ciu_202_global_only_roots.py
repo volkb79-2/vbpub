@@ -500,3 +500,99 @@ def test_root_has_cleanable_stack_counts_the_marker_names_from_config_constants(
         _touch(root, f"s/{marker}")
         assert deploy._root_has_cleanable_stack(root) is True
 
+
+def test_root_has_cleanable_stack_surfaces_an_unreadable_root(tmp_path):
+    # An enumeration failure must not read as "no stacks": that would turn an
+    # unreadable root into a successful no-op clean.
+    with pytest.raises(OSError):
+        deploy._root_has_cleanable_stack(tmp_path / "does-not-exist")
+
+
+# --- global-only vanilla clean: network verdict branches ---
+
+def _global_only_with_networks(tmp_path, monkeypatch, *, targets, keeps, errors):
+    """A root holding one vanilla-reset file and a scripted network verdict."""
+    root = tmp_path / "root"
+    root.mkdir()
+    marker = root / "ciu.instance.generated.toml"
+    marker.write_text("x\n", encoding="utf-8")
+    monkeypatch.setattr(
+        deploy, "_clean_network_targets",
+        lambda *_a, **_k: (list(targets), dict(keeps), list(errors), ""),
+    )
+    return root, marker
+
+
+def test_global_only_vanilla_plan_lists_kept_networks_and_reports_plan_errors(
+    monkeypatch, tmp_path, capsys,
+):
+    root, marker = _global_only_with_networks(
+        tmp_path, monkeypatch, targets=["gone-net"],
+        keeps={"kept-net": "attached devcontainer"}, errors=["enumeration broke"],
+    )
+    assert deploy._clean_global_only_root(root, {}, vanilla=True, plan_only=True) == 1
+    out = capsys.readouterr().out
+    assert "networks to remove (1): gone-net" in out
+    assert "NOT touching network kept-net: attached devcontainer" in out
+    assert "[ERROR] plan: enumeration broke" in out
+    assert marker.exists()
+
+
+def test_global_only_vanilla_clean_fails_and_keeps_files_on_enumeration_errors(
+    monkeypatch, tmp_path, capsys,
+):
+    root, marker = _global_only_with_networks(
+        tmp_path, monkeypatch, targets=[], keeps={}, errors=["enumeration broke"],
+    )
+    monkeypatch.setattr(deploy, "_remove_identity_networks", lambda _nets: ([], []))
+    assert deploy._clean_global_only_root(root, {}, vanilla=True, plan_only=False) == 1
+    out = capsys.readouterr().out
+    assert "[ERROR] enumeration broke" in out
+    assert "--vanilla skipped" in out
+    assert "clean completed with errors" in out
+    assert marker.exists()
+
+
+def test_global_only_vanilla_clean_reports_only_kept_networks_that_exist(
+    monkeypatch, tmp_path, capsys,
+):
+    root, marker = _global_only_with_networks(
+        tmp_path, monkeypatch, targets=[],
+        keeps={"kept-here": "reason one", "kept-away": "reason two", "kept-odd": "reason three"},
+        errors=[],
+    )
+    monkeypatch.setattr(deploy, "_remove_identity_networks", lambda _nets: ([], []))
+
+    def exists(net):
+        if net == "kept-odd":
+            raise ValueError("bad name")
+        return net == "kept-here"
+
+    monkeypatch.setattr(deploy, "_network_exists", exists)
+    assert deploy._clean_global_only_root(root, {}, vanilla=True, plan_only=False) == 0
+    out = capsys.readouterr().out
+    assert "kept: kept-here (reason one)" in out
+    assert "kept: kept-away" not in out
+    assert "[WARN] kept-network check failed for 'kept-odd': bad name" in out
+    assert not marker.exists()  # the teardown completed, so the files went
+
+
+def test_global_only_vanilla_clean_fails_when_a_target_network_cannot_be_verified(
+    monkeypatch, tmp_path, capsys,
+):
+    root, marker = _global_only_with_networks(
+        tmp_path, monkeypatch, targets=["odd-net"], keeps={}, errors=[],
+    )
+    monkeypatch.setattr(deploy, "_remove_identity_networks", lambda _nets: ([], []))
+
+    def exists(net):
+        raise ValueError("cannot ask docker")
+
+    monkeypatch.setattr(deploy, "_network_exists", exists)
+    assert deploy._clean_global_only_root(root, {}, vanilla=True, plan_only=False) == 1
+    out = capsys.readouterr().out
+    assert "post-clean invariant unverifiable (S6.4a): network 'odd-net'" in out
+    assert "cannot ask docker" in out
+    assert "--vanilla skipped" in out
+    assert marker.exists()
+
