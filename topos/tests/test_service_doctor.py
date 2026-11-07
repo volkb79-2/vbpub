@@ -113,12 +113,12 @@ def test_units_current_compares_all_four_resources(tmp_path: Path, monkeypatch) 
 
 def test_groups_check_only_requires_the_configured_group(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
-    _config(paths, "docker")
-    _group(monkeypatch, {"docker": 991})
+    _config(paths, "ops")
+    _group(monkeypatch, {"ops": 991})
     assert doctor._check_groups(_runtime(), _args(tmp_path)).status == "ok"
     _group(monkeypatch, {})
     result = doctor._check_groups(_runtime(), _args(tmp_path))
-    assert result.status == "fail" and "docker" in result.remedy
+    assert result.status == "fail" and "ops" in result.remedy
 
 
 def test_socket_units_check_enabled_and_active(monkeypatch) -> None:
@@ -141,33 +141,33 @@ def test_expected_socket_problem_checks_socket_group_owner_and_mode(monkeypatch)
     path = "/fake/run/topos/observe/topos.sock"
     details = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=991)
     monkeypatch.setattr(doctor.os, "lstat", lambda _path: details)
-    _group(monkeypatch, {"docker": 991})
-    assert doctor._expected_socket_problem(path, "docker", "0660") is None
+    _group(monkeypatch, {"ops": 991})
+    assert doctor._expected_socket_problem(path, "ops", "0660") is None
     details.st_mode = stat.S_IFREG | 0o660
-    assert "not a socket" in doctor._expected_socket_problem(path, "docker", "0660")
+    assert "not a socket" in doctor._expected_socket_problem(path, "ops", "0660")
     details.st_mode = stat.S_IFSOCK | 0o600
-    assert "expected root:docker 0660" in doctor._expected_socket_problem(path, "docker", "0660")
+    assert "expected root:ops 0660" in doctor._expected_socket_problem(path, "ops", "0660")
     details.st_mode = stat.S_IFSOCK | 0o660
     details.st_uid = 3
-    assert "expected root:docker 0660" in doctor._expected_socket_problem(path, "docker", "0660")
+    assert "expected root:ops 0660" in doctor._expected_socket_problem(path, "ops", "0660")
     details.st_uid = 0
     details.st_gid = 3
-    assert "expected root:docker 0660" in doctor._expected_socket_problem(path, "docker", "0660")
+    assert "expected root:ops 0660" in doctor._expected_socket_problem(path, "ops", "0660")
     _group(monkeypatch, {})
-    assert "group docker does not exist" in doctor._expected_socket_problem(path, "docker", "0660")
+    assert "group ops does not exist" in doctor._expected_socket_problem(path, "ops", "0660")
     monkeypatch.setattr(
         doctor.os, "lstat", lambda _path: (_ for _ in ()).throw(FileNotFoundError(2, "No such file or directory"))
     )
-    assert "No such file" in doctor._expected_socket_problem(path, "docker", "0660")
+    assert "No such file" in doctor._expected_socket_problem(path, "ops", "0660")
     monkeypatch.setattr(doctor.os, "lstat", lambda _path: (_ for _ in ()).throw(PermissionError(13, "denied")))
     with pytest.raises(PermissionError):
-        doctor._expected_socket_problem(path, "docker", "0660")
+        doctor._expected_socket_problem(path, "ops", "0660")
 
 
 def test_socket_nodes_check_uses_configured_observe_group_and_mode(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
-    _config(paths, "docker")
-    _group(monkeypatch, {"docker": 991})
+    _config(paths, "ops")
+    _group(monkeypatch, {"ops": 991})
     good = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=991)
     monkeypatch.setattr(doctor.os, "lstat", lambda _path: good)
     assert doctor._check_socket_nodes(_runtime(), _args(tmp_path)).status == "ok"
@@ -292,8 +292,8 @@ def test_foreign_rules_reuse_p11_and_skip_unreadable_nonroot(tmp_path: Path, mon
 
 def test_caller_access_reports_root_nonmember_member_and_missing_group(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
-    _config(paths, "docker")
-    _group(monkeypatch, {"docker": 991})
+    _config(paths, "ops")
+    _group(monkeypatch, {"ops": 991})
     monkeypatch.setattr(doctor.os, "geteuid", lambda: 0)
     assert doctor._check_caller_access(_runtime(), _args(tmp_path)).status == "ok"
     monkeypatch.setattr(doctor.os, "geteuid", lambda: 1000)

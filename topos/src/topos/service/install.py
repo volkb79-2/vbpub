@@ -664,6 +664,11 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     group = _resolve_group(args, record, runtime, _existing_config_group(paths))
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", group):
         raise InstallError(f"not a usable observe group name: {group!r}")
+    if group == "docker":
+        raise InstallError(
+            "the observe group must not be docker (membership is root-equivalent); "
+            f"use {DEFAULT_OBSERVE_GROUP} and add the users with --observe-users"
+        )
     if _group_gid(group) is None and group != DEFAULT_OBSERVE_GROUP:
         raise InstallError(f"mapped observe group {group!r} does not exist")
 
@@ -1522,7 +1527,7 @@ def register_install(registry: CliRegistry) -> None:
         OptionSpec(("--daemon-lock",), "topos daemon lock pin in the same form", group="WHEELS", metavar="PIN"),
         OptionSpec(("--wheel-source",), "HTTPS release base or directory containing pinned assets and dependency wheels",
                    group="WHEELS", metavar="SOURCE"),
-        OptionSpec(("--observe-group",), "create topos-observe or map observe access to an existing group",
+        OptionSpec(("--observe-group",), "create topos-observe or map observe access to an existing group (never docker)",
                    group="ACCESS", metavar="GROUP"),
         OptionSpec(("--observe-users",), "comma-separated existing users to add to the observe group",
                    group="ACCESS", metavar="USERS"),
@@ -1547,7 +1552,7 @@ def register_install(registry: CliRegistry) -> None:
             handler=_install_handler,
             examples=(
                 "toposd install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... --daemon-lock VERSION@sha256:... --enable",
-                "toposd install --wheel-source ./wheels --observe-group docker --no-enable --yes",
+                "toposd install --wheel-source ./wheels --observe-users alice,bob --no-enable --yes",
             ),
         )
     )

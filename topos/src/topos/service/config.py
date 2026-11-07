@@ -107,6 +107,12 @@ def parse_config(contents: str, *, source: str = "<config>") -> ServiceConfig:
         raise ConfigError(
             "sockets.observe.group must match ^[a-z_][a-z0-9_-]{0,31}$"
         )
+    if raw_group == "docker":
+        # docker group membership is root-equivalent; observers join topos-observe instead.
+        raise ConfigError(
+            "sockets.observe.group must not be docker; add the users who need to observe to "
+            "topos-observe (toposd install --observe-users)"
+        )
 
     raw_mode = raw_observe.get("mode", _DEFAULT_SOCKET_MODE)
     if not isinstance(raw_mode, str) or not _MODE_RE.fullmatch(raw_mode):

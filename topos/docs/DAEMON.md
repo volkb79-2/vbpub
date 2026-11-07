@@ -69,14 +69,17 @@ sudo toposd install --dry-run \
   --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
   --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
-  --observe-group docker --observe-users alice,bob --enable
+  --observe-users alice,bob --enable
 ```
 
 After checking the preview, run the same command with `--yes` and without
 `--dry-run`. On an interactive TTY, the observe-group prompt offers
 `topos-observe` as its default. A non-interactive run must pass
 `--observe-group` (unless an existing config or install record supplies it).
-A mapped group must already exist; mapping to `docker` is supported.
+A mapped group must already exist. The `docker` group is refused as the observe
+group, by the flag, the install record and `toposd.toml` alike (its membership
+is root-equivalent): put operator accounts into `topos-observe` with
+`--observe-users`, or map another dedicated group.
 `--observe-users` adds existing users to the chosen group. `--no-enable` writes
 the service files without enabling or starting the socket/service.
 
@@ -202,8 +205,8 @@ sudo rm -rf /run/topos
 - There is no live-session drain or exit code 3; topos clients only read
   telemetry, and there is no mutating daemon session to drain.
 - topos has no `/var/lib` daemon data, so uninstall has no `--purge-data` mode.
-- An observe group may map to an existing group such as `docker`; topos does
-  not apply cgprofile's P-5 refusal for that group.
+- Like cgprofile, topos refuses `docker` as the observe group; an observe group
+  may map to any other existing group.
 - Readiness uses a bounded hello request on the configured observe socket and
   requires the reply to report the expected topos version.
 - There is no downgrade below the socket-unit release: topos before 0.7.0 has
@@ -573,14 +576,14 @@ collection.
 checks that the socket node is a socket owned by root with mode `0660`, then
 sends hello and current requests to verify client access and the topos frame
 protocol. Any socket group is accepted unless `--group` names one: a container
-usually cannot resolve the host's group names, and mdt hosts map observe access
-to `docker`. Use `toposd doctor` for host-wide install checks.
+usually cannot resolve the host's group names. Use `toposd doctor` for host-wide
+install checks.
 
 ```bash
 topos daemon status                              # default socket, any group
 topos daemon status --json                       # JSON output
 topos daemon status --pretty-json                # indented JSON
-topos daemon status --group docker               # also require the socket group
+topos daemon status --group topos-observe        # also require the socket group
 topos daemon status --socket /custom/path.sock
 ```
 

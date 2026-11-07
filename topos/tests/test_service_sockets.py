@@ -310,8 +310,10 @@ def test_rendered_default_units_match_packaged_assets_byte_for_byte() -> None:
 
 
 def test_mapped_observe_group_is_only_a_sysusers_comment() -> None:
-    cfg = parse_config('[sockets.observe]\ngroup = "docker"\n')
-    assert render_units(cfg)["topos.sysusers"] == "# observe level mapped to existing group docker; nothing created\n"
+    cfg = parse_config('[sockets.observe]\ngroup = "ops"\n')
+    assert render_units(cfg)["topos.sysusers"] == "# observe level mapped to existing group ops; nothing created\n"
+    with pytest.raises(ConfigError, match="sockets.observe.group must not be docker"):
+        parse_config('[sockets.observe]\ngroup = "docker"\n')
 
 
 def test_config_check_prints_ok_and_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -5,6 +5,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 - feat(toposd): add pinned `install`, `uninstall`, and `doctor` host-service workflows for topos 0.7.0 and later: immutable versioned venvs, recoverable install records, targeted observe-group config edits, activation-aware service checks, deferred removal of the running version, and safe partial cleanup when group removal fails
+- feat(toposd): refuse `docker` as the observe group (flag, install record and `toposd.toml`); operator accounts join `topos-observe` through `--observe-users`
 - feat(topos/release): generate and publish the sha256-pinned daemon dependency lock beside each topos wheel
 - fix(topos): remove `topos daemon preflight` and `install-plan` without alias (use `toposd doctor` and `toposd install --dry-run`); `topos daemon status` stays as the client check, sends hello, and accepts any socket group unless `--group` names one
 - feat(topos/daemon): systemd owns the `observe` socket at `/run/topos/observe/topos.sock`; daemon state moves under `/run/topos/state/`; the old `/run/topos/topos.sock` is no longer served, so an upgrading host needs a fresh install

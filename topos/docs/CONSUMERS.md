@@ -27,8 +27,10 @@ at `/etc/sysusers.d/topos.conf`. To check a staged root tree, pass
 
 Install a release with the topos wheel, cli-extended wheel, and daemon lock
 pins. Pins use `<version>@sha256:<64 lowercase hex>`; the daemon-lock version
-must match the topos wheel. For mdt hosts that already use the `docker` group,
-map observe access to that existing group:
+must match the topos wheel. Observe access is a group of its own, `topos-observe`
+by default: add every operator account that needs it (login user, runner, the
+devcontainer user via its numeric gid) with `--observe-users`. The `docker`
+group is never an observe group:
 
 ```bash
 sudo toposd install --dry-run \
@@ -36,13 +38,13 @@ sudo toposd install --dry-run \
   --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
   --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
-  --observe-group docker --observe-users alice,bob --enable
+  --observe-users alice,bob --enable
 sudo toposd install --yes \
   --wheel 0.7.3@sha256:<topos-wheel-sha256> \
   --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
   --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
-  --observe-group docker --observe-users alice,bob --enable
+  --observe-users alice,bob --enable
 sudo toposd doctor --json
 topos daemon status
 ```
@@ -52,7 +54,7 @@ The release base resolves assets under the `topos-v<version>` tag. A local
 wheels, the pinned lock, and all third-party wheels used by the lock. The
 installer writes `/etc/topos/install.toml` with those pins, the source, observe
 group, requested users, enable choice, and the groups it created. A mapped
-group must already exist; `docker` is allowed.
+group must already exist, and `docker` is refused (also in `toposd.toml`).
 
 If `/etc/topos/toposd.toml` already selects an observe group, omit
 `--observe-group` from both install commands above: the file's group is used and
@@ -97,7 +99,7 @@ The client account needs permission to connect to the socket through its
 configured group. Use `toposd doctor --check NAME` for a focused host check and
 `topos daemon status` for client-side socket and protocol status. Inside a
 container it accepts any socket group, because the host's group names usually do
-not resolve there; `--group docker` also requires the group on an mdt host. Uninstall
+not resolve there; `--group topos-observe` also requires that group on the host. Uninstall
 without removing group memberships by default:
 
 ```bash

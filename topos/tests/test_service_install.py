@@ -267,21 +267,49 @@ def test_invalid_wheel_source_is_refused_during_dry_run(tmp_path: Path, monkeypa
         install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
 
 
-def test_nonexistent_mapped_group_is_refused_and_docker_is_allowed(tmp_path: Path, monkeypatch) -> None:
+def test_nonexistent_mapped_group_is_refused_and_an_existing_one_is_allowed(tmp_path: Path, monkeypatch) -> None:
     args, _wheels = _install_args(observe_group="missing-group")
     _groups(monkeypatch)
     with pytest.raises(InstallError, match="mapped observe group 'missing-group' does not exist"):
         install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
 
-    _groups(monkeypatch, {"docker": 991})
-    args, _wheels = _install_args(observe_group="docker")
+    _groups(monkeypatch, {"ops": 991})
+    args, _wheels = _install_args(observe_group="ops")
     values = install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
-    assert values["observe_group"] == "docker"
+    assert values["observe_group"] == "ops"
+
+
+def test_the_docker_group_is_never_an_observe_group(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    _groups(monkeypatch, {"docker": 994})
+    commands = []
+
+    # By flag, even though the group exists.
+    args, _wheels = _install_args(observe_group="docker", enable=False)
+    with pytest.raises(InstallError, match="observe group must not be docker.*topos-observe.*--observe-users"):
+        install._gather_inputs(args, _runtime(dry_run=True), paths)
+
+    # From the install record.
+    Path(paths.install_record).parent.mkdir(parents=True)
+    Path(paths.install_record).write_text('observe_group = "docker"\n', encoding="utf-8")
+    args, _wheels = _install_args(observe_group=None, enable=False)
+    with pytest.raises(InstallError, match="observe group must not be docker"):
+        Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).install(args, _runtime(yes=True))
+    Path(paths.install_record).unlink()
+
+    # From an existing config file: the config itself is refused, naming the key.
+    Path(paths.config).parent.mkdir(parents=True, exist_ok=True)
+    Path(paths.config).write_text('[sockets.observe]\ngroup = "docker"\n', encoding="utf-8")
+    with pytest.raises(InstallError, match="sockets.observe.group must not be docker"):
+        Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).install(args, _runtime(yes=True))
+
+    # Nothing was written or run.
+    assert commands == [] and not Path(paths.pending).exists() and not os.path.lexists(paths.opt)
 
 
 def test_install_rechecks_a_mapped_group_before_writing_anything(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
-    args, _wheels = _install_args(observe_group="docker", enable=False)
+    args, _wheels = _install_args(observe_group="ops", enable=False)
     calls = []
 
     def gid(_group: str) -> int | None:
@@ -291,7 +319,7 @@ def test_install_rechecks_a_mapped_group_before_writing_anything(tmp_path: Path,
     monkeypatch.setattr(install, "_group_gid", gid)
     subject = Installer(paths, run=_fake_run([]), geteuid=lambda: 0)
 
-    with pytest.raises(InstallError, match="mapped observe group 'docker' does not exist"):
+    with pytest.raises(InstallError, match="mapped observe group 'ops' does not exist"):
         subject.install(args, _runtime(yes=True))
 
     assert len(calls) == 2
@@ -308,17 +336,17 @@ def test_saved_record_resolves_group_users_and_pins(tmp_path: Path, monkeypatch)
         "cli_extended_wheel": args.cli_extended_wheel,
         "daemon_lock": args.daemon_lock,
         "wheel_source": args.wheel_source,
-        "observe_group": "docker",
+        "observe_group": "ops",
         "observe_users": ["alice"],
         "enable_now": False,
         "created_groups": [],
     }
     record.write_text(install._render_record(fields), encoding="utf-8")
-    _groups(monkeypatch, {"docker": 991})
+    _groups(monkeypatch, {"ops": 991})
     monkeypatch.setattr(install.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
     values = install._gather_inputs(_args(), _runtime(dry_run=True), paths)
     assert values["version"] == "0.7.3"
-    assert values["observe_group"] == "docker"
+    assert values["observe_group"] == "ops"
     assert values["observe_users"] == ["alice"]
     assert values["enable_now"] is False
 
@@ -338,7 +366,7 @@ def test_tty_prompts_resolve_group_users_and_enable(tmp_path: Path, monkeypatch)
         def text(self, message, **_kwargs):
             self.calls.append(("text", message))
             if "Existing group" in message:
-                return "docker"
+                return "ops"
             if message.endswith(" pin"):
                 return self.pins.pop(0)
             return "alice"
@@ -352,14 +380,14 @@ def test_tty_prompts_resolve_group_users_and_enable(tmp_path: Path, monkeypatch)
     args.wheel = args.cli_extended_wheel = args.daemon_lock = args.observe_users = None
     args.observe_group = None
     args.enable = args.no_enable = False
-    _groups(monkeypatch, {"docker": 991})
+    _groups(monkeypatch, {"ops": 991})
     monkeypatch.setattr(install.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
     values = install._gather_inputs(
         args,
         _runtime(interactive=True, prompts=prompts),
         InstallPaths(tmp_path),
     )
-    assert values["observe_group"] == "docker"
+    assert values["observe_group"] == "ops"
     assert values["observe_users"] == ["alice"]
     assert values["enable_now"] is True
     assert prompts.defaults == ["create topos-observe"]
@@ -581,33 +609,33 @@ def test_install_refuses_a_foreign_entry_in_usr_local_bin(tmp_path: Path, monkey
 
 def test_existing_config_keeps_non_group_values_and_allows_group_edit(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
-    _groups(monkeypatch, {"docker": 991})
+    _groups(monkeypatch, {"ops": 991})
     Path(paths.config).parent.mkdir(parents=True)
-    edited = install._render_config("docker").replace('"0660"', '"0600"')
+    edited = install._render_config("ops").replace('"0660"', '"0600"')
     Path(paths.config).write_text(edited, encoding="utf-8")
     subject = Installer(paths, geteuid=lambda: 0)
 
-    text, config, changed = subject._config("docker")
+    text, config, changed = subject._config("ops")
     assert (text, changed) == (edited, False) and config.sockets.observe.mode == "0600"
     text, config, changed = subject._config("topos-observe")
     assert changed and config.sockets.observe.group == "topos-observe"
     assert 'mode = "0600"' in text
     Path(paths.config).write_text("invalid = [\n", encoding="utf-8")
     with pytest.raises(InstallError, match="toposd.toml is invalid.*fix or remove it"):
-        subject._config("docker")
+        subject._config("ops")
     Path(paths.config).write_bytes(b"\xff\xfe")
     with pytest.raises(InstallError, match="cannot read .*toposd.toml"):
-        subject._config("docker")
+        subject._config("ops")
     Path(paths.config).unlink()
-    text, _config, changed = subject._config("docker")
-    assert (text, changed) == (install._render_config("docker"), True)
+    text, _config, changed = subject._config("ops")
+    assert (text, changed) == (install._render_config("ops"), True)
 
 
 def test_install_applies_and_reports_a_flag_group_change_in_dry_run(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
-    _groups(monkeypatch, {"docker": 991, "redis": 992})
+    _groups(monkeypatch, {"ops": 991, "redis": 992})
     Path(paths.config).parent.mkdir(parents=True)
-    original = install._render_config("docker").replace('group = "docker"', 'group = "docker" # operator note')
+    original = install._render_config("ops").replace('group = "ops"', 'group = "ops" # operator note')
     Path(paths.config).write_text(original, encoding="utf-8")
     args, _wheels = _install_args(observe_group="redis", enable=False)
 
@@ -624,18 +652,18 @@ def test_existing_config_group_wins_without_flag_and_flag_equal_to_file_is_uncha
     tmp_path: Path, monkeypatch
 ) -> None:
     paths = InstallPaths(tmp_path)
-    _groups(monkeypatch, {"docker": 991})
+    _groups(monkeypatch, {"ops": 991})
     Path(paths.config).parent.mkdir(parents=True)
-    original = install._render_config("docker")
+    original = install._render_config("ops")
     Path(paths.config).write_text(original, encoding="utf-8")
     Path(paths.install_record).write_text('observe_group = "topos-observe"\n', encoding="utf-8")
     args, _wheels = _install_args(observe_group=None, enable=False)
 
     body = Installer(paths, geteuid=lambda: 0).install(args, _runtime(dry_run=True))
-    assert body["observe_group"] == "docker" and body["config_changes"] == []
+    assert body["observe_group"] == "ops" and body["config_changes"] == []
     assert Path(paths.config).read_text(encoding="utf-8") == original
 
-    args.observe_group = "docker"
+    args.observe_group = "ops"
     body = Installer(paths, geteuid=lambda: 0).install(args, _runtime(dry_run=True))
     assert body["config_changes"] == []
     assert Path(paths.config).read_text(encoding="utf-8") == original
@@ -645,13 +673,13 @@ def test_existing_config_group_wins_without_flag_and_flag_equal_to_file_is_uncha
     ("contents", "expected_line"),
     (
         ('state_dir = "/run/topos/state"\n\n[sockets.observe]\n# preserve this comment\npath = "/run/topos/observe/topos.sock"\n',
-         'group = "docker"\n'),
+         'group = "ops"\n'),
         ('state_dir = "/run/topos/state"\nsockets.observe.path = "/run/topos/observe/topos.sock"\n',
-         'sockets.observe.group = "docker"\n'),
+         'sockets.observe.group = "ops"\n'),
         ('state_dir = "/run/topos/state"\n[sockets]\nobserve.path = "/run/topos/observe/topos.sock"\n',
-         'observe.group = "docker"\n'),
+         'observe.group = "ops"\n'),
         ('state_dir = "/run/topos/state"\n',
-         '[sockets.observe]\ngroup = "docker"\n'),
+         '[sockets.observe]\ngroup = "ops"\n'),
     ),
 )
 def test_config_group_editor_adds_missing_group_without_losing_comments_or_dotted_form(
@@ -661,18 +689,18 @@ def test_config_group_editor_adds_missing_group_without_losing_comments_or_dotte
     Path(paths.config).parent.mkdir(parents=True)
     Path(paths.config).write_text(contents, encoding="utf-8")
 
-    edited, config, changed = Installer(paths)._config("docker")
+    edited, config, changed = Installer(paths)._config("ops")
 
     assert changed and expected_line in edited
     if "preserve this comment" in contents:
         assert "preserve this comment" in edited
-    assert config.sockets.observe.group == "docker"
+    assert config.sockets.observe.group == "ops"
 
 
 def test_config_group_editor_refuses_unsafe_inline_table_and_invalid_edited_text(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
     Path(paths.config).parent.mkdir(parents=True)
-    Path(paths.config).write_text('sockets = { observe = { group = "docker" } }\n', encoding="utf-8")
+    Path(paths.config).write_text('sockets = { observe = { group = "ops" } }\n', encoding="utf-8")
     with pytest.raises(InstallError, match=r"cannot safely edit sockets.observe.group.*edit the group under \[sockets.observe\]"):
         Installer(paths)._config("redis")
 
@@ -684,21 +712,21 @@ def test_config_group_editor_refuses_unsafe_inline_table_and_invalid_edited_text
         return original(text, source=source)
 
     monkeypatch.setattr(install, "parse_config", refuse_edited)
-    Path(paths.config).write_text(install._render_config("docker"), encoding="utf-8")
+    Path(paths.config).write_text(install._render_config("ops"), encoding="utf-8")
     with pytest.raises(InstallError, match="editing sockets.observe.group would make .* invalid: invalid edited result"):
         Installer(paths)._config("redis")
 
 
 def test_config_group_editor_handles_parent_table_and_missing_final_newline(tmp_path: Path) -> None:
     paths = InstallPaths(tmp_path)
-    parent_table = install._edit_config_group("[sockets]\n", "docker", paths.config)
-    assert parent_table == '[sockets]\n[sockets.observe]\ngroup = "docker"\n'
-    assert install.parse_config(parent_table).sockets.observe.group == "docker"
+    parent_table = install._edit_config_group("[sockets]\n", "ops", paths.config)
+    assert parent_table == '[sockets]\n[sockets.observe]\ngroup = "ops"\n'
+    assert install.parse_config(parent_table).sockets.observe.group == "ops"
 
     no_final_newline = '[sockets.observe]\npath = "/run/topos/observe/topos.sock"'
-    edited = install._edit_config_group(no_final_newline, "docker", paths.config)
-    assert edited == no_final_newline + '\ngroup = "docker"\n'
-    assert install.parse_config(edited).sockets.observe.group == "docker"
+    edited = install._edit_config_group(no_final_newline, "ops", paths.config)
+    assert edited == no_final_newline + '\ngroup = "ops"\n'
+    assert install.parse_config(edited).sockets.observe.group == "ops"
 
 
 @pytest.mark.parametrize(
@@ -710,14 +738,14 @@ def test_config_group_editor_handles_parent_table_and_missing_final_newline(tmp_
 )
 def test_config_group_editor_refuses_unsupported_nested_socket_tables(tmp_path: Path, text: str) -> None:
     with pytest.raises(InstallError, match="cannot safely edit sockets.observe.group"):
-        install._edit_config_group(text, "docker", str(tmp_path / "toposd.toml"))
+        install._edit_config_group(text, "ops", str(tmp_path / "toposd.toml"))
 
 
 def test_config_group_editor_refuses_nested_inline_observe_table(tmp_path: Path) -> None:
     with pytest.raises(InstallError, match="cannot safely edit sockets.observe.group"):
         install._edit_config_group(
             '[sockets]\nobserve = { path = "/run/topos/observe/topos.sock" }\n',
-            "docker",
+            "ops",
             str(tmp_path / "toposd.toml"),
         )
 
@@ -771,9 +799,9 @@ def test_a_config_without_a_group_key_names_no_group(tmp_path: Path, monkeypatch
 
 
 def test_config_group_editor_returns_text_unchanged_when_the_group_already_matches(tmp_path: Path) -> None:
-    text = install._render_config("docker")
+    text = install._render_config("ops")
 
-    assert install._edit_config_group(text, "docker", str(tmp_path / "toposd.toml")) == text
+    assert install._edit_config_group(text, "ops", str(tmp_path / "toposd.toml")) == text
 
 
 def test_a_fresh_install_creates_its_config_and_reports_no_edit(tmp_path: Path, monkeypatch) -> None:
@@ -863,7 +891,7 @@ def test_uninstall_refuses_a_directory_at_every_unlinked_path_of_an_owned_host(
 def test_config_group_edit_is_idempotent_and_duplicate_target_refuses(tmp_path: Path) -> None:
     paths = InstallPaths(tmp_path)
     Path(paths.config).parent.mkdir(parents=True)
-    Path(paths.config).write_text(install._render_config("docker"), encoding="utf-8")
+    Path(paths.config).write_text(install._render_config("ops"), encoding="utf-8")
     subject = Installer(paths)
     edited, _config, changed = subject._config("redis")
     assert changed
@@ -873,7 +901,7 @@ def test_config_group_edit_is_idempotent_and_duplicate_target_refuses(tmp_path: 
 
     with pytest.raises(InstallError, match="cannot safely edit sockets.observe.group"):
         install._edit_config_group(
-            '[sockets.observe]\ngroup = "docker"\ngroup = "redis"\n', "redis", paths.config
+            '[sockets.observe]\ngroup = "ops"\ngroup = "redis"\n', "redis", paths.config
         )
 
 
@@ -1463,10 +1491,10 @@ def test_groupdel_failure_is_reported_after_cleanup_and_names_the_manual_steps(
 
 def test_created_group_record_refuses_any_group_topos_did_not_create(tmp_path: Path) -> None:
     paths = InstallPaths(tmp_path)
-    _record(paths, 'created_groups = ["docker"]\n')
+    _record(paths, 'created_groups = ["ops"]\n')
     commands = []
 
-    with pytest.raises(InstallError, match=r"install record .*etc/topos/install.toml contains unsupported created group 'docker'"):
+    with pytest.raises(InstallError, match=r"install record .*etc/topos/install.toml contains unsupported created group 'ops'"):
         Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).uninstall(
             _args(remove_groups=True), _runtime(yes=True)
         )
