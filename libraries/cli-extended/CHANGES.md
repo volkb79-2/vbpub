@@ -7,6 +7,22 @@ know when upgrading; it is not generated.
 
 ## Contract and upgrade notes
 
+### 0.6.0 — host endpoint records
+
+- **`cli_extended.hostendpoints`** publishes owner fragments under
+  `/etc/host-endpoints.d/`, renders `/etc/host-endpoints.env`, updates the
+  marked `/etc/environment` block and installs the login-shell profile source.
+  `publish`, `withdraw`, `plan`, `verify`, and `check` share one validated
+  format; `require_env` fails with the missing variable and caller-supplied
+  remedy. The `hostendpoints` module CLI supports `publish`, `withdraw`,
+  `check --json`, and `show`. See [the endpoint CLI specification](docs/CLI-SPEC.md)
+  and [consumer guide](docs/CONSUMERS.md#host-endpoint-records).
+- **Ownership and safety.** Consumers must read endpoint values from the
+  process environment. A service installer publishes only its own fragment
+  from the service's configured value; this helper does not supply endpoint
+  defaults. Duplicate owners, malformed records, damaged markers, external
+  duplicate assignments, and symlinked managed targets are refused.
+
 ### 0.4.0 — fallback verb and doctor exit code/detail lines (LCR-1, LCR-2)
 
 Library contract version is unchanged (1) and the surface manifest schema is

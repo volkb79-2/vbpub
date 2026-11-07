@@ -7,6 +7,77 @@ with `CliRegistry`, then supplies domain-specific parsers and handlers only
 where needed. The package's
 [`README`](../README.md) contains the complete registration pattern.
 
+## Host endpoint records
+
+`cli_extended.hostendpoints` stores host facts supplied by their owner. The
+service installer is the only place that selects a default socket path; it
+publishes the already resolved path, its directory when static consumers need
+one, and any host GIDs. A consumer reads only the process environment and does
+not add a literal path or GID fallback.
+
+An installer can publish from its post-configuration values:
+
+```python
+from cli_extended.hostendpoints import publish
+
+publish(
+    "cgprofile",
+    {
+        "CGPROFILE_CONTROL_SOCKET": control_socket,
+        "CGPROFILE_CONTROL_SOCKET_DIR": control_socket_dir,
+        "CGPROFILE_CONTROL_GID": str(control_gid),
+        "CGPROFILE_OBSERVER_SOCKET": observer_socket,
+        "CGPROFILE_OBSERVER_SOCKET_DIR": observer_socket_dir,
+        "CGPROFILE_OBSERVER_GID": str(observer_gid),
+    },
+    writer=f"cgpd install {version}",
+)
+```
+
+`control_socket`, `observer_socket`, their derived directories, and group IDs
+come from the service's active configuration and resolved host groups. There
+is no helper default or compatibility path. `publish` replaces only the
+`cgprofile` fragment, then renders the shared aggregate and generated
+`/etc/environment` block. Installation and removal are serialized by
+`/etc/host-endpoints.d/.lock`; `withdraw("cgprofile")` should run before the
+installer removes its socket units or runtime directories.
+
+A client requires its endpoint before connecting:
+
+```python
+from cli_extended.hostendpoints import require_env
+
+socket_path = require_env(
+    "CGPROFILE_CONTROL_SOCKET",
+    remedy=(
+        "log in again, or `set -a; . /etc/host-endpoints.env`, "
+        "or run `cgpd install`"
+    ),
+)
+```
+
+An unset or empty variable raises `CliFailure` naming the variable and the
+remedy. A client may accept an explicit `--socket` override, but its implicit
+path always comes from `require_env`. The `hostendpoints` module CLI is useful
+for host-side operations:
+
+```bash
+python3 -m cli_extended.hostendpoints publish \
+  --owner cgprofile --writer 'cgpd install 2.3.0' \
+  --entry CGPROFILE_CONTROL_SOCKET=/run/cgprofile/control/cgprofile.sock \
+  --entry CGPROFILE_CONTROL_SOCKET_DIR=/run/cgprofile/control
+python3 -m cli_extended.hostendpoints check --json
+python3 -m cli_extended.hostendpoints show
+python3 -m cli_extended.hostendpoints withdraw --owner cgprofile
+```
+
+`plan` performs the same alphabet, collision, symlink, and marker checks
+without changing files. `verify` compares one owner's fragment with its live
+expected mapping; `check` compares all fragments with the aggregate, verifies
+the environment block and profile source, and reports wrong modes or
+symlinks. The exact header and marker format is in the
+[endpoint CLI specification](CLI-SPEC.md).
+
 ## Install and choose a version source
 
 For development in this checkout:
