@@ -1902,13 +1902,18 @@ def test_javascript_balanced_group_scanner_handles_tokens_and_uncertainty() -> N
         assert mcp_client._skip_js_balanced_group(source, 0) is None
 
     assert mcp_client._arrow_body_has_top_level_comma("", 0) is False
+    assert mcp_client._arrow_body_has_top_level_comma(" /* trailing trivia */", 0) is False
     assert mcp_client._arrow_body_has_top_level_comma("a, b", 0) is True
     assert mcp_client._arrow_body_has_top_level_comma("a; b", 0) is True
     assert mcp_client._arrow_body_has_top_level_comma("(a, b)", 0) is False
     assert mcp_client._arrow_body_has_top_level_comma("'a,b'", 0) is False
     assert mcp_client._arrow_body_has_top_level_comma("`value ${1, 2}`", 0) is False
     assert mcp_client._arrow_body_has_top_level_comma("/[a,b]/.test(value)", 0) is False
+    assert mcp_client._arrow_body_has_top_level_comma("/unterminated", 0) is True
     assert mcp_client._arrow_body_has_top_level_comma("a / b", 0) is False
+    assert mcp_client._arrow_body_has_top_level_comma("{value: 1} / 2", 0) is True
+    assert mcp_client._arrow_body_has_top_level_comma("123 + 456", 0) is False
+    assert mcp_client._arrow_body_has_top_level_comma("a === b", 0) is False
     assert mcp_client._arrow_body_has_top_level_comma("({value: 1} / 2)", 0) is True
     assert mcp_client._arrow_body_has_top_level_comma("'unterminated", 0) is True
     assert mcp_client._arrow_body_has_top_level_comma("/* unterminated", 0) is True
@@ -1916,6 +1921,7 @@ def test_javascript_balanced_group_scanner_handles_tokens_and_uncertainty() -> N
 
     assert not mcp_client._is_whole_arrow_function("")
     assert not mcp_client._is_whole_arrow_function("/* unterminated")
+    assert not mcp_client._is_whole_arrow_function("async")
     assert not mcp_client._is_whole_arrow_function("(x")
     assert not mcp_client._is_whole_arrow_function("x =>")
     assert mcp_client._is_whole_arrow_function("async (a, b) => a + b")
@@ -1926,8 +1932,15 @@ def test_javascript_balanced_group_scanner_handles_tokens_and_uncertainty() -> N
     assert not mcp_client._is_whole_arrow_function("x => {} + 1")
     assert not mcp_client._is_whole_arrow_function("x => {")
     assert not mcp_client._is_whole_function_expression("")
+    assert not mcp_client._is_whole_function_expression("async")
     assert not mcp_client._is_whole_function_expression("function/* unterminated")
+    assert not mcp_client._is_whole_function_expression("function*/* unterminated")
+    assert not mcp_client._is_whole_function_expression("function 1() {}")
+    assert not mcp_client._is_whole_function_expression("function named/* unterminated")
+    assert not mcp_client._is_whole_function_expression("function")
     assert not mcp_client._is_whole_function_expression("function(")
+    assert not mcp_client._is_whole_function_expression("function()")
+    assert not mcp_client._is_whole_function_expression("function() 1")
     assert not mcp_client._is_whole_function_expression("function() {")
     assert mcp_client._is_whole_function_expression("async function* named() { return /x/; }")
     assert not mcp_client._is_whole_function_expression("functionality()")
