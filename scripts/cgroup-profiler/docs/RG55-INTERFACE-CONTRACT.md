@@ -13,8 +13,8 @@ project asserts the two copies are byte-identical.
 absolute-counter rule for `cpu`/`pressure`/`faults`/`events`, `§3`
 nullability note for `peak_over_baseline_bytes`, `§7` new subsection).
 **v1.1 (RW-34, 2026-09-12, §8 below):** additive under `contract: 1` —
-two carriers (§8.1), `watch` (§8.2), placement (§8.3), liveness + policy
-(§8.4), `host.gates_slice` (§8.5), `version.transports` (§8.6), Summary
+the socket-only control carrier (§8.1), `watch` (§8.2), placement (§8.3),
+liveness + policy (§8.4), `host.gates_slice` (§8.5), `version.transports` (§8.6), Summary
 `liveness`/`placement`/`watch` (§8.7), new error codes (§8.8). Producers
 implemented it under the then-planned cgprofile 1.1.0 (P6) and run-gate
 23.9.0 (P5). RW-434/RW-476 later combined these already-merged capabilities
@@ -38,22 +38,25 @@ compatibility checks use the installed `run-gate --version`.
 
 Parties: **producer** = cgroup-profiler's daemon (`cgpd`) and its client
 (`cgpctl`); **consumer** = the installed Run-Gate wheel (stdlib-only
-runtime), which talks to the daemon over its control socket
-`/run/cgprofile/control/cgprofile.sock` (§8.1) from any devcontainer, worktree or
-instance. **RG-156 (2026-11-04):** the socket is the only carrier Run-Gate
-uses; its former `docker exec cgprofile-host-daemon cgprofile ctl <verb>
-[args] --json` fallback, the `[profile] transport` and `[profile] daemon`
-settings and `RUN_GATE_PROFILE_TRANSPORT` were removed. Run-Gate never sends
-`report` or `gc`. The `cgprofile ctl` client verbs remain the producer's own
-operator interface and the reference translator of the socket protocol.
+runtime), whose `ProfilerClient` sends control-protocol requests directly over
+`/run/cgprofile/control/cgprofile.sock` (§8.1), or the configured socket path,
+from any devcontainer, worktree or instance. **RG-156 (2026-11-04):** the
+socket is the only carrier Run-Gate uses; its former `docker exec
+cgprofile-host-daemon cgprofile ctl <verb> [args] --json` fallback, the
+`[profile] transport` and `[profile] daemon` settings and
+`RUN_GATE_PROFILE_TRANSPORT` were removed. Run-Gate never sends `report` or
+`gc`. The `cgpctl` client remains the producer's own operator interface and
+reference translator of the socket protocol.
 
 ---
 
 ## 1. Transport and I/O rules
 
-1. run-gate always passes `--json`. `cgpctl` talks to the serve loop over
-   `/run/cgprofile/control/cgprofile.sock`, mounted into the consumer at its
-   declared path.
+1. The control protocol is newline-delimited JSON. `cgpctl` translates its
+   command-line requests to this protocol; Run-Gate's stdlib-only
+   `ProfilerClient` builds the same wire requests directly and connects to
+   `/run/cgprofile/control/cgprofile.sock` (or the configured socket path).
+   Consumers mount the corresponding control-level directory at that path.
 2. **stdout is exactly one JSON object** (UTF-8, no other output). stderr is
    free text for diagnostics; run-gate ignores it except that on a failure
    it quotes the LAST stderr line in its single warning.
@@ -478,17 +481,20 @@ stay byte-identical.
 
 ### 8.1 Socket-only carrier (D-30)
 
-The serve loop speaks newline-delimited JSON, one request per connection,
-on the control listener `/run/cgprofile/control/cgprofile.sock`. The
-`cgprofile-control.socket` systemd unit owns that node as `root:<configured
-control group>` with the configured mode and passes one descriptor named
-`control` to cgpd. The observer has its own socket unit and descriptor. Runtime
-directories are root-owned mode `0755`; consumers mount only the level
-directory they are entitled to.
+The `cgpd` serve loop speaks newline-delimited JSON, one request per
+connection, on `/run/cgprofile/control/cgprofile.sock`. Its systemd socket
+unit creates a `root:root` level directory with mode `0755` and a
+`root:<configured dedicated control group>` socket with mode `0660`, then
+passes one descriptor named `control` to `cgpd`. The default control group is
+`cgprofile-control`; the observer has its own socket unit, dedicated group,
+level directory and `observer` descriptor. These level groups are distinct,
+and neither may be the Docker group or use its GID. Consumers mount only the
+level directory they are entitled to. The supported host layout uses the
+new per-level paths; no client falls back to the pre-cutover socket paths.
 
 | carrier | how a request travels | who is authorised | default |
 |---|---|---|---|
-| `socket` | the consumer connects to `/run/cgprofile/control/cgprofile.sock` and writes ONE request line `{"verb": "<verb>", "args": {…}, "contract": 1}\n`; the daemon answers with the same JSON object stdout would carry, then closes (streaming verbs: one object per line until end) | members of the configured control group, narrowed by `allow_uids` when configured (`SO_PEERCRED`); a refused peer gets `{"ok": false, "contract": 1, "error": {"code": "peer-refused", …}}` and the connection closes | yes |
+| `socket` | the consumer connects to `/run/cgprofile/control/cgprofile.sock` and writes ONE request line `{"verb": "<verb>", "args": {…}, "contract": 1}\n`; the daemon returns a JSON response object, then closes (streaming verbs: one object per line until end) | members of the configured dedicated control group and UID 0 can connect through the `0660` socket; when the daemon's `allow_uids` setting is non-empty, `SO_PEERCRED` also restricts peers to those UIDs plus UID 0; a refused peer gets `{"ok": false, "contract": 1, "error": {"code": "peer-refused", …}}` and the connection closes | only carrier |
 
 Rules: (1) the control and observer levels are separate endpoints; the
 control endpoint accepts daemon control verbs and the observer endpoint
@@ -505,10 +511,11 @@ including the newline and must arrive within an absolute 25 s deadline from
 accept (trickle bytes do not extend it); an oversized line receives
 `bad-argument`, an incomplete line at deadline or EOF is closed without
 dispatch, and the accepted `watch` stream itself has no server-side timeout;
-(5) a producer keeps
-the exec carrier for operators; Run-Gate (RG-156) is socket only. When the
-socket cannot be reached Run-Gate degrades as for any unavailable profiler
-(basic or rusage profile, one warning) and the warning names the CP-31 cause
+(5) the exec carrier is unsupported: `version.transports.exec` is `false`
+under control contract 1 and omitted under contract 2. Run-Gate (RG-156) is
+socket only. When the socket cannot be reached Run-Gate degrades as for any
+unavailable profiler (basic or rusage profile, one warning) and the warning
+names the CP-31 cause
 tag, classified from errno and the socket directory because nobody answers:
 `socket-not-mounted` (directory absent), `socket-missing` (directory present,
 node gone), `daemon-refusing` (node present, nothing listening) or
@@ -517,7 +524,8 @@ node gone), `daemon-refusing` (node present, nothing listening) or
 ### 8.2 `cgprofile ctl watch <session> --json` (streaming, D-27)
 
 Streams one JSON object per line until the session ends (stop, kill, or
-daemon shutdown), then exits 0. Both carriers. Lines:
+daemon shutdown), then exits 0. The request and stream use the control socket.
+Lines:
 ```json
 {"contract": 1, "event": "reading", "session": "s-…", "at": "…", "elapsed_seconds": 91.2,
  "live": {…as in status…}, "liveness": {…§8.4…}, "placement": {…§8.3…} | null}
@@ -528,10 +536,9 @@ daemon shutdown), then exits 0. Both carriers. Lines:
 ```
 Cadence: one `reading` every `--watch-interval` seconds (default 30,
 clamped [5, 300]); `verdict` lines only on a state change; exactly one
-`end`. Over exec this is ONE long-lived `docker exec` whose stdout the
-consumer reads line by line (no per-verb timeout; the consumer applies an
-idle timeout of `3 × watch-interval` and re-attaches on expiry). Unknown
-session → exit 2 `unknown-session` as a single line.
+`end`. The consumer reads the stream on the same socket connection; Run-Gate
+uses an idle timeout of `3 × watch-interval` and re-attaches once on expiry.
+Unknown session → exit 2 `unknown-session` as a single line.
 
 ### 8.3 Placement (D-20, D-25, D-31) — `start` options and the `placement` block
 
@@ -667,7 +674,8 @@ is not installed — `ctl host` and run-gate `doctor` say "unbounded").
                "allow_uids": [] , "peer_cred": true}}
 ```
 
-The additive `version.resource_observer` object advertises the separate
+The `exec` carrier is unsupported; contract 2 omits the `exec` key. The
+additive `version.resource_observer` object advertises the separate
 native-R2 listener: `{"contract": 2,
 "path": "/run/cgprofile/observer/cgprofile.sock", "listening": true}`.
 This contract number is independent of the control protocol's `contract: 1`;
@@ -843,15 +851,34 @@ for an Assay lane or command lane in an ephemeral environment. The explicit lane
 declaration is the opt-in; command wrappers that launch Assay R2 preserve the
 inherited endpoint variable for that process. The observer remains a
 read-only query bound to the command's own peer. Before launch Run-Gate
-validates the root-owned `/run/cgprofile/observer` directory as mode `0755`
-and the `cgprofile-observer` socket node as mode `0660`. Systemd owns the
-node; the dedicated `cgprofile-observer` group is separate from the Docker group.
+uses `lstat` on the `/run/cgprofile/observer` directory and socket. It
+requires the directory to be a `root:root` directory, not writable by group
+or other, and searchable by group; it does not require its GID to match the
+socket GID or connect to the observer socket. The socket unit creates the
+socket as `root:<configured dedicated observer group>` with mode `0660`
+(default group: `cgprofile-observer`). Run-Gate checks that it is root-owned,
+group-connectable, not accessible to other users, and uses a non-root GID
+distinct from both the host Docker GID and control socket GID. Inside the
+lane, the observer endpoint is `/run/cgprofile-observer/cgprofile.sock`.
 Run-Gate mounts the directory read-only into the test container, so the socket
 path resolves again after daemon restart. It grants that dedicated GID and
 sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container path. Observer-backed
 lanes declare per-container memory and PID ceilings and refuse arbitrary extra
-mounts. They do not mount the control socket, change PID/cgroup/network namespaces, or
-add a Docker socket.
+mounts. They do not mount the control socket, change PID/cgroup/network
+namespaces, or add a Docker socket.
+
+For a present control socket, Run-Gate checks before connecting that it is a
+Unix socket with a non-zero GID distinct from the host Docker GID. It accepts
+UID 0 without supplementary group membership because the tester runner uses
+`--user 0:0`; other callers must have the control GID as their effective GID
+or in their supplementary groups. A refusal names `cgprofile-control` and
+says to recreate the devcontainer with its `--group-add`. Run-Gate obtains the
+host Docker GID from `RUN_GATE_HOST_DOCKER_GID` first, then
+`MDT_HOST_DOCKER_GID` supplied by the host launcher. A malformed selected
+value fails; if neither is set, the control preflight names both variables.
+Run-Gate does not infer this GID from the Docker API socket owner or its own
+group database, because a proxy or relay may use a different GID on that
+socket.
 
 Assay first attempts its existing local B145 reader. It uses the configured
 observer only when the local reader specifically proves that the private
