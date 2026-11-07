@@ -141,7 +141,15 @@ class StreamableHttpClient:
                 headers = response.headers
                 body = response.read()
         except urllib.error.HTTPError as exc:
-            raise McpUnavailable(f"MCP endpoint rejected the request (HTTP {exc.code})") from exc
+            if expected_id is None:
+                # urllib turns non-2xx notification replies into HTTPError. The
+                # server still answered, so let the notification status check
+                # classify it as an MCP protocol error rather than unreachable.
+                status = exc.code
+                headers = exc.headers
+                body = b""
+            else:
+                raise McpUnavailable(f"MCP endpoint rejected the request (HTTP {exc.code})") from exc
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", "connection failed")
             raise McpUnavailable(f"MCP endpoint is unreachable ({reason})") from exc

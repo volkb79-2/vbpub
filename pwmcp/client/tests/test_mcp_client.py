@@ -6,6 +6,7 @@ import base64
 import json
 import sys
 import threading
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,7 @@ class _McpState:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
         self.navigate_errors: list[str] = []
+        self.tool_errors: dict[str, str] = {}
         self.eval_value: object = {"title": "Sample page"}
         self.eval_results: list[object] = []
         self.html_value: object = None
@@ -94,6 +96,9 @@ class _FakeMcpServer:
                     name = payload["params"]["name"]
                     if name == "browser_navigate" and state.navigate_errors:
                         text = state.navigate_errors.pop(0)
+                        result = {"isError": True, "content": [{"type": "text", "text": text}]}
+                    elif name in state.tool_errors:
+                        text = state.tool_errors[name]
                         result = {"isError": True, "content": [{"type": "text", "text": text}]}
                     elif name == "browser_navigate":
                         result = {"content": [{"type": "text", "text": "navigated"}]}
@@ -241,6 +246,19 @@ def test_eval_endpoint_failure_hint_names_the_mcp_endpoint(
     assert "check that the PWMCP MCP endpoint is reachable" in error
 
 
+def test_eval_tool_error_says_the_endpoint_replied(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.tool_errors["browser_evaluate"] = "Uncaught ReferenceError: missingValue"
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["eval", "https://example.test", "missingValue"]) == 1
+    error = capsys.readouterr().err
+    assert "MCP endpoint replied" in error
+    assert "requested JavaScript" in error
+    assert "check that the PWMCP MCP endpoint is reachable" not in error
+
+
 @pytest.mark.parametrize(
     "arguments,message",
     [
@@ -339,6 +357,53 @@ def test_inspect_html_truncates_with_a_notice_and_can_write_a_file(
     assert json.loads(captured.out)["output"] == str(output_path)
 
 
+def test_inspect_html_writes_a_file_without_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    html = "<main>saved</main>"
+    output_path = tmp_path / "page.html"
+    with _FakeMcpServer() as server:
+        server.state.html_value = {
+            "data": base64.b64encode(html.encode()).decode(),
+            "included_bytes": len(html.encode()),
+            "total_bytes": len(html.encode()),
+            "truncated": False,
+        }
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "inspect", "https://example.test", "--format", "html", "--output", str(output_path)
+        ]) == 0
+        captured = capsys.readouterr()
+    assert output_path.read_text(encoding="utf-8") == html
+    assert captured.out == ""
+    assert f"wrote html output to {output_path}" in captured.err
+
+
+def test_inspect_html_reports_file_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output_path = tmp_path / "directory.html"
+    output_path.mkdir()
+    html = "<main>cannot save</main>"
+    with _FakeMcpServer() as server:
+        server.state.html_value = {
+            "data": base64.b64encode(html.encode()).decode(),
+            "included_bytes": len(html.encode()),
+            "total_bytes": len(html.encode()),
+            "truncated": False,
+        }
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "inspect", "https://example.test", "--format", "html", "--output", str(output_path)
+        ]) == 1
+        captured = capsys.readouterr()
+    assert "cannot write html output" in captured.err
+
+
 def test_inspect_html_retries_one_browser_crash_automatically(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -358,6 +423,94 @@ def test_inspect_html_retries_one_browser_crash_automatically(
     assert captured.out == html + "\n"
     assert "retrying automatically once" in captured.err
     assert len(_call_args(server.state, "browser_navigate")) == 2
+
+
+def test_inspect_html_explicit_retries_cover_a_tool_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    html = "<html><body>recovered</body></html>"
+    with _FakeMcpServer() as server:
+        server.state.navigate_errors = ["temporary navigation failure"]
+        server.state.html_value = {
+            "data": base64.b64encode(html.encode()).decode(),
+            "included_bytes": len(html.encode()),
+            "total_bytes": len(html.encode()),
+            "truncated": False,
+        }
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "inspect", "https://example.test", "--format", "html", "--retries", "1"
+        ]) == 0
+        captured = capsys.readouterr()
+    assert captured.out == html + "\n"
+    assert "attempt 1/2 failed: browser_navigate: temporary navigation failure; retrying" in captured.err
+    assert len(_call_args(server.state, "browser_navigate")) == 2
+
+
+def test_inspect_html_does_not_retry_a_generic_tool_error_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.navigate_errors = ["temporary navigation failure"]
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["inspect", "https://example.test", "--format", "html"]) == 1
+        captured = capsys.readouterr()
+    assert "pwmcp inspect failed: browser_navigate: temporary navigation failure" in captured.err
+    assert len(_call_args(server.state, "browser_navigate")) == 1
+
+
+@pytest.mark.parametrize(
+    "page_diagnostics",
+    [
+        ["not an object"],
+        {"title": None, "text": "body", "status": 200, "final_url": "https://example.test", "frames": []},
+        {"title": "title", "text": None, "status": 200, "final_url": "https://example.test", "frames": []},
+        {"title": "title", "text": "body", "status": True, "final_url": "https://example.test", "frames": []},
+        {"title": "title", "text": "body", "status": 200, "final_url": None, "frames": []},
+        {"title": "title", "text": "body", "status": 200, "final_url": "https://example.test", "frames": None},
+        {"title": "title", "text": "body", "status": 200, "final_url": "https://example.test", "frames": [3]},
+    ],
+)
+def test_inspect_html_rejects_malformed_page_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    page_diagnostics: object,
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics = page_diagnostics
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["inspect", "https://example.test", "--format", "html"]) == 1
+        error = capsys.readouterr().err
+    assert "page diagnostics returned" in error
+    evaluated_functions = [
+        call["function"] for call in _call_args(server.state, "browser_evaluate")
+    ]
+    assert len(evaluated_functions) == 1
+    assert "new TextEncoder()" not in evaluated_functions[0]
+
+
+def test_inspect_html_has_a_guard_for_exhausted_internal_attempts() -> None:
+    # The public CLI rejects --retries outside 0..10 before this handler. Keep
+    # the handler's no-result guard tested if another caller bypasses that check.
+    args = SimpleNamespace(
+        max_html_bytes=512 * 1024,
+        wait_until="load",
+        ignore_https_errors=False,
+        user_agent=None,
+        storage_state=None,
+        retries=-1,
+        timeout_ms=30_000,
+        url="https://example.test",
+        selector=None,
+        html_mode="outer",
+        wait_for=None,
+        output=None,
+    )
+    runtime = SimpleNamespace(output=None)
+    with pytest.raises(cli_module.CliFailure, match="MCP browser returned no HTML result"):
+        cli_module._inspect_html(args, runtime)  # type: ignore[arg-type]
 
 
 def test_inspect_html_reports_a_challenge_without_returning_or_writing_html(
@@ -591,12 +744,13 @@ def test_streamable_http_client_close_is_best_effort(monkeypatch: pytest.MonkeyP
     client = StreamableHttpClient("http://example.test/mcp")
     client.close()  # no session id: no request
     client.session_id = "session"
-    monkeypatch.setattr(
-        mcp_client.urllib.request,
-        "urlopen",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("close failed")),
-    )
-    client.close()
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            mcp_client.urllib.request,
+            "urlopen",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("close failed")),
+        )
+        client.close()
     assert client.session_id is None
     with _FakeMcpServer() as server:
         server.state.delete_status = 503
