@@ -12,7 +12,7 @@ from .errors import Refusal
 from .host import Host
 
 SCHEMA = 1
-SCHEMA_MINOR = 3  # 1: disk scope / plausibility / veryquick; 2: cache hints and capability history; 3: plan and cache-reference/status fields
+SCHEMA_MINOR = 5  # 1: disk scope / plausibility / veryquick; 2: cache hints and capability history; 3: plan/cache-reference fields; 4: partial runs and veryquick cache diagnostics; 5: persisted PLA-06 rung measurements
 DEFAULT_DIR = "/var/lib/iobench"
 NOT_MEASURED = "not_measured"
 REQUIRED_TOP = ("schema", "schema_minor", "tool", "run", "identity", "targets", "evidence", "proposals", "quality", "restore")
@@ -179,7 +179,10 @@ def live_identity(host: Host, stored: Mapping[str, Any]) -> dict[str, Any] | Non
     except (OSError, ValueError):
         wd_live = None  # the work dir is removed after a run: nothing to compare
     if target is not None:
-        return {**s0_identity(host, target, None), "workdir_fs": wd_live}
+        try:
+            return {**s0_identity(host, target, None), "workdir_fs": wd_live}
+        except Refusal as exc:
+            return {"_identity_unavailable": {"condition": exc.condition, "detail": str(exc)}}
     stored_scope = stored.get("disk_scope")
     if stored_scope is None:
         return None  # a record from before the disk scope: nothing to find the disk with
@@ -202,6 +205,8 @@ def identity_differs(stored: Mapping[str, Any], live: Mapping[str, Any] | None) 
     The partition (devno, PARTUUID, size) or file (filesystem uuid, inode) that was measured is no part of it: it may be gone
     (``target_changed`` warns), the disk it was on is what the result describes."""
     if live is None:
+        return True
+    if "_identity_unavailable" in live:
         return True
     ss, ls = stored.get("disk_scope"), live.get("disk_scope")
     if ss is None or ls is None:
@@ -310,6 +315,11 @@ def check(host: Host, state_dir: str, *, calibration: bool = False, sections: tu
         capability_rows, capability_warnings, capability_skipped_rows = capability.load(host, p["capability"], digest)
     res.capability = capability.latest_summary(capability_rows, skipped_rows=capability_skipped_rows)
     res.warnings.extend(capability_warnings)
+    identity_unavailable = live.get("_identity_unavailable") if live is not None else None
+    if identity_unavailable is not None:
+        res.state = "stale"
+        res.reasons.append(f"identity_unavailable:{identity_unavailable['condition']}")
+        return res
     if identity_differs(doc["identity"], live):
         res.state = "stale"
         return res

@@ -106,12 +106,18 @@ the opt-in; Run-Gate does not infer command semantics from argv.
 Rev 21 (run-gate rev 66): RG-89 permits the observer on any Assay or command
 lane whose resolved environment is ephemeral. Before launching such a lane,
 Run-Gate requires cgprofile's version response to advertise observer contract
-2 at the configured socket path with `listening = true`.
+2 at the path from `CGPROFILE_OBSERVER_SOCKET` with `listening = true`.
 Rev 22 (Run-Gate 24.0.0): wheel-only distribution. The installed `run-gate`
 console command and its wheel SemVer are the only supported CLI identity;
 copied scripts and consumer symlinks are retired. Project discovery is from
 the current working directory, and persisted `revision` values remain only
 record-format provenance, never an upgrade floor.
+Rev 23 (WP-E3): Run-Gate resolves cgprofile endpoints from
+`CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET` in its process
+environment only. `[profile] socket_path` is refused by name; there is no
+file-read, built-in-path, or legacy fallback. Observer directory binds use
+identity paths, and Assay receives `ASSAY_RESOURCE_OBSERVER_SOCKET` at the
+same endpoint.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -2380,7 +2386,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `damon_cleanup.confirmed == false` is recorded verbatim in `resources`
     and disclosed as the one warning line suffixed "profile recorded with
     this caveat" — never a verdict change (`R-36h`). `--dry-run` prints the plan
-    (socket path, scope, damon, token env) and starts nothing — UNCONDITIONAL
+    (control endpoint variable, scope, damon, token env) and starts nothing — UNCONDITIONAL
     on whether profiling is enabled, so a disabled lane's dry run still
     names WHY (a fix in the same commit that shipped this: gating the print
     call on `profiling` as well as inside the function made the
@@ -2394,13 +2400,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `[profile]` settings AND whether `RUN_GATE_PROFILE` is overriding them.
   - **`R-43h` Config.** `[profile]` (central/project, whole-table shadowing,
     `R-09`'s rule): `enabled` (bool, default true), `interval` (the `budget`
-    grammar, default `"1s"`), `damon` (bool, default true),
-    `socket_path` (absolute Unix-socket path, default
-    `/run/cgprofile/control/cgprofile.sock`), and `admission_wait` (the
-    `budget` grammar, default `"10m"`). Per lane: `profile = false` (opt out
-    entirely — `profile = true` is REFUSED by name, a no-op typo for "delete
-    this key") or a table `[lanes.<n>.profile] { enabled, damon }` overriding
-    those two only. Unknown keys refuse at load like every other table.
+    grammar, default `"1s"`), `damon` (bool, default true), and
+    `admission_wait` (the `budget` grammar, default `"10m"`). `socket_path` is
+    a named removed key (WP-E3 / RG-244); the control endpoint is supplied
+    separately through `CGPROFILE_CONTROL_SOCKET`. Per lane: `profile = false`
+    (opt out entirely — `profile = true` is REFUSED by name, a no-op typo for
+    "delete this key") or a table `[lanes.<n>.profile] { enabled, damon }`
+    overriding those two only. Unknown keys refuse at load like every other
+    table.
   - **`R-43i` Bare-host lanes (RG-57/RW-27b).** A bare-host lane IS
     profiled once `[profile]` is enabled — it is NOT categorically
     unprofiled (superseded RG-55 v1 text). Daemon path: the target is
@@ -2491,16 +2498,26 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     nothing for real.
 
 - **`R-43j` Socket-only carrier (RG-55/P5 C2, RG-156).** Run-gate reaches
-  the profiler daemon only through its control socket, `socket_path` of the
-  `[profile]` table (default `/run/cgprofile/control/cgprofile.sock`). There is no
-  `docker exec` carrier, no `transport` or `daemon` key and no
-  `RUN_GATE_PROFILE_TRANSPORT`; each is refused by name at load. An
-  unreachable socket carries its CP-31 cause tag in the one warning
-  (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
-  `socket-permission`; classified from errno and the socket directory) and the
-  lane falls back as for any unavailable profiler. A
+  the profiler daemon only through its control socket. Its path comes only
+  from `CGPROFILE_CONTROL_SOCKET` in the process environment; Run-Gate never
+  reads the host endpoint record file and has no built-in path or fallback.
+  There is no `docker exec` carrier, no `transport` or `daemon` key and no
+  `RUN_GATE_PROFILE_TRANSPORT`; each is refused by name at load. A reachable
+  environment value whose socket is unavailable carries its CP-31 cause tag
+  in the one warning (`socket-not-mounted`, `socket-missing`,
+  `daemon-refusing`, `socket-permission`; classified from errno and the socket
+  directory) and the lane falls back as for any unavailable profiler. A
   socket, daemon, or parser failure is profiling state unknown and follows
   `R-36h`; it never changes the lane's verdict.
+- **`R-43l` Host endpoint environment (WP-E3).** `CGPROFILE_CONTROL_SOCKET`
+  is required when profiling is enabled and for every observer lane because
+  its observer version preflight uses the control socket.
+  `CGPROFILE_OBSERVER_SOCKET` is required only for observer lanes. Run-Gate
+  reads both lazily from its process environment; an unset or empty required
+  value is an infrastructure error naming the variable and directing the
+  operator to `cgpd doctor` and the host endpoints record. `RUN_GATE_PROFILE=off`
+  explicitly opts out of profiling, but it does not exempt an observer lane
+  from either endpoint requirement.
 - **`R-43k` Streaming watch (RG-55/P5 C5).** After a successful profile
   `start`, run-gate creates one `ctl watch` reader for that session. `reading`
   and `verdict` events update the inflight/history watch field. A daemon
@@ -2733,8 +2750,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   inherited endpoint variable for that process. The endpoint remains a
   read-only query bound to the command's own peer. Before launching the lane,
   Run-Gate queries the daemon's control version response and requires observer
-  contract 2, the fixed socket path, and `listening = true`. Before building
-  Docker argv, Run-Gate lstats `/run/cgprofile/observer` as a `root:root`
+  contract 2, the path advertised by `CGPROFILE_OBSERVER_SOCKET`, and
+  `listening = true`. Before building Docker argv, Run-Gate lstats the
+  directory containing that endpoint as a `root:root`
   directory with no group or world write access and group search permission.
   The directory GID must be 0 but does not grant socket access or need to match
   the socket GID. The read-only mount lets this metadata
@@ -2760,18 +2778,23 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   state is infrastructure ERROR; Docker must not invent a bind source. The
   lane must declare `resources.memory` and positive-integer `resources.pids`,
   which become `--memory` and `--pids-limit`; observer lanes refuse
-  `RUN_GATE_EXTRA_MOUNTS`. The container receives that observer directory at
-  `/run/cgprofile-observer` via a read-only directory bind; the host socket is
-  `/run/cgprofile/observer/cgprofile.sock`, so the in-lane endpoint is
-  `/run/cgprofile-observer/cgprofile.sock`. Run-Gate supplies the observer
-  socket GID as a supplementary group and sets
-  `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container socket path. It does
-  not mount `/run/cgprofile/control/cgprofile.sock`, grant the Docker socket,
+  `RUN_GATE_EXTRA_MOUNTS`. The container receives the observer directory via
+  a read-only identity bind: source and target are both
+  `dirname(CGPROFILE_OBSERVER_SOCKET)`. Run-Gate supplies the observer socket
+  GID as a supplementary group and sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to
+  the same endpoint value. When an Assay lane or command needs this fact in
+  its judge process, its `assay.toml` declares
+  `ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"`
+  under `[lanes.<lane>.infrastructure]`; this fails by name rather than
+  silently dropping an unset value. Run-Gate does not mount the control
+  endpoint, grant the Docker socket,
   or change the container's
   private PID/cgroup/network namespaces.
-  This release requires the new host socket layout. On a host still using the
-  old layout, preflight reports that the host socket cutover is required;
-  keep the earlier Run-Gate and Assay pins there until cutover.
+  This release takes both endpoints only from the `CGPROFILE_CONTROL_SOCKET`
+  and `CGPROFILE_OBSERVER_SOCKET` environment variables. A host or session
+  that does not deliver the variables a lane needs fails preflight naming the
+  variable, with the remedy to check it, run `cgpd doctor`, and repair the
+  host endpoints record; there is no built-in path to fall back to.
   - The observer listener belongs to the existing cgprofile daemon and accepts
     exactly one `resource-limits` request with a positive native thread ID.
     It has no `start`, `stop`, `place`, or other control verbs. The daemon

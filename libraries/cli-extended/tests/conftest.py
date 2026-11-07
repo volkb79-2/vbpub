@@ -1,3 +1,3 @@
 """Test-suite wiring: ``pytester`` drives the opt-in plugin tests."""
 
-pytest_plugins = ["pytester"]
+pytest_plugins = ["pytester", "cli_extended.pytest_plugin"]

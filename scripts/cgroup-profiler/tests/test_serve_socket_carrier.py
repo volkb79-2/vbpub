@@ -348,6 +348,16 @@ class _Scenario:
         observer_dir.mkdir(mode=0o751)
         self.observer_socket_path = str(observer_dir / "resource-observer.sock")
         self.barrier = _TickBarrier()
+        self.watch_wait_started = threading.Event()
+
+        def watch_wait(stop_event: threading.Event, timeout: float) -> None:
+            # Let the streaming scenario change liveness only after the
+            # initial reading has completed its state check. Otherwise a
+            # fast `stop` can race that check and make the frozen stream
+            # omit the transition it is intended to document.
+            self.watch_wait_started.set()
+            stop_event.wait(timeout)
+
         monkeypatch.setattr(damon_mod, "available", lambda: True)
         ids = iter([SESSION_ID, SESSION_ID_2])
         root, proc = _fake_roots(tmp_path)
@@ -356,7 +366,8 @@ class _Scenario:
             observer_socket_path=self.observer_socket_path,
             cgroup_root=str(root), proc_root=str(proc),
             clock=lambda: EPOCH_START, sampler_clock=_per_thread_counting_clock(),
-            sampler_sleep=self.barrier, session_id_fn=lambda: next(ids),
+            sampler_sleep=self.barrier, watch_wait=watch_wait,
+            session_id_fn=lambda: next(ids),
             accept_timeout=0.05,
         )
         self.barrier.server = self.server
@@ -441,6 +452,9 @@ class _Scenario:
         watch_client.sendall((json.dumps(watch_req) + "\n").encode("utf-8"))
         reader = _StreamReader(watch_client)
         first = reader.next()  # the attach reading, before anything changes
+        assert self.watch_wait_started.wait(timeout=10.0), (
+            "watch stream did not finish its initial state check"
+        )
 
         # A REAL state change on a REAL session, driven on demand so the
         # golden carries all three §8.2 line shapes in a fixed order. The

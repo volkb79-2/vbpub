@@ -261,7 +261,10 @@ def test_rev_c_s13_a_faked_rung_feeds_no_cliff_no_cached_ref_no_best_rung_and_no
     base, faked = go(False), go(True)
     bl, fl = base.calibration["calibration"]["ladder"], faked.calibration["calibration"]["ladder"]
     assert bl["excluded_rungs"] == [] and bl["best_read_rung_iops"] == pytest.approx(73228, rel=0.01)  # the 1 GiB rung was the fastest
-    assert fl["excluded_rungs"] == [{"dir": "read", "ws_bytes": 1 << 30, "check": "IOB-PLA-06"}]
+    assert len(fl["excluded_rungs"]) == 1
+    assert fl["excluded_rungs"][0]["dir"] == "read" and fl["excluded_rungs"][0]["ws_bytes"] == 1 << 30
+    assert fl["excluded_rungs"][0]["qd"] == 32 and fl["excluded_rungs"][0]["job"].endswith("rung-r32-1024")
+    assert fl["excluded_rungs"][0]["check"] == "IOB-PLA-06"
     assert all(r["ws_bytes"] != 1 << 30 for r in fl["rungs"] if r["dir"] == "read")
     assert fl["best_read_rung_iops"] < 0.5 * bl["best_read_rung_iops"]  # not the faked figure
     assert fl["cached_ref_iops"] != bl["cached_ref_iops"]  # computed without the dropped rung
