@@ -1,6 +1,7 @@
 """Exercise tnt through a tmux pseudo-terminal at real terminal dimensions."""
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import shlex
@@ -20,9 +21,12 @@ import pytest
 SIZES = ((60, 40), (80, 24), (120, 40), (200, 60))
 HOST_NAME = "qa-archive-host-eu-west-production-2026-cluster"
 POLL_INTERVAL_SECONDS = 0.05
+PR_SET_CHILD_SUBREAPER = 36
+PR_GET_CHILD_SUBREAPER = 37
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SGR_RE = re.compile(r"\x1b\[([0-9:;]*)m")
 HELPER = Path(__file__).with_name("tui_tmux_helper.py")
+LOCAL_MISSING_TMUX_OPT_OUT = "TNT_TEST_ALLOW_MISSING_TMUX_FOR_LOCAL_DEV"
 
 
 def _argv(executable: str | Sequence[str]) -> list[str]:
@@ -30,22 +34,93 @@ def _argv(executable: str | Sequence[str]) -> list[str]:
     return [executable] if isinstance(executable, str) else list(executable)
 
 
-def _pid_alive(pid: int) -> bool:
+def _process_stat(pid: int) -> tuple[str, int, int] | None:
     try:
         with open(f"/proc/{pid}/stat", encoding="ascii", errors="replace") as handle:
-            state = handle.read().rsplit(")", 1)[1].split()[0]
-    except (OSError, IndexError):
-        return False
-    return state not in ("Z", "X")
+            fields = handle.read().rsplit(")", 1)[1].split()
+    except FileNotFoundError:
+        return None
+    except IndexError as exc:
+        raise AssertionError(f"could not parse /proc/{pid}/stat") from exc
+    return fields[0], int(fields[1]), int(fields[2])
 
 
-def _wait_pids_gone(pids: Sequence[int], timeout: float) -> list[int]:
+def _pid_exists(pid: int) -> bool:
+    """A zombie is still present until its parent calls waitpid."""
+    state = _process_stat(pid)
+    return state is not None and state[0] != "X"
+
+
+def _process_group_members(pgids: set[int]) -> set[int]:
+    members = set()
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit():
+            pid = int(entry.name)
+            details = _process_stat(pid)
+            if details is not None and details[2] in pgids and details[0] != "X":
+                members.add(pid)
+    return members
+
+
+def _reap_process_group(pgid: int, timeout: float = 0) -> None:
+    """Reap exited children in a tmux process group, including adopted zombies."""
     deadline = time.monotonic() + timeout
-    alive = [pid for pid in pids if _pid_alive(pid)]
-    while alive and time.monotonic() < deadline:
+    while True:
+        try:
+            pid, _status = os.waitpid(-pgid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid:
+            continue
+        if time.monotonic() >= deadline:
+            return
         time.sleep(POLL_INTERVAL_SECONDS)
-        alive = [pid for pid in alive if _pid_alive(pid)]
-    return alive
+
+
+def _wait_pids_gone(pids: Sequence[int], pgids: set[int], timeout: float) -> list[int]:
+    deadline = time.monotonic() + timeout
+    remaining: set[int] = set()
+    while True:
+        for pgid in pgids:
+            _reap_process_group(pgid)
+        remaining = {pid for pid in pids if _pid_exists(pid)} | _process_group_members(pgids)
+        if not remaining or time.monotonic() >= deadline:
+            return sorted(remaining)
+        time.sleep(POLL_INTERVAL_SECONDS)
+
+
+def _tmux_executable() -> str | None:
+    executable = shutil.which("tmux")
+    if executable is not None:
+        return executable
+    if os.environ.get(LOCAL_MISSING_TMUX_OPT_OUT) == "1":
+        return None
+    raise RuntimeError(
+        "tmux is required for the tnt terminal tests; install tmux, or set "
+        f"{LOCAL_MISSING_TMUX_OPT_OUT}=1 only on a local development machine"
+    )
+
+
+@pytest.fixture(scope="session")
+def tmux_child_subreaper():
+    """Adopt tmux's orphaned descendants so this test session can wait for them."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    prior = ctypes.c_int(0)
+    if libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(prior), 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_GET_CHILD_SUBREAPER failed")
+    changed = not prior.value
+    if changed and libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER failed")
+    active = ctypes.c_int(0)
+    if libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(active), 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "PR_GET_CHILD_SUBREAPER verification failed")
+    if active.value != 1:
+        raise AssertionError("tmux test session must be a child subreaper")
+    try:
+        yield
+    finally:
+        if changed and libc.prctl(PR_SET_CHILD_SUBREAPER, 0, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "could not restore child-subreaper state")
 
 
 class PrivateTmux(list):
@@ -54,6 +129,7 @@ class PrivateTmux(list):
     def __init__(self, argv: Sequence[str]) -> None:
         super().__init__(argv)
         self.pids: set[int] = set()
+        self.pgids: set[int] = set()
 
     def track(self) -> None:
         """Record the server and pane pids while the server is alive (a no-op once it has gone)."""
@@ -63,36 +139,53 @@ class PrivateTmux(list):
         server = _tmux(self, "display-message", "-p", "#{pid}", check=False)
         if server.returncode == 0 and server.stdout.strip().isdigit():
             self.pids.add(int(server.stdout.strip()))
+        for pid in self.pids:
+            details = _process_stat(pid)
+            if details is not None:
+                pgid = details[2]
+                if pgid == os.getpgrp():
+                    raise AssertionError(
+                        f"refusing to manage tmux process group {pgid}: it is the test group"
+                    )
+                self.pgids.add(pgid)
 
 
 def _stop_private_server(command: PrivateTmux) -> None:
-    """Kill the private tmux server and everything in its panes, and wait until they are really gone.
+    """Kill the private server and reap its panes, requiring their /proc entries to disappear.
 
-    ``kill-session`` on the last session (or the helper exiting) only asks the server to
-    quit; the server and the pane process then linger for a moment after the test
-    returns, which is what assay's leaked-process-tree check saw. Remembering the pids
-    while the server is alive and waiting for them makes the teardown synchronous,
-    whether the test passed, failed or timed out.
+    Killing the last session asks the server to quit; orphaned server and pane
+    processes are adopted by this fixture's child-subreaper session. A zombie
+    still has a /proc entry, so waitpid(-pgid) must reap each process group before
+    teardown can succeed, whether the test passed, failed or timed out.
     """
     command.track()
     pids = sorted(command.pids)
     _tmux(command, "kill-server", check=False)
-    survivors = _wait_pids_gone(pids, 15)
+    survivors = _wait_pids_gone(pids, command.pgids, 15)
+    if survivors:
+        for pgid in command.pgids:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
     for pid in survivors:
         try:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-    survivors = _wait_pids_gone(survivors, 15)
+    survivors = _wait_pids_gone(pids, command.pgids, 15)
     assert not survivors, f"tmux test teardown left processes behind: {survivors}"
 
 
 @pytest.fixture
-def tmux_command():
+def tmux_command(tmux_child_subreaper):
     """A tmux command bound to a private socket, so the test never touches (or leaks) the default server."""
-    executable = shutil.which("tmux")
+    try:
+        executable = _tmux_executable()
+    except RuntimeError as exc:
+        pytest.fail(str(exc), pytrace=False)
     if executable is None:
-        pytest.skip("tmux is not installed in tester-unified; package Debian trixie tmux there (TNT-54)")
+        pytest.skip(f"tmux is missing and {LOCAL_MISSING_TMUX_OPT_OUT}=1 is set for local development")
     # AF_UNIX paths are short; pytest's tmp_path can exceed the limit, so use a dedicated short directory.
     socket_dir = Path(tempfile.mkdtemp(prefix="tnt-tmux-"))
     command = PrivateTmux((executable, "-f", "/dev/null", "-S", str(socket_dir / "sock")))
@@ -470,15 +563,38 @@ def test_tui_in_real_tmux_terminal(size, tmp_path, tmux_command):
         _tmux(executable, "kill-session", "-t", session, check=False)
 
 
-def test_private_server_teardown_kills_server_and_pane_synchronously(tmux_command):
-    """The fixture's teardown must leave neither a tmux server nor a pane process (assay leak check)."""
+def test_missing_tmux_fails_without_local_development_opt_out(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.delenv(LOCAL_MISSING_TMUX_OPT_OUT, raising=False)
+
+    with pytest.raises(RuntimeError, match="tmux is required"):
+        _tmux_executable()
+
+
+def test_local_development_opt_out_is_required_to_allow_missing_tmux(monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    monkeypatch.setenv(LOCAL_MISSING_TMUX_OPT_OUT, "1")
+
+    assert _tmux_executable() is None
+
+
+def test_tmux_child_subreaper_fixture_sets_the_flag(tmux_child_subreaper):
+    libc = ctypes.CDLL(None, use_errno=True)
+    active = ctypes.c_int(0)
+    assert libc.prctl(PR_GET_CHILD_SUBREAPER, ctypes.byref(active), 0, 0, 0) == 0
+    assert active.value == 1
+
+
+def test_private_server_teardown_reaps_server_and_pane(tmux_command):
+    """Teardown must reap the tmux server and pane, not mistake zombies for gone processes."""
     _tmux(tmux_command, "new-session", "-d", "-s", "leakprobe", "sleep 300")
     tmux_command.track()
     pids = sorted(tmux_command.pids)
-    assert len(pids) == 2 and all(_pid_alive(pid) for pid in pids), pids
+    assert len(pids) == 2 and all(_pid_exists(pid) for pid in pids), pids
 
     _stop_private_server(tmux_command)
 
-    assert not [pid for pid in pids if _pid_alive(pid)]
+    assert not [pid for pid in pids if _pid_exists(pid)]
+    assert not _process_group_members(tmux_command.pgids)
     # A second teardown (the fixture's own) on an already-dead server is a harmless no-op.
     _stop_private_server(tmux_command)

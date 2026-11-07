@@ -1,5 +1,7 @@
 # tnt's executable gate matrix. CMRU release gates run r0-r1 and ux-focused.
-# Real tmux terminal cases skip until tester-unified includes tmux (TNT-54).
+# tester-unified installs tmux (TNT-54); the r0-r1, ux-focused and R2 suites
+# require it, and fail if it is missing. The local-development skip is disabled
+# in each registered gate.
 # No test touches a real host: live-v27 is a separate, operator-run lane (docs/DESIGN.md section 9).
 schema_version = 1
 
@@ -8,7 +10,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "cd {worktree}/truenas/tnt && /opt/tester-venv/bin/python3 -m pip install --no-deps setuptools==82.0.1 wheel==0.47.0 websocket-client==1.8.0 && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation -e . && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation 'truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297' && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 nice /opt/tester-venv/bin/python3 -m pytest tests -q -p no:xdist --cov=tnt --cov-branch --cov-fail-under=97 --cov-report=term-missing --cov-report=json:coverage.json",
+  "cd {worktree}/truenas/tnt && /opt/tester-venv/bin/python3 -m pip install --no-deps setuptools==82.0.1 wheel==0.47.0 websocket-client==1.8.0 && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation -e . && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation 'truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297' && unset TNT_TEST_ALLOW_MISSING_TMUX_FOR_LOCAL_DEV && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 nice /opt/tester-venv/bin/python3 -m pytest tests -q -p no:xdist --cov=tnt --cov-branch --cov-fail-under=97 --cov-report=term-missing --cov-report=json:coverage.json",
 ]
 clean_tree = false
 budget = "20m"
@@ -22,7 +24,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "cd {worktree}/truenas/tnt && /opt/tester-venv/bin/python3 -m pip install --no-deps setuptools==82.0.1 wheel==0.47.0 websocket-client==1.8.0 && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation -e . && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation 'truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297' && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 nice /opt/tester-venv/bin/python3 -m pytest -q -p no:xdist tests/test_management_core_views.py tests/test_tui.py tests/test_tui_hosts.py tests/test_tui_ux.py tests/test_tui_tmux.py",
+  "cd {worktree}/truenas/tnt && /opt/tester-venv/bin/python3 -m pip install --no-deps setuptools==82.0.1 wheel==0.47.0 websocket-client==1.8.0 && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation -e . && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation 'truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297' && unset TNT_TEST_ALLOW_MISSING_TMUX_FOR_LOCAL_DEV && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 nice /opt/tester-venv/bin/python3 -m pytest -q -p no:xdist tests/test_management_core_views.py tests/test_tui.py tests/test_tui_hosts.py tests/test_tui_ux.py tests/test_tui_tmux.py",
 ]
 clean_tree = false
 budget = "10m"
@@ -35,10 +37,15 @@ memory = "1g"
 # are installed once here, then the worktree's Assay judges the `tnt` lane declared in
 # assay.toml (resumable; verdict in .assay/verdict-r2.json). NOT part of the cmru
 # release gate (cmru.toml runs r0-r1 and ux-focused only); start it after R0/R1/R3 and
-# review pass, from a committed clean worktree. Acceptance command:
-#   run-gate r2 --worktree <committed worktree>     (remote-gate.py ... r2 for netcup hosts)
-# --jobs 3 equals judge.mutation.jobs_max and the lane's 3 CPUs; the budget is a
-# placeholder until a bounded pilot measures the candidate count and rate.
+# review pass, from a committed clean worktree. The operator starts every attempt:
+#   run-gate r2 --worktree <same committed worktree>
+# After each BUDGET_EXCEEDED result, run that command again against the same
+# worktree and commit. Assay resumes completed candidates from
+# .assay/mutation-state-r2; a budget-ended attempt is incomplete, not a verdict.
+# There is no --campaign-deadline, so there is no campaign-wide clock. Assay's
+# 24h budget applies to each invocation; Run-Gate's 25h budget includes setup.
+# At the measured rate, the ~64h campaign needs about three invocations.
+# --jobs 3 equals judge.mutation.jobs_max and the lane's 3 CPUs.
 [lanes.r2]
 kind = "command"
 resource_observer = "cgprofile"
@@ -48,7 +55,7 @@ argv = [
   "cd {worktree}/truenas/tnt && /opt/tester-venv/bin/python3 -m pip install --no-deps setuptools==82.0.1 wheel==0.47.0 websocket-client==1.8.0 && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation -e . && /opt/tester-venv/bin/python3 -m pip install --no-deps --no-build-isolation 'truenas_api_client @ git+https://github.com/truenas/api_client.git@2a04491953d38c13f13f40729d2a4966a77c6297' && export PYTHONPATH={worktree}/assay/src:{worktree}/libraries/cowtree/src && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run tnt --file assay.toml --jobs 3 --resume --state-dir .assay/mutation-state-r2 --progress .assay/progress-r2.jsonl --verdict-json .assay/verdict-r2.json",
 ]
 clean_tree = true
-budget = "12h"
+budget = "25h"
 artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
 
 [lanes.r2.resources]

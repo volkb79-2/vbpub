@@ -325,8 +325,13 @@ def test_lock_owner_refusal_closes_the_lock_descriptor(tmp_path, monkeypatch):
         current = real_fstat(fd)
         return SimpleNamespace(st_mode=current.st_mode, st_uid=os.geteuid() + 1)
 
-    monkeypatch.setattr(host_store.os, "open", capture_open)
-    monkeypatch.setattr(host_store.os, "fstat", wrong_owner)
+    # host_store.os is the process-wide os module. Patch an isolated proxy so
+    # background workers and pytest internals continue to receive real stat
+    # results while this lock check sees the simulated wrong owner.
+    isolated_os = SimpleNamespace(**vars(os))
+    isolated_os.open = capture_open
+    isolated_os.fstat = wrong_owner
+    monkeypatch.setattr(host_store, "os", isolated_os)
     with pytest.raises(ProfileError, match="unsafe host-file lock"):
         with host_store._serialized(paths, create_parents=False):
             pytest.fail("the unsafe lock must be refused before yielding")
