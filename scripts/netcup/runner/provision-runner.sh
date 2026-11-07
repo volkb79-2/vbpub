@@ -45,7 +45,23 @@ else
   fi
   useradd --create-home --uid "$RUNNER_UID" --user-group --shell /bin/bash "$RUNNER_USER"
 fi
-getent group docker >/dev/null || groupadd docker
+docker_group_entry=$(getent group docker) || {
+  groupadd docker
+  docker_group_entry=$(getent group docker) || {
+    echo 'local docker group is unavailable after group creation' >&2
+    exit 2
+  }
+}
+docker_group_gid=${docker_group_entry#*:*:}
+docker_group_gid=${docker_group_gid%%:*}
+[[ $docker_group_gid =~ ^[1-9][0-9]*$ ]] || {
+  echo "local docker group has an invalid GID: ${docker_group_gid:-missing}" >&2
+  exit 2
+}
+if [[ -e /etc/host-endpoints.env || -L /etc/host-endpoints.env ]]; then
+  load_host_endpoints /etc/host-endpoints.env || exit $?
+  require_host_docker_group_match
+fi
 usermod -aG docker "$RUNNER_USER"
 
 identity_check

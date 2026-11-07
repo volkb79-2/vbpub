@@ -198,6 +198,51 @@ public, and `netcup.toml` remains limited to API endpoint settings. The
 browser may also require an interactive second factor. See the live check
 below for the observed console and automation limit.
 
+## Runner cockpit uses the host endpoint record
+
+The runner cockpit is recreated from host setup facts rather than a second
+copy of service paths and group IDs in `runner.env`. The endpoint publishers
+own their socket paths and GIDs; the aggregate record is the source the
+launcher reads. This keeps each service's configured path authoritative and
+makes a missing install or stale publication fail before the cockpit is
+replaced, with the missing variable named for repair.
+
+The record is privileged input because the launcher controls Docker on the
+host, so its loader treats the file as data rather than sourcing it. It
+requires a regular non-symlink file owned by root with no group or other write
+permission, accepts only comments, blank lines and the published `KEY=VALUE`
+alphabet, rejects duplicate keys, and exports only the runner's known keys.
+Paths must be absolute and each socket directory must match its socket's
+parent; GIDs must be canonical positive decimal values. A malformed line
+fails with its file and line number before any container is replaced.
+
+The launcher gives the cockpit the record's numeric Docker, cgprofile-control,
+topos-observe and BuildKit GIDs. Numeric IDs preserve the host group identity
+inside the container even though its group table is different. The observer
+GID is deliberately left for Run-Gate to grant to observer lanes, so the
+cockpit itself does not gain observer access. Both the observer socket and
+its directory are passed into the cockpit so Run-Gate observer preflights and
+assay launchers can read the authoritative socket path. Socket directories
+are mounted read-only at their recorded paths: Unix socket clients can
+connect through these identity mounts while the container cannot replace host
+directory entries. This also lets Run-Gate inspect the observer directory
+before it creates a lane container.
+
+Provisioning runs before the endpoint aggregate is normally published. During
+that bootstrap step only, `provision-runner.sh` uses the host group named
+`docker`; it does not select a numeric GID. Host-setup later publishes the GID
+of that same group. A provisioning rerun checks an existing record, and
+cockpit startup refuses if the record's Docker GID differs from the local
+`docker` group. This preserves the published host fact without requiring the
+record before its publisher has run.
+
+The endpoint record is part of the runner host's installation contract. When
+the launcher names a missing value, repair it through the service or host-setup
+publisher that owns that value, verify the published record with the host
+checker, and recreate the cockpit. Do not maintain a parallel endpoint list
+in the runner configuration. The operational sequence is in
+[CONSUMERS.md](CONSUMERS.md#runner-cockpit-endpoints).
+
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,
