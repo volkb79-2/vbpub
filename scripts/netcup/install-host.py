@@ -1490,9 +1490,24 @@ def _load_custom_script_file(path: str) -> tuple[str, Optional[str]]:
         raise CliFailure(f"invalid completionMarker in {path}: {exc}", exit_code=2) from exc
     declared_config = parsed.get("config")
     embedded_config = _customscript_v2_config(custom_script, source=path)
+    v2_config_markers = {
+        "partitioning",
+        "root_max_size_gb",
+        "root_resize_policy",
+        "disk_layout",
+        "data_area",
+        "data_partition",
+        "data_lvm",
+        "state_dir",
+        "controller_ssh_pubkey",
+        "run_io_benchmark",
+    }
     is_v2_bundle = (
         "VBPUB_CONFIG_EXTRA_JSON=" in custom_script
-        or (isinstance(declared_config, dict) and "schema_version" in declared_config)
+        or (
+            isinstance(declared_config, dict)
+            and bool(v2_config_markers.intersection(declared_config))
+        )
     )
     if is_v2_bundle:
         if declared_config is None:

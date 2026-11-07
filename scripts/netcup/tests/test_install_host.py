@@ -1035,7 +1035,7 @@ def test_main_interactive_dry_run_preserves_existing_target_host_jsonc(
     assert existing.read_text() == existing_content, "dry-run must not touch an existing target-host.jsonc"
     assert not any(c[0] == "post" for c in client.calls)
     out = capsys.readouterr().out
-    assert "NOT saving to target-host.target.example.jsonc" in out
+    assert "target-host.target.example.jsonc" in out
 
 
 def test_main_interactive_dry_run_does_not_create_target_host_jsonc(

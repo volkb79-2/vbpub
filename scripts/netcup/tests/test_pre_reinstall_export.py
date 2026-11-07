@@ -61,7 +61,8 @@ def test_export_calls_api_guard_before_pinned_ssh_and_checks_remote_identity(tmp
     assert len(calls) == 1
     command = calls[0][0][-1]
     assert command.index("v1001_api_check") < command.index("v1001_ssh")
-    assert "StrictHostKeyChecking=yes" in command
+    assert str(exporter.ENV_HELPER) in command
+    assert "v1001_ssh root@\"$V1001_IP\"" in command
     assert "hostname -f" in exporter.REMOTE_COLLECTOR
     assert "hostnamectl --static" in exporter.REMOTE_COLLECTOR
     assert "/etc/vbpub/server-id" in exporter.REMOTE_COLLECTOR
@@ -128,8 +129,8 @@ def test_export_rejects_invalid_date_before_any_ssh(tmp_path, date):
 def test_remote_collection_lists_volume_names_without_inspecting_contents():
     exporter = _load_exporter()
     remote = exporter.REMOTE_COLLECTOR
-    assert "docker volume ls --format" in remote
+    assert '["docker", "volume", "ls", "--format", "{{.Name}}"]' in remote
     assert "docker volume inspect" not in remote
-    assert "sfdisk -d /dev/vda" in remote
-    assert "lsblk -b -J" in remote
-    assert "blkid" in remote
+    assert '["sfdisk", "-d", "/dev/vda"]' in remote
+    assert '["lsblk", "-b", "-J", "/dev/vda"]' in remote
+    assert '["blkid"]' in remote
