@@ -84,7 +84,7 @@ def test_run_gate_consumer_identity_is_documented_for_all_adopters():
 
 
 def test_package_contract_mirrors_canonical_contract_byte_for_byte():
-    canonical = ROOT.parents[1] / "run-gate-project" / "nyxloom-trove" / "RG55-INTERFACE-CONTRACT.md"
+    canonical = ROOT.parent / "run-gate-project" / "nyxloom-trove" / "RG55-INTERFACE-CONTRACT.md"
     local = ROOT / "docs" / "RG55-INTERFACE-CONTRACT.md"
     assert local.read_bytes() == canonical.read_bytes()
 
@@ -193,7 +193,7 @@ def test_the_registered_github_release_body_is_documented_in_every_adopter_docum
     assert "was written and not rolled back" in design and "exactly the intended body" in design
 
     # CONSUMERS (how): a pasteable preview and the single-handler rule.
-    assert "cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 2.0.0 --dry-run" in consumers
+    assert "cmru release cgprofile --config cmru.orchestration.toml --set-version 3.0.0 --dry-run" in consumers
     assert "----- begin release body -----" in consumers and "----- end release body -----" in consumers
     assert pasteable in consumers and "oci-image-release" in consumers  # named only as forbidden
     assert "only command of `[steps.push]`" in consumers

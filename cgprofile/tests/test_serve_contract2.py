@@ -1,6 +1,6 @@
 """cgprofiled control contract 2 in the daemon: negotiation, ownership, the config
 verbs, gc arguments, status states and the live-reload plumbing
-(PROTOCOL 10.1-10.7, CGPCTL-SPEC 3).
+(PROTOCOL 10.1-10.7, CGPROFILECTL-SPEC 3).
 
 Everything drives `SessionServer._dispatch` with an explicit peer
 `(pid, uid, gid)` so the SO_PEERCRED-derived context is exercised without a

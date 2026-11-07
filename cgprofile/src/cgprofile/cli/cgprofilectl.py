@@ -1,15 +1,14 @@
-"""``cgprofilectl``: the client console script (CGPCTL-SPEC.md section 2).
+"""``cgprofilectl``: the socket client of the host daemon (CGPROFILECTL-SPEC.md section 2).
 
-The registry is built on cli-extended. Daemon verbs speak the ctl wire through
-:mod:`cgprofile.ctlwire` (standard library only); the report renderer is
-imported only inside ``report``; ``mark`` imports nothing outside the standard
-library and cli-extended (a test pins this).
+The registry is built on cli-extended. Every verb speaks the ctl wire through
+:mod:`cgprofile.ctlwire` (standard library only). The local verbs (``run``, ``mark``,
+``report``, ``analyze``, ``skills``) belong to the end-user client ``cgprofile``
+(:mod:`cgprofile.cli.cgprofile`).
 """
 
 from __future__ import annotations
 
 import argparse
-import functools
 import grp
 import json
 import os
@@ -17,32 +16,27 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
-import tempfile
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from cli_extended import (
     ArgumentSpec,
-    CliFailure,
     CliIdentity,
     CliRegistry,
     CliRuntime,
-    OptionSpec,
     RegisteredCli,
     VerbGroup,
     VerbSpec,
     register_doctor,
-    register_skills_verbs,
 )
 from cli_extended.doctor import CheckResult, DoctorCheck
 
 from .. import ctlwire
 from ..ctlwire import CAUSE_REMEDY, CLIENT_CONTRACTS, WireFailure
 from ..version import installed_version
+from ._common import REPORT_EXTRA_HINT, SCHEMA, bad as _bad, emit, guarded, opt as _opt, socket_option, socket_path
 
-SCHEMA = 1
 TUNABLE_KEYS = (
     "allow_uids", "interval", "damon_default", "keep_sessions", "keep_days",
     "export_max_bytes", "max_sessions", "max_exports", "max_watchers",
@@ -52,8 +46,6 @@ _KEY_TYPES = {
     "keep_sessions": "int", "keep_days": "int", "export_max_bytes": "int",
     "max_sessions": "int", "max_exports": "int", "max_watchers": "int",
 }
-DIRECT_MODE_REFUSAL = "direct mode needs cgroupfs; use 'cgprofilectl start' against the host daemon"
-REPORT_EXTRA_HINT = "pip install 'cgprofile[report]'"
 OBSERVER_DIR = "/run/cgprofile/observer"
 OBSERVER_SOCKET = "/run/cgprofile/observer/cgprofile.sock"
 SLICE_DIR = "/sys/fs/cgroup/cgprofile.slice"
@@ -64,43 +56,7 @@ def identity() -> CliIdentity:
                        long_name="cgroup resource profiler client", command="cgprofilectl")
 
 
-# ── shared plumbing ─────────────────────────────────────────────────────────
-
-def _bad(message: str, code: str = "bad-argument") -> WireFailure:
-    return WireFailure(message, exit_code=2, code=code)
-
-
-def _fail(runtime: CliRuntime, exc: WireFailure) -> int:
-    """Render a failure: the ``--json`` error document, or one ``[ERROR]`` line plus the remedy."""
-    if runtime.json_mode:
-        runtime.output.error(exc.message)
-        runtime.output.primary({"schema": SCHEMA, "ok": False, "error": {
-            "code": exc.code, "message": exc.message, "cause": exc.cause}})
-        return exc.exit_code
-    message = f"{exc.message} (cause: {exc.cause})" if exc.cause else exc.message
-    raise CliFailure(message, exit_code=exc.exit_code,
-                     hint=CAUSE_REMEDY.get(exc.cause) if exc.cause else None)
-
-
-def guarded(handler: Callable[[argparse.Namespace, CliRuntime], Optional[int]]):
-    """Turn a ``WireFailure`` into the CLI's exit code and, under ``--json``, its error document."""
-    @functools.wraps(handler)
-    def run(args: argparse.Namespace, runtime: CliRuntime) -> Optional[int]:
-        try:
-            return handler(args, runtime)
-        except WireFailure as exc:
-            return _fail(runtime, exc)
-    return run
-
-
-def socket_path(args: argparse.Namespace) -> str:
-    return ctlwire.resolve_socket(getattr(args, "socket", None))[0]
-
-
-def emit(runtime: CliRuntime, doc: Dict[str, Any], lines: Sequence[str]) -> None:
-    body = {"schema": SCHEMA, "ok": True, **doc}
-    runtime.output.primary(body if runtime.json_mode else "\n".join(lines))
-
+# ── shared plumbing (the rest lives in ._common) ────────────────────────────
 
 def _iso(value: Any) -> Optional[str]:
     return value if isinstance(value, str) else None
@@ -364,64 +320,6 @@ def _watch(args: argparse.Namespace, runtime: CliRuntime) -> None:
             runtime.output.primary(_watch_line(doc))
 
 
-# ── report ──────────────────────────────────────────────────────────────────
-
-def _render(run_path: str, out_dir: str, html: bool, md: bool) -> List[Dict[str, Any]]:
-    """Render a run directory into ``out_dir``. Needs the ``report`` extra."""
-    try:
-        from .. import analyze, report_html, report_md, store
-    except ImportError as exc:
-        raise WireFailure(f"the report extra is not installed ({exc}); install it with {REPORT_EXTRA_HINT}",
-                          exit_code=1, code="report-extra-missing") from exc
-    os.makedirs(out_dir, exist_ok=True)
-    run = store.RunDir(os.path.dirname(run_path), os.path.basename(run_path), create=False)
-    analysis = analyze.build(run)
-    written: List[str] = []
-    if html:
-        written.append(report_html.render(analysis, os.path.join(out_dir, "report.html")))
-    if md:
-        written.append(report_md.render(analysis, out_dir))
-    return [{"path": os.path.basename(p), "bytes": os.path.getsize(p)} for p in written]
-
-
-def _write_parts(parts: Dict[str, bytes], directory: str) -> None:
-    os.makedirs(directory, exist_ok=True)
-    for name, body in parts.items():
-        with open(os.path.join(directory, os.path.basename(name)), "wb") as handle:
-            handle.write(body)
-
-
-@guarded
-def _report(args: argparse.Namespace, runtime: CliRuntime) -> None:
-    html, md = not args.md_only, not args.html_only
-    if args.run_dir:
-        if args.session or args.export_only:
-            raise _bad("report --run-dir takes no session id and no --export-only")
-        run_path = os.path.realpath(args.run_dir)
-        if not os.path.isdir(run_path):
-            raise _bad(f"run directory does not exist: {args.run_dir}")
-        out_dir = args.out or run_path
-        label = os.path.basename(run_path)
-        files = _render(run_path, out_dir, html, md)
-    else:
-        if not args.session:
-            raise _bad("report needs a session id or --run-dir DIR")
-        label = args.session
-        parts = ctlwire.export_parts(socket_path(args), args.session)
-        if args.export_only:
-            _write_parts(parts, args.export_only)
-            out_dir = args.export_only
-            files = [{"path": n, "bytes": len(b)} for n, b in sorted(parts.items())]
-        else:
-            out_dir = args.out or f"./cgprofile-report-{args.session}"
-            with tempfile.TemporaryDirectory(prefix="cgprofile-export-") as scratch:
-                run_path = os.path.join(scratch, args.session)
-                _write_parts(parts, run_path)
-                files = _render(run_path, out_dir, html, md)
-    emit(runtime, {"session": label, "out_dir": out_dir, "files": files},
-         [os.path.join(out_dir, f["path"]) for f in files])
-
-
 # ── prune ───────────────────────────────────────────────────────────────────
 
 @guarded
@@ -446,46 +344,6 @@ def _prune(args: argparse.Namespace, runtime: CliRuntime) -> None:
     removed = list(doc.get("removed", []))
     emit(runtime, {"dry_run": False, "removed": removed, "kept": doc.get("kept")},
          [f"removed {s}" for s in removed] or ["nothing removed"])
-
-
-# ── run / mark (no daemon) ──────────────────────────────────────────────────
-
-@guarded
-def _run(args: argparse.Namespace, runtime: CliRuntime) -> int:
-    from .. import access, direct
-
-    command = list(args.command)
-    if command[:1] == ["--"]:
-        command = command[1:]
-    if not command:
-        raise _bad("nothing to run: put the command after `--`")
-    if not access.have_host_cgroup_view():
-        raise _bad(DIRECT_MODE_REFUSAL, "direct-mode-unavailable")
-    outcome = direct.run_command(command, out_dir=os.path.realpath(args.out_dir), phase=args.phase,
-                                 cgprofilectl_dir=os.path.dirname(os.path.realpath(sys.argv[0])))
-    emit(runtime, {"run_dir": outcome.run_dir, "exit_status": outcome.exit_status,
-                   "duration_seconds": outcome.duration_seconds},
-         [outcome.run_dir, f"command exited {outcome.exit_status}"])
-    return outcome.exit_status if args.propagate_exit else 0
-
-
-@guarded
-def _mark(args: argparse.Namespace, runtime: CliRuntime) -> None:
-    run_path = os.environ.get("CGPROFILE_RUN_DIR")
-    if not run_path:
-        raise _bad("CGPROFILE_RUN_DIR is not set: run this inside `cgprofilectl run`", "no-run-dir")
-    if not os.path.isdir(run_path):
-        raise _bad(f"run directory does not exist: {run_path}", "no-run-dir")
-    try:
-        meta = json.loads(args.meta) if args.meta else {}
-    except json.JSONDecodeError as exc:
-        raise _bad(f"--meta must be valid JSON: {exc}") from exc
-    if not isinstance(meta, dict):
-        raise _bad("--meta must be a JSON object")
-    from .. import phases
-
-    mark = phases.emit_mark(run_path, args.name, kind=args.kind, meta=meta)
-    emit(runtime, {"name": mark.name, "kind": mark.kind}, [f"mark {mark.kind}:{mark.name}"])
 
 
 # ── config ──────────────────────────────────────────────────────────────────
@@ -811,12 +669,6 @@ DOCTOR_CHECKS = (
 
 # ── registry ────────────────────────────────────────────────────────────────
 
-def _opt(flags: str, description: str, *, group: str = "OPTIONS", metavar: Optional[str] = None,
-         mutually_exclusive_group: Optional[str] = None, **parser_kwargs: Any) -> OptionSpec:
-    return OptionSpec(tuple(flags.split("/")), description, group=group, metavar=metavar,
-                      parser_kwargs=parser_kwargs, mutually_exclusive_group=mutually_exclusive_group)
-
-
 def _session_arg() -> ArgumentSpec:
     return ArgumentSpec("session", "the session id (s-...)", metavar="ID")
 
@@ -825,10 +677,9 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     """Build the registered CLI; import-safe (nothing runs until ``.run()``)."""
     registry = CliRegistry(
         cli_identity or identity(), prog="cgprofilectl",
-        description="Control the cgprofile host daemon and profile commands locally.",
+        description="Control the cgprofile host daemon over its control socket.",
         getting_started=("cgprofilectl status", "cgprofilectl sessions", "cgprofilectl doctor"),
-        global_options=(_opt("--socket", "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
-                             group="CONNECTION", metavar="PATH"),),
+        global_options=(socket_option(),),
         unexpected_exceptions="report",
     )
     read = VerbGroup.EXPLORATION.value
@@ -886,21 +737,6 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
                       metavar="SECONDS", type=float, default=30),),
         handler=_watch))
     registry.register(VerbSpec(
-        "report", description="export a stored session and render its report locally", group=read,
-        expensive=True, include_progress=False,
-        examples=("cgprofilectl report s-20261104T101500Z-9f01", "cgprofilectl report --run-dir ./runs/run-1 --md-only"),
-        arguments=(ArgumentSpec("session", "the session id (omit with --run-dir)", metavar="ID",
-                                parser_kwargs={"nargs": "?"}),),
-        options=(
-            _opt("--out", "output directory (default ./cgprofile-report-<session>/)", group="OUTPUT", metavar="DIR"),
-            _opt("--run-dir", "render a standalone run result; needs no daemon", group="SOURCE", metavar="DIR"),
-            _opt("--export-only", "write the raw exported parts here and render nothing", group="SOURCE", metavar="DIR"),
-            _opt("--html-only", "write only report.html", group="OUTPUT", action="store_true",
-                 mutually_exclusive_group="format"),
-            _opt("--md-only", "write only report.md", group="OUTPUT", action="store_true",
-                 mutually_exclusive_group="format"),
-        ), handler=_report))
-    registry.register(VerbSpec(
         "prune", description="apply stored-session retention now", group=modify, mutating=True, dry_run=True,
         confirmation_required=True, include_progress=False,
         dry_run_help="list the sessions that would be removed",
@@ -909,25 +745,6 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
                  _opt("--keep-days", "keep sessions at most this many days for this call", group="RETENTION",
                       metavar="DAYS", type=int)),
         handler=_prune))
-    registry.register(VerbSpec(
-        "run", description="profile one command locally (direct mode, needs cgroupfs)", group=modify,
-        mutating=True, expensive=True, include_progress=False, confirmation_required=False,
-        examples=("cgprofilectl run --phase build -- make",),
-        arguments=(ArgumentSpec("command", "the command to profile, after --", metavar="CMD",
-                                parser_kwargs={"nargs": argparse.REMAINDER}),),
-        options=(_opt("--phase", "phase name of the whole command (default: its basename)", group="RUN", metavar="NAME"),
-                 _opt("--out-dir", "directory receiving the run directory", group="RUN", metavar="DIR",
-                      default="./cgprofile-runs"),
-                 _opt("--propagate-exit", "exit with the command's own status", group="RUN", action="store_true")),
-        handler=_run))
-    registry.register(VerbSpec(
-        "mark", description="append a phase mark to the current run ($CGPROFILE_RUN_DIR)", group=modify,
-        mutating=True, confirmation_required=False, include_progress=False,
-        examples=("cgprofilectl mark restoring-database",),
-        arguments=(ArgumentSpec("name", "the mark name", metavar="NAME"),),
-        options=(_opt("--kind", "phase or event", group="MARK", metavar="KIND", choices=("phase", "event"), default="phase"),
-                 _opt("--meta", "JSON object of extra fields", group="MARK", metavar="JSON")),
-        handler=_mark))
     config = CliRegistry(
         registry.identity, prog="cgprofilectl config", description="Show and change the daemon's settings.",
         global_options=registry.global_options, unexpected_exceptions="report")
@@ -954,7 +771,6 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
                                delegate=config.build()))
     register_doctor(registry, DOCTOR_CHECKS,
                     description="diagnose the install, the socket, the caller and the daemon")
-    register_skills_verbs(registry, package="cgprofile")
     return registry.build()
 
 

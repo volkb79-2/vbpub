@@ -1,10 +1,11 @@
-# cgroup-profiler consumers
+# cgprofile consumers
 
-The supported operator front door is the `cgprofilectl` console script of the wheel:
+The supported operator front door is the `cgprofile` console script of the wheel (`cgprofilectl` is the
+socket client of the daemon, `cgprofiled` the daemon; 2.x called them `cgpctl` and `cgpd`):
 
 ```bash
-cgprofilectl --version
-# cgprofilectl <installed-version>
+cgprofile --version
+# cgprofile <installed-version>
 ```
 
 The probe prints one identity line and exits 0; it needs neither the daemon nor
@@ -12,7 +13,7 @@ the `report` extra. The version is the installed wheel's (an untagged build is
 `0.0.0-dev`). Help, usage and error output at every depth begin with the
 matching identity headline (cli-extended contract, `docs/CLI-SPEC.md`). Use
 [`ATTACH-GUIDE.md`](../ATTACH-GUIDE.md) for the complete gate integration
-recipe, [`CGPCTL-SPEC.md`](CGPCTL-SPEC.md) for every verb, and the
+recipe, [`CGPROFILECTL-SPEC.md`](CGPROFILECTL-SPEC.md) for every verb, and the
 [migration table](#migration-table-1x-command-to-cgprofilectl-verb) when an older
 command or script needs translating.
 
@@ -20,7 +21,7 @@ command or script needs translating.
 
 The daemon is a native systemd service installed from pinned wheels by
 `cgprofiled install`. Phase-1 releases are not deployed to cockpit hosts until
-phase 2 updates mdt host-setup; keep `CGPROFILE_WHEEL` below `2.2.0` until the
+phase 2 updates mdt host-setup; keep `CGPROFILE_WHEEL` below `3.0.0` until the
 operator's drained cutover. Old and new clients do not interoperate.
 
 For the first install, bootstrap the CLI from the two wheel files. Set the
@@ -123,7 +124,7 @@ dated section of `CHANGES.md` as the body. Preview the exact text before releasi
 repository root:
 
 ```bash
-cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 2.0.0 --dry-run
+cmru release cgprofile --config cmru.orchestration.toml --set-version 3.0.0 --dry-run
 ```
 
 The preview prints the complete body between `----- begin release body -----` and
@@ -143,13 +144,13 @@ inspect the `cgprofile-v<version>` release and its tag before retrying (see the
 
 ## One-shot collector behavior
 
-If `cgprofilectl run` requests DAMON while the host's `nr_kdamonds` registry is
+If `cgprofile run` requests DAMON while the host's `nr_kdamonds` registry is
 nonempty, the collector refuses to resize it, even when its existing monitors
 are stopped, because Linux rebuilds every kdamond entry on a count write. The
 collector logs DAMON as unavailable, signals readiness, and continues ordinary
 cgroup, CPU and memory sampling. A later DAMON collection or cleanup failure
 also disables only DAMON and still writes the normal finished manifest.
-`cgprofilectl run` still launches the wrapped command; a DAMON problem must not
+`cgprofile run` still launches the wrapped command; a DAMON problem must not
 change the command's exit status (R-36h). Confirm actual DAMON collection from
 a persisted `damon.jsonl` series, not from `cgprofilectl doctor` or a visible DAMON
 sysfs directory alone. Independent one-shot processes coordinate with the
@@ -564,7 +565,7 @@ start idempotent. The `meta` object is required and its `kind` is either
 
 Use the installed Run-Gate wheel, not a copied project-local `run-gate.py`
 script. Check the installed SemVer with `run-gate --version` before adopting a
-lane; see [Run-Gate's wheel contract](../../../run-gate-project/CONSUMERS.md#distribution-installed-wheel-and-semver).
+lane; see [Run-Gate's wheel contract](../../run-gate-project/CONSUMERS.md#distribution-installed-wheel-and-semver).
 
 The following is a minimal shell-shaped integration. Replace the image,
 command, and metadata values for the consuming project:
@@ -603,7 +604,7 @@ In production code, put the stop call in the lane's `finally`/cleanup path so
 it runs when the lane fails. Read the `cgprofilectl` exit status directly: `0` is a
 valid response, `2` is a usage or daemon-declared contract error, and `3` is
 unreachable or malformed-daemon state
-([`CGPCTL-SPEC.md`](CGPCTL-SPEC.md) section 1). Do not pipe the command through
+([`CGPROFILECTL-SPEC.md`](CGPROFILECTL-SPEC.md) section 1). Do not pipe the command through
 a pager when deciding whether the stop succeeded.
 
 For `cgprofilectl start`, an exit-2 `target-not-found` means the daemon searched a
@@ -640,7 +641,7 @@ scope intact rather than killing or deleting processes it cannot safely
 restore. The host system bus is used only by the daemon, never by the
 cockpit. The complete ownership and security rationale, including the
 deferred broker option, is in the
-[`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+[`RG-55 placement design`](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 For `--progress-stream`, provide a regular NDJSON file path inside the lane;
 the daemon ignores a FIFO, device, or unfinished line. A placement request with an existing
 `rg-<token>` leaf ordinarily starts unplaced with `placement.error` set. Use a fresh
@@ -697,7 +698,7 @@ run-gate --base "$P1_BASE" r2
 run-gate --base "$P1_BASE" gate
 ```
 
-Run these from `scripts/cgroup-profiler/`. The dry run shows the expanded
+Run these from `cgprofile/`. The dry run shows the expanded
 `--request-base` argument without starting the judged lane. Before the long
 R2 run, inspect Assay's plan for the exact commit/tree and the intended
 source candidates. The `gate` lane passes the same base to its nested `r2`.
@@ -718,15 +719,15 @@ flag is not the P1 acceptance command. The rationale is in the
 The command migration table below covers the 1.x CLI vocabulary; it does not describe transport compatibility. cgprofile 2.0.0 replaced the `cgprofile` command with
 `cgprofilectl` (client) and `cgprofiled` (daemon), the daemon is a native systemd service
 installed by mdt host-setup, and the control socket speaks ctl contract 2. cgprofile 2.2.0 also moves service access to per-level systemd sockets at the new paths
-([`CGPCTL-SPEC.md`](CGPCTL-SPEC.md), [`PROTOCOL.md`](PROTOCOL.md) section 10,
+([`CGPROFILECTL-SPEC.md`](CGPROFILECTL-SPEC.md), [`PROTOCOL.md`](PROTOCOL.md) section 10,
 [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md)). There is no alias.
 
 | 1.x | 2.0 |
 |---|---|
-| `./cgprofile run -- CMD` | `cgprofilectl run -- CMD` |
+| `./cgprofile run -- CMD` | `cgprofile run -- CMD` |
 | `./cgprofile attach --target T` | `cgprofilectl start --target T` then `cgprofilectl stop ID` |
-| `./cgprofile mark NAME` | `cgprofilectl mark NAME` |
-| `./cgprofile report --run-dir D` | `cgprofilectl report --run-dir D` |
+| `./cgprofile mark NAME` | `cgprofile mark NAME` |
+| `./cgprofile report --run-dir D` | `cgprofile report --run-dir D` |
 | `./cgprofile targets --target T` | `cgprofilectl start --target T --dry-run` |
 | `./cgprofile doctor` | `cgprofilectl doctor` |
 | `./cgprofile serve ...` | `cgprofiled run` under systemd socket activation, configured by `/etc/cgprofile/cgprofiled.toml` |
@@ -734,7 +735,7 @@ installed by mdt host-setup, and the control socket speaks ctl contract 2. cgpro
 | `... ctl host` | `cgprofilectl host` |
 | `... ctl status` | `cgprofilectl sessions` / `cgprofilectl show ID` |
 | `... ctl start` / `stop` / `watch` | `cgprofilectl start` / `stop` / `watch` |
-| `... ctl report ID` | `cgprofilectl report ID` (export, rendered on the client) |
+| `... ctl report ID` | `cgprofile report ID` (export, rendered on the client) |
 | `... ctl gc` | `cgprofilectl prune` |
 | `./setup.sh` | `pip install cgprofile[report]` for the report extra only |
 | `CGPROFILE_ALLOW_UIDS`, `serve` flags | keys of `/etc/cgprofile/cgprofiled.toml`; runtime change by `cgprofilectl config set` |
@@ -745,14 +746,14 @@ Consumer notes:
 
 | Consumer | What to do |
 |---|---|
-| run-gate | Socket carrier only on `/run/cgprofile/control/cgprofile.sock`; no `exec`, `auto`, or old-path fallback. It keeps speaking contract 1, which the daemon serves for `version`, `host`, `status`, `start`, `stop`, `watch` and `gc`, and renders reports with `cgprofilectl report` or skips them. |
+| run-gate | Socket carrier only on `/run/cgprofile/control/cgprofile.sock`; no `exec`, `auto`, or old-path fallback. It keeps speaking contract 1, which the daemon serves for `version`, `host`, `status`, `start`, `stop`, `watch` and `gc`, and renders reports with `cgprofile report` or skips them. |
 | assay | Nothing: it uses only the observer socket (contracts 2 and 3). |
-| mdt cockpit image | Ships the `cgprofile` wheel (core only) so `cgprofilectl` is on `PATH`; the finalize step runs `cgprofilectl skills check`. |
-| mdt host-setup | Phase 2 will call the install verbs, render its declared config, and run the service-side doctor. Do not deploy cgprofile 2.2.0 before that consumer update and the host cutover. |
+| mdt cockpit image | Ships the `cgprofile` wheel (core only) so `cgprofilectl` is on `PATH`; the finalize step runs `cgprofile skills check`. |
+| mdt host-setup | Phase 2 will call the install verbs, render its declared config, and run the service-side doctor. Do not deploy cgprofile 3.0.0 before that consumer update and the host cutover. |
 | Devcontainers and runners | After host cutover, mount only `/run/cgprofile/control` or `/run/cgprofile/observer` as required; run `cgprofilectl --socket PATH` (or set `CGPCTL_SOCKET`) for control. |
 
 A contract-1 `report` request to a 2.x daemon is answered with the error code
-`report-removed`, naming `cgprofilectl report`. Ownership rules apply to `stop` and
+`report-removed`, naming `cgprofile report`. Ownership rules apply to `stop` and
 `prune`: a caller stops its own sessions, and only uid 0 stops or exports
 another uid's. Control and observer groups are separate; observer membership
 does not grant control operations.

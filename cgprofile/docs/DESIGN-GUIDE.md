@@ -1,4 +1,4 @@
-# cgroup-profiler design guide
+# cgprofile design guide
 
 This document records why the RG-55 daemon behaves as it does. The user-facing
 feature list is in [`README.md`](../README.md); worked adoption belongs in
@@ -88,7 +88,7 @@ SemVer is the public compatibility identity. A project-local copy of
 from that installed package and is no longer a supported integration. Keeping
 the contract tied to the installed CLI makes the compatibility check describe
 the code that actually drives the lane. See the
-[Run-Gate wheel contract](../../../run-gate-project/CONSUMERS.md#distribution-installed-wheel-and-semver).
+[Run-Gate wheel contract](../../run-gate-project/CONSUMERS.md#distribution-installed-wheel-and-semver).
 
 Scope creation registers initial PIDs with systemd. cgprofile then moves each
 validated PID from the scope root into the leaf through
@@ -147,7 +147,7 @@ approximate process-RSS substitute. A future design that starts work inside
 the leaf before allocations, or reports a separately named RSS/PSS estimate,
 would have different adoption and accuracy costs and needs its own contract.
 The detailed metric-source and disclosure rules are in the
-[`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+[`RG-55 placement design`](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 
 The daemon's host system bus is separate from the consumer control socket. The
 cockpit receives only the cgprofile control socket; it does not need the system
@@ -170,7 +170,7 @@ and its own tested identity/path validation. A broker that can perform the
 same host-root operations and trusts the daemon's claims may merely move the
 compromise point. The detailed no-broker decision and future broker tradeoffs
 are recorded in the
-[`RG-55 placement design`](../../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
+[`RG-55 placement design`](../../run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md#a3-placement-ownership-correction-delegated-scope-below-dev-gatesslice-2026-09-30).
 
 Stall enforcement never signals a numeric PID, despite the daemon's host PID
 namespace. For `scope=container`, enforcement also requires
@@ -638,7 +638,7 @@ release body.
 Exactly one release-body handler may run: `oci-image-release`, `wheel-publish` and
 `tarball-publish` each write the whole body, so CMRU refuses (before any release side effect) a
 plan that combines them, which is how a leftover image step is caught. The handler reads the
-notes from the protected candidate commit's `cgroup-profiler/CHANGES.md`, so the body always
+notes from the protected candidate commit's `cgprofile/CHANGES.md`, so the body always
 describes the tag that was gated.
 
 What CMRU checks before any side effect, and what it cannot: it validates the handler for the

@@ -1,4 +1,4 @@
-"""Direct-mode ``cgprofilectl run``: profile one command in the caller's own cgroup subtree.
+"""Direct-mode ``cgprofile run``: profile one command in the caller's own cgroup subtree.
 
 Standard library only. The collector child (``cgprofile.cli.legacy _collect``) and
 this driver meet in the run directory through sentinel files (a file survives the
@@ -31,7 +31,7 @@ class Outcome:
 
 
 def _note(message: str) -> None:
-    print(f"[cgprofilectl] {message}", file=sys.stderr, flush=True)
+    print(f"[cgprofile] {message}", file=sys.stderr, flush=True)
 
 
 def collector_command(run_path: str) -> List[str]:
@@ -82,7 +82,7 @@ def stop_collector(run_path: str, child: subprocess.Popen, timeout: float = STOP
         child.kill()
 
 
-def run_command(command: List[str], *, out_dir: str, phase: Optional[str], cgprofilectl_dir: str,
+def run_command(command: List[str], *, out_dir: str, phase: Optional[str], client_dir: str,
                 run_id: Optional[str] = None) -> Outcome:
     """Run ``command`` under the collector; returns where the data is and how the command ended."""
     os.makedirs(out_dir, exist_ok=True)
@@ -92,7 +92,7 @@ def run_command(command: List[str], *, out_dir: str, phase: Optional[str], cgpro
     phases.emit_mark(run.path, label, kind="phase", meta={"argv": command}, source="wrapper")
     env = dict(os.environ)
     env["CGPROFILE_RUN_DIR"] = run.path
-    env["PATH"] = cgprofilectl_dir + os.pathsep + env.get("PATH", "")
+    env["PATH"] = client_dir + os.pathsep + env.get("PATH", "")
     started = time.time()
     try:
         result = subprocess.run(command, env=env, check=False)

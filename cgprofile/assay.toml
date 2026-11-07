@@ -1,4 +1,4 @@
-# cgroup-profiler's assay lane declarations. Consumed by run-gate.toml's
+# cgprofile's assay lane declarations. Consumed by run-gate.toml's
 # [lanes.r2] via a live, worktree-installed assay (assay/docs/
 # INTERNAL-CONSUMERS.md) — no pinned zipapp for an in-repo consumer.
 schema_version = 2

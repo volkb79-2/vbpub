@@ -89,7 +89,7 @@ def test_local_build_refuses_dirty_source_before_creating_build_context(
 
 def test_local_build_cleanliness_checks_only_the_two_docker_contexts(tmp_path):
     repo = tmp_path / "repo"
-    project = repo / "scripts" / "cgroup-profiler"
+    project = repo / "cgprofile"
     analysis = repo / "scripts" / "damon-analysis"
     unrelated = repo / "cmru"
     project.mkdir(parents=True)
@@ -171,7 +171,7 @@ def test_temporary_build_tree_contains_the_exact_full_repository_commit(
     tmp_path, monkeypatch,
 ):
     repo = tmp_path / "repo"
-    project = repo / "scripts" / "cgroup-profiler"
+    project = repo / "cgprofile"
     analysis = repo / "scripts" / "damon-analysis"
     project.mkdir(parents=True)
     (project / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
@@ -189,11 +189,11 @@ def test_temporary_build_tree_contains_the_exact_full_repository_commit(
     monkeypatch.setattr(build_push, "HERE", project)
 
     with build_push.exact_build_source(commit) as source:
-        assert source == source.parents[1] / "scripts" / "cgroup-profiler"
+        assert source == source.parent / "cgprofile"
         assert build_push.git_revision(source) == commit
         assert (source / "Dockerfile").is_file()
-        assert (source.parent / "damon-analysis" / "lib" / "damon_analysis.py").is_file()
-        temporary_root = source.parents[1]
+        assert (source.parent / "scripts" / "damon-analysis" / "lib" / "damon_analysis.py").is_file()
+        temporary_root = source.parent
         assert str(temporary_root) in subprocess.run(
             ["git", "worktree", "list", "--porcelain"], cwd=repo,
             check=True, capture_output=True, text=True,

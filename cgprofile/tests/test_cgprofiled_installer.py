@@ -286,6 +286,60 @@ def test_units_without_an_install_record_or_pending_are_not_ours(tmp_path):
     assert installer.old_installation_problems(paths) == []
 
 
+def test_the_2x_layout_is_refused_with_removal_steps_and_never_migrated(tmp_path):
+    paths = _paths(tmp_path)
+    assert not any(item.startswith("2.x layout:") for item in installer.old_installation_problems(paths))
+    Path(paths.unit_dir).mkdir(parents=True)
+    (Path(paths.unit_dir) / "cgpd.service").write_text("old\n", encoding="utf-8")
+    (Path(paths.unit_dir) / "cgpd.service.d").mkdir()
+    Path(paths.config).parent.mkdir(parents=True)
+    (Path(paths.config).parent / "cgpd.toml").write_text("interval = 2\n", encoding="utf-8")
+    client = Path(paths.at("/usr/local/bin/cgpctl"))
+    client.parent.mkdir(parents=True)
+    client.symlink_to("/opt/cgprofile/current/venv/bin/cgpctl")  # a dangling link still counts
+
+    problems = installer.old_installation_problems(paths)
+    message = installer.manual_removal_message(problems)
+
+    found = [item for item in problems if item.startswith("2.x layout:")]
+    assert sorted(item.rsplit("/", 1)[-1] for item in found) == ["cgpctl", "cgpd.service", "cgpd.service.d", "cgpd.toml"]
+    assert "cgpd.service" in message and "/usr/local/bin/cgpctl" in message and "/etc/cgprofile/cgpd.toml" in message
+    assert "nothing is migrated" in message and "cgprofiled.toml" in message
+
+
+@pytest.mark.parametrize("old", ["cgpd.service", "cgpd.service.d", "cgpd.toml", "cgpctl"])
+def test_install_refuses_each_2x_path_before_changing_anything(host, tmp_path, old):
+    target = {
+        "cgpd.service": host.paths.at("/etc/systemd/system/cgpd.service"),
+        "cgpd.service.d": host.paths.at("/etc/systemd/system/cgpd.service.d"),
+        "cgpd.toml": host.paths.at("/etc/cgprofile/cgpd.toml"),
+        "cgpctl": host.paths.at("/usr/local/bin/cgpctl"),
+    }[old]
+    Path(target).parent.mkdir(parents=True, exist_ok=True)
+    if old == "cgpd.service.d":
+        Path(target).mkdir()
+    else:
+        Path(target).write_text("x\n", encoding="utf-8")
+    before = _snapshot(tmp_path)
+    with pytest.raises(installer.InstallError, match="cgprofiled install refused") as caught:
+        host.install()
+    assert f"2.x layout: {target}" in str(caught.value)
+    assert _snapshot(tmp_path) == before and not host.commands
+
+
+def test_a_seeded_old_config_gets_the_removal_list_not_a_bare_invalid_config_error(host, tmp_path):
+    """C3: `_config_groups` used to reject the seeded `ctl_socket` config before the P-11 list was built."""
+    Path(host.paths.config).parent.mkdir(parents=True)
+    Path(host.paths.config).write_text('ctl_socket = "/run/cgprofile/ctl.sock"\n', encoding="utf-8")
+    before = _snapshot(tmp_path)
+    with pytest.raises(installer.InstallError) as caught:
+        host.install()
+    text = str(caught.value)
+    assert "cgprofiled install refused" in text and "old config keys: ctl_socket" in text
+    assert "Manual steps:" in text and "is invalid" not in text
+    assert _snapshot(tmp_path) == before and not host.commands
+
+
 def test_a_differently_suffixed_mdt_manifest_is_still_the_old_installer(tmp_path):
     version = Path(_paths(tmp_path).opt) / "2.1.0"
     version.mkdir(parents=True)
@@ -1017,6 +1071,9 @@ def test_install_applies_config_units_groups_links_and_start(tmp_path, monkeypat
     assert "[sockets.control]" in config and "[sockets.observer]" in config
     assert Path(paths.client_link).is_symlink()
     assert os.readlink(paths.client_link) == paths.client_target
+    # both clients are linked: the socket client and the end-user client (E.2)
+    assert os.readlink(paths.user_link) == paths.user_target
+    assert paths.user_link.endswith("/usr/local/bin/cgprofile") and paths.user_target.endswith("/venv/bin/cgprofile")
     record = Path(paths.install_record).read_text(encoding="utf-8")
     assert "created_groups = [\"cgprofile-control\", \"cgprofile-observer\"]" in record
     assert ["systemctl", "start", "cgprofile-control.socket", "cgprofile-observer.socket"] in commands
@@ -1149,6 +1206,16 @@ def test_foreign_client_link_is_refused_before_any_change(host):
     with pytest.raises(installer.InstallError, match="was not written by cgprofiled install"):
         host.install()
     assert os.readlink(link) == "/usr/bin/true"
+
+
+def test_a_foreign_end_user_client_entry_is_refused_too(host):
+    link = Path(host.paths.user_link)
+    link.parent.mkdir(parents=True)
+    link.write_text("#!/bin/sh\n# somebody else's cgprofile\n", encoding="utf-8")
+    with pytest.raises(installer.InstallError, match=f"{link} exists and was not written by cgprofiled install"):
+        host.install()
+    assert link.read_text(encoding="utf-8").startswith("#!/bin/sh")
+    assert not os.path.lexists(host.paths.opt) and not host.commands
 
 
 def test_our_own_client_link_is_replaced_on_upgrade(host):
@@ -1318,8 +1385,9 @@ def test_unit_print_failure_is_a_refusal(tmp_path, monkeypatch):
 
 def test_version_build_failures_are_bounded_and_clean_up(tmp_path, monkeypatch):
     host = Host(tmp_path, monkeypatch, fail={("python3", "-m", "venv"): 1})
-    with pytest.raises(installer.InstallError, match="command failed"):
+    with pytest.raises(installer.InstallError, match="command failed") as caught:
         host.install()
+    assert "apt install python3-venv" in str(caught.value) and "-m venv" in str(caught.value)
     assert not os.path.lexists(Path(host.paths.opt) / "2.2.0") and not Path(host.paths.pending).exists()
 
     original = _fake_run(host.commands, host.group_gids, host.active)
@@ -1634,7 +1702,7 @@ def test_uninstall_removes_everything_it_wrote_and_stops_the_slice(tmp_path, mon
     for path in (host.paths.opt, host.paths.config, host.paths.install_record, host.paths.runtime_root,
                  host.paths.unit_dir + "/cgprofiled.service", host.paths.unit_dir + "/cgprofile.slice",
                  host.paths.unit_dir + "/cgprofile-control.socket", host.paths.client_link,
-                 host.paths.sysusers_dir + "/cgprofile.conf"):
+                 host.paths.user_link, host.paths.sysusers_dir + "/cgprofile.conf"):
         assert not os.path.lexists(path), path
     assert not os.path.lexists(os.path.dirname(host.paths.config))
     assert Path(host.paths.state_data, "keep").is_file()
@@ -1712,9 +1780,13 @@ def test_uninstall_purges_data_only_when_asked_and_reports_foreign_client_link_k
     link = Path(host.paths.client_link)
     link.unlink()
     link.write_text("#!/bin/sh\n", encoding="utf-8")
+    user_link = Path(host.paths.user_link)
+    user_link.unlink()
+    user_link.write_text("#!/bin/sh\n", encoding="utf-8")
     body = host.subject.uninstall(_args(purge_data=True), _runtime(yes=True))
     assert body["data_purged"] is True and not Path(host.paths.state_data).exists()
-    assert body["kept"] == [host.paths.client_link] and link.is_file()
+    assert body["kept"] == [host.paths.client_link, host.paths.user_link]
+    assert link.is_file() and user_link.is_file()
     assert "kept (not written by cgprofiled install)" in installer._uninstall_summary(body)
 
 
@@ -2173,6 +2245,8 @@ def test_registered_verbs_expose_the_documented_options():
 def test_the_client_link_target_is_prefixed_by_the_root(tmp_path):
     paths = _paths(tmp_path)
     assert paths.client_target == str(tmp_path / "opt/cgprofile/current/venv/bin/cgprofilectl")
+    assert paths.user_target == str(tmp_path / "opt/cgprofile/current/venv/bin/cgprofile")
+    assert paths.client_links == ((paths.client_link, paths.client_target), (paths.user_link, paths.user_target))
     assert paths.control_dir == str(tmp_path / "run/cgprofile/control")
     with pytest.raises(ValueError, match="absolute service path"):
         paths.at("relative/path")

@@ -16,10 +16,10 @@ from typing import Dict, List, Set
 import pytest
 
 from cgprofile import ctlwire, daemon_config
-from cgprofile.cli import cgprofilectl, cgprofiled
+from cgprofile.cli import cgprofile, cgprofilectl, cgprofiled
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = ROOT.parents[1]
+REPO = ROOT.parent
 README = ROOT / "README.md"
 PROTOCOL = ROOT / "docs" / "PROTOCOL.md"
 OBSERVER_GROUP = "cgprofile-observer"
@@ -83,16 +83,18 @@ def readme_problems(text: str) -> List[str]:
     """Every way the README overview disagrees with the shipped surface."""
     problems: List[str] = []
     commands = _section(text, "2. Commands")
-    ctl_table, cgprofiled_table, key_table = _tables(commands)[:3]
+    ctl_table, client_table, cgprofiled_table, key_table = _tables(commands)[:4]
 
-    ctl_verbs = _registry_verbs(cgprofilectl.build_cli())
-    documented = {_first_code(row[0]).split()[0]: row for row in ctl_table}
-    if set(documented) != set(ctl_verbs):
-        problems.append(f"cgprofilectl verbs: README {sorted(documented)} vs registry {sorted(ctl_verbs)}")
-    for name, row in documented.items():
-        for flag in re.findall(r"`(--[a-z][a-z-]*)", row[1]):
-            if flag not in ctl_verbs.get(name, set()):
-                problems.append(f"cgprofilectl {name}: README flag {flag} is not in the registry")
+    for label, table, registry in (("cgprofilectl", ctl_table, cgprofilectl.build_cli()),
+                                   ("cgprofile", client_table, cgprofile.build_cli())):
+        verbs = _registry_verbs(registry)
+        documented = {_first_code(row[0]).split()[0]: row for row in table}
+        if set(documented) != set(verbs):
+            problems.append(f"{label} verbs: README {sorted(documented)} vs registry {sorted(verbs)}")
+        for name, row in documented.items():
+            for flag in re.findall(r"`(--[a-z][a-z-]*)", row[1]):
+                if flag not in verbs.get(name, set()):
+                    problems.append(f"{label} {name}: README flag {flag} is not in the registry")
 
     cgprofiled_verbs = _registry_verbs(cgprofiled.build_cli())
     documented_cgprofiled = {_first_code(row[0]) for row in cgprofiled_table}
@@ -144,7 +146,7 @@ def test_socket_paths_and_group_names_agree_across_the_documents():
 
 
 def test_cgprofiled_run_is_explicit_in_the_spec_and_the_readme():
-    spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "CGPROFILECTL-SPEC.md").read_text(encoding="utf-8")
     assert "never a default verb" in spec
     assert "The default verb" not in spec
     assert "explicit service entrypoint" in README.read_text(encoding="utf-8")
@@ -153,8 +155,8 @@ def test_cgprofiled_run_is_explicit_in_the_spec_and_the_readme():
 def test_socket_group_user_and_config_test_contract_stays_in_sync():
     design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
     consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
-    spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
-    cli_spec = (ROOT / "docs" / "CLI-SPEC.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "CGPROFILECTL-SPEC.md").read_text(encoding="utf-8")
+    cli_spec = (ROOT / "docs" / "CLI-SPEC-cgprofilectl.md").read_text(encoding="utf-8")
     native = (ROOT / "docs" / "NATIVE-DEPLOYMENT.md").read_text(encoding="utf-8")
 
     assert "--add-user LEVEL=USER" in README.read_text(encoding="utf-8")
@@ -166,7 +168,7 @@ def test_socket_group_user_and_config_test_contract_stays_in_sync():
     assert "--add-user LEVEL=USER" in spec and "gpasswd -a" in spec
     assert "memberships are never" in spec and "Cross-service group uniqueness belongs to host-setup" in spec
     assert "cgprofiled -t" in spec and "ExecStartPre" in spec
-    assert "CGPCTL-SPEC.md` section 3" in cli_spec and "config-test option" in cli_spec
+    assert "CGPROFILECTL-SPEC.md` section 3" in cli_spec and "config-test option" in cli_spec
     assert "No override exists" in native and "manual cleanup" in native
     assert "Do not rerun the cgprofiled binary from a version tree" in native
     assert "root-equivalent on mdt hosts" not in spec
@@ -175,9 +177,9 @@ def test_socket_group_user_and_config_test_contract_stays_in_sync():
 
 def test_recorded_user_reconciliation_and_requested_user_validation_are_documented():
     readme = README.read_text(encoding="utf-8")
-    cli_spec = (ROOT / "docs" / "CLI-SPEC.md").read_text(encoding="utf-8")
+    cli_spec = (ROOT / "docs" / "CLI-SPEC-cgprofilectl.md").read_text(encoding="utf-8")
     consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
-    spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "CGPROFILECTL-SPEC.md").read_text(encoding="utf-8")
     design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
 
     for text in (readme, cli_spec, consumers):
@@ -189,7 +191,7 @@ def test_recorded_user_reconciliation_and_requested_user_validation_are_document
 
 
 def test_group_examples_and_legacy_container_files_name_the_dedicated_model():
-    spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "CGPROFILECTL-SPEC.md").read_text(encoding="utf-8")
     serve = (ROOT / "src" / "cgprofile" / "serve.py").read_text(encoding="utf-8")
     compose = (ROOT / "ciu.compose.yml.j2").read_text(encoding="utf-8")
     compose_text = " ".join(

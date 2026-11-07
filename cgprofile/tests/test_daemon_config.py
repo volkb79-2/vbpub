@@ -1,4 +1,4 @@
-"""cgprofiled configuration: schema, file, reload, overrides (CGPCTL-SPEC 3.2-3.5)."""
+"""cgprofiled configuration: schema, file, reload, overrides (CGPROFILECTL-SPEC 3.2-3.5)."""
 
 from __future__ import annotations
 

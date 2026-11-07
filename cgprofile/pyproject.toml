@@ -53,8 +53,10 @@ test = [
 ]
 
 [project.scripts]
-# cgprofilectl is the cli-extended client, cgprofiled the cli-extended daemon entry
-# (config file, unit renderer, reload).
+# cgprofile is the end-user client (run, mark, report, analyze, skills), cgprofilectl
+# the cli-extended socket client of the daemon, cgprofiled the cli-extended daemon
+# entry (config file, unit renderer, reload).
+cgprofile = "cgprofile.cli.cgprofile:main"
 cgprofilectl = "cgprofile.cli.cgprofilectl:main"
 cgprofiled = "cgprofile.cli.cgprofiled:main"
 
@@ -84,10 +86,18 @@ schema_version = 1
 [[tool.cli-extended.clis]]
 id = "cgprofilectl"
 factory = "cgprofile.cli.cgprofilectl:build_cli"
-review = "docs/cli-review.toml"
-manifest = "docs/cli-surface.json"
-spec = "docs/CLI-SPEC.md"
-findings = "docs/cli-review-findings.toml"
+review = "docs/cli-review-cgprofilectl.toml"
+manifest = "docs/cli-surface-cgprofilectl.json"
+spec = "docs/CLI-SPEC-cgprofilectl.md"
+findings = "docs/cli-findings-cgprofilectl.toml"
+
+[[tool.cli-extended.clis]]
+id = "cgprofile"
+factory = "cgprofile.cli.cgprofile:build_cli"
+review = "docs/cli-review-cgprofile.toml"
+manifest = "docs/cli-surface-cgprofile.json"
+spec = "docs/CLI-SPEC-cgprofile.md"
+findings = "docs/cli-findings-cgprofile.toml"
 
 [tool.coverage.run]
 branch = true

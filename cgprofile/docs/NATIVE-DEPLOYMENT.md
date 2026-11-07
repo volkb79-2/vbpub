@@ -8,14 +8,28 @@ commands are in [`CONSUMERS.md`](CONSUMERS.md).
 
 ## 1. Rollout boundary
 
-cgprofile 2.2.0 is the phase-1 service and client release. It serves only the
-new per-level layout below. It does not probe or serve old paths and it does
-not migrate an mdt host-setup installation. The install command refuses old
-state and prints the operator's manual removal list.
+cgprofile 3.0.0 is the phase-1 service and client release under the final names
+(`cgprofiled`, `cgprofilectl`, and the end-user client `cgprofile`; 2.x called
+them `cgpd` and `cgpctl`). It serves only the new per-level layout below. It does
+not probe or serve old paths and it does not migrate an mdt host-setup
+installation or a 2.x one. The install command refuses old state, including the
+2.x layout (`cgpd.service`, `cgpd.service.d/`, `/etc/cgprofile/cgpd.toml`,
+`/usr/local/bin/cgpctl`), and prints the operator's manual removal list; fresh
+hosts never meet that refusal.
 
 Phase 1 is not deployed to cockpit hosts. Keep `CGPROFILE_WHEEL` below
-`2.2.0` until phase 2 updates mdt host-setup and the operator performs each
+`3.0.0` until phase 2 updates mdt host-setup and the operator performs each
 host's drained cutover. Old and new clients and services do not interoperate.
+
+### Prerequisites
+
+The installer builds a virtualenv per version with `python3 -m venv`, then
+installs the two pinned wheels into it without network access. On Debian and
+Ubuntu the `venv` module is split out: a minimal image needs the `python3-venv`
+package (`apt install python3-venv`) before `cgprofiled install` is run. When
+the venv step fails the installer says so in its error message. Besides Python
+3.11 or newer with `python3-venv`, the host needs systemd (with
+`systemd-sysusers`), root, and `gpasswd` for the group memberships.
 
 ## 2. Runtime layout and access
 
@@ -89,7 +103,8 @@ both wheel files.
 
 After installation, `cgprofiled` remains in the active versioned venv at
 `/opt/cgprofile/current/venv/bin/cgprofiled`; the installer does not add a global
-`cgprofiled` symlink. `cgprofilectl` is linked into `/usr/local/bin` for client use.
+`cgprofiled` symlink. `cgprofilectl` and `cgprofile` are linked into `/usr/local/bin` for client use; an
+existing `/usr/local/bin` entry that the installer did not write is never replaced.
 
 For an unattended install, acquire the two wheel files and run:
 

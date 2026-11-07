@@ -75,7 +75,7 @@ def cli_extended_wheel(tmp_path_factory) -> Path:
     (0.5.0 against >=0.5.1) with no index to resolve from. The clean venv therefore gets the checkout's own
     cli-extended as a wheel, built the same way as the cgprofile wheel above (copied tree, pretend version).
     """
-    source = PROJECT_ROOT.parents[1] / "libraries" / "cli-extended"
+    source = PROJECT_ROOT.parent / "libraries" / "cli-extended"
     assert (source / "pyproject.toml").is_file(), f"cli-extended source missing at {source}"
     work = tmp_path_factory.mktemp("cli-extended-build")
     tree = work / "tree"

@@ -77,7 +77,7 @@ PY
   fi
 }
 
-echo "cgroup-profiler gate canaries"
+echo "cgprofile gate canaries"
 
 # 1. The counter-reset rule. A cgroup recreated mid-run resets its counters;
 #    reporting the negative delta would put a spike in the chart that never

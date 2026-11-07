@@ -104,6 +104,7 @@ def test_pyproject_wheel_facts():
     assert "version" not in project
     assert project["dependencies"] == ["cli-extended>=0.5.1"]
     assert project["scripts"] == {
+        "cgprofile": "cgprofile.cli.cgprofile:main",
         "cgprofilectl": "cgprofile.cli.cgprofilectl:main",
         "cgprofiled": "cgprofile.cli.cgprofiled:main",
     }
@@ -119,7 +120,7 @@ def test_pyproject_wheel_facts():
 def test_cmru_declares_the_wheel_only():
     config = tomllib.loads((PROJECT_ROOT / "cmru.toml").read_text(encoding="utf-8"))
     project = config["project"]
-    assert project["id"] == "cgroup-profiler"
+    assert project["id"] == "cgprofile"
     assert project["artifacts"] == ["wheel"]
     assert project["scm_dist"] == "cgprofile"
     assert config["project"]["release"]["artifact_dirs"] == ["dist"]

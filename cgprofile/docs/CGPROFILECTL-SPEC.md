@@ -1,19 +1,22 @@
-# cgprofilectl and cgprofiled: the 2.0 command-line contract
+# cgprofile, cgprofilectl and cgprofiled: the command-line contract
 
-**Status.** Specification for cgprofile 2.0.0. Nothing here is implemented in 1.x. Package 1 (wheel
-layout), package 2 (`cgprofilectl`) and package 3 (`cgprofiled`) implement it, the run-gate socket-only change
-consumes it, and [`PROTOCOL.md`](PROTOCOL.md) section 10 carries the wire half (ctl contract 2).
+**Status.** The contract of cgprofile 3.0.0 (the 2.0 contract with the 3.0 names and the client split).
+[`PROTOCOL.md`](PROTOCOL.md) section 10 carries the wire half (ctl contract 2).
 [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md) carries packaging, the unit and the install path.
-The generated `docs/CLI-SPEC.md`, `docs/cli-surface.json` and `docs/cli-review.toml` that cli-extended
-derives from the registries replace the verb tables here as the mechanical authority once package 2 and
-3 land; this file stays the prose authority for behaviour.
+The generated `docs/CLI-SPEC-cgprofile.md`, `docs/CLI-SPEC-cgprofilectl.md`, their `cli-surface-*.json` manifests
+and `cli-review-*.toml` catalogs (indexed by `docs/CLI-SPEC.md`) that cli-extended derives from the registries
+are the mechanical authority; this file stays the prose authority for behaviour.
 
 **Names.** Product, release tag prefix (`cgprofile-v`), wheel distribution and Python package are
-`cgprofile`. The client console script is `cgprofilectl`; the daemon console script is `cgprofiled`. There is no
-`cgprofile` command and no alias. Environment variables keep the `CGPROFILE_` prefix, except the one
-client socket override, which is `CGPCTL_SOCKET`.
+`cgprofile`. The wheel installs three console scripts: `cgprofile` (the end-user client: `run`, `mark`,
+`report`, `analyze`, `skills`), `cgprofilectl` (the socket client of the daemon) and `cgprofiled` (the daemon).
+cgprofile 2.x called the daemon `cgpd` and the one client `cgpctl`; 3.0.0 renamed them and split the client.
+There are no aliases and no fallbacks, and nothing is migrated: the installer refuses a host that still has
+the 2.x layout and lists what to remove (`NATIVE-DEPLOYMENT.md`). Environment variables keep the `CGPROFILE_`
+prefix, except the one client socket override, which is `CGPCTL_SOCKET` until the endpoint-from-environment
+change replaces it.
 
-**Conventions.** Both CLIs are built on cli-extended (`CliRegistry`, `CliIdentity`, `register_doctor`,
+**Conventions.** All three CLIs are built on cli-extended (`CliRegistry`, `CliIdentity`, `register_doctor`,
 `register_skills_verbs`) and inherit its global options (`--help`, `--version`, `--json` on read verbs,
 `--quiet`, `--verbose`, `--log-level`, `--no-color`, `--traceback`, and `--yes` / `--dry-run` on the verbs
 that declare them). Exact option spellings only, no abbreviation routing. Unexpected exceptions are
@@ -44,11 +47,15 @@ Cause tags for exit 3 (the CP-31 set, plus one):
 The 1.x `ctl` table (0 ok, 2 refused, 3 fault) was wire for run-gate's exec carrier only and is not
 preserved: that carrier is removed (docs/CONSUMERS.md, consumer impact).
 
-## 2. `cgprofilectl`
+## 2. `cgprofilectl` and `cgprofile`
 
 ```
 cgprofilectl [--socket PATH] [--json] <verb> [args]
+cgprofile [--json] <verb> [args]
 ```
+
+`cgprofilectl` carries every verb that talks to the daemon's control socket (sections 2.1 to 2.5). The local verbs
+(`run`, `mark`, `report`, `analyze`, `skills`) are the end-user client `cgprofile` (section 2.6).
 
 ### 2.1 Socket selection
 
@@ -73,20 +80,16 @@ Daemon verbs need the group (section 2.4). "Mutating" verbs change daemon state.
 | `start --target T [options]` | `start` | yes | Starts a daemon session. Prints the session id. |
 | `stop ID` | `stop` | yes | Stops and finalizes; prints the summary. Own sessions only unless uid 0. |
 | `watch ID [--watch-interval S]` | `watch` | no | Streams readings until the session ends. |
-| `report ID [--out DIR] [--html-only\|--md-only]` | `export` | no | Exports the stored session and renders locally. |
-| `report --run-dir DIR [...]` | none | no | Renders a standalone `run` result. |
 | `prune [--keep N] [--keep-days D] [--dry-run] [--yes]` | `gc` | yes | Applies retention now. `--dry-run` lists what would go. |
-| `run [--phase NAME=...] -- CMD...` | none | no | Profile one command locally, direct mode only. |
-| `mark NAME [--kind K] [--meta JSON]` | none | no | Append a phase mark to the current run. Stdlib-only. |
 | `doctor [--check NAME]` | `version` | no | Diagnose the install, the socket, the caller and the daemon. |
 | `config show` | `config` | no | Effective settings, each with its source (`default`, `file`, `override`), and the config digest. |
 | `config set KEY VALUE [--persist]` | `config-set` | yes | Changes one runtime-tunable setting live (section 3.5). uid 0 only. |
 | `config reset KEY \| --all` | `config-reset` | yes | Drops one runtime override, or all of them. uid 0 only. |
-| `skills install\|uninstall\|check\|list` | none | | cli-extended's `register_skills_verbs`, package `cgprofile`. |
 
-Removed relative to 1.x with no replacement alias: `attach` (use `start` and `stop`, or `run`),
+Removed relative to 1.x with no replacement alias: `attach` (use `start` and `stop`, or `cgprofile run`),
 `targets` (use `start --dry-run`), the hidden `_collect`, `serve` (now `cgprofiled`), the whole `ctl` group,
-helper mode, the placement probe container, and `--log-tail` / `--log-match`.
+helper mode, the placement probe container, and `--log-tail` / `--log-match`. Moved to `cgprofile` in 3.0.0 with
+no alias left on `cgprofilectl`: `report`, `run`, `mark`, `skills`.
 
 ### 2.3 Verb details and JSON shapes
 
@@ -173,17 +176,6 @@ Human mode prints one status line per reading. `--json` prints the wire's lines 
 per line (`reading`, `verdict`, last `{"event": "end"}`), each with `"schema": 1` added. Exit 0 only when
 exactly one terminal `end` line arrived; EOF alone is exit 3 (`daemon-refusing`), as in 1.x.
 
-**`report`**
-
-`report ID` runs `export` (PROTOCOL.md section 10.3), verifies the part digests, writes the four parts to
-a temporary session directory, and calls the existing renderer into `--out DIR` (default
-`./cgprofile-report-<session>/`). Output: `{"schema": 1, "ok": true, "session": "...", "out_dir": "...",
-"files": [{"path": "report.html", "bytes": 0}, {"path": "report.md", "bytes": 0}]}`. The renderer needs
-the `report` extra (pandas, plotly, matplotlib, scipy, ruptures). Without it the verb exits 1 with one
-line naming `pip install 'cgprofile[report]'` and still offers `--export-only DIR`, which writes the raw
-parts and renders nothing. Rendering cost is charged to the caller's cgroup. `report --run-dir DIR` is the
-same renderer on a `run` result, needs no daemon, and is part of the degraded set.
-
 **`prune`**
 
 `{"schema": 1, "ok": true, "dry_run": false, "removed": ["s-..."], "kept": 12}`. Retention defaults come
@@ -191,22 +183,6 @@ from the daemon config; `--keep` and `--keep-days` override for this call only a
 daemon's configured maxima (no one can widen retention beyond the operator's policy, but a caller may
 tighten it for sessions it owns; sessions of other uids are removed only by uid 0). Without `--yes` or
 `--dry-run` the verb lists the candidates and asks.
-
-**`run -- CMD...`**
-
-Direct mode only: the command runs in the caller's own cgroup subtree, sampled by the stdlib collector;
-the result is a run directory (`CGPROFILE_RUN_DIR` exported to the command; `mark` appends to it). Where
-cgroupfs is not visible (a devcontainer without host cgroups) the verb fails with exit 2 and one line:
-`direct mode needs cgroupfs; use 'cgprofilectl start' against the host daemon`. Output: `{"schema": 1, "ok":
-true, "run_dir": "...", "exit_status": 0, "duration_seconds": 0.0}`; the profiled command's own exit
-status is `exit_status`, and cgprofilectl exits 0 when profiling succeeded regardless of it unless
-`--propagate-exit` is given.
-
-**`mark`**
-
-`cgprofilectl mark NAME [--kind K] [--meta JSON]` writes a phase mark into `$CGPROFILE_RUN_DIR`. It imports
-nothing outside the standard library and cli-extended (a test pins this), needs no daemon, no socket and
-no group. Exit 2 when `CGPROFILE_RUN_DIR` is unset.
 
 **`doctor`**
 
@@ -225,10 +201,11 @@ with a `pass|warn|fail|skip` status and a remedy on non-pass:
 | `sessions-dir` | reported from the daemon's `status`, not tested from the client |
 | `overrides` | no runtime override is active (`pass`); `warn`, naming the key, when an override shadows a value the config file declares (host-setup's value is not what is in force), or when the overrides file had entries the daemon ignored (section 3.5) |
 | `report-extra` | the `report` extra imports (`warn`, not `fail`, when missing) |
-| `skills` | the packaged agent skill is installed and current (cli-extended `skills check`) |
 
-`doctor` is in the degraded set: with no daemon access it still runs `socket`, `caller-group`,
-`report-extra` and `skills`, marks the rest `skip`, and the failing check prints the fix, for example
+The agent-skill check is `cgprofile skills check`; `doctor` no longer carries it.
+
+`doctor` is in the degraded set: with no daemon access it still runs `socket`, `caller-group` and
+`report-extra`, marks the rest `skip`, and the failing check prints the fix, for example
 `add yourself to cgprofile-control (gid 999) and re-login`, or `the socket is missing: systemctl start cgprofiled`.
 
 **`config show`**
@@ -264,9 +241,9 @@ not an error (`reset` is empty). Audit-logged like `config set`.
 
 | Caller | Verbs that work |
 |---|---|
-| Any user | `--version`, `--help`, `run`, `mark`, `report --run-dir`, `skills *`, `doctor` (degraded: the local checks and the remedy for the failing one) |
+| Any user | `--version`, `--help`, `doctor` (degraded: the local checks and the remedy for the failing one); of `cgprofile`: `run`, `mark`, `report --run-dir`, `analyze`, `skills *` |
 | Member of the configured control socket group, and in `allow_uids` when that is set | everything in section 2.2 against their own sessions; `sessions`, `show`, `watch`, `status`, `host` against all sessions |
-| uid 0 | the above, plus `stop`, `report` (export) and `prune` of other uids' sessions, and `config set` / `config reset` (the only callers allowed to change settings, the access list included) |
+| uid 0 | the above, plus `stop`, `cgprofile report` (export) and `prune` of other uids' sessions, and `config set` / `config reset` (the only callers allowed to change settings, the access list included) |
 | `cgprofile-observer` group member | nothing in `cgprofilectl`; the observer socket is reached by consumers directly, by design |
 
 A daemon verb without access exits 3 with cause `socket-permission`, the socket's group, the caller's
@@ -279,9 +256,61 @@ is not part of the control-group policy. Ownership is enforced by the daemon fro
 
 | Variable | Use |
 |---|---|
-| `CGPCTL_SOCKET` | socket override (section 2.1) |
-| `CGPROFILE_RUN_DIR` | the current run directory (`mark`, `report --run-dir`); set by `run` for its child |
-| `CGPROFILE_MARK` | removed: wrapped commands call `cgprofilectl mark` through `PATH`; `run` prepends the directory of the running `cgprofilectl` to the child's `PATH` |
+| `CGPCTL_SOCKET` | socket override (section 2.1); also read by `cgprofile report SESSION` |
+| `CGPROFILE_RUN_DIR` | the current run directory (`cgprofile mark`, `cgprofile report --run-dir`); set by `cgprofile run` for its child |
+| `CGPROFILE_MARK` | removed: wrapped commands call `cgprofile mark` through `PATH`; `cgprofile run` prepends the directory of the running `cgprofile` to the child's `PATH` |
+
+### 2.6 `cgprofile`, the end-user client
+
+```
+cgprofile [--json] <verb> [args]
+```
+
+| Verb | Wire op | Summary |
+|---|---|---|
+| `run [--phase NAME] [--out-dir DIR] [--propagate-exit] -- CMD...` | none | Profile one command locally, direct mode only. |
+| `mark NAME [--kind K] [--meta JSON]` | none | Append a phase mark to the current run. Stdlib-only. |
+| `report ID [--out DIR] [--html-only\|--md-only] [--export-only DIR] [--socket PATH]` | `export` | Exports the stored session from the daemon and renders locally. |
+| `report --run-dir DIR [...]` | none | Renders a standalone `run` result; needs no daemon. |
+| `analyze DIR` | none | Analyses a run directory and prints its proposals. |
+| `skills install\|uninstall\|check\|list` | none | cli-extended's `register_skills_verbs`, package `cgprofile`. |
+
+`--socket PATH` is an option of `report` only (same resolution as section 2.1: `--socket`, then `CGPCTL_SOCKET`, then
+the default). Output documents carry `"schema": 1` like `cgprofilectl`.
+
+**`run -- CMD...`**
+
+Direct mode only: the command runs in the caller's own cgroup subtree, sampled by the stdlib collector;
+the result is a run directory (`CGPROFILE_RUN_DIR` exported to the command; `mark` appends to it). Where
+cgroupfs is not visible (a devcontainer without host cgroups) the verb fails with exit 2 and one line:
+`direct mode needs cgroupfs; use 'cgprofilectl start' against the host daemon`. Output: `{"schema": 1, "ok":
+true, "run_dir": "...", "exit_status": 0, "duration_seconds": 0.0}`; the profiled command's own exit
+status is `exit_status`, and cgprofile exits 0 when profiling succeeded regardless of it unless
+`--propagate-exit` is given.
+
+**`mark`**
+
+`cgprofile mark NAME [--kind K] [--meta JSON]` writes a phase mark into `$CGPROFILE_RUN_DIR`. It imports
+nothing outside the standard library and cli-extended (a test pins this), needs no daemon, no socket and
+no group. Exit 2 when `CGPROFILE_RUN_DIR` is unset.
+
+**`report`**
+
+`report ID` runs `export` (PROTOCOL.md section 10.3), verifies the part digests, writes the four parts to
+a temporary session directory, and calls the existing renderer into `--out DIR` (default
+`./cgprofile-report-<session>/`). Output: `{"schema": 1, "ok": true, "session": "...", "out_dir": "...",
+"files": [{"path": "report.html", "bytes": 0}, {"path": "report.md", "bytes": 0}]}`. The renderer needs
+the `report` extra (pandas, plotly, matplotlib, scipy, ruptures). Without it the verb exits 1 with one
+line naming `pip install 'cgprofile[report]'` and still offers `--export-only DIR`, which writes the raw
+parts and renders nothing. Rendering cost is charged to the caller's cgroup. `report --run-dir DIR` is the
+same renderer on a `run` result and needs no daemon.
+
+**`analyze DIR`**
+
+Runs the analysis of a run directory (the one `report --run-dir` renders) and prints the proposals, one line per
+proposal in human mode (`severity id title (confidence)`), or `{"schema": 1, "ok": true, "run_dir": "...",
+"proposals": [...]}` under `--json`; no files are written. Needs the `report` extra (exit 1 with the install line
+without it). Exit 2 when the directory does not exist.
 
 ## 3. `cgprofiled`
 

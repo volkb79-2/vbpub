@@ -1,15 +1,15 @@
-# RG-55 interface contract — cgroup-profiler daemon ⇄ run-gate (contract 1)
+# RG-55 interface contract — cgprofile daemon ⇄ run-gate (contract 1)
 
 **Status: FROZEN 2026-09-12** by the vbpub controller (plan of record:
 `WAVE-PLAN-2026-09-12-rg55-profiling.md` §4). Both packages code against
 this file. A change after dispatch is a numbered controller ruling (RW-n in
 `reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`) delivered to BOTH
 implementers; nobody edits this file unilaterally. A verbatim copy lives at
-`scripts/cgroup-profiler/docs/RG55-INTERFACE-CONTRACT.md`. The cgroup-profiler
+`cgprofile/docs/RG55-INTERFACE-CONTRACT.md`. The cgprofile
 `test_docs.py` mirror test checks byte identity in its `r0-r1` lane; its
 `coverage-partial` lane deselects that test. Run-Gate's `selftest` also checks
-the copies byte-for-byte when the sibling cgroup-profiler docs exist in the
-monorepo layout, and skips that check when the sibling file is absent.
+the copies byte-for-byte in the monorepo layout (a monorepo without the sibling
+file fails; only a standalone Run-Gate without the monorepo skips).
 
 **Amendments:** RW-11 (2026-09-12, §4.3 basic-path file list: +`memory.max`,
 +`memory.high`, 10 → 12 files); RW-21 (2026-09-12, scope `container`:
@@ -39,12 +39,12 @@ also serves observer contract 3 (`window-open`/`window-close`,
 `docs/PROTOCOL.md` §9), which Run-Gate does not use; observer contract-1
 requests receive an explicit unsupported-contract refusal. The control
 protocol has its own contracts 1 and 2 (`docs/PROTOCOL.md` §10). The combined
-first cgroup-profiler release is 1.0.0.
+first cgprofile release is 1.0.0.
 **RW-570 (2026-10-14):** the supported Run-Gate consumer is its installed
 SemVer wheel. A copied project-local `run-gate.py` script is not supported;
 compatibility checks use the installed `run-gate --version`.
 
-Parties: **producer** = cgroup-profiler's daemon (`cgprofiled`) and its client
+Parties: **producer** = cgprofile's daemon (`cgprofiled`) and its client
 (`cgprofilectl`); **consumer** = the installed Run-Gate wheel (stdlib-only
 runtime), whose `ProfilerClient` sends control-protocol requests directly over
 `/run/cgprofile/control/cgprofile.sock` (§8.1), or the configured socket path,
@@ -88,7 +88,7 @@ reference translator of the socket protocol.
    `null`. Counters that were read but never incremented are `0`.
 8. Names: native systemd service `cgprofiled.service`; reported `daemon.name`
    remains `cgprofile-host-daemon`; sessions root
-   `/var/lib/cgprofile/sessions`; deployment authority is cgroup-profiler's
+   `/var/lib/cgprofile/sessions`; deployment authority is cgprofile's
    `docs/NATIVE-DEPLOYMENT.md`; session ids `s-<YYYYMMDDTHHMMSSZ>-<4 hex>`.
 
 ## 2. Verbs
@@ -259,7 +259,7 @@ watcher (`0` when read and unchanged, `null` only when unreadable).
 
 **Golden example:** `fixtures/rg55/summary-v1.json` (next to this file and
 vendored byte-identical into `run-gate-project/tests/fixtures/rg55/` and
-`scripts/cgroup-profiler/tests/fixtures/contract/`). The daemon's tests
+`cgprofile/tests/fixtures/contract/`). The daemon's tests
 assert a fake-cgroupfs session produces exactly this shape; run-gate's
 tests assert this exact document round-trips into `history.json` schema 2
 and the `footprint` manifest.
@@ -286,7 +286,7 @@ and the `footprint` manifest.
    and `memory.high` are required so the basic path can compute
    `events.limit_drift` the same way the daemon does) under
    `/sys/fs/cgroup/`, parsed with the
-   three parsers ported verbatim from `scripts/cgroup-profiler/lib/util.py`
+   three parsers ported verbatim from `cgprofile/src/cgprofile/util.py`
    (`read_int`, `read_kv`, `read_pressure` — string variants; attributed in
    a comment). The basic summary uses the §3 key set with `method:
    "basic"`, `session: null`, `daemon: null`, `damon: null`,
@@ -365,7 +365,7 @@ container. Its unit runs as `root`, sets `PrivateNetwork=yes` and
 `Slice=cgprofile.slice`, and permits writes through `ReadWritePaths` including
 `/sys/fs/cgroup` and `/sys/kernel/mm/damon`. The service's proc view comes
 from the `proc_root` configuration, which cgprofiled exports as
-`CGPROFILE_PROC_ROOT`. cgroup-profiler's `docs/NATIVE-DEPLOYMENT.md` is the
+`CGPROFILE_PROC_ROOT`. cgprofile's `docs/NATIVE-DEPLOYMENT.md` is the
 deployment authority. Run-Gate never passes `--cgroupns=host` or `--pid=host`
 to lane, gate, workload, helper, or test containers.
 
@@ -670,7 +670,7 @@ native-R2 listener: `{"contract": 2, "contracts": [2, 3],
 Its contract numbers are independent of the control protocol's contract
 number; `listening` reflects whether the observer socket was bound
 successfully. Control contract 2 adds `export`, `config`, `config-set`, and
-`config-reset`, removes `report`, and is specified in cgroup-profiler's
+`config-reset`, removes `report`, and is specified in cgprofile's
 `docs/PROTOCOL.md` section 10.
 
 ### 8.7 Summary additions (schema 1, optional keys)

@@ -1,4 +1,4 @@
-"""``cgprofiled``: the daemon console script (CGPCTL-SPEC.md section 3).
+"""``cgprofiled``: the daemon console script (CGPROFILECTL-SPEC.md section 3).
 
 A cli-extended service entrypoint. ``--help``, ``--version`` and malformed
 arguments never start the service, create state or touch the socket; only
@@ -94,7 +94,7 @@ def probe_daemon(path: str) -> Optional[Tuple[str, Optional[int]]]:
 
 
 def preflight(config_path: str, explicit: bool, environ: Mapping[str, str]) -> daemon_config.Settings:
-    """The five checks of CGPCTL-SPEC 3.1, in order. Returns the loaded
+    """The five checks of CGPROFILECTL-SPEC 3.1, in order. Returns the loaded
     settings; every failure is a one-line exit-2 refusal naming the fix."""
     from .. import access
 

@@ -4,7 +4,7 @@
 # /opt/cgprofile/current/venv; `--install-root` / `--wheel-venv` change it).
 # Values are the NATIVE-DEPLOYMENT.md section 4.2 proposals. OOMScoreAdjust is
 # deliberately unset (section 4.4) and no environment is set: the daemon
-# reads its configuration from the file only (CGPCTL-SPEC.md section 3.4).
+# reads its configuration from the file only (CGPROFILECTL-SPEC.md section 3.4).
 [Unit]
 Description=cgprofile resource-profiling daemon
 Requires=cgprofile-control.socket cgprofile-observer.socket

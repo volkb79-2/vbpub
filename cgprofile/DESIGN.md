@@ -1,4 +1,4 @@
-# cgroup-profiler — architecture and module contract
+# cgprofile — architecture and module contract
 
 A container/cgroup performance profiler: it records CPU, memory, IO and
 pressure over time for a set of targets, resolves what the **effective** cgroup
@@ -21,7 +21,7 @@ tag; an untagged build is `0.0.0-dev`). `--version` prints one identity line,
 exits 0 and needs neither the daemon nor the `report` extra. At every nested
 parser depth, help, usage and error output begin with the identity headline.
 The reviewed command surface is `docs/CLI-SPEC.md`; the behavioural contract
-is `docs/CGPCTL-SPEC.md`.
+is `docs/CGPROFILECTL-SPEC.md`.
 
 ## 1. Why the shape is what it is
 
@@ -32,7 +32,7 @@ boundary cannot sustain a 250 ms cadence, so the profiler never tries. There
 are exactly two places the sampling code runs, and it is byte-identical in
 both:
 
-- **Direct mode** (`cgprofilectl run`): in the caller's own process tree, where the
+- **Direct mode** (`cgprofile run`): in the caller's own process tree, where the
   caller can see cgroupfs. Where it cannot, `run` refuses with one line naming
   the daemon alternative. `access.py` owns the proc-root selection.
 - **The daemon** (`cgprofiled`): a native service on the host, which sees host
@@ -89,7 +89,7 @@ run-gate talks to this daemon over a Unix socket per lane instead of spawning
 a collector each time. `RG55-INTERFACE-CONTRACT.md` is the full wire contract
 and `docs/PROTOCOL.md` the request side. The daemon is STILL collector-tier:
 `serve.py` never imports pandas. It does not render reports; it streams a
-stored session through the `export` operation (§4.13) and `cgprofilectl report`
+stored session through the `export` operation (§4.13) and `cgprofile report`
 renders the real interactive report in the caller's process, so the tier split
 holds. Packaging, the unit and the install path are in
 `docs/NATIVE-DEPLOYMENT.md`; the operator's-eye view is the README's
@@ -108,15 +108,15 @@ not a fetch.
 ## 2. Layout
 
 ```
-scripts/cgroup-profiler/
+cgprofile/
   pyproject.toml          distribution `cgprofile`, console scripts, `report` extra
   cmru.toml               release contract (scm versioning, wheel artifact)
   src/cgprofile/
-    cli/cgprofilectl.py         the client (cli-extended registry; verbs of CGPCTL-SPEC.md)
+    cli/cgprofilectl.py         the client (cli-extended registry; verbs of CGPROFILECTL-SPEC.md)
     cli/cgprofiled.py           the daemon entry: run | unit | config | reload
-    cli/legacy.py         the collector child shared by `cgprofilectl run` and the daemon
+    cli/legacy.py         the collector child shared by `cgprofile run` and the daemon
     ctlwire.py            the client side of the control protocol
-    direct.py             `cgprofilectl run`: direct-mode runner
+    direct.py             `cgprofile run`: direct-mode runner
     daemon_config.py      the cgprofiled.toml schema, loader, reload, overrides layer
     unitfiles.py          `cgprofiled unit print|check` renderer
     data/                 unit templates and the default config (package data)
@@ -134,7 +134,7 @@ scripts/cgroup-profiler/
     summary.py            the incremental Summary accumulator (§4.14)
     serve.py              SessionServer, the daemon's socket loop (§4.15)
     resource_observer.py observer_windows.py   the observer socket (contracts 2, 3)
-  docs/                   CGPCTL-SPEC, CLI-SPEC (generated surface), PROTOCOL,
+  docs/                   CGPROFILECTL-SPEC, CLI-SPEC (generated surface), PROTOCOL,
                           NATIVE-DEPLOYMENT, CONSUMERS, DESIGN-GUIDE
   README.md               product overview and quickstart
   ATTACH-GUIDE.md         how to profile a gate; "Profiling a run-gate lane"
@@ -152,7 +152,7 @@ writing anything**; they define the idioms the rest of the package follows.
 <out-dir>/<run-id>/
   manifest.json    run metadata, resolved targets, host facts, limit snapshots
   samples.jsonl    one JSON object per sample tick
-  marks.jsonl      phase marks — appended by `cgprofilectl mark`, possibly from
+  marks.jsonl      phase marks — appended by `cgprofile mark`, possibly from
                    inside another container sharing the directory
   events.jsonl     detected events
   damon.jsonl      DAMON region snapshots (only when --damon)
@@ -608,13 +608,13 @@ Hard rules from the house data-viz standard, all of which apply here:
 ### 4.12 `cli/cgprofilectl.py` and `cli/cgprofiled.py` (integrators — not an agent's files)
 
 The grammar is the cli-extended registry of each module; the generated
-inventory is `docs/CLI-SPEC.md` and the behaviour is `docs/CGPCTL-SPEC.md`.
+inventory is `docs/CLI-SPEC.md` and the behaviour is `docs/CGPROFILECTL-SPEC.md`.
 In outline:
 
 ```
-cgprofilectl run [--phase N] [--out-dir D] [--propagate-exit] -- <command>   direct mode
-cgprofilectl mark <name> [--kind phase|event] [--meta JSON]                  appends to $CGPROFILE_RUN_DIR
-cgprofilectl report <session> | --run-dir D   [--out D] [--html-only|--md-only|--export-only D]
+cgprofile run [--phase N] [--out-dir D] [--propagate-exit] -- <command>   direct mode
+cgprofile mark <name> [--kind phase|event] [--meta JSON]                  appends to $CGPROFILE_RUN_DIR
+cgprofile report <session> | --run-dir D   [--out D] [--html-only|--md-only|--export-only D]
 cgprofilectl start --target T [...] / stop / watch / show / sessions / status / host / prune
 cgprofilectl config show | set KEY VALUE [--persist] | reset KEY|--all
 cgprofilectl doctor | skills install|uninstall|check|list
@@ -671,7 +671,7 @@ rather than threading `limits.py` through the sampler).
 `SessionServer` listens on a Unix socket (JSON-lines request/response, one
 request per connection — `_accept_loop`/`_handle_connection`), running one
 sampling thread per live session at a FIXED cadence (the adaptive
-hot/idle back-off §4.4 describes for `cgprofilectl run` is deliberately off
+hot/idle back-off §4.4 describes for `cgprofile run` is deliberately off
 here — the contract's own computation rules, §7, assume samples land every
 `interval_seconds` with no gaps). It owns: the in-memory + on-disk session
 registry (restart recovery finalizes any session a previous daemon process
@@ -688,7 +688,7 @@ closes). `cli/cgprofiled.py` (§4.12) is the CLI layer; the client's wire module
 
 **Reports and the tier split.** This module never imports pandas and has no
 report verb. The `export` operation streams a stored session as four digest-
-verified parts (`docs/PROTOCOL.md` section 10.3) and `cgprofilectl report` rebuilds
+verified parts (`docs/PROTOCOL.md` section 10.3) and `cgprofile report` rebuilds
 a run directory from them and renders it in the caller's process with the
 `report` extra. For that to work, every session directory this module writes
 is ALSO a valid `store.RunDir` in the §3/§4.3 sense — `_manifest_for` carries

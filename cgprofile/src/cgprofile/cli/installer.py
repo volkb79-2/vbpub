@@ -109,6 +109,16 @@ class InstallPaths:
     def service_dropins(self) -> str:
         return self.at("/etc/systemd/system/cgprofiled.service.d")
 
+    # The 2.x layout (cgpd/cgpctl). 3.0 never reads or migrates it; P-11 refuses while any of it exists.
+    @property
+    def v2_paths(self) -> Tuple[str, ...]:
+        return (
+            os.path.join(self.unit_dir, "cgpd.service"),
+            os.path.join(self.unit_dir, "cgpd.service.d"),
+            self.at("/etc/cgprofile/cgpd.toml"),
+            self.at("/usr/local/bin/cgpctl"),
+        )
+
     @property
     def pending(self) -> str:
         return os.path.join(self.opt, "PENDING")
@@ -124,6 +134,19 @@ class InstallPaths:
     @property
     def client_target(self) -> str:
         return self.at("/opt/cgprofile/current/venv/bin/cgprofilectl")
+
+    @property
+    def user_link(self) -> str:
+        return self.at("/usr/local/bin/cgprofile")
+
+    @property
+    def user_target(self) -> str:
+        return self.at("/opt/cgprofile/current/venv/bin/cgprofile")
+
+    @property
+    def client_links(self) -> Tuple[Tuple[str, str], ...]:
+        """(link, target) of both clients: the socket client and the end-user client."""
+        return ((self.client_link, self.client_target), (self.user_link, self.user_target))
 
 
 def parse_pin(value: str, label: str = "wheel") -> Tuple[str, str]:
@@ -210,8 +233,11 @@ def manual_removal_message(details: Iterable[str] = (), verb: str = "install") -
             "review and remove each listed foreign tmpfiles rule, sysusers file, or cgprofiled service drop-in",
             "remove /etc/sysusers.d/mdt-cgprofile.conf (keep the cgprofile-observer group and its GID)",
             "remove /usr/local/sbin/mdt-cgprofile-install.sh and the old /opt/cgprofile installation",
-            "remove /usr/local/bin/cgprofilectl, old cgprofiled.service/cgprofile.slice units, and /etc/cgprofile/cgprofiled.toml",
-            "stop old cgprofiled first, run systemctl daemon-reload, then remove /run/cgprofile",
+            "stop and disable the 2.x cgpd.service first, remove /etc/systemd/system/cgpd.service, "
+            "/etc/systemd/system/cgpd.service.d/ and the old cgprofile.slice and socket units, "
+            "run systemctl daemon-reload, then remove /run/cgprofile",
+            "remove the 2.x /usr/local/bin/cgpctl and /etc/cgprofile/cgpd.toml (3.0 uses cgprofilectl, "
+            "cgprofile and /etc/cgprofile/cgprofiled.toml; nothing is migrated)",
             "keep /var/lib/cgprofile unless data purge is intended",
         ))
     if version_root:
@@ -305,6 +331,7 @@ def old_installation_problems(paths: InstallPaths, config_path: Optional[str] = 
     old_keys = _read_old_config_keys(config)
     if old_keys:
         problems.append(f"{config}: old config keys: " + ", ".join(old_keys))
+    problems.extend(f"2.x layout: {path}" for path in paths.v2_paths if os.path.lexists(path))
     problems.extend(f"foreign rule or drop-in: {path}" for path in find_foreign_rules(paths))
     problems.extend(_run_tree_problems(paths))
     # Units next to PENDING come from an unfinished cgprofiled install (PENDING itself is
@@ -847,9 +874,8 @@ class Installer:
             raise InstallError(f"{current} points to an incomplete version tree {version_dir}")
         return target
 
-    def _preflight(self, values: Mapping[str, Any], config_path: str, *, dry_run: bool) -> Tuple[bool, bool]:
-        if not dry_run and self.geteuid() != 0:
-            raise InstallError("cgprofiled install needs root")
+    def _refuse_old_layout(self, config_path: str) -> None:
+        """P-11: refuse, with the manual-removal list, while any old-layout file exists."""
         problems = old_installation_problems(self.paths, config_path)
         if os.path.lexists(self.paths.install_record):
             # A failed upgrade of a finished install: every apply step is idempotent,
@@ -859,6 +885,11 @@ class Installer:
             problems = [item for item in problems if item not in reapply]
         if problems:
             raise InstallError(manual_removal_message(problems))
+
+    def _preflight(self, values: Mapping[str, Any], config_path: str, *, dry_run: bool) -> Tuple[bool, bool]:
+        if not dry_run and self.geteuid() != 0:
+            raise InstallError("cgprofiled install needs root")
+        self._refuse_old_layout(config_path)
         version_dir = os.path.join(self.paths.opt, values["version"])
         manifest_path = os.path.join(version_dir, "MANIFEST")
         if os.path.isfile(manifest_path):
@@ -872,10 +903,11 @@ class Installer:
                     f"{version_dir} is immutable and its wheel digest differs from the pin; release a new version"
                 )
         # A /usr/local/bin entry that cgprofiled install did not write is never replaced.
-        if os.path.lexists(self.paths.client_link) and not _is_install_link(self.paths.client_link, self.paths):
-            raise InstallError(
-                f"{self.paths.client_link} exists and was not written by cgprofiled install; move it away, then rerun"
-            )
+        for link, _target in self.paths.client_links:
+            if os.path.lexists(link) and not _is_install_link(link, self.paths):
+                raise InstallError(
+                    f"{link} exists and was not written by cgprofiled install; move it away, then rerun"
+                )
         current = self._current_version()
         if current is None and not has_socket_units(values["version"]):
             raise InstallError(
@@ -971,7 +1003,14 @@ class Installer:
                     raise InstallError(f"sha256 of {clix} does not match the pin; refusing before unpack")
                 os.makedirs(version_dir, mode=0o755)
                 try:
-                    self._command([self.python, "-m", "venv", venv], timeout=120)
+                    try:
+                        self._command([self.python, "-m", "venv", venv], timeout=120)
+                    except InstallError as exc:
+                        # C5: a minimal Debian/Ubuntu image has `venv` but not `ensurepip` until
+                        # python3-venv is installed; say so instead of a bare exit status.
+                        raise InstallError(
+                            f"{exc}; the host needs the python3-venv package "
+                            "(apt install python3-venv), then rerun") from None
                     # exactly the two sha256-pinned wheels: a new dependency fails closed
                     self._command([
                         os.path.join(venv, "bin", "python"), "-m", "pip", "install", "--quiet",
@@ -1192,6 +1231,9 @@ class Installer:
     def install(self, args: argparse.Namespace, runtime: CliRuntime) -> Dict[str, Any]:
         self._check_config_arg(args)
         config_path = self.paths.config
+        # C3: the old-layout refusal and its removal list come before any parsing of the existing
+        # config, or a seeded old config dies in _config_groups with a bare "invalid" message.
+        self._refuse_old_layout(config_path)
         values = _gather_inputs(args, runtime, self.paths)
         downgrade, version_drift = self._preflight(values, config_path, dry_run=runtime.dry_run)
         config_text, config_changes = self._target_config(config_path, values)
@@ -1278,8 +1320,8 @@ class Installer:
         os.makedirs(self.paths.unit_dir, mode=0o755, exist_ok=True)
         if resource_change or version_drift or earlier_pending:
             self._command([self.systemctl, "daemon-reload"], timeout=30)
-        _atomic_symlink(self.paths.client_target, self.paths.client_link,
-                        self.paths.client_link + ".cgprofiled-new")
+        for link, target in self.paths.client_links:
+            _atomic_symlink(target, link, link + ".cgprofiled-new")
         if values["enable_now"]:
             enabled = ["cgprofile.slice", "cgprofiled.service"]
             if has_socket_units(values["version"]):
@@ -1439,7 +1481,7 @@ class Installer:
               ("cgprofiled.service", "cgprofile-control.socket", "cgprofile-observer.socket", "cgprofile.slice")),
             self._resource_paths()["cgprofile.sysusers"],
             *_mdt_dropins(paths),
-            *([paths.client_link] if _is_install_link(paths.client_link, paths) else []),
+            *(link for link, _target in paths.client_links if _is_install_link(link, paths)),
             paths.at(daemon_config.DEFAULT_CONTROL_SOCKET),
             paths.at(daemon_config.DEFAULT_OBSERVER_SOCKET),
             paths.control_dir, paths.observer_dir, paths.state_dir, paths.runtime_root,
@@ -1490,13 +1532,13 @@ class Installer:
             # MemoryMin reservation) until the next reboot.
             self._command([self.systemctl, "stop", "cgprofile.slice"], timeout=60)
         # A /usr/local/bin entry that is not ours stays, and is reported as kept.
-        kept = [paths.client_link] if os.path.lexists(paths.client_link) \
-            and not _is_install_link(paths.client_link, paths) else []
+        kept = [link for link, _target in paths.client_links
+                if os.path.lexists(link) and not _is_install_link(link, paths)]
         for path in (
             *(os.path.join(paths.unit_dir, unit) for unit in (*units, "cgprofile.slice")),
             self._resource_paths()["cgprofile.sysusers"],
             *_mdt_dropins(paths),
-            *([] if kept else [paths.client_link]),
+            *(link for link, _target in paths.client_links if link not in kept),
             paths.at(daemon_config.DEFAULT_CONTROL_SOCKET),
             paths.at(daemon_config.DEFAULT_OBSERVER_SOCKET),
         ):

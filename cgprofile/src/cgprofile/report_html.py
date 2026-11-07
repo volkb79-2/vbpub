@@ -740,7 +740,7 @@ def render(
     if plotlyjs not in ("inline", "directory"):
         raise ValueError(f"plotlyjs must be 'inline' or 'directory', got {plotlyjs!r}")
 
-    run_title = title or f"cgroup-profiler — {analysis.manifest.get('run_id', 'run')}"
+    run_title = title or f"cgprofile — {analysis.manifest.get('run_id', 'run')}"
 
     fig, theme_arrays = build_figure(analysis)
     figure_div_id = "cgp-figure"

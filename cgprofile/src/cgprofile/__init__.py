@@ -1,4 +1,4 @@
-"""cgroup-profiler internals.
+"""cgprofile internals.
 
 Deliberately empty of re-exports. The package is split into a collector tier
 (standard library only, runs inside a privileged helper container) and an

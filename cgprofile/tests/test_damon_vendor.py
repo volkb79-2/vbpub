@@ -16,7 +16,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VENDORED = PROJECT_ROOT / "src" / "cgprofile" / "_damon" / "damon_analysis.py"
-SOURCE_OF_TRUTH = PROJECT_ROOT.parent / "damon-analysis" / "lib" / "damon_analysis.py"
+SOURCE_OF_TRUTH = PROJECT_ROOT.parent / "scripts" / "damon-analysis" / "lib" / "damon_analysis.py"
 
 
 def test_the_vendored_copy_keeps_its_licence_header():

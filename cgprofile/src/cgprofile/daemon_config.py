@@ -1,6 +1,6 @@
 """The ``cgprofiled`` configuration: schema, file, runtime overrides, effective values.
 
-Authority: ``docs/CGPCTL-SPEC.md`` sections 3.2 to 3.5. Root keys and fixed
+Authority: ``docs/CGPROFILECTL-SPEC.md`` sections 3.2 to 3.5. Root keys and fixed
 ``[sockets.<level>]`` tables in ``/etc/cgprofile/cgprofiled.toml``, one validation
 function shared by the file loader, ``cgprofiled config check`` and the
 ``config-set`` verb, and runtime overrides above the file (uid 0 only,

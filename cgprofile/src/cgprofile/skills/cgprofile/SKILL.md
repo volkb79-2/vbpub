@@ -1,14 +1,18 @@
 ---
-name: cgprofilectl
-description: Profile a container, cgroup or slice's real resource use over time (CPU, memory, IO, swap, pressure) with cgprofilectl, resolve its effective limits, and check for collateral damage to a neighbour. Use for host-contention diagnosis, capacity questions before capping a container, or an unexplained slowdown or OOM; never guess these numbers from docker stats.
+name: cgprofile
+description: Profile a container, cgroup or slice's real resource use over time (CPU, memory, IO, swap, pressure) with cgprofile and cgprofilectl, resolve its effective limits, and check for collateral damage to a neighbour. Use for host-contention diagnosis, capacity questions before capping a container, or an unexplained slowdown or OOM; never guess these numbers from docker stats.
 ---
 
-# cgprofilectl (cgprofile client)
+# cgprofile (end-user client) and cgprofilectl (daemon client)
 
 **Mandate.** Do not answer "why is my gate slow" or "is this container
 memory-starved" by reading `docker stats`, `free` or `memory.current` by hand.
 A cgroup's own `memory.max` is rarely the number that binds it; the ancestor
 chain decides. Start a session and read its summary.
+
+Two commands from one wheel: `cgprofilectl` talks to the host daemon (`status`,
+`host`, `sessions`, `show`, `start`, `stop`, `watch`, `prune`, `config`, `doctor`);
+`cgprofile` is the local client (`run`, `mark`, `report`, `analyze`, `skills`).
 
 ## Check the environment first
 
@@ -29,7 +33,7 @@ unreachable; the error line carries one cause tag: `socket-not-mounted`,
 id=$(cgprofilectl start --target container:web --meta '{"lane":"my-check"}')
 cgprofilectl watch "$id"                  # until the session ends; --json for lines
 cgprofilectl stop "$id"                   # prints the summary; add --json for the document
-cgprofilectl report "$id" --out ./report  # export + render locally (needs the report extra)
+cgprofile report "$id" --out ./report     # export + render locally (needs the report extra)
 ```
 
 - Targets: `containerid:<64hex>`, `container:NAME` (resolved client-side with
@@ -44,9 +48,10 @@ cgprofilectl report "$id" --out ./report  # export + render locally (needs the r
 ## Profile one command locally (no daemon)
 
 ```bash
-cgprofilectl run --phase build -- make          # direct mode: needs cgroupfs
-cgprofilectl mark "restoring database"          # inside the command; needs only CGPROFILE_RUN_DIR
-cgprofilectl report --run-dir ./cgprofile-runs/run-...
+cgprofile run --phase build -- make             # direct mode: needs cgroupfs
+cgprofile mark "restoring database"             # inside the command; needs only CGPROFILE_RUN_DIR
+cgprofile report --run-dir ./cgprofile-runs/run-...
+cgprofile analyze ./cgprofile-runs/run-...      # the proposals only, no files
 ```
 
 In a devcontainer without host cgroups `run` exits 2 with
@@ -58,4 +63,4 @@ In a devcontainer without host cgroups `run` exits 2 with
 Open `report.md` first (verdicts and proposals), then `report.html` for the
 interactive charts. Read the effective limits in the summary before proposing
 a cap. The report needs `pip install 'cgprofile[report]'`; without it
-`report ID --export-only DIR` still saves the raw parts.
+`cgprofile report ID --export-only DIR` still saves the raw parts.

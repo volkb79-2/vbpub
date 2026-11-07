@@ -1,4 +1,4 @@
-"""The reviewed CLI cases of docs/cli-review.toml: each runs its recorded invocation against the fake daemon and asserts the reviewed outcome."""
+"""The reviewed CLI cases of docs/cli-review-cgprofilectl.toml: each runs its recorded invocation against the fake daemon and asserts the reviewed outcome."""
 import pytest
 
 from cli_cases import execute, load_cases, slug

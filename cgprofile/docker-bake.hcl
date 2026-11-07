@@ -17,13 +17,13 @@ target "cgprofile" {
   }
   // The Dockerfile's own DAMON-support COPY needs the sibling
   // scripts/damon-analysis/lib/damon_analysis.py, which the "." context
-  // above cannot see (it is outside scripts/cgroup-profiler/) — a second,
+  // above cannot see (it is outside cgprofile/) — a second,
   // named build context, exactly what `COPY --from=damon_analysis` in the
   // Dockerfile expects. Without this the image builds fine but DAMON is
   // unconditionally "unavailable" inside every container regardless of
   // the host kernel (found live during RG-55 P1 acceptance).
   contexts = {
-    damon_analysis = "../damon-analysis"
+    damon_analysis = "../scripts/damon-analysis"
   }
 }
 

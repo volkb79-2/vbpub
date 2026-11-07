@@ -46,7 +46,7 @@ from cgprofile.version import resolve_build_identity, resolve_cmru_release_ident
 # here (rather than silently disabling entitlement checks estate-wide via
 # BUILDX_BAKE_ENTITLEMENTS_FS=0) keeps the ask narrow and visible in the
 # actual command line, not an env var a future reader would miss.
-_FS_ALLOW = ["--allow=fs.read=../damon-analysis"]
+_FS_ALLOW = ["--allow=fs.read=../scripts/damon-analysis"]
 
 
 def log(msg: str) -> None:
@@ -88,7 +88,7 @@ def require_clean_local_build_source(project_root: Path = HERE) -> None:
     try:
         context_paths = (
             project_root.relative_to(repo_root).as_posix(),
-            (project_root.parent / "damon-analysis").relative_to(repo_root).as_posix(),
+            (repo_root / "scripts" / "damon-analysis").relative_to(repo_root).as_posix(),
         )
     except ValueError as exc:
         raise RuntimeError("local build contexts are outside their Git repository") from exc

@@ -15,7 +15,7 @@ and every error code below is live.
 > **Contracts.** The control socket speaks **ctl contract 2** (the `export`, `config`, `config-set` and
 > `config-reset` operations, session ownership; section 10) and, for older consumers, **contract 1**
 > (sections 1 to 9). The daemon serves both; a request without a `contract` field is contract 1. Section 10
-> also says how peers recognise each other. The command-line half is [`CGPCTL-SPEC.md`](CGPCTL-SPEC.md).
+> also says how peers recognise each other. The command-line half is [`CGPROFILECTL-SPEC.md`](CGPROFILECTL-SPEC.md).
 
 ## 1. One carrier: the Unix socket (§8.1, design D-30)
 
@@ -163,7 +163,7 @@ note in `docs/CONSUMERS.md` and the rationale in `docs/DESIGN-GUIDE.md`.
    socket access by themselves. Each consumer mounts only its entitled level
    directory.
 3. The `allow_uids` key of `cgprofiled.toml` (an array of uids; runtime-tunable by
-   uid 0, `CGPCTL-SPEC.md` section 3.5) adds an `SO_PEERCRED` check: uid 0 is
+   uid 0, `CGPROFILECTL-SPEC.md` section 3.5) adds an `SO_PEERCRED` check: uid 0 is
    always allowed, listed uids are allowed, everything else gets
    `{"ok": false, "contract": 1, "error": {"code": "peer-refused", "message": …}}`
    and the connection closes. Unreadable peer credentials are refused when
@@ -200,7 +200,7 @@ R2 consumers still fail closed when their configured endpoint is unavailable.
 Response shape is always
 `{"ok": false, "contract": 1, "error": {"code": "<kebab-code>", "message": "…"}}`
 (the `contract` field echoes the request's). `cgprofilectl` maps codes to exit
-codes in `CGPCTL-SPEC.md` section 1. Codes: `bad-argument`,
+codes in `CGPROFILECTL-SPEC.md` section 1. Codes: `bad-argument`,
 `target-not-found`, `too-many-sessions`, `unknown-session`,
 `report-unavailable`, `report-failed`, `stop-incomplete` (a `stop` whose
 sampling worker did not exit within 10 s: the session is NOT finalized, keeps
@@ -491,7 +491,7 @@ Response: `{"ok": true, "contract": 2, "config": {"file": "/etc/cgprofile/cgprof
 "/var/lib/cgprofile/overrides.toml", "overrides_ignored": 0, "keys": {"<key>": {"value": ..., "source":
 "default" | "file" | "override", "reloadable": true, "tunable": true, "persisted": false, "shadows":
 {"value": ..., "source": "file" | "default"}}}}}`. `shadows` is present only for an override. The key set
-is `CGPCTL-SPEC.md` section 3.2; the precedence and the runtime-tunable allow-list are its section 3.5.
+is `CGPROFILECTL-SPEC.md` section 3.2; the precedence and the runtime-tunable allow-list are its section 3.5.
 
 **`config-set`** (write; uid 0 only, section 10.5):
 
@@ -509,9 +509,9 @@ is `CGPCTL-SPEC.md` section 3.2; the precedence and the runtime-tunable allow-li
 Response: `{"ok": true, "contract": 2, "config-set": {"key": "allow_uids", "old": {"value": [1003],
 "source": "file"}, "new": {"value": [1003, 1004], "source": "override"}, "persisted": true, "applied":
 true, "audit_id": "17"}}`. The daemon applies the value (atomically, with the reload swap of
-`CGPCTL-SPEC.md` section 3.3) before it answers; `applied` is `false` only for `dry_run`. If `persist` was
+`CGPROFILECTL-SPEC.md` section 3.3) before it answers; `applied` is `false` only for `dry_run`. If `persist` was
 requested and the write fails the daemon leaves the override unapplied and answers `persist-failed`.
-Every attempt, accepted or refused, writes the audit line of `CGPCTL-SPEC.md` section 3.5.
+Every attempt, accepted or refused, writes the audit line of `CGPROFILECTL-SPEC.md` section 3.5.
 
 **`config-reset`** (write; uid 0 only):
 

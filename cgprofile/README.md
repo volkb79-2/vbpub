@@ -1,4 +1,4 @@
-# cgroup-profiler
+# cgprofile
 
 Profile what a container or cgroup actually does over time — CPU, memory, IO,
 swap, pressure — resolve what its **effective** limits are (the whole ancestor
@@ -11,39 +11,46 @@ production game server lose its anonymous pages?"** — so profiling a subject
 while observing a victim is a first-class mode, not a workaround.
 
 ```bash
-pip install cgprofile           # the wheel provides cgprofilectl (client) and cgprofiled (daemon)
-cgprofilectl --version                # cgprofilectl <version>
+pip install cgprofile           # the wheel provides cgprofile (end-user client), cgprofilectl (daemon client) and cgprofiled (daemon)
+cgprofile --version                   # cgprofile <version>
 cgprofilectl doctor                   # what can I reach?
 
-cgprofilectl run --phase gate -- ./gate.sh                   # profile one command locally (direct mode)
+cgprofile run --phase gate -- ./gate.sh                      # profile one command locally (direct mode)
 cgprofilectl start --target slice:dev-gates.slice            # or ask the host daemon to profile a target
+cgprofile report SESSION                                     # then render its report
 ```
 
-`cgprofilectl --version` is the documented operator identity probe. It prints the
-installed wheel version (derived from the `cgprofile-vX.Y.Z` release tag; an
-untagged build is `0.0.0-dev`). `cgprofilectl` and `cgprofiled` are built on cli-extended:
-help, usage and error output at every depth begin with the matching identity
-headline, and the reviewed command surface is [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md).
-The 1.x commands map to `cgprofilectl` verbs in the
+`cgprofile --version` (and `cgprofilectl --version`) is the documented operator identity probe.
+It prints the installed wheel version (derived from the `cgprofile-vX.Y.Z` release tag; an
+untagged build is `0.0.0-dev`). `cgprofile`, `cgprofilectl` and `cgprofiled` are built on
+cli-extended: help, usage and error output at every depth begin with the matching identity
+headline, and the reviewed command surfaces are [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md)
+(an index of [`cgprofile`](docs/CLI-SPEC-cgprofile.md) and [`cgprofilectl`](docs/CLI-SPEC-cgprofilectl.md)).
+The 1.x commands map to `cgprofile` and `cgprofilectl` verbs in the
 [migration table](docs/CONSUMERS.md#migration-table-1x-command-to-cgprofilectl-verb).
+cgprofile 3.0.0 renamed the 2.x commands (`cgpd` is `cgprofiled`, `cgpctl` is `cgprofilectl`) and moved the local
+verbs (`run`, `mark`, `report`, `skills`) to the new `cgprofile` client; there are no aliases, and `cgprofiled install`
+refuses a host that still has the 2.x layout and lists what to remove.
 
 ## Product overview
 
 ### 1. What it is
 
-Two programs from one wheel. `cgprofiled` is the always-on host daemon, a native
+Three programs from one wheel. `cgprofiled` is the always-on host daemon, a native
 systemd service that samples cgroups, owns DAMON, stores sessions, and answers
-a Unix-socket protocol. `cgprofilectl` is the client: it talks to the daemon, renders
-reports, and also profiles one command locally without any daemon. There is no
+a Unix-socket protocol. `cgprofilectl` is the socket client: it controls the daemon.
+`cgprofile` is the end-user client: it profiles one command locally without any
+daemon, marks phases, renders and analyses reports (of a run directory or an exported
+daemon session) and installs the agent skill. There is no
 container, no Docker use by the daemon, and no helper image. Normative
-documents: [`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) (command line),
+documents: [`docs/CGPROFILECTL-SPEC.md`](docs/CGPROFILECTL-SPEC.md) (command line),
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) (wire), [`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md)
 (install), [`DESIGN.md`](DESIGN.md) (architecture).
 
 ### 2. Commands
 
 `cgprofilectl [--socket PATH] [--json] <verb>`; the full client table, flags, JSON
-shapes and exit codes are in [`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md)
+shapes and exit codes are in [`docs/CGPROFILECTL-SPEC.md`](docs/CGPROFILECTL-SPEC.md)
 section 2.
 
 | verb | what |
@@ -55,16 +62,22 @@ section 2.
 | `start` | start a daemon session on a container, cgroup or slice; `--target`, `--scope`, `--place`, `--on-stall`, `--dry-run` |
 | `stop` | stop and finalize a session; prints the summary |
 | `watch` | stream readings until the session ends; `--watch-interval` |
-| `report` | export a stored session and render it locally; `--out`, `--html-only`, `--md-only`, `--run-dir` |
 | `prune` | apply retention now; `--keep`, `--keep-days`, `--dry-run`, `--yes` |
-| `run` | profile one command locally, direct mode only; `--phase`, `--out-dir` |
-| `mark` | append a phase mark to the current run; stdlib-only, callable from inside a gate |
 | `doctor` | diagnose client access, daemon, observer endpoint and runtime; `--check` |
 | `config` | `config show`, `config set KEY VALUE [--persist]`, `config reset` (uid 0 for writes) |
+
+`cgprofile <verb>` is the end-user client (no daemon is needed except to export a stored session):
+
+| verb | what |
+|---|---|
+| `run` | profile one command locally, direct mode only; `--phase`, `--out-dir` |
+| `mark` | append a phase mark to the current run; stdlib-only, callable from inside a gate |
+| `report` | render a run directory, or export a stored session from the daemon and render it; `--out`, `--html-only`, `--md-only`, `--run-dir`, `--export-only`, `--socket` |
+| `analyze` | analyse a run directory and print the proposals |
 | `skills` | install, check, list or remove the packaged agent skill |
 
 `cgprofiled [--config PATH] <verb>` is root-only for service changes and read-only
-for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
+for inspection ([`docs/CGPROFILECTL-SPEC.md`](docs/CGPROFILECTL-SPEC.md) section 3):
 
 | verb | what |
 |---|---|
@@ -77,8 +90,8 @@ for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
 | `reload` | signal the running daemon to reload; `--reset-overrides` also drops runtime overrides |
 
 After installation, run the service CLI from the active versioned venv at
-`/opt/cgprofile/current/venv/bin/cgprofiled`. The installer links the client command
-`cgprofilectl` into `/usr/local/bin` but does not add a global `cgprofiled` symlink.
+`/opt/cgprofile/current/venv/bin/cgprofiled`. The installer links the client commands
+`cgprofilectl` and `cgprofile` into `/usr/local/bin` but does not add a global `cgprofiled` symlink.
 
 The daemon reads `/etc/cgprofile/cgprofiled.toml`, plus uid-0 runtime overrides.
 A missing file means all defaults. Unknown keys are refused. Socket settings

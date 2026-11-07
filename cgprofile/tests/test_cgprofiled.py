@@ -1,4 +1,4 @@
-"""cgprofiled: the cli-extended service entry (CGPCTL-SPEC.md section 3)."""
+"""cgprofiled: the cli-extended service entry (CGPROFILECTL-SPEC.md section 3)."""
 
 from __future__ import annotations
 

@@ -1,0 +1,3706 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/reset/argument-shape/argument:route:entrypoint:cgprofilectl/config/reset/key",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cgprofilectl/config/reset/key"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/reset",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cgprofilectl/config/reset/key"
+      },
+      "signature": "sha256:c43f825b8419bbd69a90cf467358796d78a3a0c896ea9c0b66ebbf956421acec"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/reset/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/reset/--all"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/reset",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cgprofilectl/config/reset/--all"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:a94f59833729b5649f31f0898d25ebc6c76e7b8d4d090512f540e063d1c83928"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/reset/option-spelling/option:route:entrypoint:cgprofilectl/config/reset/--all/--all",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/reset/--all"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/reset",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/reset/--all",
+        "spelling": "--all"
+      },
+      "signature": "sha256:552fd531fbf38438bfa32c95c47b7c942c3bacf20b50b677527440e5628e76e9"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/reset/option-spelling/option:route:entrypoint:cgprofilectl/config/reset/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/reset/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/reset",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/reset/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:bed86d4fcd4d43358fcdd5ea8951835b245d046c096091a1407e519ce2b2b2c5"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/reset/option-spelling/option:route:entrypoint:cgprofilectl/config/reset/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/reset/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/reset",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/reset/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:a2e37ea0eada82810ee9b83446fb83e3f5121860b5a578183f176f1dd64e260f"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/reset/option-spelling/option:route:entrypoint:cgprofilectl/config/reset/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/reset/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/reset",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/reset/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:1b0a4a44b4d8700a9a2561cbc48939c3e8b1c6e2a1e8be0019565f6ba9a9b131"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/set/argument-shape/argument:route:entrypoint:cgprofilectl/config/set/key",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cgprofilectl/config/set/key"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/set",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cgprofilectl/config/set/key"
+      },
+      "signature": "sha256:3bbccb904b4dfd56c8eae9a4e7df1a8af35a8035278b83cef1553f7f17634d66"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/set/argument-shape/argument:route:entrypoint:cgprofilectl/config/set/value",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cgprofilectl/config/set/value"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/set",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cgprofilectl/config/set/value"
+      },
+      "signature": "sha256:32840c0422d7aec29eb1eca3058219dab432d8af9dc4eced8c975209d884fde9"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/set/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:cgprofilectl/config/set/key",
+        "argument:route:entrypoint:cgprofilectl/config/set/value",
+        "option:route:entrypoint:cgprofilectl/config/set/--persist"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/set",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cgprofilectl/config/set/--persist"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:cgprofilectl/config/set/key": 1,
+          "argument:route:entrypoint:cgprofilectl/config/set/value": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:cgprofilectl/config/set/key",
+          "argument:route:entrypoint:cgprofilectl/config/set/value"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:9fd80dda88a12fb395a1f916b08d7edd58d078999a17861970cbe9edcd5f7f30"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/set/option-spelling/option:route:entrypoint:cgprofilectl/config/set/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/set/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/set",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/set/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:61f9e2a5f6790de5e4dd95702ab0ccf6fd69419f452ce1ca810ff0e481164dc8"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/set/option-spelling/option:route:entrypoint:cgprofilectl/config/set/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/set/--dry-run"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/set",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/set/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:86e01d88da03d725fcb88c17e5c3d84094d3fe6bb74e4a5a7f71307600e4201d"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/set/option-spelling/option:route:entrypoint:cgprofilectl/config/set/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/set/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/set",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/set/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:b4965166b77f98b941cc317ae4e25ed890de569627b11804e7d9d0550b4938dd"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/set/option-spelling/option:route:entrypoint:cgprofilectl/config/set/--persist/--persist",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/set/--persist"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/set",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/set/--persist",
+        "spelling": "--persist"
+      },
+      "signature": "sha256:4c053a5f5b2ba0403522000f19f0d858c474826bb7c74df2f3825c0a6efebb34"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/set/option-spelling/option:route:entrypoint:cgprofilectl/config/set/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/set/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/set",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/set/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:819d677805d5450043f96ad316742393deb784306b07fe5c8ac5c5aa4617ec79"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/show/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:cgprofilectl/config/show",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:b1ccb1e450bfc74250d0fe8039d2a03ffcdaafde15f845ed925d71c48b486dad"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/show/option-spelling/option:route:entrypoint:cgprofilectl/config/show/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/show/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/show/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:0d3e6ba479507d954083afd13fc40b2020a10250d831a9dd9631af53643cc28a"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/show/option-spelling/option:route:entrypoint:cgprofilectl/config/show/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/show/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/show/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:1fddda58f1021b5698dffc75741091a29ba7d519a9ff449793b0ffdcfcab3667"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/config/show/option-spelling/option:route:entrypoint:cgprofilectl/config/show/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/config/show/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/config/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/config/show/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:1e7c1abc3a3df0e7ea356a049d7d2ff965b1a4eea286e8d2ea9947472f9658eb"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/doctor/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:cgprofilectl/doctor",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:154588d8f838658d7372d50ffd2a01b450b576423d05ea6f9c65c01c401f77e0"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/doctor/option-spelling/option:route:entrypoint:cgprofilectl/doctor/--check/--check",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/doctor/--check"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/doctor/--check",
+        "spelling": "--check"
+      },
+      "signature": "sha256:f949c056309c5cf0424c42827a364dbb4db69d528428f3008a95900dc8700c9b"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/doctor/option-spelling/option:route:entrypoint:cgprofilectl/doctor/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/doctor/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/doctor/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:9f507b90536b9f0c7a3287f6af7956c745e31da416bf9181c56726b8072b9dd2"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/doctor/option-spelling/option:route:entrypoint:cgprofilectl/doctor/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/doctor/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/doctor/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:9f93d1ae0c93c5ddf8ffab9cc8fd756006fb35d1505f387e14d86541d30d79bf"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/doctor/option-spelling/option:route:entrypoint:cgprofilectl/doctor/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/doctor/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/doctor/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:ed953c157b91f9b0c3a15b2f0cc07e25db5859fd46a766b547250c0057b54010"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/host/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:cgprofilectl/host",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:8348f23d706e4b3c339fddeab3b93ebd97e087e5cff66e2e2c5a91753997637b"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/host/option-spelling/option:route:entrypoint:cgprofilectl/host/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/host/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/host",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/host/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:4f9792fd823c503157849a88bed7e90bfafcb8eafefc608d57552ddd6395d9d3"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/host/option-spelling/option:route:entrypoint:cgprofilectl/host/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/host/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/host",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/host/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:f497e2a6e62acd479fdb4cbd286b9bb2f11834a285bd5b89b97c305bc784f0d9"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/host/option-spelling/option:route:entrypoint:cgprofilectl/host/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/host/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/host",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/host/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:8367f32f37f6bec6e149a1972e257569d415aede87a98433321db16afa3c5452"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/prune/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:cgprofilectl/prune",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:30104a81591cc7457503babc402adcbfac01bdb7146a11ab42ec2217da4d3e3c"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/prune/option-spelling/option:route:entrypoint:cgprofilectl/prune/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/prune/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/prune",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/prune/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:4edce59bf5d00e33e642cf72fcb5239e883ed17f765369b4f5509ea5ad9f0d74"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/prune/option-spelling/option:route:entrypoint:cgprofilectl/prune/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/prune/--dry-run"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/prune",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/prune/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:a9ef236bb61f82e21e6782d03b37fbc5d0b7c176f156cec182607d3f3a12d274"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/prune/option-spelling/option:route:entrypoint:cgprofilectl/prune/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/prune/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/prune",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/prune/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:2e1d7d60e26faad20c8d3b3500f4154549fbe1606a047b2e7b6d8850dd7f575b"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/prune/option-spelling/option:route:entrypoint:cgprofilectl/prune/--keep-days/--keep-days",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/prune/--keep-days"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/prune",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/prune/--keep-days",
+        "spelling": "--keep-days"
+      },
+      "signature": "sha256:f1bca87f196148e7dcd235992d14cbe4c3e3535dd310c5cb382bcb09370c3786"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/prune/option-spelling/option:route:entrypoint:cgprofilectl/prune/--keep/--keep",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/prune/--keep"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/prune",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/prune/--keep",
+        "spelling": "--keep"
+      },
+      "signature": "sha256:b0f2ba81bac0d66dc6b91270e19cb62f46330550d1e3bf8433bcc13885b03fd1"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/prune/option-spelling/option:route:entrypoint:cgprofilectl/prune/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/prune/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/prune",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/prune/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:2f55b0e3be996a106fb089f91af025e136d4cc15cfe99d64aa6a4ab6aedbdab6"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/prune/option-spelling/option:route:entrypoint:cgprofilectl/prune/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/prune/--yes"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/prune",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/prune/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:54c7ef94dbbf5df26b91d0d2cd9ba6cf18bdcf9572d395b1a6a4b148e24e3ee6"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/sessions/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/sessions/--state",
+        "option:route:entrypoint:cgprofilectl/sessions/--mine"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/sessions",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cgprofilectl/sessions/--state",
+          "option:route:entrypoint:cgprofilectl/sessions/--mine"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:f216d6cd2a69f6c93361179cd7ffba605dced4a82814318f9f653556ae2147d8"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/sessions/option-choice/option:route:entrypoint:cgprofilectl/sessions/--state/58bf5b5478",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/sessions/--state"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/sessions",
+      "shape": {
+        "choice": "done",
+        "option_id": "option:route:entrypoint:cgprofilectl/sessions/--state"
+      },
+      "signature": "sha256:c55c04f5c62882816d726f71b22fb792abab2c912f9daa424890fe5bdc802baf"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/sessions/option-choice/option:route:entrypoint:cgprofilectl/sessions/--state/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/sessions/--state"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/sessions",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:cgprofilectl/sessions/--state"
+      },
+      "signature": "sha256:c9458345bd77f26df87024d684d4086f91ac35c469696927c3828cf813d8604e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/sessions/option-choice/option:route:entrypoint:cgprofilectl/sessions/--state/844546be55",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/sessions/--state"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/sessions",
+      "shape": {
+        "choice": "live",
+        "option_id": "option:route:entrypoint:cgprofilectl/sessions/--state"
+      },
+      "signature": "sha256:2ba9a9fb8c92afcd84558603ab28c9badf4edf0a71d1a8e8452c52b430589be9"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/sessions/option-spelling/option:route:entrypoint:cgprofilectl/sessions/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/sessions/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/sessions",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/sessions/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:d2ff4456650dd6fa12594968b99a9405890df11239e6c5471363de7a3cf80509"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/sessions/option-spelling/option:route:entrypoint:cgprofilectl/sessions/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/sessions/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/sessions",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/sessions/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:7b4fc5855dc4fc1af00d01fbf9a62ebe3dfd1349650f227abb91a505e3cb9e2e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/sessions/option-spelling/option:route:entrypoint:cgprofilectl/sessions/--mine/--mine",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/sessions/--mine"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/sessions",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/sessions/--mine",
+        "spelling": "--mine"
+      },
+      "signature": "sha256:750d8d97b2e2d135cfd74de7d93ccb61acc8127a305a2171a3c3042738e9bf6c"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/sessions/option-spelling/option:route:entrypoint:cgprofilectl/sessions/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/sessions/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/sessions",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/sessions/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:35bd03e27f293b1e22231ccb55282c25a06cfd27cdadc874a8a9bebec996ce56"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/sessions/option-spelling/option:route:entrypoint:cgprofilectl/sessions/--state/--state",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/sessions/--state"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/sessions",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/sessions/--state",
+        "spelling": "--state"
+      },
+      "signature": "sha256:fced70b574cb02c30783ea8e352db746c42484a68857e4ff1905028c2ccdccfe"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/show/argument-shape/argument:route:entrypoint:cgprofilectl/show/session",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cgprofilectl/show/session"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/show",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cgprofilectl/show/session"
+      },
+      "signature": "sha256:14c0dc78fccb46992dd9716f1da8c204d94686bb42e3114eaf45acbc55a3ff76"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/show/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:cgprofilectl/show/session"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/show",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:cgprofilectl/show/session": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:cgprofilectl/show/session"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:395e3e3141224f4c375e16f8479c59f7fc243647afae6d99e11ce06c0123f402"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/show/option-spelling/option:route:entrypoint:cgprofilectl/show/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/show/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/show/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:b9633c07fcd57678c24fa15ac21caff43206f1038ef48bc136acaa41bac2132e"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/show/option-spelling/option:route:entrypoint:cgprofilectl/show/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/show/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/show/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:d08e51e81e0bc0b573a962352c799d9c349a2b6fabd4553ab1f3f2269db06387"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/show/option-spelling/option:route:entrypoint:cgprofilectl/show/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/show/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/show/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:ae951c69d9477fadd5ee95ebf6b8862c1f2a755436fda4faa96c0ca1870eabf3"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--target",
+        "option:route:entrypoint:cgprofilectl/start/--place"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cgprofilectl/start/--place"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:cgprofilectl/start/--target"
+        ]
+      },
+      "signature": "sha256:74b1ed47255f9c00202069dff89db51e88c69e4b30dccaaa562169c681dff3b6"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-choice/option:route:entrypoint:cgprofilectl/start/--damon/990c23868b",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--damon"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "choice": "on",
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--damon"
+      },
+      "signature": "sha256:8a0ed0328bd72d736c6791457f5f9314130c2d163ecec66761075add562f80f7"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-choice/option:route:entrypoint:cgprofilectl/start/--damon/9f3becba6e",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--damon"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "choice": "off",
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--damon"
+      },
+      "signature": "sha256:d68f528a1470630e586d9e86d8f6a7d301d3a100eb9719d9ff576e279e70a816"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-choice/option:route:entrypoint:cgprofilectl/start/--on-stall/8d0ccb734a",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--on-stall"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "choice": "report",
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--on-stall"
+      },
+      "signature": "sha256:c72f216b888776423b568fc958f56a63f26cb5c911158ab602a59ae9ceb7a601"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-choice/option:route:entrypoint:cgprofilectl/start/--on-stall/a25a7933fa",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--on-stall"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "choice": "kill",
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--on-stall"
+      },
+      "signature": "sha256:db059f36a22ac9e620bdbc0d64bdfc31b5c3a3ad413a079ef9b811f7ecdeaed8"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-choice/option:route:entrypoint:cgprofilectl/start/--scope/7258bfbaad",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--scope"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "choice": "container-shared",
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--scope"
+      },
+      "signature": "sha256:9a6a0a35b10ba7ce88597470a53c5e62598fd207bc80bf6b46b603873c89e249"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-choice/option:route:entrypoint:cgprofilectl/start/--scope/b52d3805dc",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--scope"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "choice": "container",
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--scope"
+      },
+      "signature": "sha256:a3c30a24b71aaed0125615198f66e4855cff0d7c74d68505cc372b16c6935caa"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--ceiling/--ceiling",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--ceiling"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--ceiling",
+        "spelling": "--ceiling"
+      },
+      "signature": "sha256:da43f50c817576aed6d89db0e6b59cfc4fca98e6eb2e48cbb8b11c5052f5e427"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--cpu-weight/--cpu-weight",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--cpu-weight"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--cpu-weight",
+        "spelling": "--cpu-weight"
+      },
+      "signature": "sha256:c0885b17fb32cb4819b13b6ce8a3c153b4aad996e00276dfa12f665193aff44c"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--damon/--damon",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--damon"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--damon",
+        "spelling": "--damon"
+      },
+      "signature": "sha256:0cefbc26137e858d15245529e694743db880cba7f00559ac980cd5772f3de871"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:6eefc47f444f7c3b5630ef7bc6afa8216ad78842a3d792b9aa1a88616e034252"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--dry-run"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:6fa6b97f44a3790614b988e6a17c946660074f3c82a1c45735f12847ed500ea1"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--idle-bound/--idle-bound",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--idle-bound"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--idle-bound",
+        "spelling": "--idle-bound"
+      },
+      "signature": "sha256:a482952f745dcad9d7dc31569b3507b08d48b1985f01c59b846ba8149b5ac89c"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--interval/--interval",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--interval"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--interval",
+        "spelling": "--interval"
+      },
+      "signature": "sha256:809757f6f3b06aaa37eaa9123b8e85f27d80da2d3a377832e1bcc25336d7c992"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:671487779f742cd9c04798e823f5ec84de582e272f758590c24e4d467b339830"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--memory-high/--memory-high",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--memory-high"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--memory-high",
+        "spelling": "--memory-high"
+      },
+      "signature": "sha256:17f1eea40259d4a9988825c5241e8f81bff9cc433e246352e798aca91cb8b4a4"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--memory-max/--memory-max",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--memory-max"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--memory-max",
+        "spelling": "--memory-max"
+      },
+      "signature": "sha256:04a8045209b229aa78c55bb21a56a885daf415d82c32e6dad2424727cf986d20"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--meta/--meta",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--meta"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--meta",
+        "spelling": "--meta"
+      },
+      "signature": "sha256:528c57931e3dfe4da37a2b298374a86492dadd7ba732f5c7ecb5cf3ebaaf05d5"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--on-stall/--on-stall",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--on-stall"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--on-stall",
+        "spelling": "--on-stall"
+      },
+      "signature": "sha256:dc034b53f0621d1ac12e8312119038850a89e28a97e317914272e185e1342051"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--place/--place",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--place"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--place",
+        "spelling": "--place"
+      },
+      "signature": "sha256:3c72240e497e567b036d7d6dba3e8eae2ff656a3204538c3056f8f74066f0458"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--progress-stream/--progress-stream",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--progress-stream"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--progress-stream",
+        "spelling": "--progress-stream"
+      },
+      "signature": "sha256:b80df10df96c3658df0832da7ba9a8d75b4caca5bb951e767ee906c926de828a"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--scope/--scope",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--scope"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--scope",
+        "spelling": "--scope"
+      },
+      "signature": "sha256:361c578511792afa0bb3ac3538de4edef9a665be5b8b8d2998758d315497d0a4"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:05c7a31c5e4fa828662e19c7b7973aad1b3d6624b63e4a2a48ea2e9e7ed94650"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--target/--target",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--target"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--target",
+        "spelling": "--target"
+      },
+      "signature": "sha256:3024654d3a326d5b0101d649293e7c91979d81fa216247897022dfedcbe6dc6f"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--token/--token",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--token"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--token",
+        "spelling": "--token"
+      },
+      "signature": "sha256:54cce34a01b5c47e0f9caa6b7e91f53e67d686f1e6ceca83b09f6b436726f5b3"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/start/option-spelling/option:route:entrypoint:cgprofilectl/start/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/start/--yes"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/start",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/start/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:3aed9937259c4f92374eef3ef0dec682b1ed1b3a7a0b665136445788dcd27618"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/status/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:cgprofilectl/status",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:2e1b9f010aa3bd0658882cb355727e6301997b8477117864a67a87b410e09db0"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/status/option-spelling/option:route:entrypoint:cgprofilectl/status/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/status/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/status/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:0a9e5783ade1ea091f985c2b290a43192f48e83dd0760046325bd6d6cd087e0f"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/status/option-spelling/option:route:entrypoint:cgprofilectl/status/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/status/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/status/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:cf5a40c0b1fa157276772fe28cbeb2175259aabd6d3a3b269b6c3b7d0fd41ce0"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/status/option-spelling/option:route:entrypoint:cgprofilectl/status/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/status/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/status",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/status/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:e142152f0c6dc197f8abd19d2f66828c25d7f75fcf6d2b64fbc64990d2b8c0e1"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/stop/argument-shape/argument:route:entrypoint:cgprofilectl/stop/session",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cgprofilectl/stop/session"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/stop",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cgprofilectl/stop/session"
+      },
+      "signature": "sha256:00108269958379af91086dc48a690f588b64595463a5acec7b08a867c22ac0ba"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/stop/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:cgprofilectl/stop/session"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/stop",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {
+          "argument:route:entrypoint:cgprofilectl/stop/session": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:cgprofilectl/stop/session"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:ee940c83f3995a4c9c76411083ed8951bc342af09ab452610cd87854b97dba3d"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/stop/option-spelling/option:route:entrypoint:cgprofilectl/stop/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/stop/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/stop",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/stop/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:57487c29fb8e9b8b3bd24bf871481b84cc6cf85c4e80cdac45f37832fd8c3a86"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/stop/option-spelling/option:route:entrypoint:cgprofilectl/stop/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/stop/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/stop",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/stop/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:bff3b39ecbdf50614a3173abe27b6040f542c42392e11d6ccb40c4fbb6fcfb18"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/stop/option-spelling/option:route:entrypoint:cgprofilectl/stop/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/stop/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/stop",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/stop/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:e52b767731db830d46be6df27a15a9e27ece4c08012ccf649605869b77c7138f"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/stop/option-spelling/option:route:entrypoint:cgprofilectl/stop/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/stop/--yes"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/stop",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/stop/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:375a58d229d9e325b22ae7dd28956368587a8873d533875fa3eda445d1a1b68c"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/watch/argument-shape/argument:route:entrypoint:cgprofilectl/watch/session",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:cgprofilectl/watch/session"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/watch",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:cgprofilectl/watch/session"
+      },
+      "signature": "sha256:8c6f427cc0202323efa24e0ede033f6a76264c582522d825f90dca60327783e9"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/watch/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:cgprofilectl/watch/session",
+        "option:route:entrypoint:cgprofilectl/watch/--watch-interval"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/watch",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:cgprofilectl/watch/--watch-interval"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:cgprofilectl/watch/session": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:cgprofilectl/watch/session"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:a78ceb7df447cc3c682d264201457bd4f74aa308f6093165302a46b1edd7335b"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/watch/option-spelling/option:route:entrypoint:cgprofilectl/watch/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/watch/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/watch",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/watch/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:6ff9704b627c60ecaa11df7edac5c49d8795efd35b2c21038639c484e8fdd9bb"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/watch/option-spelling/option:route:entrypoint:cgprofilectl/watch/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/watch/--json"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/watch",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/watch/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:21ba4cd5aa8ffc021c795e6f8b46cdd3163e74d4d243568e174509a92abfafa0"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/watch/option-spelling/option:route:entrypoint:cgprofilectl/watch/--socket/--socket",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/watch/--socket"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/watch",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/watch/--socket",
+        "spelling": "--socket"
+      },
+      "signature": "sha256:9e7b6125affb86e3cc5e37bdfb633e722762e255299420ba73f226c69e8521dc"
+    },
+    {
+      "id": "case:route:entrypoint:cgprofilectl/watch/option-spelling/option:route:entrypoint:cgprofilectl/watch/--watch-interval/--watch-interval",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cgprofilectl/watch/--watch-interval"
+      ],
+      "route_id": "route:entrypoint:cgprofilectl/watch",
+      "shape": {
+        "option_id": "option:route:entrypoint:cgprofilectl/watch/--watch-interval",
+        "spelling": "--watch-interval"
+      },
+      "signature": "sha256:3b375d3d7b8fab19a64f3eb198e44b1c7a140c675eeb2499c4f98244429d719f"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "cgprofilectl",
+    "display_name": "CGPROFILE",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:cgprofilectl",
+    "long_name": "cgroup resource profiler client",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "cgprofilectl",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "show and change the daemon's settings",
+      "group": "MIXED OPERATIONS",
+      "id": "route:entrypoint:cgprofilectl/config",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "config"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:cgprofilectl/config/show",
+        "route:entrypoint:cgprofilectl/config/set",
+        "route:entrypoint:cgprofilectl/config/reset"
+      ],
+      "summary": "show and change the daemon's settings",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/config/reset/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "config",
+            "reset"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "the key whose override to drop",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cgprofilectl/config/reset/key",
+          "kind": "argument",
+          "metavar": "KEY",
+          "minimum_values": 0,
+          "name": "key",
+          "nargs": "?",
+          "parser_kwargs": {
+            "nargs": "?"
+          },
+          "parser_path": [
+            "config",
+            "reset"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--all",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "drop every override",
+          "dest": "all",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--all"
+          ],
+          "help_group": "SCOPE",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/config/reset/--all",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "config",
+            "reset"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "show and change the daemon's settings",
+          "group": "MIXED OPERATIONS",
+          "id": null,
+          "name": "config",
+          "summary": "show and change the daemon's settings",
+          "synopsis": null
+        }
+      ],
+      "description": "drop one runtime override, or all of them (uid 0 only)",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cgprofilectl/config/reset",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "config"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "config",
+            "reset"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "config",
+        "reset"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "drop one runtime override, or all of them (uid 0 only) [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/config/set/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "config",
+            "set"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "a runtime-tunable key: allow_uids, interval, damon_default, keep_sessions, keep_days, export_max_bytes, max_sessions, max_exports, max_watchers",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cgprofilectl/config/set/key",
+          "kind": "argument",
+          "metavar": "KEY",
+          "minimum_values": 1,
+          "name": "key",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "config",
+            "set"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "the new value (number, integer, on|off, or a comma list)",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cgprofilectl/config/set/value",
+          "kind": "argument",
+          "metavar": "VALUE",
+          "minimum_values": 1,
+          "name": "value",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "config",
+            "set"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--persist",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "also write the overrides file so it survives restarts",
+          "dest": "persist",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--persist"
+          ],
+          "help_group": "SCOPE",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/config/set/--persist",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "config",
+            "set"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "show and change the daemon's settings",
+          "group": "MIXED OPERATIONS",
+          "id": null,
+          "name": "config",
+          "summary": "show and change the daemon's settings",
+          "synopsis": null
+        }
+      ],
+      "description": "change one runtime-tunable setting live (uid 0 only)",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cgprofilectl/config/set",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "config"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "config",
+            "set"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "config",
+        "set"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "change one runtime-tunable setting live (uid 0 only) [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/config/show/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "config",
+            "show"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "show and change the daemon's settings",
+          "group": "MIXED OPERATIONS",
+          "id": null,
+          "name": "config",
+          "summary": "show and change the daemon's settings",
+          "synopsis": null
+        }
+      ],
+      "description": "effective settings with their source and the config digest",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cgprofilectl/config/show",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "config"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "config",
+            "show"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "config",
+        "show"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "effective settings with their source and the config digest",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/doctor/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--check",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "run only this check (repeatable)",
+          "dest": "check",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--check"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/doctor/--check",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null
+          },
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "diagnose the install, the socket, the caller and the daemon",
+      "group": "MAINTENANCE",
+      "id": "route:entrypoint:cgprofilectl/doctor",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "doctor"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "doctor"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "diagnose the install, the socket, the caller and the daemon",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/host/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "host"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "host facts: load, memory, pressure, observed slices, DAMON",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cgprofilectl/host",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "host"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "host"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "host facts: load, memory, pressure, observed slices, DAMON",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/prune/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "prune"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--keep",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "keep at most this many sessions for this call",
+          "dest": "keep",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--keep"
+          ],
+          "help_group": "RETENTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/prune/--keep",
+          "kind": "option",
+          "metavar": "N",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "prune"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--keep-days",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "keep sessions at most this many days for this call",
+          "dest": "keep_days",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--keep-days"
+          ],
+          "help_group": "RETENTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/prune/--keep-days",
+          "kind": "option",
+          "metavar": "DAYS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "prune"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "apply stored-session retention now",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cgprofilectl/prune",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "prune"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "prune"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "apply stored-session retention now [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/sessions/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "sessions"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--state",
+          "choices": [
+            "live",
+            "done",
+            "all"
+          ],
+          "const": null,
+          "default": "all",
+          "default_present": true,
+          "description": "which sessions to list",
+          "dest": "state",
+          "effective_default": "all",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--state"
+          ],
+          "help_group": "FILTER",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/sessions/--state",
+          "kind": "option",
+          "metavar": "STATE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "live",
+              "done",
+              "all"
+            ],
+            "default": "all"
+          },
+          "parser_path": [
+            "sessions"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--mine",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "only sessions owned by the calling uid",
+          "dest": "mine",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--mine"
+          ],
+          "help_group": "FILTER",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/sessions/--mine",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "sessions"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "one row per session, live and stored",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cgprofilectl/sessions",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "sessions"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "sessions"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "one row per session, live and stored",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/show/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "show"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "the session id (s-...)",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cgprofilectl/show/session",
+          "kind": "argument",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "name": "session",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "show"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "live counters of a live session, the summary of a finished one",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cgprofilectl/show",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "show"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "show"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "live counters of a live session, the summary of a finished one",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--target",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "containerid:<64hex>, container:NAME, cgroup:/abs/path or slice:NAME.slice",
+          "dest": "target",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--target"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--target",
+          "kind": "option",
+          "metavar": "TARGET",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--scope",
+          "choices": [
+            "container",
+            "container-shared"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "scope (default: container, or observe for cgroup:/slice: targets)",
+          "dest": "scope",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--scope"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--scope",
+          "kind": "option",
+          "metavar": "SCOPE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "container",
+              "container-shared"
+            ]
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--token",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "caller token echoed in the session",
+          "dest": "token",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--token"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--token",
+          "kind": "option",
+          "metavar": "TOKEN",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--interval",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "sampling interval in seconds",
+          "dest": "interval",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--interval"
+          ],
+          "help_group": "SAMPLING",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--interval",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--damon",
+          "choices": [
+            "on",
+            "off"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "force DAMON on or off for this session",
+          "dest": "damon",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--damon"
+          ],
+          "help_group": "SAMPLING",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--damon",
+          "kind": "option",
+          "metavar": "on|off",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "on",
+              "off"
+            ]
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--place",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "place the target under the gates slice with the caps below",
+          "dest": "place",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--place"
+          ],
+          "help_group": "PLACEMENT",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--place",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--memory-high",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "memory.high of the placement leaf, bytes",
+          "dest": "memory_high",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--memory-high"
+          ],
+          "help_group": "PLACEMENT",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--memory-high",
+          "kind": "option",
+          "metavar": "BYTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--memory-max",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "memory.max of the placement leaf, bytes",
+          "dest": "memory_max",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--memory-max"
+          ],
+          "help_group": "PLACEMENT",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--memory-max",
+          "kind": "option",
+          "metavar": "BYTES",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--cpu-weight",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "cpu.weight of the placement leaf, 1..10000",
+          "dest": "cpu_weight",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--cpu-weight"
+          ],
+          "help_group": "PLACEMENT",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--cpu-weight",
+          "kind": "option",
+          "metavar": "WEIGHT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--idle-bound",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "auto or seconds without progress before a stall verdict",
+          "dest": "idle_bound",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--idle-bound"
+          ],
+          "help_group": "STALL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--idle-bound",
+          "kind": "option",
+          "metavar": "auto|SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ceiling",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "auto or seconds of total runtime before a stall verdict",
+          "dest": "ceiling",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ceiling"
+          ],
+          "help_group": "STALL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--ceiling",
+          "kind": "option",
+          "metavar": "auto|SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--on-stall",
+          "choices": [
+            "report",
+            "kill"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "what an actionable verdict does (default report)",
+          "dest": "on_stall",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--on-stall"
+          ],
+          "help_group": "STALL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--on-stall",
+          "kind": "option",
+          "metavar": "ACTION",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "report",
+              "kill"
+            ]
+          },
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--progress-stream",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "the lane's progress NDJSON path as the lane sees it",
+          "dest": "progress_stream",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--progress-stream"
+          ],
+          "help_group": "STALL",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--progress-stream",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--meta",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "JSON object merged over the client's meta",
+          "dest": "meta",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--meta"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/start/--meta",
+          "kind": "option",
+          "metavar": "JSON",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "start"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "start a daemon session on a container, cgroup or slice",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cgprofilectl/start",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "start"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "start"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "start a daemon session on a container, cgroup or slice [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/status/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "status"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "daemon and client versions, contracts, slots and config digest",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cgprofilectl/status",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "status"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "status"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "daemon and client versions, contracts, slots and config digest",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/stop/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "stop"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "the session id (s-...)",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cgprofilectl/stop/session",
+          "kind": "argument",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "name": "session",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "stop"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "stop and finalize a session; prints the summary",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:cgprofilectl/stop",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "stop"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "stop"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "stop and finalize a session; prints the summary [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--socket",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "dest": "socket",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--socket"
+          ],
+          "help_group": "CONNECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/watch/--socket",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "watch"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "the session id (s-...)",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:cgprofilectl/watch/session",
+          "kind": "argument",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "name": "session",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "watch"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--watch-interval",
+          "choices": null,
+          "const": null,
+          "default": 30,
+          "default_present": true,
+          "description": "seconds between readings (daemon clamps to 5..300)",
+          "dest": "watch_interval",
+          "effective_default": 30,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--watch-interval"
+          ],
+          "help_group": "STREAM",
+          "hidden": false,
+          "id": "option:route:entrypoint:cgprofilectl/watch/--watch-interval",
+          "kind": "option",
+          "metavar": "SECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 30,
+            "type": {
+              "callable": "builtins.float"
+            }
+          },
+          "parser_path": [
+            "watch"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.float"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "stream readings until the session ends",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:cgprofilectl/watch",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "watch"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "watch"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "stream readings until the session ends",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

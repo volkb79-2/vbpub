@@ -1,4 +1,4 @@
-# Changelog — cgroup-profiler
+# Changelog — cgprofile
 
 All notable changes to this project are recorded here. Entries marked
 `cmru: generated` are produced from the project-scoped release range before
@@ -7,6 +7,44 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 `nyxloom-trove/backlog/` and git history.
 
 ## [Unreleased]
+
+### Breaking (3.0.0)
+- The project moved from `scripts/cgroup-profiler/` to `cgprofile/` at the repository root; the cmru project id
+  and the orchestration key are now `cgprofile`. The tag prefix (`cgprofile-v`), the wheel distribution and the
+  Python package are unchanged, so tag history and `git describe` continue. Entries below this one that name
+  `cgroup-profiler` describe the 2.x tree; `git log --follow` follows the files across the move.
+- The commands are renamed with no aliases and no fallbacks: the daemon `cgpd` is `cgprofiled` (same verbs: `run`,
+  `config check`, `reload`, `unit print|check`, `install`, `uninstall`, `doctor`, `-t`), and the socket client
+  `cgpctl` is `cgprofilectl` (`status`, `host`, `sessions`, `show`, `start`, `stop`, `watch`, `prune`, `config`,
+  `doctor`).
+- The new end-user client `cgprofile` takes the local verbs out of the socket client: `run -- CMD` (direct mode),
+  `mark`, `report` (renders a run directory, or exports a stored session from the daemon and renders it),
+  `analyze RUN_DIR` (new: the proposals of a run directory) and the agent `skills` verbs. `cgprofilectl` no longer
+  has `run`, `mark`, `report` or `skills`, and its `doctor` no longer carries the skills check (`cgprofile skills
+  check`). `cgprofile report SESSION` takes `--socket PATH` as an option of the verb.
+- The units, config and links follow: `cgprofiled.service` and `cgprofiled.service.d/`, `/etc/cgprofile/cgprofiled.toml`,
+  and `/usr/local/bin/cgprofilectl` plus `/usr/local/bin/cgprofile`. `cgprofile.slice`, the two socket units, the
+  paths under `/run/cgprofile`, `/var/lib/cgprofile`, `install.toml`, the groups and every `CGPROFILE_*` variable
+  are unchanged. `CGPCTL_SOCKET` stays for now (its replacement lands with the endpoint-from-environment change).
+- P-11 now refuses the 2.x layout too (`cgpd.service`, `cgpd.service.d/`, `/etc/cgprofile/cgpd.toml`,
+  `/usr/local/bin/cgpctl`) with the manual-removal list; nothing is migrated. A fresh host never meets it.
+- The cli-extended surface is split per executable: `docs/CLI-SPEC-cgprofile.md`, `docs/CLI-SPEC-cgprofilectl.md`
+  (with `docs/CLI-SPEC.md` as their index), `cli-surface-*.json`, `cli-review-*.toml` and `cli-findings-*.toml`.
+  `docs/CGPCTL-SPEC.md` is now `docs/CGPROFILECTL-SPEC.md`.
+
+### Fixed (VM acceptance of 2.2.0, findings C1 to C5)
+- C1 (blocking): `cgprofiled doctor`'s `connect` check probed the observer with a contract-1 `host` request that the
+  observer never serves, so it failed on every fresh install. It now sends the contract-2 `resource-limits` request
+  the observer serves (an `observer-refused` answer proves a live endpoint); a test runs it through the real
+  observer dispatcher.
+- C2: `tools/vm-socket-acceptance.sh` `--self-bind` case uses the dedicated socket groups (group `root` is refused by
+  P-5), `systemd-run --slice cgprofile.slice`, and polls for the socket instead of `sleep 3`; the observer probe at
+  case 5 sends a contract-2 request.
+- C3: an install over a seeded old-layout config (the removed `ctl_socket` key) now prints the P-11 refusal with
+  the manual-removal list; the refusal runs before the existing config is parsed.
+- C4: the acceptance script no longer creates a GID-0 alias group it cannot delete; it uses `root` itself.
+- C5: `python3-venv` is documented as a prerequisite (`docs/NATIVE-DEPLOYMENT.md`) and a failing `venv` step names it.
+- The control socket handler no longer prints a `BrokenPipeError` traceback when a client closes before the reply.
 
 <!-- cmru: release history -->
 

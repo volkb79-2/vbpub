@@ -49,7 +49,7 @@ from . import util
 _DAMO_BIN = os.path.normpath(
     os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        "..", "..", "..", "damon-analysis", "venv", "bin", "damo",
+        "..", "..", "..", "scripts", "damon-analysis", "venv", "bin", "damo",
     )
 )
 

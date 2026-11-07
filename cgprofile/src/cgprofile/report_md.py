@@ -249,7 +249,7 @@ def render(analysis: Analysis, out_dir: str) -> str:
     colors = _assign_colors(entity_order)
 
     lines: List[str] = [
-        f"# cgroup-profiler report — {_esc((analysis.manifest or {}).get('run_id', 'unknown run'))}",
+        f"# cgprofile report —{_esc((analysis.manifest or {}).get('run_id', 'unknown run'))}",
         "",
         _run_header(analysis),
         "",

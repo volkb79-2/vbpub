@@ -1,4 +1,4 @@
-# /etc/cgprofile/cgprofiled.toml: cgprofiled configuration (CGPCTL-SPEC.md section 3.2).
+# /etc/cgprofile/cgprofiled.toml: cgprofiled configuration (CGPROFILECTL-SPEC.md section 3.2).
 # Shipped inside the cgprofile wheel as the documented default; every key is
 # commented out because an absent file means exactly these defaults.
 #

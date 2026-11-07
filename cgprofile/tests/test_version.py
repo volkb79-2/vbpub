@@ -465,7 +465,7 @@ def test_project_prefix_is_read_from_cmru_contract(tmp_path, monkeypatch):
 
 
 def test_missing_project_prefix_is_refused(tmp_path):
-    (tmp_path / "cmru.toml").write_text("[project]\nid = 'cgroup-profiler'\n", encoding="utf-8")
+    (tmp_path / "cmru.toml").write_text("[project]\nid = 'cgprofile'\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="must declare a non-empty project.prefix"):
         version.resolve_build_version(tmp_path, require_release_tag=False)
 

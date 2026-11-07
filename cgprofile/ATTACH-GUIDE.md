@@ -19,8 +19,8 @@ cgprofilectl doctor                      # socket, group, versions, observer dir
 ```
 
 `doctor` names what this process can reach and the exact fix for what it cannot
-(for example the group that owns the daemon's socket). `cgprofilectl run` and
-`cgprofilectl mark` need no daemon; every other verb talks to the host daemon's socket
+(for example the group that owns the daemon's socket). `cgprofile run` and
+`cgprofile mark` need no daemon; every `cgprofilectl` verb talks to the host daemon's socket
 (`--socket`, `$CGPCTL_SOCKET`, else
 `/run/cgprofile/control/cgprofile.sock`).
 
@@ -28,8 +28,8 @@ Two ways to profile, one CLI:
 
 | Mode | Verb | Needs | Result |
 |---|---|---|---|
-| Direct | `cgprofilectl run -- CMD` | cgroupfs visible to the caller; no daemon | a run directory with the report inputs |
-| Daemon | `cgprofilectl start --target T` ... `cgprofilectl stop ID` | access to the daemon's socket | a stored session, rendered on demand with `cgprofilectl report ID` |
+| Direct | `cgprofile run -- CMD` | cgroupfs visible to the caller; no daemon | a run directory with the report inputs |
+| Daemon | `cgprofilectl start --target T` ... `cgprofilectl stop ID` | access to the daemon's socket | a stored session, rendered on demand with `cgprofile report ID` |
 
 Direct mode profiles the wrapped command in the caller's own cgroup subtree.
 Everything that observes something else (a container, a cgroup, a slice), places
@@ -43,17 +43,17 @@ The simplest useful form. Profile the gate locally (direct mode, needs the host
 cgroup view):
 
 ```bash
-cgprofilectl run --phase gate --propagate-exit \
+cgprofile run --phase gate --propagate-exit \
   -- ../../shared-ramdisk-depot-manager/tools/gate.sh
 ```
 
-- `cgprofilectl run` profiles the wrapped command itself (target `self@follow`: the
+- `cgprofile run` profiles the wrapped command itself (target `self@follow`: the
   command and the containers it spawns afterwards). To profile another target
   or to watch neighbours, use a daemon session (`cgprofilectl start --target ...`,
   section 2).
 - With `--propagate-exit` the wrapped command's exit code becomes `cgprofilectl`'s exit
   code, so this drops into an existing script without changing its semantics;
-  without it `cgprofilectl run` exits 0 and prints the run directory and the command's
+  without it `cgprofile run` exits 0 and prints the run directory and the command's
   status.
 
 Where the estate's gates run (a gate tier slice, `dev-gates.slice` by default):
@@ -78,7 +78,7 @@ under `dev-background.slice` when needed.
 cgprofilectl start --target container:my-service          # prints the session id
 cgprofilectl watch s-20261104T101500Z-9f01                 # stream readings until it ends
 cgprofilectl stop s-20261104T101500Z-9f01                  # finalize; prints the summary
-cgprofilectl report s-20261104T101500Z-9f01                # export from the daemon and render locally
+cgprofile report s-20261104T101500Z-9f01                # export from the daemon and render locally
 ```
 
 A daemon session is bounded by `stop` (or the daemon's stall policy:
@@ -96,16 +96,16 @@ daemon they exit 3 with the cause `contract-unsupported`.
 ## 3. Phase marks — the optional upgrade
 
 Marks are what turn a flat timeline into "startup / warm-up / job A / idle".
-`cgprofilectl run` exports `CGPROFILE_RUN_DIR` (the run directory; the mark channel
+`cgprofile run` exports `CGPROFILE_RUN_DIR` (the run directory; the mark channel
 lives there) into the wrapped command's environment and puts the directory of
 `cgprofilectl` first on its `PATH`.
 
 So a gate that wants to label its own phases does:
 
 ```bash
-cgprofilectl mark "restoring fixture db"
-cgprofilectl mark "running suite"
-cgprofilectl mark "teardown complete" --kind event
+cgprofile mark "restoring fixture db"
+cgprofile mark "running suite"
+cgprofile mark "teardown complete" --kind event
 ```
 
 `--kind phase` (the default) opens a new phase and closes the previous one.
@@ -114,11 +114,11 @@ cgprofilectl mark "teardown complete" --kind event
 Guard it so the gate still runs unprofiled:
 
 ```bash
-mark() { [ -n "${CGPROFILE_RUN_DIR:-}" ] && cgprofilectl mark "$@" || true; }
+mark() { [ -n "${CGPROFILE_RUN_DIR:-}" ] && cgprofile mark "$@" || true; }
 mark "building image"
 ```
 
-`cgprofilectl mark` needs no daemon and no host cgroup tree — it appends one line to
+`cgprofile mark` needs no daemon and no host cgroup tree — it appends one line to
 a file. That is why it works from inside a gate container.
 
 ### Marking from inside a container
@@ -132,7 +132,7 @@ docker run --rm \
   -v "$CGPROFILE_RUN_DIR:$CGPROFILE_RUN_DIR" \
   -e CGPROFILE_RUN_DIR \
   my-gate-image \
-  sh -c 'cgprofilectl mark "suite start"; run-the-suite'   # cgprofilectl installed in my-gate-image
+  sh -c 'cgprofile mark "suite start"; run-the-suite'   # cgprofilectl installed in my-gate-image
 ```
 
 Appends are a single `write()` under `O_APPEND`, so several containers marking
@@ -152,7 +152,7 @@ runs/run-YYYYmmdd-HHMMSS-xxxxxxxx/
 
 The interactive report is one self-contained file and needs no server and no
 network. plotly.js alone is 4.7 MiB of that; a measured 20-second capture of a
-slice with 29 cgroups came to 6.9 MiB total. `cgprofilectl report --md-only` writes
+slice with 29 cgroups came to 6.9 MiB total. `cgprofile report --md-only` writes
 the static twin without the interactive file when size matters.
 
 Read it in this order:
@@ -198,7 +198,7 @@ alongside the counters; omitting it uses the daemon's `damon_default`. The
 daemon owns a shared DAMON pool that supports concurrent sessions, and
 `cgprofilectl host` reports whether DAMON is available. DAMON is optional evidence:
 if it cannot start, the session and the profiled workload continue without the
-series. `cgprofilectl run` (direct mode) samples the counters only.
+series. `cgprofile run` (direct mode) samples the counters only.
 
 ---
 
@@ -207,7 +207,7 @@ series. `cgprofilectl run` (direct mode) samples the counters only.
 The profiler is meant to be run on a host that is already under pressure, so
 its own footprint is part of the design:
 
-- Direct-mode sampling (`cgprofilectl run`) is adaptive: 250 ms while anything is
+- Direct-mode sampling (`cgprofile run`) is adaptive: 250 ms while anything is
   moving, backing off to 2 s when quiet. **Read that literally: it backs off
   only when *nothing* in the sampled set is moving.** A tier that also holds a
   large service stack never goes quiet. Point the target at what you actually
@@ -223,7 +223,7 @@ its own footprint is part of the design:
 - The collector and the daemon are standard-library only and hold no series in
   memory: every sample is appended and forgotten.
 - Analysis and rendering happen **after** the run, in the caller's process
-  (`cgprofilectl report`), never in the daemon and never during profiling.
+  (`cgprofile report`), never in the daemon and never during profiling.
 - Nothing is installed, downloaded, or built at run time. Without the `report`
   extra collection still works and only the report step complains.
 
@@ -265,7 +265,7 @@ session (`"reused": true`) rather than starting a second one.
 **By session id.** The `start` response's `"session"` field
 (`s-<timestamp>-<4 hex>`) is what every later call names —
 `cgprofilectl show <session>`, `cgprofilectl stop <session>` (run in the same `finally` as
-container teardown, before `docker rm -f`), `cgprofilectl report <session>` for a
+container teardown, before `docker rm -f`), `cgprofile report <session>` for a
 human afterwards. `stop` is idempotent too: a second call on an
 already-finished session returns the same stored summary with
 `"already_stopped": true`, never an error. A session belongs to the uid that
@@ -276,7 +276,7 @@ tag such as `socket-missing` or `socket-permission`), a timeout, or an
 unparsable answer means "profiling unavailable for this call". run-gate's own
 basic fallback (`method: "basic"`, sampling the lane container's own cgroup
 directly, no daemon involved) takes over silently; see the contract §4.3.
-`cgprofilectl doctor` names the cause and the fix. Direct mode (`cgprofilectl run`,
+`cgprofilectl doctor` names the cause and the fix. Direct mode (`cgprofile run`,
 sections 1 and 3) never talks to the daemon.
 
 ## 9. Liveness watch and placement, from a consumer's view (D-20/D-27/D-31, §8.2-§8.4)

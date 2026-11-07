@@ -18,7 +18,7 @@ SOCKET_ENV = "CGPCTL_SOCKET"
 CLIENT_CONTRACTS = (1, 2)
 ROUNDTRIP_TIMEOUT = 25.0
 
-# Daemon answers by exit code (CGPCTL-SPEC.md section 1).
+# Daemon answers by exit code (CGPROFILECTL-SPEC.md section 1).
 RUNTIME_CODES = frozenset({
     "daemon-error", "stop-incomplete", "export-failed", "export-too-large",
     "persist-failed", "busy",
@@ -138,7 +138,7 @@ OWNERSHIP_VERBS = frozenset({"stop", "export", "config-set", "config-reset"})
 
 
 def refusal(doc: Dict[str, Any], verb: str = "") -> WireFailure:
-    """Map a daemon ``ok: false`` answer to its exit code (CGPCTL-SPEC.md section 1).
+    """Map a daemon ``ok: false`` answer to its exit code (CGPROFILECTL-SPEC.md section 1).
 
     ``peer-refused`` on an ownership or root-only verb is the safety refusal (exit 2); on any
     other verb it means this caller's uid is not authorised on the socket (exit 3,
