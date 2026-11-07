@@ -1630,6 +1630,15 @@ enforced by refusing every incomplete input before the first upload and by movin
 leaves an incomplete versioned release that the idempotent re-run (same-named assets are
 replaced) completes.
 
+**S-REL.7 — Release dry-run preconditions.** Before allocating a candidate worktree,
+`cmru release --dry-run` MUST run the declared version-window, selected tester-image
+identity, and bootstrap-version checks against the exact source revision. The selected
+tester-image identity check MUST report a non-empty Run-Gate version and a valid 64-digit
+lowercase SHA-256 for the published wheel. An omitted or malformed identity field is a
+failed precondition (exit 4); CMRU MUST NOT substitute `unknown` or another invented value.
+A Docker-unavailable result MAY be `SKIPPED` only when the preflight positively identifies
+that unavailable condition.
+
 ---
 
 ## S2 — Config Schema

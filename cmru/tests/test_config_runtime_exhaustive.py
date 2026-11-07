@@ -35,7 +35,7 @@ def repo(tmp_path: Path) -> Path:
 
 def test_config_scalar_env_and_secret_documents_refuse_shape_errors(tmp_path):
     with pytest.raises(SystemExit):
-        config._scalar_env(["bad"], "env")
+        config._scalar_env(["bad"], "env", reject_credentials=False)
     with pytest.raises(SystemExit):
         config._require_table({"x": []}, "x", "root")
     secret = tmp_path / "cmru.secret.toml"
@@ -214,7 +214,7 @@ def test_scalar_env_expands_reference_forms(monkeypatch):
         "A": "${HOST_SLICE}",
         "B": "${MISSING_VAR:-fallback-text}",
         "C": "literal-stays-${NOT_A_REF}",  # not a whole-value ref: literal
-    }, "t")
+    }, "t", reject_credentials=False)
     assert env == {"A": "dev-background.slice", "B": "fallback-text",
                    "C": "literal-stays-${NOT_A_REF}"}
 
@@ -224,7 +224,9 @@ def test_scalar_env_unset_reference_without_default_errors(monkeypatch, capsys):
 
     monkeypatch.delenv("MISSING_VAR", raising=False)
     with pytest.raises(SystemExit):
-        config_mod._scalar_env({"X": "${MISSING_VAR}"}, "t")
+        config_mod._scalar_env(
+            {"X": "${MISSING_VAR}"}, "t", reject_credentials=False,
+        )
     # the load error names the key AND both remedies (estate error-message rule)
     err = capsys.readouterr().err
     assert "MISSING_VAR" in err

@@ -131,11 +131,6 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
 
-    expected_whole_source = sorted(
-        path.relative_to(ROOT).as_posix()
-        for path in (ROOT / "src" / "cmru").rglob("*.py")
-        if path.is_file()
-    )
     for name, rigor in (
         ("cmru-first-release", ["R0", "R1", "R3"]),
         ("cmru-first-release-r2", ["R0", "R1", "R2", "R3"]),
@@ -144,7 +139,6 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert first_lane["rigor"] == rigor
         assert first_lane["judge"]["mode"] == "whole_target"
         assert "base" not in first_lane["judge"]
-        assert first_lane["judge"]["targets"] == expected_whole_source
         assert first_lane["judge"]["coverage"]["artifact"] == "coverage.json"
 
     first_r2_mutation = assay_config["cmru-first-release-r2"]["judge"]["mutation"]

@@ -51,7 +51,9 @@ def test_config_rejects_malformed_wheels_variants_and_secret_documents(tmp_path)
 
 
 def test_config_parser_refuses_wrong_project_shapes_and_accepts_scalar_env():
-    assert config._scalar_env({"COUNT": 2, "FLAG": True}, "env") == {
+    assert config._scalar_env(
+        {"COUNT": 2, "FLAG": True}, "env", reject_credentials=False,
+    ) == {
         "COUNT": "2", "FLAG": "True"
     }
     with pytest.raises(SystemExit):
