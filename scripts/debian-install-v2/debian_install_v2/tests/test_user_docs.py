@@ -78,6 +78,8 @@ def test_each_user_doc_explains_journal_visibility_during_data_mount():
         assert "install-time journal" in text, path
         assert "hidden" in text and "/var/log/journal" in text, path
         assert "journalctl --flush" in text, path
+        assert "not verified" in text or "unverified" in text, path
+        assert "systemd-journald" in text, path
 
 
 def test_readme_keeps_the_plain_defaults_next_to_the_partitioning_layout():

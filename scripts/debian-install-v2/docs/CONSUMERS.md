@@ -159,9 +159,11 @@ formatted ext4 volume can use this mount in `partitioning.data.volumes`:
 
 The install-time journal stays on the root filesystem and is hidden when the
 data filesystem is mounted there; it is not copied into the new filesystem.
-The mounted directory will not show those earlier files. After installation,
-run `journalctl --flush` or reboot so journald resumes persistent writes on the
-mounted filesystem.
+The mounted directory will not show those earlier files. Source inspection
+verifies this mount and visibility behavior. Whether `journalctl --flush`,
+restarting `systemd-journald`, or rebooting resumes persistent writes on the
+mounted filesystem is **not verified** by the current tests. Verify that behavior
+in the `r1-vm-real-commit` lane before claiming recovery.
 
 ```json
 {

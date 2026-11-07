@@ -492,6 +492,20 @@ def _wizard_output_path(out_dir: Optional[str | Path], hostname: str) -> Path:
     return destination
 
 
+def _validate_wizard_config_output_path(output_path: str | Path) -> Path:
+    """Refuse explicit wizard payloads inside the source worktree."""
+    destination = Path(output_path).expanduser()
+    resolved = destination.resolve()
+    try:
+        resolved.relative_to(WORKTREE_ROOT.resolve())
+    except ValueError:
+        return destination
+    raise CliFailure(
+        "wizard --config output must be outside the worktree; use --out-dir for a per-host runtime payload",
+        exit_code=2,
+    )
+
+
 def _positive_finite(value: str) -> float:
     try:
         parsed = float(value)
@@ -2830,8 +2844,11 @@ def _run_install_workflow_body(args, runtime):
         print(json.dumps(_display_redaction(installation_payload), indent=2))
         print()
 
-        output_config_path = getattr(args, "config_path", None) or _wizard_output_path(
-            getattr(args, "out_dir", None), hostname
+        explicit_output_path = getattr(args, "config_path", None)
+        output_config_path = (
+            _validate_wizard_config_output_path(explicit_output_path)
+            if explicit_output_path
+            else _wizard_output_path(getattr(args, "out_dir", None), hostname)
         )
         if args.dry_run:
             print("=" * 70)

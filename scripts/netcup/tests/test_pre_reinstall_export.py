@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import os
+import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -134,3 +137,180 @@ def test_remote_collection_lists_volume_names_without_inspecting_contents():
     assert '["sfdisk", "-d", "/dev/vda"]' in remote
     assert '["lsblk", "-b", "-J", "/dev/vda"]' in remote
     assert '["blkid"]' in remote
+
+
+@pytest.mark.parametrize(
+    ("name", "raw"),
+    [
+        ("state", b'{"password": "sentinel-json"}\n'),
+        ("comments.jsonc", b'{\n  // operator note\n  "PAT": "sentinel-jsonc",\n}\n'),
+        ("host.env", b'API_KEY=sentinel-api\nPAT=sentinel-pat\nPASS=sentinel-pass\nPASSWD=sentinel-passwd\nPRIVATE=sentinel-private\n'),
+        ("service.ini", b'password = "sentinel-ini"\n'),
+        ("auth.conf", b'Authorization: Bearer sentinel-bearer\n'),
+        ("auth.json", b'{"Authorization": "Bearer sentinel-json-bearer"}\n'),
+        ("url.txt", b'endpoint=https://operator:sentinel-url@host.example/path\n'),
+        ("args.txt", b'--password sentinel-arg --api-key=sentinel-arg-key\n'),
+        ("private.pem", b'-----BEGIN OPENSSH PRIVATE KEY-----\nsentinel-key\n-----END OPENSSH PRIVATE KEY-----\n'),
+    ],
+)
+def test_redaction_covers_secret_pair_shapes_in_any_filename(name, raw):
+    exporter = _load_exporter()
+    cleaned = exporter.redact_export_bytes(f"arbitrary/path/{name}", raw)
+    assert b"sentinel-" not in cleaned
+    assert (
+        b"***REDACTED***" in cleaned
+        or b"***REDACTED PRIVATE KEY***" in cleaned
+        or name == "url.txt" and b"https://host.example/path" in cleaned
+    )
+
+
+def test_redaction_refuses_nul_binary_content():
+    exporter = _load_exporter()
+    with pytest.raises(ValueError, match="binary|NUL"):
+        exporter.redact_export_bytes("state", b"ordinary\x00data")
+
+
+def test_remote_collector_enforces_identity_redaction_scratch_and_size_cap(tmp_path):
+    exporter = _load_exporter()
+    root = tmp_path / "host-root"
+    (root / "etc/vbpub").mkdir(parents=True)
+    (root / "etc/mdt").mkdir(parents=True)
+    (root / "etc/ssh").mkdir(parents=True)
+    (root / "var/lib/iogovmon/state").mkdir(parents=True)
+    (root / "var/lib/iogovmon/scratch").mkdir(parents=True)
+    (root / "home/runner/runner-scripts").mkdir(parents=True)
+    (root / "etc/vbpub/server-id").write_text("804027\n", encoding="utf-8")
+    (root / "etc/fstab").write_text("UUID=safe / ext4 defaults 0 1\n", encoding="utf-8")
+    (root / "etc/ssh/sshd_config").write_text("PasswordAuthentication no\n", encoding="utf-8")
+    for source, content in (
+        ("etc/hosts", "127.0.0.1 localhost\n"),
+        ("etc/containerd/config.toml", "version = 2\n"),
+        ("etc/docker/daemon.json", "{}\n"),
+        ("etc/mdt-cow-root.sh", "#!/bin/sh\n"),
+        ("etc/vbpub/bootstrap.env", "BOOTSTRAP_MODE=runner\n"),
+    ):
+        path = root / source
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    for source in (
+        "etc/cloud/cloud.cfg.d",
+        "etc/udev/rules.d",
+        "etc/sudoers.d",
+        "etc/sysctl.d",
+        "etc/systemd/system",
+    ):
+        directory = root / source
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "saved.conf").write_text("saved\n", encoding="utf-8")
+    (root / "etc/mdt/host-capacity.json").write_text(
+        '{\n  // capacity note\n  "password": "sentinel-jsonc",\n  "API_KEY": "sentinel-api",\n  "Authorization": "Bearer sentinel-json-bearer"\n}\n',
+        encoding="utf-8",
+    )
+    (root / "etc/mdt/too-large.txt").write_bytes(b"x" * 129)
+    (root / "home/runner/runner-scripts/runner.env").write_text(
+        "COCKPIT_CONFIG_DIR=/home/runner/mdt-cockpit-runner-config-test\n"
+        "COCKPIT_HOME_DIR=/home/runner/mdt-cockpit-runner-home-test\n",
+        encoding="utf-8",
+    )
+    (root / "home/runner/mdt-cockpit-runner-config-test").mkdir(parents=True)
+    (root / "home/runner/mdt-cockpit-runner-config-test/config.ini").write_text(
+        "Authorization: Bearer sentinel-bearer\n", encoding="utf-8"
+    )
+    (root / "home/runner/mdt-cockpit-runner-home-test").mkdir(parents=True)
+    (root / "home/runner/mdt-cockpit-runner-home-test/settings").write_text("safe\n", encoding="utf-8")
+    (root / "var/lib/iogovmon/state/state.json").write_text('{"state": "ok"}\n', encoding="utf-8")
+    (root / "var/lib/iogovmon/scratch/fio.dat").write_bytes(b"scratch-data")
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    stub = bindir / "stub"
+    stub.write_text(
+        r'''#!/bin/sh
+case "$(basename "$0")" in
+  hostname) printf '%s' "${FAKE_FQDN:-v1001.vxxu.de}" ;;
+  hostnamectl) printf 'v1001' ;;
+  lsblk) if [ "$1" = '-dn' ]; then printf 'vda'; else printf '%s' '{"blockdevices":[]}'; fi ;;
+  sfdisk) printf 'label: gpt' ;;
+  blkid) printf '/dev/vda3: UUID=example' ;;
+  docker) printf 'campaign-cache' ;;
+esac
+''',
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    for command in ("hostname", "hostnamectl", "lsblk", "sfdisk", "blkid", "docker"):
+        (bindir / command).symlink_to(stub)
+
+    remote = exporter.remote_collector("v1001", max_file_bytes=128)
+    remote = remote.replace('ROOT = Path("/")', f"ROOT = Path({str(root)!r})")
+    script = tmp_path / "collector.py"
+    script.write_text(remote, encoding="utf-8")
+    env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+    completed = subprocess.run(
+        [sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=env, check=False,
+    )
+    assert completed.returncode == 0, completed.stderr.decode(errors="replace")
+    with tarfile.open(fileobj=io.BytesIO(completed.stdout), mode="r:gz") as archive:
+        names = set(archive.getnames())
+        files = {name: archive.extractfile(name).read() for name in names if archive.getmember(name).isfile()}
+    assert "home/runner/mdt-cockpit-runner-config-test/config.ini" in names
+    assert "home/runner/mdt-cockpit-runner-home-test/settings" in names
+    assert "etc/ssh/sshd_config" not in names
+    for expected_name in (
+        "etc/hosts",
+        "etc/containerd/config.toml",
+        "etc/docker/daemon.json",
+        "etc/mdt/host-capacity.json",
+        "etc/mdt-cow-root.sh",
+        "etc/vbpub/bootstrap.env",
+        "etc/cloud/cloud.cfg.d/saved.conf",
+        "etc/rules.d/saved.conf",
+        "etc/sudoers.d/saved.conf",
+        "etc/sysctl.d/saved.conf",
+        "etc/systemd-system/saved.conf",
+    ):
+        assert expected_name in names
+    assert not any("scratch" in name for name in names)
+    notes = files["meta/collection.txt"].decode()
+    assert "scratch" in notes and "skipped" in notes
+    assert "too-large.txt" in notes and "129" in notes and "128" in notes
+    all_bytes = b"\n".join(files.values())
+    for secret in (b"sentinel-jsonc", b"sentinel-api", b"sentinel-bearer", b"sentinel-json-bearer"):
+        assert secret not in all_bytes
+
+    mismatch_env = dict(env, FAKE_FQDN="wrong.example")
+    mismatch = subprocess.run(
+        [sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=mismatch_env, check=False,
+    )
+    assert mismatch.returncode != 0
+    assert mismatch.stdout == b""
+
+
+@pytest.mark.parametrize("name", ["/etc/fstab", "../etc/fstab", "root/escape", "not-allowlisted/file"])
+def test_archive_member_names_refuse_absolute_parent_and_unlisted_roots(name):
+    exporter = _load_exporter()
+    with pytest.raises(ValueError, match="unsafe|allowlist"):
+        exporter._safe_member_name(name)
+
+
+def test_extract_redacted_refuses_non_regular_members_and_export_removes_partial_tree(tmp_path):
+    exporter = _load_exporter()
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w:gz") as archive:
+        member = tarfile.TarInfo("etc/link")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "fstab"
+        archive.addfile(member)
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    with pytest.raises(ValueError, match="non-regular"):
+        exporter._extract_redacted(data.getvalue(), destination)
+
+    with pytest.raises(RuntimeError, match="read-only evidence export failed"):
+        exporter.export_snapshot(
+            "v1001", "20261107", root=tmp_path / "failed",
+            runner=lambda argv, **kwargs: CompletedProcess(argv, 1, stdout=b"", stderr=b"fake refusal"),
+        )
+    assert not (tmp_path / "failed/v1001/pre-reinstall-20261107").exists()

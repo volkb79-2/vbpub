@@ -10,6 +10,15 @@ Known issues and open test gaps: [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_T
 For the Debian-install-v2 data-area plan, offline preview, and saved r1002/v1001
 root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
 
+For the guarded v1001/r1002 reinstall path, `pre-reinstall-export.py` collects
+bounded, allowlisted, redacted host evidence and `pre-reinstall.py` validates
+the source config, generated bundle, live identity, disk facts, and wizard
+payload before submit. Submit requires the reviewed bundle hash, expected
+remote commit, and explicit account SSH-key ID. After reinstall,
+`update-host-pin.sh` checks a host key against a fingerprint obtained through
+the authenticated provider path. See the [consumer steps](CONSUMERS.md#guarded-data-area-v2-reinstall)
+and [design rationale](DESIGN-GUIDE.md#guarded-destructive-reinstall).
+
 ## First-time setup
 
 From the repository root, make an isolated environment for these scripts. The
@@ -213,6 +222,9 @@ Interactive runs without `--yes` still offer the image picker. To install a
 saved wizard request, pass its printed path to
 `install --config FILE`; the `install` verb's `target-host.jsonc` default is
 separate and is not inferred from the wizard output directory.
+Wizard `--config PATH` is an output file path and is refused if it resolves
+inside the source worktree. Use `--out-dir DIR` for a per-host output directory;
+the default artifacts directory and `target-host.*.jsonc` names are ignored.
 Existing Netcup account keys are persistent operator keys: choose `all`,
 `none`, or a comma-separated selection, or repeat `--ssh-key-id`. The
 installer never creates an account key. The separate local controller

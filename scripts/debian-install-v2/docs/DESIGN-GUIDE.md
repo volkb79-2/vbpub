@@ -163,8 +163,11 @@ protected.
 The install-time journal remains on the root filesystem and is hidden when
 stage two mounts the data filesystem there; it is not copied or seeded onto
 the new filesystem. The mounted directory will not show those earlier files.
-After installation, `journalctl --flush` or a reboot lets journald resume
-persistent writes on the mounted filesystem.
+Source inspection confirms this mount and visibility behavior. Whether
+`journalctl --flush`, restarting `systemd-journald`, or rebooting resumes
+persistent writes on the mounted filesystem is **not verified** by the current
+tests. Verify that behavior in the `r1-vm-real-commit` lane before claiming
+recovery.
 
 The runner finds its planned CoW partition by GPT PARTLABEL `MDT_COW`; it does
 not carve or guess a partition number.

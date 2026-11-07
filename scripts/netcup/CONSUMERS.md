@@ -26,6 +26,23 @@ Read-only inspection works without choosing a target:
 ./scp-api.py server-details 804027
 ```
 
+### Keep wizard payloads out of the source tree
+
+Wizard-generated `target-host.<hostname>.jsonc` files contain account and
+target-specific facts. The default is the ignored `artifacts/install-host/`
+directory. An explicit wizard `--config PATH` is an output path and is refused
+if it resolves anywhere inside the source worktree. Use `--out-dir` to select
+an external runtime directory, for example:
+
+```bash
+R=/home/vscode/vbpub-release-program-20261027
+./install-host.py wizard --image 128 --out-dir "$R/v1001/install-review-20261107"
+```
+
+Review the generated file before passing its printed path to
+`install --config FILE`. `target-host.*.jsonc` is ignored as an additional
+guard against staging a per-host payload.
+
 ### Refresh the SCP API reference
 
 Netcup's human documentation is the
@@ -301,14 +318,24 @@ changed plan does not require an environment-file device-number edit.
 
 ## Guarded data-area-v2 reinstall
 
-For the v1001/r1002 reinstall flow, export evidence before submission. The
-exporter verifies the API identity first, uses the pinned SSH helper, checks
-the host name and server-ID file remotely, and writes an allowlisted snapshot
-under each host's `pre-reinstall-<date>/` directory. It redacts keys matching
-`TOKEN`, `PASSWORD`, or `SECRET` and private-key blocks; the Docker inventory
-contains names only. Verify every exported file against `SHA256SUMS` before
-continuing. Run v1001 first, then r1002 only after v1001 passes post-install
-checks.
+For the v1001/r1002 reinstall flow, stop the R2 campaign on v1001 through its
+owning host-agent workflow before the reinstall sequence. Export its campaign
+resume state, artifacts, and logs with a `SHA256SUMS` manifest; transfer the
+export to r1002, verify it there, resume the campaign on r1002, and record the
+handover on the campaign board. This is a separate host-agent action and must
+be complete before the destructive sequence starts.
+
+The read-only evidence exporter verifies API identity first, uses the pinned
+SSH helper, checks the host name and server-ID file remotely, and writes an
+allowlisted snapshot under each host's `pre-reinstall-<date>/` directory. It
+redacts token, password, pass, passwd, private, API key, PAT, and related secret
+fields, including quoted JSON/YAML/INI pairs in arbitrary filenames, JSONC
+comments, bearer headers, URL userinfo, command-line options, and private-key
+blocks. Files larger than 1 MiB are listed and skipped by default;
+`--max-file-bytes` can set an explicit cap. The iogovmon `scratch/` tree and
+Docker volume contents are excluded. Verify every exported file against
+`SHA256SUMS` before continuing. Run v1001 first, then r1002 only after v1001
+passes post-install checks.
 
 From `scripts/netcup`, use the exact saved root geometry for the host and
 reviewed config/bundle. The following uses the recorded 512 GiB disk, root
@@ -317,29 +344,69 @@ partition 3, and root start sector `2500608`:
 ```bash
 R=/home/vscode/vbpub-release-program-20261027
 ./pre-reinstall-export.py v1001 --date 20261107
-sha256sum -c "$R/v1001/pre-reinstall-20261107/SHA256SUMS"
+(cd "$R/v1001/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
 
 ./pre-reinstall.py v1001 \
   --config "$R/v1001/debian-install-v2-20261107.json" \
   --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
   --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
-  --repo-branch main --run-dir "$R/v1001/reinstall-20261107" --dry-run
+  --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
+  --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
+  --run-dir "$R/v1001/reinstall-20261107" --dry-run
 ```
 
-Inspect `reinstall.log`, confirm the API/SSH identity and image ID `128`, and
-review the wizard's complete payload. The dry-run records `EXIT=0` and does not
-submit the install. After the maintenance window is approved, repeat the same
-preflight command with `--yes` instead of `--dry-run`; it repeats all checks
-and submits only after strict config validation and the offline plan succeed.
-The wrapper writes the bundle checksum and a `reinstall.log.EXIT` record. Its
-wizard output goes to the requested run directory as
-`target-host.<hostname>.jsonc`.
+Use the exact full commit printed by `build-customscript` and approved by the
+operator for `REVIEWED_MAIN_COMMIT`; the wrapper compares it with the current
+remote commit for `main`. `ACCOUNT_SSH_KEY_ID` is the explicitly selected key
+ID from the authenticated Netcup account. The dry-run prints `REMOTE_COMMIT=`
+and `BUNDLE_SHA256=`. Inspect `reinstall.log`, confirm the API/SSH identity and
+image ID `128`, and review the parsed wizard payload. Record the exact
+`BUNDLE_SHA256` as `V1001_REVIEWED_BUNDLE_SHA256`; the dry-run records `EXIT=0` and
+does not submit the install.
+
+After the maintenance window is approved, repeat the same preflight with
+`--yes`, the recorded hash, commit, and SSH-key ID. The wrapper repeats all
+checks, including the wizard dry-run payload validation, before the submit
+request. It writes the bundle checksum and a `reinstall.log.EXIT` record, and
+streams wizard output to the terminal and log. If interrupted after submission,
+use the task ID and `monitor-task.py watch <task-id>` printed by the wrapper or
+stored in the run directory. Wizard output also goes to
+`target-host.<hostname>.jsonc` under the requested run directory.
+
+```bash
+./pre-reinstall.py v1001 \
+  --config "$R/v1001/debian-install-v2-20261107.json" \
+  --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
+  --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
+  --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
+  --expect-bundle-sha256 "$V1001_REVIEWED_BUNDLE_SHA256" \
+  --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
+  --run-dir "$R/v1001/reinstall-20261107" --yes
+```
 
 Use the matching r1002 paths and image ID only after v1001 passes verification.
 Before generating or selecting a bundle, move the exact stale payloads listed
 in the operator runbook to that host's `stale-<date>/` directory. Keep those
 files; never delete them or attach them. The preflight rejects removed Debian
 v2 config keys before it can start the wizard.
+
+After reinstall, obtain the new ED25519 host-key fingerprint through the
+authenticated provider console or another verified provider channel. Do not
+accept an unverified first-seen key. The updater verifies that fingerprint
+with `ssh-keygen`, removes only the exact host records, and atomically installs
+the candidate pin:
+
+```bash
+R=/home/vscode/vbpub-release-program-20261027
+./update-host-pin.sh v1001 \
+  --pin-file "$R/v1001/ssh_known_hosts-v1001-20261105" \
+  --fingerprint "$V1001_PROVIDER_HOSTKEY_SHA256"
+```
+
+For r1002, use `r1002` and
+`$R/r1002/ssh_known_hosts-after-reinstall-20261104` with the fingerprint
+verified for that host. The updater refuses a fingerprint mismatch and leaves
+the existing pin untouched.
 
 ## Remote gate (run a lane on a test host)
 

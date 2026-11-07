@@ -606,6 +606,24 @@ def test_wizard_output_path_is_per_host_under_runtime_dir(install_host_mod, tmp_
         install_host_mod._wizard_output_path(install_host_mod.WORKTREE_ROOT, "v1001.vxxu.de")
 
 
+def test_explicit_wizard_config_output_cannot_write_into_worktree(install_host_mod, tmp_path):
+    with pytest.raises(CliFailure, match="outside the worktree"):
+        install_host_mod._validate_wizard_config_output_path(
+            install_host_mod.WORKTREE_ROOT / "scripts/netcup/target-host.v1001.jsonc"
+        )
+    external = tmp_path / "target-host.v1001.jsonc"
+    assert install_host_mod._validate_wizard_config_output_path(external) == external
+
+
+def test_per_host_wizard_payload_name_is_gitignored(install_host_mod):
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", "target-host.v1001.vxxu.de.jsonc"],
+        cwd=install_host_mod.NETCUP_DIR,
+        check=False,
+    )
+    assert result.returncode == 0
+
+
 def test_debian_v2_bundle_rejects_stale_config_before_any_api_work(
     install_host_mod, monkeypatch, tmp_path
 ):

@@ -335,9 +335,13 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
 
   With `/var/log/journal` selected, the install-time journal remains on the
   root filesystem and is hidden when stage two mounts the new filesystem over
-  that path. The mounted directory will not show those earlier files. After
-  installation, run `journalctl --flush` or reboot so journald resumes
-  persistent writes on the mounted filesystem.
+  that path. The mounted directory will not show those earlier files.
+  Source inspection confirms the install-time files remain on the root
+  filesystem and are hidden by the later mount; they are not copied. Whether
+  `journalctl --flush`, restarting `systemd-journald`, or rebooting resumes
+  persistent writes on the mounted filesystem is **not verified** by the current
+  tests. Verify that behavior in the `r1-vm-real-commit` lane before claiming
+  recovery.
 - **Not supported**: `fs: zfs` as a managed filesystem (refused with a clear message; deferred),
   btrfs `subvol`.
 - **Safety**: `mkfs`/`pvcreate` only touch a BLANK device (the same filesystem again is kept, any

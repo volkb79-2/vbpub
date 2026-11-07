@@ -1,0 +1,88 @@
+"""The post-reinstall host-key pin update uses fake ssh-keyscan/ssh-keygen only."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+
+NETCUP_DIR = Path(__file__).resolve().parents[1]
+UPDATE_PIN = NETCUP_DIR / "update-host-pin.sh"
+
+
+def _tools(tmp_path: Path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    keyscan = bindir / "ssh-keyscan"
+    keyscan.write_text(
+        "#!/bin/sh\n"
+        "for last do :; done\n"
+        "printf '%s ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEY\\n' \"$last\"\n",
+        encoding="utf-8",
+    )
+    keyscan.chmod(0o755)
+    keygen = bindir / "ssh-keygen"
+    keygen.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$SSH_KEYGEN_LOG\"\n"
+        "if [ \"$1\" = '-lf' ]; then printf '256 %s fake (ED25519)\\n' \"$FAKE_FINGERPRINT\"; exit 0; fi\n"
+        "if [ \"$1\" = '-R' ]; then awk -v host=\"$2\" '$1 != host { print }' \"$4\" > \"$4.tmp\"; mv \"$4.tmp\" \"$4\"; exit 0; fi\n"
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    keygen.chmod(0o755)
+    return bindir
+
+
+def _run_update(tmp_path: Path, pin: Path, fingerprint: str):
+    bindir = _tools(tmp_path)
+    env = dict(
+        os.environ,
+        PATH=f"{bindir}:{os.environ['PATH']}",
+        SSH_KEYGEN_LOG=str(tmp_path / "ssh-keygen.log"),
+        FAKE_FINGERPRINT=fingerprint,
+    )
+    return subprocess.run(
+        ["bash", str(UPDATE_PIN), "v1001", "--pin-file", str(pin), "--fingerprint", "SHA256:approved"],
+        cwd=NETCUP_DIR,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def test_host_pin_update_refuses_fingerprint_mismatch_without_changing_pin(tmp_path):
+    pin = tmp_path / "ssh_known_hosts-v1001-20261105"
+    original = "152.53.166.181 ssh-ed25519 OLDKEY\nv1001.vxxu.de ssh-ed25519 OLDHOSTKEY\n"
+    pin.write_text(original, encoding="utf-8")
+
+    result = _run_update(tmp_path, pin, "SHA256:unexpected")
+
+    assert result.returncode != 0
+    assert "fingerprint mismatch" in result.stderr
+    assert pin.read_text(encoding="utf-8") == original
+    assert "-lf" in (tmp_path / "ssh-keygen.log").read_text(encoding="utf-8")
+
+
+def test_host_pin_update_replaces_only_the_reviewed_host_records(tmp_path):
+    pin = tmp_path / "ssh_known_hosts-v1001-20261105"
+    pin.write_text(
+        "152.53.166.181 ssh-ed25519 OLDKEY\n"
+        "v1001.vxxu.de ssh-ed25519 OLDHOSTKEY\n"
+        "other.example ssh-ed25519 KEEPKEY\n",
+        encoding="utf-8",
+    )
+
+    result = _run_update(tmp_path, pin, "SHA256:approved")
+
+    assert result.returncode == 0, result.stderr
+    updated = pin.read_text(encoding="utf-8")
+    assert "OLDKEY" not in updated and "OLDHOSTKEY" not in updated
+    assert "other.example ssh-ed25519 KEEPKEY" in updated
+    assert "152.53.166.181 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEY" in updated
+    assert pin.stat().st_mode & 0o777 == 0o600
+    calls = (tmp_path / "ssh-keygen.log").read_text(encoding="utf-8")
+    assert "-lf " in calls and "-R 152.53.166.181 -f " in calls and "-R v1001.vxxu.de -f " in calls

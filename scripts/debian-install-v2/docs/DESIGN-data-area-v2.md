@@ -140,8 +140,11 @@ absolute, cannot collide with each other, and are written to fstab by UUID.
 The install-time journal files remain on the root filesystem and are hidden
 when stage two mounts the data filesystem at `/var/log/journal`. They are not
 copied into the new filesystem, so the mounted directory will not show those
-earlier files. After installation, `journalctl --flush` or a reboot lets
-journald resume persistent writes on the mounted filesystem.
+earlier files. Source inspection verifies this mount and visibility
+behavior. Whether `journalctl --flush`, restarting `systemd-journald`, or
+rebooting resumes persistent writes on the mounted filesystem is **not verified**
+by the current tests. Verify that behavior in the `r1-vm-real-commit` lane
+before claiming recovery.
 
 ## Partition recognition and limits
 

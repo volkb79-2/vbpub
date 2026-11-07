@@ -70,6 +70,9 @@ wizard writes per-host files under the ignored runtime directory by default;
 `--out-dir` changes that directory. This avoids putting a customScript-bearing
 payload in the checkout and keeps separate host plans distinct. `install`
 reads its selected file. There is no hidden `default-recipe.jsonc` fallback.
+An explicit wizard `--config` output is refused anywhere inside the source
+worktree, even when the destination is nested below it, so generated
+account-specific payloads cannot be accidentally added to the repository.
 
 Non-interactive wizard runs require an explicit `--image ID` or the explicit
 choice `--image newest`. The provider's newest image changes over time, so
@@ -99,6 +102,22 @@ and private-key blocks before writing local evidence. It lists Docker volume
 names only. This limits the evidence copy to the partition table, fstab,
 installer state/logs, iobench/iogovmon state, environment files, and checksums
 needed for the reinstall decision.
+
+The operator wrapper regenerates the customScript bundle from the reviewed
+source config and requires byte-for-byte equality, so a valid-looking config
+cannot be paired with a modified shell payload. It parses the actual wizard
+dry-run payload before submission. `--yes` is bound to the SHA-256 shown by
+that dry run, and `--expect-commit` binds the selected branch to the operator's
+reviewed commit. Explicit `--ssh-key-id` values remove the wizard's account-key
+prompt from the destructive path. Wizard output is streamed to the terminal
+and log; a submitted task ID is persisted before further monitoring.
+
+The exporter applies the same conservative redaction remotely and locally,
+including JSONC and key/value pairs independent of filename. Each file is
+capped at 1 MiB by default; skipped oversized paths are listed in the
+collection record. The iogovmon `scratch/` tree and Docker volume contents are
+excluded. The pin updater does not trust a first-seen key: it requires an
+authenticated provider fingerprint before replacing the exact host entries.
 
 ## Notification backend and Mattermost boundary
 
