@@ -519,8 +519,10 @@ Lines:
 {"contract": 1, "event": "reading", "session": "s-…", "at": "…", "elapsed_seconds": 91.2,
  "live": {…as in status…}, "liveness": {…§8.4…}, "placement": {…§8.3…} | null}
 {"contract": 1, "event": "verdict", "session": "s-…", "at": "…",
- "watch": {"state": "stalled"|"runaway"|"over_ceiling"|"hung"|"throttled"|"ok",
-           "verdict": "killed"|"reported"|"none", "reason": "…", "readings": <int>}}
+ "watch": {"state": "stalled"|"runaway"|"over_ceiling"|"hung"|"throttled"|"unknown"|"ok",
+           "verdict": "killed"|"reported"|"none", "reason": "…", "readings": <int>,
+           "monitor_state": "healthy"|"degraded-monitor"|"unknown",
+           "monitor_reason": "…"|null}}
 {"contract": 1, "event": "end", "session": "s-…", "at": "…", "reason": "stopped"|"killed"|"daemon-shutdown"}
 ```
 Cadence: one `reading` every `--watch-interval` seconds (default 30,
@@ -528,6 +530,8 @@ clamped [5, 300]); `verdict` lines only on a state change; exactly one
 `end`. The consumer reads the stream on the same socket connection; Run-Gate
 uses an idle timeout of `3 × watch-interval` and re-attaches once on expiry.
 Unknown session → exit 2 `unknown-session` as a single line.
+`unknown` means a monitor gap prevents a liveness conclusion. It does not
+request a kill; the consumer wall timeout remains its backstop.
 
 ### 8.3 Placement (D-20, D-25, D-31) — `start` options and the `placement` block
 
@@ -616,16 +620,22 @@ process RSS or a hard cap on all memory already resident in the lane.
              "cpu_seconds": 143.2, "cpu_seconds_recent": 0.9,
              "io_bytes": 58720256, "stream": {"path": "…", "last_event_at": "…"|null,
              "last_event": "candidate"|null, "cadence_hint_seconds": 45.0|null} | null,
-             "paused_for_seconds": 0.0, "pause_reason": null|"host-psi"|"slice-psi"}
+             "paused_for_seconds": 0.0,
+             "pause_reason": null|"host-psi"|"slice-psi"|"monitor-gap",
+             "seq": 7|null, "mono_ns": 123456789|null,
+             "due_ns": 123000000|null, "fresh": true|false,
+             "interval_seconds": 1.0|null,
+             "monitor_state": "healthy"|"degraded-monitor"|"unknown",
+             "monitor_reason": "…"|null}
 ```
 New `start` options (policy authored by the consumer):
 
 | option | meaning |
 |---|---|
 | `--progress-stream <path>` | the lane's own progress NDJSON path AS THE LANE SEES IT; the daemon reads it through `/proc/<lane pid>/root/<path>` — no extra mount. The stream's `plan` event field `expect_next_event_within_s` (assay B091) is the cadence hint |
-| `--idle-bound auto\|<seconds>` | `auto` = `max(300, 3 × cadence_hint)` (D-22); the stall clock PAUSES while gates-slice or host memory `full avg10 > 5` |
+| `--idle-bound auto\|<seconds>` | `auto` = `max(300, 3 × cadence_hint)` (D-22); the idle and progress-cadence clocks pause during gates-slice/host memory pressure and across a monitor gap |
 | `--ceiling auto\|<seconds>` | `auto` = `3 × meta.expected.duration_s` when known, else none; a session over its ceiling is `over_ceiling` |
-| `--on-stall kill\|report` | `kill` = `cgroup.kill` on the exact, populated target container cgroup (`scope=container`), or on the verified token leaf (`scope=container-shared`, requiring token + explicit successful placement); no PID signals or fallback; a runtime refusal is `reported`; `report` = verdict `reported`, nothing killed; default `report` |
+| `--on-stall kill\|report` | `kill` keeps the authenticated start grant and exact-boundary rules; it additionally requires at least three consecutive fresh kill-state readings spanning 60 seconds and an immediate daemon confirmation that exact target CPU/I/O counters and, when configured, stream identity have not grown since a reading at least 30 seconds earlier; no PID signals or fallback; a runtime refusal is `reported`; `report` = verdict `reported`, nothing killed; default `report` |
 
 States: `ok`; `stalled` (idle bound exceeded with no stream event and no
 CPU growth ≥ 1 s over the trailing 30 s); `hung` (the stream reported
@@ -633,7 +643,25 @@ completion — its last event is terminal — and the pid subtree is still
 alive 30 s later); `runaway` (idle bound exceeded WITH CPU growth — the lane
 is busy but silent; killed only when over ceiling); `throttled` (the leaf's
 `memory.pressure full avg10 > 20` while `memory.high` is applied — never
-killed, reported); `over_ceiling`.
+killed, reported); `over_ceiling`; `unknown` (a monitor gap or stalled monitor,
+so no liveness conclusion is available).
+
+Readings carry `seq`, `mono_ns`, `due_ns`, `fresh` and `interval_seconds`.
+`fresh` means the reading was taken within `2 × interval_seconds` of its
+scheduled due time. A gap longer than `max(3 × interval_seconds, 5 s)` is
+`monitor-gap`; its full span is added to `paused_for_seconds` and excluded
+from both idle and progress-cadence clocks. Cumulative `cpu.stat usage_usec`,
+`io.stat` byte counters and progress-stream identity are compared across the
+true elapsed span. CPU growth is scaled to the trailing 30-second rule rather
+than inferred from sample count.
+
+Monitor health is `healthy`, `degraded-monitor`, or `unknown`. Any increase in
+the daemon's own `cpu.stat nr_throttled` counter or a non-fresh reading in the
+confirmation span yields a reported verdict but makes `kill_requested` false.
+An absent or stalled monitor yields `unknown`; `over_ceiling` remains judged
+from the authenticated start on the daemon clock. Restarted live sessions are
+finalized as `daemon-crash-recovery` and their liveness clocks are never
+resumed.
 
 ### 8.5 `host.gates_slice`
 
@@ -676,8 +704,8 @@ successfully. Control contract 2 adds `export`, `config`, `config-set`, and
 ### 8.7 Summary additions (schema 1, optional keys)
 
 `liveness` (the final §8.4 block), `placement` (the final §8.3 block),
-`watch` (`{state, verdict, reason, readings, policy: {idle_bound_s,
-ceiling_s, on_stall, progress_stream}}`). run-gate copies them into
+`watch` (`{state, verdict, reason, readings, monitor_state, monitor_reason,
+policy: {idle_bound_s, ceiling_s, on_stall, progress_stream}}`). run-gate copies them into
 `resources` verbatim; history stats gain nothing new in v1.1.
 
 `damon_cleanup` (cgprofile 1.1.0, additive; present only when a DAMON owner
@@ -728,8 +756,11 @@ bounded-admission limit or shutting down; retry shortly).
    `report` and keep the lane-local watchdog as verdict authority. Do not add
    placement just to enable kill. For `scope=container`, kill is confined to
    the exact container cgroup under the gates slice and leaves its existing
-   Docker limits unchanged. Without a daemon the in-process ProgressWatch
-   (D-22) is the fallback and says so once.
+   Docker limits unchanged. `unknown` is indeterminate: keep the lane's wall
+   timeout active and do not treat it as success or a stall. A
+   `degraded-monitor` verdict is report-only and never authorizes a kill.
+   Without a daemon the in-process ProgressWatch (D-22) is the fallback and
+   says so once.
 3. Placement requests only for exec and bare-host lanes (D-20); ephemeral
    containers stay docker-capped; requested numbers are disclosed as
    `resources.memory`/manifest-derived (`× 1.5`, "derived").

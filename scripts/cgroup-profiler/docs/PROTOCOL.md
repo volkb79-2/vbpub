@@ -114,6 +114,11 @@ explicit successful `--place` leaf; it never adds placement itself. If the
 requested boundary is unavailable at start, the request is `bad-policy` and
 no live session is created. If the boundary is empty, unreadable, or later
 refuses the write, the watch verdict is `reported`, not `killed`.
+Before writing `cgroup.kill`, the daemon also requires three consecutive fresh
+kill-state readings spanning at least 60 seconds and a final target-counter
+confirmation against a reading at least 30 seconds old. A missing monitor
+produces `unknown`; a monitor gap never counts as idle time and never permits
+a kill.
 
 `watch`'s lines are §8.2's three shapes, frozen one per file in
 `tests/fixtures/rg55/watch-{reading,verdict,end}.json` (and as the whole
@@ -122,10 +127,21 @@ stream in `socket/watch-response.json`):
 * `reading` — every `--watch-interval`: `live` (as in `status`), `liveness`
   (§8.4) and `placement` (§8.3 — the block for a placed or refused session,
   `null` for one that never asked to be placed).
-* `verdict` — only when the state CHANGES, carrying exactly
-  `{state, verdict, reason, readings}`. The policy those came from is in
-  `status`/`stop`/the Summary (§8.7), not on every line.
+* `verdict` — only when the state CHANGES, carrying
+  `{state, verdict, reason, readings, monitor_state, monitor_reason}`. The
+  policy those came from is in `status`/`stop`/the Summary (§8.7), not on
+  every line.
 * `end` — exactly one, last: `stopped` \| `killed` \| `daemon-shutdown`.
+
+Liveness readings add `seq`, `mono_ns`, `due_ns`, `fresh`, `interval_seconds`,
+`monitor_state` and `monitor_reason`. `fresh` is true only when the reading
+was taken within twice its interval of `due_ns`. A gap longer than
+`max(3 × interval, 5 s)` uses `pause_reason: "monitor-gap"`, adds the gap to
+`paused_for_seconds`, and does not advance idle or progress-cadence time.
+`monitor_state` is `healthy`, `degraded-monitor` (stale reading or daemon
+throttling), or `unknown` (no reading or a monitor gap). Watch `state` may be
+`unknown` while liveness is indeterminate; `over_ceiling` remains evaluated
+from the authenticated start on the daemon's monotonic clock.
 
 `start`'s placement options (§8.3) follow the same naming rule:
 

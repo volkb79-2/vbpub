@@ -238,6 +238,25 @@ def simple_server(tmp_path, simple_root, simple_proc):
     )
 
 
+def test_daemon_throttle_reader_resolves_only_the_unified_cgroup(simple_server):
+    proc_root = Path(simple_server.proc_root)
+    (proc_root / "self").mkdir()
+    self_cgroup = proc_root / "self" / "cgroup"
+    daemon_cgroup = Path(simple_server.cgroup_root) / "daemon.slice"
+    daemon_cgroup.mkdir()
+    (daemon_cgroup / "cpu.stat").write_text("usage_usec 10\nnr_throttled 7\n")
+
+    self_cgroup.write_text(
+        "1:cpu:/legacy\n0:cpu:/controller-list\n0::/daemon.slice\n"
+    )
+    assert simple_server._read_self_nr_throttled() == 7
+
+    # A v1 row and a v2 row with controllers are skipped; without a unified
+    # cgroup path there is no source for the daemon's throttle counter.
+    self_cgroup.write_text("1:cpu:/legacy\n0:cpu:/controller-list\n")
+    assert simple_server._read_self_nr_throttled() is None
+
+
 def _wire(verb: str, **args) -> Dict[str, Any]:
     """One §8.1 request line: `{"verb", "args", "contract"}` and nothing
     else. Every `_dispatch` call in this suite goes through here, so the
@@ -933,7 +952,7 @@ class TestRestartRecovery:
         serve.SessionServer(sessions_dir=str(sessions_dir), clock=lambda: EPOCH_END)
         manifest = json.loads((session_dir / "manifest.json").read_text())
         assert manifest["status"] == "aborted"
-        assert manifest["aborted_reason"] == "daemon-restarted"
+        assert manifest["aborted_reason"] == "daemon-crash-recovery"
         assert not (session_dir / "summary.json").exists()
 
     def test_a_live_session_with_samples_is_finalized_with_a_summary(self, tmp_path):
@@ -1353,7 +1372,8 @@ def _run_full_lifecycle(scope: str, monkeypatch, tmp_path) -> Dict[str, Any]:
 
     session_box: Dict[str, Any] = {}
 
-    def advance(_seconds: float) -> None:
+    def advance(seconds: float) -> None:
+        mono_box["t"] += seconds
         frame_box["n"] += 1
         idx = frame_box["n"]
         if idx < n_frames:
@@ -1368,9 +1388,7 @@ def _run_full_lifecycle(scope: str, monkeypatch, tmp_path) -> Dict[str, Any]:
     mono_box = {"t": 0.0}
 
     def sampler_clock() -> float:
-        value = mono_box["t"]
-        mono_box["t"] += 1.0
-        return value
+        return mono_box["t"]
 
     def fake_damon_session(targets, **kw):
         return _FrameDamonSession(targets, frame_box, **kw)
@@ -1473,13 +1491,10 @@ class TestFullLifecycleGoldenReproduction:
         assert watch["state"] == "ok" and watch["verdict"] == "none" and watch["reason"] is None
         assert watch["policy"] == {"idle_bound_s": 300.0, "ceiling_s": None,
                                    "on_stall": "report", "progress_stream": None}
-        # `readings` is NOT pinned here: the watcher runs on the discovery
-        # cadence (2 s of the SAMPLER's clock), and this harness drives its
-        # five frames as fast as the host allows, so how many of them are
-        # "due" is a property of the machine, not of the contract. The
-        # byte-frozen v1.1 Summary lives in `test_serve_socket_carrier.py`,
-        # where the clocks are fully injected.
-        assert watch["readings"] >= 1
+        # The fake sampler clock advances only by each injected sleep, so
+        # liveness cadence and the five-frame sequence do not depend on how
+        # quickly the host runs this harness.
+        assert watch["readings"] == 3
         assert result["liveness"]["stream"] is None
         assert result["liveness"]["pause_reason"] is None
         # The v1 golden is still byte-identical underneath the new keys.
@@ -2563,7 +2578,12 @@ def test_observe_liveness_after_close_never_reaches_the_kill(
             progress_stream = None
 
         stream = None
+        readings = 0
         kill_requested = True
+
+        @staticmethod
+        def kill_requested_at(_now):
+            return True
 
         def observe(self, _sample):
             # Finalization begins between the top-of-function check and the
@@ -3749,21 +3769,23 @@ class _LockstepAdvance:
     """
 
     def __init__(self, frame_box: Dict[str, int], root_link: Path, proc_link: Path,
-                 n_frames: int, pause_after_tick: int) -> None:
+                 mono_box: Dict[str, float], n_frames: int, pause_after_tick: int) -> None:
         self.frame_box = frame_box
         self.root_link = root_link
         self.proc_link = proc_link
+        self.mono_box = mono_box
         self.n_frames = n_frames
         self.pause_after_tick = pause_after_tick
         self.tick_done = threading.Event()
         self.resume = threading.Event()
         self.sess: Any = None  # set by the test thread once `start` returns
 
-    def __call__(self, _seconds: float) -> None:
+    def __call__(self, seconds: float) -> None:
         k = self.frame_box["n"]
         if k == self.pause_after_tick:
             self.tick_done.set()
-            self.resume.wait(timeout=5.0)
+            self.resume.wait()
+        self.mono_box["t"] += seconds
         idx = k + 1
         if idx < self.n_frames:
             frame, proc = _frame_paths(idx)
@@ -3774,17 +3796,6 @@ class _LockstepAdvance:
             self.frame_box["n"] = idx
         else:
             self.sess.stop_event.set()
-
-
-def _counting_sampler_clock() -> Callable[[], float]:
-    box = {"t": 0.0}
-
-    def clock() -> float:
-        value = box["t"]
-        box["t"] += 1.0
-        return value
-
-    return clock
 
 
 def _wait_for_socket(socket_path: str) -> None:
@@ -3814,7 +3825,11 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         lambda targets, **kw: _FrameDamonSession(targets, frame_box, **kw),
     )
 
-    lockstep = _LockstepAdvance(frame_box, root_link, proc_link, n_frames, pause_after_tick=2)
+    sampler_mono_box = {"t": 0.0}
+    lockstep = _LockstepAdvance(
+        frame_box, root_link, proc_link, sampler_mono_box,
+        n_frames, pause_after_tick=2,
+    )
     server_start_epoch = datetime(2026, 9, 12, 9, 0, 0, tzinfo=timezone.utc).timestamp()
     clock_box = {"t": server_start_epoch}
     socket_path = str(tmp_path / "ctl.sock")
@@ -3822,7 +3837,7 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
         observer_socket_path=str(tmp_path / "resource-observer.sock"),
         cgroup_root=str(root_link), proc_root=str(proc_link),
-        clock=lambda: clock_box["t"], sampler_clock=_counting_sampler_clock(),
+        clock=lambda: clock_box["t"], sampler_clock=lambda: sampler_mono_box["t"],
         sampler_sleep=lockstep, session_id_fn=lambda: SESSION_ID, accept_timeout=0.05,
     )
     accept_thread = threading.Thread(target=server._accept_loop, daemon=True)
@@ -3884,7 +3899,7 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         assert _canon(version_out) == _canon(json.loads((FIXTURES / "version-v1.json").read_text()))
 
         # -- status, paused mid-session at frame 2 --
-        assert lockstep.tick_done.wait(timeout=5.0)
+        assert lockstep.tick_done.wait()
         clock_box["t"] = EPOCH_START + 2.0
         status_out = _wire_call(socket_path, "status")
         assert status_out["ok"] is True
@@ -3923,7 +3938,7 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         lockstep.resume.set()
 
         # -- stop, once the session has run to completion (frame 4) --
-        lockstep.sess.thread.join(timeout=5.0)
+        lockstep.sess.thread.join()
         clock_box["t"] = EPOCH_END
         stop_out = _wire_call(socket_path, "stop", session=SESSION_ID)
         assert stop_out["ok"] is True

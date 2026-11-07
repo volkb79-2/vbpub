@@ -318,9 +318,13 @@ def _force_stalled(server: serve.SessionServer, session_id: str) -> None:
     sess = server._sessions[session_id]
     with sess.lock:
         sess.watch.observe(serve.liveness_mod.LivenessSample(
-            mono=0.0, at="2026-09-12T10:15:00Z", elapsed_seconds=0.0))
+            mono=0.0, at="2026-09-12T10:15:00Z", elapsed_seconds=0.0,
+            seq=0, mono_ns=0, due_ns=0, fresh=True, interval_seconds=10_000.0,
+            monitor_nr_throttled_total=0))
         sess.watch.observe(serve.liveness_mod.LivenessSample(
-            mono=10_000.0, at="2026-09-12T12:00:00Z", elapsed_seconds=10_000.0))
+            mono=10_000.0, at="2026-09-12T12:00:00Z", elapsed_seconds=10_000.0,
+            seq=1, mono_ns=10_000_000_000_000, due_ns=10_000_000_000_000,
+            fresh=True, interval_seconds=10_000.0, monitor_nr_throttled_total=0))
     assert sess.watch.state == "stalled"
 
 

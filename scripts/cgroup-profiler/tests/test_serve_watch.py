@@ -152,7 +152,9 @@ class TestPolicyRefusal:
             assert watch["state"] == "ok" and watch["verdict"] == "none"
             assert set(status["session"]["liveness"]) == {
                 "last_activity_at", "idle_for_seconds", "cpu_seconds", "cpu_seconds_recent",
-                "io_bytes", "stream", "paused_for_seconds", "pause_reason",
+                "io_bytes", "stream", "paused_for_seconds", "pause_reason", "seq",
+                "mono_ns", "due_ns", "fresh", "interval_seconds", "monitor_state",
+                "monitor_reason",
             }
         finally:
             server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
@@ -334,6 +336,7 @@ class TestRealSubtreeEnforcement:
             assert not sess.thread.is_alive()
             sess.watch.policy = liveness.parse_policy({"on_stall": "kill"})
             _force_stalled(sess)
+            sess.watch.kill_requested_at = lambda _now: True
 
             def forbidden_signal(*_args):
                 pytest.fail("daemon must never signal a numeric host PID")
@@ -522,6 +525,7 @@ class TestKillTargets:
             started_at="2026-09-12T10:15:00Z",
         )
         _force_stalled(sess)
+        sess.watch.kill_requested_at = lambda _now: True
         server._enforce_stall_kill(sess, [7, 9])
         assert sess.watch.verdict == "reported"  # never "killed": nothing died
         assert "kill-refused:no-token-in-shared-scope" in sess.watch.reason
@@ -625,14 +629,94 @@ def _force_stalled(sess: serve._Session) -> None:
     with sess.lock:
         sess.watch.observe(liveness.LivenessSample(
             mono=0.0, at="2026-09-12T10:15:00Z", elapsed_seconds=0.0,
+            seq=0, mono_ns=0, due_ns=0, fresh=True, interval_seconds=10_000.0,
+            monitor_nr_throttled_total=0,
         ))
         sess.watch.observe(liveness.LivenessSample(
             mono=10_000.0, at="2026-09-12T12:00:00Z", elapsed_seconds=10_000.0,
+            seq=1, mono_ns=10_000_000_000_000, due_ns=10_000_000_000_000,
+            fresh=True, interval_seconds=10_000.0, monitor_nr_throttled_total=0,
         ))
     assert sess.watch.state == "stalled"
 
 
 class TestWatchStream:
+    def test_liveness_wall_timestamp_is_taken_after_the_stream_reader(self, tmp_path, monkeypatch):
+        root = _fake_cgroup_root(tmp_path, procs="101\n")
+        server = _server(
+            tmp_path, cgroup_root=root, proc_root=str(_fake_proc(tmp_path)),
+        )
+        assert server._dispatch({
+            "verb": "start",
+            "args": _start_args(
+                token=TOKEN, progress_stream="/run/lane/progress.ndjson",
+            ),
+            "contract": 1,
+        })["ok"]
+        sess = server._sessions[SESSION_ID]
+        sess.stop_event.set()
+        sess.thread.join(timeout=10)
+        assert not sess.thread.is_alive()
+
+        wall = [EPOCH_START]
+        server.clock = lambda: wall[0]
+        server.monitor_throttled_reader = lambda: 0
+        monkeypatch.setattr(
+            liveness, "resolve_stream_path", lambda *_args: "/fake/progress.ndjson",
+        )
+
+        def delayed_stream_read(_path, *, previous=None):
+            wall[0] = EPOCH_START + 7.0
+            return liveness.StreamSample(
+                path="/run/lane/progress.ndjson", present=True,
+                identity="1:abc", last_event="phase", cadence_hint_seconds=None,
+            )
+
+        monkeypatch.setattr(liveness, "read_progress_stream", delayed_stream_read)
+        previous = sess.watch._last_sample
+        assert previous is not None
+        mono = previous.mono + 3.0
+        server._observe_liveness(
+            sess, mono=mono, record={},
+            abs_target=str(root / SCOPE_CGROUP), target_metrics={},
+            host_metrics={}, pids=[101],
+        )
+
+        assert sess.watch.last_activity_at == server._iso(EPOCH_START + 7.0)
+        server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
+
+    def test_unknown_monitor_state_is_reported_on_a_watch_frame(self, tmp_path):
+        server = _server(
+            tmp_path, cgroup_root=_fake_cgroup_root(tmp_path),
+            proc_root=str(_fake_proc(tmp_path)),
+        )
+        assert server._dispatch({"verb": "start", "args": _start_args(), "contract": 1})["ok"]
+        sess = server._sessions[SESSION_ID]
+        sess.stop_event.set()
+        sess.thread.join(timeout=10)
+        assert not sess.thread.is_alive()
+
+        previous = sess.watch._last_sample
+        assert previous is not None
+        mono = previous.mono + 100.0
+        sess.sampler_origin_mono = server.sampler_clock() - mono
+        sess.watch.observe(liveness.LivenessSample(
+            mono=mono, at="2026-09-12T10:16:40Z", elapsed_seconds=mono,
+            seq=sess.watch.readings, mono_ns=int(mono * 1_000_000_000),
+            due_ns=previous.mono_ns + 10_000_000_000, fresh=False,
+            interval_seconds=10.0, monitor_nr_throttled_total=0,
+        ))
+
+        reading, watch = server._watch_lines(sess)
+
+        assert reading["liveness"]["pause_reason"] == "monitor-gap"
+        assert reading["liveness"]["monitor_state"] == "unknown"
+        assert watch["state"] == "unknown"
+        assert watch["verdict"] == "reported"
+        assert watch["monitor_state"] == "unknown"
+        assert watch["monitor_reason"] == "monitor-gap"
+        server._dispatch({"verb": "stop", "args": {"session": SESSION_ID}, "contract": 1})
+
     def test_readings_a_verdict_on_change_and_exactly_one_end(self, streaming_server):
         server = streaming_server
         assert server._dispatch({"verb": "start", "args": _start_args(), "contract": 1})["ok"]
@@ -655,8 +739,10 @@ class TestWatchStream:
                 break
             assert line["event"] == "reading"
         verdict = lines[-1]
-        # §8.2 lists exactly these keys on a verdict line.
-        assert set(verdict["watch"]) == {"state", "verdict", "reason", "readings"}
+        # §8.2 includes monitor health on each state-change verdict.
+        assert set(verdict["watch"]) == {
+            "state", "verdict", "reason", "readings", "monitor_state", "monitor_reason",
+        }
         assert verdict["watch"]["state"] == "stalled"
         assert verdict["watch"]["verdict"] == "reported"
 

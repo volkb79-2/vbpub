@@ -660,6 +660,28 @@ When consuming `cgpctl watch`, require its terminal `end` line. `cgpctl watch`
 exits 3 if the socket closes before that line; treat it as profiling
 unavailable and reconcile the session through `cgpctl show` and `cgpctl stop`.
 
+### Interpreting liveness monitor health
+
+`unknown` means the monitor cannot support a stall conclusion. Preserve the
+lane's own wall timeout as the completion backstop. `degraded-monitor` means
+the daemon reports the liveness verdict but cannot use that observation to
+authorize a kill. `monitor-gap` is also the pause reason for the full missing
+span; it does not advance either the idle or progress-cadence clock.
+
+Use this handling for a `watch` verdict block:
+
+```python
+def liveness_result(watch):
+    if watch["state"] == "unknown":
+        return "undetermined; keep the lane wall timeout active"
+    if watch["monitor_state"] == "degraded-monitor":
+        return "reported only; do not treat this as kill authorization"
+    return watch["verdict"]
+```
+
+The complete fields and kill conditions are in the
+[`liveness contract`](RG55-INTERFACE-CONTRACT.md#84-liveness-and-policy-d-17-d-22-d-27).
+
 ## Closed values and response evidence
 
 Consumers may type these public values:

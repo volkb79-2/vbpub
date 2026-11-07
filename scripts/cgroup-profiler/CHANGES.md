@@ -56,6 +56,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - feat(cgprofile): repeatable `cgpd install --add-user LEVEL=USER`; existing users are added with `gpasswd -a`, recorded for reruns and never individually removed on uninstall
 - feat(cgprofile): `cgpd -t` config-test alias for systemd `ExecStartPre`
 
+### Fixed
+- fix(cgprofile): monitor gaps are unknown and paused, and stall kills require fresh sustained evidence plus exact counter confirmation (CP-62)
+
 ### Changed
 - breaking(cgprofile): socket defaults move to `/run/cgprofile/control/cgprofile.sock` and `/run/cgprofile/observer/cgprofile.sock`; old config keys are refused and clients have no legacy-path fallback
 - docs(cgprofile): document P-11 manual cleanup, phase-1 rollout boundary, and systemd socket ownership

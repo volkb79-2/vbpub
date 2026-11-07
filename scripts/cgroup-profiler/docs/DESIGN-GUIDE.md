@@ -53,6 +53,38 @@ through a read-only bind. This is a deliberate, bounded application-level
 exception to observation-only operation, not a kernel sandbox or general
 host-control surface.
 
+### Liveness fails safe across monitor gaps
+
+Every liveness reading carries its sequence, monotonic timestamp, scheduled
+due time, interval and freshness. A gap longer than `max(3 × interval, 5 s)`
+is reported as `monitor-gap`; the full gap is paused and is excluded from the
+idle and progress-cadence clocks. CPU and I/O use the target's cumulative
+`cpu.stat` and `io.stat` counters, and stream identity is compared across the
+gap. CPU growth is apportioned over its true elapsed span before applying the
+30-second activity rule, so a healthy CPU-only lane remains active when the
+sampler was delayed.
+
+The watch state is `unknown` while the monitor is absent or has stopped
+reporting. A stale reading or any increase in the daemon's own
+`nr_throttled` counter marks monitor health `degraded-monitor`; liveness
+verdicts remain visible, but that evidence cannot authorize a kill. A kill
+still needs the authenticated `on_stall=kill` start grant, three consecutive
+fresh kill-state readings over at least 60 seconds, and a final daemon-side
+read immediately before `cgroup.kill`. That read compares exact target
+`cpu.stat` and `io.stat` values with a reading at least 30 seconds old, plus
+the same progress-stream identity with no growth. A missing or stalled
+monitor leaves the consumer's wall timeout and the daemon-clock
+`over_ceiling` verdict as the backstops. Restart recovery finalizes a live
+session as `daemon-crash-recovery`; it never resumes liveness clocks.
+
+This closes a live failure mode in which sampler downtime accrued as idle
+time while CPU growth during the same gap fell out of the sampled window. The
+watcher could therefore kill a healthy CPU-only lane based on evidence it had
+not observed. Keeping uncertainty explicit preserves the distinction between
+"no activity" and "no trustworthy reading." Wire fields and verdict values
+are defined in [`PROTOCOL.md`](PROTOCOL.md) and
+[`RG-55 §8.2/§8.4`](RG55-INTERFACE-CONTRACT.md).
+
 ### Why placement uses a delegated scope
 
 The gates slice is the systemd-owned capacity boundary. A slice is not the

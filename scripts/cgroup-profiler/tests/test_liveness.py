@@ -363,6 +363,19 @@ class TestReadingHelpers:
         assert liveness.cgroup_io_bytes(str(tmp_path)) == 3030
         assert liveness.cgroup_io_bytes(str(tmp_path / "missing")) is None
 
+    def test_kill_evidence_reads_exact_counters_and_stream_identity(self, tmp_path):
+        cgroup = tmp_path / "cgroup"
+        cgroup.mkdir()
+        (cgroup / "cpu.stat").write_text("usage_usec 1234567\n")
+        (cgroup / "io.stat").write_text("8:0 rbytes=1000 wbytes=2000 rios=1 wios=1\n")
+        stream = _write_stream(tmp_path / "progress.ndjson", {"event": "phase"})
+
+        evidence = liveness.read_kill_evidence(str(cgroup), str(stream))
+
+        assert evidence.cpu_usage_usec == 1_234_567
+        assert evidence.io_bytes == 3_000
+        assert evidence.stream_identity == liveness.read_progress_stream(str(stream)).identity
+
 
 # ── §8.4: the state machine, every transition ───────────────────────────
 
@@ -382,21 +395,27 @@ class _Fake:
         self.leaf_high = False
         self.alive = True
         self.changes = []
+        self.seq = 0
 
     def tick(self, n=1, **kw):
         for _ in range(n):
             for key, value in kw.items():
                 setattr(self, key, value)
             self.mono += self.step
-            change = self.tracker.observe(liveness.LivenessSample(
+            change = self.tracker.observe(_liveness_sample(
                 mono=self.mono, at=f"2026-09-12T10:{int(self.mono) // 60:02d}:"
                                    f"{int(self.mono) % 60:02d}Z",
                 elapsed_seconds=self.mono, cpu_seconds_total=self.cpu,
                 io_bytes_total=self.io, stream=self.stream,
                 host_psi_full_avg10=self.host_psi, slice_psi_full_avg10=self.slice_psi,
                 leaf_psi_full_avg10=self.leaf_psi, leaf_memory_high_applied=self.leaf_high,
-                subtree_alive=self.alive,
+                subtree_alive=self.alive, seq=self.seq,
+                mono_ns=int(self.mono * 1_000_000_000),
+                due_ns=int(self.mono * 1_000_000_000), fresh=True,
+                interval_seconds=max(self.step, 10.0),
+                monitor_nr_throttled_total=0,
             ))
+            self.seq += 1
             if change is not None:
                 self.changes.append(change)
         return self.tracker.state
@@ -416,7 +435,258 @@ def _stream(identity, event=None, hint=None):
     )
 
 
+def _liveness_sample(**fields):
+    """Build a scheduled synthetic reading unless a test overrides provenance."""
+    mono = fields.get("mono", 0.0)
+    mono_ns = int(mono * 1_000_000_000)
+    fields.setdefault("seq", int(mono * 10))
+    fields.setdefault("mono_ns", mono_ns)
+    fields.setdefault("due_ns", mono_ns)
+    fields.setdefault("fresh", True)
+    fields.setdefault("interval_seconds", 10.0)
+    fields.setdefault("monitor_nr_throttled_total", 0)
+    return liveness.LivenessSample(**fields)
+
+
 class TestStateMachine:
+    def test_first_monitor_reading_after_a_long_startup_gap_is_unknown(self):
+        t = _tracker(idle_bound=10, on_stall="kill")
+
+        t.observe(_liveness_sample(
+            mono=80.0, at="2026-09-12T10:01:20Z", elapsed_seconds=80.0,
+            cpu_seconds_total=0.0, io_bytes_total=0, seq=0,
+            mono_ns=80_000_000_000, due_ns=0, fresh=False,
+            interval_seconds=2.0, monitor_nr_throttled_total=0,
+        ))
+
+        assert t.state == "unknown"
+        assert t.monitor_state == "unknown"
+        assert t.idle_for_seconds == 0.0
+        assert t.paused_for_seconds == 80.0
+        assert t.pause_reason == "monitor-gap"
+        assert t.kill_requested is False
+
+    def test_cpu_only_lane_active_during_monitor_gap_is_unknown_not_stalled(self):
+        t = _tracker(idle_bound=10, on_stall="kill")
+        t.observe(_liveness_sample(
+            mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
+            cpu_seconds_total=None, cpu_usage_usec_total=0,
+            io_bytes_total=0, seq=0, mono_ns=0,
+            due_ns=0, fresh=True, interval_seconds=2.0,
+            monitor_nr_throttled_total=0,
+        ))
+
+        change = t.observe(_liveness_sample(
+            mono=80.0, at="2026-09-12T10:01:20Z", elapsed_seconds=80.0,
+            cpu_seconds_total=None, cpu_usage_usec_total=50_000_000,
+            io_bytes_total=0, seq=40,
+            mono_ns=80_000_000_000, due_ns=2_000_000_000, fresh=False,
+            interval_seconds=2.0, monitor_nr_throttled_total=0,
+        ))
+
+        assert change == liveness.STATE_UNKNOWN
+        assert t.state == "unknown"
+        assert t.monitor_state == "unknown"
+        assert t.idle_for_seconds == 0.0
+        assert t.paused_for_seconds == 80.0
+        assert t.pause_reason == "monitor-gap"
+        assert t.cpu_seconds_recent == pytest.approx(18.75)  # 50s / 80s × 30s
+        assert t.kill_requested is False
+
+        # Once fresh readings resume, the cumulative CPU delta from the gap
+        # remains in the true trailing window and keeps this CPU-only lane
+        # active instead of converting the unknown span into a stall.
+        change = t.observe(_liveness_sample(
+            mono=82.0, at="2026-09-12T10:01:22Z", elapsed_seconds=82.0,
+            cpu_seconds_total=None, cpu_usage_usec_total=50_000_000,
+            io_bytes_total=0, seq=41, mono_ns=82_000_000_000,
+            due_ns=82_000_000_000, fresh=True, interval_seconds=2.0,
+            monitor_nr_throttled_total=0,
+        ))
+        assert change == "ok"
+        assert t.state == "ok"
+        assert t.cpu_seconds_recent > 1.0
+        assert t.kill_requested is False
+
+    def test_monitor_gap_does_not_advance_idle_or_stream_cadence_clocks(self):
+        t = _tracker(
+            idle_bound=50, progress_stream="/run/lane/progress.ndjson",
+        )
+        t.observe(_liveness_sample(
+            mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
+            cpu_seconds_total=0.0, io_bytes_total=0,
+            stream=_stream("1:aa", event="candidate"), seq=0, mono_ns=0,
+            due_ns=0, fresh=True, interval_seconds=2.0,
+            monitor_nr_throttled_total=0,
+        ))
+        t.observe(_liveness_sample(
+            mono=40.0, at="2026-09-12T10:00:40Z", elapsed_seconds=40.0,
+            cpu_seconds_total=0.0, io_bytes_total=0,
+            stream=_stream("1:aa", event="candidate"), seq=20,
+            mono_ns=40_000_000_000, due_ns=40_000_000_000, fresh=True,
+            interval_seconds=20.0, monitor_nr_throttled_total=0,
+        ))
+        assert t.idle_for_seconds == 40.0
+        assert t._silent_for == 40.0
+
+        t.observe(_liveness_sample(
+            mono=120.0, at="2026-09-12T10:02:00Z", elapsed_seconds=120.0,
+            cpu_seconds_total=0.0, io_bytes_total=0,
+            stream=_stream("1:aa", event="candidate"), seq=60,
+            mono_ns=120_000_000_000, due_ns=60_000_000_000, fresh=False,
+            interval_seconds=20.0, monitor_nr_throttled_total=0,
+        ))
+
+        assert t.state == "unknown"
+        assert t.idle_for_seconds == 40.0
+        assert t._silent_for == 40.0
+        assert t.paused_for_seconds == 80.0
+        assert t.pause_reason == "monitor-gap"
+
+    def test_cpu_delta_is_scaled_by_true_elapsed_span_after_a_gap(self):
+        t = _tracker(idle_bound=100, on_stall="kill")
+        t.observe(_liveness_sample(
+            mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
+            cpu_seconds_total=None, cpu_usage_usec_total=0,
+            io_bytes_total=0, seq=0, mono_ns=0,
+            due_ns=0, fresh=True, interval_seconds=2.0,
+            monitor_nr_throttled_total=0,
+        ))
+        t.observe(_liveness_sample(
+            mono=80.0, at="2026-09-12T10:01:20Z", elapsed_seconds=80.0,
+            cpu_seconds_total=None, cpu_usage_usec_total=8_000_000,
+            io_bytes_total=0, seq=40,
+            mono_ns=80_000_000_000, due_ns=2_000_000_000, fresh=False,
+            interval_seconds=2.0, monitor_nr_throttled_total=0,
+        ))
+        assert t.cpu_seconds_recent == pytest.approx(3.0)
+        assert t.state == "unknown"
+        assert t.kill_requested is False
+
+    def test_io_and_stream_growth_are_compared_across_a_monitor_gap(self):
+        t = _tracker(idle_bound=10, progress_stream="/run/lane/progress.ndjson")
+        t.observe(_liveness_sample(
+            mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
+            io_bytes_total=100, stream=_stream("1:aa", event="candidate"),
+            seq=0, mono_ns=0, due_ns=0, fresh=True, interval_seconds=10.0,
+            monitor_nr_throttled_total=0,
+        ))
+        t.observe(_liveness_sample(
+            mono=20.0, at="2026-09-12T10:00:20Z", elapsed_seconds=20.0,
+            io_bytes_total=100, stream=_stream("1:aa", event="candidate"),
+            seq=1, mono_ns=20_000_000_000, due_ns=20_000_000_000,
+            fresh=True, interval_seconds=10.0, monitor_nr_throttled_total=0,
+        ))
+
+        t.observe(_liveness_sample(
+            mono=100.0, at="2026-09-12T10:01:40Z", elapsed_seconds=100.0,
+            io_bytes_total=200, stream=_stream("2:bb", event="phase"),
+            seq=2, mono_ns=100_000_000_000, due_ns=30_000_000_000,
+            fresh=False, interval_seconds=10.0, monitor_nr_throttled_total=0,
+        ))
+
+        assert t.state == "unknown"
+        assert t.liveness_block()["io_bytes"] == 200
+        assert t.last_activity_at == "2026-09-12T10:01:40Z"
+        assert t.idle_for_seconds == 0.0
+        assert t._silent_for == 0.0
+        assert t.paused_for_seconds == 80.0
+
+    def test_over_ceiling_keeps_the_daemon_clock_backstop_during_a_gap(self):
+        t = _tracker(idle_bound=10, ceiling=50, on_stall="kill")
+        t.observe(_liveness_sample(
+            mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
+            cpu_seconds_total=0.0, seq=0, mono_ns=0, due_ns=0,
+            fresh=True, interval_seconds=2.0, monitor_nr_throttled_total=0,
+        ))
+        t.observe(_liveness_sample(
+            mono=80.0, at="2026-09-12T10:01:20Z", elapsed_seconds=80.0,
+            cpu_seconds_total=0.0, seq=1, mono_ns=80_000_000_000,
+            due_ns=2_000_000_000, fresh=False, interval_seconds=2.0,
+            monitor_nr_throttled_total=0,
+        ))
+
+        assert t.state == "over_ceiling"
+        assert t.watch_block(now_mono=81.0)["state"] == "over_ceiling"
+        assert t.paused_for_seconds == 80.0
+        assert t.kill_requested is False
+
+    def test_equal_monotonic_timestamps_do_not_create_zero_span_cpu_segments(self):
+        t = _tracker(idle_bound=100)
+        t.observe(_liveness_sample(
+            mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
+            cpu_usage_usec_total=0, seq=0, mono_ns=0, due_ns=0,
+            fresh=True, interval_seconds=2.0,
+        ))
+        t.observe(_liveness_sample(
+            mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
+            cpu_usage_usec_total=5_000_000, seq=1, mono_ns=0, due_ns=0,
+            fresh=True, interval_seconds=2.0,
+        ))
+        assert t.cpu_seconds == 5.0
+        assert t.cpu_seconds_recent == 0.0
+
+        t.observe(_liveness_sample(
+            mono=10.0, at="2026-09-12T10:00:10Z", elapsed_seconds=10.0,
+            cpu_usage_usec_total=6_000_000, seq=2, mono_ns=10_000_000_000,
+            due_ns=10_000_000_000, fresh=True, interval_seconds=2.0,
+        ))
+        assert t.cpu_seconds_recent == pytest.approx(1.0)
+
+    def test_monitor_throttle_counter_reset_degrades_health_and_clears_kill_evidence(self):
+        t = _tracker(idle_bound=1, on_stall="kill")
+        t.observe(_liveness_sample(
+            mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
+            cpu_seconds_total=0.0, seq=0, mono_ns=0, due_ns=0,
+            fresh=True, interval_seconds=30.0, monitor_nr_throttled_total=5,
+        ))
+        t.observe(_liveness_sample(
+            mono=30.0, at="2026-09-12T10:00:30Z", elapsed_seconds=30.0,
+            cpu_seconds_total=0.0, seq=1, mono_ns=30_000_000_000,
+            due_ns=30_000_000_000, fresh=True, interval_seconds=30.0,
+            monitor_nr_throttled_total=4,
+        ))
+
+        assert t.state == "stalled"
+        assert t.monitor_state == "degraded-monitor"
+        assert t.kill_state_readings == []
+        assert t.kill_requested is False
+
+    @pytest.mark.parametrize("fault", ["sigstop", "throttled", "blocked-read"])
+    def test_monitor_faults_in_fake_clock_never_authorize_a_kill(self, fault):
+        t = _tracker(idle_bound=1, on_stall="kill")
+        for seq, mono in enumerate((0.0, 30.0, 60.0, 90.0)):
+            sample = _liveness_sample(
+                mono=mono, at=f"2026-09-12T10:00:{int(mono):02d}Z",
+                elapsed_seconds=mono, cpu_seconds_total=0.0, io_bytes_total=0,
+                seq=seq, mono_ns=int(mono * 1_000_000_000),
+                due_ns=int(mono * 1_000_000_000), fresh=True,
+                interval_seconds=30.0, monitor_nr_throttled_total=0,
+            )
+            t.observe(sample)
+        assert t.kill_requested is True  # stable fresh evidence is kill eligible
+
+        if fault == "sigstop":
+            assert t.kill_requested_at(181.0) is False
+            assert t.watch_block(now_mono=181.0)["state"] == "unknown"
+            live = t.liveness_block(now_mono=181.0)
+            assert live["monitor_state"] == "unknown"
+            assert live["pause_reason"] == "monitor-gap"
+        else:
+            prior = t._last_sample
+            assert prior is not None
+            t.observe(_liveness_sample(
+                mono=120.0, at="2026-09-12T10:02:00Z", elapsed_seconds=120.0,
+                cpu_seconds_total=0.0, io_bytes_total=0, seq=4,
+                mono_ns=120_000_000_000, due_ns=120_000_000_000,
+                fresh=fault != "blocked-read", interval_seconds=30.0,
+                monitor_nr_throttled_total=(1 if fault == "throttled" else 0),
+            ))
+            assert t.kill_requested is False
+            assert t.watch_block()["monitor_state"] == "degraded-monitor"
+            assert t.watch_block()["state"] == "stalled"
+            assert t.watch_block()["verdict"] == "reported"
+
     def test_partial_stream_bytes_cannot_keep_a_silent_lane_alive(self, tmp_path):
         path = _write_stream(tmp_path / "p.ndjson", {"event": "candidate"})
         tracker = _tracker(idle_bound=20, progress_stream=str(path))
@@ -545,7 +815,9 @@ class TestStateMachine:
         assert fake.tick(6) == "ok"       # elapsed 60 s, not yet OVER
         assert fake.tick() == "over_ceiling"
         assert "over the ceiling of 60.0s" in t.reason
-        assert t.kill_requested is True   # §8.4: over ceiling IS killable
+        assert t.kill_requested is False  # state must remain confirmed for 60 s
+        fake.tick(6)
+        assert t.kill_requested is True
 
     def test_ceiling_auto_comes_from_the_declared_expected_duration(self):
         t = liveness.LivenessTracker(
@@ -619,15 +891,15 @@ class TestStateMachine:
 
     def test_cpu_at_the_exact_window_cutoff_is_retained(self):
         t = _tracker(idle_bound=1000)
-        t.observe(liveness.LivenessSample(
+        t.observe(_liveness_sample(
             mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
             cpu_seconds_total=0.0,
         ))
-        t.observe(liveness.LivenessSample(
+        t.observe(_liveness_sample(
             mono=10.0, at="2026-09-12T10:00:10Z", elapsed_seconds=10.0,
             cpu_seconds_total=1.0,
         ))
-        t.observe(liveness.LivenessSample(
+        t.observe(_liveness_sample(
             mono=liveness.CPU_WINDOW_SECONDS,
             at="2026-09-12T10:00:30Z", elapsed_seconds=liveness.CPU_WINDOW_SECONDS,
             cpu_seconds_total=1.0,
@@ -639,11 +911,11 @@ class TestStateMachine:
         # sleep or a fabricated second sample outside the window contract.
         monkeypatch.setattr(liveness, "CPU_WINDOW_SECONDS", 0.0)
         t = _tracker(idle_bound=1000)
-        t.observe(liveness.LivenessSample(
+        t.observe(_liveness_sample(
             mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
             cpu_seconds_total=0.0,
         ))
-        t.observe(liveness.LivenessSample(
+        t.observe(_liveness_sample(
             mono=1.0, at="2026-09-12T10:00:01Z", elapsed_seconds=1.0,
             cpu_seconds_total=0.0,
         ))
@@ -651,7 +923,7 @@ class TestStateMachine:
 
     def test_omitted_leaf_evidence_does_not_imply_memory_high(self):
         t = _tracker(idle_bound=1000)
-        t.observe(liveness.LivenessSample(
+        t.observe(_liveness_sample(
             mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
             leaf_psi_full_avg10=44.0,
         ))
@@ -659,11 +931,11 @@ class TestStateMachine:
 
     def test_omitted_subtree_alive_defaults_alive_for_terminal_hang_detection(self):
         t = _tracker(idle_bound=1000, progress_stream="/run/lane/p.ndjson")
-        t.observe(liveness.LivenessSample(
+        t.observe(_liveness_sample(
             mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
             stream=_stream("1:aa", event="end"),
         ))
-        change = t.observe(liveness.LivenessSample(
+        change = t.observe(_liveness_sample(
             mono=liveness.HUNG_GRACE_SECONDS,
             at="2026-09-12T10:00:30Z", elapsed_seconds=liveness.HUNG_GRACE_SECONDS,
             stream=_stream("1:aa", event="end"),
@@ -694,13 +966,13 @@ class TestStateMachine:
         fake.tick(2)
         assert t.state == liveness.STATE_STALLED
         t.record_kill([4242])
-        assert t.observe(liveness.LivenessSample(
+        assert t.observe(_liveness_sample(
             mono=30.0, at="2026-09-12T10:00:30Z", elapsed_seconds=30.0,
         )) is None
 
     def test_exact_leaf_psi_threshold_does_not_report_throttling(self):
         t = _tracker(idle_bound=1000)
-        t.observe(liveness.LivenessSample(
+        t.observe(_liveness_sample(
             mono=0.0, at="2026-09-12T10:00:00Z", elapsed_seconds=0.0,
             leaf_psi_full_avg10=20.0, leaf_memory_high_applied=True,
         ))
@@ -725,12 +997,24 @@ class TestEnforcement:
 
     def test_kill_is_requested_once_and_recorded(self):
         t = _tracker(idle_bound=50, on_stall="kill")
-        assert _Fake(t).tick(8) == "stalled"
+        # Three fresh kill-state readings must span at least 60 seconds.
+        fake = _Fake(t, step=30.0)
+        assert fake.tick(5) == "stalled"
         assert t.kill_requested is True
         t.record_kill([4242, 4243])
         assert t.verdict == "killed"
         assert "cgroup kill enforced for 2 tracked pid(s)" in t.reason
         assert t.kill_requested is False  # enforced: never twice
+
+    def test_old_kill_evidence_is_pruned_without_losing_the_required_span(self):
+        t = _tracker(idle_bound=50, on_stall="kill")
+        fake = _Fake(t, step=30.0)
+
+        fake.tick(12)
+
+        assert len(t.kill_state_readings) == 5
+        assert t.kill_state_readings[-1].mono - t.kill_state_readings[0].mono >= 60.0
+        assert t.kill_requested is True
 
     def test_a_killed_verdict_is_not_rewritten_by_later_ticks(self):
         t = _tracker(idle_bound=50, on_stall="kill")
@@ -763,7 +1047,7 @@ class TestEnforcement:
             fake.cpu += 5.0
             fake.tick()
         assert t.state == "runaway" and t.kill_requested is False  # §8.4
-        for _ in range(11):
+        for _ in range(16):
             fake.cpu += 5.0
             fake.tick()
         assert t.state == "over_ceiling" and t.kill_requested is True
@@ -776,19 +1060,25 @@ class TestBlocks:
         block = t.liveness_block()
         assert set(block) == {
             "last_activity_at", "idle_for_seconds", "cpu_seconds", "cpu_seconds_recent",
-            "io_bytes", "stream", "paused_for_seconds", "pause_reason",
+            "io_bytes", "stream", "paused_for_seconds", "pause_reason", "seq",
+            "mono_ns", "due_ns", "fresh", "interval_seconds", "monitor_state",
+            "monitor_reason",
         }
         assert set(block["stream"]) == {
             "path", "last_event_at", "last_event", "cadence_hint_seconds",
         }
         assert block["stream"]["cadence_hint_seconds"] == 45.0
+        assert block["fresh"] is True
 
     def test_the_watch_block_is_the_contract_shape(self):
         t = _tracker(idle_bound=50, ceiling=900, on_stall="kill",
                      progress_stream="/run/lane/p.ndjson")
         _Fake(t).tick(2)
         block = t.watch_block()
-        assert set(block) == {"state", "verdict", "reason", "readings", "policy"}
+        assert set(block) == {
+            "state", "verdict", "reason", "readings", "monitor_state",
+            "monitor_reason", "policy",
+        }
         assert block["policy"] == {
             "idle_bound_s": 50.0, "ceiling_s": 900.0, "on_stall": "kill",
             "progress_stream": "/run/lane/p.ndjson",

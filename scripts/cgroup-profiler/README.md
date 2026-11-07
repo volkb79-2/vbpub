@@ -63,6 +63,12 @@ section 2.
 | `config` | `config show`, `config set KEY VALUE [--persist]`, `config reset` (uid 0 for writes) |
 | `skills` | install, check, list or remove the packaged agent skill |
 
+The daemon reports liveness as `unknown` when its monitor misses a long
+sampling gap; that span does not count toward the lane's idle or progress
+clocks. `degraded-monitor` reports stale readings or daemon-cgroup throttling.
+See the [liveness design](docs/DESIGN-GUIDE.md#liveness-fails-safe-across-monitor-gaps)
+and [consumer example](docs/CONSUMERS.md#interpreting-liveness-monitor-health).
+
 `cgpd [--config PATH] <verb>` is root-only for service changes and read-only
 for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
 

@@ -53,7 +53,7 @@ import json
 import os
 import stat
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from . import metrics, util
 
@@ -72,6 +72,10 @@ CEILING_MULTIPLIER = 3.0
 #: CPU growth counts as activity at >= 1 s over the trailing 30 s (§8.4).
 CPU_WINDOW_SECONDS = 30.0
 CPU_GROWTH_SECONDS = 1.0
+MONITOR_GAP_MIN_SECONDS = 5.0
+KILL_CONFIRM_MIN_SPAN_SECONDS = 30.0
+KILL_MIN_READINGS = 3
+KILL_MIN_SPAN_SECONDS = 60.0
 #: A terminal stream event plus a subtree still alive this long after -> `hung`.
 HUNG_GRACE_SECONDS = 30.0
 #: Memory `full avg10` above this pauses both clocks (§8.4).
@@ -98,14 +102,20 @@ STATE_HUNG = "hung"
 STATE_RUNAWAY = "runaway"
 STATE_THROTTLED = "throttled"
 STATE_OVER_CEILING = "over_ceiling"
+STATE_UNKNOWN = "unknown"
 STATES = (
-    STATE_OK, STATE_STALLED, STATE_HUNG, STATE_RUNAWAY, STATE_THROTTLED, STATE_OVER_CEILING,
+    STATE_OK, STATE_STALLED, STATE_HUNG, STATE_RUNAWAY, STATE_THROTTLED,
+    STATE_OVER_CEILING, STATE_UNKNOWN,
 )
 #: The states `--on-stall kill` acts on. `runaway` is NOT one of them —
 #: §8.4: "killed only when over ceiling", and a runaway that outlives its
 #: ceiling is reported as `over_ceiling`, which IS here. `throttled` is
 #: never killed by the contract's own words ("never killed, reported").
 KILL_STATES = frozenset({STATE_STALLED, STATE_HUNG, STATE_OVER_CEILING})
+
+MONITOR_HEALTHY = "healthy"
+MONITOR_DEGRADED = "degraded-monitor"
+MONITOR_UNKNOWN = "unknown"
 
 VERDICT_NONE = "none"
 VERDICT_REPORTED = "reported"
@@ -403,6 +413,31 @@ def cgroup_io_bytes(abs_path: str) -> Optional[int]:
     return total
 
 
+def cgroup_cpu_usage_usec(abs_path: str) -> Optional[int]:
+    """Return the exact cumulative ``cpu.stat usage_usec`` counter."""
+    value = util.read_kv(os.path.join(abs_path, "cpu.stat")).get("usage_usec")
+    return value if type(value) is int and value >= 0 else None
+
+
+@dataclass(frozen=True)
+class KillEvidence:
+    """One daemon-side confirmation read of the exact target cgroup."""
+
+    cpu_usage_usec: Optional[int]
+    io_bytes: Optional[int]
+    stream_identity: Optional[str]
+
+
+def read_kill_evidence(abs_cgroup: str, stream_path: Optional[str]) -> KillEvidence:
+    """Read cumulative target counters and the latest complete stream identity."""
+    cpu_usage = cgroup_cpu_usage_usec(abs_cgroup)
+    io_bytes = cgroup_io_bytes(abs_cgroup)
+    stream_identity: Optional[str] = None
+    if stream_path is not None:
+        stream_identity = read_progress_stream(stream_path).identity
+    return KillEvidence(cpu_usage, io_bytes, stream_identity)
+
+
 @dataclass
 class LivenessSample:
     """Everything one tick of the state machine needs, already read.
@@ -416,8 +451,15 @@ class LivenessSample:
     mono: float
     at: str
     elapsed_seconds: float
+    seq: int
+    mono_ns: int
+    due_ns: int
+    fresh: bool
+    interval_seconds: float
     cpu_seconds_total: Optional[float] = None
+    cpu_usage_usec_total: Optional[int] = None
     io_bytes_total: Optional[int] = None
+    monitor_nr_throttled_total: Optional[int] = None
     stream: Optional[StreamSample] = None
     host_psi_full_avg10: Optional[float] = None
     slice_psi_full_avg10: Optional[float] = None
@@ -458,6 +500,8 @@ class LivenessTracker:
         self.verdict = VERDICT_NONE
         self.reason: Optional[str] = None
         self.enforced = False
+        self.monitor_state = MONITOR_UNKNOWN
+        self.monitor_reason: Optional[str] = "no monitor reading"
 
         self.last_activity_at = started_at
         self.idle_for_seconds = 0.0
@@ -472,8 +516,12 @@ class LivenessTracker:
         self._silent_for = 0.0
         self._prev_mono: Optional[float] = None
         self._prev_cpu_total: Optional[float] = None
+        self._prev_cpu_mono: Optional[float] = None
         self._prev_io_total: Optional[int] = None
-        self._cpu_window: List[Any] = []  # [(mono, cumulative cpu seconds)]
+        self._cpu_segments: List[Tuple[float, float, float]] = []
+        self._prev_monitor_nr_throttled: Optional[int] = None
+        self._last_sample: Optional[LivenessSample] = None
+        self._kill_evidence: List[LivenessSample] = []
         self._terminal_seen_mono: Optional[float] = None
 
     # -- the tick ---------------------------------------------------------
@@ -481,14 +529,56 @@ class LivenessTracker:
     def observe(self, sample: LivenessSample) -> Optional[str]:
         self.readings += 1
         dt = 0.0 if self._prev_mono is None else max(0.0, sample.mono - self._prev_mono)
-        self._prev_mono = sample.mono
+        previous_mono = self._prev_mono
+        fresh = self._sample_is_fresh(sample)
+        sample.fresh = fresh
+        gap_span = (
+            dt if previous_mono is not None
+            else max(0.0, (sample.mono_ns - sample.due_ns) / 1_000_000_000.0)
+        )
+        is_gap = gap_span > self._monitor_gap_seconds(sample.interval_seconds)
 
         cpu_growing = self._observe_cpu(sample)
         io_activity = self._observe_io(sample)
         stream_activity = self._observe_stream(sample)
+        throttled, monitor_stats_known = self._observe_monitor_throttling(sample)
+        activity = stream_activity or io_activity or cpu_growing
+
+        self._prev_mono = sample.mono
+        self._last_sample = sample
+
+        if is_gap:
+            self.monitor_state = MONITOR_UNKNOWN
+            self.monitor_reason = "monitor-gap"
+            self._kill_evidence.clear()
+            self.paused_for_seconds += gap_span
+            self.pause_reason = "monitor-gap"
+            if activity:
+                self.last_activity_at = sample.at
+                self.idle_for_seconds = 0.0
+            if stream_activity:
+                self._silent_for = 0.0
+            state, reason = self._evaluate_after_gap(sample)
+            return self._set_state(state, reason)
+
+        if not fresh:
+            self.monitor_state = MONITOR_DEGRADED
+            self.monitor_reason = "reading was not fresh"
+            self._kill_evidence.clear()
+        elif not monitor_stats_known:
+            self.monitor_state = MONITOR_DEGRADED
+            self.monitor_reason = "monitor cpu throttling counter unavailable"
+            self._kill_evidence.clear()
+        elif throttled:
+            self.monitor_state = MONITOR_DEGRADED
+            self.monitor_reason = "monitor cgroup was throttled"
+            self._kill_evidence.clear()
+        else:
+            self.monitor_state = MONITOR_HEALTHY
+            self.monitor_reason = None
 
         paused, reason = self._pause(sample)
-        if stream_activity or io_activity or cpu_growing:
+        if activity:
             self.last_activity_at = sample.at
             self.idle_for_seconds = 0.0
             self.paused_for_seconds = 0.0
@@ -506,22 +596,38 @@ class LivenessTracker:
         elif not paused:
             self._silent_for += dt
 
-        return self._evaluate(sample, cpu_growing)
+        change = self._set_state(*self._evaluate(sample, cpu_growing))
+        if fresh and self.monitor_state == MONITOR_HEALTHY and self.state in KILL_STATES:
+            self._kill_evidence.append(sample)
+            keep = max(KILL_MIN_READINGS, int(KILL_MIN_SPAN_SECONDS / sample.interval_seconds) + 3)
+            if len(self._kill_evidence) > keep:
+                del self._kill_evidence[:-keep]
+        else:
+            self._kill_evidence.clear()
+        return change
 
     def _observe_cpu(self, sample: LivenessSample) -> bool:
         total = sample.cpu_seconds_total
+        if total is None and sample.cpu_usage_usec_total is not None:
+            total = sample.cpu_usage_usec_total / 1_000_000.0
         if total is not None:
             if self._prev_cpu_total is not None:
-                self.cpu_seconds += max(0.0, total - self._prev_cpu_total)
+                delta = max(0.0, total - self._prev_cpu_total)
+                self.cpu_seconds += delta
+                if self._prev_cpu_mono is not None and sample.mono > self._prev_cpu_mono:
+                    self._cpu_segments.append((self._prev_cpu_mono, sample.mono, delta))
             self._prev_cpu_total = total
-        self._cpu_window.append((sample.mono, self.cpu_seconds))
+            self._prev_cpu_mono = sample.mono
+
         cutoff = sample.mono - CPU_WINDOW_SECONDS
-        # The just-appended sample is at ``sample.mono`` and the cutoff is
-        # never later than that sample. With monotonic timestamps it keeps
-        # the window non-empty without a redundant length comparison here.
-        while self._cpu_window[0][0] < cutoff:
-            self._cpu_window.pop(0)
-        self.cpu_seconds_recent = self.cpu_seconds - self._cpu_window[0][1]
+        while self._cpu_segments and self._cpu_segments[0][1] <= cutoff:
+            self._cpu_segments.pop(0)
+        recent = 0.0
+        for start, end, delta in self._cpu_segments:
+            span = end - start
+            overlap = max(0.0, end - max(start, cutoff))
+            recent += delta * min(1.0, overlap / span)
+        self.cpu_seconds_recent = recent
         return self.cpu_seconds_recent >= CPU_GROWTH_SECONDS
 
     def _observe_io(self, sample: LivenessSample) -> bool:
@@ -555,6 +661,46 @@ class LivenessTracker:
             self._terminal_seen_mono = sample.mono
         return new_line
 
+    def _observe_monitor_throttling(self, sample: LivenessSample) -> Tuple[bool, bool]:
+        current = sample.monitor_nr_throttled_total
+        previous = self._prev_monitor_nr_throttled
+        if current is None:
+            return False, False
+        self._prev_monitor_nr_throttled = current
+        if previous is None:
+            return False, True
+        if current < previous:
+            return False, False
+        return current > previous, True
+
+    @staticmethod
+    def _monitor_gap_seconds(interval_seconds: float) -> float:
+        return max(3.0 * interval_seconds, MONITOR_GAP_MIN_SECONDS)
+
+    @staticmethod
+    def _sample_is_fresh(sample: LivenessSample) -> bool:
+        if not sample.fresh or sample.interval_seconds <= 0:
+            return False
+        delay_ns = sample.mono_ns - sample.due_ns
+        return abs(delay_ns) <= 2 * sample.interval_seconds * 1_000_000_000
+
+    def _evaluate_after_gap(self, sample: LivenessSample) -> Tuple[str, Optional[str]]:
+        ceiling = self.ceiling_seconds()
+        if ceiling is not None and sample.elapsed_seconds > ceiling:
+            return STATE_OVER_CEILING, (
+                f"elapsed {sample.elapsed_seconds:.1f}s is over the ceiling of {ceiling:.1f}s"
+            )
+        return STATE_UNKNOWN, "monitor-gap: liveness is unknown until fresh readings resume"
+
+    def _set_state(self, state: str, reason: Optional[str]) -> Optional[str]:
+        if state == self.state:
+            self.reason = reason
+            return None
+        self.state = state
+        self.reason = reason
+        self.verdict = VERDICT_NONE if state == STATE_OK else VERDICT_REPORTED
+        return state
+
     def _pause(self, sample: LivenessSample) -> Any:
         """(paused, reason). The gates slice is checked first: it is the
         more specific object (the lane's own capacity pool) and names the
@@ -569,12 +715,14 @@ class LivenessTracker:
 
     # -- the state machine ------------------------------------------------
 
-    def _evaluate(self, sample: LivenessSample, cpu_growing: bool) -> Optional[str]:
+    def _evaluate(
+        self, sample: LivenessSample, cpu_growing: bool,
+    ) -> Tuple[str, Optional[str]]:
         if self.enforced:
             # A kill (or a refused kill) is terminal: the verdict a consumer
             # already read must not be rewritten by later ticks of a subtree
             # that is now dying.
-            return None
+            return self.state, self.reason
         idle_bound = self.idle_bound_seconds()
         ceiling = self.ceiling_seconds()
         state = STATE_OK
@@ -625,24 +773,69 @@ class LivenessTracker:
                     f"{CPU_WINDOW_SECONDS:.0f}s"
                 )
 
-        if state == self.state:
-            self.reason = reason
-            return None
-        self.state = state
-        self.reason = reason
-        self.verdict = VERDICT_NONE if state == STATE_OK else VERDICT_REPORTED
-        return state
+        return state, reason
 
     # -- enforcement (the server performs it; the tracker records it) -----
 
     @property
     def kill_requested(self) -> bool:
-        """Whether ``--on-stall kill`` says to act on the CURRENT state."""
+        """Whether fresh in-process evidence currently permits actuation."""
+        now = self._last_sample.mono if self._last_sample is not None else 0.0
+        return self.kill_requested_at(now)
+
+    def kill_requested_at(self, now_mono: float) -> bool:
+        """Whether the kill state persisted over three fresh readings and 60 s."""
+        if not self._kill_evidence:
+            return False
+        first = self._kill_evidence[0]
+        latest = self._kill_evidence[-1]
         return (
             self.policy.on_stall == "kill"
             and not self.enforced
             and self.state in KILL_STATES
+            and self.monitor_state == MONITOR_HEALTHY
+            and len(self._kill_evidence) >= KILL_MIN_READINGS
+            and latest.mono - first.mono >= KILL_MIN_SPAN_SECONDS
+            and now_mono - latest.mono <= 2 * latest.interval_seconds
         )
+
+    def kill_confirm_anchor(self, now_mono: float) -> Optional[LivenessSample]:
+        """Latest fresh kill-state reading at least 30 s before ``now_mono``."""
+        eligible = [
+            sample for sample in self._kill_evidence
+            if now_mono - sample.mono >= KILL_CONFIRM_MIN_SPAN_SECONDS
+        ]
+        return eligible[-1] if eligible else None
+
+    def monitor_state_at(self, now_mono: Optional[float] = None) -> str:
+        """Return unknown when the sampler has exceeded its monitor-gap bound."""
+        sample = self._last_sample
+        if sample is None:
+            return MONITOR_UNKNOWN
+        if now_mono is not None:
+            age = max(0.0, now_mono - sample.mono)
+            if age > self._monitor_gap_seconds(sample.interval_seconds):
+                return MONITOR_UNKNOWN
+        return self.monitor_state
+
+    def _effective_state(
+        self, now_mono: Optional[float],
+    ) -> Tuple[str, Optional[str]]:
+        if now_mono is not None:
+            ceiling = self.ceiling_seconds()
+            if ceiling is not None and now_mono > ceiling:
+                return STATE_OVER_CEILING, (
+                    f"elapsed {now_mono:.1f}s is over the ceiling of {ceiling:.1f}s"
+                )
+        if self.monitor_state_at(now_mono) == MONITOR_UNKNOWN:
+            reason = "monitor-gap" if self._last_sample is not None else "no monitor reading"
+            return STATE_UNKNOWN, f"{reason}: liveness is unknown"
+        return self.state, self.reason
+
+    @property
+    def kill_state_readings(self) -> List[LivenessSample]:
+        """Copy of eligible evidence for the server's final cgroup confirmation."""
+        return list(self._kill_evidence)
 
     def record_kill(self, pids: List[int], *, via: Optional[str] = None) -> None:
         """``via`` records the exact cgroup boundary used for enforcement.
@@ -675,7 +868,7 @@ class LivenessTracker:
     def ceiling_seconds(self) -> Optional[float]:
         return self.policy.ceiling_seconds(self.expected_duration_seconds)
 
-    def liveness_block(self) -> Dict[str, Any]:
+    def liveness_block(self, *, now_mono: Optional[float] = None) -> Dict[str, Any]:
         stream_block: Optional[Dict[str, Any]] = None
         if self.policy.progress_stream is not None:
             stream_block = {
@@ -686,6 +879,20 @@ class LivenessTracker:
                     self.stream.cadence_hint_seconds if self.stream is not None else None
                 ),
             }
+        monitor_state = self.monitor_state_at(now_mono)
+        monitor_reason = self.monitor_reason
+        paused_for_seconds = self.paused_for_seconds
+        pause_reason = self.pause_reason
+        if monitor_state == MONITOR_UNKNOWN:
+            if self._last_sample is None:
+                monitor_reason = "no monitor reading"
+            else:
+                monitor_reason = "monitor-gap"
+                pause_reason = "monitor-gap"
+            if now_mono is not None and self._last_sample is not None:
+                age = max(0.0, now_mono - self._last_sample.mono)
+                if age > self._monitor_gap_seconds(self._last_sample.interval_seconds):
+                    paused_for_seconds += age
         return {
             "last_activity_at": self.last_activity_at,
             "idle_for_seconds": round(self.idle_for_seconds, 3),
@@ -693,17 +900,34 @@ class LivenessTracker:
             "cpu_seconds_recent": round(self.cpu_seconds_recent, 3),
             "io_bytes": self.io_bytes,
             "stream": stream_block,
-            "paused_for_seconds": round(self.paused_for_seconds, 3),
-            "pause_reason": self.pause_reason,
+            "paused_for_seconds": round(paused_for_seconds, 3),
+            "pause_reason": pause_reason,
+            "seq": self._last_sample.seq if self._last_sample is not None else None,
+            "mono_ns": self._last_sample.mono_ns if self._last_sample is not None else None,
+            "due_ns": self._last_sample.due_ns if self._last_sample is not None else None,
+            "fresh": self._last_sample.fresh if self._last_sample is not None else False,
+            "interval_seconds": (
+                round(self._last_sample.interval_seconds, 3)
+                if self._last_sample is not None else None
+            ),
+            "monitor_state": monitor_state,
+            "monitor_reason": monitor_reason,
         }
 
-    def watch_block(self) -> Dict[str, Any]:
+    def watch_block(self, *, now_mono: Optional[float] = None) -> Dict[str, Any]:
         ceiling = self.ceiling_seconds()
+        state, reason = self._effective_state(now_mono)
+        monitor_state = self.monitor_state_at(now_mono)
+        monitor_reason = self.monitor_reason
+        if monitor_state == MONITOR_UNKNOWN:
+            monitor_reason = "monitor-gap" if self._last_sample is not None else "no monitor reading"
         return {
-            "state": self.state,
-            "verdict": self.verdict,
-            "reason": self.reason,
+            "state": state,
+            "verdict": VERDICT_NONE if state == STATE_OK else VERDICT_REPORTED,
+            "reason": reason,
             "readings": self.readings,
+            "monitor_state": monitor_state,
+            "monitor_reason": monitor_reason,
             "policy": {
                 "idle_bound_s": round(self.idle_bound_seconds(), 3),
                 "ceiling_s": None if ceiling is None else round(ceiling, 3),
