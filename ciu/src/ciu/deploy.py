@@ -811,6 +811,43 @@ def _resolve_identity_live_state(project: str, service: str) -> dict:
     }
 
 
+def split_service_selector(selector: str) -> tuple[str, str | None]:
+    """Parse the shared ``<stack>[:<service>]`` selector grammar."""
+    if not isinstance(selector, str) or not selector:
+        raise ValueError("[S18] service selector must be `<stack>[:<service>]`")
+    if ":" not in selector:
+        return selector, None
+    stack, service = selector.rsplit(":", 1)
+    if not stack or not service:
+        raise ValueError("[S18] service selector must be `<stack>[:<service>]`")
+    return stack, service
+
+
+def select_service(
+    identities: dict[str, dict[str, dict[str, Any]]], service: str | None,
+) -> tuple[str, str, dict[str, Any]]:
+    """Resolve one exact service from an already-filtered identity document."""
+    stack_path = next(iter(identities), None)
+    if stack_path is None:
+        raise ValueError("[S18] selected stack has no rendered services")
+    if len(identities) != 1:
+        raise ValueError(
+            "[S18] selector resolved more than one stack; select one stack explicitly"
+        )
+    stack_services = identities[stack_path]
+    if service is None:
+        if len(stack_services) != 1:
+            raise ValueError(
+                f"[S18] stack {stack_path!r} has {len(stack_services)} services; "
+                "name one as `<stack>[:<service>]`"
+            )
+        service = next(iter(stack_services))
+    identity = stack_services.get(service)
+    if identity is None:
+        raise ValueError(f"[S18] service {service!r} was not found in stack {stack_path!r}")
+    return stack_path, service, identity
+
+
 def exec_service(
     repo_root: Path,
     selector: str,
@@ -823,29 +860,11 @@ def exec_service(
 
     if not argv:
         raise ValueError("[S18] `ciu exec <stack>[:<service>] -- ARGV...` requires a command")
-    if ":" in selector:
-        stack, service = selector.rsplit(":", 1)
-        if not stack or not service:
-            raise ValueError("[S18] service selector must be `<stack>[:<service>]`")
-    else:
-        stack, service = selector, None
+    stack, service = split_service_selector(selector)
     repo_root = Path(repo_root).resolve()
     document = resolve_identities(repo_root, stack=stack, profiles=profiles)
     identities = document["resolved"]["identities"]
-    stack_path = next(iter(identities), None)
-    if stack_path is None:
-        raise ValueError(f"[S18] stack {stack!r} has no rendered services")
-    stack_services = identities[stack_path]
-    if service is None:
-        if len(stack_services) != 1:
-            raise ValueError(
-                f"[S18] stack {stack_path!r} has {len(stack_services)} services; "
-                "name one as `<stack>:<service>`"
-            )
-        service = next(iter(stack_services))
-    identity = stack_services.get(service)
-    if identity is None:
-        raise ValueError(f"[S18] service {service!r} was not found in stack {stack_path!r}")
+    stack_path, service, identity = select_service(identities, service)
 
     global_config = load_global_config(repo_root, write_rendered=False)
     targets = worktree_pkg.resolve_exec_targets_config(global_config)
@@ -5851,13 +5870,34 @@ def action_clean(
         ciu_context=profiles_pkg.render_ciu_context(profile, selection),
     )
     reset_refusals: list[str] = []
+    one_shot_refusals: list[str] = []
     for entry in selection:
         rel = entry["path"]
         if rel not in rendered or not (repo_root / rel).resolve().is_dir():
             continue
-        reason = engine.reset_refusal(config_model.deep_merge(config, rendered[rel]))
+        merged_config = config_model.deep_merge(config, rendered[rel])
+        reason = engine.reset_refusal(merged_config)
         if reason:
             reset_refusals.append(f"{rel}: {reason}")
+            continue
+        if phases_pkg.service_shipped(entry.get("service", {})):
+            continue  # shipped stacks never reach reset_service (step 2)
+        # CIU-141: `down --remove-orphans` would stop another checkout's or
+        # stack's `ciu run` one-shots in this Compose project. reset_service
+        # refuses then, but only after step 1 has already removed containers,
+        # so evaluate the same guard here, before anything is removed.
+        try:
+            engine.guard_clean_stack(
+                merged_config, (repo_root / rel).resolve(), repo_root=repo_root,
+            )
+        except (engine.ComposeError, ValueError) as exc:
+            # ValueError: the compose project cannot be determined (project_name
+            # without environment_tag or identity facts). It is a refusal found
+            # before anything is removed; --ignore-errors still falls through to
+            # step 2, whose "reset failed" report is the old best-effort path.
+            one_shot_refusals.append(f"{rel}: {exc}")
+        except FileNotFoundError:
+            pass  # no docker: the removal steps below report it (CIU-137)
     if plan_only:
         # `--dry-run`: print the plan and stop. The destructive passes below
         # never run, and the real clean does not re-print it (the plan is the
@@ -5868,10 +5908,14 @@ def action_clean(
         )
         for message in reset_refusals:
             error(f"plan: clean would refuse to reset {message}")
-        return 1 if reset_refusals else plan_rc
-    if reset_refusals and not ignore_errors:
+        for message in one_shot_refusals:
+            error(f"plan: clean would refuse: {message}")
+        return 1 if (reset_refusals or one_shot_refusals) else plan_rc
+    if (reset_refusals or one_shot_refusals) and not ignore_errors:
         for message in reset_refusals:
             error(f"[CIU-200] clean refuses to reset {message}; nothing was removed")
+        for message in one_shot_refusals:
+            error(f"[CIU-141] clean refuses: {message}; nothing was removed")
         return 1
 
     # Step 1: stop + remove project containers. all_states=True so an exited

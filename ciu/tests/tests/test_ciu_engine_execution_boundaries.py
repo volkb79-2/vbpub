@@ -133,6 +133,38 @@ def test_interrupted_compose_skips_post_hook_and_preserves_interrupted_status(
     assert result["stdout"] == "partial compose output\n"
 
 
+def test_prepare_stack_exposes_rendered_inputs_without_starting_compose(
+    tmp_path, monkeypatch
+):
+    """The one-shot prepare seam preserves up's dry-run render and skips reset/start."""
+    stack = _write_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(engine, "ensure_workspace_network", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        engine, "execute_docker_compose_with_logs",
+        lambda *args, **kwargs: pytest.fail("prepare_stack must not start Compose"),
+    )
+    monkeypatch.setattr(
+        engine, "reset_service",
+        lambda *args, **kwargs: pytest.fail("prepare_stack must not reset the stack"),
+    )
+
+    dry_run = engine.main_execution(
+        working_dir=stack, define_root=tmp_path, dry_run=True, generate_env=True,
+        skip_hostdir_check=True,
+    )
+    rendered_before = (stack / engine.CIU_COMPOSE_OUTPUT).read_bytes()
+
+    prepared = engine.prepare_stack(
+        working_dir=stack, define_root=tmp_path, skip_hostdir_check=True,
+    )
+
+    assert prepared.project == "engine-boundary-test-demo"
+    assert prepared.file_args == ["-f", engine.CIU_COMPOSE_OUTPUT]
+    assert prepared.rendered_compose == rendered_before.decode("utf-8")
+    assert (stack / engine.CIU_COMPOSE_OUTPUT).read_bytes() == rendered_before
+    assert prepared.config["demo"]["name"] == dry_run["config"]["demo"]["name"]
+
+
 def test_compose_runner_returns_nonzero_status_and_streamed_output(tmp_path, monkeypatch):
     """S8.1: compose failure is a structured failure, retaining visible output."""
     class FailedProcess:

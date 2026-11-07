@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: pending release notes begin -->
+### Fixed
+- test(pwmcp): close the 1.64.1-r4 R2 survivors with boundary, retry, diagnostics, and storage-state regressions; document four equivalent mutants (PWMCP-41)
+- test(pwmcp): make the rejected-body reader fake honor zero-byte reads and cap reads so drain mutants fail cleanly instead of growing the test's read log (PWMCP-41)
+- test(pwmcp): make the recognition-timeout and slot-release test independent of subprocess startup time (PWMCP-41)
+<!-- cmru: pending release notes end -->
+
 <!-- cmru: release history -->
 
 ## [1.64.1-r4] - 2026-11-05

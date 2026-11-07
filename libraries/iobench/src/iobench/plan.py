@@ -9,7 +9,21 @@ from .host import TAIL_BYTES
 
 GIB = 1 << 30
 MIB = 1 << 20
-PROFILE_BUDGET_S = {"quick": 720, "standard": 3600, "thorough": 4500, "matrix": 900, "knob": 480}
+PROFILE_BUDGET_S = {"veryquick": 210, "quick": 720, "standard": 3600, "thorough": 4500, "matrix": 900, "knob": 480}
+# veryquick (IOB-PRF-03): a plan of 173 s inside a 210 s hard budget (the slack covers fio start-up and teardown)
+VQ_S0_S = 10
+VQ_S1_S = 20
+VQ_FILL_S = 20            # the fill writes R_est x 20 s of data ...
+VQ_FILL_ALLOT_S = 25      # ... and may take 25 s
+VQ_ECOLD_QD32_S = 15      # E-cold: QD32 random read on the cold region ...
+VQ_ECOLD_QD1_S = 15       # ... a QD1 latency histogram on the rest of it ...
+VQ_HITREF_S = 10          # ... and a QD1 histogram on the first GiB (the cache-hit reference)
+VQ_SERIES_S = 30          # one write time series over the written extent (burst and knee)
+VQ_CELL_S = 12            # S6: four 12 s cells (4 KiB random and 128 KiB sequential, read and write)
+VQ_CELLS = 4
+VQ_LOG_AVG_MS = 500       # 500 ms samples: a 12 s cell still gives >= 8 points after its 2 s warm-up
+VQ_WARMUP_S = 2.0
+VQ_SEQ_BS = 131072
 FILL_BUDGET_FRACTION = 0.12
 VOLUME_FACTOR = 1.2
 SLOW_DISK_BPS = 5_000_000
@@ -101,6 +115,13 @@ class Allotment:
 def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: int | None = None) -> Allotment:
     """The stage allotment table of SPEC section 15, derived from the geometry."""
     budget = PROFILE_BUDGET_S[profile] if budget_s is None else budget_s
+    if profile == "veryquick":
+        stages = (Stage("S0", VQ_S0_S, True), Stage("S1", VQ_S1_S, True), Stage("fill", VQ_FILL_ALLOT_S, True),
+                  Stage("E-cold", VQ_ECOLD_QD32_S + VQ_ECOLD_QD1_S + VQ_HITREF_S, False, "QD32 15 s + QD1 histogram 15 s + cache-hit reference 10 s"),
+                  Stage("series", VQ_SERIES_S, True, "one 30 s write time series over the written extent"),
+                  Stage("S6", VQ_CELLS * VQ_CELL_S, True, "4 KiB random and 128 KiB sequential, read and write"))
+        ws = ws_max(size_bytes, r_est_bps, budget, fill_seconds=VQ_FILL_S)
+        return Allotment(profile, budget, stages, ws, (ws,))
     quick = profile == "quick"
     thorough = profile == "thorough"
     ws = ws_max(size_bytes, r_est_bps, budget, fill_seconds=60 if quick else None)

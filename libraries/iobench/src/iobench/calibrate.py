@@ -1,6 +1,7 @@
 """Calibration (IOB-CAL-01..10, IOB-CCH-01..07, IOB-SLO, IOB-SHP, IOB-LAT): the slow once-per-host phase."""
 from __future__ import annotations
 
+import json
 import math
 import statistics
 from dataclasses import replace
@@ -68,7 +69,8 @@ def _basis(value: float | None, reasons: list[str], absent: str | None = None) -
 class Calibrator(Runner):
     def __init__(self, host: Any, cfg: Config) -> None:
         super().__init__(host, cfg, command="calibrate")
-        self.profile, self.quick = cfg.profile, cfg.profile == "quick"
+        self.profile, self.quick = cfg.profile, cfg.profile in ("quick", "veryquick")  # quick: every profile that cuts the ladder and the observation runs
+        self.vq = cfg.profile == "veryquick"
         self.touch = TouchMap()
         self.excluded_rungs: list[dict[str, Any]] = []
         self.reads: list[dict[str, Any]] = []
@@ -154,6 +156,10 @@ class Calibrator(Runner):
             raise RunFailed("S1 measured no write throughput")
         self.evidence["rate_probe"] = {"r_est_bps": self.r_est, "samples": len(out.series), "seconds": 20}
 
+    def fill_budget_s(self, budget_s: float) -> float:
+        """Seconds of data the fill may write at the S1 rate: 20 (veryquick), 60 (quick) or 12 % of the budget."""
+        return plan.VQ_FILL_S if self.vq else (60 if self.quick else plan.FILL_BUDGET_FRACTION * budget_s)
+
     def make_plan(self) -> plan.Allotment:
         budget = self.cfg.budget_s(plan.PROFILE_BUDGET_S[self.profile])
         self.start_budget(budget)
@@ -162,7 +168,7 @@ class Calibrator(Runner):
         if self.target.kind == "file":
             fs = guard.fs_info(self.host, self.target.path.rsplit("/", 1)[0])
             self.margin = guard.file_margin(fs.total)
-            fill_s = 60 if self.quick else plan.FILL_BUDGET_FRACTION * budget
+            fill_s = self.fill_budget_s(budget)
             # the space the file could consume is what was free before it was preallocated
             ws, fresh_len = guard.file_ws_max(self.target.size_bytes, fs.free + self.target.size_bytes, self.margin, self.r_est, fill_s)
             start = ladder.align_up(ws)
@@ -184,7 +190,7 @@ class Calibrator(Runner):
         chunk = max(MIN_FILL_CHUNK, ladder.align(self.r_est * FILL_CHECK_S))
         started = self.host.now()
         deadline = started + alloc.seconds("fill")
-        fill_budget_s = 60 if self.quick else plan.FILL_BUDGET_FRACTION * alloc.budget_s
+        fill_budget_s = self.fill_budget_s(alloc.budget_s)
         rates: list[float] = []
         replanned, aborted = False, None
         while pos < ws and self.host.now() < deadline:
@@ -223,21 +229,35 @@ class Calibrator(Runner):
         half = ladder.align(cold_len / 2)
         if half < MIB:
             raise S.SeriesError("the cold region is smaller than 1 MiB")
-        qd32 = self.run_job("ecold", "randread", 4096, 32, E_COLD_QD32_S, 0, half, key="e_cold")
-        qd1 = self.run_job("ecold-qd1", "randread", 4096, 1, HIST_S, half, cold_len - half, key="e_cold", hist=True, log_avg_ms=1000)
+        qd32_s, qd1_s = (plan.VQ_ECOLD_QD32_S, plan.VQ_ECOLD_QD1_S) if self.vq else (E_COLD_QD32_S, HIST_S)
+        qd32 = self.run_job("ecold", "randread", 4096, 32, qd32_s, 0, half, key="e_cold", **self.sampling())
+        qd1 = self.run_job("ecold-qd1", "randread", 4096, 1, qd1_s, half, cold_len - half, key="e_cold", hist=True, log_avg_ms=self.sampling().get("log_avg_ms", 1000))
         counts = cache.aggregate_hist(qd1.hist)
-        self.cold_raw = {"reading": self.reading(qd32), "modes": cache.modes(counts), "region_bytes": cold_len}
+        self.cold_raw = {"reading": self.reading(qd32, self.warmup()), "modes": cache.modes(counts), "region_bytes": cold_len}
         self.evidence["histograms"]["e_cold_qd1"] = sparse(counts)
+        if self.vq:
+            self.hit_ref(plan.VQ_HITREF_S)  # the cache-hit reference the cold probe is classified against: part of the 40 s E-cold allotment
+
+    def sampling(self) -> dict[str, Any]:
+        """veryquick samples every 500 ms so that its short runs still give the 8 points a reading needs."""
+        return {"log_avg_ms": plan.VQ_LOG_AVG_MS} if self.vq else {}
+
+    def warmup(self) -> float:
+        return plan.VQ_WARMUP_S if self.vq else ladder.WARMUP_S
 
     # -- the ladder ----------------------------------------------------------------------------------------
     def rung(self, ws: int, direction: str, qd: int, runtime: int = RUNG_S, tag: str = "") -> dict[str, Any]:
         rw = "randread" if direction == "read" else "randwrite"
         label = f"rung-{direction[0]}{qd}-{ws // MIB}{tag}"
-        out = self.run_job(label, rw, 4096, qd, runtime, 0, ws, key="ladder")
-        rec = ladder.rung_record(out, ws)
-        if rec["state"] == "unsteady" and qd == 32 and self.fits(EXTEND_S + 60):
+        out = self.run_job(label, rw, 4096, qd, runtime, 0, ws, key="ladder", **self.sampling())
+        rec = ladder.rung_record(out, ws, warmup_s=self.warmup())
+        if rec["state"] == "unsteady" and qd == 32 and not self.vq and self.fits(EXTEND_S + 60):
             out = self.run_job(label + "-ext", rw, 4096, qd, EXTEND_S, 0, ws, key="ladder")
             rec = {**ladder.rung_record(out, ws), "extended": True}
+        return self.judged(out, rec, qd)
+
+    def judged(self, out: FioResult, rec: dict[str, Any], qd: int) -> dict[str, Any]:
+        """Little's law on a rung's run (IOB-PLA-06): a broken or faked fio makes the rung unusable."""
         check = plausibility.pla_06(out.stats.iops, out.stats.clat_mean_us, qd)
         self.little.append(check)
         if check.status == "fail":
@@ -252,8 +272,11 @@ class Calibrator(Runner):
             return False
         return True
 
-    def hit_ref(self) -> None:
-        out = self.run_job("hitref", "randread", 4096, 1, HIST_S, 0, min(GIB, self.ws), key="ladder", hist=True, log_avg_ms=1000)
+    def hit_ref(self, seconds: float = HIST_S) -> None:
+        # veryquick has no small rung that was written and read: its hit reference is the last GiB the fill wrote, the data a write cache holds
+        offset = self.ws - min(GIB, self.ws) if self.vq else 0
+        out = self.run_job("hitref", "randread", 4096, 1, seconds, offset, min(GIB, self.ws), key="ladder", hist=True,
+                           log_avg_ms=self.sampling().get("log_avg_ms", 1000))
         counts = cache.aggregate_hist(out.hist)
         self.hit_ref_us = cache.hist_percentile_us(counts, 50)
         self.evidence["histograms"]["hit_ref"] = sparse(counts)
@@ -398,6 +421,32 @@ class Calibrator(Runner):
         if not self.quick:
             self.close_group("shape", "r4")
 
+    # -- veryquick: the one write series and the four cells (IOB-PRF-03) ------------------------------------------
+    def series_vq(self) -> None:
+        """One 30 s QD32 random-write series over the written extent: it is the write rung and shows a burst that ends inside 30 s."""
+        rec = self.rung(self.ws, "write", 32, plan.VQ_SERIES_S, "-vq")
+        if self.usable(rec):
+            self.writes.append(rec)
+
+    def s6_vq(self) -> None:
+        """Four 12 s cells.  The 4 KiB random read cell, QD32 over the whole written extent, is also the read rung of the analysis."""
+        for n, cell in enumerate(shape.vq_grid(plan.VQ_CELL_S, plan.VQ_SEQ_BS)):
+            out = self.run_job(f"s6-{n}", cell.rw, cell.bs, cell.qd, cell.seconds, 0, self.ws, key="ladder", **self.sampling())
+            self.cells.append(shape.cell_record(out, cell, warmup_s=self.warmup()))
+            if (cell.dir, cell.pattern, cell.bs) == ("read", "rand", 4096):
+                rec = self.judged(out, ladder.rung_record(out, self.ws, warmup_s=self.warmup()), cell.qd)
+                if self.usable(rec):
+                    self.reads.append(rec)
+
+    def coarse_model(self) -> dict[str, Any]:
+        """Per direction the two measured rates the veryquick model is derived from, ``None`` when a cell is missing or not steady."""
+        out: dict[str, Any] = {}
+        for d in ("read", "write"):
+            rand = next((c for c in self.cells if (c["dir"], c["pattern"], c["bs"]) == (d, "rand", 4096) and shape.certified(c)), None)
+            seq = next((c for c in self.cells if (c["dir"], c["pattern"], c["bs"]) == (d, "seq", plan.VQ_SEQ_BS) and shape.certified(c)), None)
+            out[d] = None if rand is None or seq is None else {"seq_bps": seq["steady_bps"], "rand_iops": rand["steady_iops"]}
+        return out
+
     # -- S7 ------------------------------------------------------------------------------------------------
     def s7(self) -> None:
         for direction in ("read", "write"):
@@ -434,7 +483,9 @@ class Calibrator(Runner):
         post = [(r["ws_bytes"], r["steady_iops"]) for r in classes if r["class"] == "post_cliff" and r["state"] in ("steady", "flat")]
         e1 = cache.e1_fit(post, statistics.median(before) if before else None)
         state = cache.classify_cache(cold, e2, cliff_bytes=cliff, largest_rung=largest["ws_bytes"], quick=self.quick,
-                                    cached_ref=cached_ref, cache_excludable=self.target.kind == "device")
+                                    cached_ref=None if self.vq else cached_ref, cache_excludable=self.target.kind == "device")
+        # veryquick has no cached tier to compare the cold region with (its one read rung IS the cold-ish region): the cold probe alone
+        # decides, against the cache-hit reference; "as fast as the warm rung" would hold by construction
         if self.target.kind == "file" and state.state == "cold_hit_like" and cliff is None:
             # a file target is bounded by --size and free space: its cliff is unreachable (IOB-TGT-10), so the honest reason is the margin
             state = replace(state, reasons=("device_smaller_than_cache_margin",))
@@ -444,6 +495,8 @@ class Calibrator(Runner):
                   "e1": e1, "state": state, "read_value": value, "best": best,
                   "headroom": best / state.r if state.status == "proven" and best is not None else None}
         extras = (["budget_limited"] if self.budget_limited else []) + (["ceiling_moved"] if self.moved.get("ladder") else [])
+        if self.vq:
+            extras.append("veryquick_profile")  # nothing a veryquick run measures is proven, whatever the cold probe says
         unsteady = "unsteady" if "unsteady" in (largest["state"], writes[-1]["state"]) else "steady"
         self.checks += [plausibility.pla_01(unsteady),
                         plausibility.pla_02(largest["ws_bytes"], cliff, self.budget_limited),
@@ -474,7 +527,7 @@ class Calibrator(Runner):
             self.proof = {}
             inputs: dict[str, Any] = {"rewrite_iops": rewrite, "fresh_iops": self.fvr["fresh_iops"] if fresh_counts else None}
             if self.quick:
-                reasons.append("quick_profile")
+                reasons.append("veryquick_profile" if self.vq else "quick_profile")
             elif "write" not in self.obs:
                 reasons.append("budget_limited")
             else:
@@ -545,7 +598,7 @@ class Calibrator(Runner):
     def fresh_unmeasured_note(self) -> str:
         """The real cause recorded in ``fresh_vs_rewrite.reason`` when it was not measured."""
         if self.quick:
-            return "quick_profile"
+            return "veryquick_profile" if self.vq else "quick_profile"
         if self.fresh_note:
             return self.fresh_note
         status = self.stages.get("fresh-vs-rewrite", "skipped")
@@ -600,7 +653,9 @@ class Calibrator(Runner):
         digest = ceilings.identity_digest(self.identity)
         hist_path = res.paths(self.state_dir)["ceilings"]
         rows, _ = ceilings.load(self.host, hist_path, digest)
-        history = ceilings.summary(rows, self.host.now())
+        now = self.host.now()
+        history = ceilings.summary(rows, now)
+        value_history = ceilings.value_summary(rows, now)
         bps = self.bps_bases()
         shape_doc = self.shape_doc()
         self.checks += [plausibility.pla_11({d: shape_doc["linear_model_fit_by_dir"][d] for d in ("read", "write")})] if self.cells else []
@@ -637,13 +692,25 @@ class Calibrator(Runner):
             "plateau_bps": {f"{d}/rand4k": self.obs[d].steady * 4096 for d in ("read", "write") if d in self.obs},
             "stages": dict(self.stages),
         }
-        props = proposals.build_calibration_proposals(cal, self.cfg.targets, history)
+        rate_status = "pass"
+        if self.vq:
+            wl = a["writes"][-1]
+            p19 = plausibility.pla_19(self.cell_bps("read", "seq", plan.VQ_SEQ_BS), self.cell_bps("write", "seq", plan.VQ_SEQ_BS),
+                                      cache_state=state.state)
+            self.checks.append(p19)
+            rate_status = p19.status
+            cal["coarse_model"] = self.coarse_model()
+            # a burst that ends inside the 30 s series shows; one that outlives it cannot be seen (and no write value is proven either way)
+            cal["veryquick"] = {"series_s": plan.VQ_SERIES_S, "write_burst_seen": wl["state"] != "unsteady" and bool(wl["knee_s"]) and wl["burst_units"] > 0,
+                                "write_knee_s": wl["knee_s"], "write_state": wl["state"]}
+        props = proposals.build_calibration_proposals(cal, self.cfg.targets, value_history)
         props = plausibility.apply_effects(props, self.checks)
         cal["proposals"] = props
         cal["iocost_keys"] = {k: (v["value"] if v["status"] != "absent" else None) for k, v in props["iocost_model"].items()}
         limits = self.final_limits(history)
         run_checks = [c.as_dict() for c in self.checks]
-        quality = {"cache_proof": self.cache_proof(), "limits": limits, "checks": run_checks}
+        quality = {"cache_proof": self.cache_proof(), "limits": limits, "checks": run_checks,
+                   "plausibility": plausibility.verdict(state.state, vq=self.vq, rate_status=rate_status)}
         tgt = dict(proposals.DEFAULT_TARGETS)
         targets = {**self.cfg.targets, "source": "default" if self.cfg.targets == tgt else "operator"}
         writeback = {n: proposals.absent("stage_skipped", r) for n, r in (("dirty_bytes", "R1"), ("dirty_background_bytes", "R1b"),
@@ -661,7 +728,7 @@ class Calibrator(Runner):
     def final_limits(self, history: dict[str, Any]) -> list[str]:
         limits = list(self.limits)
         if self.quick:
-            limits.append("quick-profile")
+            limits.append("very-quick-profile" if self.vq else "quick-profile")
         if any(not p.proven for p in self.proof.values()):
             limits.append("short-observation")
         if history["history"] == "single-run":
@@ -702,16 +769,49 @@ class Calibrator(Runner):
         ts = ceilings.iso(self.host.now())
         plateaus = [{"dir": d, "workload": "rand4k", "plateau_bps": self.obs[d].steady * 4096, "observation_s": self.obs[d].observation_s,
                      "state": self.obs[d].state} for d in ("read", "write") if d in self.obs]
-        for obs in ceilings.run_observations(plateaus, ts):
+        kind = ceilings.TARGET_KIND[self.target.kind]
+        for obs in ceilings.run_observations(plateaus, ts, kind, self.identity["disk"]):
             ceilings.append(self.host, p["ceilings"], obs, digest)
         for group, moved in self.moved.items():
             if moved:
                 for d in ("read", "write"):
-                    ceilings.append(self.host, p["ceilings"], plausibility.shift_observation(ts, d, self.refs[self.ref_tag][d]), digest)
+                    ceilings.append(self.host, p["ceilings"], plausibility.shift_observation(ts, d, self.refs[self.ref_tag][d], kind), digest)
         return Outcome(status, code, message, result, calibration)
 
     # -- the run ---------------------------------------------------------------------------------------------
+    def body_vq(self) -> None:
+        """veryquick (IOB-PRF-03): S0, S1, a short fill, the cold probe, one write series, four cells; no ladder, no S7."""
+        self.s0(need_workdir=False)
+        self.stage("S1", self.s1, required=True)
+        alloc = self.make_plan()
+        self.stage("fill", lambda: self.fill(alloc), required=True)
+        self.stage("E-cold", self.e_cold, min_s=alloc.seconds("E-cold"))
+        self.stage("series", self.series_vq, required=True)
+        self.stage("S6", self.s6_vq, required=True)
+        for stage in ("ladder", "S7"):
+            self.skip(stage, "very-quick-profile")
+        self.analyze()
+
+    def protect_veryquick_state(self) -> None:
+        """Do not let an install-time quick run replace a fuller result in the same state directory."""
+        paths = res.paths(self.state_dir)
+        for name in ("calibration", "result"):
+            path = paths[name]
+            if not self.host.exists(path):
+                continue
+            try:
+                doc = json.loads(self.host.read_text(path))
+                profile = doc["run"]["profile"]
+            except (OSError, ValueError, KeyError, TypeError):
+                profile = None  # an unreadable record is not proof that the directory is safe to replace
+            if profile != "veryquick":
+                raise Refusal("veryquick_state_exists", f"refusing to overwrite {path}; it is not a verified veryquick result",
+                              "use a separate --state-dir for the veryquick calibration")
+
     def body(self) -> None:
+        if self.vq:
+            self.protect_veryquick_state()
+            return self.body_vq()
         self.s0(need_workdir=False)
         self.stage("S1", self.s1, required=True)
         alloc = self.make_plan()

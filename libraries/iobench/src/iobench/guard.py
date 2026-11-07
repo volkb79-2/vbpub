@@ -26,6 +26,22 @@ SIDECAR_SUFFIX = ".iobench-target"
 ROOT_TARGET_FREE_SHARE = 0.10
 WORKDIR_MARK = ".iobench-workdir"
 MIN_WORKDIR_FREE = 4 * GIB
+# These virtual-device serials encode generated IDs or slots, not hardware identity; keep their full families together.
+PLACEHOLDER_DISK_IDENTIFIER_PATTERN = re.compile(
+    r"""
+    (?:
+        | 0
+      | qm\d{5}
+      | qemu\x20harddisk
+      | unknown|none|null|n/a|na|not\x20available|not\x20specified|not\x20set|not\x20provided
+      | unspecified|default|placeholder|tbd|serial\x20number|system\x20serial\x20number
+      | 0123456789|1234567890|to\x20be\x20filled\x20by\x20o\.e\.m\.
+      | vb[0-9a-f]{8}-[0-9a-f]{8}
+      | vdisk\d+
+    )
+    """,
+    re.IGNORECASE | re.ASCII | re.VERBOSE,
+)
 
 
 # -- low-level facts ------------------------------------------------------------
@@ -90,6 +106,86 @@ def disk_attr(host: Host, disk_name: str, rel: str) -> str | None:
     if not host.exists(path):
         return None
     return host.read_text(path).strip() or None
+
+
+def _disk_identifier(value: str | None) -> str | None:
+    """Return a usable disk serial/WWN, treating virtual defaults as weak evidence."""
+    if value is None:
+        return None
+    clean = " ".join(value.split())
+    normalized = clean.casefold()
+    compact = "".join(ch for ch in normalized if ch.isalnum())
+    repeated_pattern = any(len(compact) >= 4 and len(compact) % period == 0
+                          and compact == compact[:period] * (len(compact) // period)
+                          for period in range(1, len(compact) // 2 + 1))
+    if PLACEHOLDER_DISK_IDENTIFIER_PATTERN.fullmatch(normalized) or repeated_pattern:
+        return None
+    return clean or None
+
+
+@dataclass(frozen=True)
+class DiskFacts:
+    """The whole disk behind a target (IOB-CEI-06): what the disk-scope identity is made of."""
+
+    name: str
+    devno: str
+    size_bytes: int
+    model: str | None
+    serial: str | None
+    wwn: str | None
+    scheduler: str | None
+    rotational: str | None
+
+
+def disk_facts(host: Host, name: str) -> DiskFacts:
+    """Facts of the whole disk ``name`` (a ``/sys/class/block`` entry that is not a partition)."""
+    base = f"/sys/class/block/{name}"
+    return DiskFacts(name, host.read_text(base + "/dev").strip(), int(host.read_text(base + "/size")) * 512,
+                     _disk_identifier(disk_attr(host, name, "device/model")), _disk_identifier(disk_attr(host, name, "device/serial")),
+                     _disk_identifier(disk_attr(host, name, "wwid")),
+                     disk_attr(host, name, "queue/scheduler"), disk_attr(host, name, "queue/rotational"))
+
+
+def find_disk(host: Host, *, model: str | None, serial: str | None, wwn: str | None, size_bytes: int, hint: str | None,
+              machine_id_matches: bool = False) -> DiskFacts | None:
+    """The whole disk that matches a stored disk scope without any target path (the throwaway partition may be gone).
+
+    Every stored non-null field must match and the size always must.  ``/sys/block`` lists whole disks only.  Several matches
+    (two identical strong identities) are resolved by the remembered name; a tie that cannot be broken is ``None``, never a guess.
+    A weak stored scope needs its remembered name, caller-confirmed machine-id binding (a null stored hash binds no host), an
+    equal model, and a weak candidate; size alone never identifies it."""
+    weak_scope = serial is None and wwn is None
+    if weak_scope and (hint is None or not machine_id_matches):
+        return None
+    found = []
+    try:
+        names = sorted(host.listdir("/sys/block"))
+    except OSError:
+        return None  # no block devices at all: the disk is gone
+    for name in names:
+        try:
+            facts = disk_facts(host, name)
+        except (OSError, ValueError):
+            continue  # a device that vanished or has no size (an unbound loop device) cannot be the disk
+        if facts.size_bytes != size_bytes:
+            continue
+        if weak_scope:
+            if name != hint or facts.serial is not None or facts.wwn is not None or facts.model != model:
+                continue
+        elif any(want is not None and want != have for want, have in ((model, facts.model), (serial, facts.serial), (wwn, facts.wwn))):
+            continue
+        found.append(facts)
+    if len(found) > 1:
+        found = [f for f in found if f.name == hint]
+    return found[0] if len(found) == 1 else None
+
+
+def backing_disk(host: Host, path: str) -> str | None:
+    """The name of the disk behind the filesystem that holds ``path`` (a file target), ``None`` when no single block device is behind it."""
+    fs = fs_info(host, posixpath.dirname(path))
+    if not host.exists(f"/sys/dev/block/{fs.devno}"):
+        return None
+    return device_chain(host, fs.devno).disk_name
 
 
 @dataclass(frozen=True)
