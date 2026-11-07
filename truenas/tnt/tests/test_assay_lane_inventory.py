@@ -32,3 +32,14 @@ def test_assay_targets_are_exactly_the_modules_with_executable_lines():
         "executable but not listed": sorted(expected - targets),
     }
     assert "src/tnt/__init__.py" not in targets and "src/tnt/tui/__init__.py" not in targets
+
+
+def test_registered_test_lanes_cannot_use_the_local_missing_tmux_opt_out():
+    opt_out = "TNT_TEST_ALLOW_MISSING_TMUX_FOR_LOCAL_DEV"
+    run_gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    for lane in ("r0-r1", "ux-focused"):
+        argv = " ".join(run_gate["lanes"][lane]["argv"])
+        assert f"unset {opt_out}" in argv
+
+    assay = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))
+    assert assay["lanes"]["tnt"]["env"][opt_out] == "0"

@@ -890,8 +890,16 @@ rather than a cockpit pytest command:
 ```sh
 run-gate --list
 run-gate release-preconditions  # focused tests for dry-run gate preconditions
+run-gate survivor-regressions   # s1 regression oracles and first-release Assay target inventory
 run-gate gate
 ```
+
+The survivor lane runs in `tester-unified` and has no release side effects. The
+dry-run image check requires the selected tester image's Run-Gate identity to
+report a non-empty version and a valid wheel SHA-256; an omitted field is a
+failed precondition, not a value to supply as a local fallback. If it fails,
+inspect the selected image identity and rebuild it from the declared
+`tester-unified` definition with the Run-Gate wheel named by the CMRU preflight.
 
 The CMRU aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later.
 `run-gate --version` reports its SemVer; the CMRU gate verifies that it matches

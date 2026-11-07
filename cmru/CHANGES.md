@@ -37,6 +37,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [7.2.3] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=63d38845b3205141aa619556a94621579b492944 -->
+
+### Fixed
+- fix(tester-unified): wait for wheel identity parser (b3ace5dc1)
+- fix(cmru): close first-release gate findings (0e2b0ad23)
+- fix(cmru): close 7.2.2 R2 shard s1 survivors (ef293876b)
+- fix: retirement review round 1 (run-gate CHANGES names the new default host image; gate-image tests guard both the retired and the successor MDT image) (675449f58)
+- fix(run-gate): exec-mode docs and refusals (RG-165, RG-166); cmru KI-126 triage plan (d2a7ff436)
+
+### Changed
+- chore: retire modern-debian-tools-python-debug; mdt-cockpit is its successor (2015c4e00)
+- Merge branch 'rg-167-168-20261105' (1f9b9f829)
+- Merge main into rg-167-168-20261105 (dfdc75226)
+- Merge main into rg-167-168-20261105 (3399c6dcc)
+
+### Documentation
+- docs: sync bootstrap procedure with Run-Gate 25.2.1 (e82c13aa0)
+
+### Testing
+- test(cmru): close shard s1 review findings (3bd4a0fcd)
+
 ## [7.2.2] - 2026-11-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=fc596963b611bad5dc6b7c428fbb00b8a401e7f0 -->
@@ -103,6 +126,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - `tools/local_baseline_facts.py` + `docs/CONSUMERS.md`: how to start the `mutation` lane outside a release (builds `CMRU_ASSAY_BASELINE_FACTS`
   from local `cmru-v*` tags; the R1 pin must equal the selected tag).
+- fix(cmru): close the 56 surviving R2 s1 mutants (KI-129), require complete Run-Gate identity evidence, add hand-discriminating regression oracles, and omit the unmeasurable package initializer from first-release Assay targets.
+- test(cmru): read the estate import oracle's sibling consumer from the judged Git commit so shared COW overlays cannot supply stale source bytes.
+- fix(cmru): keep the strict first-release whole-target coverage lane measurable by importing the tool dependency type at runtime.
 <!-- cmru: pending release notes end -->
 
 ## [7.2.1] - 2026-11-04

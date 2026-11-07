@@ -186,6 +186,30 @@ pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
+# Focused tester-unified lane for R2 survivor regressions and Assay target
+# inventory. Optional selectors after `--` let closeout probes run one oracle.
+[lanes.survivor-regressions]
+kind = "command"
+environment = "tester-unified"
+description = "Run focused CMRU survivor regression oracles."
+accepts_args = true
+argv = [
+  "bash",
+  "-c",
+  '''
+set -euo pipefail
+cd {worktree}/cmru
+export PYTHONPATH="src:../libraries/worktree/src"
+export PYTHONDONTWRITEBYTECODE=1
+if [ "$#" -eq 0 ]; then
+    set -- tests/test_assay_lane_inventory.py tests/test_r2_survivors_s*.py
+fi
+exec nice -n 10 /opt/tester-venv/bin/python -m pytest -q --cli-case-partial "$@"
+''',
+  "--",
+]
+budget = "10m"
+
 # Dedicated ephemeral environment for CMRU's mutation lane. Inheriting the
 # central tester-unified definition preserves its shared image/cgroup policy;
 # this name adds only CMRU-specific release-baseline facts.
