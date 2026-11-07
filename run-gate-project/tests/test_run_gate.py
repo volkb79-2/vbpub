@@ -10406,6 +10406,11 @@ class TestResourceObserverLane:
         "/run/x/ y.sock",
         "/run/x/\ty.sock",
         "/run/x/y.sock\n",
+        "/run/a,b/obs.sock",
+        "/run/a=b/obs.sock",
+        "/run/ü/obs.sock",
+        "/run/．．/obs.sock",
+        "/d/" + "a" * 4094,
     ])
     def test_socket_environment_resolvers_reject_malformed_endpoints(
             self, monkeypatch, variable, resolver, endpoint):
@@ -10632,6 +10637,68 @@ class TestResourceObserverLane:
                 {"mode": "ephemeral", "image": "runner:local"},
                 "fixture", "test.slice", "fixture", dry_run=dry_run,
                 profile_plan={"enabled": False, "disabled_reason": "test"})
+
+    @pytest.mark.parametrize(("variable", "resolver"), [
+        ("CGPROFILE_CONTROL_SOCKET", run_gate.control_socket_from_env),
+        ("CGPROFILE_OBSERVER_SOCKET", run_gate.observer_socket_from_env),
+    ])
+    def test_endpoint_of_the_maximum_length_is_accepted(
+            self, monkeypatch, variable, resolver):
+        endpoint = "/" + "a" * 4095
+        assert len(endpoint) == 4096
+        monkeypatch.setenv(variable, endpoint)
+        # A top-level file name is fine for the control endpoint; the
+        # observer additionally needs a directory below the root.
+        if variable == "CGPROFILE_OBSERVER_SOCKET":
+            endpoint = "/d/" + "a" * 4093
+            monkeypatch.setenv(variable, endpoint)
+        assert resolver() == endpoint
+
+    def test_observer_endpoint_directly_below_the_root_is_refused(
+            self, monkeypatch):
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", "/obs.sock")
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"CGPROFILE_OBSERVER_SOCKET.*filesystem root"):
+            run_gate.observer_socket_from_env()
+        # The control endpoint is never mounted, so the same shape is fine.
+        monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "/ctl.sock")
+        assert run_gate.control_socket_from_env() == "/ctl.sock"
+
+    def test_root_level_observer_socket_never_reaches_a_mount_argv(
+            self, monkeypatch):
+        # Stat is faked so every other preflight passes: the refusal must
+        # come from the filesystem-root rule itself, not a missing file.
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", "/obs.sock")
+        monkeypatch.delenv(run_gate.EXTRA_MOUNT_ENV_VAR, raising=False)
+        self._patch_socket_metadata(
+            monkeypatch, Path("/obs.sock"),
+            control_socket_path="/run/test/control.sock")
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"CGPROFILE_OBSERVER_SOCKET.*filesystem root"):
+            run_gate.resource_observer_docker_flags(
+                {"kind": "assay", "environment": "tester-unified",
+                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_run_gate_sources_hold_no_socket_path_literals(self):
+        # Every string constant (docstrings and f-string parts included) is
+        # scanned: the endpoints come from the environment only. The allowlist
+        # of strings that may mention an old path is explicit and empty.
+        denied = ("/run/cgprofile", "/var/run/cgprofile", "cgprofile.sock",
+                  "cgprofile-observer")
+        allowed: set[tuple[str, str]] = set()
+        offenders = []
+        for name in ("run_gate.py", "run_gate_admission.py",
+                     "run_gate_profile.py"):
+            tree = ast.parse((RUN_GATE_DIR / name).read_text())
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant)
+                        and isinstance(node.value, str)):
+                    for literal in denied:
+                        if (literal in node.value
+                                and (name, node.value) not in allowed):
+                            offenders.append(
+                                (name, node.lineno, literal))
+        assert offenders == []
 
     def test_observer_directory_with_a_colon_is_refused_before_any_mount(
             self, monkeypatch):
@@ -26048,6 +26115,63 @@ class TestContainerProfilingDefensiveBranches:
             lane, "suite", repo, repo, repo,
             {"image": "tester:local"}, "test-env", "dev-background.slice",
             "test", run_record=None, profile_plan=plan) == 0
+
+
+    def test_container_lane_records_the_control_endpoint_with_the_session(
+            self, tmp_path, monkeypatch):
+        # Recovery (re-attach, promoted follower) stops the session on the
+        # endpoint recorded with it, so the container lane's second inflight
+        # write must carry `profile_control_socket` next to `profile_session`.
+        repo = make_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "physical_path", lambda path: path)
+        monkeypatch.setattr(run_gate, "dual_mount_flags",
+                            lambda *args: ["-v", "host:container"])
+        monkeypatch.setattr(run_gate, "git_config_overlay_flags",
+                            lambda *_args, **_kwargs: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *args: None)
+        monkeypatch.setattr(run_gate, "prepare_profile_start",
+                            lambda *args, **kwargs: {"state": "admitted"})
+        monkeypatch.setattr(run_gate, "head_commit", lambda *args: "deadbeef")
+        writes = []
+        monkeypatch.setattr(
+            run_gate, "write_inflight_record",
+            lambda _project, _worktree, _lane, payload:
+            writes.append(dict(payload)))
+        monkeypatch.setattr(run_gate, "container_state",
+                            lambda *args: {"id": "container-id"})
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": None,
+                                "socket_path": "/host/recorded-control.sock",
+                                "session": "s-container",
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None})
+        monkeypatch.setattr(run_gate, "print_profile_warning", lambda *args: None)
+        monkeypatch.setattr(run_gate, "print_host_pressure_line", lambda *args: None)
+        monkeypatch.setattr(run_gate, "print_profile_session_line", lambda *args: None)
+        monkeypatch.setattr(run_gate, "make_progress_watch", lambda *args, **kwargs: None)
+        monkeypatch.setattr(run_gate, "await_container",
+                            lambda *args, **kwargs: 0)
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda argv, *args, **kwargs: subprocess.CompletedProcess(
+                argv, 0, stdout="container-id\n", stderr=""))
+        plan = {"enabled": True, "interval": "1s",
+                "damon": True, "source": "test", "token": "tok"}
+        lane = {"kind": "command", "environment": "tester-unified",
+                "argv": ["true"], "clean_tree": False}
+
+        assert run_gate.run_container_lane(
+            lane, "suite", repo, repo, repo,
+            {"image": "tester:local"}, "test-env", "dev-background.slice",
+            "test", run_record=None, profile_plan=plan) == 0
+
+        assert writes[-1]["profile_session"] == "s-container"
+        assert writes[-1]["profile_control_socket"] == (
+            "/host/recorded-control.sock")
 
 
 class TestBareHostProfilingWiring:
