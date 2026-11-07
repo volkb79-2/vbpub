@@ -241,9 +241,25 @@ def test_observer_guards_use_the_new_paths_and_launcher_docker_gid() -> None:
         (SELF_QUALIFICATION_SCRIPT, ("/workspaces/vbpub", "self-qualification-provisional")),
     ],
 )
-def test_gate_launchers_name_the_missing_environment_endpoint_and_remedy(script, argv) -> None:
+@pytest.mark.parametrize(
+    ("observer_value", "expected_message"),
+    [
+        (None, "is unset or empty"),
+        ("", "is unset or empty"),
+        ("relative/cgprofile.sock", "must be an absolute path"),
+        ("/run/cgprofile,readonly=false/observer.sock", "must be an absolute path"),
+        ("/run/cgprofile/../observer.sock", "must be an absolute path"),
+        ("/run/cg profile/observer.sock", "must be an absolute path"),
+    ],
+)
+def test_gate_launchers_refuse_missing_or_malformed_environment_endpoint(
+    script, argv, observer_value, expected_message
+) -> None:
     env = _host_environ()
-    env.pop("CGPROFILE_OBSERVER_SOCKET")
+    if observer_value is None:
+        env.pop("CGPROFILE_OBSERVER_SOCKET")
+    else:
+        env["CGPROFILE_OBSERVER_SOCKET"] = observer_value
     proc = subprocess.run(
         ["bash", str(script), *argv],
         capture_output=True,
@@ -254,10 +270,21 @@ def test_gate_launchers_name_the_missing_environment_endpoint_and_remedy(script,
     )
 
     assert proc.returncode == 3
-    assert (
-        "CGPROFILE_OBSERVER_SOCKET is unset; log in again, or set -a; "
-        ". /etc/host-endpoints.env, or run cgpd install"
-    ) in proc.stderr
+    assert "CGPROFILE_OBSERVER_SOCKET" in proc.stderr
+    assert expected_message in proc.stderr
+
+
+def test_observer_docs_name_the_separate_run_gate_and_runner_work() -> None:
+    documents = (
+        PROJECT_ROOT / "README.md",
+        PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md",
+        PROJECT_ROOT / "docs" / "CONSUMERS.md",
+    )
+    for document in documents:
+        source = document.read_text(encoding="utf-8")
+        assert "WP-E3" in source, document
+        assert "WP-R1" in source, document
+        assert "Netcup runner" in source, document
 
 
 @pytest.mark.parametrize(

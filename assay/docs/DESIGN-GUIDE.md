@@ -884,14 +884,17 @@ execution counters.
 
 #### Host cgprofile socket endpoints
 
-The host endpoint record owns the socket location; each consumer reads
-`CGPROFILE_OBSERVER_SOCKET` from its process environment. A launcher that
-duplicates the socket path or translates it for a container creates a second
-fact that can silently drift from the service owner. Assay therefore binds the
-endpoint's parent directory read-only at the identical path and passes the same
-socket path as `ASSAY_RESOURCE_OBSERVER_SOCKET`. The observer-enabled Assay
-lanes declare that value as `required-env`, so a missing endpoint refuses
-before the lane command starts. No fixed path or allowlist is needed.
+The host endpoint record owns the socket location. Assay's registered
+launchers read `CGPROFILE_OBSERVER_SOCKET` from their process environment; a
+launcher that duplicates the socket path or translates it for a container
+creates a second fact that can silently drift from the service owner. Assay
+therefore binds the endpoint's parent directory read-only at the identical
+path and passes the same socket path as `ASSAY_RESOURCE_OBSERVER_SOCKET`. The
+observer-enabled Assay lanes declare that value as `required-env`, so a missing
+endpoint refuses before the lane command starts. No fixed path or allowlist is
+needed. Run-Gate's environment reader and lane passthrough are WP-E3; the
+Netcup runner's export is WP-R1. Those caller integrations are separate work
+and are not added here.
 
 The separate control endpoint is never mounted for observation. Assay's host
 launchers do not mount or stat it; Run-Gate carries the control-GID preflight

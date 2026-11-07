@@ -327,12 +327,14 @@ assay exists to close that gap mechanically, not by policy:
   Assay may use the explicitly configured
   `ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint, but only for that hidden-
   ancestor condition; all identity, ancestry, and attribution checks remain
-  fail-closed. Run-Gate's `resource_observer = "cgprofile"` reads the observer
-  endpoint from `CGPROFILE_OBSERVER_SOCKET` and mounts its directory read-only
-  at the same path in the lane. The lane receives that identity path as
-  `ASSAY_RESOURCE_OBSERVER_SOCKET`; Assay's six observer-enabled lanes declare
-  it as required infrastructure, so an unset value is a named error. Launchers
-  do not carry a socket path default. They never mount or stat the separate
+  fail-closed. Assay's host launchers read the observer endpoint from
+  `CGPROFILE_OBSERVER_SOCKET`, mount its directory read-only at the same path,
+  and pass that identity path as `ASSAY_RESOURCE_OBSERVER_SOCKET`. Assay's six
+  observer-enabled lanes declare it as required infrastructure, so an unset
+  value is a named error. Run-Gate's environment reader and lane passthrough
+  are WP-E3; the Netcup runner's export is WP-R1. Those caller integrations are
+  separate work and are not added here. Launchers do not carry a socket path
+  default. They never mount or stat the separate
   control endpoint; Run-Gate carries the control-GID preflight because it opens
   that endpoint for control requests. The observer directory must be `root:root`,
   and launchers read the observer GID from the socket inode. Use the installed

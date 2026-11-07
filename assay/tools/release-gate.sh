@@ -52,12 +52,23 @@ remote_gate="../scripts/netcup/runner/remote-gate.py"
 [[ -f "$remote_gate" ]] \
   || die "remote-gate.py is missing at $remote_gate"
 
+remote_gate_base_env=(
+  -u GITHUB_PUSH_PAT
+  -u GITHUB_TOKEN
+  -u CMRU_GIT_AUTH_TOKEN
+  -u GH_TOKEN
+  -u GH_ENTERPRISE_TOKEN
+  -i
+  "PATH=$PATH"
+  "HOME=$HOME"
+)
+
 if [[ -v REMOTE_GATE_OUT ]]; then
   [[ -n "$REMOTE_GATE_OUT" ]] \
     || die 'REMOTE_GATE_OUT is set but empty'
   remote_out="$REMOTE_GATE_OUT"
 else
-  remote_out="$(python3 - "$remote_gate" <<'PYEOF'
+  remote_out="$(env "${remote_gate_base_env[@]}" python3 - "$remote_gate" <<'PYEOF'
 import importlib.util
 import sys
 
@@ -73,6 +84,21 @@ PYEOF
 )" || die 'cannot read remote-gate.py output-directory default'
   [[ -n "$remote_out" ]] || die 'remote-gate.py returned an empty output-directory default'
 fi
+
+remote_gate_env=(
+  "${remote_gate_base_env[@]}"
+  "REMOTE_GATE_OUT=$remote_out"
+)
+if [[ -v REMOTE_GATE_HOSTS ]]; then
+  remote_gate_env+=("REMOTE_GATE_HOSTS=$REMOTE_GATE_HOSTS")
+fi
+if [[ -n ${SSH_AUTH_SOCK:-} ]]; then
+  remote_gate_env+=("SSH_AUTH_SOCK=$SSH_AUTH_SOCK")
+fi
+
+run_remote_gate() {
+  env "${remote_gate_env[@]}" python3 "$remote_gate" "$@"
+}
 
 # remote-gate bounds run IDs to 61 characters. Seven base-36 UTC epoch-second
 # digits keep the full lane and 12-character commit prefix in that bound.
@@ -99,16 +125,60 @@ print(result.rjust(7, "0"))
 PYEOF
 )" || die 'cannot encode the current UTC time for a remote-gate run ID'
 run_name="assay-rel-${commit:0:12}-${lane}-${utc}"
+run_dir="$remote_out/$run_name"
+remote_gate_pid=""
+remote_gate_launching=false
+pending_signal=""
+pending_signal_status=""
 
-if REMOTE_GATE_OUT="$remote_out" python3 "$remote_gate" run \
+handle_remote_signal() {
+  local signal_name="$1" exit_status="$2" cancel_status
+  if [[ -z "$remote_gate_pid" && "$remote_gate_launching" == true ]]; then
+    pending_signal="$signal_name"
+    pending_signal_status="$exit_status"
+    return 0
+  fi
+
+  trap ':' INT TERM
+  if [[ -n "$remote_gate_pid" ]]; then
+    kill -s "$signal_name" "$remote_gate_pid" 2>/dev/null || true
+  fi
+  if [[ -f "$run_dir/meta.json" ]]; then
+    printf 'assay release-gate: interrupted; attempting to cancel remote run %s\n' \
+      "$run_name" >&2
+    if run_remote_gate cancel "$run_name"; then
+      printf 'assay release-gate: remote cancellation was requested: %s\n' "$run_name" >&2
+    else
+      cancel_status=$?
+      printf 'assay release-gate: cancel attempt for %s failed (exit %s); the host job may remain active\n' \
+        "$run_name" "$cancel_status" >&2
+    fi
+  fi
+  if [[ -n "$remote_gate_pid" ]]; then
+    wait "$remote_gate_pid" 2>/dev/null || true
+  fi
+  exit "$exit_status"
+}
+
+trap 'handle_remote_signal INT 130' INT
+trap 'handle_remote_signal TERM 143' TERM
+
+remote_gate_launching=true
+env "${remote_gate_env[@]}" python3 "$remote_gate" run \
   "$host" "$worktree" "$lane" \
-  --project-dir assay --repo vbpub --name "$run_name"; then
+  --project-dir assay --repo vbpub --name "$run_name" &
+remote_gate_pid=$!
+remote_gate_launching=false
+if [[ -n "$pending_signal" ]]; then
+  handle_remote_signal "$pending_signal" "$pending_signal_status"
+fi
+if wait "$remote_gate_pid"; then
   remote_status=0
 else
   remote_status=$?
 fi
+remote_gate_pid=""
 
-run_dir="$remote_out/$run_name"
 if receipt="$(python3 - "$run_dir/meta.json" "$run_dir/result.json" <<'PYEOF'
 import json
 import re
@@ -141,6 +211,18 @@ PYEOF
   IFS=$'\t' read -r meta_sha verdict lane_status <<<"$receipt"
 else
   if (( remote_status != 0 )); then
+    if [[ -f "$run_dir/meta.json" && ! -f "$run_dir/result.json" ]]; then
+      printf 'assay release-gate: remote-gate exited without a result; attempting to cancel unattended remote run %s\n' \
+        "$run_name" >&2
+      if run_remote_gate cancel "$run_name"; then
+        printf 'assay release-gate: remote run cancellation was requested: %s\n' \
+          "$run_name" >&2
+      else
+        cancel_status=$?
+        printf 'assay release-gate: cancel attempt for %s failed (exit %s); the host job may remain active\n' \
+          "$run_name" "$cancel_status" >&2
+      fi
+    fi
     printf 'assay release-gate: remote-gate produced no valid result for %s (exit %s)\n' \
       "$run_name" "$remote_status" >&2
     exit "$remote_status"

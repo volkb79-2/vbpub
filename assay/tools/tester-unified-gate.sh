@@ -37,7 +37,12 @@ bounded_docker_update_cpu_cap() {
 
 if [[ ${1:-} != "--inner" ]]; then
   [[ -n ${CGPROFILE_OBSERVER_SOCKET:-} ]] \
-    || die 'CGPROFILE_OBSERVER_SOCKET is unset; log in again, or set -a; . /etc/host-endpoints.env, or run cgpd install'
+    || die 'CGPROFILE_OBSERVER_SOCKET is unset or empty; log in again, or set -a; . /etc/host-endpoints.env, or run cgpd install'
+  [[ "$CGPROFILE_OBSERVER_SOCKET" =~ ^/[A-Za-z0-9_./:@+-]+$ ]] \
+    || die 'CGPROFILE_OBSERVER_SOCKET must be an absolute path using only [A-Za-z0-9_./:@+-] and without .. path segments'
+  case "$CGPROFILE_OBSERVER_SOCKET/" in
+    */../*) die 'CGPROFILE_OBSERVER_SOCKET must be an absolute path using only [A-Za-z0-9_./:@+-] and without .. path segments' ;;
+  esac
   RESOURCE_OBSERVER_SOURCE="$CGPROFILE_OBSERVER_SOCKET"
   RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
   RESOURCE_OBSERVER_TARGET_DIRECTORY="$RESOURCE_OBSERVER_DIRECTORY_SOURCE"

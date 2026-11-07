@@ -536,13 +536,13 @@ its local cgroup view. If that view specifically proves ancestors are hidden,
 a caller may explicitly provide `ASSAY_RESOURCE_OBSERVER_SOCKET` for a
 trusted observer-only Unix socket. The endpoint must bind the request to the
 caller's peer credentials and native thread ID, derive the cgroup itself,
-return a complete verified ancestry, and expose no control verbs. Run-Gate's
-`resource_observer = "cgprofile"` option mounts the separate cgprofile
-observer socket read-only, supplies its observed GID, and sets this variable.
-For registered Assay launchers, `CGPROFILE_OBSERVER_SOCKET` is the sole host
-endpoint source. The launcher mounts its parent directory read-only at the
-identical path in the container and passes the same endpoint as
-`ASSAY_RESOURCE_OBSERVER_SOCKET`. The host directory must be `root:root 0755`;
+return a complete verified ancestry, and expose no control verbs. Assay's
+registered launchers read the host endpoint from `CGPROFILE_OBSERVER_SOCKET`,
+mount its parent directory read-only at the identical path, and pass the same
+endpoint as `ASSAY_RESOURCE_OBSERVER_SOCKET`. Run-Gate's environment reader and
+lane passthrough are WP-E3; the Netcup runner's export is WP-R1. Those caller
+integrations are separate work and are not added here. The host directory must
+be `root:root 0755`;
 the socket inode's GID is the observer access group. A missing endpoint fails
 with its variable name and the remedy. There is no translated path, allowlist,
 or old-layout fallback. Never mount the separate control endpoint: a read-only
