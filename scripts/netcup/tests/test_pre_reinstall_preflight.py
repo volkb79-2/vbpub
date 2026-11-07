@@ -556,3 +556,36 @@ def test_wizard_stream_is_visible_live_and_inherits_no_operator_prompt_input(tmp
     assert seen["stdin"] is preflight.subprocess.DEVNULL
     assert seen["stdout"] is preflight.subprocess.PIPE
     assert seen["stderr"] is preflight.subprocess.STDOUT
+
+
+def _ls_remote(monkeypatch, preflight, *, returncode=0, stdout="", stderr=""):
+    import types
+
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(preflight.subprocess, "run", fake_run)
+    return seen
+
+
+def test_current_remote_commit_reads_the_named_branch_head(monkeypatch):
+    preflight = _load_preflight()
+    seen = _ls_remote(monkeypatch, preflight, stdout="b" * 40 + "\trefs/heads/main\n")
+    assert preflight._current_remote_commit("main") == "b" * 40
+    assert seen[0][:2] == ["git", "ls-remote"]
+    assert seen[0][-1] == "refs/heads/main"
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"returncode": 128, "stderr": "network down"},
+    {"stdout": ""},
+    {"stdout": "c" * 40 + "\trefs/heads/other\n"},
+])
+def test_current_remote_commit_refuses_unresolvable_branch(monkeypatch, kwargs):
+    preflight = _load_preflight()
+    _ls_remote(monkeypatch, preflight, **kwargs)
+    with pytest.raises(preflight.PreflightError, match="remote branch commit"):
+        preflight._current_remote_commit("main")
