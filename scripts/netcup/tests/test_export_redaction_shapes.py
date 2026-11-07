@@ -1,4 +1,4 @@
-"""Shape tests for the evidence-export redaction (fix 6, finding N1).
+"""Shape tests for evidence-export redaction and its fail-closed second pass.
 
 Every secret shape the fix-5 review measured as leaking, plus the shapes the
 operator listed, must (a) be redacted by the first pass, (b) be caught by the
@@ -64,6 +64,7 @@ SHAPES = {
     "flag-db-password": f"cmd --db-password={SECRET}\n",
     "flag-client-secret": f"cmd --client-secret {SECRET}\n",
     "flag-token-space": f"--token {SECRET}\n",
+    "flag-passphrase": f"cmd --passphrase {SECRET}\n",
     # camelCase keys, JSON and plain text
     "camel-json-accessToken": f'{{"accessToken": "{SECRET}"}}\n',
     "camel-json-apiToken": f'{{"apiToken": "{SECRET}"}}\n',
@@ -71,6 +72,20 @@ SHAPES = {
     "camel-json-dbPassword": f'{{"dbPassword": "{SECRET}"}}\n',
     "camel-text-dbPassword": f"dbPassword: {SECRET}\n",
     "camel-text-clientSecret": f"clientSecret = {SECRET}\n",
+    "key-passphrase-lower": f"passphrase: {SECRET}\n",
+    "key-passphrase-upper": f"PASSPHRASE={SECRET}\n",
+    "key-dbpass": f"DBPASS={SECRET}\n",
+    "key-rootpass": f"ROOTPASS={SECRET}\n",
+    "key-sshpass": f"SSHPASS={SECRET}\n",
+    "key-pwd": f"PWD={SECRET}\n",
+    "key-presharedkey": f"PresharedKey = {SECRET}\n",
+    "yaml-sequence-at-parent-indent": f"secrets:\n- {SECRET}\nkeep: harmless\n",
+    "yaml-multiword-plain-value": f"password: my secret phrase\n",
+    "netrc-password": f"machine example.invalid login operator password {SECRET}\n",
+    "curl-user-short": f"curl -u operator:{SECRET} https://example.invalid/\n",
+    "curl-user-long": f"curl --user operator:{SECRET} https://example.invalid/\n",
+    "webhook-path-raw": f"https://chat.example/hooks/{SECRET}\n",
+    "webhook-path-key": f"mattermost_webhook_url: https://chat.example/hooks/{SECRET}\n",
     "json-in-list": f'{{"items":[{{"password":"{SECRET}"}}]}}\n',
     "json-secret-in-string": f'{{"note": "token={SECRET}"}}\n',
     # env style
@@ -175,6 +190,41 @@ def test_private_key_block_is_replaced_and_detected():
     cleaned = redaction.redact_text("before\n" + pem + "after\n")
     assert "abc" not in cleaned and redaction.PRIVATE_KEY_MARKER in cleaned
     assert not redaction.has_unredacted(cleaned)
+
+
+@pytest.mark.parametrize(
+    ("shape", "raw"),
+    [
+        ("base64", lambda size: b"A" * size),
+        ("yaml-key-pairs", lambda size: b"a:" * (size // 2)),
+        ("repeated-http-scheme", lambda size: (b"http://" * (size // 7)) + b"x" * (size % 7)),
+        ("spaces", lambda size: b" " * size),
+    ],
+)
+def test_one_megabyte_single_lines_take_the_deterministic_line_cap_path(shape, raw, monkeypatch):
+    size = 1024 * 1024
+    content = raw(size)
+    assert len(content) == size, shape
+
+    class RegexMustNotRun:
+        def sub(self, *_args, **_kwargs):
+            pytest.fail(f"regex scanner ran before the {shape} line cap")
+
+    monkeypatch.setattr(redaction, "PRIVATE_KEY_RE", RegexMustNotRun())
+    with pytest.raises(ValueError, match=r"line exceeds the 65536-byte redaction limit"):
+        redaction.redact_bytes("etc/example/large.txt", content)
+
+
+def test_total_file_budget_rejects_many_short_lines_before_scanning(monkeypatch):
+    content = b"x\n" * (1024 * 1024 // 2 + 1)
+
+    class RegexMustNotRun:
+        def sub(self, *_args, **_kwargs):
+            pytest.fail("regex scanner ran before the total file budget")
+
+    monkeypatch.setattr(redaction, "PRIVATE_KEY_RE", RegexMustNotRun())
+    with pytest.raises(ValueError, match=r"file exceeds the 1048576-byte redaction limit"):
+        redaction.redact_bytes("etc/example/many-lines.txt", content)
 
 
 def test_unredactable_content_is_refused_not_exported(monkeypatch):

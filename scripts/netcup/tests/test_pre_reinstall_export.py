@@ -75,6 +75,25 @@ def test_export_calls_api_guard_before_pinned_ssh_and_checks_remote_identity(tmp
     assert exported == tmp_path / "v1001" / "pre-reinstall-20261107"
 
 
+def test_export_uses_a_real_ssh_timeout_and_reports_timeout_by_name(tmp_path, monkeypatch):
+    exporter = _load_exporter()
+    fake_ssh = tmp_path / "fake-ssh"
+    fake_ssh.write_text("#!/bin/sh\nexec /bin/sleep 30\n", encoding="utf-8")
+    fake_ssh.chmod(0o755)
+    monkeypatch.setattr(exporter, "SSH_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(exporter, "ssh_command", lambda _host: f"exec {fake_ssh}")
+
+    def run_fake_ssh(argv, **kwargs):
+        assert kwargs.get("timeout") == 0.2
+        return subprocess.run(argv, **kwargs)
+
+    with pytest.raises(RuntimeError, match=r"SSH collection timed out after 0\.2 seconds"):
+        exporter.export_snapshot(
+            "v1001", "20261107", root=tmp_path, runner=run_fake_ssh
+        )
+    assert not (tmp_path / "v1001" / "pre-reinstall-20261107").exists()
+
+
 def test_export_redacts_sensitive_values_and_hashes_every_exported_data_file(tmp_path):
     exporter = _load_exporter()
     data = _archive({
@@ -218,6 +237,10 @@ def test_remote_collector_enforces_identity_redaction_scratch_and_size_cap(tmp_p
     )
     (root / "home/runner/mdt-cockpit-runner-home-test").mkdir(parents=True)
     (root / "home/runner/mdt-cockpit-runner-home-test/settings").write_text("safe\n", encoding="utf-8")
+    ssh_dir = root / "home/runner/mdt-cockpit-runner-home-test/.ssh"
+    ssh_dir.mkdir()
+    (ssh_dir / "id_ed25519").write_text("private-key-material\n", encoding="utf-8")
+    (ssh_dir / "authorized_keys").write_text("ssh-ed25519 public-key-material\n", encoding="utf-8")
     (root / "var/lib/iogovmon/state/state.json").write_text('{"state": "ok"}\n', encoding="utf-8")
     (root / "var/lib/iogovmon/scratch/fio.dat").write_bytes(b"scratch-data")
 
@@ -256,6 +279,7 @@ esac
         files = {name: archive.extractfile(name).read() for name in names if archive.getmember(name).isfile()}
     assert "home/runner/mdt-cockpit-runner-config-test/config.ini" in names
     assert "home/runner/mdt-cockpit-runner-home-test/settings" in names
+    assert not any("/.ssh/" in f"/{name}" for name in names)
     assert "etc/ssh/sshd_config" not in names
     for expected_name in (
         "etc/hosts",
@@ -273,6 +297,8 @@ esac
         assert expected_name in names
     assert not any("scratch" in name for name in names)
     notes = files["meta/collection.txt"].decode()
+    assert "id_ed25519" in notes and "authorized_keys" in notes
+    assert "skipped sensitive filename" in notes
     assert "scratch" in notes and "skipped" in notes
     assert "too-large.txt" in notes and "257" in notes and "256" in notes
     all_bytes = b"\n".join(files.values())
