@@ -558,18 +558,30 @@ def test_tgt_08_fresh_fs_alloc_label_and_discard_mount_rule():
     assert on_val == pytest.approx(min(on_fvr["rewrite_iops"], on_fvr["fresh_iops"]), rel=0.02) and on_val < 0.5 * off_val
 
 
-def test_tgt_09_file_kind_labelled_and_history_separate():
+def test_tgt_09_file_kind_labelled_and_history_shared_per_disk():
+    """A file result is labelled ``file`` (``filesystem_layer``), and each of its observations carries the kind ``file``; but the history is
+    the disk's (IOB-CEI-06), so a file observation and a raw one of the same disk share one history and are reported separately."""
     host = file_host()
     out = calibrate(host, target="/bench/target.img", work_dir="/bench/w")
     assert out.result["identity"]["target"]["kind"] == "file" and "filesystem_layer" in out.result["quality"]["limits"]
     rows = host.read_text("/var/lib/iobench/ceilings.jsonl").splitlines()
     digest_file = json.loads(rows[0])["identity_digest"]
+    assert out.result["identity"]["disk_scope"]["name"] == "vda"  # the disk behind the filesystem holding the file
+    file_obs = [json.loads(r) for r in rows[1:]]
+    assert file_obs and {o["kind"] for o in file_obs} == {"file"}
     dev_host = make_host(cache=None)
-    dev_out = calibrate(dev_host)
-    digest_dev = json.loads(dev_host.read_text("/var/lib/iobench/ceilings.jsonl").splitlines()[0])["identity_digest"]
-    assert digest_file != digest_dev
-    # a device-kind history is ignored (with a warning) by a file-kind lookup and vice versa
-    assert ceilings.load(host, "/var/lib/iobench/ceilings.jsonl", digest_dev) == ([], ["history_ignored_identity_differs"])
+    calibrate(dev_host)
+    dev_rows = dev_host.read_text("/var/lib/iobench/ceilings.jsonl").splitlines()
+    assert json.loads(dev_rows[0])["identity_digest"] == digest_file
+    assert {json.loads(r)["kind"] for r in dev_rows[1:]} == {"raw"}
+    # the file host's history, extended with the raw observations of the same disk, is one history whose kinds are reported apart
+    for line in dev_rows[1:]:
+        host.append_line("/var/lib/iobench/ceilings.jsonl", line)
+    merged, warnings = ceilings.load(host, "/var/lib/iobench/ceilings.jsonl", digest_file)
+    assert warnings == [] and {o["kind"] for o in merged} == {"file", "raw"}
+    assert set(ceilings.summary_by_kind(merged, host.now())) == {"file", "raw"}
+    # a history of another disk is ignored with a warning
+    assert ceilings.load(host, "/var/lib/iobench/ceilings.jsonl", "sha256:other") == ([], ["history_ignored_identity_differs"])
 
 
 def test_tgt_10_file_sizing():

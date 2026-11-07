@@ -23,8 +23,8 @@ def test_ref_02_moved_is_finding_not_failure():
     moved = P.compare_group({"A": 100.0, "B": 90.0}, 1000.0, 500.0)
     assert moved["moved"] and moved["reasons"] == ["ceiling_moved"] and moved["finding"] == "reference_shift"
     assert moved["values"] == {"A": 100.0, "B": 90.0}  # both values stay in the evidence
-    obs = P.shift_observation("2026-10-21T04:10:00Z", "write", 21000.0)
-    assert obs["note"] == "reference_shift" and obs["duration_s"] == 15 and obs["plateau_bps"] == 21000.0 * 4096
+    obs = P.shift_observation("2026-10-21T04:10:00Z", "write", 21000.0, "file")
+    assert obs["note"] == "reference_shift" and obs["duration_s"] == 15 and obs["plateau_bps"] == 21000.0 * 4096 and obs["kind"] == "file"
 
 
 def test_pla_01_controlled_wrong():

@@ -33,25 +33,32 @@ def test_extents_remove_touching_the_end_leaves_no_empty_range():
 
 
 # -- ceilings ---------------------------------------------------------------------------------------------------
-IDENT = {"disk": {"devno": "8:1", "partuuid": "p", "size_bytes": 5, "model": "m", "serial": "s", "wwn": "w"}, "target": {"kind": "device"}}
+SCOPE = {"model": "m", "serial": "s", "wwn": "w", "size_bytes": 5, "strength": "strong", "machine_id_hash": None}
+IDENT = {"disk": {"devno": "8:1", "partuuid": "p", "size_bytes": 5}, "target": {"kind": "device"}, "disk_scope": SCOPE}
 
 
-def test_ceilings_identity_digest_is_the_hash_of_the_sorted_key_json():
-    fields = {"devno": "8:1", "kind": "device", "model": "m", "partuuid": "p", "serial": "s", "size_bytes": 5, "wwn": "w"}
-    expected = "sha256:" + hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+def test_ceilings_identity_digest_is_the_hash_of_the_pipe_joined_disk_scope():
+    expected = "sha256:" + hashlib.sha256(b"disk-scope-1|m|s|w|5").hexdigest()
     assert ceilings.identity_digest(IDENT) == expected
+    # a serial-less (weak) disk also binds to its host; absent fields are the empty string
+    weak = {"model": None, "serial": None, "wwn": None, "size_bytes": 9, "strength": "weak", "machine_id_hash": "h"}
+    assert ceilings.scope_key(weak) == "sha256:" + hashlib.sha256(b"disk-scope-1|||" + b"|9|h").hexdigest()
+    assert ceilings.scope_key({**weak, "machine_id_hash": None}) == "sha256:" + hashlib.sha256(b"disk-scope-1|||" + b"|9|").hexdigest()
+    # a strong disk ignores the host hash; the partition, the kind and the device name are never part of it
+    assert ceilings.scope_key({**SCOPE, "machine_id_hash": "x", "name": "vdb"}) == ceilings.identity_digest(IDENT)
+    assert ceilings.identity_digest({**IDENT, "disk": {"devno": "9:9"}, "target": {"kind": "file"}}) == ceilings.identity_digest(IDENT)
 
 
 def test_ceilings_append_writes_sorted_keys_and_rotate_returns_none_for_a_missing_file():
     host = make_host()
-    obs = {"ts": "2026-10-01T00:00:00Z", "dir": "write", "workload": "seq1m", "plateau_bps": 5e8, "duration_s": 60, "source": "benchmark"}
+    obs = {"ts": "2026-10-01T00:00:00Z", "dir": "write", "workload": "seq1m", "plateau_bps": 5e8, "duration_s": 60, "source": "benchmark", "kind": "raw"}
     ceilings.append(host, "/var/lib/iobench/c.jsonl", dict(reversed(list(obs.items()))), "sha256:x")
     assert host.read_text("/var/lib/iobench/c.jsonl").splitlines()[1] == json.dumps(obs, sort_keys=True)
     assert ceilings.rotate_foreign(host, "/var/lib/iobench/none.jsonl", "sha256:x", "t") is None
 
 
 def obs_at(ts, bps=100.0, d="write", w="seq1m", **kw):
-    return {"ts": ts, "dir": d, "workload": w, "plateau_bps": bps, "duration_s": 60, "source": "benchmark", **kw}
+    return {"ts": ts, "dir": d, "workload": w, "plateau_bps": bps, "duration_s": 60, "source": "benchmark", "kind": "raw", **kw}
 
 
 def test_ceilings_summary_window_includes_the_cutoff_instant():
@@ -87,7 +94,7 @@ def test_ceilings_a_shift_of_exactly_the_threshold_is_not_a_shift():
 def test_ceilings_run_observations_keep_a_window_of_exactly_the_minimum_duration():
     plateaus = [{"dir": "write", "workload": "seq1m", "plateau_bps": 1.0, "state": "steady", "observation_s": ceilings.MIN_DURATION_S},
                 {"dir": "write", "workload": "rand4k", "plateau_bps": 1.0, "state": "steady", "observation_s": ceilings.MIN_DURATION_S - 1}]
-    assert [o["workload"] for o in ceilings.run_observations(plateaus, "t")] == ["seq1m"]
+    assert [o["workload"] for o in ceilings.run_observations(plateaus, "t", "raw")] == ["seq1m"]
 
 
 # -- ladder -----------------------------------------------------------------------------------------------------
@@ -327,22 +334,29 @@ def test_result_load_rejects_a_non_object_or_a_document_missing_a_version_key(te
 
 def test_result_identity_strength_follows_serial_or_wwn():
     host = make_host(cache=INVERSION)
-    target = guard.load_target(host, "/dev/vda7")
+    base = "/sys/devices/pci0/block/vda/"
     for serial, wwn, strength in (("S", None, "strong"), (None, "W", "strong"), ("S", "W", "strong"), (None, None, "weak")):
-        ident = res.s0_identity(host, dataclasses.replace(target, serial=serial, wwn=wwn), None)
-        assert ident["identity_strength"] == strength
+        for attr, value in (("device/serial", serial), ("wwid", wwn)):
+            if value is None:
+                host.files.pop(base + attr, None)
+            else:
+                host.put(base + attr, value + "\n")
+        ident = res.s0_identity(host, guard.load_target(host, "/dev/vda7"), None)
+        assert ident["identity_strength"] == strength == ident["disk_scope"]["strength"]
 
 
 def identity(workdir_uuid=None, **disk):
-    return {"disk": {"scheduler": "none", **disk}, "ram_bytes": 1, "kernel": "7.2", "root_source": "/dev/x",
+    return {"target": {"kind": "device", "path": "/dev/x"}, "disk": {"scheduler": "none", **disk}, "ram_bytes": 1, "kernel": "7.2", "root_source": "/dev/x",
             "workdir_fs": None if workdir_uuid is None else {"uuid": workdir_uuid}}
 
 
 def test_result_advisory_warnings_compare_workdir_filesystems_with_either_side_absent():
     assert res.advisory_warnings(identity(), identity(), None, 0) == []
     assert res.advisory_warnings(identity(), identity("u"), None, 0) == ["workdir_fs_changed"]
-    assert res.advisory_warnings(identity("u"), identity(), None, 0) == ["workdir_fs_changed"]
+    # a work dir that is gone after the run has nothing to compare
+    assert res.advisory_warnings(identity("u"), identity(), None, 0) == []
     assert res.advisory_warnings(identity("u"), identity("u"), None, 0) == []
+    assert res.advisory_warnings(identity("u"), identity("v"), None, 0) == ["workdir_fs_changed"]
 
 
 def test_result_advisory_warnings_age_limit_is_strict():
