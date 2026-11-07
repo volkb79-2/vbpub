@@ -306,8 +306,25 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     return registry.build()
 
 
+def _expand_config_test(argv: list[str]) -> list[str]:
+    """``toposd -t [--config PATH]`` is ``toposd config check [--config PATH]``.
+
+    Like ``nginx -t`` it tests the configuration and exits 0 or non-zero, so it can
+    run as an ``ExecStartPre``. ``-t`` takes no other argument; anything else is
+    left to the normal parser, which rejects the unknown flag.
+    """
+    if argv.count("-t") != 1:
+        return argv
+    rest = [word for word in argv if word != "-t"]
+    only_config = rest == [] or (len(rest) == 2 and rest[0] == "--config") or (
+        len(rest) == 1 and rest[0].startswith("--config=")
+    )
+    return ["config", "check", *rest] if only_config else argv
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    return build_cli().run(argv=None if argv is None else list(argv))
+    words = list(sys.argv[1:] if argv is None else argv)
+    return build_cli().run(argv=_expand_config_test(words))
 
 
 if __name__ == "__main__":

@@ -111,7 +111,7 @@ def parse_config(contents: str, *, source: str = "<config>") -> ServiceConfig:
         # docker group membership is root-equivalent; observers join topos-observe instead.
         raise ConfigError(
             "sockets.observe.group must not be docker; add the users who need to observe to "
-            "topos-observe (toposd install --observe-users)"
+            "topos-observe (toposd install --add-user observe=USER)"
         )
 
     raw_mode = raw_observe.get("mode", _DEFAULT_SOCKET_MODE)

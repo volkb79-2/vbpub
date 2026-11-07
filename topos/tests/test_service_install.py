@@ -49,7 +49,7 @@ def _args(**overrides):
         "daemon_lock": None,
         "wheel_source": None,
         "observe_group": None,
-        "observe_users": None,
+        "add_user": None,
         "enable": False,
         "no_enable": False,
         "allow_downgrade": False,
@@ -73,7 +73,7 @@ def _install_args(*, version="0.7.3", enable=True, **overrides):
         "daemon_lock": _pin(version, lock),
         "wheel_source": "https://release.invalid/download",
         "observe_group": "topos-observe",
-        "observe_users": "",
+        "add_user": None,
         "enable": enable,
         "no_enable": not enable,
         "allow_downgrade": False,
@@ -286,7 +286,7 @@ def test_the_docker_group_is_never_an_observe_group(tmp_path: Path, monkeypatch)
 
     # By flag, even though the group exists.
     args, _wheels = _install_args(observe_group="docker", enable=False)
-    with pytest.raises(InstallError, match="observe group must not be docker.*topos-observe.*--observe-users"):
+    with pytest.raises(InstallError, match="observe group must not be docker.*topos-observe.*--add-user observe=USER"):
         install._gather_inputs(args, _runtime(dry_run=True), paths)
 
     # From the install record.
@@ -312,9 +312,12 @@ def test_install_rechecks_a_mapped_group_before_writing_anything(tmp_path: Path,
     args, _wheels = _install_args(observe_group="ops", enable=False)
     calls = []
 
-    def gid(_group: str) -> int | None:
+    def gid(group: str) -> int | None:
+        if group == "docker":
+            return None
         calls.append(None)
-        return 991 if len(calls) == 1 else None
+        # The existence and GID checks in _gather_inputs see the group; the recheck does not.
+        return 991 if len(calls) <= 2 else None
 
     monkeypatch.setattr(install, "_group_gid", gid)
     subject = Installer(paths, run=_fake_run([]), geteuid=lambda: 0)
@@ -322,7 +325,7 @@ def test_install_rechecks_a_mapped_group_before_writing_anything(tmp_path: Path,
     with pytest.raises(InstallError, match="mapped observe group 'ops' does not exist"):
         subject.install(args, _runtime(yes=True))
 
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert not Path(paths.config).exists() and not Path(paths.opt).exists()
 
 
@@ -377,7 +380,7 @@ def test_tty_prompts_resolve_group_users_and_enable(tmp_path: Path, monkeypatch)
 
     args, _wheels = _install_args()
     prompts = Prompts((args.wheel, args.cli_extended_wheel, args.daemon_lock))
-    args.wheel = args.cli_extended_wheel = args.daemon_lock = args.observe_users = None
+    args.wheel = args.cli_extended_wheel = args.daemon_lock = args.add_user = None
     args.observe_group = None
     args.enable = args.no_enable = False
     _groups(monkeypatch, {"ops": 991})
@@ -392,6 +395,88 @@ def test_tty_prompts_resolve_group_users_and_enable(tmp_path: Path, monkeypatch)
     assert values["enable_now"] is True
     assert prompts.defaults == ["create topos-observe"]
     assert [name for name, _message in prompts.calls] == ["text", "text", "text", "select", "text", "text", "confirm"]
+
+
+@pytest.mark.parametrize(
+    ("gids", "reason"),
+    (({"ops": 0}, "GID 0"), ({"ops": 994, "docker": 994}, "the docker group's GID")),
+)
+def test_a_group_with_gid_zero_or_the_docker_gid_is_refused_on_every_path(
+    tmp_path: Path, monkeypatch, gids, reason
+) -> None:
+    paths = InstallPaths(tmp_path)
+    _groups(monkeypatch, gids)
+    commands = []
+    message = f"observe group 'ops' has {reason}"
+
+    # Flag.
+    args, _wheels = _install_args(observe_group="ops", enable=False)
+    with pytest.raises(InstallError, match=message) as caught:
+        install._gather_inputs(args, _runtime(dry_run=True), paths)
+    assert caught.value.exit_code == 2
+
+    # Install record.
+    Path(paths.install_record).parent.mkdir(parents=True)
+    Path(paths.install_record).write_text('observe_group = "ops"\n', encoding="utf-8")
+    args, _wheels = _install_args(observe_group=None, enable=False)
+    with pytest.raises(InstallError, match=message):
+        Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).install(args, _runtime(yes=True))
+    Path(paths.install_record).unlink()
+
+    # Existing config file.
+    Path(paths.config).parent.mkdir(parents=True, exist_ok=True)
+    Path(paths.config).write_text(install._render_config("ops"), encoding="utf-8")
+    with pytest.raises(InstallError, match=message):
+        Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).install(args, _runtime(yes=True))
+
+    # Nothing was written or run.
+    assert commands == [] and not Path(paths.pending).exists() and not os.path.lexists(paths.opt)
+
+
+def test_a_group_with_the_docker_gid_typed_at_the_prompt_is_refused(tmp_path: Path, monkeypatch) -> None:
+    class Prompts:
+        def select(self, _message, choices, **_kwargs):
+            return choices[1]
+
+        def text(self, message, **_kwargs):
+            return "ops" if "Existing group" in message else "unused"
+
+    args, _wheels = _install_args(observe_group=None, enable=False)
+    _groups(monkeypatch, {"ops": 994, "docker": 994})
+
+    with pytest.raises(InstallError, match="observe group 'ops' has the docker group's GID"):
+        install._gather_inputs(args, _runtime(interactive=True, prompts=Prompts()), InstallPaths(tmp_path))
+
+
+def test_add_user_flags_are_repeatable_additive_and_kept_in_the_record(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args(add_user=["observe=alice", "observe=bob"])
+    groups = _groups(monkeypatch)
+    monkeypatch.setattr(install.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    commands = []
+    subject = Installer(paths, run=_fake_run(commands, groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+
+    dry = subject.install(args, _runtime(dry_run=True))
+    assert dry["users_to_add"] == ["alice", "bob"]
+    assert "would add to topos-observe: alice, bob" in install._install_summary(dry)
+
+    body = subject.install(args, _runtime(yes=True))
+    assert body["users_added"] == ["alice", "bob"]
+    assert [c for c in commands if c[0] == "gpasswd"] == [
+        ["gpasswd", "-a", "alice", "topos-observe"], ["gpasswd", "-a", "bob", "topos-observe"],
+    ]
+    assert 'observe_users = ["alice", "bob"]' in Path(paths.install_record).read_text(encoding="utf-8")
+
+    # A rerun without the flag keeps the recorded users; one more flag adds to them.
+    args, _wheels = _install_args(add_user=["observe=carol"])
+    commands.clear()
+    body = subject.install(args, _runtime(yes=True))
+    assert body["users_added"] == ["alice", "bob", "carol"]
+    assert 'observe_users = ["alice", "bob", "carol"]' in Path(paths.install_record).read_text(encoding="utf-8")
+    args, _wheels = _install_args(add_user=None)
+    assert subject.install(args, _runtime(yes=True))["users_added"] == ["alice", "bob", "carol"]
+    assert not any(c[0] == "usermod" for c in commands)
 
 
 def test_typing_docker_at_the_group_prompt_is_refused(tmp_path: Path, monkeypatch) -> None:
@@ -1642,8 +1727,11 @@ def _record(paths: InstallPaths, text: str) -> None:
     ("overrides", "message"),
     (
         ({"wheel": "not-a-pin"}, "--wheel must be"),
-        ({"observe_users": "Bad User"}, "not a usable Unix user name"),
-        ({"observe_users": "ghost"}, "user 'ghost' does not exist"),
+        ({"add_user": ["observe=Bad User"]}, "not a usable Unix user name"),
+        ({"add_user": ["observe=ghost"]}, "user 'ghost' does not exist"),
+        ({"add_user": ["alice"]}, "--add-user takes observe=USER"),
+        ({"add_user": ["control=alice"]}, "--add-user takes observe=USER"),
+        ({"add_user": ["observe="]}, "--add-user takes observe=USER"),
         ({"observe_group": "Bad Group"}, "not a usable observe group name"),
         ({"enable": True, "no_enable": True}, "choose only one of --enable and --no-enable"),
     ),
@@ -1691,7 +1779,7 @@ def test_a_damaged_install_record_is_refused(tmp_path: Path, monkeypatch, record
     paths = InstallPaths(tmp_path)
     _record(paths, record)
     _groups(monkeypatch)
-    args, _wheels = _install_args(observe_group=None, observe_users=None)
+    args, _wheels = _install_args(observe_group=None, add_user=None)
     with pytest.raises(InstallError, match=message):
         install._gather_inputs(args, _runtime(dry_run=True), paths)
 
@@ -1727,7 +1815,7 @@ class _Prompts:
 
 
 def _interactive_args(**overrides):
-    args, _wheels = _install_args(observe_group=None, observe_users=None, **overrides)
+    args, _wheels = _install_args(observe_group=None, add_user=None, **overrides)
     args.enable = args.no_enable = False
     return args
 
@@ -2119,14 +2207,17 @@ def test_install_refuses_when_sysusers_does_not_create_the_group(tmp_path: Path,
 
 def test_install_adds_observe_users_and_restarts_only_what_changed(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
-    args, wheels = _install_args(observe_users="alice")
+    args, wheels = _install_args(add_user=["observe=alice"])
     groups = _groups(monkeypatch)
     monkeypatch.setattr(install.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
     monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
     commands = []
     subject = Installer(paths, run=_fake_run(commands, groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
-    subject.install(args, _runtime(yes=True))
-    assert ["usermod", "-a", "-G", "topos-observe", "alice"] in commands
+    body = subject.install(args, _runtime(yes=True))
+    assert ["gpasswd", "-a", "alice", "topos-observe"] in commands
+    assert not any(command[0] == "usermod" for command in commands)
+    assert body["users_added"] == ["alice"]
+    assert "added to topos-observe: alice (a new login session or a restarted service" in install._install_summary(body)
 
     active = {"topos.service": True, "topos-observe.socket": True}
     socket_unit = Path(paths.unit_dir, "topos-observe.socket")

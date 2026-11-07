@@ -328,6 +328,30 @@ def test_config_check_prints_ok_and_json(tmp_path: Path, capsys: pytest.CaptureF
     assert "config file" in capsys.readouterr().err
 
 
+def test_dash_t_tests_the_config_like_config_check(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from topos.service.cli import _expand_config_test, main
+
+    config_path = _write_config(tmp_path / "toposd.toml")
+    assert main(["-t", "--config", str(config_path)]) == 0
+    assert capsys.readouterr().out == "ok\n"
+    assert main([f"--config={config_path}", "-t"]) == 0
+    assert capsys.readouterr().out == "ok\n"
+    bad = tmp_path / "bad.toml"
+    bad.write_text("[sockets.observe]\ngroup = 'docker'\n", encoding="utf-8")
+    assert main(["-t", "--config", str(bad)]) == 2
+    assert "must not be docker" in capsys.readouterr().err
+    assert main(["-t", "--config", str(tmp_path / "missing.toml")]) == 2
+    capsys.readouterr()
+
+    # -t takes only --config; every other shape is left to the normal parser.
+    assert _expand_config_test(["-t"]) == ["config", "check"]
+    assert _expand_config_test(["-t", "--config", "/x"]) == ["config", "check", "--config", "/x"]
+    assert _expand_config_test(["-t", "run"]) == ["-t", "run"]
+    assert _expand_config_test(["-t", "-t"]) == ["-t", "-t"]
+    assert _expand_config_test(["run", "--config", "/x"]) == ["run", "--config", "/x"]
+    assert main(["-t", "run"]) == 2
+
+
 def test_unit_print_emits_all_files_or_one_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     from topos.service.cli import main
 

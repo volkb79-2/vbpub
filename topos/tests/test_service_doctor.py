@@ -31,11 +31,14 @@ def _config(paths: InstallPaths, group="topos-observe") -> str:
     return str(path)
 
 
-def _group(monkeypatch, mapping):
+def _group(monkeypatch, mapping, members=None):
+    members = members or {}
+    # install.py resolves the docker GID through its own grp import, the same module object.
+
     def getgrnam(name):
         if name not in mapping:
             raise KeyError(name)
-        return SimpleNamespace(gr_name=name, gr_gid=mapping[name])
+        return SimpleNamespace(gr_name=name, gr_gid=mapping[name], gr_mem=list(members.get(name, [])))
 
     monkeypatch.setattr(doctor.grp, "getgrnam", getgrnam)
 
@@ -119,6 +122,50 @@ def test_groups_check_only_requires_the_configured_group(tmp_path: Path, monkeyp
     _group(monkeypatch, {})
     result = doctor._check_groups(_runtime(), _args(tmp_path))
     assert result.status == "fail" and "ops" in result.remedy
+
+
+@pytest.mark.parametrize(("gids", "reason"), (({"ops": 0}, "GID 0"), ({"ops": 994, "docker": 994}, "docker group's GID")))
+def test_groups_check_fails_for_gid_zero_and_the_docker_gid(tmp_path: Path, monkeypatch, gids, reason) -> None:
+    _config(InstallPaths(tmp_path), "ops")
+    _group(monkeypatch, gids)
+
+    result = doctor._check_groups(_runtime(), _args(tmp_path))
+
+    assert result.status == "fail" and reason in result.summary and "dedicated group" in result.remedy
+
+
+def test_groups_check_lists_members_and_warns_about_recorded_users_that_are_not_members(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    _config(paths, "ops")
+    _group(monkeypatch, {"ops": 991, "docker": 994}, {"ops": ["bob", "alice"]})
+
+    result = doctor._check_groups(_runtime(), _args(tmp_path))
+    assert result.status == "ok" and "ops (991): alice, bob" in result.summary
+    assert result.details["members"] == ["alice", "bob"] and result.details["recorded_users"] == []
+
+    Path(paths.install_record).parent.mkdir(parents=True, exist_ok=True)
+    Path(paths.install_record).write_text('observe_users = ["alice", "carol", "dave", 7]\n', encoding="utf-8")
+    monkeypatch.setattr(doctor.pwd, "getpwnam", lambda name: SimpleNamespace(pw_gid=991 if name == "dave" else 1000))
+    result = doctor._check_groups(_runtime(), _args(tmp_path))
+    assert result.status == "warn" and "recorded but not members: carol" in result.summary
+    assert "--add-user observe=USER" in result.remedy
+    assert result.details["recorded_users"] == ["alice", "carol", "dave"]  # dave: primary group, not listed in gr_mem
+
+    # An unknown recorded user is reported rather than crashing the check.
+    monkeypatch.setattr(doctor.pwd, "getpwnam", lambda name: (_ for _ in ()).throw(KeyError(name)))
+    assert "carol" in doctor._check_groups(_runtime(), _args(tmp_path)).summary
+
+    # A damaged record only drops the recorded-user comparison.
+    Path(paths.install_record).write_text("not = [valid\n", encoding="utf-8")
+    result = doctor._check_groups(_runtime(), _args(tmp_path))
+    assert result.status == "ok" and result.details["recorded_users"] == []
+
+    # A group with no members says so.
+    _group(monkeypatch, {"ops": 991})
+    Path(paths.install_record).unlink()
+    assert "no members" in doctor._check_groups(_runtime(), _args(tmp_path)).summary
 
 
 def test_socket_units_check_enabled_and_active(monkeypatch) -> None:

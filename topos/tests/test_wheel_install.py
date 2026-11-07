@@ -25,7 +25,7 @@ def _package_zip(source: Path, package: str, destination: Path) -> Path:
 BOOTSTRAP = r'''
 import grp, runpy, sys, types
 topos_zip, cli_extended_zip, *cli_args = sys.argv[1:]
-grp.getgrnam = lambda name: types.SimpleNamespace(gr_name=name, gr_gid=991)
+grp.getgrnam = lambda name: types.SimpleNamespace(gr_name=name, gr_gid=994 if name == "docker" else 991, gr_mem=[])
 stdlib = [p for p in sys.path if "site-packages" not in p and "dist-packages" not in p]
 sys.path[:] = [topos_zip, cli_extended_zip, *stdlib]
 sys.argv = ["toposd", *cli_args]

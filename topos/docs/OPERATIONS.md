@@ -50,7 +50,7 @@ sudo toposd install --dry-run \
   --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
   --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
-  --observe-users alice --enable
+  --add-user observe=alice --enable
 ```
 
 After reviewing the output, repeat the command with `--yes` and without

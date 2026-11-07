@@ -6,6 +6,7 @@ import argparse
 import grp
 import json
 import os
+import pwd
 import stat
 import subprocess
 from pathlib import Path
@@ -19,8 +20,10 @@ from .install import (
     InstallError,
     InstallPaths,
     _hello,
+    _read_record,
     manual_removal_message,
     old_installation_problems,
+    unsafe_group_reason,
     version_key,
 )
 from .lock import LockError, parse_pin
@@ -109,12 +112,41 @@ def _check_groups(_runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
     assert config is not None
     name = config.sockets.observe.group
     try:
-        gid = grp.getgrnam(name).gr_gid
+        entry = grp.getgrnam(name)
     except KeyError:
         return CheckResult("fail", f"observe group {name!r} does not exist",
                            remedy=f"create group {name!r} or map observe to an existing group "
                                   "(toposd install --observe-group GROUP), then rerun toposd install")
-    return CheckResult("ok", f"observe group {name} exists", details={"group": name, "gid": gid})
+    gid = entry.gr_gid
+    reason = unsafe_group_reason(gid)
+    if reason is not None:
+        return CheckResult("fail", f"observe group {name!r} has {reason} ({gid})",
+                           remedy="map observe to a dedicated group (toposd install --observe-group GROUP, "
+                                  "default topos-observe), then rerun toposd install")
+    members = sorted(entry.gr_mem)
+    details: dict[str, Any] = {"group": name, "gid": gid, "members": members}
+    # Users the install record lists must still be members: a member is never removed by
+    # install, so a missing one was removed by hand or the group was recreated.
+    try:
+        recorded = _read_record(_paths(args).install_record).get("observe_users", [])
+    except InstallError:
+        recorded = []
+    missing = [user for user in recorded if isinstance(user, str) and user not in members
+               and not _has_primary_group(user, gid)]
+    details["recorded_users"] = [user for user in recorded if isinstance(user, str)]
+    shown = ", ".join(members) if members else "no members"
+    if missing:
+        return CheckResult("warn", f"observe group {name} ({gid}): {shown}; recorded but not members: "
+                                   f"{', '.join(missing)}",
+                           remedy="rerun toposd install with --add-user observe=USER for each", details=details)
+    return CheckResult("ok", f"observe group {name} ({gid}): {shown}", details=details)
+
+
+def _has_primary_group(user: str, gid: int) -> bool:
+    try:
+        return pwd.getpwnam(user).pw_gid == gid
+    except KeyError:
+        return False
 
 
 def _run_systemctl(*args: str) -> bool:

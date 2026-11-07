@@ -45,7 +45,9 @@ process also has a systemd-passed listener.
 `toposd unit print [--config PATH] [--unit NAME]` renders the socket, service,
 slice, and sysusers files from the config. `toposd unit check [--config PATH]
 [--root DIR] [--diff]` compares them with installed files. `toposd config check
-[--config PATH] [--json]` validates the service config. `toposd install`,
+[--config PATH] [--json]` validates the service config; `toposd -t [--config
+PATH]` is the same check in the `nginx -t` style (exit 0, or 2 with the error on
+stderr), usable as an `ExecStartPre`. `toposd install`,
 `uninstall`, and `doctor` manage and inspect the host service. The client-side
 `topos daemon status` command remains available for socket and protocol checks.
 The old path `/run/topos/topos.sock` is no longer served, and `topos daemon
@@ -69,21 +71,28 @@ sudo toposd install --dry-run \
   --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
   --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
-  --observe-users alice,bob --enable
+  --add-user observe=alice --add-user observe=bob --enable
 ```
 
 After checking the preview, run the same command with `--yes` and without
 `--dry-run`. On an interactive TTY, the observe-group prompt offers
 `topos-observe` as its default. A non-interactive run must pass
 `--observe-group` (unless an existing config or install record supplies it).
-A mapped group must already exist. The `docker` group is refused as the observe
-group, by the flag, the install record and `toposd.toml` alike (its membership
-is root-equivalent): put operator accounts into `topos-observe` with
-`--observe-users`, or map another dedicated group. A `toposd.toml` that already
-names `docker` is refused even when `--observe-group` is given, so change that
-line by hand first.
-`--observe-users` adds existing users to the chosen group. `--no-enable` writes
-the service files without enabling or starting the socket/service.
+A mapped group must already exist. The observe group is refused, with exit 2 and
+no override, when it is named `docker`, has GID 0, or has the docker group's GID;
+the flag, the install record, `toposd.toml` and the prompt answer are all
+checked before anything changes (its membership would be root-equivalent). Put
+operator accounts into `topos-observe` with `--add-user observe=USER`, or map
+another dedicated group. A `toposd.toml` that already names a refused group is
+refused even when `--observe-group` is given, so change that line by hand first.
+`--add-user observe=USER` (repeatable; `observe` is topos's only level) adds an
+existing user to the observe group with `gpasswd -a` after the group exists.
+Members are only ever added: a rerun without the flag keeps every recorded user,
+a further flag adds to them, and neither install nor uninstall removes a member.
+The result names the users added; a new membership applies to the user's next
+login session or after a service restart, not to running sessions.
+`--no-enable` writes the service files without enabling or starting the
+socket/service.
 
 `toposd install` supports topos 0.7.0 and later; older releases have no
 `toposd` or daemon lock. Installing a version older than the current one needs
@@ -126,7 +135,10 @@ A failure after that point, while units, links and services change, leaves
 
 `toposd doctor [--check NAME] [--json]` runs `config-valid`, `units-current`,
 `groups`, `socket-units`, `socket-nodes`, `socket-dirs`, `state-dir`,
-`service`, `connect`, `foreign-rules`, and `caller-access`. A non-root caller
+`service`, `connect`, `foreign-rules`, and `caller-access`. The `groups` check
+fails when the observe group is missing, has GID 0 or the docker GID, and lists
+the members; it warns when a user recorded in `install.toml` is no longer a
+member. A non-root caller
 without observe-group access gets `skip` for `connect`; checks that cannot
 inspect a root-owned resource report `skip` with `run as root`.
 The `service` check compares the running hello version with the installed

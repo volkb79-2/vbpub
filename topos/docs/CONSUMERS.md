@@ -29,7 +29,7 @@ Install a release with the topos wheel, cli-extended wheel, and daemon lock
 pins. Pins use `<version>@sha256:<64 lowercase hex>`; the daemon-lock version
 must match the topos wheel. Observe access is a group of its own, `topos-observe`
 by default: add every operator account that needs it (login user, runner) with
-`--observe-users`, and give a container the group through its own group setting
+`--add-user observe=USER` (repeatable), and give a container the group through its own group setting
 (a numeric `group_add` of the host gid). The `docker` group is never an observe
 group:
 
@@ -39,13 +39,13 @@ sudo toposd install --dry-run \
   --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
   --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
-  --observe-users alice,bob --enable
+  --add-user observe=alice --add-user observe=bob --enable
 sudo toposd install --yes \
   --wheel 0.7.3@sha256:<topos-wheel-sha256> \
   --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
   --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
-  --observe-users alice,bob --enable
+  --add-user observe=alice --add-user observe=bob --enable
 sudo toposd doctor --json
 topos daemon status
 ```

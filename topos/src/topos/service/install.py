@@ -171,6 +171,36 @@ def _group_gid(name: str) -> int | None:
         return None
 
 
+def unsafe_group_reason(gid: int) -> str | None:
+    """Why an observe group with this GID is refused, or None: GID 0 and the docker GID are root-equivalent."""
+    if gid == 0:
+        return "GID 0"
+    if gid == _group_gid("docker"):
+        return "the docker group's GID"
+    return None
+
+
+def _refuse_unsafe_group(group: str) -> None:
+    gid = _group_gid(group)
+    reason = None if gid is None else unsafe_group_reason(gid)
+    if reason is not None:
+        raise InstallError(
+            f"the observe group {group!r} has {reason} ({gid}); "
+            f"use a dedicated group such as {DEFAULT_OBSERVE_GROUP}"
+        )
+
+
+def _add_user_names(values: Sequence[str] | None) -> list[str]:
+    """User names from repeated --add-user LEVEL=USER values; topos has the one level, observe."""
+    users: list[str] = []
+    for item in values or ():
+        level, separator, user = item.partition("=")
+        if not separator or level != "observe" or not user:
+            raise InstallError(f"--add-user takes observe=USER (the only level is observe); got {item!r}")
+        users.append(user)
+    return users
+
+
 def _toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -667,15 +697,17 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     if group == "docker":
         raise InstallError(
             "the observe group must not be docker (membership is root-equivalent); "
-            f"use {DEFAULT_OBSERVE_GROUP} and add the users with --observe-users"
+            f"use {DEFAULT_OBSERVE_GROUP} and add the users with --add-user observe=USER"
         )
     if _group_gid(group) is None and group != DEFAULT_OBSERVE_GROUP:
         raise InstallError(f"mapped observe group {group!r} does not exist")
+    _refuse_unsafe_group(group)
 
-    users_raw = getattr(args, "observe_users", None)
-    if users_raw is None:
-        users_raw = record.get("observe_users")
-    if users_raw is None and runtime.output.is_interactive and not runtime.dry_run and not runtime.json_mode:
+    # Users from earlier runs stay (members are only ever added); the flag adds more.
+    flag_users = _add_user_names(getattr(args, "add_user", None))
+    users_raw = record.get("observe_users")
+    if users_raw is None and not flag_users and runtime.output.is_interactive and not runtime.dry_run \
+            and not runtime.json_mode:
         try:
             users_raw = runtime.prompts.text(
                 "Users to add to the observe group (comma-separated)", default="", required=False
@@ -688,7 +720,7 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         raw_users = users_raw
     else:
         raw_users = _parse_words(str(users_raw or ""))
-    users = _validate_users(raw_users)
+    users = _validate_users([*raw_users, *flag_users])
 
     if getattr(args, "enable", False) and getattr(args, "no_enable", False):
         raise InstallError("choose only one of --enable and --no-enable")
@@ -1048,6 +1080,7 @@ class Installer:
         values["observe_group"] = config.sockets.observe.group
         if _group_gid(values["observe_group"]) is None and values["observe_group"] != DEFAULT_OBSERVE_GROUP:
             raise InstallError(f"mapped observe group {values['observe_group']!r} does not exist")
+        _refuse_unsafe_group(values["observe_group"])
         # A new file is created, not edited: only an existing file can have changes.
         config_changes = ["sockets.observe.group"] if config_changed and config_existed else []
         rendered = render_units(config)
@@ -1059,6 +1092,7 @@ class Installer:
                 "config": self.paths.config,
                 "observe_group": values["observe_group"],
                 "config_changes": config_changes,
+                "users_to_add": values["observe_users"],
                 "resources": sorted(rendered),
                 "downgrade": downgrade,
                 "enabled": values["enable_now"],
@@ -1125,8 +1159,9 @@ class Installer:
         record_text = _render_record(record)
         # PENDING makes this complete record a recoverable failed first install.
         _atomic_write(self.paths.install_record, record_text)
+        # Members are only ever added: install and uninstall never remove one.
         for user in values["observe_users"]:
-            self._command(["usermod", "-a", "-G", values["observe_group"], user], timeout=30)
+            self._command(["gpasswd", "-a", user, values["observe_group"]], timeout=30)
 
         # A re-apply over an earlier PENDING compares against files the failed
         # attempt already wrote, so drift is invisible: reload and restart anyway.
@@ -1168,6 +1203,7 @@ class Installer:
             "observe_group": values["observe_group"],
             "config_changes": config_changes,
             "config_changed": config_changed,
+            "users_added": values["observe_users"],
             "resources_changed": sorted(name for name, changed in resource_changed.items() if changed),
             "pruned": removed,
             "enabled": values["enable_now"],
@@ -1449,7 +1485,7 @@ class Installer:
 
 def _handler_paths(args: argparse.Namespace, runtime: CliRuntime) -> InstallPaths:
     root = getattr(args, "root", "/")
-    # systemctl, systemd-sysusers and usermod always act on the live host, so a
+    # systemctl, systemd-sysusers and gpasswd always act on the live host, so a
     # staging root is only safe for a dry run.
     if os.fspath(root) != "/" and not runtime.dry_run:
         raise CliFailure("--root is only valid with --dry-run", exit_code=2)
@@ -1503,6 +1539,13 @@ def _install_summary(body: Mapping[str, Any]) -> str:
         summary = f"topos {body['version']} installed; {changed}; enabled={body['enabled']}"
     if body.get("config_changes"):
         summary += f"; set sockets.observe.group = {body['observe_group']} in {body['config']}"
+    if body.get("dry_run") and body.get("users_to_add"):
+        summary += f"; would add to {body['observe_group']}: {', '.join(body['users_to_add'])}"
+    if body.get("users_added"):
+        summary += (
+            f"; added to {body['observe_group']}: {', '.join(body['users_added'])} "
+            "(a new login session or a restarted service picks up the membership)"
+        )
     return summary
 
 
@@ -1529,8 +1572,8 @@ def register_install(registry: CliRegistry) -> None:
                    group="WHEELS", metavar="SOURCE"),
         OptionSpec(("--observe-group",), "create topos-observe or map observe access to an existing group (never docker)",
                    group="ACCESS", metavar="GROUP"),
-        OptionSpec(("--observe-users",), "comma-separated existing users to add to the observe group",
-                   group="ACCESS", metavar="USERS"),
+        OptionSpec(("--add-user",), "add an existing user to the observe group (repeatable; members are never removed)",
+                   group="ACCESS", metavar="LEVEL=USER", parser_kwargs={"action": "append", "default": None}),
         OptionSpec(("--enable",), "enable and start the installed service", group="SERVICE",
                    parser_kwargs={"action": "store_true"}),
         OptionSpec(("--no-enable",), "install resources without enabling or starting topos", group="SERVICE",
@@ -1552,7 +1595,7 @@ def register_install(registry: CliRegistry) -> None:
             handler=_install_handler,
             examples=(
                 "toposd install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... --daemon-lock VERSION@sha256:... --enable",
-                "toposd install --wheel-source ./wheels --observe-users alice,bob --no-enable --yes",
+                "toposd install --wheel-source ./wheels --add-user observe=alice --add-user observe=bob --no-enable --yes",
             ),
         )
     )
