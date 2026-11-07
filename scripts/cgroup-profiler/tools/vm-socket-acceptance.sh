@@ -7,12 +7,15 @@
 #
 #   run-vm-harness.sh copy  RUN scripts/cgroup-profiler/tools  /root/tools
 #   run-vm-harness.sh copy  RUN <wheel directory>              /root/wheels
-#   run-vm-harness.sh ssh   RUN -- sudo env CGPROFILE_PIN=... CLI_EXTENDED_PIN=... \
+#   run-vm-harness.sh ssh   RUN -- sudo env CGP_DISPOSABLE_GUEST=yes CGPROFILE_PIN=... CLI_EXTENDED_PIN=... \
 #       bash /root/tools/vm-socket-acceptance.sh clean-guest
-#   (on the SECOND guest, seeded by `seed-old-layout` below)
-#   run-vm-harness.sh ssh   RUN2 -- sudo env CGPROFILE_PIN=... CLI_EXTENDED_PIN=... \
+#   (on a SECOND fresh guest; the script seeds the old host-setup files itself)
+#   run-vm-harness.sh ssh   RUN2 -- sudo env CGP_DISPOSABLE_GUEST=yes CGPROFILE_PIN=... CLI_EXTENDED_PIN=... \
 #       bash /root/tools/vm-socket-acceptance.sh old-layout-guest
 #
+# Guard: a VM is not enough (the live netcup hosts are VMs). It refuses unless
+# CGP_DISPOSABLE_GUEST=yes is set, the guest is a run-vm-harness guest (hostname vbpub-test,
+# user tester) and cgprofile is not installed or running yet; see need_guest.
 # Required environment: CGPROFILE_PIN and CLI_EXTENDED_PIN (<version>@sha256:<hex>).
 # Optional: WHEELS (default /root/wheels), OLD_WHEEL_PIN (an older cgprofile pin that exists
 # in WHEELS, for the real --allow-downgrade rollback), CONTROL_USER (default root).
@@ -41,9 +44,28 @@ expect_exit() {  # expect_exit CODE "description" command...
 }
 inode() { stat -c %i "$1"; }
 
+refuse() { echo "refusing: $1" >&2; exit 2; }
+
+# A VM is NOT proof of a disposable guest: the live netcup hosts are VMs too. This script
+# installs and removes the whole service and, in old-layout-guest, deletes /opt/cgprofile,
+# /run/cgprofile and /etc/cgprofile, so it runs only where ALL of these hold:
+#   - root, a VM, and the explicit opt-in CGP_DISPOSABLE_GUEST=yes on the command line;
+#   - a guest created by run-vm-harness.sh (vmctl's cloud-init gives it the hostname
+#     vbpub-test and the user tester);
+#   - nothing of cgprofile is installed or running yet (checked before anything is seeded).
+# CGP_TEST_ROOT only prefixes the path checks, for the guard's own tests.
 need_guest() {
+    local root="${CGP_TEST_ROOT:-}"
     [ "$(id -u)" -eq 0 ] || { echo "run as root inside the guest" >&2; exit 2; }
-    systemd-detect-virt --vm >/dev/null 2>&1 || { echo "refusing to run outside a VM" >&2; exit 2; }
+    [ "${CGP_DISPOSABLE_GUEST:-}" = yes ] || refuse "set CGP_DISPOSABLE_GUEST=yes to confirm this is a disposable run-vm-harness guest"
+    systemd-detect-virt --vm >/dev/null 2>&1 || refuse "not a VM"
+    [ "$(hostname)" = vbpub-test ] && id tester >/dev/null 2>&1 \
+        || refuse "this is not a run-vm-harness guest (hostname vbpub-test and user tester expected)"
+    local path
+    for path in /opt/cgprofile /etc/cgprofile /etc/systemd/system/cgpd.service /run/cgprofile; do
+        [ ! -e "$root$path" ] && [ ! -L "$root$path" ] || refuse "$path already exists: cgprofile is installed here, this is not a fresh disposable guest"
+    done
+    ! systemctl is-active --quiet cgpd.service || refuse "cgpd.service is running: this is not a fresh disposable guest"
     : "${CGPROFILE_PIN:?set CGPROFILE_PIN}" "${CLI_EXTENDED_PIN:?set CLI_EXTENDED_PIN}"
 }
 
@@ -198,9 +220,11 @@ old_layout_guest() {
     expect_exit 2 "uninstall refuses before changing anything" bootstrap uninstall --yes
     check "the seeded files are untouched" bash -c "[ -f /etc/tmpfiles.d/mdt-cgprofile.conf ] && [ -f /opt/cgprofile/2.1.0/MANIFEST ]"
     CASE="6 P-11 after manual removal"
+    # Only what seed_old_layout wrote may be removed: its marker proves this run created it.
+    [ -f /opt/cgprofile/.vm-acceptance-seed ] || refuse "the seed marker is missing; not deleting /opt/cgprofile"
     rm -f /etc/tmpfiles.d/mdt-cgprofile.conf /etc/tmpfiles.d/mdt-cgprofile-observer.conf \
-        /etc/sysusers.d/mdt-cgprofile.conf /etc/systemd/system/cgpd.service /etc/systemd/system/cgprofile.slice
-    rm -rf /opt/cgprofile /run/cgprofile /etc/cgprofile /etc/systemd/system/cgpd.service.d
+        /etc/sysusers.d/mdt-cgprofile.conf
+    rm -rf /opt/cgprofile /run/cgprofile /etc/cgprofile
     systemctl daemon-reload
     expect_exit 0 "fresh install succeeds once the old files are removed" bootstrap install "${install_flags[@]}"
 }
@@ -212,14 +236,16 @@ seed_old_layout() {
     printf 'g cgprofile-observer - - -\n' >/etc/sysusers.d/mdt-cgprofile.conf
     printf 'ctl_socket = "/run/cgprofile/ctl.sock"\n' >/etc/cgprofile/cgpd.toml
     printf 'installer=mdt host-setup (MDT-055)\n' >/opt/cgprofile/2.1.0/MANIFEST
+    printf 'seeded by vm-socket-acceptance.sh\n' >/opt/cgprofile/.vm-acceptance-seed
     chmod 0770 /run/cgprofile
 }
 
 mode="${1:-}"
 case "$mode" in
+    guard-check) need_guest; echo "guard ok: this looks like a fresh disposable run-vm-harness guest" ;;
     clean-guest) need_guest; clean_guest ;;
     old-layout-guest) need_guest; old_layout_guest ;;
-    *) echo "usage: $0 clean-guest | old-layout-guest" >&2; exit 2 ;;
+    *) echo "usage: $0 guard-check | clean-guest | old-layout-guest" >&2; exit 2 ;;
 esac
 echo
 if [ "$FAILED" -eq 0 ]; then echo "ALL PASS"; else echo "$FAILED FAILED"; exit 1; fi

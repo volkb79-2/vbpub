@@ -48,6 +48,62 @@ def test_the_uninstall_cases_cover_the_review_additions():
     assert "systemctl enable cgprofile.slice" in text
 
 
+def _guard_run(tmp_path, mode="guard-check", *, opt_in="yes", hostname="vbpub-test", tester=True, vm=True,
+               service_active=False, existing=()):
+    """Run the script with stub id/hostname/systemd-detect-virt/systemctl and a fake root."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    stubs = {
+        "id": f'#!/bin/sh\nif [ "$1" = -u ]; then echo 0; else exit {0 if tester else 1}; fi\n',
+        "hostname": f"#!/bin/sh\necho {hostname}\n",
+        "systemd-detect-virt": f"#!/bin/sh\nexit {0 if vm else 1}\n",
+        "systemctl": f"#!/bin/sh\nexit {0 if service_active else 3}\n",
+    }
+    for name, body in stubs.items():
+        (bin_dir / name).write_text(body, encoding="utf-8")
+        (bin_dir / name).chmod(0o755)
+    root = tmp_path / "root"
+    root.mkdir(exist_ok=True)
+    for path in existing:
+        (root / path.lstrip("/")).mkdir(parents=True, exist_ok=True)
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "CGP_TEST_ROOT": str(root),
+           "CGPROFILE_PIN": "2.2.0@sha256:" + "a" * 64, "CLI_EXTENDED_PIN": "0.5.1@sha256:" + "b" * 64}
+    if opt_in:
+        env["CGP_DISPOSABLE_GUEST"] = opt_in
+    return subprocess.run(["bash", str(SCRIPT), mode], capture_output=True, text=True, env=env, check=False)
+
+
+def test_the_guard_passes_only_on_a_fresh_harness_guest(tmp_path):
+    result = _guard_run(tmp_path)
+    assert result.returncode == 0 and "guard ok" in result.stdout
+
+
+@pytest.mark.parametrize("kwargs, message", [
+    ({"opt_in": ""}, "CGP_DISPOSABLE_GUEST=yes"),
+    ({"opt_in": "1"}, "CGP_DISPOSABLE_GUEST=yes"),
+    ({"vm": False}, "not a VM"),
+    ({"hostname": "r1002"}, "not a run-vm-harness guest"),
+    ({"tester": False}, "not a run-vm-harness guest"),
+    ({"existing": ["/opt/cgprofile"]}, "/opt/cgprofile already exists"),
+    ({"existing": ["/etc/cgprofile"]}, "/etc/cgprofile already exists"),
+    ({"existing": ["/run/cgprofile"]}, "/run/cgprofile already exists"),
+    ({"existing": ["/etc/systemd/system/cgpd.service"]}, "cgpd.service already exists"),
+    ({"service_active": True}, "cgpd.service is running"),
+])
+@pytest.mark.parametrize("mode", ["guard-check", "clean-guest", "old-layout-guest"])
+def test_every_mode_refuses_on_a_real_host_look_alike(tmp_path, mode, kwargs, message):
+    result = _guard_run(tmp_path, mode, **kwargs)
+    assert result.returncode == 2 and message in result.stderr
+    assert "PASS" not in result.stdout and "FAIL" not in result.stdout  # no case ran
+
+
+def test_the_destructive_removal_needs_the_seed_marker_the_script_writes_itself():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert text.index("vm-acceptance-seed ] || refuse") < text.index("rm -rf /opt/cgprofile /run/cgprofile /etc/cgprofile")
+    assert "printf 'seeded by vm-socket-acceptance.sh" in text
+    assert text.count("rm -rf") == 1  # the only recursive delete, behind the marker
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="the refusal under test is the non-root one")
 def test_it_refuses_to_run_without_root_so_a_host_is_never_touched(tmp_path):
     result = subprocess.run(["bash", str(SCRIPT), "clean-guest"], capture_output=True, text=True,
