@@ -303,6 +303,7 @@ class DaemonApi:
     health_registry: ComponentHealthRegistry | None = None
     audit_log: AuditLog = field(default_factory=AuditLog)
     identity_name: str = "topos-daemon"
+    socket_activation: dict[str, str | int] | None = None
 
     # -- public entry point --
 
@@ -404,7 +405,7 @@ class DaemonApi:
         raise _ApiError(ErrorCode.UNKNOWN_OP, f"unknown op: {op}")
 
     def _op_hello(self) -> dict[str, Any]:
-        return {
+        reply = {
             "protocol_versions": list(PROTOCOL_VERSIONS),
             "capabilities": list(CAPABILITIES),
             "identity": {
@@ -420,6 +421,9 @@ class DaemonApi:
                 "history_capacity": self.broker.history_capacity(),
             },
         }
+        if self.socket_activation is not None:
+            reply["socket_activation"] = dict(self.socket_activation)
+        return reply
 
     def _op_current(self) -> dict[str, Any]:
         try:

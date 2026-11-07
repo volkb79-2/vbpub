@@ -299,7 +299,12 @@ duplicating registry prose.
 ### Read-only ops
 
 - `hello` — protocol version(s), capabilities, daemon identity, and current
-  limits (max request bytes, max response items, history capacity).
+  limits (max request bytes, max response items, history capacity). A daemon
+  started through `run_daemon` additively reports
+  `socket_activation: {mode, listeners}`: `mode` is `activated` when a
+  systemd-passed listener was supplied and `self-bind` otherwise;
+  `listeners` counts the supplied listeners. A directly constructed `DaemonApi`
+  may omit this field.
 - `current` — latest atomic `(sequence, frame)` plus `metrics_meta`.
 - `history` — bounded by sequence cursor OR by time window (`since_ts`
   inclusive, `until_ts` exclusive); each form returns explicit

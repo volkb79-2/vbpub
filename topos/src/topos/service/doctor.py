@@ -314,6 +314,18 @@ def _check_service(_runtime: CliRuntime, args: argparse.Namespace) -> CheckResul
     if running != installed:
         return CheckResult("fail", f"topos reports {running}, current points to {installed}",
                            remedy="restart topos.service so it runs the installed version")
+    activation = hello.get("socket_activation")
+    if (
+        not isinstance(activation, dict)
+        or activation.get("mode") != "activated"
+        or type(activation.get("listeners")) is not int
+        or activation.get("listeners") != 1
+    ):
+        return CheckResult(
+            "fail",
+            "topos.service was not started by topos-observe.socket with exactly one listener",
+            remedy="topos.service was not started by topos-observe.socket; run systemctl restart topos-observe.socket",
+        )
     return CheckResult("ok", f"topos.service is active at version {installed}", details={"version": installed})
 
 

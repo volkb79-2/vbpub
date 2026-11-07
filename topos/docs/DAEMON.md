@@ -121,6 +121,10 @@ A failure after that point, while units, links and services change, leaves
 `service`, `connect`, `foreign-rules`, and `caller-access`. A non-root caller
 without observe-group access gets `skip` for `connect`; checks that cannot
 inspect a root-owned resource report `skip` with `run as root`.
+The `service` check compares the running hello version with the installed
+version and requires `socket_activation.mode = "activated"` with exactly one
+listener. If the daemon is self-bound or is an older daemon without this hello
+field, the remedy is `systemctl restart topos-observe.socket`.
 
 ```bash
 toposd doctor --json

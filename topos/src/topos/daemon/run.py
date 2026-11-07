@@ -93,6 +93,10 @@ def run_daemon(
         broker,
         limits=ApiLimits(history_capacity=history_size),
         health_registry=health_registry,
+        socket_activation={
+            "mode": "activated" if listener is not None else "self-bind",
+            "listeners": 1 if listener is not None else 0,
+        },
     )
 
     try:

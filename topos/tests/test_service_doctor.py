@@ -217,7 +217,11 @@ def test_service_check_requires_active_installed_version_and_access(tmp_path: Pa
     Path(paths.install_record).write_text('wheel = "0.7.3@sha256:' + "a" * 64 + '"\n', encoding="utf-8")
     _group(monkeypatch, {"topos-observe": 991})
     monkeypatch.setattr(doctor, "_run_systemctl", lambda *_args: True)
-    monkeypatch.setattr(doctor, "_hello", lambda _path: {"identity": {"version": "0.7.3"}})
+    activated_hello = {
+        "identity": {"version": "0.7.3"},
+        "socket_activation": {"mode": "activated", "listeners": 1},
+    }
+    monkeypatch.setattr(doctor, "_hello", lambda _path: activated_hello)
     monkeypatch.setattr(doctor.os, "geteuid", lambda: 0)
     assert doctor._check_service(_runtime(), _args(tmp_path)).status == "ok"
     Path(paths.install_record).write_text('wheel = "0.7.2@sha256:' + "a" * 64 + '"\n', encoding="utf-8")
@@ -226,6 +230,16 @@ def test_service_check_requires_active_installed_version_and_access(tmp_path: Pa
     Path(paths.install_record).write_text('wheel = "0.7.3@sha256:' + "a" * 64 + '"\n', encoding="utf-8")
     monkeypatch.setattr(doctor, "_hello", lambda _path: {"identity": {"version": "0.7.2"}})
     assert doctor._check_service(_runtime(), _args(tmp_path)).status == "fail"
+    expected_remedy = "topos.service was not started by topos-observe.socket; run systemctl restart topos-observe.socket"
+    for reply in (
+        {"identity": {"version": "0.7.3"}, "socket_activation": {"mode": "self-bind", "listeners": 0}},
+        {"identity": {"version": "0.7.3"}},
+        {"identity": {"version": "0.7.3"}, "socket_activation": {"mode": "activated", "listeners": 2}},
+        {"identity": {"version": "0.7.3"}, "socket_activation": {"mode": "activated", "listeners": True}},
+    ):
+        monkeypatch.setattr(doctor, "_hello", lambda _path, reply=reply: reply)
+        result = doctor._check_service(_runtime(), _args(tmp_path))
+        assert result.status == "fail" and result.remedy == expected_remedy
     monkeypatch.setattr(doctor, "_run_systemctl", lambda *_args: False)
     assert doctor._check_service(_runtime(), _args(tmp_path)).status == "fail"
 
