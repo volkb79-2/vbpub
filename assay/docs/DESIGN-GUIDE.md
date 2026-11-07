@@ -882,17 +882,23 @@ record's outer shape. The v15 verdict shape adds B145's execution evidence
 only to native outcomes; ingested mutation reports do not claim local
 execution counters.
 
-#### Host cgprofile socket cutover
+#### Host cgprofile socket endpoints
 
-Assay's tester launchers consume the observer socket from
-`/run/cgprofile/observer/cgprofile.sock` and bind its directory read-only at
-`/run/cgprofile-observer`. The host basename stays intact, so the
-`ASSAY_RESOURCE_OBSERVER_SOCKET` endpoint is
-`/run/cgprofile-observer/cgprofile.sock`. The control endpoint stays at
-`/run/cgprofile/control/cgprofile.sock` and is never mounted for observation.
-Assay's host launchers do not mount or stat the control socket; Run-Gate carries
-the control-GID preflight because Run-Gate opens that endpoint for control
-requests.
+The host endpoint record owns the socket location. Assay's registered
+launchers read `CGPROFILE_OBSERVER_SOCKET` from their process environment; a
+launcher that duplicates the socket path or translates it for a container
+creates a second fact that can silently drift from the service owner. Assay
+therefore binds the endpoint's parent directory read-only at the identical
+path and passes the same socket path as `ASSAY_RESOURCE_OBSERVER_SOCKET`. The
+observer-enabled Assay lanes declare that value as `required-env`, so a missing
+endpoint refuses before the lane command starts. No fixed path or allowlist is
+needed. Run-Gate's environment reader and lane passthrough are WP-E3; the
+Netcup runner's export is WP-R1. Those caller integrations are separate work
+and are not added here.
+
+The separate control endpoint is never mounted for observation. Assay's host
+launchers do not mount or stat it; Run-Gate carries the control-GID preflight
+because Run-Gate opens that endpoint for control requests.
 
 Systemd owns the per-level directories as `root:root`; the socket file's GID
 grants access. Assay's observer launch guard verifies uid 0, gid 0, and a safe
@@ -902,13 +908,23 @@ inode. The launch guard reads the host Docker GID from the strict
 host-setup. Each selected value must be a positive decimal GID, and a malformed
 override refuses instead of falling through. The Docker API socket's GID is
 not an authority for the host Docker group: a proxy or relay may use a separate
-access group. `/run/cgprofile` and the observer directory are not GID sources
-either; the level directories are `root:root 0755`. The observer socket GID
+access group. The endpoint directory is not a GID source; the level
+directories are `root:root 0755`. The observer socket GID
 must be nonzero and different from Docker. Run-Gate also requires the observer
-and control socket GIDs to differ.
-These clients use the new paths only. A host still on the earlier layout needs
-its socket cutover before using the updated Assay or Run-Gate release, so its
-existing pins stay in place until that host is switched.
+and control socket GIDs to differ. Updated clients have no fallback for an
+earlier socket layout.
+
+#### Assay release gate delegation
+
+CMRU keeps its release transaction on the controller so signing, tagging,
+building, publishing and credentials remain there. Only the two Assay gate
+commands move to the selected cut-over test host, which is the fastest path to
+reuse the host's registered Run-Gate lane and tester environment without
+moving the release workflow. `tools/release-gate.sh` uses the existing
+`remote-gate.py` bundle path, runs attached, and accepts the result only when
+the runner's `meta.json` SHA matches `CMRU_RELEASE_GATE_COMMIT` and
+`result.json` says `PASS`. A failed lane keeps its own exit code; a mismatched
+commit is an infrastructure refusal.
 
 #### Native R2 cgroup observation (B148/A-494)
 
@@ -2976,7 +2992,7 @@ The R2 waiver is a version-bounded release decision, not a substitute for an
 R2 result. CMRU runs Assay's `run-tests` step in its isolated release
 transaction after preparing the dated `CHANGES.md` heading and before creating
 the release tag. The step runs the ordinary self-hosted release gate, then
-`run-gate self-qualification-provisional`: full-source R0 and R1 (100% whole-
+the `self-qualification-provisional` Run-Gate lane: full-source R0 and R1 (100% whole-
 target line and branch coverage) plus the R3 canary, with R2 omitted. A
 successful run records `.assay/mutation-postponed-assay.json` as `provisional`;
 it never asserts an R2 pass, and the full `self-qualification` lane remains the
@@ -2989,11 +3005,13 @@ The gate checks the first H2 release heading after `## [Unreleased]` because
 the release tag does not exist when CMRU runs `run-tests`. It refuses a
 malformed or unsupported first heading without searching historical sections,
 and requires the heading to match CMRU's protected planned transaction version.
-The only permitted interval is `10.0.0 <= version < 10.2.0`; the operator
-extended the original 2026-10-27 waiver on 2026-10-31 to include the 10.1.0
-release. A visible stable `assay-vX.Y.Z` tag is also required, and the latest
-visible tag must be below 10.2.0. Missing, unreadable, or unparseable tag state
-refuses the waiver.
+The currently permitted interval is `10.0.0 <= version < 12.1.0`; the
+operator extended the original 2026-10-27 waiver on 2026-10-31 and 2026-11-04.
+A visible stable `assay-vX.Y.Z` tag is also required, and the latest visible
+tag must be below 12.1.0. Missing, unreadable, or unparseable tag state refuses
+the waiver. The bound is frozen by that operator decision. Extending it
+requires a new operator R2-waiver decision; the gate names this decision in its
+refusal and directs the caller to the full self-qualification lane.
 
 The bare-host wrapper removes an old postponement marker before its own
 dirty-tree and host-admission checks. Run-Gate can refuse admission before the

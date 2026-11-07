@@ -170,11 +170,6 @@ def test_sta_05_status_collapse_audit():
         h.write_range = lambda a, t, o, n: (flag.update(on=flag["on"] or any("rung-w32-4096" in x for x in a)), real(a, t, o, n))[1]
         return calibrate(h).result
 
-    def cut():
-        h = seeded()
-        h.scenario.cut_after_bytes = {"-fill-": int(0.4 * 0.85 * 435853320192)}
-        return calibrate(h).result
-
     def mat(model, host_kw=None, **kw):
         return lambda: run_matrix(model, host_kw, **kw)[1].result
 
@@ -256,7 +251,9 @@ def test_sta_05_status_collapse_audit():
         "cache_residual_possible": ("caps.RIOPS", residual),
         "device_smaller_than_cache_margin": ("caps.RIOPS", margin),
         "ceiling_moved": ("caps.RIOPS", moved),
-        "budget_limited": ("caps.RIOPS", cut),
+        # A profile whose plan genuinely caps its working set is budget-limited;
+        # a fio job that simply returns fewer bytes is not.
+        "budget_limited": ("caps.RIOPS", cal(profile="quick")),
         "quick_profile": ("caps.RIOPS", cal(profile="quick")),
         "veryquick_profile": ("caps.RIOPS", cal(profile="veryquick")),
         "short_observation": ("caps.WIOPS", burst_throttle),
@@ -324,11 +321,11 @@ def matrix_baseline_model_p99(host, p99):
 
 # reasons that legitimately accompany another row's scenario (each is a CONSEQUENCE of the scenario, not a collapse of two rows):
 CONSEQUENCES = {
-    "budget_limited": {"cache_not_excluded", "cache_model_undetermined", "ceiling_moved", "no_cliff_hit_like_mode", "cache_residual_possible"},
+    "budget_limited": {"cache_not_excluded", "cache_model_undetermined", "ceiling_moved", "no_cliff_hit_like_mode", "cache_residual_possible", "quick_profile"},
     "ceiling_moved": {"cache_model_undetermined", "no_cliff_hit_like_mode"},
     "quick_profile": {"budget_limited"},  # the quick fill is time-bounded to R_est x 60 s, so the working set is budget-limited too
     # the veryquick fill is 20 s of data (budget-limited working set); its one cold probe on an unbounded disk reads hit-like (no ladder to say more)
-    "veryquick_profile": {"budget_limited", "no_cliff_hit_like_mode"},
+    "veryquick_profile": {"budget_limited", "no_cliff_hit_like_mode", "cache_model_undetermined"},
 }
 
 

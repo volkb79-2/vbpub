@@ -9,8 +9,10 @@ from iobench import ceilings, guard, proposals, result as res
 from iobench.errors import Refusal
 from iobench.host import RealHost
 from iobench.result import LoadError
+from iobench.testing import GIB
 
 from helpers import INVERSION, calibrate, make_host, matrix, read_json
+from test_tgt import btrfs_file_host
 
 STATE = "/var/lib/iobench"
 
@@ -66,6 +68,7 @@ def test_res_01_files_are_written_through_the_host_atomically(world):
 def test_res_02_versioning(world):
     host, _ = world
     doc = read_json(host, f"{STATE}/result.json")
+    assert res.SCHEMA_MINOR == doc["schema_minor"] == 5
     h = fresh_copy(host)
     # an unknown major is refused with exit 5 / schema_unsupported
     h.put(f"{STATE}/result.json", json.dumps({**doc, "schema": 2}))
@@ -237,6 +240,46 @@ def test_chk_01_exit_codes(world):
     d = c.as_dict()
     assert set(d) == {"state", "reasons", "warnings", "limits", "identity_strength", "sections", "result", "calibration_id", "history", "capability"}
     assert d["history"] == "recorded" and d["calibration_id"].startswith("cal-")  # the benchmark appended its own plateaus (CEI-05)
+
+
+@pytest.mark.parametrize("change", ("member_added", "member_list_unreadable"))
+def test_chk_01_btrfs_identity_change_is_stale_with_a_reason(change, monkeypatch):
+    host, uuid = btrfs_file_host()
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    target = guard.init_file(host, "/bench/target.img", size=6 * GIB, own=True, expect_fs_uuid=uuid,
+                             confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-21T03:00:00Z")
+    out = calibrate(host, target=target.path, work_dir="/bench/w", profile="veryquick")
+    assert out.status == "complete"
+
+    changed = fresh_copy(host)
+    devices = f"/sys/fs/btrfs/{uuid}/devices"
+    if change == "member_added":
+        changed.symlinks[f"{devices}/2"] = changed.realpath("/sys/dev/block/254:7")
+    else:
+        member_dev = changed.realpath(f"{devices}/1") + "/dev"
+        read_text = changed.read_text
+
+        def unreadable(path):
+            if path == member_dev:
+                raise PermissionError("member list is unreadable")
+            return read_text(path)
+
+        monkeypatch.setattr(changed, "read_text", unreadable)
+
+    stored_identity = out.result["identity"]
+    live = res.live_identity(changed, stored_identity)
+    assert live is not None and "_identity_unavailable" in live
+    assert res.identity_differs(stored_identity, live) is True
+    check = res.check(changed, STATE, now=changed.now())
+    expected = "target_fs_multi_device" if change == "member_added" else "target_fs_disk_unknown"
+    assert (check.state, check.exit_code, check.reasons) == ("stale", 3, [f"identity_unavailable:{expected}"])
+
+    from cli_extended import CliIdentity
+    from iobench import cli
+    stdout, stderr = __import__("io").StringIO(), __import__("io").StringIO()
+    code = cli.build_cli(CliIdentity("iobench", "0.1.0", "x", "iobench"), host_factory=lambda: changed).run(
+        argv=["check", "--json"], stdout=stdout, stderr=stderr)
+    assert code == 3 and '"state": "stale"' in stdout.getvalue() and expected in stdout.getvalue()
 
 
 def test_chk_01_calibration_check_uses_the_calibration_file(world):

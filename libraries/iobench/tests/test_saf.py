@@ -4,6 +4,7 @@ import json
 import pytest
 
 from iobench import restore
+from iobench.calibrate import Calibrator
 from iobench.errors import Aborted, Refusal, VerificationFailure
 from iobench.host import HostError
 from iobench.restore import Safety
@@ -318,6 +319,7 @@ def test_saf_02_restore_on_signal_in_a_run():
     assert not host.exists(restore.JOURNAL)
     failed = read_json(host, f"{STATE}/result.last-failed.json")
     assert failed["run"]["status"] == "aborted" and failed["restore"]["verified"] is True
+    assert failed["schema_minor"] == 5 and failed["partial"]["status"] == "incomplete"
 
 
 def test_saf_02_restore_at_the_start_of_the_next_run():
@@ -385,6 +387,20 @@ def test_saf_06_abort_in_a_run_kills_fio_and_restores():
     h3.at(h3.now() + 100, lambda: h3.put(restore.ABORT_FILE, ""))
     c = calibrate(h3)
     assert c.exit_code == 8 and h3.read_text(f"{STATE}/calibration.json") == good
+
+
+def test_saf_02_stage_records_the_aborted_mark_before_propagating():
+    from helpers import config, make_host
+
+    run = Calibrator(make_host(cache=None), config())
+    run.fits = lambda _seconds: True
+
+    def abort():
+        raise Aborted("signal SIGTERM")
+
+    with pytest.raises(Aborted, match="signal SIGTERM"):
+        run.stage("S6", abort, required=True)
+    assert run.stages["S6"].startswith("aborted:") and "signal SIGTERM" in run.stages["S6"]
 
 
 def test_saf_07_aborted_run_keeps_good_result_in_a_run():

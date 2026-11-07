@@ -2189,8 +2189,8 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.opti
 id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--size/--size"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:77b724749f630c75724c55c324aca6e4015c10e0dd187a3a3320c012ffaecba8"
-rationale = "--size is accepted by `target init`: File target size in bytes (required; the upper bound of everything iobench writes there)."
+reviewed_signature = "sha256:5dde2a868005ed5bfadc3a1b3a580cbe0a5120333529ef3c2a330fce8b0fea5d"
+rationale = "`target init --size` accepts aligned positive byte counts and rejects unaligned values during parsing with a corrected 1 MiB multiple."
 invocation = ["target", "init", "--file", "/bench/t.img", "--size", "2147483648", "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222", "--dry-run"]
 expected_exit_status = 0
 expected_stdout_contains = "\"marker_written\""
@@ -2260,7 +2260,7 @@ invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--profile", "v
 expected_exit_status = 0
 expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the veryquick stage plan (S0, S1, fill, E-cold, series, S6; 173 s planned) with each stage's fio argv and written-byte bounds; writes nothing to the target and changes no runtime setting; the live preflight is NOT run: the output says `preflight: not_run`"]
+effects = ["Dry run: prints the veryquick stage plan (S0, S1, fill, E-cold, series, S6; 201 s planned) with each stage's fio argv and written-byte bounds; writes nothing to the target and changes no runtime setting; the live preflight is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--profile.780be2ca4d]"]
 
 [[cases]]

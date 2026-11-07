@@ -224,7 +224,7 @@ def test_cal_02_confinement_argv(healthy):
 
 
 def test_cal_02_interrupted_fill_records_actual_bytes():
-    host = make_host(cache=INVERSION)
+    host = make_host(cache=dict(capacity_gib=50, hit_iops=92000, write_allocate=True))
     ws = int(0.85 * (435853320192 - 1048576))
     host.scenario.cut_after_bytes = {"-fill-": int(0.4 * ws)}
     out = calibrate(host)
@@ -234,8 +234,10 @@ def test_cal_02_interrupted_fill_records_actual_bytes():
     sizes = {r["ws_bytes"] for r in cal["ladder"]["rungs"]}
     assert max(sizes) <= end and cal["fill"]["bytes"] == end
     props = out.result["proposals"]["caps"]["dev_aggregate"]
-    assert "budget_limited" in props["RIOPS"]["reasons"] and props["RIOPS"]["status"] == "unproven"
-    assert "limited-by-budget" in out.result["quality"]["limits"] and out.result["quality"]["cache_proof"] == "limited-by-budget"
+    assert "budget_limited" not in props["RIOPS"]["reasons"] and props["RIOPS"]["status"] == "unproven"
+    assert "limited-by-budget" not in out.result["quality"]["limits"]
+    assert "limited-by-fio-short" in out.result["quality"]["limits"]
+    assert out.result["quality"]["cache_proof"] == "limited-by-fio-short"
     assert not host.devices["/dev/vda7"].unwritten_reads
 
 
@@ -253,6 +255,37 @@ def test_cal_02_fill_replans_on_burst_capped_disk():
     for j in fio_jobs(host):
         if j.writes and j.io_size is not None and "-fill-" not in j.name:
             assert j.io_size <= 1.2 * cal["R_est_bps"] * j.runtime_s * 1.001, j.name
+
+
+def test_cal_02_failed_late_stage_persists_completed_measurements_as_incomplete(monkeypatch):
+    from iobench import calibrate as cal_mod
+    from iobench.errors import RunFailed
+    host = make_host(cache=INVERSION)
+
+    def fail_fresh_stage(self):
+        raise RunFailed("injected failure after the ladder")
+
+    monkeypatch.setattr(cal_mod.Calibrator, "fresh_vs_rewrite", fail_fresh_stage)
+    out = calibrate(host)
+    failed = read_json(host, "/var/lib/iobench/calibration.last-failed.json")
+    assert out.status == "failed" and failed["partial"]["status"] == "incomplete"
+    assert failed["partial"]["stages"]["E2"] == "ok"
+    assert failed["partial"]["ladder"]["rungs"] and failed["partial"]["extent_written"]
+
+
+def test_cal_02_failed_early_stage_persists_partial_with_completed_identity(monkeypatch):
+    from iobench.errors import RunFailed
+
+    def fail_s1(self):
+        raise RunFailed("controlled early failure")
+
+    monkeypatch.setattr(cal_mod.Calibrator, "s1", fail_s1)
+    host = make_host(cache=INVERSION)
+    out = calibrate(host)
+    failed = read_json(host, "/var/lib/iobench/calibration.last-failed.json")
+    assert out.status == "failed" and failed["partial"]["status"] == "incomplete"
+    assert failed["partial"]["stages"]["S1"] == "failed: controlled early failure"
+    assert failed["partial"]["extent_written"] == []
 
 
 def test_cal_03_unsteady_rung_is_extended_then_kept_unsteady():
