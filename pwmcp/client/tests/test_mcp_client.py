@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import random
 import subprocess
 import sys
 import threading
@@ -140,7 +141,9 @@ class _FakeMcpServer:
                     }
                 else:
                     response_message = {"jsonrpc": "2.0", "id": payload.get("id"), "result": result}
-                body = json.dumps(response_message, ensure_ascii=False).encode()
+                body = json.dumps(response_message, ensure_ascii=False).encode(
+                    "utf-8", errors="backslashreplace"
+                )
                 self.send_response(200)
                 default_type = "text/event-stream" if method in state.sse_methods else "application/json"
                 content_type, override_body = state.response_overrides.get(method, (default_type, body))
@@ -154,13 +157,17 @@ class _FakeMcpServer:
                     elif method in state.sse_methods:
                         if method in state.wrong_id_methods:
                             response_message["id"] = -1
-                            body = json.dumps(response_message, ensure_ascii=False).encode()
+                            body = json.dumps(response_message, ensure_ascii=False).encode(
+                                "utf-8", errors="backslashreplace"
+                            )
                         ending = state.sse_line_ending
                         self.wfile.write(b"event: message" + ending + b"data: " + body + ending + ending)
                     else:
                         if method in state.wrong_id_methods:
                             response_message["id"] = -1
-                            body = json.dumps(response_message, ensure_ascii=False).encode()
+                            body = json.dumps(response_message, ensure_ascii=False).encode(
+                                "utf-8", errors="backslashreplace"
+                            )
                         self.wfile.write(body)
 
             def do_DELETE(self) -> None:  # noqa: N802
@@ -385,6 +392,40 @@ def test_eval_reports_transport_oversize_with_a_size_hint(
     assert "check that the PWMCP MCP endpoint is reachable" not in error
 
 
+def test_eval_response_limit_scales_with_the_requested_output_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        # The value fits under --max-bytes, while JSON-RPC/SSE framing makes
+        # the MCP response exceed 1000 bytes.
+        server.state.eval_value = "x" * 900
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "eval", "https://example.test", "document.body.innerText", "--max-bytes", "1024"
+        ]) == 0
+        output = json.loads(capsys.readouterr().out)
+    assert output == "x" * 900
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_eval_outputs_lone_surrogates_without_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    json_mode: bool,
+) -> None:
+    value = "a\ud800b"
+    with _FakeMcpServer() as server:
+        server.state.eval_value = value
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        args = ["eval", "https://example.test", "document.body.innerText"]
+        if json_mode:
+            args.append("--json")
+        assert cli_module.main(args) == 0
+        output = json.loads(capsys.readouterr().out)
+    assert output == value
+
+
 def test_eval_caps_a_large_page_value_inside_the_page_function() -> None:
     node = require_binary("node", "Node.js executes the generated eval size guard")
     function = evaluation_function("'large value'.repeat(1000)", max_bytes=16)
@@ -563,10 +604,16 @@ def test_mcp_client_ignores_http_proxy_environment_for_credentialed_endpoint(
             monkeypatch.setenv(name, proxy_url)
         for name in ("no_proxy", "NO_PROXY"):
             monkeypatch.setenv(name, "")
+        # urlopen builds its process-global opener lazily. Reset it after setting
+        # the proxy so a regression in close() cannot inherit a stale no-proxy
+        # configuration from an earlier test.
+        monkeypatch.setattr(mcp_client.urllib.request, "_opener", None)
         with _FakeMcpServer() as server:
             endpoint = server.url.replace("http://", "http://user:secret@", 1)
-            with StreamableHttpClient(endpoint) as client:
+            client = StreamableHttpClient(endpoint)
+            with client:
                 client.call_tool("browser_navigate", {"url": "https://example.test"})
+                client.close()
             assert server.state.deleted_sessions == 1
     finally:
         proxy.shutdown()
@@ -1040,6 +1087,7 @@ def test_inspect_html_does_not_retry_a_generic_tool_error_by_default(
 @pytest.mark.parametrize(
     ("error", "options", "expected_evaluations"),
     [
+        ("Target closed", [], 1),
         ("Target closed", ["--retries", "2"], 1),
         ("Page crashed", ["--retries", "0"], 1),
         ("Page crashed", [], 2),
@@ -1613,6 +1661,7 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
         ("`value ${'x; // y'}`", "value x; // y"),
         ("`value ${ {item: 'x; // y'} /* block */ // line\n.item}`", "value x; // y"),
         ("`outer ${`inner ${'nested'}`}`", "outer inner nested"),
+        ("`value ${a / b}`;", "value 3"),
         (r"/a;\/\/b/.test('a;//b');", True),
         (r"/[;/]+/gi.test(';/');", True),
         (r"/\//.test('/');", True),
@@ -1624,12 +1673,14 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
         ("({value: 2}).value / 2;", 1),
         ("({$value_2: 3}).$value_2;", 3),
         ("({café: 4}).café;", 4),
+        ("1 /* c */ + 2", 3),
         ("1 + 1; /* c */", 2),
         ("1 /* c */;", 1),
         ("1;;", 1),
         ("// leading comment\n1 + 1", 2),
         ("1 + 1 // trailing comment", 2),
         ("() => 3 // trailing function comment", 3),
+        ("/* leading comment */ function () { return 5; }", 5),
     ],
 )
 def test_evaluation_function_preserves_literals_and_strips_only_trailing_syntax(
@@ -1640,6 +1691,7 @@ def test_evaluation_function_preserves_literals_and_strips_only_trailing_syntax(
     function = evaluation_function(expression)
     program = (
         "const fs = require('fs'); const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+        "const a = 6, b = 2; "
         "const fn = eval('(' + input.function + ')'); console.log(JSON.stringify(fn()));"
     )
     completed = subprocess.run(
@@ -1650,6 +1702,118 @@ def test_evaluation_function_preserves_literals_and_strips_only_trailing_syntax(
         text=True,
     )
     assert json.loads(completed.stdout) == expected
+
+
+def test_passthrough_call_wrapper_keeps_closers_after_a_line_comment() -> None:
+    node = require_binary("node", "Node.js executes the bounded eval wrapper")
+    function = mcp_client._bounded_evaluation_function("() => 3 // trailing function comment", 16)
+    program = (
+        "const fs = require('fs'); const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+        "(async () => { const fn = eval('(' + input.function + ')'); "
+        "console.log(JSON.stringify(await fn())); })();"
+    )
+    completed = subprocess.run(
+        [node, "-e", program],
+        input=json.dumps({"function": function}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout)["value"] == 3
+
+
+@pytest.mark.parametrize(
+    ("expression", "arguments", "result_kind", "expected"),
+    [
+        ("(1) + '(x) => y'", [], "value", "1(x) => y"),
+        ("(document.title) || (() => 2)", [], "returned-function", 2),
+        ("async x => x", [7], "value", 7),
+        ("async (a, b) => a + b", [3, 4], "value", 7),
+        ("function () { return 5; }", [], "value", 5),
+        ("function* () { yield 5; }", [], "generator", {"value": 5, "done": False}),
+        ("functionality()", [], "value", 9),
+    ],
+)
+def test_only_whole_function_expressions_pass_through(
+    expression: str,
+    arguments: list[object],
+    result_kind: str,
+    expected: object,
+) -> None:
+    node = require_binary("node", "Node.js checks generated eval expression semantics")
+    function = evaluation_function(expression)
+    program = (
+        "const fs = require('fs'); const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+        "globalThis.document = {title: ''}; globalThis.functionality = () => 9; "
+        "(async () => { const fn = eval('(' + input.function + ')'); "
+        "let value = await fn(...input.arguments); "
+        "if (input.result_kind === 'returned-function' && typeof value === 'function') value = await value(); "
+        "if (input.result_kind === 'generator') value = value.next(); "
+        "console.log(JSON.stringify(value)); })();"
+    )
+    completed = subprocess.run(
+        [node, "-e", program],
+        input=json.dumps({
+            "function": function,
+            "arguments": arguments,
+            "result_kind": result_kind,
+        }),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert json.loads(completed.stdout) == expected
+
+
+def test_javascript_scanner_differential_fuzz_matches_node_for_fixed_seeds() -> None:
+    node = require_binary("node", "Node.js compares original and transformed JavaScript expressions")
+    seeds = (0xC0FFEE, 0x5EED, 0xA11CE)
+    expressions = ["`value ${a / b}`;"]
+
+    def make_expression(rng: random.Random, depth: int = 0) -> str:
+        if depth >= 3 or rng.randrange(4) == 0:
+            leaf = rng.randrange(4)
+            if leaf == 0:
+                return str(rng.randrange(1, 20))
+            if leaf == 1:
+                return json.dumps(rng.choice(["x;//y", "quote'and\"slash/", "plain"]))
+            if leaf == 2:
+                left, right = rng.randrange(1, 10), rng.randrange(1, 10)
+                return f"`value ${{{left} / {right}}}`"
+            left, middle, right = rng.randrange(1, 10), rng.randrange(1, 10), rng.randrange(1, 10)
+            return f"`value ${{({left} + {middle}) / {right}}}`"
+
+        left = make_expression(rng, depth + 1)
+        right = make_expression(rng, depth + 1)
+        operator = rng.choice(("+", "*", "===", "/"))
+        return f"({left} /* fuzz */ {operator} {right})"
+
+    for seed in seeds:
+        rng = random.Random(seed)
+        for _ in range(24):
+            expression = make_expression(rng)
+            expression = "/* fixed-seed fuzz */ " + expression
+            suffix = rng.choice(("", ";", ";;;", " // trailing comment\n", "; /* trailing comment */"))
+            expressions.append(expression + suffix)
+
+    functions = [evaluation_function(expression) for expression in expressions]
+    program = (
+        "const fs = require('fs'); const input = JSON.parse(fs.readFileSync(0, 'utf8')); "
+        "globalThis.a = 6; globalThis.b = 2; "
+        "const pairs = input.expressions.map((source, index) => { "
+        "const original = eval(source); const fn = eval('(' + input.functions[index] + ')'); "
+        "return [original, fn()]; }); console.log(JSON.stringify(pairs));"
+    )
+    completed = subprocess.run(
+        [node, "-e", program],
+        input=json.dumps({"expressions": expressions, "functions": functions}),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    pairs = json.loads(completed.stdout)
+    assert len(pairs) == len(expressions)
+    assert all(original == transformed for original, transformed in pairs)
 
 
 def test_javascript_scanner_preserves_uncertain_or_incomplete_expressions() -> None:
@@ -1668,7 +1832,6 @@ def test_javascript_scanner_preserves_uncertain_or_incomplete_expressions() -> N
         "`value ${1 /* unterminated",
         "`value ${'unterminated",
         "`value ${answer",
-        "`value ${answer / 2}`;",
     ):
         normalized, first_token = mcp_client._strip_trailing_javascript(source)
         assert normalized == source
@@ -1679,6 +1842,7 @@ def test_javascript_scanner_preserves_uncertain_or_incomplete_expressions() -> N
             mcp_client._strip_trailing_javascript(source)
 
     assert mcp_client._strip_trailing_javascript("value /= 2;") == ("value /= 2", 0)
+    assert mcp_client._strip_trailing_javascript("a /* c */ + b") == ("a /* c */ + b", 0)
 
 
 def test_javascript_scanner_caps_nested_template_recursion_conservatively() -> None:
