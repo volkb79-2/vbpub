@@ -453,6 +453,11 @@ def installed_pip_version(python: Path, package: str) -> str:
     raise InstallerError(f"cannot read the installed version of {package}: {proc.stderr.strip()[:200]}")
 
 
+# OpenCode 2's platform packages (scope + name); the `@opencode/cli` launcher is NOT installed, because
+# its postinstall picks baseline-vs-AVX2 from the BUILD host's /proc/cpuinfo and needs npm script approval.
+OPENCODE_PLATFORM_SCOPE = "@opencode"
+
+
 def opencode_platform_package() -> str:
     machine = platform.machine().lower()
     if machine in {"x86_64", "amd64"}:
@@ -464,7 +469,7 @@ def opencode_platform_package() -> str:
 
     libc_name = platform.libc_ver()[0].lower()
     libc_suffix = "-musl" if libc_name == "musl" else ""
-    return f"opencode-linux-{architecture}{libc_suffix}"
+    return f"{OPENCODE_PLATFORM_SCOPE}/cli-linux-{architecture}{libc_suffix}"
 
 
 def install_opencode() -> None:
