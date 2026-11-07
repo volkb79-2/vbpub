@@ -71,16 +71,18 @@ def test_real_executable_obeys_cli_contract(tmp_path: Path) -> None:
     assert_cli_contract(
         invoke,
         IDENTITY,
-        ("contract", "doctor", "inspect", "skills"),
+        ("contract", "doctor", "eval", "inspect", "skills"),
         invalid_invocations={
             "unknown verb": ["bogus"],
             "contract operand": ["contract", "extra"],
             "doctor bad check option": ["doctor", "--nope"],
+            "eval missing URL": ["eval"],
             "inspect missing URL": ["inspect"],
         },
         known_verb_errors={
             "contract operand": "contract",
             "doctor bad check option": "doctor",
+            "eval missing URL": "eval",
             "inspect missing URL": "inspect",
         },
     )

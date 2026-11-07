@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -32,6 +33,22 @@ from . import ocr as ocr_module
 from . import storage_state as storage_module
 from .blocked import BlockVerdict, detect as detect_block
 from .diagnostics import DOCTOR_CHECKS, try_load_contract
+from .mcp_client import (
+    _EVAL_RESULT_MARKER,
+    McpError,
+    McpResponseTooLarge,
+    McpTimeout,
+    McpToolError,
+    StreamableHttpClient,
+    decode_html_value,
+    decode_tool_value,
+    evaluation_function,
+    html_extraction_function,
+    is_browser_crash,
+    is_retryable_page_crash,
+    page_diagnostics_function,
+    visible_selector_function,
+)
 from .release import assess_skew, version_to_release
 from .session import BrowserLease, PwmcpError
 from .user_agent import ResolvedUserAgent, UserAgentError, cdp_override_params, resolve
@@ -148,6 +165,51 @@ _SETTLE_MS = 500
 _SHELL_BYTES = 1024
 _SHRINK_FACTOR = 2
 _MAX_RETRIES = 10
+_MAX_HTML_BYTES = 512 * 1024
+_DEFAULT_MAX_EVAL_BYTES = 1024 * 1024
+_MAX_EVAL_BYTES = 4 * 1024 * 1024
+_MCP_HTTP_TIMEOUT_MARGIN_SECONDS = 2.0
+
+
+def _failure_hint(exc: BaseException) -> str:
+    """Keep browser lifecycle failures distinct from service reachability failures."""
+
+    if isinstance(exc, McpResponseTooLarge):
+        return (
+            "the MCP response exceeded its configured transport limit; return a smaller or aggregated value"
+        )
+    if isinstance(exc, McpTimeout) or "request timed out" in str(exc).lower():
+        return "the MCP request timed out; increase --timeout for eval or --timeout-ms for inspect"
+    if isinstance(exc, McpToolError) and is_browser_crash(exc):
+        return (
+            "the PWMCP MCP endpoint replied, but the page or browser crashed or was closed; "
+            "if it repeats, check that the browser service is running"
+        )
+    if is_browser_crash(exc):
+        return (
+            "the page or browser crashed or was closed; if it repeats, check that PWMCP is still running "
+            "and reachable, then reduce page load or check browser memory and /dev/shm"
+        )
+    if isinstance(exc, McpToolError):
+        return (
+            "the PWMCP MCP endpoint replied; check the page URL, its wait condition, and the requested JavaScript; "
+            "serialize calls if the shared browser reports that it is already in use"
+        )
+    if isinstance(exc, McpError):
+        return "check that the PWMCP MCP endpoint is reachable and PWMCP_MCP_URL names its /mcp endpoint"
+    if isinstance(exc, PwmcpError):
+        return "check that PWMCP is running and reachable from this container"
+    return "check that PWMCP is running and reachable from this container, and that the page wait condition is reachable"
+
+
+def _print_eval_truncation(preview: str, max_bytes: int, runtime: CliRuntime) -> None:
+    """Print a bounded JSON preview and keep its truncation signal machine-readable."""
+
+    if runtime.json_mode:
+        runtime.output.primary({"preview": preview, "truncated": True, "max_bytes": max_bytes})
+    else:
+        runtime.output.primary(preview)
+        runtime.output.emit(LogLevel.WARN, f"[truncated after {max_bytes} bytes]", force=True)
 
 
 class _PageDiagnostics:
@@ -369,6 +431,170 @@ def _small_result_warning(args: argparse.Namespace, payload: str | bytes, sizes:
     return None
 
 
+def _inspect_html(args: argparse.Namespace, runtime: CliRuntime) -> None:
+    """Read bounded page or element HTML through the server's browser_evaluate MCP tool."""
+
+    if not 1 <= args.max_html_bytes <= _MAX_HTML_BYTES:
+        raise CliFailure(f"--max-html-bytes must be between 1 and {_MAX_HTML_BYTES}")
+    if args.wait_until != "load":
+        raise CliFailure(
+            "--format html currently uses the MCP browser_navigate load condition; --wait-until must be load"
+        )
+    if args.ignore_https_errors or args.user_agent is not None or args.storage_state:
+        raise CliFailure(
+            "--format html uses the configured MCP browser context and cannot apply --ignore-https-errors, "
+            "--user-agent, or --storage-state"
+        )
+
+    retries = args.retries if args.retries is not None else 1
+    attempts = retries + 1
+    result: tuple[str, int, bool] | None = None
+    for number in range(1, attempts + 1):
+        try:
+            http_timeout = args.timeout_ms / 1000
+            if args.wait_for:
+                http_timeout += _MCP_HTTP_TIMEOUT_MARGIN_SECONDS
+            with StreamableHttpClient(timeout=http_timeout) as client:
+                client.call_tool("browser_navigate", {"url": args.url})
+                diagnostics_started = time.monotonic()
+                page_diagnostics = decode_tool_value(
+                    client.call_tool("browser_evaluate", {"function": page_diagnostics_function()})
+                )
+                if not isinstance(page_diagnostics, dict):
+                    raise McpError("MCP page diagnostics returned a non-object result")
+                title = page_diagnostics.get("title")
+                text = page_diagnostics.get("text")
+                status_value = page_diagnostics.get("status")
+                final_url = page_diagnostics.get("final_url")
+                frames = page_diagnostics.get("frames")
+                if (
+                    not isinstance(title, str)
+                    or not isinstance(text, str)
+                    or (status_value is not None and (not isinstance(status_value, int) or isinstance(status_value, bool)))
+                    or not isinstance(final_url, str)
+                    or not isinstance(frames, list)
+                    or any(not isinstance(frame, str) for frame in frames)
+                ):
+                    raise McpError("MCP page diagnostics returned invalid values")
+                verdict = detect_block(status=status_value, headers={}, title=title, text=text, frames=frames)
+                if verdict is not None:
+                    _report_html_blocked(
+                        args,
+                        runtime,
+                        verdict,
+                        status=status_value,
+                        final_url=final_url,
+                        waited_ms=int((time.monotonic() - diagnostics_started) * 1000),
+                    )
+                if args.wait_for:
+                    client.call_tool(
+                        "browser_evaluate",
+                        {"function": visible_selector_function(args.wait_for, args.timeout_ms)},
+                    )
+                evaluated = client.call_tool(
+                    "browser_evaluate",
+                    {
+                        "function": html_extraction_function(
+                            args.selector, args.html_mode, args.max_html_bytes
+                        )
+                    },
+                )
+                result = decode_html_value(
+                    decode_tool_value(evaluated), max_bytes=args.max_html_bytes
+                )
+            break
+        except McpError as exc:
+            retryable_page_crash = is_retryable_page_crash(exc)
+            browser_lease_closed = is_browser_crash(exc) and not retryable_page_crash
+            automatic_crash_retry = args.retries is None and number == 1 and retryable_page_crash
+            explicit_retry = (
+                args.retries is not None
+                and number < attempts
+                and not browser_lease_closed
+            )
+            if not (automatic_crash_retry or explicit_retry):
+                raise CliFailure(f"pwmcp inspect failed: {exc}", hint=_failure_hint(exc)) from exc
+            if automatic_crash_retry:
+                note = f"attempt {number}/{attempts} hit a page/browser crash ({exc}); retrying automatically once"
+            else:
+                note = f"attempt {number}/{attempts} failed: {exc}; retrying"
+            runtime.output.emit(LogLevel.WARN, note, force=True)
+
+    if result is None:
+        raise CliFailure("pwmcp inspect failed: the MCP browser returned no HTML result")
+    html, total_bytes, truncated = result
+    included_bytes = len(html.encode("utf-8"))
+    if truncated:
+        runtime.output.emit(
+            LogLevel.WARN,
+            f"HTML result truncated at {included_bytes} bytes (page content is {total_bytes} bytes); "
+            "use a narrower --selector",
+            force=True,
+        )
+
+    output_path = Path(args.output).expanduser() if args.output else None
+    metadata = {
+        "format": "html",
+        "truncated": truncated,
+        "size_bytes": total_bytes,
+        "included_bytes": included_bytes,
+    }
+    if output_path is not None:
+        try:
+            output_path.write_text(html, encoding="utf-8")
+        except OSError as exc:
+            raise CliFailure(f"cannot write html output to {output_path}: {exc}") from exc
+        runtime.output.info(f"wrote html output to {output_path}")
+        if runtime.json_mode:
+            runtime.output.primary({"output": str(output_path), **metadata})
+        return
+    if runtime.json_mode:
+        runtime.output.primary({"content": html, **metadata})
+    else:
+        runtime.output.primary(html)
+
+
+def _report_html_blocked(
+    args: argparse.Namespace,
+    runtime: CliRuntime,
+    verdict: BlockVerdict,
+    *,
+    status: int | None,
+    final_url: str,
+    waited_ms: int,
+) -> None:
+    """Keep bounded HTML inspection consistent with inspect's bot-protection contract."""
+
+    message = (
+        f"blocked by bot protection ({verdict.description}); HTML was not returned because the page "
+        "is a challenge page, not the target"
+    )
+    result = {
+        "blocked": True,
+        "provider": verdict.provider,
+        "kind": verdict.kind,
+        "signals": list(verdict.signals),
+        "status": status,
+        "final_url": final_url,
+        "waited_ms": waited_ms,
+        "message": message,
+    }
+    if runtime.json_mode:
+        runtime.output.primary_json(result)
+    else:
+        runtime.output.primary(message)
+    if args.output:
+        runtime.output.emit(LogLevel.WARN, f"--output {args.output} was not written: the result is not the target", force=True)
+    raise CliFailure(
+        message,
+        exit_code=EXIT_BLOCKED,
+        hint=(
+            "report this to the user as BLOCKED; do not retry or work around it. A human can open the page "
+            "once and export a storage state for --storage-state (README 'Bot protection')"
+        ),
+    )
+
+
 def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
     """Read rendered page text, an ARIA snapshot, or a remote screenshot."""
 
@@ -381,10 +607,17 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
         raise CliFailure("URL must be an absolute http:// or https:// URL")
     if args.timeout_ms <= 0:
         raise CliFailure("--timeout-ms must be a positive integer")
-    if not 0 <= args.retries <= _MAX_RETRIES:
+    if args.retries is not None and not 0 <= args.retries <= _MAX_RETRIES:
         raise CliFailure(f"--retries must be between 0 and {_MAX_RETRIES}")
     if args.format == "screenshot" and not args.output:
         raise CliFailure("--output is required when --format=screenshot")
+    if args.format != "html" and (
+        args.selector is not None or args.html_mode != "outer" or args.max_html_bytes != _MAX_HTML_BYTES
+    ):
+        raise CliFailure("--selector, --html-mode, and --max-html-bytes require --format html")
+    if args.format == "html":
+        _inspect_html(args, runtime)
+        return
 
     # PWMCP-09: an explicit per-call --user-agent is validated before connecting.
     call_override: ResolvedUserAgent | None = None
@@ -432,9 +665,9 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
             # Effective identity: the per-call --user-agent wins, else the server-level
             # setting the service publishes in its contract, else the browser default.
             active = call_override or _server_identity(getattr(lease, "contract", None))
-            # PWMCP-24: each attempt is a fresh context and navigation; --retries N allows N more
-            # after a failed or unstable attempt (a single attempt when it is 0, the default).
-            attempts = args.retries + 1
+            # PWMCP-24: an explicit --retries N allows N more failed or unstable attempts.
+            # With no option, keep the one-attempt behavior except for one page-local crash.
+            attempts = args.retries + 1 if args.retries is not None else 2
             sizes: list[int] = []
             number = 0
             while True:  # the last attempt always ends the loop: it returns (break) or raises
@@ -442,14 +675,28 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
                 last = number == attempts
                 try:
                     attempt = _inspect_once(
-                        lease, args, active, image_type, runtime, check_stable=not last, storage=storage
+                        lease,
+                        args,
+                        active,
+                        image_type,
+                        runtime,
+                        check_stable=args.retries is not None and not last,
+                        storage=storage,
                     )
                 except PlaywrightError as exc:
-                    if last:
-                        raise
-                    runtime.output.emit(
-                        LogLevel.WARN, f"attempt {number}/{attempts} failed: {exc}; retrying", force=True
+                    retryable_page_crash = is_retryable_page_crash(exc)
+                    browser_lease_closed = is_browser_crash(exc) and not retryable_page_crash
+                    automatic_crash_retry = (
+                        args.retries is None and number == 1 and retryable_page_crash
                     )
+                    explicit_retry = args.retries is not None and not last and not browser_lease_closed
+                    if not (automatic_crash_retry or explicit_retry):
+                        raise
+                    if automatic_crash_retry:
+                        note = f"attempt {number}/{attempts} hit a page/browser crash ({exc}); retrying automatically once"
+                    else:
+                        note = f"attempt {number}/{attempts} failed: {exc}; retrying"
+                    runtime.output.emit(LogLevel.WARN, note, force=True)
                     continue
                 if isinstance(attempt.payload, str):
                     sizes.append(len(attempt.payload.encode("utf-8")))
@@ -468,10 +715,7 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
                     if note:
                         runtime.output.emit(LogLevel.WARN, note, force=True)
     except (PwmcpError, PlaywrightError, OSError, ValueError) as exc:
-        raise CliFailure(
-            f"pwmcp inspect failed: {exc}",
-            hint="check that PWMCP is running and the page's wait condition is reachable",
-        ) from exc
+        raise CliFailure(f"pwmcp inspect failed: {exc}", hint=_failure_hint(exc)) from exc
 
     # Transparency (PWMCP-09). With no override (source "default") the output is exactly
     # what it always was: same stdout, same JSON shape, empty stderr. Only when an override
@@ -752,6 +996,54 @@ def _ocr(args: argparse.Namespace, runtime: CliRuntime) -> None:
         runtime.output.primary(payload)
 
 
+def _eval(args: argparse.Namespace, runtime: CliRuntime) -> None:
+    """Navigate through PWMCP MCP and print the browser_evaluate value as JSON."""
+
+    try:
+        parsed = urlsplit(args.url)
+    except ValueError as exc:
+        raise CliFailure(f"URL is malformed: {exc}") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise CliFailure("URL must be an absolute http:// or https:// URL")
+    if not math.isfinite(args.timeout) or args.timeout <= 0:
+        raise CliFailure("--timeout must be a positive number of seconds")
+    if not 1 <= args.max_bytes <= _MAX_EVAL_BYTES:
+        raise CliFailure(f"--max-bytes must be between 1 and {_MAX_EVAL_BYTES}")
+    try:
+        function = evaluation_function(
+            args.expression,
+            selector=args.selector,
+            attribute=args.attr,
+            property_name=args.property,
+            all_matches=args.all_matches,
+            max_bytes=args.max_bytes,
+        )
+    except ValueError as exc:
+        raise CliFailure(str(exc)) from exc
+
+    try:
+        response_limit = args.max_bytes * 12 + 64 * 1024
+        with StreamableHttpClient(timeout=args.timeout, max_response_bytes=response_limit) as client:
+            client.call_tool("browser_navigate", {"url": args.url})
+            evaluated = client.call_tool("browser_evaluate", {"function": function})
+            value = decode_tool_value(evaluated)
+    except McpError as exc:
+        raise CliFailure(f"pwmcp eval failed: {exc}", hint=_failure_hint(exc)) from exc
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, dict) and value.get(_EVAL_RESULT_MARKER) is True:
+        if value.get("truncated") is True:
+            _print_eval_truncation(str(value.get("preview", "")), args.max_bytes, runtime)
+            return
+        value = value.get("value")
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    encoded_bytes = encoded.encode("utf-8", errors="backslashreplace")
+    if len(encoded_bytes) <= args.max_bytes:
+        runtime.output.primary_json(value)
+        return
+    preview = encoded_bytes[: args.max_bytes].decode("utf-8", errors="ignore")
+    _print_eval_truncation(preview, args.max_bytes, runtime)
+
+
 def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
     """Build the registered CLI; import-safe (nothing runs until ``.run()``)."""
 
@@ -763,6 +1055,7 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             "pwmcp doctor",
             "pwmcp contract",
             "pwmcp inspect https://example.com --format snapshot",
+            'pwmcp eval https://example.com "document.title"',
             "pwmcp ocr --image console.png",
         ),
         global_options=(
@@ -776,6 +1069,58 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
         ),
         unexpected_exceptions="report",
     )
+    registry.register(VerbSpec(
+        "eval",
+        description="evaluate JavaScript in a page through PWMCP's browser_evaluate MCP tool and print JSON",
+        group=VerbGroup.EXPLORATION.value,
+        examples=(
+            'pwmcp eval https://example.com "document.title"',
+            'pwmcp eval https://example.com --selector "meta[name=description]" --attr content',
+            'pwmcp eval https://example.com --selector "script[type=application/json]" --property textContent',
+            'pwmcp eval https://example.com --selector ".card" --property textContent --all --timeout 60',
+            'pwmcp eval https://example.com "document.body.innerText" --max-bytes 262144',
+        ),
+        include_progress=False,
+        arguments=(
+            ArgumentSpec(
+                "url",
+                "absolute HTTP or HTTPS page URL to open in the remote MCP browser",
+                metavar="URL",
+            ),
+            ArgumentSpec(
+                "expression",
+                "JavaScript expression or function; omit when reading an element attribute or property",
+                metavar="EXPRESSION",
+                parser_kwargs={"nargs": "?", "default": None},
+            ),
+        ),
+        options=(
+            OptionSpec(("--selector",), "CSS selector for an element attribute or property read", group="ELEMENT", metavar="CSS"),
+            OptionSpec(("--attr",), "read this attribute from the selected element(s)", group="ELEMENT", metavar="NAME"),
+            OptionSpec(("--property",), "read this property from the selected element(s)", group="ELEMENT", metavar="NAME"),
+            OptionSpec(
+                ("--all",),
+                "return a JSON array for every matching element instead of the first match",
+                group="ELEMENT",
+                parser_kwargs={"action": "store_true", "dest": "all_matches"},
+            ),
+            OptionSpec(
+                ("--timeout",),
+                "maximum time per MCP request for navigation and evaluation in seconds",
+                group="WAIT",
+                metavar="SECONDS",
+                parser_kwargs={"type": float, "default": 30.0},
+            ),
+            OptionSpec(
+                ("--max-bytes",),
+                f"maximum encoded result bytes (1 to {_MAX_EVAL_BYTES}; truncation is identified)",
+                group="OUTPUT",
+                metavar="BYTES",
+                parser_kwargs={"type": int, "default": _DEFAULT_MAX_EVAL_BYTES},
+            ),
+        ),
+        handler=_eval,
+    ))
     registry.register(VerbSpec(
         "contract",
         description="print the pwmcp server contract (release, Playwright version, endpoints, limits) as JSON",
@@ -800,6 +1145,7 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
         examples=(
             "pwmcp inspect https://example.com",
             "pwmcp inspect https://example.com --format snapshot --output page.yml",
+            "pwmcp inspect https://example.com --format html --selector main --html-mode outer",
             "pwmcp inspect https://example.com --format screenshot --output page.png --full-page",
             "pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded",
             "pwmcp inspect https://example.com --wait-for 'h1' --timeout-ms 45000 --retries 3",
@@ -816,10 +1162,30 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
         options=(
             OptionSpec(
                 ("--format",),
-                "output rendered body text, an ARIA snapshot, or a PNG/JPEG screenshot",
+                "output rendered body text, an ARIA snapshot, bounded HTML, or a PNG/JPEG screenshot",
                 group="OUTPUT",
                 metavar="FORMAT",
-                parser_kwargs={"choices": ("text", "snapshot", "screenshot"), "default": "text"},
+                parser_kwargs={"choices": ("text", "snapshot", "html", "screenshot"), "default": "text"},
+            ),
+            OptionSpec(
+                ("--selector",),
+                "CSS selector whose HTML to return (default: the whole document)",
+                group="OUTPUT",
+                metavar="CSS",
+            ),
+            OptionSpec(
+                ("--html-mode",),
+                "return outerHTML or innerHTML when --format html is selected",
+                group="OUTPUT",
+                metavar="MODE",
+                parser_kwargs={"choices": ("outer", "inner"), "default": "outer"},
+            ),
+            OptionSpec(
+                ("--max-html-bytes",),
+                f"maximum HTML bytes returned (1 to {_MAX_HTML_BYTES}; truncation is identified)",
+                group="OUTPUT",
+                metavar="BYTES",
+                parser_kwargs={"type": int, "default": _MAX_HTML_BYTES},
             ),
             OptionSpec(
                 ("--output",),
@@ -852,11 +1218,11 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             ),
             OptionSpec(
                 ("--retries",),
-                "retry up to N more times (fresh navigation each) when an attempt fails or the "
-                "page text is still changing after a 0.5 s settle window; 0 = single attempt",
+                "retry up to N more times (fresh navigation each) after a failure or unstable page; "
+                "by default only a recognised browser crash is retried once; --retries 0 disables it",
                 group="WAIT",
                 metavar="N",
-                parser_kwargs={"type": int, "default": 0},
+                parser_kwargs={"type": int, "default": None},
             ),
             OptionSpec(
                 ("--full-page",),

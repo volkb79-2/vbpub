@@ -5,7 +5,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+### Added
+- feat(pwmcp): add standard-library `pwmcp eval` for JSON-valued page JavaScript and `inspect --format html` for bounded selector/document HTML through the existing MCP tools; preserve BLOCKED handling for detected challenge pages (PWMCP-42)
+
 ### Fixed
+- fix(pwmcp): scan division and regex syntax inside template expressions, pass through only whole functions, keep bounded-wrapper closers beyond line comments, and handle lone-surrogate output safely; add third-review mutant and differential-fuzz regressions (PWMCP-42 fix round 3)
+- fix(pwmcp): refuse MCP redirects, ignore proxy environment variables, cap eval JSON in the page, classify transport overflow with a size hint, and put text truncation markers on stderr; add second-review regressions for URL credentials, JavaScript literals, comments, retry guards, cap boundaries, UTF-8 prefixes, and CRLF/CR SSE frames (PWMCP-42 fix round 2)
+- fix(pwmcp): distinguish page/browser crashes from MCP or browser-service reachability errors and retry one recognized first-navigation crash by default with an explicit stderr note; document the 2 GiB `/dev/shm` allocation and the absence of a PWMCP-owned browser memory cap (PWMCP-42)
+- fix(pwmcp): update `pwmcp-fetch` for `mcp` SDK 2.3.0 and required `browser_click.target`; test skill tool names against the pinned server tool contract and its CLI flags against the registered parser (PWMCP-42)
+- fix(pwmcp): split SSE records only on HTTP line endings, join multi-line `data:` fields, and support credentialed MCP URLs through redacted Basic Auth headers (PWMCP-42 review)
+- fix(pwmcp): define JavaScript expression wrapping, cap `eval` results, preserve timeout and browser-closure hints, and avoid retrying a dead Playwright lease (PWMCP-42 review)
+- test(pwmcp): add the opt-in live MCP response-shape check, Node-backed HTML extraction and syntax-error oracles, and verb-scoped skill CLI drift coverage (PWMCP-42 review)
 - test(pwmcp): close the 1.64.1-r4 R2 survivors with boundary, retry, diagnostics, and storage-state regressions; document four equivalent mutants (PWMCP-41)
 - test(pwmcp): make the rejected-body reader fake honor zero-byte reads and cap reads so drain mutants fail cleanly instead of growing the test's read log (PWMCP-41)
 - test(pwmcp): make the recognition-timeout and slot-release test independent of subprocess startup time (PWMCP-41)

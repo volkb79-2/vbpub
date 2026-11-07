@@ -1,0 +1,15 @@
+{
+  "package": "@playwright/mcp",
+  "version": "0.0.80",
+  "scope": "browser tools referenced by pwmcp-fetch and its CLI",
+  "tools": [
+    {"name": "browser_click", "required_arguments": ["target"]},
+    {"name": "browser_console_messages", "required_arguments": []},
+    {"name": "browser_evaluate", "required_arguments": ["function"]},
+    {"name": "browser_navigate", "required_arguments": ["url"]},
+    {"name": "browser_snapshot", "required_arguments": []},
+    {"name": "browser_take_screenshot", "required_arguments": []},
+    {"name": "browser_type", "required_arguments": ["text"]},
+    {"name": "browser_wait_for", "required_arguments": []}
+  ]
+}
