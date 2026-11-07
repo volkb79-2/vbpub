@@ -952,6 +952,22 @@ def test_tty_group_prompt_creates_the_default_or_refuses_an_empty_mapping(tmp_pa
 
 
 @pytest.mark.parametrize(
+    "runtime",
+    (
+        _runtime(),
+        _runtime(json_mode=True),
+        _runtime(dry_run=True),
+    ),
+)
+def test_noninteractive_install_requires_an_observe_group(tmp_path: Path, monkeypatch, runtime) -> None:
+    _groups(monkeypatch)
+    args, _wheels = _install_args(observe_group=None)
+
+    with pytest.raises(InstallError, match="missing required --observe-group; provide it on a non-interactive run"):
+        install._gather_inputs(args, runtime, InstallPaths(tmp_path))
+
+
+@pytest.mark.parametrize(
     ("prompts", "clear_wheel"),
     (
         (_Prompts(select=install.PromptCancelled), False),

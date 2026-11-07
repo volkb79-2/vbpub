@@ -73,8 +73,10 @@ sudo toposd install --dry-run \
 ```
 
 After checking the preview, run the same command with `--yes` and without
-`--dry-run`. `--observe-group` defaults to `topos-observe`, which the installer
-creates. A mapped group must already exist; mapping to `docker` is supported.
+`--dry-run`. On an interactive TTY, the observe-group prompt offers
+`topos-observe` as its default. A non-interactive run must pass
+`--observe-group` (unless an existing config or install record supplies it).
+A mapped group must already exist; mapping to `docker` is supported.
 `--observe-users` adds existing users to the chosen group. `--no-enable` writes
 the service files without enabling or starting the socket/service.
 

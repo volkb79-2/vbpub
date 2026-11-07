@@ -497,7 +497,7 @@ def _resolve_group(args: argparse.Namespace, record: Mapping[str, Any], runtime:
         except PromptCancelled:
             raise InstallError("installation prompts cancelled", exit_code=130) from None
         raise InstallError("missing required --observe-group")
-    return DEFAULT_OBSERVE_GROUP
+    raise InstallError("missing required --observe-group; provide it on a non-interactive run")
 
 
 def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: InstallPaths) -> dict[str, Any]:
