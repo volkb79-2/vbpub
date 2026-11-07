@@ -556,9 +556,7 @@ def test_default_generic_navigation_failure_is_not_retried_or_settled(monkeypatc
     "message",
     [
         "Page.goto: Page crashed",
-        "Target closed",
         "Execution context was destroyed",
-        "Browser has been closed",
     ],
 )
 def test_first_page_crash_is_retried_once_without_an_explicit_retries_option(
@@ -577,6 +575,26 @@ def test_first_page_crash_is_retried_once_without_an_explicit_retries_option(
     assert message in captured.err
 
 
+@pytest.mark.parametrize("message", ["Target closed", "Browser has been closed"])
+@pytest.mark.parametrize("retry_args", [[], ["--retries", "2"]])
+def test_browser_level_closure_does_not_retry_on_a_dead_playwright_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    message: str,
+    retry_args: list[str],
+) -> None:
+    calls = _install_cli_browser(monkeypatch, fail_navigations=1, navigation_error=message)
+    assert cli_module.main([
+        "inspect", "https://example.test/page", "--format", "snapshot", *retry_args
+    ]) == 1
+    captured = capsys.readouterr()
+    assert len(calls["goto"]) == 1
+    assert len(calls["context_options"]) == 1
+    assert calls["closed"] == [True]
+    assert "retrying" not in captured.err
+    assert "check that PWMCP is still running" in captured.err
+
+
 def test_final_browser_crash_hint_does_not_blame_pwmcp_connectivity(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -585,8 +603,9 @@ def test_final_browser_crash_hint_does_not_blame_pwmcp_connectivity(
     assert cli_module.main(["inspect", "https://example.test/page", "--format", "snapshot"]) == 1
     captured = capsys.readouterr()
     assert len(calls["goto"]) == 2  # the automatic retry is bounded to one attempt
-    assert "PWMCP is reachable, but the page or browser crashed" in captured.err
-    assert "check that PWMCP is running" not in captured.err
+    assert "PWMCP is reachable" not in captured.err
+    assert "page or browser crashed or was closed" in captured.err
+    assert "check that PWMCP is still running" in captured.err
 
 
 def test_connectivity_failure_keeps_a_service_reachability_hint(

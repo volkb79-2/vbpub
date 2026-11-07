@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import base64
+import http.client
 import json
+import shutil
+import subprocess
 import sys
 import threading
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 
@@ -112,7 +116,11 @@ class _FakeMcpServer:
                             value = True
                         else:
                             value = state.eval_results.pop(0) if state.eval_results else state.eval_value
-                        result = {"content": [{"type": "text", "text": "### Result\n" + json.dumps(value)}]}
+                        result = {
+                            "content": [
+                                {"type": "text", "text": "### Result\n" + json.dumps(value, ensure_ascii=False)}
+                            ]
+                        }
                 else:
                     result = None
                 if method in state.rpc_error_methods:
@@ -123,7 +131,7 @@ class _FakeMcpServer:
                     }
                 else:
                     response_message = {"jsonrpc": "2.0", "id": payload.get("id"), "result": result}
-                body = json.dumps(response_message).encode()
+                body = json.dumps(response_message, ensure_ascii=False).encode()
                 self.send_response(200)
                 default_type = "text/event-stream" if method in state.sse_methods else "application/json"
                 content_type, override_body = state.response_overrides.get(method, (default_type, body))
@@ -137,12 +145,12 @@ class _FakeMcpServer:
                     elif method in state.sse_methods:
                         if method in state.wrong_id_methods:
                             response_message["id"] = -1
-                            body = json.dumps(response_message).encode()
+                            body = json.dumps(response_message, ensure_ascii=False).encode()
                         self.wfile.write(b"event: message\ndata: " + body + b"\n\n")
                     else:
                         if method in state.wrong_id_methods:
                             response_message["id"] = -1
-                            body = json.dumps(response_message).encode()
+                            body = json.dumps(response_message, ensure_ascii=False).encode()
                         self.wfile.write(body)
 
             def do_DELETE(self) -> None:  # noqa: N802
@@ -220,6 +228,223 @@ def test_eval_selector_attribute_all_matches_returns_json_array(
     assert "return values" in function
 
 
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085"])
+def test_eval_preserves_raw_unicode_line_separators_in_sse_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    separator: str,
+) -> None:
+    expected = f"before{separator}after"
+    with _FakeMcpServer() as server:
+        server.state.eval_value = expected
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["eval", "https://example.test", "document.title"]) == 0
+        actual = json.loads(capsys.readouterr().out)
+    assert actual == expected
+
+
+@pytest.mark.parametrize("separator", ["\u2028", "\u2029", "\u0085"])
+def test_inspect_html_block_probe_preserves_raw_unicode_line_separators_in_sse(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    separator: str,
+) -> None:
+    html = "<main>fixture</main>"
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics["text"] = f"before{separator}after"
+        server.state.html_value = {
+            "data": base64.b64encode(html.encode()).decode(),
+            "included_bytes": len(html.encode()),
+            "total_bytes": len(html.encode()),
+            "truncated": False,
+        }
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["inspect", "https://example.test", "--format", "html"]) == 0
+        actual = capsys.readouterr().out
+    assert actual == html + "\n"
+
+
+def test_eval_output_limit_marks_truncation_in_text_and_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.eval_value = "x" * 100
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "eval", "https://example.test", "document.body.innerText", "--max-bytes", "16"
+        ]) == 0
+        text_output = capsys.readouterr().out
+        assert "[truncated" in text_output
+        assert len(text_output.encode("utf-8")) < 100
+
+        assert cli_module.main([
+            "eval", "https://example.test", "document.body.innerText", "--max-bytes", "16", "--json"
+        ]) == 0
+        json_output = json.loads(capsys.readouterr().out)
+    assert json_output["truncated"] is True
+    assert json_output["max_bytes"] == 16
+    assert len(json_output["preview"].encode("utf-8")) <= 16
+
+
+@pytest.mark.parametrize("value", ["0", "8388609"])
+def test_eval_output_limit_rejects_values_outside_the_supported_range(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    value: str,
+) -> None:
+    monkeypatch.setenv("PWMCP_MCP_URL", "not-used")
+    assert cli_module.main(["eval", "https://example.test", "1", "--max-bytes", value]) == 1
+    assert "--max-bytes must be between" in capsys.readouterr().err
+
+
+def test_eval_mcp_url_userinfo_becomes_basic_auth_and_is_removed_from_endpoint() -> None:
+    username = "pwmcp consumer"
+    password = " odd:@/+#[]%$!"
+    userinfo = f"{quote(username, safe='')}:{quote(password, safe='')}"
+    with _FakeMcpServer() as server:
+        endpoint = server.url.replace("http://", f"http://{userinfo}@", 1)
+        with StreamableHttpClient(endpoint) as client:
+            assert client.endpoint == server.url
+            client.call_tool("browser_navigate", {"url": "https://example.test"})
+        expected = "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
+        assert all(headers["authorization"] == expected for headers in server.state.request_headers)
+        assert server.state.delete_headers[0]["authorization"] == expected
+
+
+def test_eval_mcp_url_errors_do_not_expose_odd_userinfo(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    username = "pwmcp"
+    password = " pass:@/?#[]%$! "
+    encoded_password = quote(password, safe="")
+    endpoint = f"http://{quote(username, safe='')}:{encoded_password}@example.test:bad/mcp"
+    monkeypatch.setenv("PWMCP_MCP_URL", endpoint)
+    assert cli_module.main(["eval", "https://example.test", "document.title"]) == 1
+    captured = capsys.readouterr()
+    with pytest.raises(McpUnavailable) as raised:
+        StreamableHttpClient(endpoint)
+    exception_text = f"{raised.value}\n{raised.value!r}"
+    for secret in (password, encoded_password):
+        assert secret not in captured.out
+        assert secret not in captured.err
+        assert secret not in exception_text
+
+
+@pytest.mark.parametrize("exception_type", [http.client.InvalidURL, ValueError, RuntimeError])
+def test_eval_mcp_transport_errors_are_safe_with_credentialed_urls(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    exception_type: type[Exception],
+) -> None:
+    username = "consumer"
+    password = "odd :@/?#[]% value"
+    encoded_user = quote(username, safe="")
+    encoded_password = quote(password, safe="")
+    endpoint = f"http://{encoded_user}:{encoded_password}@127.0.0.1:8931/mcp"
+    requests: list[str] = []
+
+    def reject_request(request: object, **_kwargs: object) -> object:
+        request_url = str(getattr(request, "full_url"))
+        requests.append(request_url)
+        raise exception_type(f"rejected {request_url}")
+
+    monkeypatch.setenv("PWMCP_MCP_URL", endpoint)
+    monkeypatch.setattr(mcp_client.urllib.request, "urlopen", reject_request)
+    assert cli_module.main(["eval", "https://example.test", "document.title"]) == 1
+    captured = capsys.readouterr()
+    with pytest.raises(McpUnavailable) as raised:
+        StreamableHttpClient(endpoint).initialize()
+    exception_text = f"{raised.value}\n{raised.value!r}"
+    assert requests and all("consumer:" not in request for request in requests)
+    for secret in (password, encoded_password):
+        assert secret not in captured.out
+        assert secret not in captured.err
+        assert secret not in exception_text
+
+
+def test_sse_multiline_data_fields_are_joined_with_newlines(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = b'event: message\ndata: {"jsonrpc":"2.0","id":7,\ndata: "result":{"ok":true}}\n\n'
+    loaded: list[str] = []
+    real_loads = json.loads
+
+    def record_loads(value: str | bytes | bytearray, *args: object, **kwargs: object) -> object:
+        loaded.append(value.decode() if isinstance(value, bytes) else str(value))
+        return real_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(mcp_client.json, "loads", record_loads)
+    assert mcp_client._sse_message(payload, 7) == {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "result": {"ok": True},
+    }
+    assert loaded == ['{"jsonrpc":"2.0","id":7,\n"result":{"ok":true}}']
+
+
+def test_eval_javascript_syntax_error_keeps_its_position(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.tool_errors["browser_evaluate"] = "SyntaxError: Unexpected token ')' at position 5"
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["eval", "https://example.test", "1 + )"]) == 1
+    error = capsys.readouterr().err
+    assert "SyntaxError" in error
+    assert "position 5" in error
+    assert "MCP endpoint replied" in error
+
+
+def test_eval_timeout_hint_does_not_suggest_a_browser_crash_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def timeout(*_args: object, **_kwargs: object) -> object:
+        raise McpUnavailable("MCP endpoint request timed out")
+
+    monkeypatch.setattr(cli_module, "StreamableHttpClient", timeout)
+    assert cli_module.main(["eval", "https://example.test", "document.title"]) == 1
+    error = capsys.readouterr().err
+    assert "timed out" in error
+    assert "increase --timeout" in error
+    assert "page or browser crashed" not in error
+
+
+def test_browser_closure_hint_does_not_claim_pwmcp_is_reachable() -> None:
+    hint = cli_module._failure_hint(RuntimeError("Browser has been closed"))
+    assert "page or browser was closed" in hint
+    assert "check that PWMCP is still running" in hint
+    assert "PWMCP is reachable" not in hint
+
+
+def test_inspect_html_passes_margin_for_page_selector_wait_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    timeouts: list[float] = []
+    real_client = cli_module.StreamableHttpClient
+
+    def recording_client(*args: object, **kwargs: object) -> StreamableHttpClient:
+        timeouts.append(float(kwargs["timeout"]))
+        return real_client(*args, **kwargs)
+
+    with _FakeMcpServer() as server:
+        server.state.html_value = {
+            "data": base64.b64encode(b"<main>ok</main>").decode(),
+            "included_bytes": len(b"<main>ok</main>"),
+            "total_bytes": len(b"<main>ok</main>"),
+            "truncated": False,
+        }
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        monkeypatch.setattr(cli_module, "StreamableHttpClient", recording_client)
+        assert cli_module.main([
+            "inspect", "https://example.test", "--format", "html", "--wait-for", "main", "--timeout-ms", "1000"
+        ]) == 0
+        capsys.readouterr()
+    assert timeouts == [3.0]
+
+
 def test_eval_mcp_error_keeps_browser_crash_hint(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -229,7 +454,7 @@ def test_eval_mcp_error_keeps_browser_crash_hint(
         monkeypatch.setenv("PWMCP_MCP_URL", server.url)
         assert cli_module.main(["eval", "https://example.test", "document.title"]) == 1
     error = capsys.readouterr().err
-    assert "PWMCP is reachable, but the page or browser crashed" in error
+    assert "MCP endpoint replied, but the page or browser crashed" in error
     assert "pwmcp eval failed: browser_navigate: Page.goto: Page crashed" in error
 
 
@@ -423,6 +648,22 @@ def test_inspect_html_retries_one_browser_crash_automatically(
     assert captured.out == html + "\n"
     assert "retrying automatically once" in captured.err
     assert len(_call_args(server.state, "browser_navigate")) == 2
+
+
+def test_inspect_html_retries_zero_disables_the_automatic_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.navigate_errors = ["Page.goto: Page crashed"]
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "inspect", "https://example.test", "--format", "html", "--retries", "0"
+        ]) == 1
+        error = capsys.readouterr().err
+    assert "pwmcp inspect failed" in error
+    assert "retrying" not in error
+    assert len(_call_args(server.state, "browser_navigate")) == 1
 
 
 def test_inspect_html_explicit_retries_cover_a_tool_error(
@@ -869,9 +1110,70 @@ def test_html_capture_script_modes_and_result_validation() -> None:
             decode_html_value(invalid_metadata, max_bytes=2)
 
 
+def _python_html_prefix(source: str, limit: int) -> tuple[str, int, bool]:
+    included: list[str] = []
+    included_bytes = 0
+    total_bytes = 0
+    prefix = True
+    for character in source:
+        width = len(character.encode("utf-8"))
+        total_bytes += width
+        if prefix and included_bytes + width <= limit:
+            included.append(character)
+            included_bytes += width
+        else:
+            prefix = False
+    return "".join(included), total_bytes, total_bytes > included_bytes
+
+
+def test_html_capture_javascript_and_python_byte_prefix_oracle_agree() -> None:
+    extraction = html_extraction_function(None, "inner", 7)
+    width_formula = (
+        "point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4"
+    )
+    assert f"const width = {width_formula};" in extraction
+    assert "included_bytes + width <= limit" in extraction
+    assert "truncated: total_bytes > included_bytes" in extraction
+    for source, limit in (
+        ("Aé中𝄞", 7),
+        ("é" * 9, 10),
+        ("𝄞" * 80_000, 131_071),
+    ):
+        expected_prefix, total_bytes, truncated = _python_html_prefix(source, limit)
+        assert len(expected_prefix.encode("utf-8")) <= limit
+        assert total_bytes == len(source.encode("utf-8"))
+        assert truncated == (len(expected_prefix) != len(source))
+
+
+def test_generated_html_capture_javascript_executes_in_node_when_available() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed in the tester environment; Python mirror covers UTF-8 cap rules")
+    for source, limit in (
+        ("Aé中𝄞", 7),
+        ("é" * 9, 10),
+        ("𝄞" * 80_000, 131_071),
+    ):
+        function = html_extraction_function(None, "inner", limit)
+        program = (
+            "global.document = {documentElement: {innerHTML: "
+            + json.dumps(source, ensure_ascii=True)
+            + "}}; global.btoa = (value) => Buffer.from(value, 'binary').toString('base64'); "
+            + f"console.log(JSON.stringify(({function})()));"
+        )
+        completed = subprocess.run([node, "-e", program], check=True, capture_output=True, text=True)
+        actual = json.loads(completed.stdout)
+        prefix, total, truncated = _python_html_prefix(source, limit)
+        assert base64.b64decode(actual["data"]).decode("utf-8") == prefix
+        assert actual["included_bytes"] == len(prefix.encode("utf-8"))
+        assert actual["total_bytes"] == total
+        assert actual["truncated"] is truncated
+
+
 def test_evaluation_function_supports_function_source_and_element_properties() -> None:
     assert evaluation_function("() => document.title") == "() => document.title"
     assert evaluation_function("async function() { return 3; }") == "async function() { return 3; }"
+    assert evaluation_function("function count() { return 3; }") == "function count() { return 3; }"
     assert evaluation_function("async item => item.title") == "async item => item.title"
     assert evaluation_function("[1, 2].map((item) => item * 2)") == "() => ([1, 2].map((item) => item * 2))"
     assert evaluation_function("item => item.title") == "item => item.title"
@@ -880,7 +1182,14 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
         "const values = elements.map((element) => element[\"textContent\"]); "
         "return (values.length ? values[0] : null); }"
     )
-    assert evaluation_function("document.title") == "() => (document.title)"
+    assert evaluation_function("document.title") == "() => (\ndocument.title\n)"
+    assert evaluation_function("document.title;") == "() => (\ndocument.title\n)"
+    assert evaluation_function("document.title; // trailing comment") == (
+        "() => (\ndocument.title // trailing comment\n)"
+    )
+    assert evaluation_function("1 // trailing comment") == "() => (\n1 // trailing comment\n)"
+    assert evaluation_function("functionality.value") == "() => (\nfunctionality.value\n)"
+    assert evaluation_function("functionCount + 1") == "() => (\nfunctionCount + 1\n)"
     with pytest.raises(ValueError, match="only one"):
         evaluation_function(None, selector="a", attribute="href", property_name="href")
     with pytest.raises(ValueError, match="provide a JavaScript"):
