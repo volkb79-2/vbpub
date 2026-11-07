@@ -76,7 +76,10 @@ execution_mode = "project-first"
 
 # Images (built in this repo; see each project's build step).
 CMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:local"
-CMRU_TESTER_UNIFIED_IMAGE = "tester-unified:local"
+# The environment wins, so one release can use a side-tagged image (for example a phase-1
+# image whose run-gate must not be promoted to `:local` yet) without touching what the
+# controller consumes. Unset: the promoted `:local` image.
+CMRU_TESTER_UNIFIED_IMAGE = "${CMRU_TESTER_UNIFIED_IMAGE:-tester-unified:local}"
 
 # The BuildKit endpoint every image build goes through. The host governs builds (a worker a
 # build starts itself may be terminated), so the Buildx builder is a `remote` node on a
