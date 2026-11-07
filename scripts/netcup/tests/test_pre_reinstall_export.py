@@ -264,7 +264,7 @@ esac
         "etc/mdt/host-capacity.json",
         "etc/mdt-cow-root.sh",
         "etc/vbpub/bootstrap.env",
-        "etc/cloud/cloud.cfg.d/saved.conf",
+        "etc/cloud.cfg.d/saved.conf",
         "etc/rules.d/saved.conf",
         "etc/sudoers.d/saved.conf",
         "etc/sysctl.d/saved.conf",
