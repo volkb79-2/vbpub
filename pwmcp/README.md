@@ -86,16 +86,62 @@ The Compose stack uses the exact version-pinned image from the local cache
 when available and pulls it on a cold host.
 
 The bundled `pwmcp` CLI can inspect a remote page without installing browser
-binaries in the devcontainer:
+binaries in the devcontainer. It returns rendered text, an accessibility
+snapshot, bounded HTML, or a screenshot; `pwmcp eval` reads a JSON value through
+the existing MCP page-evaluation tool:
 
 ```bash
 pwmcp inspect https://example.com --format text
 pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format html --selector main --output page.html
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 pwmcp inspect https://self-signed.example --ignore-https-errors
 pwmcp inspect https://example.com/app \
   --wait-until networkidle --wait-for '#content'
+pwmcp eval https://example.com 'document.title'
+pwmcp eval https://example.com --selector 'meta[name=description]' --attr content
+pwmcp eval https://example.com --selector main --property textContent --max-bytes 262144
 ```
+
+HTML is capped at 512 KiB by default and reports truncation. `pwmcp eval` checks
+the compact JSON result in the page before returning it through MCP. The cap is
+1 MiB by default; `--max-bytes` sets it from 1 byte to 4 MiB. Oversized results
+return a compact JSON preview. Text mode prints that preview to stdout and a
+`[truncated after N bytes]` marker to stderr while keeping exit status 0. With
+`--json`, the result is an object with `preview`, `truncated: true`, and
+`max_bytes`. A separate bounded MCP response body protects the transport; if a
+response still reaches that ceiling, PWMCP reports a size error and recommends
+returning a smaller or aggregated value.
+The MCP client connects directly to `PWMCP_MCP_URL`: proxy environment
+variables are ignored and redirects are refused.
+
+`eval` accepts an expression, a JavaScript function expression, or an arrow
+function. A linear scanner removes trailing statement semicolons and comments
+outside single-quoted, double-quoted, and template literals. Leading comments
+are allowed; a comment with no expression is an error. When slash syntax is
+ambiguous, PWMCP leaves the source unchanged for the JavaScript parser to
+diagnose. Use an explicit function with `return` for multiple statements. `eval`
+does not retry page code automatically. It requires no separately installed
+`mcp` Python package and executes the supplied code in the page context, so
+only use it on pages the user is authorized to inspect.
+
+The first page-local renderer crash during native `inspect` is retried once in
+a fresh context; `--retries N` requests additional attempts and `--retries 0`
+disables that retry. A browser-level closure is reported without retry because
+the native Playwright lease may be dead; the HTML path also stops on a reported
+browser closure because a new MCP session cannot restore a closed browser. The
+HTML path opens a fresh MCP session for each other retry. A tool error proves
+the MCP endpoint replied; a local browser connection error does not establish
+that it is still reachable.
+
+`PWMCP_MCP_URL` accepts an absolute `http://` or `https://` MCP endpoint, with
+or without `username:password@` userinfo. Userinfo is sent as an HTTP Basic
+Authorization header and removed from the URL before the HTTP request. Percent
+encode reserved characters in credentials. Use HTTPS whenever credentials
+leave a trusted local network. See the [remote evaluation and HTML
+design](docs/DESIGN-GUIDE.md#mcp-backed-evaluation-and-bounded-html), the
+[evaluation security boundary](docs/SECURITY.md#mcp-page-evaluation), and
+[consumer examples](docs/CONSUMERS.md#inspect-a-webpage).
 
 For pages that render content after the initial navigation event, use
 `--wait-until networkidle` and `--wait-for` a visible, page-specific content
@@ -121,18 +167,18 @@ does not inherit PATH.
 ## Client install and upgrade
 
 The client is **one wheel, `pwmcp-client`**, with two faces: the **`pwmcp` CLI** (console script
-`pwmcp_client.cli:main`: `contract`, `versions`, `doctor`, `inspect`, `ocr`, `skills`) and the
+`pwmcp_client.cli:main`: `contract`, `versions`, `doctor`, `inspect`, `eval`, `ocr`, `skills`) and the
 **`pwmcp_client` Python library** (`BrowserLease`, `load_contract`, `PwmcpContract`, `PwmcpError`,
 `PwmcpUnavailable`, `VersionMismatch`). Installing the wheel gives both.
 
 **Versioning: 1:1 with the server release.** The wheel version is generated at release time from the
 server release (`client/src/pwmcp_client/VERSION`, one mapping helper in `pwmcp_client/release.py`):
-`1.64.1-r2` becomes `1.64.1.post2` (PEP 440 reads `-rN` as the post-release segment, so
-`packaging.version.Version("1.64.1-r2") == Version("1.64.1.post2")`). Two wheels with different
+`1.64.1-r5` becomes `1.64.1.post5` (PEP 440 reads `-rN` as the post-release segment, so
+`packaging.version.Version("1.64.1-r5") == Version("1.64.1.post5")`). Two wheels with different
 content therefore never share a version, and `pip` can tell and upgrade. Roll the client out together
-with the server it talks to. `pwmcp --version` prints the exact network-free `pwmcp 1.64.1.post2`
+with the server it talks to. `pwmcp --version` prints the exact network-free `pwmcp 1.64.1.post5`
 line the shared CLI contract requires; **`pwmcp versions`** adds the server:
-`pwmcp 1.64.1.post2 (server 1.64.1-r2)` or `(server unreachable)`.
+`pwmcp 1.64.1.post5 (server 1.64.1-r5)` or `(server unreachable)`.
 
 **Compatibility policy** (what `pwmcp.contract.json` guarantees). The contract's
 `playwright.protocol` (`<major>.<minor>` of Playwright) is the wire-protocol guarantee: a client
@@ -158,9 +204,9 @@ venv with `pip install --no-index --require-hashes` (pwmcp-client plus its exact
 dependencies, including that release's Playwright) and links `~/.local/bin/pwmcp`:
 
 ```bash
-base=https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v1.64.1-r2
+base=https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v1.64.1-r5
 curl -fsSLO "$base/pwmcp-client-install.py"; curl -fsSL "$base/pwmcp-client-install.py.sha256"   # check it
-python3 pwmcp-client-install.py --version 1.64.1-r2      # private repo: --github-token-file FILE
+python3 pwmcp-client-install.py --version 1.64.1-r5      # private repo: --github-token-file FILE
 pwmcp skills install && pwmcp doctor --contract http://pwmcp-host:3000/contract
 ```
 
@@ -177,7 +223,7 @@ and `pwmcp-client-requirements.txt`, a hash-pinned requirements file whose lines
 `name @ <asset URL> --hash=sha256:...`. Plain `pip` install, one go, hashes enforced:
 
 ```bash
-rel=1.64.1-r3   # the server's release; the wheel version is 1.64.1.post3
+rel=1.64.1-r5   # the server's release; the wheel version is 1.64.1.post5
 curl -fsSLO https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v$rel/pwmcp-client-requirements.txt
 python3 -m venv ~/.venvs/pwmcp && ~/.venvs/pwmcp/bin/pip install --require-hashes -r pwmcp-client-requirements.txt
 ~/.venvs/pwmcp/bin/pwmcp versions --contract http://pwmcp-host:3000/contract
@@ -197,7 +243,7 @@ Operator procedure (do not run it from a release job; the instance is live). The
 fresh-install verb). Replace `$rel`:
 
 ```bash
-rel=1.64.1-r3
+rel=1.64.1-r5
 cd /tmp && base=https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v$rel
 curl -fsSLO $base/get.py && curl -fsSL $base/get.py.sha256 && sha256sum get.py     # compare
 XDG_DATA_HOME=/srv python3 get.py update --scope user --version pwmcp-v$rel
