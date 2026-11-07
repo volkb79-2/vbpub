@@ -33,11 +33,24 @@ def test_the_guard_records_are_immutable():
 
 # -- mount evidence -------------------------------------------------------------------------------------------------
 def test_a_mount_entry_touches_a_device_by_its_number_or_by_its_source_name_alone():
+    host = standard_host()
     by_number = guard.MountEntry("254:7", "/a", "ext4", "/dev/other", "rw")
     by_name = guard.MountEntry("0:99", "/b", "ext4", "/dev/vda7", "rw")
     neither = guard.MountEntry("0:98", "/c", "ext4", "/dev/vdz", "rw")
-    touching = guard._touching([by_number, by_name, neither], {"254:7"}, {"/dev/vda7"})
-    assert touching == {by_number, by_name}
+    touching = guard._touching(host, [by_number, by_name, neither], {"254:7"}, {"/dev/vda7"})
+    assert {e.mountpoint for e in touching} == {"/a", "/b"}
+    assert {e.devno for e in touching} == {"254:7"}
+
+
+def test_a_mount_entry_touches_a_device_by_its_resolved_devno_alone():
+    from test_tgt import btrfs_file_host
+
+    host, _ = btrfs_file_host()
+    # 0:52 is not a sysfs block number, but this source resolves to 254:8.
+    resolved_only = guard.MountEntry("0:52", "/resolved-only", "btrfs", "/dev/vda8", "rw")
+    touching = guard._touching(host, [resolved_only], {"254:8"}, set())
+    assert {entry.mountpoint for entry in touching} == {"/resolved-only"}
+    assert {entry.devno for entry in touching} == {"254:8"}
 
 
 # -- the violation set -----------------------------------------------------------------------------------------------
@@ -116,6 +129,23 @@ def test_a_filesystem_is_the_root_filesystem_by_device_number_or_by_backing_sour
     assert guard.on_root_fs(host, _fs("254:3", "/dev/vda3")) is False
 
 
+def test_a_btrfs_work_filesystem_uses_the_same_resolved_devno_as_root(monkeypatch):
+    from test_tgt import btrfs_file_host
+
+    host, _ = btrfs_file_host()
+    host.mounts = [
+        (ns, "0:52", "/", "/dev/root-alias", "btrfs", opts) if mp == "/"
+        else (ns, "0:53", mp, "/dev/vda8", "btrfs", opts) if mp == "/bench"
+        else (ns, devno, mp, source, fstype, opts)
+        for ns, devno, mp, source, fstype, opts in host.mounts
+    ]
+    real_devno = host.devno
+    monkeypatch.setattr(host, "devno", lambda path: "254:8" if path in ("/dev/root-alias", "/dev/vda8") else real_devno(path))
+    fs = guard.fs_info(host, "/bench")
+    assert fs.devno == "254:8" and fs.raw_devno == "0:53"
+    assert guard.on_root_fs(host, fs) is True
+
+
 def _root_host(free):
     host = standard_host()
     host.set_fs("/", 40 * GIB, free)
@@ -133,7 +163,7 @@ def test_a_root_file_target_of_exactly_ten_percent_of_the_free_space_is_allowed_
     free = 20 * GIB
     assert _root_init(_root_host(free), free // 10).size_bytes == free // 10
     with pytest.raises(Refusal) as err:
-        _root_init(_root_host(free), free // 10 + 1)
+        _root_init(_root_host(free), free // 10 + (1 << 20))
     assert err.value.condition == "root_target_too_large"
 
 

@@ -133,6 +133,31 @@ def test_required_env_resolves_and_missing_or_empty_refuses_named_key(tmp_path):
     assert "NETWORK_SOURCE" in str(missing.value)
 
 
+def test_assay_observer_lane_requires_and_injects_the_named_socket_endpoint():
+    lane_file = load_lane_file(Path(__file__).parents[2] / "assay.toml")
+    lane = lane_file.lane("tester-unified")
+    expected_fact = {
+        "ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
+    }
+    assert lane.infrastructure == expected_fact
+
+    with pytest.raises(AssayError, match="ASSAY_RESOURCE_OBSERVER_SOCKET"):
+        resolve_command_plan(
+            lane,
+            passthrough_source={},
+            infrastructure_environment={},
+        )
+
+    plan = resolve_command_plan(
+        lane,
+        passthrough_source={},
+        infrastructure_environment={
+            "ASSAY_RESOURCE_OBSERVER_SOCKET": "/fixture/observer.sock"
+        },
+    )
+    assert plan.env_effective["ASSAY_RESOURCE_OBSERVER_SOCKET"] == "/fixture/observer.sock"
+
+
 def test_derived_fact_requires_rendered_toml_value(tmp_path):
     facts = tmp_path / "ciu.global.toml"
     facts.write_text("[deploy]\nimage = 'postgres:18'\n", encoding="utf-8")

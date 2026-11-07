@@ -5,10 +5,57 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [1.64.1-r5] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=b5808b1287e71dd62a65b1d278f32233051973e2 -->
+
+### Added
+- feat(pwmcp): add MCP-backed eval and bounded HTML inspection (74bd2c68e)
+
+### Fixed
+- fix(pwmcp): close scanner fold review lows (08e371a6c)
+- fix(pwmcp): close third-round eval regressions (6616d22e9)
+- fix(pwmcp): restore verified round two guards (a8ff4923e)
+- fix(pwmcp): address second fold review findings (8460204a4)
+- fix(pwmcp): close fold review findings (b12053d9f)
+- fix(pwmcp): report mismatched SSE response ids (55747e192)
+- fix(pwmcp): classify notification failures and close R1 gaps (1e20ace6a)
+
+### Documentation
+- docs(pwmcp): record PWMCP-42 R1 evidence (c096a9c83)
+
+### Testing
+- test(pwmcp): cover keyword division in arrow groups (08e24c3a6)
+- test(pwmcp): cover comments in arrow parameters (49722e33a)
+- test(pwmcp): close scanner review gaps (f61815af9)
+- test(pwmcp): cover scanner refusal branches (f653229a5)
+- test(pwmcp): assert bounded wrapper newline (ad14767ab)
+- test(pwmcp): add third review regressions (627ba4e40)
+- test(pwmcp): cover incomplete template scanner paths (67e9886bb)
+- test(pwmcp): run second-round mutant proof (f38241114)
+- test(pwmcp): correct regex literal expectation (3d320a9e7)
+- test(pwmcp): model bounded eval response in CLI replay (7174fc669)
+- test(pwmcp): cover second fold review findings (d5df712cc)
+- test(pwmcp): align expression wrapper oracle (adadf0913)
+- test(pwmcp): follow optional dependency policy (2a33e8c9a)
+- test(pwmcp): cover fold review findings (715eef19c)
+- test(pwmcp): cover navigation crash retry and error hints (963360cb8)
+- test(pwmcp): make OCR timeout coverage deterministic (46b75eaa4)
+- test(pwmcp): close survivor review gaps (c400d6d4c)
+- test(pwmcp): assert the 400 main-document diagnostic directly (e1d128c2e)
+- test(pwmcp): close R2 survivors and drain OOM root cause (f5abbe4a9)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - feat(pwmcp): add standard-library `pwmcp eval` for JSON-valued page JavaScript and `inspect --format html` for bounded selector/document HTML through the existing MCP tools; preserve BLOCKED handling for detected challenge pages (PWMCP-42)
 
 ### Fixed
+- fix(pwmcp): treat regex-prefix words after `.` and `?.` as member identifiers during JavaScript expression scanning; add scanner regressions for comments inside groups and trailing tokens after function expressions (PWMCP-42 fold-review follow-up)
 - fix(pwmcp): scan division and regex syntax inside template expressions, pass through only whole functions, keep bounded-wrapper closers beyond line comments, and handle lone-surrogate output safely; add third-review mutant and differential-fuzz regressions (PWMCP-42 fix round 3)
 - fix(pwmcp): refuse MCP redirects, ignore proxy environment variables, cap eval JSON in the page, classify transport overflow with a size hint, and put text truncation markers on stderr; add second-review regressions for URL credentials, JavaScript literals, comments, retry guards, cap boundaries, UTF-8 prefixes, and CRLF/CR SSE frames (PWMCP-42 fix round 2)
 - fix(pwmcp): distinguish page/browser crashes from MCP or browser-service reachability errors and retry one recognized first-navigation crash by default with an explicit stderr note; document the 2 GiB `/dev/shm` allocation and the absence of a PWMCP-owned browser memory cap (PWMCP-42)
@@ -20,8 +67,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - test(pwmcp): make the rejected-body reader fake honor zero-byte reads and cap reads so drain mutants fail cleanly instead of growing the test's read log (PWMCP-41)
 - test(pwmcp): make the recognition-timeout and slot-release test independent of subprocess startup time (PWMCP-41)
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [1.64.1-r4] - 2026-11-05
 <!-- cmru: generated -->

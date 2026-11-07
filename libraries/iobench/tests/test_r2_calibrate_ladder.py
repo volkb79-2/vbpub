@@ -1,8 +1,10 @@
 """IOB-R2-01: calibration oracles for the cold region, the idle QD1 latency, ladder densification and file-target planning."""
 import pytest
 
-from iobench import guard, ladder, plan
+from iobench import guard, ladder, plan, plausibility
 from iobench.calibrate import RUNG_S, Calibrator
+from iobench.devio import FioJob, FioResult, FioStats
+from iobench.testing import DirScenario
 
 from helpers import INVERSION, calibrate, config, make_host
 from test_r2_calibrate import file_host
@@ -40,6 +42,104 @@ def test_r2_cal_the_idle_qd1_p99_is_the_latency_of_the_qd1_run_not_of_a_deeper_o
     for direction in ("read", "write"):
         assert run.qd1_p99[direction] == depth[(direction, 1)]
         assert depth[(direction, 1)] != depth[(direction, 8)]
+
+
+def _file_calibration_with_write(write, *, little_factor_by_qd=None):
+    from test_r2_calibrate import file_host
+
+    host = file_host()
+    host.scenario.write = write
+    host.scenario.noise_cv = 0.0
+    if little_factor_by_qd is not None:
+        host.scenario.little_factor_by_qd = little_factor_by_qd
+    run = Calibrator(host, config(target="/bench/target.img", work_dir="/bench/w"))
+    out = run.execute()
+    assert out.status == "complete", out.message
+    return run, out
+
+
+@pytest.mark.parametrize(
+    ("depth_failure", "qd32_failure", "caps_fail"),
+    [(True, True, True), (True, False, False), (False, True, True)],
+    ids=("depth-and-main", "depth-only", "main-only"),
+)
+def test_r2_cal_pla_06_merges_degradation_from_every_failing_rung(monkeypatch, depth_failure, qd32_failure, caps_fail):
+    """A later hard QD32 failure keeps its cap effect even when a depth failure was recorded first."""
+    original = plausibility.pla_06
+    run = Calibrator(make_host(cache=INVERSION), config())
+
+    def controlled(iops, latency_us, qd, *, job_name=None, degrade_caps=True, **kwargs):
+        if depth_failure and qd == 1 and job_name and "rung-w1-" in job_name and job_name.endswith("-d"):
+            return original(1600.0, 3.5, qd, job_name=job_name, degrade_caps=False)
+        if qd32_failure and qd == 32 and job_name and f"rung-w32-{run.ws // MIB}" in job_name:
+            return original(1600.0, 40_000.0, qd, job_name=job_name, degrade_caps=True)
+        return original(iops, latency_us, qd, job_name=job_name, degrade_caps=degrade_caps, **kwargs)
+
+    monkeypatch.setattr(plausibility, "pla_06", controlled)
+    out = run.execute()
+    assert out.status == "complete", out.message
+    check = next(c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-06")
+    assert check["status"] == "fail"
+    assert ("caps" in check["degrades"]) is caps_fail
+    if depth_failure:
+        assert out.calibration["calibration"]["ladder"]["qd90"]["write"] is None
+    caps = out.result["proposals"]["caps"]["dev_aggregate"]
+    assert all((v.get("reason") == "stage_failed") is caps_fail for v in caps.values())
+
+
+def test_r2_cal_a_v1001_qd1_write_replay_uses_total_latency_and_produces_a_depth_verdict():
+    # The retained v1001 record supplies 1.6k IOPS, 3.5 us mean clat and 3.888 us p99.
+    # Its slat/lat fields were not retained; about 620 us slat is a replay assumption, not
+    # measured evidence. The end-to-end oracle asserts the resulting calibration verdict.
+    write = DirScenario(iops_max=2600, qd_iops={1: 1600, 8: 2600, 32: 2600}, lat_us=3.5, slat_us=620.0)
+    run, out = _file_calibration_with_write(write)
+    job_suffix = f"rung-w1-{run.ws // MIB}-d"
+    replay = next(row for row in out.result["quality"]["little_law_rungs"] if row["job"].endswith(job_suffix))
+    assert replay["qd"] == 1 and replay["iops"] == pytest.approx(1600.0, rel=0.01)
+    assert replay["clat_mean_us"] == pytest.approx(3.5)
+    assert replay["slat_mean_us"] == pytest.approx(620.0)
+    assert replay["lat_mean_us"] == pytest.approx(623.5)
+    assert replay["status"] == "pass"
+    assert out.calibration["calibration"]["ladder"]["qd90"]["write"] == 8
+    assert not any(row.get("job", "").endswith(job_suffix) for row in out.calibration["calibration"]["ladder"]["excluded_rungs"])
+    assert out.calibration["quality"]["little_law_rungs"] == out.result["quality"]["little_law_rungs"]
+
+
+def test_r2_cal_a_real_write_depth_failure_is_excluded_from_qd90_and_does_not_publish_its_p99():
+    write = DirScenario(iops_max=2600, qd_iops={1: 1600, 8: 2600, 32: 2600}, lat_us=3.5)
+    run, out = _file_calibration_with_write(write)
+    job_suffix = f"rung-w1-{run.ws // MIB}-d"
+    replay = next(row for row in out.result["quality"]["little_law_rungs"] if row["job"].endswith(job_suffix))
+    assert replay["status"] == "fail" and replay["qd"] == 1
+    assert replay["iops"] == pytest.approx(1600.0, rel=0.01)
+    assert replay["clat_mean_us"] == pytest.approx(3.5) and replay["slat_mean_us"] == pytest.approx(0.0)
+    assert replay["lat_mean_us"] == pytest.approx(3.5)
+    assert 1 not in run.depth["write"] and 8 in run.depth["write"] and 32 in run.depth["write"]
+    ladder_doc = out.calibration["calibration"]["ladder"]
+    assert ladder_doc["qd90"]["write"] is None and ladder_doc["qd90"]["read"] is not None
+    assert ladder_doc["idle_qd1_p99_us"]["write"] is None
+    excluded = [row for row in ladder_doc["excluded_rungs"] if row.get("job", "").endswith(job_suffix)]
+    assert len(excluded) == 1 and excluded[0]["qd"] == 1 and excluded[0]["check"] == "IOB-PLA-06"
+    check = next(c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-06")
+    for expected in (job_suffix, "QD1", "iops=", "mean clat=", "mean slat=", "mean lat="):
+        assert expected in check["detail"]
+    assert "caps" not in check["degrades"]
+    caps = out.result["proposals"]["caps"]["dev_aggregate"]
+    assert all(v.get("reason") != "stage_failed" for v in caps.values())
+
+
+def test_r2_cal_missing_latency_from_supported_fio_is_a_measurement_defect():
+    run = Calibrator(make_host(cache=None), config())
+    job = FioJob("rung-w1-1-d", "/dev/vda7", "randwrite", 4096, 1, 10, 0, GIB)
+    stats = FioStats("write", 1600.0, 6_553_600.0, 4096 * 16000, 10.0, 3.5,
+                     {"99.000000": 3.888}, slat_mean_us=None, lat_mean_us=None, fio_version="fio-3.36")
+    result = FioResult(job, 0, stats, [], None, 0.0)
+    rec = run.judged(result, {"dir": "write", "ws_bytes": GIB}, 1, depth_only=True)
+    check = run.little[-1]
+    assert rec["little_failed"] and check.status == "fail"
+    assert "not_applicable: fio did not report lat/slat" in check.detail
+    assert "measurement defect" in check.detail and "fio-3.36" in check.detail
+    assert check.degrades == ()
 
 
 def test_r2_cal_a_ladder_that_falls_below_the_cliff_ratio_is_densified_once_between_the_last_good_rung_and_the_largest():

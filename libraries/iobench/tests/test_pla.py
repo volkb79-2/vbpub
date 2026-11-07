@@ -52,6 +52,31 @@ def test_pla_06_controlled_wrong():
     bad = P.pla_06(10000.0, 9000.0, 32)                         # 2.8: broken or faked fio
     assert bad.status == "fail" and bad.effects == (("caps", "absent", "stage_failed"),)
     assert P.pla_06(10000.0, 100.0, 32).status == "fail"
+    non_finite = P.pla_06(10000.0, float("inf"), 32, job_name="rung-r32-64G")
+    assert non_finite.status == "not_applicable" and "non-finite lat/slat" in non_finite.detail
+
+
+def test_pla_06_replays_the_v1001_qd1_write_depth_rung_and_names_its_job():
+    # Retained v1001 standard evidence: QD1 write, about 1.6k IOPS and 3.5 us mean clat.
+    # The captured check was 0.006; this replay gives 0.0056, the same failure signature.
+    clat_only = P.pla_06(1600.0, 3.5, 1, job_name="rung-w1-64G-d")
+    assert clat_only.status == "fail" and clat_only.value == pytest.approx(0.006)
+    assert "rung-w1-64G-d" in clat_only.detail and "QD1" in clat_only.detail
+    # Little's law needs roughly 625 us total latency at 1.6k IOPS/QD1; the retained record lacks slat/lat to explain the gap.
+    total = P.pla_06(1600.0, 625.0, 1, job_name="rung-w1-64G-d")
+    assert total.status == "pass" and total.value == pytest.approx(1.0)
+    unavailable = P.pla_06(1600.0, None, 1, job_name="rung-w1-64G-d", latency_expected=False)
+    assert unavailable.status == "not_applicable" and unavailable.detail.startswith("not_applicable: fio did not report lat/slat")
+    defect = P.pla_06(1600.0, None, 1, job_name="rung-w1-64G-d", latency_expected=True, degrade_caps=False)
+    assert defect.status == "fail" and "measurement defect" in defect.detail
+    assert defect.degrades == ()  # a missing metric on a depth rung still cannot blank capabilities
+
+
+def test_pla_06_depth_failure_does_not_degrade_caps():
+    depth = P.pla_06(1600.0, 3.5, 1, job_name="rung-w1-64G-d", degrade_caps=False)
+    props = {"caps": _caps()}
+    after = P.apply_effects(props, [depth])
+    assert depth.status == "fail" and depth.degrades == () and after["caps"] == props["caps"]
 
 
 def test_pla_07_controlled_wrong():

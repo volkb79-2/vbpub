@@ -10,7 +10,7 @@ from iobench.guard import Target
 from iobench.host import HostError, TAIL_BYTES
 from iobench.testing import (GIB, R1002_PARTUUID, R1002_SIZE, TailViolation, standard_host)
 
-from helpers import job, run_job, target_ref
+from helpers import config, job, run_job, target_ref
 
 CREATED = "2026-10-21T03:00:00Z"
 DEV = "/dev/vda7"
@@ -614,4 +614,204 @@ def test_tgt_10_fill_aborts_when_free_space_falls():
     margin = guard.file_margin(30 * GIB)
     assert cal["fill"]["bytes"] < cal["fill"]["planned_bytes"] and host.statfs("/bench")[1] < margin + GIB
     assert cal["extent_written"][0][1] == cal["fill"]["bytes"]  # WS_max shrank to the extent so far
-    assert "limited-by-budget" in out.result["quality"]["limits"]
+    assert "limited-by-budget" not in out.result["quality"]["limits"]
+    assert "limited-by-space" in out.result["quality"]["limits"]
+    assert out.result["quality"]["cache_proof"] == "limited-by-space"
+
+
+def test_tgt_10_a_file_fio_cut_short_does_not_claim_budget_truncation():
+    host = file_host()
+    host.scenario.cut_after_bytes = {"-fill-": 64 * (1 << 20)}
+    out = calibrate(host, target="/bench/target.img", work_dir="/bench/w", profile="veryquick")
+    fill = out.calibration["calibration"]["fill"]
+    assert out.status == "complete" and 0 < fill["bytes"] < fill["planned_bytes"]
+    assert "limited-by-budget" not in out.result["quality"]["limits"]
+    assert "limited-by-fio-short" in out.result["quality"]["limits"]
+    assert out.result["quality"]["cache_proof"] == "limited-by-fio-short"
+
+
+def btrfs_file_host(*, multi_device=False):
+    """Replay the retained IB-VQ btrfs identity: anonymous mount 0:52, source /dev/vda8 (254:8).
+
+    The experiment retained findmnt/lsblk output and the anonymous devno/source pair, not a complete original mountinfo line.
+    """
+    host = standard_host(workdir_free=100 * GIB)
+    uuid = "c5ea3deb-7c69-40bb-a51c-4a37d5ff9829"
+    part = host.add_partition("vda", "vda8", 254, 8, 168 * GIB, None)
+    part.fs_uuid = uuid
+    host.mounts = [(ns, dev, mp, src, fs, opts) for ns, dev, mp, src, fs, opts in host.mounts if mp != "/bench"]
+    host.add_mount("0:52", "/bench", "/dev/vda8", "btrfs")
+    host.set_fs("/bench", 168 * GIB, 100 * GIB)
+    devices = f"/sys/fs/btrfs/{uuid}/devices"
+    host.makedirs(devices)
+    host.symlinks[f"{devices}/1"] = host.realpath("/sys/dev/block/254:8")
+    if multi_device:
+        host.symlinks[f"{devices}/2"] = host.realpath("/sys/dev/block/254:7")
+    return host, uuid
+
+
+def test_tgt_06_btrfs_mount_source_and_single_member_resolve_the_same_disk():
+    host, uuid = btrfs_file_host()
+    target = guard.init_file(host, "/bench/target.img", size=6 * GIB, own=True, expect_fs_uuid=uuid,
+                             confirm_quiet_window=False, allow_large_root_target=False, created=CREATED)
+    fs = guard.fs_info(host, target.path)
+    assert fs.devno == "254:8"  # mountinfo's 0:52 is anonymous; the source is vda8
+    assert guard.backing_disk(host, target.path) == "vda"
+    from iobench.stages import Runner
+    assert Runner(host, config(target=target.path), command="calibrate").file_target_disk(target.path) == "vda"
+    from iobench.result import s0_identity
+    assert s0_identity(host, target, "/bench/w")["disk_scope"]["name"] == "vda"
+
+
+def test_tgt_06_btrfs_member_devno_overrides_a_different_mount_source_devno(monkeypatch):
+    host, uuid = btrfs_file_host()
+    host.add_disk("vdb", 253, 200 * GIB)
+    host.add_partition("vdb", "vdb8", 253, 8, 100 * GIB, "00000000-0000-0000-0000-000000000008")
+    devices = f"/sys/fs/btrfs/{uuid}/devices"
+    host.symlinks[f"{devices}/1"] = host.realpath("/sys/dev/block/253:8")
+    real_devno = host.devno
+    monkeypatch.setattr(host, "devno", lambda path: "254:7" if path == "/dev/vda8" else real_devno(path))
+    assert guard.fs_info(host, "/bench").devno == "254:7"
+    assert guard.backing_disk(host, "/bench/target.img") == "vdb"
+
+
+def test_tgt_06_multi_device_btrfs_is_refused_before_file_creation():
+    host, uuid = btrfs_file_host(multi_device=True)
+    with pytest.raises(Refusal) as err:
+        guard.init_file(host, "/bench/target.img", size=6 * GIB, own=True, expect_fs_uuid=uuid,
+                        confirm_quiet_window=False, allow_large_root_target=False, created=CREATED)
+    assert err.value.condition == "target_fs_multi_device"
+    assert not host.exists("/bench/target.img") and not host.exists("/bench/target.img.iobench-target")
+
+
+def test_tgt_05_a_work_dir_on_multi_device_btrfs_is_refused_like_a_file_target():
+    host, _ = btrfs_file_host(multi_device=True)
+    with pytest.raises(Refusal) as err:
+        guard.check_workdir(host, "/bench/w", planned_volume=GIB, installer=False,
+                            confirm_quiet_window=False, target_disk="vda")
+    assert err.value.condition == "target_fs_multi_device"
+
+
+def test_tgt_05_a_work_dir_that_is_the_multi_device_btrfs_mountpoint_is_refused():
+    host, _ = btrfs_file_host(multi_device=True)
+    with pytest.raises(Refusal) as err:
+        guard.check_workdir(host, "/bench", planned_volume=GIB, installer=False,
+                            confirm_quiet_window=False, target_disk="vda")
+    assert err.value.condition == "target_fs_multi_device"
+
+
+def test_tgt_05_namespace_check_uses_raw_and_resolved_btrfs_devnos():
+    host, _ = btrfs_file_host()
+    # PID 1 has an additional mount of the same btrfs device, but under another source spelling.
+    host.devices["/dev/btrfs-alias"] = host.devices["/dev/vda8"]
+    host.add_mount("0:52", "/bench/other-view", "/dev/btrfs-alias", "btrfs", ns="init")
+    with pytest.raises(Refusal) as err:
+        guard.check_workdir(host, "/bench/w", planned_volume=GIB, installer=False,
+                            confirm_quiet_window=False, target_disk="vda")
+    assert err.value.condition == "namespace_mismatch"
+
+
+def test_tgt_05_workdir_namespace_check_keeps_a_raw_only_mount_match():
+    host, _ = btrfs_file_host()
+    # The work mount resolves 0:52 through /dev/vda8 to 254:8. PID 1 also has a
+    # different mount with the raw 0:52 number and an unresolved source name.
+    host.add_mount("0:52", "/bench/other-view", "/dev/unresolved-btrfs-source", "btrfs", ns="init")
+    with pytest.raises(Refusal) as err:
+        guard.check_workdir(host, "/bench/w", planned_volume=GIB, installer=False,
+                            confirm_quiet_window=False, target_disk="vda")
+    assert err.value.condition == "namespace_mismatch"
+
+
+def test_tgt_06_calibration_refuses_a_file_when_btrfs_gains_a_second_member():
+    host, uuid = btrfs_file_host()
+    target = guard.init_file(host, "/bench/target.img", size=6 * GIB, own=True, expect_fs_uuid=uuid,
+                             confirm_quiet_window=False, allow_large_root_target=False, created=CREATED)
+    devices = f"/sys/fs/btrfs/{uuid}/devices"
+    host.symlinks[f"{devices}/2"] = host.realpath("/sys/dev/block/254:7")
+    from iobench.stages import Runner
+    before = len(host.argv_log)
+    with pytest.raises(Refusal) as err:
+        Runner(host, config(target=target.path), command="calibrate").file_target_disk(target.path)
+    assert err.value.condition == "target_fs_multi_device"
+    assert not any(argv[0] == "fio" for argv in host.argv_log[before:])
+
+
+def test_tgt_06_btrfs_without_a_visible_member_list_is_refused():
+    host, uuid = btrfs_file_host()
+    devices = f"/sys/fs/btrfs/{uuid}/devices"
+    host.dirs.discard(devices)
+    host.symlinks.pop(f"{devices}/1")
+    with pytest.raises(Refusal) as err:
+        guard.init_file(host, "/bench/target.img", size=6 * GIB, own=True, expect_fs_uuid=uuid,
+                        confirm_quiet_window=False, allow_large_root_target=False, created=CREATED)
+    assert err.value.condition == "target_fs_disk_unknown" and "member devices" in str(err.value)
+
+
+def test_tgt_06_btrfs_requires_a_uuid_and_complete_well_formed_member_facts(monkeypatch):
+    host, uuid = btrfs_file_host()
+    host.devices["/dev/vda8"].fs_uuid = None
+    with pytest.raises(Refusal) as err:
+        guard.backing_disk(host, "/bench/target.img")
+    assert err.value.condition == "target_fs_disk_unknown"
+
+    host, uuid = btrfs_file_host()
+    devices = f"/sys/fs/btrfs/{uuid}/devices"
+    host.dirs.add(f"{devices}/2")  # sysfs lists a member whose /dev fact is absent
+    assert guard.btrfs_member_devnos(host, uuid) is None
+
+    host.dirs.discard(f"{devices}/2")
+    host.put(f"{devices}/2/dev", "not-a-devno\n")
+    assert guard.btrfs_member_devnos(host, uuid) is None
+
+    original_read = host.read_text
+
+    def unreadable(path):
+        if path == host.realpath(f"{devices}/1") + "/dev":
+            raise OSError("sysfs read failed")
+        return original_read(path)
+
+    monkeypatch.setattr(host, "read_text", unreadable)
+    assert guard.btrfs_member_devnos(host, uuid) is None
+
+
+def test_tgt_06_init_refuses_when_backing_disk_disappears_before_identity(monkeypatch):
+    host = file_host()
+    monkeypatch.setattr(guard, "backing_disk", lambda _host, _path: None)
+    with pytest.raises(Refusal) as err:
+        guard.init_file(host, "/bench/new-target.img", size=6 * GIB, own=True,
+                        expect_fs_uuid="22222222-2222-2222-2222-222222222222", confirm_quiet_window=False,
+                        allow_large_root_target=False, created=CREATED)
+    assert err.value.condition == "target_fs_disk_unknown"
+
+
+def test_tgt_06_overlay_source_does_not_claim_a_block_backing_disk():
+    host = file_host()
+    host.mounts = [(ns, "0:99" if mp == "/bench" else dev, mp, src, "overlay" if mp == "/bench" else fs, opts)
+                   for ns, dev, mp, src, fs, opts in host.mounts]
+    fs = guard.fs_info(host, "/bench/target.img")
+    assert fs.devno == "0:99" and guard.backing_disk(host, "/bench/target.img") is None
+
+
+def test_tgt_06_other_anonymous_filesystem_numbers_fall_back_to_the_block_source():
+    host = file_host()
+    host.mounts = [(ns, "0:99" if mp == "/bench" else dev, mp, src, fs, opts)
+                   for ns, dev, mp, src, fs, opts in host.mounts]
+    fs = guard.fs_info(host, "/bench/target.img")
+    assert fs.devno == "254:5" and guard.backing_disk(host, "/bench/target.img") == "vda"
+
+
+def test_tgt_06_file_size_must_be_a_mib_multiple_with_floor_suggestion():
+    host = standard_host(workdir_free=40 * GIB)
+    size = 6 * GIB + 1
+    with pytest.raises(Refusal) as err:
+        finit(host, size=size)
+    corrected = (size // (1 << 20)) * (1 << 20)
+    assert err.value.condition == "file_size_alignment" and str(corrected) in err.value.remedy
+    assert not host.exists("/bench/target.img")
+    with pytest.raises(Refusal) as err:
+        finit(standard_host(), size=1)
+    assert err.value.condition == "file_size_alignment" and str(1 << 20) in err.value.remedy
+    for invalid in (0, "6291456", True):
+        with pytest.raises(Refusal) as err:
+            finit(standard_host(), size=invalid)
+        assert err.value.condition == "file_size_invalid"

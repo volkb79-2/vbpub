@@ -517,6 +517,7 @@ def _skip_js_balanced_group(source: str, start: int, nesting: int = 0) -> int | 
     index = start + 1
     previous_can_end_expression = False
     previous_is_brace_close = False
+    previous_is_member_operator = False
     while index < len(source):
         character = source[index]
         if character.isspace():
@@ -540,6 +541,7 @@ def _skip_js_balanced_group(source: str, start: int, nesting: int = 0) -> int | 
             index = end
             previous_can_end_expression = True
             previous_is_brace_close = False
+            previous_is_member_operator = False
             continue
         if character == "`":
             end = _skip_js_template(source, index, nesting + 1)
@@ -548,6 +550,7 @@ def _skip_js_balanced_group(source: str, start: int, nesting: int = 0) -> int | 
             index = end
             previous_can_end_expression = True
             previous_is_brace_close = False
+            previous_is_member_operator = False
             continue
         if character == "/":
             if previous_is_brace_close:
@@ -563,14 +566,19 @@ def _skip_js_balanced_group(source: str, start: int, nesting: int = 0) -> int | 
                 index = end
                 previous_can_end_expression = True
                 previous_is_brace_close = False
+            previous_is_member_operator = False
             continue
         if character.isalpha() or character in "_$" or ord(character) >= 128:
             start_word = index
             index += 1
             while index < len(source) and _identifier_character(source[index]):
                 index += 1
-            previous_can_end_expression = source[start_word:index] not in _REGEX_PREFIX_WORDS
+            previous_can_end_expression = (
+                previous_is_member_operator
+                or source[start_word:index] not in _REGEX_PREFIX_WORDS
+            )
             previous_is_brace_close = False
+            previous_is_member_operator = False
             continue
         if character.isdigit():
             index += 1
@@ -578,12 +586,14 @@ def _skip_js_balanced_group(source: str, start: int, nesting: int = 0) -> int | 
                 index += 1
             previous_can_end_expression = True
             previous_is_brace_close = False
+            previous_is_member_operator = False
             continue
         if character in closing_for:
             stack.append(closing_for[character])
             index += 1
             previous_can_end_expression = False
             previous_is_brace_close = False
+            previous_is_member_operator = False
             continue
         if character in ")]}":
             if not stack or stack[-1] != character:
@@ -594,6 +604,7 @@ def _skip_js_balanced_group(source: str, start: int, nesting: int = 0) -> int | 
                 return index
             previous_can_end_expression = True
             previous_is_brace_close = character == "}"
+            previous_is_member_operator = False
             continue
 
         two_character = source[index : index + 2]
@@ -610,6 +621,7 @@ def _skip_js_balanced_group(source: str, start: int, nesting: int = 0) -> int | 
             index += 1
         previous_can_end_expression = token in {"++", "--"}
         previous_is_brace_close = False
+        previous_is_member_operator = token in {".", "?."}
     return None
 
 
@@ -691,6 +703,7 @@ def _arrow_body_has_top_level_comma(source: str, start: int) -> bool:
     index = start
     previous_can_end_expression = False
     previous_is_brace_close = False
+    previous_is_member_operator = False
     while index < len(source):
         next_index = _skip_js_trivia(source, index)
         if next_index is None:
@@ -706,6 +719,7 @@ def _arrow_body_has_top_level_comma(source: str, start: int) -> bool:
             index = end
             previous_can_end_expression = True
             previous_is_brace_close = False
+            previous_is_member_operator = False
             continue
         if character == "`":
             end = _skip_js_template(source, index)
@@ -714,6 +728,7 @@ def _arrow_body_has_top_level_comma(source: str, start: int) -> bool:
             index = end
             previous_can_end_expression = True
             previous_is_brace_close = False
+            previous_is_member_operator = False
             continue
         if character in "([{":
             end = _skip_js_balanced_group(source, index)
@@ -722,6 +737,7 @@ def _arrow_body_has_top_level_comma(source: str, start: int) -> bool:
             previous_is_brace_close = source[index] == "{"
             index = end
             previous_can_end_expression = True
+            previous_is_member_operator = False
             continue
         if character == "," or character == ";":
             return True
@@ -739,11 +755,16 @@ def _arrow_body_has_top_level_comma(source: str, start: int) -> bool:
                 index = end
                 previous_can_end_expression = True
                 previous_is_brace_close = False
+            previous_is_member_operator = False
             continue
         identifier_end = _identifier_end(source, index)
         if identifier_end is not None:
-            previous_can_end_expression = source[index:identifier_end] not in _REGEX_PREFIX_WORDS
+            previous_can_end_expression = (
+                previous_is_member_operator
+                or source[index:identifier_end] not in _REGEX_PREFIX_WORDS
+            )
             previous_is_brace_close = False
+            previous_is_member_operator = False
             index = identifier_end
             continue
         if character.isdigit():
@@ -752,6 +773,7 @@ def _arrow_body_has_top_level_comma(source: str, start: int) -> bool:
                 index += 1
             previous_can_end_expression = True
             previous_is_brace_close = False
+            previous_is_member_operator = False
             continue
         two_character = source[index : index + 2]
         three_character = source[index : index + 3]
@@ -767,6 +789,7 @@ def _arrow_body_has_top_level_comma(source: str, start: int) -> bool:
             index += 1
         previous_can_end_expression = token in {"++", "--"}
         previous_is_brace_close = False
+        previous_is_member_operator = token in {".", "?."}
     return False
 
 
@@ -870,6 +893,7 @@ def _strip_trailing_javascript(source: str) -> tuple[str, int]:
     nonsemicolon_seen = False
     previous_can_end_expression = False
     previous_is_brace_close = False
+    previous_is_member_operator = False
     uncertain = False
     while index < len(source):
         character = source[index]
@@ -899,6 +923,7 @@ def _strip_trailing_javascript(source: str) -> tuple[str, int]:
         token_is_semicolon = False
         token_can_end_expression = False
         token_is_brace_close = False
+        token_is_member_operator = False
 
         if character in "'\"":
             end = _skip_js_quoted(source, index, character)
@@ -932,7 +957,9 @@ def _strip_trailing_javascript(source: str) -> tuple[str, int]:
             while index < len(source) and _identifier_character(source[index]):
                 index += 1
             word = source[start:index]
-            token_can_end_expression = word not in _REGEX_PREFIX_WORDS
+            token_can_end_expression = (
+                previous_is_member_operator or word not in _REGEX_PREFIX_WORDS
+            )
         elif character.isdigit():
             index += 1
             while index < len(source) and (source[index].isalnum() or source[index] in "._"):
@@ -951,6 +978,7 @@ def _strip_trailing_javascript(source: str) -> tuple[str, int]:
             else:
                 token = character
                 index += 1
+            token_is_member_operator = token in {".", "?."}
             if token == ";":
                 token_is_semicolon = True
             elif token in {")", "]", "}", "++", "--"}:
@@ -963,6 +991,7 @@ def _strip_trailing_javascript(source: str) -> tuple[str, int]:
             last_token_is_semicolon = True
             previous_can_end_expression = False
             previous_is_brace_close = False
+            previous_is_member_operator = False
         else:
             semicolon_start = None
             trailing_comment_start = None
@@ -970,6 +999,7 @@ def _strip_trailing_javascript(source: str) -> tuple[str, int]:
             nonsemicolon_seen = True
             previous_can_end_expression = token_can_end_expression
             previous_is_brace_close = token_is_brace_close
+            previous_is_member_operator = token_is_member_operator
 
     if first_token is None:
         raise ValueError("no JavaScript expression was provided; comments alone are not an expression")

@@ -30,6 +30,7 @@ from gate.tests.support import PROJECT_ROOT, requires_parent_repository
 from gate.tests.test_distribution_gate import (
     HEX40,
     RECEIPT_RELATIVE,
+    OBSERVER_SOURCE,
     _git_commit,
     _host_environ,
     _rev,
@@ -2197,7 +2198,7 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     # this harness), not whatever group the locally visible socket carries (the
     # fixture socket's group would be this process's effective gid).
     assert group_ids == ["994", "994"]  # verified Docker group, then the observer group
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/cgprofile.sock" in launch
+    assert f"ASSAY_RESOURCE_OBSERVER_SOCKET={OBSERVER_SOURCE}" in launch
     assert "--cidfile" in launch
     mounts = [launch[i + 1] for i, value in enumerate(launch[:-1]) if value == "--mount"]
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in mounts
@@ -2206,9 +2207,12 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     assert f"type=bind,src={socket_source},dst=/var/run/docker.sock" in mounts
     # v16 native R2 refuses to run without cgroup observation, so the runner gets
     # the observer DIRECTORY read-only (never a writable or socket-file mount).
-    observer_mounts = [value for value in mounts if "cgprofile-observer" in value]
+    observer_mounts = [value for value in mounts if str(Path(OBSERVER_SOURCE).parent) in value]
     assert len(observer_mounts) == 1
-    assert observer_mounts[0].endswith("target=/run/cgprofile-observer,readonly")
+    assert observer_mounts[0] == (
+        f"type=bind,source={Path(OBSERVER_SOURCE).parent},"
+        f"target={Path(OBSERVER_SOURCE).parent},readonly"
+    )
     assert not any("cgprofile.sock" in value for value in mounts)
     assert not any(value == "-v" for value in launch)
     assert ["logs", "--follow", _FAKE_RUNNER_ID] in calls
