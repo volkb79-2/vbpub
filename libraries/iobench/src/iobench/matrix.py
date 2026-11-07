@@ -351,9 +351,12 @@ class Matrixer(Runner):
         if not self.identity:
             return Outcome(status, code, message, None, None)
         if status != "complete":
+            partial = {"status": "incomplete", "stages": dict(self.stages),
+                       "evidence": {**self.evidence, "sweep_cells": list(self.sweep_cells), "repeats": dict(self.repeats),
+                                    "decision": self.decision, "read_ratio": dict(self.read_ratio), "base": dict(self.base)}}
             doc = {"schema": res.SCHEMA, "schema_minor": res.SCHEMA_MINOR, "tool": self.tool(), "run": self.run_record(status, message),
                    "identity": self.identity, "quality": {"cache_proof": "none", "limits": proposals.dedupe(self.limits), "checks": []},
-                   "restore": report.as_dict()}
+                   "partial": partial, "restore": report.as_dict()}
             res.write_failed(self.host, p["result"], doc)
             return Outcome(status, code, message, doc, None)
         result = self.assemble(report)

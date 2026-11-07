@@ -211,13 +211,13 @@ class Runner:
         return self.finish(job, handle, started)
 
     def file_target_disk(self, target: str) -> str:
-        """The disk behind a file target's filesystem; a filesystem with no single block device (overlay, multi-device, network)
-        is refused cleanly (IOB-BL-11) instead of failing on a missing ``/sys/dev/block`` entry."""
-        fs = guard.fs_info(self.host, posixpath.dirname(target))
-        if not self.host.exists(f"/sys/dev/block/{fs.devno}"):
+        """Resolve the same single-disk identity that target init checked, including anonymous filesystem device numbers."""
+        disk = guard.backing_disk(self.host, target)
+        if disk is None:
+            fs = guard.fs_info(self.host, posixpath.dirname(target))
             raise Refusal("target_fs_disk_unknown", f"{target} is on a filesystem with no single block device behind it ({fs.fstype} on {fs.source})",
-                          "use a file on a filesystem mounted from one block device (ext4 or xfs on a partition)")
-        return guard.device_chain(self.host, fs.devno).disk_name
+                          "use a file on a filesystem mounted from one visible block device")
+        return disk
 
     # -- S0 -----------------------------------------------------------------------------------------
     def s0(self, *, need_workdir: bool) -> None:
@@ -266,23 +266,33 @@ class Runner:
             return False
         try:
             fn()
-        except S.IntegrityError:
+        except Aborted as exc:
+            self.mark(name, f"aborted: {exc}")
+            raise
+        except S.IntegrityError as exc:
+            self.mark(name, f"failed: {exc}")
             raise
         except StageSkipped as exc:
             if required:
+                self.mark(name, f"failed: required stage skipped: {exc.why}")
                 raise
             self.skip(name, exc.why)
             return False
         except S.TooFewPoints:
             if required:
+                self.mark(name, "failed: insufficient_points")
                 raise
             self.mark(name, "failed: insufficient_points")
             return False
         except S.SeriesError:
             if required:
+                self.mark(name, "failed: unusable_series")
                 raise
             self.mark(name, "failed: unusable_series")
             return False
+        except (IobenchError, HostError) as exc:
+            self.mark(name, f"failed: {exc}")
+            raise
         self.mark(name, "ok")
         return True
 

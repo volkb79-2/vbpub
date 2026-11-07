@@ -37,6 +37,16 @@ def test_cei_01_append_only_atomic():
     assert len(host.read_text(PATH).splitlines()) == 3
 
 
+def test_cei_01_valid_json_non_object_headers_are_ignored_and_rotated():
+    host = standard_host()
+    path = "/var/lib/iobench/bad-ceilings.jsonl"
+    host.put(path, "[1]\n")
+    assert ceilings.load(host, path, DIGEST) == ([], ["history_ignored_unreadable"])
+    aside = ceilings.rotate_foreign(host, path, DIGEST, "2026-11-07T12:00:00Z")
+    assert aside == path + ".superseded-2026-11-07T120000Z"
+    assert host.read_text(aside) == "[1]\n" and not host.exists(path)
+
+
 def test_cei_02_refusals():
     for bad, cond in ((obs(bps=0), "ceiling_plateau"), (obs(bps=-5), "ceiling_plateau"), (obs(bps=float("nan")), "ceiling_plateau"),
                       (obs(bps=float("inf")), "ceiling_plateau"), (obs(bps="x"), "ceiling_plateau"), (obs(bps=True), "ceiling_plateau"),

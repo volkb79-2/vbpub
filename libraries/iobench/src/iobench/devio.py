@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import posixpath
+import re
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
@@ -213,6 +214,9 @@ class FioStats:
     runtime_s: float
     clat_mean_us: float
     pct_us: dict[str, float]
+    slat_mean_us: float | None = None
+    lat_mean_us: float | None = None
+    fio_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -230,11 +234,33 @@ def parse_fio_json(text: str, ddir: str) -> FioStats:
     doc = json.loads(text)
     job = doc["jobs"][0][ddir]
     clat = job["clat_ns"]
+    clat_mean_us = float(clat["mean"]) / 1000.0
+    slat = (job.get("slat_ns") or {}).get("mean")
+    lat = (job.get("lat_ns") or {}).get("mean")
+    slat_mean_us = float(slat) / 1000.0 if slat is not None else None
+    if lat is not None:
+        lat_mean_us = float(lat) / 1000.0
+    elif slat_mean_us is not None:
+        lat_mean_us = slat_mean_us + clat_mean_us
+    else:
+        lat_mean_us = None
     return FioStats(
         ddir=ddir, iops=float(job["iops"]), bw_bps=float(job["bw_bytes"]), io_bytes=int(job["io_bytes"]),
-        runtime_s=job["runtime"] / 1000.0, clat_mean_us=float(clat["mean"]) / 1000.0,
+        runtime_s=job["runtime"] / 1000.0, clat_mean_us=clat_mean_us,
         pct_us={k: v / 1000.0 for k, v in clat["percentile"].items()},
+        slat_mean_us=slat_mean_us, lat_mean_us=lat_mean_us,
+        fio_version=doc.get("fio version") if isinstance(doc.get("fio version"), str) else None,
     )
+
+
+def fio_version_reports_latency(version: str | None) -> bool:
+    """Whether this fio version is expected to report ``lat_ns`` or ``slat_ns`` means in JSON."""
+    if version is None:
+        return False
+    match = re.search(r"\bfio-(\d+)\.(\d+)(?:\D|$)", version)
+    if match is None:
+        return False
+    return (int(match.group(1)), int(match.group(2))) >= (3, 30)
 
 
 def parse_rate_log(text: str, metric: str) -> list[tuple[float, float]]:
