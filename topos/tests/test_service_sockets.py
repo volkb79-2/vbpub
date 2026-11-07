@@ -307,6 +307,11 @@ def test_rendered_default_units_match_packaged_assets_byte_for_byte() -> None:
     }
     assert assets == render_units(DEFAULTS)
     assert "RestartPreventExitStatus=2\n" in assets["topos.service"]
+    # The config test runs before the daemon, so a refused config never starts it.
+    lines = assets["topos.service"].splitlines()
+    assert lines.index("ExecStartPre=/opt/topos/current/venv/bin/toposd -t --config /etc/topos/toposd.toml") < next(
+        i for i, line in enumerate(lines) if line.startswith("ExecStart=")
+    )
 
 
 def test_mapped_observe_group_is_only_a_sysusers_comment() -> None:

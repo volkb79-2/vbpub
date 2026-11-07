@@ -47,7 +47,9 @@ slice, and sysusers files from the config. `toposd unit check [--config PATH]
 [--root DIR] [--diff]` compares them with installed files. `toposd config check
 [--config PATH] [--json]` validates the service config; `toposd -t [--config
 PATH]` is the same check in the `nginx -t` style (exit 0, or 2 with the error on
-stderr), usable as an `ExecStartPre`. `toposd install`,
+stderr); `topos.service` runs it as its `ExecStartPre`, so a config that fails the
+check (including a group with GID 0 or the docker GID) never starts the daemon.
+`toposd install`,
 `uninstall`, and `doctor` manage and inspect the host service. The client-side
 `topos daemon status` command remains available for socket and protocol checks.
 The old path `/run/topos/topos.sock` is no longer served, and `topos daemon

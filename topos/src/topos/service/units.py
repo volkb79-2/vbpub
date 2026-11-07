@@ -48,6 +48,7 @@ def render_units(cfg: ServiceConfig) -> dict[str, str]:
             "RuntimeDirectoryMode=0700",
             "RuntimeDirectoryPreserve=yes",
             "Sockets=topos-observe.socket",
+            "ExecStartPre=/opt/topos/current/venv/bin/toposd -t --config /etc/topos/toposd.toml",
             "ExecStart=/opt/topos/current/venv/bin/toposd run --config /etc/topos/toposd.toml",
             "Restart=on-failure",
             "RestartPreventExitStatus=2",
