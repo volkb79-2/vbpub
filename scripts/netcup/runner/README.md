@@ -2,10 +2,30 @@
 
 Generic, reviewed scripts that turn a freshly installed Debian host (see `install-host.py`) into a parallel test
 runner: a `runner` account, a Btrfs CoW area, detached-job and checkout-sync helpers, the gate tools, the
-`tester-base`/`tester-unified` images and a cockpit container that drives Run-Gate lanes. They hold no host-specific
-value: everything that names one host (FQDN, server id, uid, device, paths, pinned versions) comes from
-`runner.env`, which is gitignored. Copy `runner.env.example` to `runner.env`, fill it in, and upload the whole
+`tester-base`/`tester-unified` images and a cockpit container that drives Run-Gate lanes. Runner-specific host settings
+(identity, uid, disk layout and pinned versions) come from `runner.env`, which is gitignored. Copy
+`runner.env.example` to `runner.env`, fill it in, and upload the whole
 directory (scripts, `lib.sh`, `run-job`, `sync-from-devcontainer`, `runner.env`) to the host together.
+
+The cockpit's service endpoints and access GIDs come from the host-published `/etc/host-endpoints.env` record, not
+`runner.env`. The loader accepts only a regular, non-symlink file owned by root with no group or other write bit. It
+parses comments, blank lines and the published `KEY=VALUE` alphabet as data; malformed and duplicate entries fail with
+the file and line named. It exports only the runner's keys. `start-cockpit-runner.sh` refuses with the first missing
+variable's name. Repair the record through its owner (host-setup for Docker API and BuildKit, `cgpd install` for
+cgprofile, or `toposd install` for topos), then run
+the corresponding host checker and retry; do not add socket paths or endpoint GIDs to `runner.env`. The cockpit
+receives the record's endpoint values, including both `CGPROFILE_OBSERVER_SOCKET` and its directory, gets read-only
+identity binds of the published socket directories, and joins the Docker, cgprofile-control, topos-observe and
+mdt-buildkit groups by canonical numeric GID. It never joins the observer group; Run-Gate grants that GID to observer
+lanes when it starts them. GIDs must be positive decimal values without leading zeros, and cockpit startup verifies
+that `MDT_HOST_DOCKER_GID` matches the local `docker` group. The example pins Run-Gate 25.4.0 for the host endpoint
+cutover. See the [runner endpoint rationale](../DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record)
+and the [runner host setup steps](../CONSUMERS.md#runner-cockpit-endpoints).
+
+Provisioning normally precedes endpoint publication. As that explicit bootstrap exception, `provision-runner.sh`
+adds the runner to the host's group named `docker`; it does not choose or hard-code a GID. Host-setup publishes the
+GID of that same group, and provisioning checks the record if it already exists. Later cockpit startup checks the
+published GID against the local group before using it.
 
 Every script sources `lib.sh`, which loads `runner.env` (or `$RUNNER_ENV`) and defines `identity_check`: the host must
 answer to the configured FQDN, static hostname and `/etc/vbpub/server-id` before anything is changed. Verify the
