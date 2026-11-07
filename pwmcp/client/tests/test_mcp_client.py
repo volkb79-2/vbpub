@@ -1669,6 +1669,7 @@ def test_evaluation_scanner_treats_regex_keywords_after_member_access_as_propert
         "o?.of / 2;",
         "a.typeof / 2;",
         "x => o.do / 2",
+        "x => (o.in / 2)",
     )
     functions = [evaluation_function(expression) for expression in expressions]
     program = (
@@ -1685,7 +1686,7 @@ def test_evaluation_scanner_treats_regex_keywords_after_member_access_as_propert
         capture_output=True,
         text=True,
     )
-    assert json.loads(completed.stdout) == [3, 3, 4, 5, 6]
+    assert json.loads(completed.stdout) == [3, 3, 4, 5, 6, 3]
 
 
 @pytest.mark.parametrize(
@@ -1832,6 +1833,7 @@ def test_javascript_scanner_differential_fuzz_matches_node_for_fixed_seeds() -> 
         "o?.of / 2;",
         "a.typeof / 2;",
         "x => o.do / 2",
+        "x => (o.in / 2)",
         "(a // c\n) => 6",
         "function(){return 1}()",
         "function(){} + 1",
