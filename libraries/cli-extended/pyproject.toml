@@ -53,8 +53,8 @@ addopts = "-q"
 schema_version = 1
 
 [[tool.cli-extended.clis]]
-id = "hostendpoints"
-factory = "cli_extended.hostendpoints:build_cli"
+id = "hostcfg-endpoints"
+factory = "cli_extended.hostcfg.endpoints:build_cli"
 review = "docs/cli-review.toml"
 manifest = "docs/cli-surface.json"
 spec = "docs/CLI-SPEC.md"

@@ -9,7 +9,7 @@ where needed. The package's
 
 ## Host endpoint records
 
-`cli_extended.hostendpoints` stores host facts supplied by their owner. The
+`cli_extended.hostcfg.endpoints` stores host facts supplied by their owner. The
 service installer is the only place that selects a default socket path; it
 publishes the already resolved path, its directory when static consumers need
 one, and any host GIDs. A consumer reads only the process environment and does
@@ -18,7 +18,7 @@ not add a literal path or GID fallback.
 An installer can publish from its post-configuration values:
 
 ```python
-from cli_extended.hostendpoints import publish
+from cli_extended.hostcfg.endpoints import publish
 
 publish(
     "cgprofile",
@@ -45,7 +45,7 @@ installer removes its socket units or runtime directories.
 A client requires its endpoint before connecting:
 
 ```python
-from cli_extended.hostendpoints import require_env
+from cli_extended.hostcfg.endpoints import require_env
 
 socket_path = require_env(
     "CGPROFILE_CONTROL_SOCKET",
@@ -58,24 +58,33 @@ socket_path = require_env(
 
 An unset or empty variable raises `CliFailure` naming the variable and the
 remedy. A client may accept an explicit `--socket` override, but its implicit
-path always comes from `require_env`. The `hostendpoints` module CLI is useful
-for host-side operations:
+path always comes from `require_env`. The `hostcfg.endpoints` module CLI is
+useful for host-side operations:
 
 ```bash
-python3 -m cli_extended.hostendpoints publish \
+python3 -m cli_extended.hostcfg.endpoints publish \
   --owner cgprofile --writer 'cgpd install 2.3.0' \
   --entry CGPROFILE_CONTROL_SOCKET=/run/cgprofile/control/cgprofile.sock \
   --entry CGPROFILE_CONTROL_SOCKET_DIR=/run/cgprofile/control
-python3 -m cli_extended.hostendpoints check --json
-python3 -m cli_extended.hostendpoints show
-python3 -m cli_extended.hostendpoints withdraw --owner cgprofile
+python3 -m cli_extended.hostcfg.endpoints check --json
+python3 -m cli_extended.hostcfg.endpoints show
+python3 -m cli_extended.hostcfg.endpoints withdraw --owner cgprofile
 ```
+
+Owner names match `^[a-z][a-z0-9-]{0,62}$` (`cgprofile`, not `CgProfile`), and
+the keys `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `BASH_ENV`, `ENV`, `IFS`,
+`UID`, `EUID`, `PPID`, `SHELLOPTS`, `BASHOPTS`, `HOME`, `USER`, `LOGNAME`,
+`SHELL`, `PWD` and `OLDPWD` are reserved: use service-specific keys.
+`withdraw` of an owner that never published is a no-op that reports so.
 
 `plan` performs the same alphabet, collision, symlink, and marker checks
 without changing files. `verify` compares one owner's fragment with its live
 expected mapping; `check` compares all fragments with the aggregate, verifies
-the environment block and profile source, and reports wrong modes or
-symlinks. The exact header and marker format is in the
+the environment block and profile source, and reports wrong modes, wrong
+ownership (real `/` only), stale temporary files, or symlinks. `check` waits
+for a publish in flight, and on a host where nothing was published it passes
+with `no endpoints published`. The exact header and marker format is in
+[`SPEC.md` §16](../SPEC.md#16-host-endpoint-records) and the
 [endpoint CLI specification](CLI-SPEC.md).
 
 ## Install and choose a version source

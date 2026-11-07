@@ -635,9 +635,9 @@ review each product's command semantics before registering its grammar.
 ## Publish host endpoint records
 
 Service installers can publish their configured socket paths and host GIDs
-through [`cli_extended.hostendpoints`](docs/CONSUMERS.md#host-endpoint-records).
+through [`cli_extended.hostcfg.endpoints`](docs/CONSUMERS.md#host-endpoint-records).
 The module renders one fragment per owner, a shared environment file, the
 managed `/etc/environment` block, and the login-shell profile source. Clients
 use `require_env()` to fail clearly when an endpoint variable is absent.
 The [endpoint CLI specification](docs/CLI-SPEC.md) documents the exact record
-format, API, and `python3 -m cli_extended.hostendpoints` commands.
+format, API, and `python3 -m cli_extended.hostcfg.endpoints` commands.

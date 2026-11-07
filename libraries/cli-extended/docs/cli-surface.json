@@ -1,10 +1,10 @@
 {
   "candidates": [
     {
-      "id": "case:route:entrypoint:hostendpoints/check/minimum",
+      "id": "case:route:entrypoint:hostcfg-endpoints/check/minimum",
       "kind": "minimum",
       "members": [],
-      "route_id": "route:entrypoint:hostendpoints/check",
+      "route_id": "route:entrypoint:hostcfg-endpoints/check",
       "shape": {
         "defaulted_options": [],
         "required_argument_values": {},
@@ -12,113 +12,113 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:7c3dc771b6665cba3d0cf8a2578b228f7ee2587819e73e5a8e14b6c519987c74"
+      "signature": "sha256:fd0142b27ff5bea393a40df04692858788365e06f863c96bfe9029cb1f0a277f"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/check/option-spelling/option:route:entrypoint:hostendpoints/check/--debug-raw/--debug-raw",
+      "id": "case:route:entrypoint:hostcfg-endpoints/check/option-spelling/option:route:entrypoint:hostcfg-endpoints/check/--debug-raw/--debug-raw",
       "kind": "option-spelling",
       "members": [
-        "option:route:entrypoint:hostendpoints/check/--debug-raw"
+        "option:route:entrypoint:hostcfg-endpoints/check/--debug-raw"
       ],
-      "route_id": "route:entrypoint:hostendpoints/check",
+      "route_id": "route:entrypoint:hostcfg-endpoints/check",
       "shape": {
-        "option_id": "option:route:entrypoint:hostendpoints/check/--debug-raw",
+        "option_id": "option:route:entrypoint:hostcfg-endpoints/check/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:103c6e162a25420d8946e22ce07e850a3c38c54c784a3a5d26589ef975763ae1"
+      "signature": "sha256:b5a1126c5eeb47c54744ae44ff61c8c1d0a202b28b2cf25cfc3ef0390281d072"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/check/option-spelling/option:route:entrypoint:hostendpoints/check/--json/--json",
+      "id": "case:route:entrypoint:hostcfg-endpoints/check/option-spelling/option:route:entrypoint:hostcfg-endpoints/check/--json/--json",
       "kind": "option-spelling",
       "members": [
-        "option:route:entrypoint:hostendpoints/check/--json"
+        "option:route:entrypoint:hostcfg-endpoints/check/--json"
       ],
-      "route_id": "route:entrypoint:hostendpoints/check",
+      "route_id": "route:entrypoint:hostcfg-endpoints/check",
       "shape": {
-        "option_id": "option:route:entrypoint:hostendpoints/check/--json",
+        "option_id": "option:route:entrypoint:hostcfg-endpoints/check/--json",
         "spelling": "--json"
       },
-      "signature": "sha256:08206a2503bcf03879873323e97fb460151603c7e03886a2dc99b7b1c3f45c1e"
+      "signature": "sha256:4a797924d5ce109efaf295b717a308419935246a902c306f4fe16b08858f6ca3"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/publish/minimum",
+      "id": "case:route:entrypoint:hostcfg-endpoints/publish/minimum",
       "kind": "minimum",
       "members": [
-        "option:route:entrypoint:hostendpoints/publish/--owner",
-        "option:route:entrypoint:hostendpoints/publish/--writer",
-        "option:route:entrypoint:hostendpoints/publish/--entry"
+        "option:route:entrypoint:hostcfg-endpoints/publish/--owner",
+        "option:route:entrypoint:hostcfg-endpoints/publish/--writer",
+        "option:route:entrypoint:hostcfg-endpoints/publish/--entry"
       ],
-      "route_id": "route:entrypoint:hostendpoints/publish",
+      "route_id": "route:entrypoint:hostcfg-endpoints/publish",
       "shape": {
         "defaulted_options": [],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": [
-          "option:route:entrypoint:hostendpoints/publish/--owner",
-          "option:route:entrypoint:hostendpoints/publish/--writer",
-          "option:route:entrypoint:hostendpoints/publish/--entry"
+          "option:route:entrypoint:hostcfg-endpoints/publish/--owner",
+          "option:route:entrypoint:hostcfg-endpoints/publish/--writer",
+          "option:route:entrypoint:hostcfg-endpoints/publish/--entry"
         ]
       },
-      "signature": "sha256:8302b3c7db8198fdc7383d53af6f8f7df0c0c2a6ac0a41547e013a95bc7de7d4"
+      "signature": "sha256:b912bcdc92851c01d6c0592a17636d59ec92b1146030c856f2f723d218dd4ed0"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/publish/option-spelling/option:route:entrypoint:hostendpoints/publish/--debug-raw/--debug-raw",
+      "id": "case:route:entrypoint:hostcfg-endpoints/publish/option-spelling/option:route:entrypoint:hostcfg-endpoints/publish/--debug-raw/--debug-raw",
       "kind": "option-spelling",
       "members": [
-        "option:route:entrypoint:hostendpoints/publish/--debug-raw"
+        "option:route:entrypoint:hostcfg-endpoints/publish/--debug-raw"
       ],
-      "route_id": "route:entrypoint:hostendpoints/publish",
+      "route_id": "route:entrypoint:hostcfg-endpoints/publish",
       "shape": {
-        "option_id": "option:route:entrypoint:hostendpoints/publish/--debug-raw",
+        "option_id": "option:route:entrypoint:hostcfg-endpoints/publish/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:8549a55730318dd33685e77d2076070f316513daf3020e9739037e38abe5600d"
+      "signature": "sha256:bec1c8f033fdbbe9859259a92db4814378a5588dc6dc782d79a7ccce354904c1"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/publish/option-spelling/option:route:entrypoint:hostendpoints/publish/--entry/--entry",
+      "id": "case:route:entrypoint:hostcfg-endpoints/publish/option-spelling/option:route:entrypoint:hostcfg-endpoints/publish/--entry/--entry",
       "kind": "option-spelling",
       "members": [
-        "option:route:entrypoint:hostendpoints/publish/--entry"
+        "option:route:entrypoint:hostcfg-endpoints/publish/--entry"
       ],
-      "route_id": "route:entrypoint:hostendpoints/publish",
+      "route_id": "route:entrypoint:hostcfg-endpoints/publish",
       "shape": {
-        "option_id": "option:route:entrypoint:hostendpoints/publish/--entry",
+        "option_id": "option:route:entrypoint:hostcfg-endpoints/publish/--entry",
         "spelling": "--entry"
       },
-      "signature": "sha256:ba24966a1619c67756fd65c9ea4efcbd10b6af56a71e3d4e03358a799814086b"
+      "signature": "sha256:0d2c71704783fb6b27b124b071a95665ec712c9958b6da86e66b53467f0793a0"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/publish/option-spelling/option:route:entrypoint:hostendpoints/publish/--owner/--owner",
+      "id": "case:route:entrypoint:hostcfg-endpoints/publish/option-spelling/option:route:entrypoint:hostcfg-endpoints/publish/--owner/--owner",
       "kind": "option-spelling",
       "members": [
-        "option:route:entrypoint:hostendpoints/publish/--owner"
+        "option:route:entrypoint:hostcfg-endpoints/publish/--owner"
       ],
-      "route_id": "route:entrypoint:hostendpoints/publish",
+      "route_id": "route:entrypoint:hostcfg-endpoints/publish",
       "shape": {
-        "option_id": "option:route:entrypoint:hostendpoints/publish/--owner",
+        "option_id": "option:route:entrypoint:hostcfg-endpoints/publish/--owner",
         "spelling": "--owner"
       },
-      "signature": "sha256:bdd78cb61782f958475d61ffc9acb025d6c9ac7edb2ef5545ccfab9e139fcd78"
+      "signature": "sha256:3b12821be21c5c7a374525f1847d69adc84c85a55ea007c1fc7e400211b89540"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/publish/option-spelling/option:route:entrypoint:hostendpoints/publish/--writer/--writer",
+      "id": "case:route:entrypoint:hostcfg-endpoints/publish/option-spelling/option:route:entrypoint:hostcfg-endpoints/publish/--writer/--writer",
       "kind": "option-spelling",
       "members": [
-        "option:route:entrypoint:hostendpoints/publish/--writer"
+        "option:route:entrypoint:hostcfg-endpoints/publish/--writer"
       ],
-      "route_id": "route:entrypoint:hostendpoints/publish",
+      "route_id": "route:entrypoint:hostcfg-endpoints/publish",
       "shape": {
-        "option_id": "option:route:entrypoint:hostendpoints/publish/--writer",
+        "option_id": "option:route:entrypoint:hostcfg-endpoints/publish/--writer",
         "spelling": "--writer"
       },
-      "signature": "sha256:240eadcefb0bb7f3e9f20af20deda53a960eae5b118ce1919dddea0ef4f70ba8"
+      "signature": "sha256:e21ef220e29c30e6ee9b20def3ddb06e7edff7f0c46253490d5798deacb9153d"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/show/minimum",
+      "id": "case:route:entrypoint:hostcfg-endpoints/show/minimum",
       "kind": "minimum",
       "members": [],
-      "route_id": "route:entrypoint:hostendpoints/show",
+      "route_id": "route:entrypoint:hostcfg-endpoints/show",
       "shape": {
         "defaulted_options": [],
         "required_argument_values": {},
@@ -126,64 +126,64 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:0d06cfd240cec485066c14aeda42f48512e4995be232446f465ec70bf7bbcf70"
+      "signature": "sha256:dbf13c67af88b7be2696c5a0cf837f3826058783d1a3cae6c087e274d93380cd"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/show/option-spelling/option:route:entrypoint:hostendpoints/show/--debug-raw/--debug-raw",
+      "id": "case:route:entrypoint:hostcfg-endpoints/show/option-spelling/option:route:entrypoint:hostcfg-endpoints/show/--debug-raw/--debug-raw",
       "kind": "option-spelling",
       "members": [
-        "option:route:entrypoint:hostendpoints/show/--debug-raw"
+        "option:route:entrypoint:hostcfg-endpoints/show/--debug-raw"
       ],
-      "route_id": "route:entrypoint:hostendpoints/show",
+      "route_id": "route:entrypoint:hostcfg-endpoints/show",
       "shape": {
-        "option_id": "option:route:entrypoint:hostendpoints/show/--debug-raw",
+        "option_id": "option:route:entrypoint:hostcfg-endpoints/show/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:a5991ba74afe006028ec247e58e5ac64389f76f7c4f47cffae7d42038a77a65c"
+      "signature": "sha256:9327eabc2f4c83caf57f2cfb57bca40c76256cc5b3cbf77201451a7184fe4e36"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/withdraw/minimum",
+      "id": "case:route:entrypoint:hostcfg-endpoints/withdraw/minimum",
       "kind": "minimum",
       "members": [
-        "option:route:entrypoint:hostendpoints/withdraw/--owner"
+        "option:route:entrypoint:hostcfg-endpoints/withdraw/--owner"
       ],
-      "route_id": "route:entrypoint:hostendpoints/withdraw",
+      "route_id": "route:entrypoint:hostcfg-endpoints/withdraw",
       "shape": {
         "defaulted_options": [],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": [
-          "option:route:entrypoint:hostendpoints/withdraw/--owner"
+          "option:route:entrypoint:hostcfg-endpoints/withdraw/--owner"
         ]
       },
-      "signature": "sha256:14ea6a8d8b91256cfb15e49619045a2626e5738fc5f86a0e1c8b63ab1aab59b2"
+      "signature": "sha256:d22b4a8ffc47eecd0f00c30660269c6cb966030967b9ca9a0f7b40fc8396059f"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/withdraw/option-spelling/option:route:entrypoint:hostendpoints/withdraw/--debug-raw/--debug-raw",
+      "id": "case:route:entrypoint:hostcfg-endpoints/withdraw/option-spelling/option:route:entrypoint:hostcfg-endpoints/withdraw/--debug-raw/--debug-raw",
       "kind": "option-spelling",
       "members": [
-        "option:route:entrypoint:hostendpoints/withdraw/--debug-raw"
+        "option:route:entrypoint:hostcfg-endpoints/withdraw/--debug-raw"
       ],
-      "route_id": "route:entrypoint:hostendpoints/withdraw",
+      "route_id": "route:entrypoint:hostcfg-endpoints/withdraw",
       "shape": {
-        "option_id": "option:route:entrypoint:hostendpoints/withdraw/--debug-raw",
+        "option_id": "option:route:entrypoint:hostcfg-endpoints/withdraw/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:0060a15b600177d0857561464851b04660303a1a810443a826f7f48ae4d48a8e"
+      "signature": "sha256:0bf1bcb010f4b88b96fd7be5e1b960f77ceba479be309e7c7da70ffed409b3cd"
     },
     {
-      "id": "case:route:entrypoint:hostendpoints/withdraw/option-spelling/option:route:entrypoint:hostendpoints/withdraw/--owner/--owner",
+      "id": "case:route:entrypoint:hostcfg-endpoints/withdraw/option-spelling/option:route:entrypoint:hostcfg-endpoints/withdraw/--owner/--owner",
       "kind": "option-spelling",
       "members": [
-        "option:route:entrypoint:hostendpoints/withdraw/--owner"
+        "option:route:entrypoint:hostcfg-endpoints/withdraw/--owner"
       ],
-      "route_id": "route:entrypoint:hostendpoints/withdraw",
+      "route_id": "route:entrypoint:hostcfg-endpoints/withdraw",
       "shape": {
-        "option_id": "option:route:entrypoint:hostendpoints/withdraw/--owner",
+        "option_id": "option:route:entrypoint:hostcfg-endpoints/withdraw/--owner",
         "spelling": "--owner"
       },
-      "signature": "sha256:b3efcad527cff745a682643fd8dc4c6f15e196ca8de03d7b4da7848d80261294"
+      "signature": "sha256:6d12d79414d06a6cb7dd89806acda27fdaba0e57a20380a081ede61dfd193c1f"
     }
   ],
   "entrypoint": {
@@ -195,14 +195,14 @@
       "--help",
       "--version"
     ],
-    "command": "hostendpoints",
-    "display_name": "HOST ENDPOINTS",
+    "command": "hostcfg-endpoints",
+    "display_name": "HOSTCFG ENDPOINTS",
     "fromfile_prefix_chars": null,
-    "id": "entrypoint:hostendpoints",
+    "id": "entrypoint:hostcfg-endpoints",
     "long_name": "Host endpoint record manager",
     "no_args_action": false,
     "prefix_chars": "-",
-    "prog": "hostendpoints",
+    "prog": "hostcfg-endpoints",
     "single_command": false
   },
   "incomplete": [],
@@ -232,7 +232,7 @@
       "delegated_metadata": [],
       "description": "Check fragments, rendered files, marker structure, modes and symlinks.",
       "group": "EXPLORATION",
-      "id": "route:entrypoint:hostendpoints/check",
+      "id": "route:entrypoint:hostcfg-endpoints/check",
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [],
@@ -297,7 +297,7 @@
           ],
           "help_group": "RECORD",
           "hidden": false,
-          "id": "option:route:entrypoint:hostendpoints/publish/--owner",
+          "id": "option:route:entrypoint:hostcfg-endpoints/publish/--owner",
           "kind": "option",
           "metavar": "OWNER",
           "minimum_values": 1,
@@ -335,7 +335,7 @@
           ],
           "help_group": "RECORD",
           "hidden": false,
-          "id": "option:route:entrypoint:hostendpoints/publish/--writer",
+          "id": "option:route:entrypoint:hostcfg-endpoints/publish/--writer",
           "kind": "option",
           "metavar": "WRITER",
           "minimum_values": 1,
@@ -373,7 +373,7 @@
           ],
           "help_group": "RECORD",
           "hidden": false,
-          "id": "option:route:entrypoint:hostendpoints/publish/--entry",
+          "id": "option:route:entrypoint:hostcfg-endpoints/publish/--entry",
           "kind": "option",
           "metavar": "KEY=VALUE",
           "minimum_values": 1,
@@ -414,7 +414,7 @@
       "delegated_metadata": [],
       "description": "Publish one owner's endpoint entries and render the shared files.",
       "group": "MODIFICATION",
-      "id": "route:entrypoint:hostendpoints/publish",
+      "id": "route:entrypoint:hostcfg-endpoints/publish",
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [],
@@ -478,7 +478,7 @@
       "delegated_metadata": [],
       "description": "Print the generated aggregate environment file.",
       "group": "EXPLORATION",
-      "id": "route:entrypoint:hostendpoints/show",
+      "id": "route:entrypoint:hostcfg-endpoints/show",
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [],
@@ -543,7 +543,7 @@
           ],
           "help_group": "RECORD",
           "hidden": false,
-          "id": "option:route:entrypoint:hostendpoints/withdraw/--owner",
+          "id": "option:route:entrypoint:hostcfg-endpoints/withdraw/--owner",
           "kind": "option",
           "metavar": "OWNER",
           "minimum_values": 1,
@@ -583,7 +583,7 @@
       "delegated_metadata": [],
       "description": "Withdraw one owner's fragment and update the shared files.",
       "group": "MODIFICATION",
-      "id": "route:entrypoint:hostendpoints/withdraw",
+      "id": "route:entrypoint:hostcfg-endpoints/withdraw",
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [],
