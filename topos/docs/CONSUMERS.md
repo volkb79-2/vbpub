@@ -28,9 +28,10 @@ at `/etc/sysusers.d/topos.conf`. To check a staged root tree, pass
 Install a release with the topos wheel, cli-extended wheel, and daemon lock
 pins. Pins use `<version>@sha256:<64 lowercase hex>`; the daemon-lock version
 must match the topos wheel. Observe access is a group of its own, `topos-observe`
-by default: add every operator account that needs it (login user, runner, the
-devcontainer user via its numeric gid) with `--observe-users`. The `docker`
-group is never an observe group:
+by default: add every operator account that needs it (login user, runner) with
+`--observe-users`, and give a container the group through its own group setting
+(a numeric `group_add` of the host gid). The `docker` group is never an observe
+group:
 
 ```bash
 sudo toposd install --dry-run \

@@ -79,7 +79,9 @@ After checking the preview, run the same command with `--yes` and without
 A mapped group must already exist. The `docker` group is refused as the observe
 group, by the flag, the install record and `toposd.toml` alike (its membership
 is root-equivalent): put operator accounts into `topos-observe` with
-`--observe-users`, or map another dedicated group.
+`--observe-users`, or map another dedicated group. A `toposd.toml` that already
+names `docker` is refused even when `--observe-group` is given, so change that
+line by hand first.
 `--observe-users` adds existing users to the chosen group. `--no-enable` writes
 the service files without enabling or starting the socket/service.
 

@@ -394,6 +394,21 @@ def test_tty_prompts_resolve_group_users_and_enable(tmp_path: Path, monkeypatch)
     assert [name for name, _message in prompts.calls] == ["text", "text", "text", "select", "text", "text", "confirm"]
 
 
+def test_typing_docker_at_the_group_prompt_is_refused(tmp_path: Path, monkeypatch) -> None:
+    class Prompts:
+        def select(self, _message, choices, **_kwargs):
+            return choices[1]
+
+        def text(self, message, **_kwargs):
+            return "docker" if "Existing group" in message else "unused"
+
+    args, _wheels = _install_args(observe_group=None, enable=False)
+    _groups(monkeypatch, {"docker": 994})
+
+    with pytest.raises(InstallError, match="observe group must not be docker"):
+        install._gather_inputs(args, _runtime(interactive=True, prompts=Prompts()), InstallPaths(tmp_path))
+
+
 def test_dry_run_works_nonroot_and_writes_nothing(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
     args, _wheels = _install_args()

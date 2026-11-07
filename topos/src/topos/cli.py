@@ -136,7 +136,7 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
         type=str,
         default=None,
         help=(
-            "require this socket group (for example docker on mdt hosts); by default any group is "
+            "require this socket group (for example topos-observe); by default any group is "
             "accepted, because a container may not know the host's group names"
         ),
     )
