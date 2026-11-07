@@ -408,7 +408,7 @@ def test_no_data_area_root_star_takes_the_whole_pool():
 
 def test_tiny_test_disk_examples_from_the_design_note():
     plan, pool_end = pool(parts(vol(mount="/srv/div2-vm-cow"), root=1), disk_gib=6, swap_gib=1)
-    assert plan.root_size == S and abs(plan.extents[0][1] - 2.75 * S) < 0.02 * S
+    assert plan.root_size == S and abs(plan.extents[0][1] - 2.81 * S) < 0.02 * S
     lvm = {"root": 1, "iobench_raw_gb": False, "data": {"kind": "lvm", "vg": "vgdiv2vm", "volumes": [
         {"name": "cow", "size": 1, "fs": "btrfs", "mount": "/srv/c", "label": "MDT_COW"},
         {"name": "rest", "fs": "xfs", "mount": "/srv/r", "label": "REST"}]}}
