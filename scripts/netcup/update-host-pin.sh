@@ -77,6 +77,9 @@ ssh-keygen -R "$fqdn" -f "$updated_pin" >/dev/null
 cat -- "$candidate" >> "$updated_pin"
 chmod 0600 "$updated_pin"
 mv -f -- "$updated_pin" "$pin_file"
+# ssh-keygen -R leaves "<file>.old" holding the previous host key; write nothing
+# but the pin beside it.
+rm -f -- "$updated_pin.old"
 trap - EXIT
 rm -rf -- "$work_dir"
 echo "Updated $host SSH host-key pin: $pin_file ($actual_fingerprint)"

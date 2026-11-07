@@ -135,6 +135,7 @@ def validate_bundle(
     root_start_sector: int,
     root_number: int,
     repo_branch: str = "main",
+    repo_commit: str | None = None,
 ) -> BundleCheck:
     if host not in HOSTS:
         raise PreflightError("host must be r1002 or v1001")
@@ -179,6 +180,7 @@ def validate_bundle(
                 config,
                 repo_branch=repo_branch,
                 controller_ssh_placeholder=True,
+                repo_commit=repo_commit,
             )
         except (ConfigError, TypeError, ValueError) as exc:
             raise PreflightError(f"cannot regenerate customScript bundle from source config: {exc}") from exc
@@ -382,12 +384,23 @@ def _write_task_state(path: Path, task_id: str) -> str:
 TASK_ID_RE = re.compile(r"^\s*Task UUID:\s*(\S+)\s*$", re.IGNORECASE)
 
 
+def _wizard_environment() -> dict[str, str]:
+    """Environment for the wizard child, without the operator's controller-key override.
+
+    ``CONTROLLER_SSH_PUBKEY`` in the operator's shell would silently replace the
+    key derived from the retained identity (install-host.py reads it first), so
+    the host would be monitored with one key and reachable with another.
+    """
+    return {name: value for name, value in os.environ.items() if name != "CONTROLLER_SSH_PUBKEY"}
+
+
 def _stream_wizard(
     argv: list[str],
     *,
     log,
     task_state_path: Path,
     popen_factory: Callable | None = None,
+    line_check: Callable[[str], None] | None = None,
 ) -> CommandResult:
     factory = popen_factory or subprocess.Popen
     process = factory(
@@ -398,6 +411,7 @@ def _stream_wizard(
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=_wizard_environment(),
     )
     task_id = None
     capture_output = "--dry-run" in argv
@@ -419,6 +433,16 @@ def _stream_wizard(
                 log.write(f"TASK_ID={task_id}\nMONITOR_COMMAND={monitor_command}\n")
                 log.flush()
                 print(f"TASK_ID={task_id}", flush=True)
+            if line_check is not None:
+                try:
+                    line_check(line)
+                except PreflightError:
+                    # Best effort: the provider POST follows the printed summary
+                    # by moments, so stop the wizard as soon as a digest differs.
+                    terminate = getattr(process, "terminate", None)
+                    if terminate is not None:
+                        terminate()
+                    raise
         returncode = process.wait()
     except KeyboardInterrupt:
         if task_id is not None:
@@ -471,26 +495,104 @@ CUSTOM_SCRIPT_DIGEST_RE = re.compile(
 )
 
 
+SENT_SCRIPT_DIGEST_RE = re.compile(
+    r"(?m)^\[payload\] sent customScript \(placeholders expanded\) sha256=([0-9a-f]{64}) len=([0-9]+)$"
+)
+CONTROLLER_KEY_MARKER = "{{CONTROLLER_SSH_PUBKEY}}"
+
+
+def _script_digest(script: str) -> tuple[str, str]:
+    return hashlib.sha256(script.encode("utf-8")).hexdigest(), str(len(script))
+
+
+def _install_host_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("netcup_install_host_for_preflight", NETCUP_DIR / "install-host.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def read_controller_public_key(identity_file: str | Path) -> str:
+    """The public key the wizard derives from the retained identity (same code path)."""
+    return _install_host_module()._read_public_key_for_identity(str(identity_file))
+
+
+def expected_sent_custom_script(host: str, custom_script: str) -> str:
+    """The customScript the wizard POSTs: the reviewed script with the key marker expanded.
+
+    The key is the one derived from the retained identity, never the operator's
+    ``CONTROLLER_SSH_PUBKEY`` (which the wizard child does not inherit).
+    """
+    if CONTROLLER_KEY_MARKER not in custom_script:
+        return custom_script
+    try:
+        key = read_controller_public_key(HOSTS[host].ssh_key)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise PreflightError(f"cannot derive the controller public key from the retained identity: {exc}") from exc
+    if not key.strip():
+        raise PreflightError("the retained identity produced no controller public key")
+    return custom_script.replace(CONTROLLER_KEY_MARKER, key.replace("'", "'\"'\"'"))
+
+
+class DigestGuard:
+    """Checks the digest lines of a running wizard against the reviewed scripts."""
+
+    def __init__(self, expected_custom_script: str, expected_sent_script: str) -> None:
+        self.loaded = _script_digest(expected_custom_script)
+        self.sent = _script_digest(expected_sent_script)
+        self.loaded_seen = 0
+        self.sent_seen = 0
+
+    def __call__(self, line: str) -> None:
+        text = line.rstrip("\r\n")
+        for regex, expected, name in (
+            (CUSTOM_SCRIPT_DIGEST_RE, self.loaded, "loaded"),
+            (SENT_SCRIPT_DIGEST_RE, self.sent, "sent"),
+        ):
+            found = regex.match(text)
+            if found is None:
+                continue
+            if name == "loaded":
+                self.loaded_seen += 1
+            else:
+                self.sent_seen += 1
+            if (found.group(1), found.group(2)) != expected:
+                raise PreflightError(
+                    f"submit run printed a {name} customScript digest that differs from the reviewed one"
+                )
+
+    def require_complete(self) -> None:
+        if self.loaded_seen != 1 or self.sent_seen != 1:
+            raise PreflightError(
+                "submit run did not print exactly one loaded and one sent customScript digest line"
+            )
+
+
 def validate_wizard_preview(
     host: str,
     output: str,
     *,
     expected_custom_script: str,
+    expected_sent_custom_script: str,
     expected_ssh_key_ids: list[int],
 ) -> None:
     """Validate the payload summary the REAL wizard dry-run printed.
 
     The wizard redacts ``customScript`` in every printed summary (a
     length-only marker), so the script is bound through the SHA-256 digest
-    line the wizard prints next to it, never through the redacted text.
+    lines the wizard prints next to it, never through the redacted text: the
+    loaded script, and the exact text the POST sends (controller key expanded).
     """
     payload = _provider_payload_from_wizard_output(output)
     shown = payload.get("customScript")
     if isinstance(shown, str) and shown.startswith("***REDACTED customScript"):
         digests = CUSTOM_SCRIPT_DIGEST_RE.findall(output)
-        if len(digests) != 1:
+        sent_digests = SENT_SCRIPT_DIGEST_RE.findall(output)
+        if len(digests) != 1 or len(sent_digests) != 1:
             raise PreflightError(
-                "wizard dry-run did not print exactly one customScript digest line; "
+                "wizard dry-run did not print exactly one loaded and one sent customScript digest line; "
                 "cannot bind the provider payload to the reviewed customScript"
             )
         digest, length = digests[0]
@@ -502,6 +604,11 @@ def validate_wizard_preview(
         ):
             raise PreflightError(
                 "provider payload mismatch: customScript digest differs from the reviewed bundle"
+            )
+        if sent_digests[0] != _script_digest(expected_sent_custom_script):
+            raise PreflightError(
+                "provider payload mismatch: the sent customScript (controller key expanded) differs "
+                "from the reviewed script expanded with the retained identity's key"
             )
         payload = {**payload, "customScript": expected_custom_script}
     validate_provider_payload(
@@ -562,7 +669,7 @@ def run_reinstall(
         raise PreflightError("host must be r1002 or v1001")
     if not ssh_key_ids or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in ssh_key_ids):
         raise PreflightError("choose account SSH keys explicitly with one or more --ssh-key-id values")
-    if not expected_commit or not re.fullmatch(r"[0-9a-fA-F]{40,64}", expected_commit):
+    if not expected_commit or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", expected_commit):
         raise PreflightError("a full --expect-commit SHA is required")
     if not dry_run and not expected_bundle_sha256:
         raise PreflightError("--yes requires --expect-bundle-sha256 from the reviewed dry-run")
@@ -572,17 +679,29 @@ def run_reinstall(
     output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os_chmod_private(output_dir)
     bundle_sha_path = output_dir / "bundle.sha256"
+    snapshot_path = output_dir / "bundle.snapshot.json"
 
     def action(log):
         # Start the log before any local or remote preflight so stale-key and
         # identity refusals also leave a durable EXIT record.
+        # Read the bundle ONCE and use these exact bytes for validation, the
+        # reviewed digest, the dry-run wizard and the --yes wizard: a change to
+        # the operator's file after this point cannot reach the provider.
+        snapshot_bytes = Path(bundle_path).read_bytes()
+        descriptor = os.open(snapshot_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "wb") as snapshot:
+            snapshot.write(snapshot_bytes)
+        os.chmod(snapshot_path, 0o600)
         checked = validate_bundle(
-            host, config_path, bundle_path,
+            host, config_path, snapshot_path,
             disk_size=disk_size,
             root_start_sector=root_start_sector,
             root_number=root_number,
             repo_branch=repo_branch,
+            repo_commit=expected_commit.lower(),
         )
+        if checked.digest != hashlib.sha256(snapshot_bytes).hexdigest():
+            raise PreflightError("bundle snapshot changed while it was being validated")
         current_commit = (commit_lookup or _current_remote_commit)(repo_branch)
         if current_commit.lower() != expected_commit.lower():
             raise PreflightError(
@@ -595,7 +714,9 @@ def run_reinstall(
         log.write(f"REMOTE_COMMIT={current_commit}\nBUNDLE_SHA256={checked.digest}\n")
         log.flush()
         print(f"REMOTE_COMMIT={current_commit}\nBUNDLE_SHA256={checked.digest}", flush=True)
-        sha256_manifest(bundle_sha_path, bundle_path)
+        sha256_manifest(bundle_sha_path, snapshot_path)
+        expected_script = checked.bundle["customScript"]
+        expected_sent = expected_sent_custom_script(host, expected_script)
         identity = runner(
             ["bash", "-lc", _remote_identity_command(host, root_number)],
             stdout=subprocess.PIPE,
@@ -613,7 +734,7 @@ def run_reinstall(
         )
         preview = _stream_wizard(
             _wizard_argv(
-                host, Path(bundle_path), output_dir,
+                host, snapshot_path, output_dir,
                 ssh_key_ids=ssh_key_ids, dry_run=True,
             ),
             log=log,
@@ -625,20 +746,32 @@ def run_reinstall(
         validate_wizard_preview(
             host,
             preview.stdout,
-            expected_custom_script=checked.bundle["customScript"],
+            expected_custom_script=expected_script,
+            expected_sent_custom_script=expected_sent,
             expected_ssh_key_ids=ssh_key_ids,
         )
         if dry_run:
             return preview
+        if sha256_file(snapshot_path) != checked.digest:
+            raise PreflightError("bundle snapshot changed after the dry-run; refusing to submit")
+        guard = DigestGuard(expected_script, expected_sent)
         submitted = _stream_wizard(
             _wizard_argv(
-                host, Path(bundle_path), output_dir,
+                host, snapshot_path, output_dir,
                 ssh_key_ids=ssh_key_ids, dry_run=False,
             ),
             log=log,
             task_state_path=output_dir / "task-id",
             popen_factory=popen_factory,
+            line_check=guard,
         )
+        try:
+            if submitted.returncode == 0:
+                guard.require_complete()
+        except PreflightError as exc:
+            task_file = output_dir / "task-id"
+            hint = f" (task state: {task_file})" if task_file.exists() else ""
+            raise PreflightError(f"{exc}; the installation may already have been submitted{hint}") from exc
         return submitted
 
     status = run_logged(output_dir / "reinstall.log", action)

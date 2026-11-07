@@ -15,7 +15,7 @@ import json
 import pytest
 
 from case_harness import run_install_host
-from test_pre_reinstall_preflight import _build_valid_inputs
+from test_pre_reinstall_preflight import _build_valid_inputs, _fake_sent_script
 
 SSH_KEY_IDS = [31415]
 
@@ -74,8 +74,11 @@ def test_wrapper_accepts_the_real_wizard_dry_run_output(
     )
     _host_for_fake_server(preflight, monkeypatch, output)
     script = json.loads(bundle_path.read_text(encoding="utf-8"))["customScript"]
+    # The key the harness' wizard derives is FAKE_CONTROLLER_KEY, so this also
+    # proves the wrapper's expansion equals the real wizard's expansion.
     assert preflight.validate_wizard_preview(
-        "v1001", output, expected_custom_script=script, expected_ssh_key_ids=SSH_KEY_IDS
+        "v1001", output, expected_custom_script=script,
+        expected_sent_custom_script=_fake_sent_script(script), expected_ssh_key_ids=SSH_KEY_IDS,
     ) is None
 
 
@@ -91,6 +94,7 @@ def test_wrapper_refuses_real_wizard_output_for_a_different_script(
     with pytest.raises(preflight.PreflightError, match="customScript"):
         preflight.validate_wizard_preview(
             "v1001", output, expected_custom_script=script + "\ncurl x | sh\n",
+            expected_sent_custom_script=_fake_sent_script(script + "\ncurl x | sh\n"),
             expected_ssh_key_ids=SSH_KEY_IDS,
         )
 
@@ -107,5 +111,24 @@ def test_wrapper_refuses_output_without_a_digest_line(
     stripped = "\n".join(line for line in output.splitlines() if "customScript sha256=" not in line)
     with pytest.raises(preflight.PreflightError, match="digest"):
         preflight.validate_wizard_preview(
-            "v1001", stripped, expected_custom_script=script, expected_ssh_key_ids=SSH_KEY_IDS
+            "v1001", stripped, expected_custom_script=script,
+            expected_sent_custom_script=_fake_sent_script(script), expected_ssh_key_ids=SSH_KEY_IDS,
+        )
+
+
+def test_wrapper_refuses_real_wizard_output_when_the_sent_key_differs(
+    tmp_path, install_host_mod, monkeypatch, capsys, fake_client
+):
+    """A different controller key (e.g. a stale CONTROLLER_SSH_PUBKEY) changes the sent digest."""
+    preflight, _config, bundle_path = _build_valid_inputs(tmp_path)
+    output = _real_wizard_dry_run(
+        preflight, bundle_path, tmp_path, install_host_mod, monkeypatch, capsys, fake_client
+    )
+    _host_for_fake_server(preflight, monkeypatch, output)
+    script = json.loads(bundle_path.read_text(encoding="utf-8"))["customScript"]
+    other = script.replace("{{CONTROLLER_SSH_PUBKEY}}", "ssh-ed25519 AAAAstalekey operator-env")
+    with pytest.raises(preflight.PreflightError, match="sent customScript"):
+        preflight.validate_wizard_preview(
+            "v1001", output, expected_custom_script=script,
+            expected_sent_custom_script=other, expected_ssh_key_ids=SSH_KEY_IDS,
         )

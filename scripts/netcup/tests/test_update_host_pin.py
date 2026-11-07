@@ -27,7 +27,8 @@ def _tools(tmp_path: Path):
         "#!/bin/sh\n"
         "printf '%s\\n' \"$*\" >> \"$SSH_KEYGEN_LOG\"\n"
         "if [ \"$1\" = '-lf' ]; then printf '256 %s fake (ED25519)\\n' \"$FAKE_FINGERPRINT\"; exit 0; fi\n"
-        "if [ \"$1\" = '-R' ]; then awk -v host=\"$2\" '$1 != host { print }' \"$4\" > \"$4.tmp\"; mv \"$4.tmp\" \"$4\"; exit 0; fi\n"
+        # Real OpenSSH leaves "<file>.old" with the previous contents after -R.
+        "if [ \"$1\" = '-R' ]; then cp -p \"$4\" \"$4.old\"; awk -v host=\"$2\" '$1 != host { print }' \"$4\" > \"$4.tmp\"; mv \"$4.tmp\" \"$4\"; exit 0; fi\n"
         "exit 2\n",
         encoding="utf-8",
     )
@@ -65,6 +66,26 @@ def test_host_pin_update_refuses_fingerprint_mismatch_without_changing_pin(tmp_p
     assert "fingerprint mismatch" in result.stderr
     assert pin.read_text(encoding="utf-8") == original
     assert "-lf" in (tmp_path / "ssh-keygen.log").read_text(encoding="utf-8")
+
+
+def test_host_pin_update_leaves_nothing_but_the_pin_beside_it(tmp_path):
+    pins = tmp_path / "pins"
+    pins.mkdir()
+    pin = pins / "ssh_known_hosts-v1001-20261105"
+    pin.write_text("152.53.166.181 ssh-ed25519 OLDKEY\nv1001.vxxu.de ssh-ed25519 OLDHOSTKEY\n", encoding="utf-8")
+
+    result = _run_update(tmp_path, pin, "SHA256:approved")
+
+    assert result.returncode == 0, result.stderr
+    # ssh-keygen -R leaves "<file>.old" holding the previous host key: no stale key material.
+    assert sorted(path.name for path in pins.iterdir()) == [pin.name]
+    refused = tmp_path / "refused"
+    refused.mkdir()
+    other = refused / "ssh_known_hosts-v1001-20261105"
+    other.write_text("152.53.166.181 ssh-ed25519 OLDKEY\n", encoding="utf-8")
+    (tmp_path / "second").mkdir()
+    assert _run_update(tmp_path / "second", other, "SHA256:unexpected").returncode != 0
+    assert sorted(path.name for path in refused.iterdir()) == [other.name]
 
 
 def test_host_pin_update_replaces_only_the_reviewed_host_records(tmp_path):

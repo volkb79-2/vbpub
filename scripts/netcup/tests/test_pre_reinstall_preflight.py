@@ -16,6 +16,15 @@ NETCUP_DIR = Path(__file__).resolve().parents[1]
 PREFLIGHT_PATH = NETCUP_DIR / "pre-reinstall.py"
 
 
+PIN = "a" * 40
+FAKE_CONTROLLER_KEY = "ssh-ed25519 AAAAfakekey vbpub-test"
+
+
+def _fake_sent_script(script: str) -> str:
+    """What the wizard sends: the key marker expanded with the retained identity's key."""
+    return script.replace("{{CONTROLLER_SSH_PUBKEY}}", FAKE_CONTROLLER_KEY)
+
+
 def _load_preflight():
     spec = importlib.util.spec_from_file_location("netcup_pre_reinstall_preflight", PREFLIGHT_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -25,6 +34,18 @@ def _load_preflight():
     except BaseException:
         sys.modules.pop(spec.name, None)
         raise
+    # No test may run ssh-keygen against the operator's real identity file.
+    module.read_controller_public_key = lambda _identity: FAKE_CONTROLLER_KEY
+    # Tests build pinned bundles; direct validate_bundle calls default to that
+    # pin.  run_reinstall always passes its own commit explicitly, and the
+    # unwrapped function stays reachable for the pin-specific tests.
+    module.real_validate_bundle = module.validate_bundle
+
+    def pinned_validate_bundle(*args, **kwargs):
+        kwargs.setdefault("repo_commit", PIN)
+        return module.real_validate_bundle(*args, **kwargs)
+
+    module.validate_bundle = pinned_validate_bundle
     return module
 
 
@@ -43,7 +64,7 @@ def _build_valid_inputs(tmp_path: Path, *, host="v1001"):
     config_path = NETCUP_DIR / "examples" / "debian-install-v2" / f"{host}.json"
     config = load_config(str(config_path))
     bundle = build_customscript_bundle(
-        config, repo_branch="main", controller_ssh_placeholder=True
+        config, repo_branch="main", controller_ssh_placeholder=True, repo_commit=PIN
     )
     bundle_path = tmp_path / f"{host}-bundle.json"
     # This is the exact formatting used by cli_extended Output.primary_json,
@@ -301,11 +322,14 @@ def _wizard_summary(payload):
     import hashlib
 
     script = payload["customScript"]
+    sent = _fake_sent_script(script)
     shown = dict(payload, customScript=f"***REDACTED customScript (len={len(script)})***")
     return (
         "INSTALLATION PARAMETERS SUMMARY\n"
         + json.dumps(shown, indent=2) + "\n"
         + f"[payload] customScript sha256={hashlib.sha256(script.encode()).hexdigest()} len={len(script)}\n"
+        + "[payload] sent customScript (placeholders expanded) "
+        + f"sha256={hashlib.sha256(sent.encode()).hexdigest()} len={len(sent)}\n"
         + "[dry-run] Preflight OK\n"
     )
 
@@ -337,7 +361,9 @@ def _successful_run_helpers(preflight, bundle_path, *, submit_output="Task UUID:
     def popen_factory(argv, **kwargs):
         if "--dry-run" in argv:
             return _FakeProcess(_wizard_summary(payload))
-        return _FakeProcess(submit_output)
+        # The real --yes run prints the same summary (digest lines included)
+        # before it submits and prints the task id.
+        return _FakeProcess(_wizard_summary(payload).replace("[dry-run] Preflight OK\n", "") + submit_output)
 
     return runner, popen_factory
 
@@ -381,7 +407,7 @@ def test_valid_but_different_source_bundle_config_is_refused(tmp_path):
 
         altered = replace(altered, run_io_benchmark=not altered.run_io_benchmark)
         bundle = build_customscript_bundle(
-            altered, repo_branch="main", controller_ssh_placeholder=True
+            altered, repo_branch="main", controller_ssh_placeholder=True, repo_commit=PIN
         )
     finally:
         sys.path.remove(str(package_root))
