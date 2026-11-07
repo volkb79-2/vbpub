@@ -645,7 +645,7 @@ class TestHandleReportRealRender:
         assert resp["error"]["code"] == "report-removed"
         assert resp["error"]["message"] == (
             "the daemon no longer renders reports; export the session with "
-            "contract 2 and render locally (cgpctl report <session>)"
+            "contract 2 and render locally (cgprofilectl report <session>)"
         )
         assert not (tmp_path / "sessions" / session_id / "report.html").exists()
 
@@ -864,12 +864,12 @@ def test_gates_slice_name_is_configurable(tmp_path):
 
 
 def test_gates_slice_setting_reaches_the_session_server(tmp_path):
-    # The cgpd plumbing: the `gates_slice` setting (cgpd.toml) reaches both
-    # the server attribute and the window registry (tests/test_cgpd.py covers
+    # The cgprofiled plumbing: the `gates_slice` setting (cgprofiled.toml) reaches both
+    # the server attribute and the window registry (tests/test_cgprofiled.py covers
     # the CLI half).
     settings = daemon_config.Settings(
-        str(tmp_path / "cgpd.toml"), overrides_path=str(tmp_path / "ov.toml"))
-    (tmp_path / "cgpd.toml").write_text('gates_slice = "dev-gates-from-cfg.slice"\n')
+        str(tmp_path / "cgprofiled.toml"), overrides_path=str(tmp_path / "ov.toml"))
+    (tmp_path / "cgprofiled.toml").write_text('gates_slice = "dev-gates-from-cfg.slice"\n')
     settings.load()
     server = serve.SessionServer(
         settings=settings, sessions_dir=str(tmp_path / "sessions"),
@@ -3733,7 +3733,7 @@ def test_real_socket_distinguishes_absent_target_from_unreadable_cgroup_tree(
 # (single-threaded, no socket at all) — this suite instead runs the SAME
 # five frames through a REAL background sampling thread and a REAL
 # accept-loop thread, with the shipped wire client (`cgprofile.ctlwire`,
-# what `cgpctl` uses) as the client under test, because that is the only way
+# what `cgprofilectl` uses) as the client under test, because that is the only way
 # to prove the wire protocol works end to end rather than merely that
 # `_dispatch()` does (the handoff's own read-list item 5 asks for exactly
 # this). `ctl status` needs to land *mid-session* (frame 2, matching

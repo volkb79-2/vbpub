@@ -31,7 +31,7 @@ template_revision = 4
 prefix = "cgprofile-v"
 artifacts = ["wheel"]
 # cgprofile 2.0.0 ships the WHEEL ONLY (CP-46). The OCI image is no longer
-# built or pushed: the 1.x container stack cannot start under the cgpd
+# built or pushed: the 1.x container stack cannot start under the cgprofiled
 # entrypoint (CP-54), and `oci-image-release` would also overwrite the wheel
 # handler's GitHub Release body. Dockerfile/compose stay until package 9.
 scm_dist = "cgprofile"

@@ -1,5 +1,5 @@
 # cgprofile.slice: the protective top-level slice of the cgprofile daemon.
-# Template shipped inside the cgprofile wheel; `cgpd unit print` renders it
+# Template shipped inside the cgprofile wheel; `cgprofiled unit print` renders it
 # (it has no substituted token). Values are the NATIVE-DEPLOYMENT.md section
 # 4.1 proposals and are final only after the section 4.3 measurements.
 [Unit]

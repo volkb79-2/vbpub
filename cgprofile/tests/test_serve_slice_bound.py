@@ -1,4 +1,4 @@
-"""Sol B4 -- `cgpd run` refuses to run unless the slice the daemon is
+"""Sol B4 -- `cgprofiled run` refuses to run unless the slice the daemon is
 ACTUALLY IN (derived from its own cgroup, not looked up by name) is bounded.
 Kept apart from test_cgprofile.py, which needs the report tier's pandas/plotly
 stack; this check is collector-tier only."""
@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from cgprofile.cli import cgpd  # noqa: E402
+from cgprofile.cli import cgprofiled  # noqa: E402
 from cgprofile import access  # noqa: E402
 from cgprofile import serve as serve_lib  # noqa: E402
 from cgprofile import targets  # noqa: E402
@@ -80,7 +80,7 @@ class TestDaemonSliceProblem:
 
 
 class TestCgpdRefusesAnUnboundedDaemonSlice:
-    """The real `daemon_slice_problem` behind cgpd's preflight check 4."""
+    """The real `daemon_slice_problem` behind cgprofiled's preflight check 4."""
 
     def _prep(self, monkeypatch, tmp_path):
         monkeypatch.setattr(access, "CGROUP_ROOT", str(tmp_path / "cgroup"))
@@ -91,9 +91,9 @@ class TestCgpdRefusesAnUnboundedDaemonSlice:
             serve_lib, "SessionServer",
             lambda **kwargs: pytest.fail("must not construct a server"),
         )
-        config = tmp_path / "cgpd.toml"
+        config = tmp_path / "cgprofiled.toml"
         config.write_text("")
-        monkeypatch.setattr(cgpd, "OVERRIDES_PATH", str(tmp_path / "overrides.toml"))
+        monkeypatch.setattr(cgprofiled, "OVERRIDES_PATH", str(tmp_path / "overrides.toml"))
         return str(config)
 
     def test_refusal_names_zero_and_why_and_the_install_step(
@@ -102,8 +102,8 @@ class TestCgpdRefusesAnUnboundedDaemonSlice:
         _tree(tmp_path, own="", memory_max="0\n")
         own_cgroup("/cgprofile.slice/docker-abc.scope")
         config = self._prep(monkeypatch, tmp_path)
-        with pytest.raises(cgpd.CliFailure) as caught:
-            cgpd.preflight(config, True, {})
+        with pytest.raises(cgprofiled.CliFailure) as caught:
+            cgprofiled.preflight(config, True, {})
         assert caught.value.exit_code == 2
         text = str(caught.value)
         assert "zero is refused because" in text
@@ -115,6 +115,6 @@ class TestCgpdRefusesAnUnboundedDaemonSlice:
         _tree(tmp_path, own="", memory_max="1073741824\n")
         own_cgroup("/system.slice/docker-abc.scope")
         config = self._prep(monkeypatch, tmp_path)
-        with pytest.raises(cgpd.CliFailure) as caught:
-            cgpd.preflight(config, True, {})
+        with pytest.raises(cgprofiled.CliFailure) as caught:
+            cgprofiled.preflight(config, True, {})
         assert "not under cgprofile.slice" in str(caught.value)

@@ -1,4 +1,4 @@
-"""cgpd: the cli-extended service entry (CGPCTL-SPEC.md section 3)."""
+"""cgprofiled: the cli-extended service entry (CGPCTL-SPEC.md section 3)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 
 import _fakectl
 from cgprofile import access, daemon_config, serve
-from cgprofile.cli import cgpd
+from cgprofile.cli import cgprofiled
 
 
 @pytest.fixture(autouse=True)
@@ -33,13 +33,13 @@ def sockdir():
 @pytest.fixture()
 def cli(capsys):
     def run(*argv):
-        code = cgpd.build_cli().run(argv=list(argv))
+        code = cgprofiled.build_cli().run(argv=list(argv))
         captured = capsys.readouterr()
         return code, captured.out, captured.err
     return run
 
 
-def write_config(sockdir, text="", name="cgpd.toml"):
+def write_config(sockdir, text="", name="cgprofiled.toml"):
     path = os.path.join(sockdir, name)
     with open(path, "w") as fh:
         fh.write(text)
@@ -49,23 +49,23 @@ def write_config(sockdir, text="", name="cgpd.toml"):
 # ── surface ────────────────────────────────────────────────────────────────
 
 def test_identity_and_version(capsys, monkeypatch):
-    monkeypatch.setattr(cgpd, "installed_version", lambda: "9.9.9")
-    assert cgpd.identity().command == "cgpd"
-    assert cgpd.main(["--version"]) == 0
-    assert capsys.readouterr().out == "cgpd 9.9.9\n"
+    monkeypatch.setattr(cgprofiled, "installed_version", lambda: "9.9.9")
+    assert cgprofiled.identity().command == "cgprofiled"
+    assert cgprofiled.main(["--version"]) == 0
+    assert capsys.readouterr().out == "cgprofiled 9.9.9\n"
 
 
 def test_main_reads_sys_argv_when_called_without_arguments(monkeypatch, capsys):
-    monkeypatch.setattr("sys.argv", ["cgpd", "--version"])
-    assert cgpd.main() == 0
-    assert capsys.readouterr().out.startswith("cgpd ")
+    monkeypatch.setattr("sys.argv", ["cgprofiled", "--version"])
+    assert cgprofiled.main() == 0
+    assert capsys.readouterr().out.startswith("cgprofiled ")
 
 
 @pytest.mark.parametrize("argv", [["--help"], ["config", "--help"], ["run", "--help"]])
 def test_help_never_starts_the_service(cli, monkeypatch, argv):
-    monkeypatch.setattr(cgpd, "preflight", lambda *a: pytest.fail("help must not preflight"))
+    monkeypatch.setattr(cgprofiled, "preflight", lambda *a: pytest.fail("help must not preflight"))
     code, out, _err = cli(*argv)
-    assert code == 0 and "cgpd" in out
+    assert code == 0 and "cgprofiled" in out
 
 
 def test_help_lists_the_verbs_and_no_doctor_or_skills(cli):
@@ -76,16 +76,16 @@ def test_help_lists_the_verbs_and_no_doctor_or_skills(cli):
 
 
 def test_malformed_arguments_never_start_the_service(cli, monkeypatch):
-    monkeypatch.setattr(cgpd, "preflight", lambda *a: pytest.fail("must not preflight"))
+    monkeypatch.setattr(cgprofiled, "preflight", lambda *a: pytest.fail("must not preflight"))
     assert cli("run", "--bogus")[0] == 2
     assert cli("bogus")[0] == 2
 
 
 def test_log_is_a_key_value_line(capsys):
-    cgpd.log("start", version="2.0.0", config="/x")
-    assert capsys.readouterr().err == "cgpd: event=start version=2.0.0 config=/x\n"
-    cgpd.log("bare")
-    assert capsys.readouterr().err == "cgpd: event=bare\n"
+    cgprofiled.log("start", version="2.0.0", config="/x")
+    assert capsys.readouterr().err == "cgprofiled: event=start version=2.0.0 config=/x\n"
+    cgprofiled.log("bare")
+    assert capsys.readouterr().err == "cgprofiled: event=bare\n"
 
 
 def test_config_location():
@@ -95,8 +95,8 @@ def test_config_location():
     class Nothing:
         config = None
 
-    assert cgpd.config_location(Args) == ("/tmp/x.toml", True)
-    assert cgpd.config_location(Nothing) == (daemon_config.DEFAULT_CONFIG_PATH, False)
+    assert cgprofiled.config_location(Args) == ("/tmp/x.toml", True)
+    assert cgprofiled.config_location(Nothing) == (daemon_config.DEFAULT_CONFIG_PATH, False)
 
 
 # ── config check ───────────────────────────────────────────────────────────
@@ -123,7 +123,7 @@ class TestConfigCheck:
         ("interval = 'fast'\n", "interval"),
         ("max_sessions = 9999\n", "max_sessions"),
         ("gates_slice = 'a--b.slice'\n", "usable slice name"),
-        ("interval = \n", "cgpd.toml"),
+        ("interval = \n", "cgprofiled.toml"),
     ])
     def test_invalid_file_is_exit_2(self, cli, sockdir, text, fragment):
         code, _out, err = cli("--config", write_config(sockdir, text), "config", "check")
@@ -146,24 +146,24 @@ class TestConfigCheck:
     def test_short_test_option_validates_config_without_starting_daemon(self, capsys, sockdir, argv_order):
         path = write_config(sockdir, "interval = 2\n")
         args = ["--config", path, "-t"] if argv_order == "before" else ["-t", "--config", path]
-        assert cgpd.main(args) == 0
+        assert cgprofiled.main(args) == 0
         captured = capsys.readouterr()
         assert f"config ok: {path}" in captured.out
         assert "event=start" not in captured.err
 
     def test_short_test_option_returns_nonzero_for_invalid_config(self, capsys, sockdir):
         path = write_config(sockdir, "interval = 'fast'\n")
-        assert cgpd.main(["--config", path, "-t"]) == 2
+        assert cgprofiled.main(["--config", path, "-t"]) == 2
         captured = capsys.readouterr()
         assert "interval" in captured.err
 
     def test_short_test_option_expands_only_for_supported_shapes(self):
-        assert cgpd._expand_config_test(["-t"]) == ["config", "check"]
-        assert cgpd._expand_config_test(["--config", "/tmp/cgpd.toml", "-t"]) == [
-            "config", "check", "--config", "/tmp/cgpd.toml",
+        assert cgprofiled._expand_config_test(["-t"]) == ["config", "check"]
+        assert cgprofiled._expand_config_test(["--config", "/tmp/cgprofiled.toml", "-t"]) == [
+            "config", "check", "--config", "/tmp/cgprofiled.toml",
         ]
-        assert cgpd._expand_config_test(["-t", "--config=/tmp/cgpd.toml"]) == [
-            "config", "check", "--config=/tmp/cgpd.toml",
+        assert cgprofiled._expand_config_test(["-t", "--config=/tmp/cgprofiled.toml"]) == [
+            "config", "check", "--config=/tmp/cgprofiled.toml",
         ]
         for argv in (
             ["uninstall", "-t"],
@@ -171,24 +171,24 @@ class TestConfigCheck:
             ["run", "-t"],
             ["install", "--wheel-source", "-t"],
         ):
-            assert cgpd._expand_config_test(argv) == argv
+            assert cgprofiled._expand_config_test(argv) == argv
 
     def test_short_test_option_expansion_requires_exactly_one_occurrence(self):
-        assert cgpd._expand_config_test([]) == []
-        assert cgpd._expand_config_test(["--config", "/tmp/cgpd.toml"]) == [
-            "--config", "/tmp/cgpd.toml",
+        assert cgprofiled._expand_config_test([]) == []
+        assert cgprofiled._expand_config_test(["--config", "/tmp/cgprofiled.toml"]) == [
+            "--config", "/tmp/cgprofiled.toml",
         ]
-        assert cgpd._expand_config_test(["-t", "-t"]) == ["-t", "-t"]
+        assert cgprofiled._expand_config_test(["-t", "-t"]) == ["-t", "-t"]
 
     @pytest.mark.parametrize("argv", [["uninstall", "-t"], ["run", "-t"]])
     def test_short_test_option_is_a_normal_argparse_error_outside_config_test(self, argv, capsys):
-        assert cgpd.main(argv) == 2
+        assert cgprofiled.main(argv) == 2
         captured = capsys.readouterr()
         assert "unrecognized arguments" in captured.err
         assert "config check" not in captured.err
 
     def test_install_exposes_the_repeatable_add_user_flag(self, capsys):
-        assert cgpd.build_cli().run(argv=["install", "--help"]) == 0
+        assert cgprofiled.build_cli().run(argv=["install", "--help"]) == 0
         captured = capsys.readouterr()
         assert "--add-user LEVEL=USER" in captured.out
         assert "--control-users" not in captured.out and "--observer-users" not in captured.out
@@ -218,10 +218,10 @@ class Host:
         monkeypatch.setattr(access, "local_namespace_inode", lambda name: self.pid_ns[0])
         monkeypatch.setattr(access, "namespace_inode", lambda pid, name, root=None: self.pid_ns[1])
         monkeypatch.setattr(serve, "daemon_slice_problem", lambda cgroup, proc: self.slice_problem)
-        monkeypatch.setattr(cgpd, "OVERRIDES_PATH", os.path.join(sockdir, "overrides.toml"))
+        monkeypatch.setattr(cgprofiled, "OVERRIDES_PATH", os.path.join(sockdir, "overrides.toml"))
 
     def preflight(self, environ=None):
-        return cgpd.preflight(self.config, True, environ or {})
+        return cgprofiled.preflight(self.config, True, environ or {})
 
 
 @pytest.fixture()
@@ -237,32 +237,32 @@ class TestPreflight:
 
     def test_1_needs_root(self, host, monkeypatch):
         monkeypatch.setattr(os, "geteuid", lambda: 1000)
-        with pytest.raises(cgpd.CliFailure) as caught:
+        with pytest.raises(cgprofiled.CliFailure) as caught:
             host.preflight()
         assert caught.value.exit_code == 2 and "effective uid is 1000" in str(caught.value)
 
     def test_2_stale_environment_names_the_replacement(self, host):
-        with pytest.raises(cgpd.CliFailure) as caught:
+        with pytest.raises(cgprofiled.CliFailure) as caught:
             host.preflight({"CGPROFILE_ALLOW_UIDS": "1000"})
         assert f"CGPROFILE_ALLOW_UIDS is no longer read; set allow_uids in {host.config}" in str(caught.value)
 
     def test_2_invalid_config_is_refused(self, host):
         write_config(host.sockdir, "bogus = 1\n")
-        host.config = os.path.join(host.sockdir, "cgpd.toml")
-        with pytest.raises(cgpd.CliFailure) as caught:
+        host.config = os.path.join(host.sockdir, "cgprofiled.toml")
+        with pytest.raises(cgprofiled.CliFailure) as caught:
             host.preflight()
         assert "bogus" in str(caught.value) and caught.value.exit_code == 2
 
     @pytest.mark.parametrize("pid_ns", [(7, 8), (None, 7), (7, None)])
     def test_3_pid_namespace_mismatch(self, host, pid_ns):
         host.pid_ns = pid_ns
-        with pytest.raises(cgpd.CliFailure) as caught:
+        with pytest.raises(cgprofiled.CliFailure) as caught:
             host.preflight()
         assert "pid namespace" in str(caught.value)
 
     def test_4_unbounded_slice(self, host):
         host.slice_problem = "memory.max of /cgprofile.slice is not a finite positive integer"
-        with pytest.raises(cgpd.CliFailure) as caught:
+        with pytest.raises(cgprofiled.CliFailure) as caught:
             host.preflight()
         assert "cgprofile.slice does not provably contain this daemon" in str(caught.value)
         assert "memory.max" in str(caught.value)
@@ -272,13 +272,13 @@ class TestPreflight:
         blocker = os.path.join(host.sockdir, "file")
         write_config(host.sockdir, "x", "file")
         host.config = write_config(host.sockdir, f'sessions_dir = "{blocker}/sessions"\n', "c2.toml")
-        with pytest.raises(cgpd.CliFailure) as caught:
+        with pytest.raises(cgprofiled.CliFailure) as caught:
             host.preflight()
         assert "cannot create sessions_dir" in str(caught.value)
 
     def test_5_sessions_dir_not_writable(self, host, monkeypatch):
         monkeypatch.setattr(os, "access", lambda path, mode: False)
-        with pytest.raises(cgpd.CliFailure) as caught:
+        with pytest.raises(cgprofiled.CliFailure) as caught:
             host.preflight()
         assert "is not writable" in str(caught.value)
 
@@ -296,19 +296,19 @@ class TestPreflight:
 
 class TestProbe:
     def test_nothing_listening(self, sockdir):
-        assert cgpd.probe_daemon(os.path.join(sockdir, "none.sock")) is None
+        assert cgprofiled.probe_daemon(os.path.join(sockdir, "none.sock")) is None
 
     def test_a_daemon_answers(self, sockdir):
         daemon = _fakectl.FakeDaemon(os.path.join(sockdir, "a.sock"), {"version": lambda a, c: dict(_fakectl.V2_VERSION)})
         try:
-            assert cgpd.probe_daemon(daemon.path) == ("2.0.0", os.getpid())
+            assert cgprofiled.probe_daemon(daemon.path) == ("2.0.0", os.getpid())
         finally:
             daemon.close()
 
     def test_an_unversioned_answer(self, sockdir):
         daemon = _fakectl.FakeDaemon(os.path.join(sockdir, "a.sock"), {"version": lambda a, c: {"ok": True}})
         try:
-            assert cgpd.probe_daemon(daemon.path) == ("unknown", os.getpid())
+            assert cgprofiled.probe_daemon(daemon.path) == ("unknown", os.getpid())
         finally:
             daemon.close()
 
@@ -318,7 +318,7 @@ class TestProbe:
     def test_a_daemon_that_does_not_answer_version_is_not_counted(self, sockdir, reply):
         daemon = _fakectl.FakeDaemon(os.path.join(sockdir, "a.sock"), {"version": lambda a, c: reply})
         try:
-            assert cgpd.probe_daemon(daemon.path) is None
+            assert cgprofiled.probe_daemon(daemon.path) is None
         finally:
             daemon.close()
 
@@ -354,7 +354,7 @@ class TestRun:
         assert kwargs["sessions_dir"] == wired.sessions and kwargs["socket_path"] == wired.socket
         assert kwargs["observer_socket_path"].endswith("/observer/cgprofile.sock")
         assert kwargs["proc_root"] == "/proc" and kwargs["settings"].digest
-        assert "cgpd: event=start" in err and f"socket={wired.socket}" in err
+        assert "cgprofiled: event=start" in err and f"socket={wired.socket}" in err
         assert os.environ["CGPROFILE_PROC_ROOT"] == "/proc"
         assert os.environ["CGPROFILE_DAMON_LOCK_PATH"].endswith("/damon.lock")
         assert os.environ["CGPROFILE_BUSCTL"] == "busctl"
@@ -381,7 +381,7 @@ class TestRun:
     def test_a_socket_that_cannot_be_bound_is_a_refusal(self, cli, wired):
         StubServer.error = serve.ControlSocketError(0, "another daemon still answers")
         code, _out, err = cli("--config", wired.config, "run", "--self-bind")
-        assert code == 2 and "cgpd refuses to start: another daemon still answers" in err
+        assert code == 2 and "cgprofiled refuses to start: another daemon still answers" in err
 
     def test_a_failed_preflight_never_builds_a_server(self, cli, wired, monkeypatch):
         monkeypatch.setattr(os, "geteuid", lambda: 1000)
@@ -494,7 +494,7 @@ class TestReload:
         finally:
             daemon.close()
         assert code == 0 and signalled == [(os.getpid(), signal.SIGHUP)]
-        assert f"reload signalled to pid {os.getpid()} (cgpd 2.0.0)" in out
+        assert f"reload signalled to pid {os.getpid()} (cgprofiled 2.0.0)" in out
         assert [r["verb"] for r in daemon.requests] == ["version"]
 
     def test_json(self, cli, sockdir, signalled):

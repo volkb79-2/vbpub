@@ -1,7 +1,7 @@
-# cgpctl and cgpd: the 2.0 command-line contract
+# cgprofilectl and cgprofiled: the 2.0 command-line contract
 
 **Status.** Specification for cgprofile 2.0.0. Nothing here is implemented in 1.x. Package 1 (wheel
-layout), package 2 (`cgpctl`) and package 3 (`cgpd`) implement it, the run-gate socket-only change
+layout), package 2 (`cgprofilectl`) and package 3 (`cgprofiled`) implement it, the run-gate socket-only change
 consumes it, and [`PROTOCOL.md`](PROTOCOL.md) section 10 carries the wire half (ctl contract 2).
 [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md) carries packaging, the unit and the install path.
 The generated `docs/CLI-SPEC.md`, `docs/cli-surface.json` and `docs/cli-review.toml` that cli-extended
@@ -9,7 +9,7 @@ derives from the registries replace the verb tables here as the mechanical autho
 3 land; this file stays the prose authority for behaviour.
 
 **Names.** Product, release tag prefix (`cgprofile-v`), wheel distribution and Python package are
-`cgprofile`. The client console script is `cgpctl`; the daemon console script is `cgpd`. There is no
+`cgprofile`. The client console script is `cgprofilectl`; the daemon console script is `cgprofiled`. There is no
 `cgprofile` command and no alias. Environment variables keep the `CGPROFILE_` prefix, except the one
 client socket override, which is `CGPCTL_SOCKET`.
 
@@ -23,11 +23,11 @@ reported in one line with `--traceback` for the stack.
 
 cli-extended's table, plus one tool-specific code.
 
-| Code | Meaning in cgpctl / cgpd |
+| Code | Meaning in cgprofilectl / cgprofiled |
 |---:|---|
 | 0 | Completed. |
 | 1 | Expected runtime failure: a daemon answer of `daemon-error`, `stop-incomplete`, `export-failed`, `export-too-large`, `persist-failed`, `busy` (retry); a filesystem error; the `report` extra failing to render. |
-| 2 | Invocation, validation or safety refusal: usage errors; a daemon answer of `bad-argument`, `bad-policy`, `unknown-session`, `target-not-found`, `too-many-sessions`, `peer-refused` (including `config set` / `config reset` by a non-root caller), `session-live`, `report-removed`, and for `config set` a `bad-argument` naming an unknown or not runtime-tunable key or an invalid value; `prune` or `stop` declined without `--yes`; `cgpd` refusing a config, a second daemon, or a stale env var. |
+| 2 | Invocation, validation or safety refusal: usage errors; a daemon answer of `bad-argument`, `bad-policy`, `unknown-session`, `target-not-found`, `too-many-sessions`, `peer-refused` (including `config set` / `config reset` by a non-root caller), `session-live`, `report-removed`, and for `config set` a `bad-argument` naming an unknown or not runtime-tunable key or an invalid value; `prune` or `stop` declined without `--yes`; `cgprofiled` refusing a config, a second daemon, or a stale env var. |
 | 3 | The daemon could not be reached or does not speak a usable contract. The `[ERROR]` line and the `--json` document carry one cause tag (below). |
 | 130 | Ctrl-C. |
 
@@ -36,18 +36,18 @@ Cause tags for exit 3 (the CP-31 set, plus one):
 | Tag | Meaning | Remedy printed by `doctor` and in the error line |
 |---|---|---|
 | `socket-not-mounted` | the socket's directory does not exist (a devcontainer without the `/run/cgprofile` bind) | add the bind mount; name the template line |
-| `socket-missing` | directory exists, no socket (daemon not running) | `systemctl status cgpd`; start it |
-| `daemon-refusing` | socket exists, connection refused or the daemon answers `busy` persistently | `journalctl -u cgpd`; report if it loops |
+| `socket-missing` | directory exists, no socket (daemon not running) | `systemctl status cgprofiled`; start it |
+| `daemon-refusing` | socket exists, connection refused or the daemon answers `busy` persistently | `journalctl -u cgprofiled`; report if it loops |
 | `socket-permission` | the socket exists but the caller is not in its group, or `peer-refused` for the caller's uid | name the socket's group (derived by `stat`), the caller's groups, and the `allow_uids` key |
 | `contract-unsupported` | the daemon answers contract 1 only and the verb needs contract 2, or the reverse | name both contract sets and the version to install |
 
 The 1.x `ctl` table (0 ok, 2 refused, 3 fault) was wire for run-gate's exec carrier only and is not
 preserved: that carrier is removed (docs/CONSUMERS.md, consumer impact).
 
-## 2. `cgpctl`
+## 2. `cgprofilectl`
 
 ```
-cgpctl [--socket PATH] [--json] <verb> [args]
+cgprofilectl [--socket PATH] [--json] <verb> [args]
 ```
 
 ### 2.1 Socket selection
@@ -58,7 +58,7 @@ Resolution order, first hit wins: `--socket PATH`, then `CGPCTL_SOCKET`, then
 error (exit 2), not a silent fall-through to the default. The path may be any absolute or relative path
 to a Unix socket; the client never rewrites it. Every verb that talks to the daemon uses the resolved
 path, and `doctor` reports which source chose it (`flag`, `env`, `default`). The observer socket is not a
-`cgpctl` concern; consumers reach it directly.
+`cgprofilectl` concern; consumers reach it directly.
 
 ### 2.2 Verb surface
 
@@ -85,14 +85,14 @@ Daemon verbs need the group (section 2.4). "Mutating" verbs change daemon state.
 | `skills install\|uninstall\|check\|list` | none | | cli-extended's `register_skills_verbs`, package `cgprofile`. |
 
 Removed relative to 1.x with no replacement alias: `attach` (use `start` and `stop`, or `run`),
-`targets` (use `start --dry-run`), the hidden `_collect`, `serve` (now `cgpd`), the whole `ctl` group,
+`targets` (use `start --dry-run`), the hidden `_collect`, `serve` (now `cgprofiled`), the whole `ctl` group,
 helper mode, the placement probe container, and `--log-tail` / `--log-match`.
 
 ### 2.3 Verb details and JSON shapes
 
 Every read verb accepts `--json` and then prints exactly one JSON document on stdout (watch: one JSON
 object per line), nothing else on stdout. Human mode prints a table or key/value lines. All documents
-carry `"schema": 1` (the cgpctl output schema, independent of the wire contract) and `"ok": true`. On
+carry `"schema": 1` (the cgprofilectl output schema, independent of the wire contract) and `"ok": true`. On
 failure with `--json` the document is `{"schema": 1, "ok": false, "error": {"code": "...", "message":
 "...", "cause": "<tag or null>"}}`, exit code per section 1. Timestamps are UTC ISO-8601 with `Z`, byte
 counts are integers, seconds are numbers, an unknown value is `null`.
@@ -108,7 +108,7 @@ counts are integers, seconds are numbers, an unknown value is `null`.
  "socket": {"path": "...", "source": "flag|env|default", "group": "cgprofile-control", "gid": 999,
             "listening": true, "allow_uids": []},
  "resource_observer": {"contract": 2, "contracts": [2, 3], "path": "...", "listening": true},
- "config": {"file": "/etc/cgprofile/cgpd.toml", "digest": "sha256:...", "loaded_at": "...",
+ "config": {"file": "/etc/cgprofile/cgprofiled.toml", "digest": "sha256:...", "loaded_at": "...",
             "reloads": 0, "last_reload_error": null, "overrides": 0},
  "skew": {"client_vs_daemon": "equal|client-older|client-newer", "contract_ok": true}}
 ```
@@ -143,7 +143,7 @@ finished session the stored Summary (schema v1.1, `RG55-INTERFACE-CONTRACT.md` s
 **`start`**
 
 ```
-cgpctl start --target containerid:<64hex> | container:NAME | cgroup:/abs/path | slice:NAME.slice
+cgprofilectl start --target containerid:<64hex> | container:NAME | cgroup:/abs/path | slice:NAME.slice
              [--scope container|container-shared] [--token T] [--interval S] [--damon on|off]
              [--place --memory-high B --memory-max B --cpu-weight W]
              [--idle-bound auto|S] [--ceiling auto|S] [--on-stall report|kill]
@@ -155,7 +155,7 @@ when docker is reachable; without docker it is a usage error naming `containerid
 The daemon never resolves names. `cgroup:` and `slice:` targets are new in contract 2 (PROTOCOL.md
 section 10.4): read-only observation, no placement, no `on_stall=kill`. Defaults for an ad-hoc call: scope
 `container` for container targets; the client fills the required `meta` keys with `kind: "adhoc"`,
-`client: "cgpctl <version>"` and the caller's uid, and `--meta JSON` merges over them. `--dry-run` resolves
+`client: "cgprofilectl <version>"` and the caller's uid, and `--meta JSON` merges over them. `--dry-run` resolves
 the target, prints what would be sent and the target's effective limits, and starts nothing. `--json`
 output: `{"schema": 1, "ok": true, "session": "s-...", "started_at": "...", "target": {...},
 "placement": null}` (the `target` and `placement` objects are the wire's). A `place-refused:*` outcome is
@@ -197,14 +197,14 @@ tighten it for sessions it owns; sessions of other uids are removed only by uid 
 Direct mode only: the command runs in the caller's own cgroup subtree, sampled by the stdlib collector;
 the result is a run directory (`CGPROFILE_RUN_DIR` exported to the command; `mark` appends to it). Where
 cgroupfs is not visible (a devcontainer without host cgroups) the verb fails with exit 2 and one line:
-`direct mode needs cgroupfs; use 'cgpctl start' against the host daemon`. Output: `{"schema": 1, "ok":
+`direct mode needs cgroupfs; use 'cgprofilectl start' against the host daemon`. Output: `{"schema": 1, "ok":
 true, "run_dir": "...", "exit_status": 0, "duration_seconds": 0.0}`; the profiled command's own exit
-status is `exit_status`, and cgpctl exits 0 when profiling succeeded regardless of it unless
+status is `exit_status`, and cgprofilectl exits 0 when profiling succeeded regardless of it unless
 `--propagate-exit` is given.
 
 **`mark`**
 
-`cgpctl mark NAME [--kind K] [--meta JSON]` writes a phase mark into `$CGPROFILE_RUN_DIR`. It imports
+`cgprofilectl mark NAME [--kind K] [--meta JSON]` writes a phase mark into `$CGPROFILE_RUN_DIR`. It imports
 nothing outside the standard library and cli-extended (a test pins this), needs no daemon, no socket and
 no group. Exit 2 when `CGPROFILE_RUN_DIR` is unset.
 
@@ -229,7 +229,7 @@ with a `pass|warn|fail|skip` status and a remedy on non-pass:
 
 `doctor` is in the degraded set: with no daemon access it still runs `socket`, `caller-group`,
 `report-extra` and `skills`, marks the rest `skip`, and the failing check prints the fix, for example
-`add yourself to cgprofile-control (gid 999) and re-login`, or `the socket is missing: systemctl start cgpd`.
+`add yourself to cgprofile-control (gid 999) and re-login`, or `the socket is missing: systemctl start cgprofiled`.
 
 **`config show`**
 
@@ -267,7 +267,7 @@ not an error (`reset` is empty). Audit-logged like `config set`.
 | Any user | `--version`, `--help`, `run`, `mark`, `report --run-dir`, `skills *`, `doctor` (degraded: the local checks and the remedy for the failing one) |
 | Member of the configured control socket group, and in `allow_uids` when that is set | everything in section 2.2 against their own sessions; `sessions`, `show`, `watch`, `status`, `host` against all sessions |
 | uid 0 | the above, plus `stop`, `report` (export) and `prune` of other uids' sessions, and `config set` / `config reset` (the only callers allowed to change settings, the access list included) |
-| `cgprofile-observer` group member | nothing in `cgpctl`; the observer socket is reached by consumers directly, by design |
+| `cgprofile-observer` group member | nothing in `cgprofilectl`; the observer socket is reached by consumers directly, by design |
 
 A daemon verb without access exits 3 with cause `socket-permission`, the socket's group, the caller's
 groups and the remedy; no verb retries. The control socket group is a dedicated cgprofile access grant
@@ -275,45 +275,45 @@ and must not be the Docker group, GID 0, the docker GID, or the observer level's
 is not part of the control-group policy. Ownership is enforced by the daemon from `SO_PEERCRED`
 (PROTOCOL.md section 10.5), never by the client.
 
-### 2.5 Environment read by `cgpctl`
+### 2.5 Environment read by `cgprofilectl`
 
 | Variable | Use |
 |---|---|
 | `CGPCTL_SOCKET` | socket override (section 2.1) |
 | `CGPROFILE_RUN_DIR` | the current run directory (`mark`, `report --run-dir`); set by `run` for its child |
-| `CGPROFILE_MARK` | removed: wrapped commands call `cgpctl mark` through `PATH`; `run` prepends the directory of the running `cgpctl` to the child's `PATH` |
+| `CGPROFILE_MARK` | removed: wrapped commands call `cgprofilectl mark` through `PATH`; `run` prepends the directory of the running `cgprofilectl` to the child's `PATH` |
 
-## 3. `cgpd`
+## 3. `cgprofiled`
 
 ```
-cgpd [--config PATH] <verb>
-cgpd -t [--config PATH]
+cgprofiled [--config PATH] <verb>
+cgprofiled -t [--config PATH]
 ```
 
-Root only. `cgpd run` refuses to start as a non-root euid (exit 2) and `cgpd unit` / `cgpd config` run
-as any user (they read and render, never touch live state). `cgpd` is a service entrypoint in
+Root only. `cgprofiled run` refuses to start as a non-root euid (exit 2) and `cgprofiled unit` / `cgprofiled config` run
+as any user (they read and render, never touch live state). `cgprofiled` is a service entrypoint in
 cli-extended's sense: `--help`, `--version` and malformed arguments never start the service, create state
 or touch the socket.
 
-`cgpd -t` validates the selected config and exits 0 when valid or non-zero when
-invalid. It is equivalent to `cgpd config check` and is suitable for systemd
+`cgprofiled -t` validates the selected config and exits 0 when valid or non-zero when
+invalid. It is equivalent to `cgprofiled config check` and is suitable for systemd
 `ExecStartPre`.
 
 ### 3.1 Verbs
 
 | Verb | Summary |
 |---|---|
-| `run [--self-bind]` | Explicit, never a default verb (`cgpd` without a verb prints usage and exits 2); the unit's `ExecStart` is `cgpd run`. Adopts systemd's named `control` and `observer` sockets; `--self-bind` is only for tests and development. |
+| `run [--self-bind]` | Explicit, never a default verb (`cgprofiled` without a verb prints usage and exits 2); the unit's `ExecStart` is `cgprofiled run`. Adopts systemd's named `control` and `observer` sockets; `--self-bind` is only for tests and development. |
 | `install` | Fetches hash-pinned wheels, renders config and systemd resources, checks drift, drains live sessions before restart, then applies the service install. A TTY can prompt for missing values; repeat `--add-user LEVEL=USER` to add existing users. |
 | `uninstall [--remove-groups] [--purge-data]` | Stops and removes service resources; keeps groups and `/var/lib/cgprofile` unless the corresponding flags are supplied. |
 | `doctor [--check NAME] [--json]` | Checks config, rendered resources, groups, socket units and nodes, state directory, running version, connections, foreign rules, and caller access. |
 | `unit print [--wheel-venv PATH] [--install-root PATH]` | Prints the service, slice, per-level socket units and sysusers file from the wheel. Nothing is read from a checkout. |
 | `unit check [--installed PATH ...]` | Compares installed service resources with the rendered output; exit 2 on drift, naming the first differing line. |
-| `config check [--file PATH]` | Validates the file (unknown keys, types, ranges, slice names, uid list, and socket tables) without starting anything. Exit 0 valid, 2 invalid. `cgpd -t` is its config-test alias. |
-| `reload [--reset-overrides]` | Root only. Signals the running daemon to reload (what `systemctl reload cgpd` does); with `--reset-overrides` it first removes every runtime override through the socket (`config-reset` with `all`). Overrides are kept without the flag. |
-| `skills` | Not registered: `cgpd` has no agent skill. Client-side diagnosis remains available as `cgpctl doctor`. |
+| `config check [--file PATH]` | Validates the file (unknown keys, types, ranges, slice names, uid list, and socket tables) without starting anything. Exit 0 valid, 2 invalid. `cgprofiled -t` is its config-test alias. |
+| `reload [--reset-overrides]` | Root only. Signals the running daemon to reload (what `systemctl reload cgprofiled` does); with `--reset-overrides` it first removes every runtime override through the socket (`config-reset` with `all`). Overrides are kept without the flag. |
+| `skills` | Not registered: `cgprofiled` has no agent skill. Client-side diagnosis remains available as `cgprofilectl doctor`. |
 
-`cgpd run` preflight, each failure a one-line exit 2 that names the fix, nothing partially started:
+`cgprofiled run` preflight, each failure a one-line exit 2 that names the fix, nothing partially started:
 
 1. effective uid 0;
 2. the config loads and validates; no stale `CGPROFILE_*` daemon variable is set (section 3.4);
@@ -324,16 +324,16 @@ invalid. It is equivalent to `cgpd config check` and is suitable for systemd
 
 The run mode is then checked before service startup: `LISTEN_FDS` must contain valid named listening
 descriptors, or the operator must pass `--self-bind`. Systemd creates and owns production socket nodes;
-cgpd does not bind, chmod, chown or unlink them in activated mode. Missing levels are logged while the
+cgprofiled does not bind, chmod, chown or unlink them in activated mode. Missing levels are logged while the
 available level remains served; duplicate or unknown descriptor names are refused.
 
 SIGTERM drains as today (shutdown grace unchanged). SIGHUP reloads (section 3.3). SIGUSR1 is unused.
-`cgpd run` logs to stderr in `key=value` lines for the journal; there is no log file option.
+`cgprofiled run` logs to stderr in `key=value` lines for the journal; there is no log file option.
 
 ### 3.2 Config file
 
-`/etc/cgprofile/cgpd.toml`, root-owned, mode 0644, TOML, parsed with `tomllib`. Override with
-`cgpd --config PATH`. A missing file at the default path means all defaults; a missing file at an explicit
+`/etc/cgprofile/cgprofiled.toml`, root-owned, mode 0644, TOML, parsed with `tomllib`. Override with
+`cgprofiled --config PATH`. A missing file at the default path means all defaults; a missing file at an explicit
 `--config PATH` is an error. Root settings are top-level keys; socket settings use fixed nested
 `[sockets.control]` and `[sockets.observer]` tables. Unknown keys are refused, naming the nearest valid key.
 The removed `ctl_socket` and `observer_socket` keys receive a named refusal with their replacements.
@@ -369,49 +369,49 @@ sizing. `interval` is clamped to [0.25, 30] at use, as on the wire. The control 
 groups must be distinct dedicated groups: they cannot share a name or resolve to the same GID. Neither
 may be named `docker`, resolve to GID 0 or the docker GID, or resolve to the other level's GID.
 `config check`, the daemon loader and the installer share this rule. The installer refuses invalid group
-values from flags, saved `install.toml`, existing `cgpd.toml`, and wizard answers, with no override.
+values from flags, saved `install.toml`, existing `cgprofiled.toml`, and wizard answers, with no override.
 Cross-service group uniqueness belongs to host-setup.
 
-`cgpd install --add-user LEVEL=USER` is repeatable for `LEVEL=control` or `LEVEL=observer`. The installer
+`cgprofiled install --add-user LEVEL=USER` is repeatable for `LEVEL=control` or `LEVEL=observer`. The installer
 requires each account named with `--add-user` to exist, adds it with `gpasswd -a`, and records the requested
 users in `/etc/cgprofile/install.toml`. On reinstall, recorded users whose accounts no longer exist are
 dropped and reported; the install continues. Reinstalls re-add the remaining recorded members, and
 memberships are never individually removed on uninstall. `--dry-run` lists each requested addition and any
 dropped recorded users. The `groups` doctor check warns when a recorded member has left or their account is
-gone, and recommends rerunning `cgpd install` or naming a replacement with `--add-user LEVEL=USER`.
+gone, and recommends rerunning `cgprofiled install` or naming a replacement with `--add-user LEVEL=USER`.
 
 ### 3.3 Reload
 
-`systemctl reload cgpd` runs `ExecReload=/bin/kill -HUP $MAINPID`. On SIGHUP the daemon reads the file,
+`systemctl reload cgprofiled` runs `ExecReload=/bin/kill -HUP $MAINPID`. On SIGHUP the daemon reads the file,
 validates it fully, and swaps all reloadable keys in one atomic step; live sessions keep the settings
 they started with (a changed `interval` or `damon_default` applies to sessions started afterwards, a
 changed `keep_*` applies at the next retention pass, `max_sessions` below the live count only blocks new
 starts, `allow_uids` applies to the next connection). A change to a fixed key is reported and ignored:
-`config.last_reload_error` names `restart required for <key>`, the old value stays, and `cgpctl status`
+`config.last_reload_error` names `restart required for <key>`, the old value stays, and `cgprofilectl status`
 shows it. An invalid file leaves every old setting in force and records the error; it never kills the
 daemon. The daemon logs one line per reload with the new digest.
 
 Runtime overrides (section 3.5) survive a reload: the reload re-reads the config file and the effective
 value of each key is recomputed as override, then file, then default. A reload therefore never silently
-discards an operator's `config set`. To drop overrides together with a reload, run `cgpd reload
+discards an operator's `config set`. To drop overrides together with a reload, run `cgprofiled reload
 --reset-overrides` (section 3.1), which is `config reset --all` followed by the same SIGHUP. A restart
 drops the memory-only overrides and keeps the persisted ones.
 
 ### 3.4 Stale environment
 
 The daemon reads no `CGPROFILE_*` configuration variable. If any variable listed in the "Replaces"
-column or the removed list is set in the daemon's environment, `cgpd run` exits 2 and names the config
+column or the removed list is set in the daemon's environment, `cgprofiled run` exits 2 and names the config
 key that replaces it (or says it was removed). `CGPROFILE_ALLOW_UIDS` set in a unit's `Environment=` is
 the expected leftover; the message is `CGPROFILE_ALLOW_UIDS is no longer read; set allow_uids in
-/etc/cgprofile/cgpd.toml`. This is deliberate: a trust decision silently ignored is worse than a refusal.
+/etc/cgprofile/cgprofiled.toml`. This is deliberate: a trust decision silently ignored is worse than a refusal.
 
 ### 3.5 Runtime overrides (`config set`)
 
 Settings can also change over the control socket, by uid 0 only, without editing a file. This is the one
 deliberate exception to "the file is the source of settings", and it is built so that host-setup's
-`/etc/cgprofile/cgpd.toml` stays authoritative for everything it declares.
+`/etc/cgprofile/cgprofiled.toml` stays authoritative for everything it declares.
 
-**Precedence, highest first:** runtime override, then `/etc/cgprofile/cgpd.toml` (or `--config PATH`),
+**Precedence, highest first:** runtime override, then `/etc/cgprofile/cgprofiled.toml` (or `--config PATH`),
 then the built-in default. `config show` reports the source of each value as `override`, `file` or
 `default`, and for an override also the value it shadows.
 
@@ -449,7 +449,7 @@ declarations that should only change by editing the declared state. A `config se
 `bad-argument`, and the message lists the tunable keys.
 
 **Validation and apply.** The daemon validates the new value with the same schema function as the file
-(`cgpd config check` and the loader share it), applies it atomically with the reload swap of section 3.3
+(`cgprofiled config check` and the loader share it), applies it atomically with the reload swap of section 3.3
 (live sessions keep their settings), and answers only after the value is in force and, with `--persist`,
 on disk. `--persist` failing to write (disk full, read-only) answers `persist-failed` and leaves the
 override unapplied: no half state.
@@ -459,13 +459,13 @@ daemon log (the journal): `config-audit id=<n> op=set|reset|refused uid=1003 pid
 old=[1003] new=[1003,1004] persist=true ts=2026-11-04T10:15:00Z`. `uid` and `pid` come from
 `SO_PEERCRED`; list values are logged in full. The id is returned to the caller as `audit_id`.
 
-**Reload and restart.** `systemctl reload cgpd` keeps every override (section 3.3). `cgpd reload
+**Reload and restart.** `systemctl reload cgprofiled` keeps every override (section 3.3). `cgprofiled reload
 --reset-overrides` drops them. A daemon restart keeps persisted overrides and drops memory-only ones.
 An upgrade or rollback keeps the overrides file; the tunable set is per version, and entries the pinned
 version does not know are ignored with a warning, never an error.
 
 **Doctor and drift.** `doctor` (`overrides` check) warns for every override whose key the config file also
-declares, with the file value, the override value and the remedy `cgpctl config reset <key>`, because
+declares, with the file value, the override value and the remedy `cgprofilectl config reset <key>`, because
 host-setup's declared value is then not what is in force. `check.sh` runs `doctor`, so an operator's
 leftover override is visible at the next host check; it is a warning, not a failure, since runtime tuning
 under load is the reason the feature exists. An override on a key the file does not declare is reported

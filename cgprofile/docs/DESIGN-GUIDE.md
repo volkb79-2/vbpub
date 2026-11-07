@@ -6,11 +6,11 @@ feature list is in [`README.md`](../README.md); worked adoption belongs in
 
 ## Daemon safety and placement
 
-`cgpd.service` is a native systemd service and runs in the host PID and
+`cgprofiled.service` is a native systemd service and runs in the host PID and
 cgroup namespaces. That is what DAMON sysfs needs: it resolves `pid_target`
 in the writer's active PID namespace. The service has no Docker socket and
 uses no Docker API. Workload, gate, and test containers remain private in
-every namespace. At start `cgpd run` always verifies that the proc root it
+every namespace. At start `cgprofiled run` always verifies that the proc root it
 samples belongs to the PID namespace it runs in and refuses to serve
 otherwise; there is no mode switch. State lives in `/var/lib/cgprofile`
 (see [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md)).
@@ -214,7 +214,7 @@ The daemon runs natively in the host PID and cgroup namespaces and samples
 the real `/proc` and `/sys/fs/cgroup`; its pid-namespace identity check
 (configured proc root versus its own namespace) is a consistency check that
 is always on. Container names, labels, and `self` are resolved on the
-client side (`cgpctl`, which may call `docker inspect`) to full container
+client side (`cgprofilectl`, which may call `docker inspect`) to full container
 IDs; the daemon locates those IDs in its host cgroup view. Systemd socket
 units own `/run/cgprofile/control/cgprofile.sock` and
 `/run/cgprofile/observer/cgprofile.sock`; the service receives the already
@@ -237,7 +237,7 @@ the session directory remain separate intended write surfaces.
 
 ### Private namespaces and host views
 
-`cgpctl` runs in the caller's namespaces, which may be a private container.
+`cgprofilectl` runs in the caller's namespaces, which may be a private container.
 `self` means the container that invoked the CLI; the client resolves its own
 full Docker ID rather than guessing from `/proc/self/cgroup`. A caller-visible
 `pid:N` is accepted only when its cgroup namespace matches the caller's. The
@@ -451,11 +451,11 @@ identity is still proven as pool-owned. During a session, target recommits
 rebuild the exact array, preventing a shrinking subtree or reused slot from
 continuing to watch former lane PIDs.
 
-The one-shot collector (`cgpctl run`, `cgpctl attach`) follows the same
+The one-shot collector (`cgprofilectl run`, `cgprofilectl attach`) follows the same
 nonzero-baseline refusal and optional-evidence rule. A startup or later
 collection error closes only DAMON, writes ordinary samples and the normal
 finished manifest, and lets the wrapped command run to completion. In
-particular, `cgpctl run` must not
+particular, `cgprofilectl run` must not
 wait for DAMON before launching the user's command or let a missing optional
 series alter its verdict.
 
@@ -583,7 +583,7 @@ source-consistency metadata, not an authentication token or proof of CMRU
 provenance, so the supported publication workflow remains `cmru release`.
 
 Deployment verification checks the wheel identity: the version in the wheel's
-installed metadata, `cgpd --version`, `cgpctl --version`, and the `version`
+installed metadata, `cgprofiled --version`, `cgprofilectl --version`, and the `version`
 control verb must agree with the pinned `cgprofile-v<version>` release tag, and
 the wheel's sha256 must match the release sidecar
 ([`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md) section 3.2). While the release
@@ -625,12 +625,12 @@ Install, pin and verification live in
 - Confirm every dependency version adopted by the release is at least 14 days
   past its upload time.
 - Installs follow [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md): the wheel is
-  the deployed artifact and `cgpd.service` drains before restart.
+  the deployed artifact and `cgprofiled.service` drains before restart.
 
 ## The GitHub Release body for the published wheel
 
 From 2.0.0 the wheel is cgprofile's only released artifact (the OCI image is retired from
-the release: the 1.x container stack cannot start under the `cgpd` entrypoint, CP-54).
+the release: the 1.x container stack cannot start under the `cgprofiled` entrypoint, CP-54).
 CGProfile's push step therefore has one command, `cmru handler wheel-publish --prefix
 cgprofile --cwd .`, which uploads the wheel, its sha256 sidecar and `latest.json` and writes the
 release body.
@@ -729,7 +729,7 @@ completion.
 Docker and systemd accept any `cgroup_parent` and auto-create an uninstalled
 slice without limits, so a service whose unit names `cgprofile.slice` can
 still run unbounded next to production workloads if the slice file is absent.
-`cgpd run` therefore refuses to start unless the cgroup it is actually running
+`cgprofiled run` therefore refuses to start unless the cgroup it is actually running
 in, derived from `/proc/<pid>/cgroup` (the same path derivation placement
 uses), is under the top-level `cgprofile.slice` and that slice's `memory.max`
 is a finite positive integer. A bounded `cgprofile.slice` that merely exists
@@ -742,7 +742,7 @@ into one "not a number" outcome, so the message names every cause.
 Rejected alternative: a flag to run unbounded anyway (the point is that
 unbounded must not look governed). The refusal runs after the unit starts, so
 under the unit's restart policy a host without the slice crash-loops; that
-loud failure is intended, and `cgpd unit check` plus `cgpctl doctor` report
+loud failure is intended, and `cgprofiled unit check` plus `cgprofilectl doctor` report
 the missing or drifted slice before it comes to that.
 
 ### A wedged worker has a bounded way out
@@ -775,7 +775,7 @@ The daemon exposes two fixed access levels:
 
 Each level has its own systemd socket unit with one `ListenStream=`. The unit
 creates and owns the filesystem node, then passes exactly one named descriptor
-to `cgpd.service`. This removes socket-node ownership from daemon startup and
+to `cgprofiled.service`. This removes socket-node ownership from daemon startup and
 preserves the socket inode when only the service restarts. Restarting a socket
 unit also restarts the service through `Requires=`, so the daemon does not keep
 accepting on a descriptor whose pathname has been replaced.
@@ -784,7 +784,7 @@ The daemon validates descriptor names, rejects duplicates and unknown names,
 checks that each descriptor is a listening Unix stream socket, and clears
 `LISTEN_PID`, `LISTEN_FDS`, and `LISTEN_FDNAMES` before starting workers. An
 absent level is logged and left unavailable while the other level continues;
-`cgpd doctor` reports the missing node and gives the matching socket-unit
+`cgprofiled doctor` reports the missing node and gives the matching socket-unit
 restart command. The service never binds, chmods, chowns, or unlinks an
 activated node. `--self-bind` remains available only for tests and development;
 it may set the node mode but does not create or change the parent directory.
@@ -796,7 +796,7 @@ share a name or resolve to the same GID. A control client can start and stop
 profiling sessions; an observer client can read only the observer contract.
 Neither group may be named `docker`, resolve to GID 0 or the docker GID, or
 resolve to the other cgprofile level's GID.
-`cgpd` checks its own levels; host-setup owns uniqueness across services. The
+`cgprofiled` checks its own levels; host-setup owns uniqueness across services. The
 installer applies this rule to flags, saved records, existing config, and
 wizard answers, without an override. This keeps control access independent of
 Docker API access and leaves estate-wide group allocation to its owner. The
@@ -804,8 +804,8 @@ parent and level directories remain `root:root 0755`, so traversal does not
 grant access by itself. The socket group is the access decision.
 
 Recorded memberships are re-applied on install because users can be removed
-from a host outside cgpd. Missing recorded accounts do not block later
-installs: cgpd drops and reports them, while a user newly named with
+from a host outside cgprofiled. Missing recorded accounts do not block later
+installs: cgprofiled drops and reports them, while a user newly named with
 `--add-user` must exist. This keeps a stale record from trapping an otherwise
 valid service upgrade and preserves strict validation for explicit requests.
 
@@ -817,7 +817,7 @@ Clients use the new paths only. There is no path probing or compatibility
 fallback because the host moves from the old installation in one drained
 cutover.
 
-`cgpd install` refuses old state rather than trying to normalize it. A
+`cgprofiled install` refuses old state rather than trying to normalize it. A
 leftover mdt config key, external tmpfiles rule or unit drop-in, runtime tree
 with the wrong identity or mode, mdt installer manifest, or interrupted
 `PENDING` / `current.new` update needs an explicit manual removal. This keeps

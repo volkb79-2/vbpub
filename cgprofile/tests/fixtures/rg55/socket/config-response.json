@@ -2,7 +2,7 @@
   "ok": true,
   "contract": 2,
   "config": {
-    "file": "/var/lib/cgprofile/cgpd.toml",
+    "file": "/var/lib/cgprofile/cgprofiled.toml",
     "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "loaded_at": "2026-09-12T10:15:00Z",
     "reloads": 0,

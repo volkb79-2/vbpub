@@ -1,4 +1,4 @@
-"""A scriptable fake ctl daemon on a real AF_UNIX socket (shared by the cgpctl and ctlwire tests).
+"""A scriptable fake ctl daemon on a real AF_UNIX socket (shared by the cgprofilectl and ctlwire tests).
 
 Each handler is ``handler(args, contract) -> reply`` where a reply is a dict (one JSON line), raw
 ``bytes`` (sent as is), or a list of those (several lines). A handler may also raise to drop the
@@ -24,7 +24,7 @@ V2_VERSION = {
     "config": {"overrides": 0},
 }
 CONFIG_DOC = {"ok": True, "contract": 2, "config": {
-    "file": "/etc/cgprofile/cgpd.toml", "digest": "sha256:abc", "loaded_at": "2026-11-04T10:00:00Z",
+    "file": "/etc/cgprofile/cgprofiled.toml", "digest": "sha256:abc", "loaded_at": "2026-11-04T10:00:00Z",
     "reloads": 0, "last_reload_error": None, "overrides_file": None,
     "keys": {"allow_uids": {"value": [0, 1000], "source": "file"},
              "interval": {"value": 1.0, "source": "default"}}}}

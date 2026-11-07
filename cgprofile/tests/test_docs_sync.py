@@ -1,8 +1,8 @@
 """CP-45 docs sync: the README's product overview against the shipped surface.
 
 The README tables for the verbs, the configuration keys, the sockets and the
-group names are compared with the cli-extended registries of `cgpctl` and
-`cgpd`, the `daemon_config` schema, the wire defaults and PROTOCOL.md. A
+group names are compared with the cli-extended registries of `cgprofilectl` and
+`cgprofiled`, the `daemon_config` schema, the wire defaults and PROTOCOL.md. A
 mutation-style self-test proves each comparison fails when the README drifts.
 A grep test keeps removed 1.x names out of every live document (CP-49).
 """
@@ -16,7 +16,7 @@ from typing import Dict, List, Set
 import pytest
 
 from cgprofile import ctlwire, daemon_config
-from cgprofile.cli import cgpctl, cgpd
+from cgprofile.cli import cgprofilectl, cgprofiled
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parents[1]
@@ -83,25 +83,25 @@ def readme_problems(text: str) -> List[str]:
     """Every way the README overview disagrees with the shipped surface."""
     problems: List[str] = []
     commands = _section(text, "2. Commands")
-    ctl_table, cgpd_table, key_table = _tables(commands)[:3]
+    ctl_table, cgprofiled_table, key_table = _tables(commands)[:3]
 
-    ctl_verbs = _registry_verbs(cgpctl.build_cli())
+    ctl_verbs = _registry_verbs(cgprofilectl.build_cli())
     documented = {_first_code(row[0]).split()[0]: row for row in ctl_table}
     if set(documented) != set(ctl_verbs):
-        problems.append(f"cgpctl verbs: README {sorted(documented)} vs registry {sorted(ctl_verbs)}")
+        problems.append(f"cgprofilectl verbs: README {sorted(documented)} vs registry {sorted(ctl_verbs)}")
     for name, row in documented.items():
         for flag in re.findall(r"`(--[a-z][a-z-]*)", row[1]):
             if flag not in ctl_verbs.get(name, set()):
-                problems.append(f"cgpctl {name}: README flag {flag} is not in the registry")
+                problems.append(f"cgprofilectl {name}: README flag {flag} is not in the registry")
 
-    cgpd_verbs = _registry_verbs(cgpd.build_cli())
-    documented_cgpd = {_first_code(row[0]) for row in cgpd_table}
-    if documented_cgpd != set(cgpd_verbs):
-        problems.append(f"cgpd verbs: README {sorted(documented_cgpd)} vs registry {sorted(cgpd_verbs)}")
-    cgpd_text = " ".join(row[1] for row in cgpd_table)
-    for flag in re.findall(r"`(--[a-z][a-z-]*)", cgpd_text):
-        if flag not in set().union(*cgpd_verbs.values()):
-            problems.append(f"cgpd: README flag {flag} is not in the registry")
+    cgprofiled_verbs = _registry_verbs(cgprofiled.build_cli())
+    documented_cgprofiled = {_first_code(row[0]) for row in cgprofiled_table}
+    if documented_cgprofiled != set(cgprofiled_verbs):
+        problems.append(f"cgprofiled verbs: README {sorted(documented_cgprofiled)} vs registry {sorted(cgprofiled_verbs)}")
+    cgprofiled_text = " ".join(row[1] for row in cgprofiled_table)
+    for flag in re.findall(r"`(--[a-z][a-z-]*)", cgprofiled_text):
+        if flag not in set().union(*cgprofiled_verbs.values()):
+            problems.append(f"cgprofiled: README flag {flag} is not in the registry")
 
     keys = {_first_code(row[0]): row for row in key_table}
     if set(keys) != set(daemon_config.KEYS):
@@ -143,7 +143,7 @@ def test_socket_paths_and_group_names_agree_across_the_documents():
     assert daemon_config.DEFAULT_CONFIG_PATH in README.read_text(encoding="utf-8")
 
 
-def test_cgpd_run_is_explicit_in_the_spec_and_the_readme():
+def test_cgprofiled_run_is_explicit_in_the_spec_and_the_readme():
     spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
     assert "never a default verb" in spec
     assert "The default verb" not in spec
@@ -158,17 +158,17 @@ def test_socket_group_user_and_config_test_contract_stays_in_sync():
     native = (ROOT / "docs" / "NATIVE-DEPLOYMENT.md").read_text(encoding="utf-8")
 
     assert "--add-user LEVEL=USER" in README.read_text(encoding="utf-8")
-    assert "cgpd -t" in README.read_text(encoding="utf-8")
+    assert "cgprofiled -t" in README.read_text(encoding="utf-8")
     assert "GID 0 or the docker GID" in design
     assert "host-setup owns uniqueness across services" in design
     assert "--add-user control=alice --add-user observer=runner" in consumers
     assert "gpasswd -a" in consumers and "uninstall never removes them" in consumers
     assert "--add-user LEVEL=USER" in spec and "gpasswd -a" in spec
     assert "memberships are never" in spec and "Cross-service group uniqueness belongs to host-setup" in spec
-    assert "cgpd -t" in spec and "ExecStartPre" in spec
+    assert "cgprofiled -t" in spec and "ExecStartPre" in spec
     assert "CGPCTL-SPEC.md` section 3" in cli_spec and "config-test option" in cli_spec
     assert "No override exists" in native and "manual cleanup" in native
-    assert "Do not rerun the cgpd binary from a version tree" in native
+    assert "Do not rerun the cgprofiled binary from a version tree" in native
     assert "root-equivalent on mdt hosts" not in spec
     assert "ctl group is the Docker relay group" not in (ROOT / "docs" / "PROTOCOL.md").read_text(encoding="utf-8")
 
@@ -258,7 +258,7 @@ LIVE_DOCS = (
 
 def _consumers_without_migration_table() -> str:
     text = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
-    head, marker, _ = text.partition("## Migration table: 1.x command to cgpctl verb")
+    head, marker, _ = text.partition("## Migration table: 1.x command to cgprofilectl verb")
     assert marker, "CONSUMERS.md lost its migration table"
     return head
 
@@ -284,4 +284,4 @@ def test_no_live_document_names_a_removed_1x_command():
 def test_the_removed_name_grep_detects_each_term():
     for term in REMOVED:
         assert removed_name_hits({"doc.md": f"run {term} now"}) == [f"doc.md: {term}"]
-    assert removed_name_hits({"doc.md": "cgpctl status"}) == []
+    assert removed_name_hits({"doc.md": "cgprofilectl status"}) == []

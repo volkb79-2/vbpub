@@ -1,4 +1,4 @@
-"""``cgpctl``: the client console script (CGPCTL-SPEC.md section 2).
+"""``cgprofilectl``: the client console script (CGPCTL-SPEC.md section 2).
 
 The registry is built on cli-extended. Daemon verbs speak the ctl wire through
 :mod:`cgprofile.ctlwire` (standard library only); the report renderer is
@@ -52,7 +52,7 @@ _KEY_TYPES = {
     "keep_sessions": "int", "keep_days": "int", "export_max_bytes": "int",
     "max_sessions": "int", "max_exports": "int", "max_watchers": "int",
 }
-DIRECT_MODE_REFUSAL = "direct mode needs cgroupfs; use 'cgpctl start' against the host daemon"
+DIRECT_MODE_REFUSAL = "direct mode needs cgroupfs; use 'cgprofilectl start' against the host daemon"
 REPORT_EXTRA_HINT = "pip install 'cgprofile[report]'"
 OBSERVER_DIR = "/run/cgprofile/observer"
 OBSERVER_SOCKET = "/run/cgprofile/observer/cgprofile.sock"
@@ -61,7 +61,7 @@ SLICE_DIR = "/sys/fs/cgroup/cgprofile.slice"
 
 def identity() -> CliIdentity:
     return CliIdentity(name="CGPROFILE", version=installed_version(),
-                       long_name="cgroup resource profiler client", command="cgpctl")
+                       long_name="cgroup resource profiler client", command="cgprofilectl")
 
 
 # ── shared plumbing ─────────────────────────────────────────────────────────
@@ -296,7 +296,7 @@ def _start_request(args: argparse.Namespace) -> Dict[str, Any]:
         raise _bad(f"--meta must be valid JSON: {exc}") from exc
     if not isinstance(meta, dict):
         raise _bad("--meta must be a JSON object")
-    meta = {"kind": "adhoc", "client": f"cgpctl {installed_version()}", "uid": os.getuid(), **meta}
+    meta = {"kind": "adhoc", "client": f"cgprofilectl {installed_version()}", "uid": os.getuid(), **meta}
     wire: Dict[str, Any] = {"target": target, "scope": scope, "token": args.token}
     if args.damon is not None:
         wire["damon"] = args.damon
@@ -462,7 +462,7 @@ def _run(args: argparse.Namespace, runtime: CliRuntime) -> int:
     if not access.have_host_cgroup_view():
         raise _bad(DIRECT_MODE_REFUSAL, "direct-mode-unavailable")
     outcome = direct.run_command(command, out_dir=os.path.realpath(args.out_dir), phase=args.phase,
-                                 cgpctl_dir=os.path.dirname(os.path.realpath(sys.argv[0])))
+                                 cgprofilectl_dir=os.path.dirname(os.path.realpath(sys.argv[0])))
     emit(runtime, {"run_dir": outcome.run_dir, "exit_status": outcome.exit_status,
                    "duration_seconds": outcome.duration_seconds},
          [outcome.run_dir, f"command exited {outcome.exit_status}"])
@@ -473,7 +473,7 @@ def _run(args: argparse.Namespace, runtime: CliRuntime) -> int:
 def _mark(args: argparse.Namespace, runtime: CliRuntime) -> None:
     run_path = os.environ.get("CGPROFILE_RUN_DIR")
     if not run_path:
-        raise _bad("CGPROFILE_RUN_DIR is not set: run this inside `cgpctl run`", "no-run-dir")
+        raise _bad("CGPROFILE_RUN_DIR is not set: run this inside `cgprofilectl run`", "no-run-dir")
     if not os.path.isdir(run_path):
         raise _bad(f"run directory does not exist: {run_path}", "no-run-dir")
     try:
@@ -574,10 +574,10 @@ class _Probe:
 
 def _probe(args: argparse.Namespace) -> _Probe:
     """One probe per doctor invocation, cached on the invocation's own Namespace."""
-    probe = getattr(args, "_cgpctl_probe", None)
+    probe = getattr(args, "_cgprofilectl_probe", None)
     if probe is None:
         probe = _Probe(args)
-        args._cgpctl_probe = probe
+        args._cgprofilectl_probe = probe
     return probe
 
 
@@ -684,7 +684,7 @@ def _check_observer_dir(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
         observer = os.lstat(observer_path)
     except OSError:
         return CheckResult("warn", f"{observer_path} is absent",
-                           remedy="start cgprofile-observer.socket and check cgpd doctor")
+                           remedy="start cgprofile-observer.socket and check cgprofiled doctor")
     if not stat.S_ISSOCK(observer.st_mode) or observer.st_uid != 0:
         problems.append("observer endpoint is not a root-owned socket")
     try:
@@ -722,7 +722,7 @@ def _check_observer_dir(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
         if gid == 0:
             problems.append(f"{level} socket group resolves to GID 0")
     if problems:
-        return CheckResult("warn", "; ".join(problems), remedy="run cgpd doctor and repair the socket unit configuration")
+        return CheckResult("warn", "; ".join(problems), remedy="run cgprofiled doctor and repair the socket unit configuration")
     return CheckResult("ok", f"{observer_dir} is root:root 0755 and the observer socket has a separate group")
 
 
@@ -777,7 +777,7 @@ def _check_overrides(runtime: CliRuntime, args: argparse.Namespace) -> CheckResu
         if ignored:
             parts.append(f"{ignored} stored override entries were ignored")
         return CheckResult("warn", "; ".join(parts),
-                           remedy="; ".join(f"cgpctl config reset {k}" for k in shadowing) or "inspect the overrides file",
+                           remedy="; ".join(f"cgprofilectl config reset {k}" for k in shadowing) or "inspect the overrides file",
                            details={"shadowing": shadowing, "ignored": ignored})
     return CheckResult("ok", "no runtime override shadows the config file")
 
@@ -824,9 +824,9 @@ def _session_arg() -> ArgumentSpec:
 def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     """Build the registered CLI; import-safe (nothing runs until ``.run()``)."""
     registry = CliRegistry(
-        cli_identity or identity(), prog="cgpctl",
+        cli_identity or identity(), prog="cgprofilectl",
         description="Control the cgprofile host daemon and profile commands locally.",
-        getting_started=("cgpctl status", "cgpctl sessions", "cgpctl doctor"),
+        getting_started=("cgprofilectl status", "cgprofilectl sessions", "cgprofilectl doctor"),
         global_options=(_opt("--socket", "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
                              group="CONNECTION", metavar="PATH"),),
         unexpected_exceptions="report",
@@ -834,25 +834,25 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     read = VerbGroup.EXPLORATION.value
     modify = VerbGroup.MODIFICATION.value
     registry.register(VerbSpec("status", description="daemon and client versions, contracts, slots and config digest",
-                               group=read, examples=("cgpctl status", "cgpctl status --json"),
+                               group=read, examples=("cgprofilectl status", "cgprofilectl status --json"),
                                include_progress=False, handler=_status))
     registry.register(VerbSpec("host", description="host facts: load, memory, pressure, observed slices, DAMON",
-                               group=read, examples=("cgpctl host --json",), include_progress=False, handler=_host))
+                               group=read, examples=("cgprofilectl host --json",), include_progress=False, handler=_host))
     registry.register(VerbSpec(
         "sessions", description="one row per session, live and stored", group=read,
-        examples=("cgpctl sessions", "cgpctl sessions --state live --mine"), include_progress=False,
+        examples=("cgprofilectl sessions", "cgprofilectl sessions --state live --mine"), include_progress=False,
         options=(_opt("--state", "which sessions to list", group="FILTER", metavar="STATE",
                       choices=("live", "done", "all"), default="all"),
                  _opt("--mine", "only sessions owned by the calling uid", group="FILTER", action="store_true")),
         handler=_sessions))
     registry.register(VerbSpec("show", description="live counters of a live session, the summary of a finished one",
-                               group=read, examples=("cgpctl show s-20261104T101500Z-9f01",),
+                               group=read, examples=("cgprofilectl show s-20261104T101500Z-9f01",),
                                include_progress=False, arguments=(_session_arg(),), handler=_show))
     registry.register(VerbSpec(
         "start", description="start a daemon session on a container, cgroup or slice", group=modify,
         mutating=True, dry_run=True, include_progress=False,
         dry_run_help="resolve the target and print the request without starting a session",
-        examples=("cgpctl start --target container:web", "cgpctl start --target cgroup:/dev.slice --dry-run"),
+        examples=("cgprofilectl start --target container:web", "cgprofilectl start --target cgroup:/dev.slice --dry-run"),
         options=(
             _opt("--target", "containerid:<64hex>, container:NAME, cgroup:/abs/path or slice:NAME.slice",
                  group="TARGET", metavar="TARGET", required=True),
@@ -876,11 +876,11 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
         ), handler=_start))
     registry.register(VerbSpec("stop", description="stop and finalize a session; prints the summary", group=modify,
                                mutating=True, confirmation_required=True, include_progress=False,
-                               examples=("cgpctl stop s-20261104T101500Z-9f01",),
+                               examples=("cgprofilectl stop s-20261104T101500Z-9f01",),
                                arguments=(_session_arg(),), handler=_stop))
     registry.register(VerbSpec(
         "watch", description="stream readings until the session ends", group=read, include_json=True,
-        include_progress=False, examples=("cgpctl watch s-20261104T101500Z-9f01 --json",),
+        include_progress=False, examples=("cgprofilectl watch s-20261104T101500Z-9f01 --json",),
         arguments=(_session_arg(),),
         options=(_opt("--watch-interval", "seconds between readings (daemon clamps to 5..300)", group="STREAM",
                       metavar="SECONDS", type=float, default=30),),
@@ -888,7 +888,7 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     registry.register(VerbSpec(
         "report", description="export a stored session and render its report locally", group=read,
         expensive=True, include_progress=False,
-        examples=("cgpctl report s-20261104T101500Z-9f01", "cgpctl report --run-dir ./runs/run-1 --md-only"),
+        examples=("cgprofilectl report s-20261104T101500Z-9f01", "cgprofilectl report --run-dir ./runs/run-1 --md-only"),
         arguments=(ArgumentSpec("session", "the session id (omit with --run-dir)", metavar="ID",
                                 parser_kwargs={"nargs": "?"}),),
         options=(
@@ -904,7 +904,7 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
         "prune", description="apply stored-session retention now", group=modify, mutating=True, dry_run=True,
         confirmation_required=True, include_progress=False,
         dry_run_help="list the sessions that would be removed",
-        examples=("cgpctl prune --dry-run", "cgpctl prune --keep 50 --yes"),
+        examples=("cgprofilectl prune --dry-run", "cgprofilectl prune --keep 50 --yes"),
         options=(_opt("--keep", "keep at most this many sessions for this call", group="RETENTION", metavar="N", type=int),
                  _opt("--keep-days", "keep sessions at most this many days for this call", group="RETENTION",
                       metavar="DAYS", type=int)),
@@ -912,7 +912,7 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     registry.register(VerbSpec(
         "run", description="profile one command locally (direct mode, needs cgroupfs)", group=modify,
         mutating=True, expensive=True, include_progress=False, confirmation_required=False,
-        examples=("cgpctl run --phase build -- make",),
+        examples=("cgprofilectl run --phase build -- make",),
         arguments=(ArgumentSpec("command", "the command to profile, after --", metavar="CMD",
                                 parser_kwargs={"nargs": argparse.REMAINDER}),),
         options=(_opt("--phase", "phase name of the whole command (default: its basename)", group="RUN", metavar="NAME"),
@@ -923,22 +923,22 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     registry.register(VerbSpec(
         "mark", description="append a phase mark to the current run ($CGPROFILE_RUN_DIR)", group=modify,
         mutating=True, confirmation_required=False, include_progress=False,
-        examples=("cgpctl mark restoring-database",),
+        examples=("cgprofilectl mark restoring-database",),
         arguments=(ArgumentSpec("name", "the mark name", metavar="NAME"),),
         options=(_opt("--kind", "phase or event", group="MARK", metavar="KIND", choices=("phase", "event"), default="phase"),
                  _opt("--meta", "JSON object of extra fields", group="MARK", metavar="JSON")),
         handler=_mark))
     config = CliRegistry(
-        registry.identity, prog="cgpctl config", description="Show and change the daemon's settings.",
+        registry.identity, prog="cgprofilectl config", description="Show and change the daemon's settings.",
         global_options=registry.global_options, unexpected_exceptions="report")
     config.register(VerbSpec("show", description="effective settings with their source and the config digest",
                              group=read, include_progress=False, handler=_config_show,
-                             examples=("cgpctl config show --json",)))
+                             examples=("cgprofilectl config show --json",)))
     config.register(VerbSpec(
         "set", description="change one runtime-tunable setting live (uid 0 only)", group=modify, mutating=True,
         dry_run=True, confirmation_required=False, include_json=True, include_progress=False,
         dry_run_help="validate on the client and the daemon, change nothing",
-        examples=("cgpctl config set interval 2", "cgpctl config set allow_uids 1003,1004 --persist"),
+        examples=("cgprofilectl config set interval 2", "cgprofilectl config set allow_uids 1003,1004 --persist"),
         arguments=(ArgumentSpec("key", "a runtime-tunable key: " + ", ".join(TUNABLE_KEYS), metavar="KEY"),
                    ArgumentSpec("value", "the new value (number, integer, on|off, or a comma list)", metavar="VALUE")),
         options=(_opt("--persist", "also write the overrides file so it survives restarts", group="SCOPE",
@@ -946,7 +946,7 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
         handler=_config_set))
     config.register(VerbSpec(
         "reset", description="drop one runtime override, or all of them (uid 0 only)", group=modify, mutating=True,
-        confirmation_required=False, include_progress=False, examples=("cgpctl config reset interval", "cgpctl config reset --all"),
+        confirmation_required=False, include_progress=False, examples=("cgprofilectl config reset interval", "cgprofilectl config reset --all"),
         arguments=(ArgumentSpec("key", "the key whose override to drop", metavar="KEY", parser_kwargs={"nargs": "?"}),),
         options=(_opt("--all", "drop every override", group="SCOPE", action="store_true"),),
         handler=_config_reset))

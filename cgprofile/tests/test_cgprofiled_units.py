@@ -1,4 +1,4 @@
-"""cgpd unit print / unit check and the rendered unit goldens (NATIVE-DEPLOYMENT.md 4)."""
+"""cgprofiled unit print / unit check and the rendered unit goldens (NATIVE-DEPLOYMENT.md 4)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from cgprofile import unitfiles
-from cgprofile.cli import cgpd
+from cgprofile.cli import cgprofiled
 
 GOLDENS = Path(__file__).resolve().parent / "fixtures" / "units"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -19,7 +19,7 @@ REGEN_ENV = "CGPROFILE_REGEN_SOCKET_GOLDENS"
 @pytest.fixture()
 def cli(capsys):
     def run(*argv):
-        code = cgpd.build_cli().run(argv=list(argv))
+        code = cgprofiled.build_cli().run(argv=list(argv))
         captured = capsys.readouterr()
         return code, captured.out, captured.err
     return run
@@ -43,21 +43,21 @@ class TestRender:
     def test_a_refusal_exit_is_never_restarted_but_a_lost_socket_is(self):
         # exit 2 is a permanent configuration error (bad config, no activation); exit 3
         # (control socket lost) stays restartable under Restart=on-failure
-        service = unitfiles.render()["cgpd.service"].splitlines()
+        service = unitfiles.render()["cgprofiled.service"].splitlines()
         assert "Restart=on-failure" in service
         assert "RestartPreventExitStatus=2" in service
         assert not any(line.startswith("RestartForceExitStatus") for line in service)
 
     def test_exec_start_follows_the_install_root_or_the_venv(self):
-        assert "ExecStartPre=/opt/cgprofile/current/venv/bin/cgpd -t\n" in unitfiles.render()["cgpd.service"]
-        assert "ExecStart=/opt/cgprofile/current/venv/bin/cgpd run\n" in unitfiles.render()["cgpd.service"]
-        assert "ExecStartPre=/srv/cg/current/venv/bin/cgpd -t\n" in unitfiles.render("/srv/cg")["cgpd.service"]
-        assert "ExecStart=/srv/cg/current/venv/bin/cgpd run\n" in unitfiles.render("/srv/cg")["cgpd.service"]
-        assert "ExecStart=/srv/cg/2.0.0/venv/bin/cgpd run\n" in unitfiles.render(
-            "/srv/cg", "/srv/cg/2.0.0/venv/")["cgpd.service"]
+        assert "ExecStartPre=/opt/cgprofile/current/venv/bin/cgprofiled -t\n" in unitfiles.render()["cgprofiled.service"]
+        assert "ExecStart=/opt/cgprofile/current/venv/bin/cgprofiled run\n" in unitfiles.render()["cgprofiled.service"]
+        assert "ExecStartPre=/srv/cg/current/venv/bin/cgprofiled -t\n" in unitfiles.render("/srv/cg")["cgprofiled.service"]
+        assert "ExecStart=/srv/cg/current/venv/bin/cgprofiled run\n" in unitfiles.render("/srv/cg")["cgprofiled.service"]
+        assert "ExecStart=/srv/cg/2.0.0/venv/bin/cgprofiled run\n" in unitfiles.render(
+            "/srv/cg", "/srv/cg/2.0.0/venv/")["cgprofiled.service"]
 
     def test_the_service_sets_no_environment_and_no_oom_score(self):
-        lines = [line for line in unitfiles.render()["cgpd.service"].splitlines() if not line.startswith("#")]
+        lines = [line for line in unitfiles.render()["cgprofiled.service"].splitlines() if not line.startswith("#")]
         assert not any(line.startswith(("Environment", "OOMScoreAdjust")) for line in lines)
         assert "ExecReload=/bin/kill -HUP $MAINPID" in lines
         assert "Slice=cgprofile.slice" in lines and "StartLimitBurst=5" in lines
@@ -105,14 +105,14 @@ class TestPrint:
     def test_both_units_with_separators(self, cli):
         code, out, _ = cli("unit", "print")
         assert code == 0
-        assert out.startswith("# ---- cgprofile.slice ----\n") and "# ---- cgpd.service ----\n" in out
+        assert out.startswith("# ---- cgprofile.slice ----\n") and "# ---- cgprofiled.service ----\n" in out
         assert "# ---- cgprofile-control.socket ----\n" in out
         assert "# ---- cgprofile-observer.socket ----\n" in out
         assert "# ---- cgprofile.sysusers ----\n" in out
 
     def test_one_unit_verbatim(self, cli):
-        code, out, _ = cli("unit", "print", "--unit", "cgpd.service", "--wheel-venv", "/opt/cgprofile/2.0.0/venv")
-        assert code == 0 and out == unitfiles.render(wheel_venv="/opt/cgprofile/2.0.0/venv")["cgpd.service"]
+        code, out, _ = cli("unit", "print", "--unit", "cgprofiled.service", "--wheel-venv", "/opt/cgprofile/2.0.0/venv")
+        assert code == 0 and out == unitfiles.render(wheel_venv="/opt/cgprofile/2.0.0/venv")["cgprofiled.service"]
 
     def test_json(self, cli):
         code, out, _ = cli("unit", "print", "--json")
@@ -127,7 +127,7 @@ class TestPrint:
         config = tmp_path / "bad.toml"
         config.write_text("bogus = 1\n")
         code, _out, err = cli("--config", str(config), "unit", "print")
-        assert code == 2 and "bogus" in err and "cgpd config check" in err
+        assert code == 2 and "bogus" in err and "cgprofiled config check" in err
 
 
 class TestCheck:
@@ -140,13 +140,13 @@ class TestCheck:
         return tmp_path
 
     def test_matching_files(self, cli, installed):
-        code, out, _ = cli("unit", "check", "--installed", str(installed / "cgpd.service"),
+        code, out, _ = cli("unit", "check", "--installed", str(installed / "cgprofiled.service"),
                            str(installed / "cgprofile.slice"))
         assert code == 0 and "units match: " in out
 
     def test_json(self, cli, installed):
-        code, out, _ = cli("unit", "check", "--installed", str(installed / "cgpd.service"), "--json")
-        assert json.loads(out.strip().splitlines()[-1])["checked"] == {"cgpd.service": str(installed / "cgpd.service")}
+        code, out, _ = cli("unit", "check", "--installed", str(installed / "cgprofiled.service"), "--json")
+        assert json.loads(out.strip().splitlines()[-1])["checked"] == {"cgprofiled.service": str(installed / "cgprofiled.service")}
 
     def test_defaults_to_the_systemd_directory(self, cli, installed, monkeypatch):
         monkeypatch.setattr(unitfiles, "DEFAULT_UNIT_DIR", str(installed))
@@ -168,21 +168,21 @@ class TestCheck:
         assert unitfiles.render(config_values=only_observer)["cgprofile.sysusers"] == "g cgprofile-observer - - -\n"
 
     def test_drift_names_the_first_differing_line(self, cli, installed):
-        path = installed / "cgpd.service"
+        path = installed / "cgprofiled.service"
         path.write_text(path.read_text().replace("MemoryMax=768M", "MemoryMax=1G"))
         code, _out, err = cli("unit", "check", "--installed", str(path))
         assert code == 2
-        assert "unit drift: cgpd.service:" in err and "expected 'MemoryMax=768M', installed 'MemoryMax=1G'" in err
+        assert "unit drift: cgprofiled.service:" in err and "expected 'MemoryMax=768M', installed 'MemoryMax=1G'" in err
 
     def test_several_drifts_are_counted(self, cli, installed):
-        for name in ("cgpd.service", "cgprofile.slice"):
+        for name in ("cgprofiled.service", "cgprofile.slice"):
             (installed / name).write_text("x\n")
-        code, _out, err = cli("unit", "check", "--installed", str(installed / "cgpd.service"),
+        code, _out, err = cli("unit", "check", "--installed", str(installed / "cgprofiled.service"),
                               str(installed / "cgprofile.slice"))
         assert code == 2 and "(+1 more)" in err
 
     def test_a_missing_file_is_drift(self, cli, installed):
-        code, _out, err = cli("unit", "check", "--installed", str(installed / "nope" / "cgpd.service"))
+        code, _out, err = cli("unit", "check", "--installed", str(installed / "nope" / "cgprofiled.service"))
         assert code == 2 and "cannot read" in err
 
     def test_a_foreign_file_name_is_refused(self, cli, installed):
@@ -191,8 +191,8 @@ class TestCheck:
 
     def test_check_renders_with_the_given_venv(self, cli, installed):
         code, _out, err = cli("unit", "check", "--wheel-venv", "/srv/other/venv", "--installed",
-                              str(installed / "cgpd.service"))
-        assert code == 2 and "ExecStartPre=/srv/other/venv/bin/cgpd -t" in err
+                              str(installed / "cgprofiled.service"))
+        assert code == 2 and "ExecStartPre=/srv/other/venv/bin/cgprofiled -t" in err
 
     def test_check_with_a_bad_install_root(self, cli):
         assert cli("unit", "check", "--install-root", "relative")[0] == 2

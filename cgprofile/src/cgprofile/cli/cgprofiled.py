@@ -1,4 +1,4 @@
-"""``cgpd``: the daemon console script (CGPCTL-SPEC.md section 3).
+"""``cgprofiled``: the daemon console script (CGPCTL-SPEC.md section 3).
 
 A cli-extended service entrypoint. ``--help``, ``--version`` and malformed
 arguments never start the service, create state or touch the socket; only
@@ -42,7 +42,7 @@ PROBE_TIMEOUT = 2.0
 
 def identity() -> CliIdentity:
     return CliIdentity(name="CGPROFILE", version=installed_version(),
-                       long_name="cgroup resource profiler daemon", command="cgpd")
+                       long_name="cgroup resource profiler daemon", command="cgprofiled")
 
 
 def _opt(flags: str, description: str, *, group: str = "OPTIONS", metavar: Optional[str] = None,
@@ -58,7 +58,7 @@ def _refuse(message: str, hint: Optional[str] = None, exit_code: int = 2) -> Cli
 def log(event: str, **fields: Any) -> None:
     """One ``key=value`` line on stderr, the journal's format (section 3.1)."""
     parts = " ".join(f"{key}={value}" for key, value in fields.items())
-    print(f"cgpd: event={event} {parts}".rstrip(), file=sys.stderr, flush=True)
+    print(f"cgprofiled: event={event} {parts}".rstrip(), file=sys.stderr, flush=True)
 
 
 def config_location(args: argparse.Namespace) -> Tuple[str, bool]:
@@ -100,8 +100,8 @@ def preflight(config_path: str, explicit: bool, environ: Mapping[str, str]) -> d
 
     # 1. effective uid 0
     if os.geteuid() != 0:
-        raise _refuse(f"cgpd run needs root (effective uid is {os.geteuid()})",
-                      "start it with: systemctl start cgpd")
+        raise _refuse(f"cgprofiled run needs root (effective uid is {os.geteuid()})",
+                      "start it with: systemctl start cgprofiled")
     # 2. config and stale environment
     stale = daemon_config.stale_env_problems(environ, config_path)
     if stale:
@@ -112,7 +112,7 @@ def preflight(config_path: str, explicit: bool, environ: Mapping[str, str]) -> d
     try:
         settings.load()
     except daemon_config.ConfigError as exc:
-        raise _refuse(str(exc), "check it with: cgpd config check")
+        raise _refuse(str(exc), "check it with: cgprofiled config check")
     proc_root = settings.get("proc_root")
     # 3. pid-namespace identity
     own = access.local_namespace_inode("pid")
@@ -120,14 +120,14 @@ def preflight(config_path: str, explicit: bool, environ: Mapping[str, str]) -> d
     if own is None or selected is None or own != selected:
         raise _refuse(
             f"the pid namespace of {proc_root}/1 is not this process's",
-            "run cgpd natively under systemd, or point proc_root at this namespace's /proc")
+            "run cgprofiled natively under systemd, or point proc_root at this namespace's /proc")
     # 4. the daemon's slice is bounded
     from .. import serve
     problem = serve.daemon_slice_problem(access.CGROUP_ROOT, proc_root)
     if problem is not None:
         raise _refuse(
             f"{serve.DAEMON_SLICE_NAME} does not provably contain this daemon: {problem}",
-            "install the slice with: cgpd unit print, then systemctl daemon-reload")
+            "install the slice with: cgprofiled unit print, then systemctl daemon-reload")
     # 5. the sessions directory is creatable and writable
     sessions = settings.get("sessions_dir")
     try:
@@ -162,17 +162,17 @@ def _run(args: argparse.Namespace, runtime: CliRuntime) -> int:
     try:
         activated_sockets = serve.adopt_systemd_sockets(os.environ)
     except serve.SocketActivationError as exc:
-        raise _refuse(f"cgpd refuses invalid systemd socket activation: {exc}") from None
+        raise _refuse(f"cgprofiled refuses invalid systemd socket activation: {exc}") from None
     if activated_sockets is not None and args.self_bind:
         for listener in activated_sockets.values():
             listener.close()
         raise _refuse("--self-bind cannot be combined with LISTEN_FDS")
     if activated_sockets == {}:
-        raise _refuse("systemd set LISTEN_FDS=0; cgpd has no named socket descriptors")
+        raise _refuse("systemd set LISTEN_FDS=0; cgprofiled has no named socket descriptors")
     if activated_sockets is None and not args.self_bind:
         raise _refuse(
-            "cgpd run has no systemd listening descriptors",
-            "start cgpd through cgprofile-control.socket and cgprofile-observer.socket, "
+            "cgprofiled run has no systemd listening descriptors",
+            "start cgprofiled through cgprofile-control.socket and cgprofile-observer.socket, "
             "or pass --self-bind for tests and development",
         )
     try:
@@ -199,7 +199,7 @@ def _run(args: argparse.Namespace, runtime: CliRuntime) -> int:
     try:
         return server.serve_forever() or 0
     except serve.ControlSocketError as exc:
-        raise _refuse(f"cgpd refuses to start: {exc.strerror}") from None
+        raise _refuse(f"cgprofiled refuses to start: {exc.strerror}") from None
 
 
 def _config_check(args: argparse.Namespace, runtime: CliRuntime) -> int:
@@ -221,17 +221,17 @@ def _config_check(args: argparse.Namespace, runtime: CliRuntime) -> int:
 
 def _reload(args: argparse.Namespace, runtime: CliRuntime) -> int:
     if os.geteuid() != 0:
-        raise _refuse(f"cgpd reload needs root (effective uid is {os.geteuid()})",
-                      "use: sudo cgpd reload, or systemctl reload cgpd")
+        raise _refuse(f"cgprofiled reload needs root (effective uid is {os.geteuid()})",
+                      "use: sudo cgprofiled reload, or systemctl reload cgprofiled")
     path, explicit = config_location(args)
     try:
         values, _digest = daemon_config.read_config_file(path, explicit=explicit)
         ctl_socket = daemon_config.socket_settings(values)["control"]["path"]
     except daemon_config.ConfigError as exc:
-        raise _refuse(str(exc), "check it with: cgpd config check") from None
+        raise _refuse(str(exc), "check it with: cgprofiled config check") from None
     daemon = probe_daemon(ctl_socket)
     if daemon is None or daemon[1] is None:
-        raise _refuse(f"no daemon answers on {ctl_socket}", "start it: systemctl start cgpd", exit_code=3)
+        raise _refuse(f"no daemon answers on {ctl_socket}", "start it: systemctl start cgprofiled", exit_code=3)
     version, pid = daemon
     if args.reset_overrides:
         try:
@@ -242,7 +242,7 @@ def _reload(args: argparse.Namespace, runtime: CliRuntime) -> int:
     os.kill(pid, signal.SIGHUP)
     body = {"schema": SCHEMA, "ok": True, "pid": pid, "version": version,
             "reset_overrides": bool(args.reset_overrides)}
-    runtime.output.primary(body if runtime.json_mode else f"reload signalled to pid {pid} (cgpd {version})")
+    runtime.output.primary(body if runtime.json_mode else f"reload signalled to pid {pid} (cgprofiled {version})")
     return 0
 
 
@@ -251,10 +251,10 @@ def _reload(args: argparse.Namespace, runtime: CliRuntime) -> int:
 def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     """Build the registered CLI; import-safe (nothing runs until ``.run()``)."""
     registry = CliRegistry(
-        cli_identity or identity(), prog="cgpd",
+        cli_identity or identity(), prog="cgprofiled",
         description="The cgprofile host daemon: run it, render its units, check its config.",
-        getting_started=("cgpd -t", "cgpd config check", "cgpd unit print", "cgpd run"),
-        global_options=(_opt("--config", "config file (default /etc/cgprofile/cgpd.toml; "
+        getting_started=("cgprofiled -t", "cgprofiled config check", "cgprofiled unit print", "cgprofiled run"),
+        global_options=(_opt("--config", "config file (default /etc/cgprofile/cgprofiled.toml; "
                                          "a missing explicit file is an error)",
                              group="CONFIG", metavar="PATH"),),
         unexpected_exceptions="report",
@@ -264,7 +264,7 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     registry.register(VerbSpec(
         "run", description="serve passed systemd sockets (or self-bind explicitly for development)",
         group=modify, mutating=True, include_json=False, include_progress=False,
-        examples=("cgpd run", "cgpd run --self-bind"),
+        examples=("cgprofiled run", "cgprofiled run --self-bind"),
         options=(_opt("--self-bind", "bind configured paths directly (tests and development only)",
                       group="SOCKETS", action="store_true"),), handler=_run))
     _register_unit(registry)
@@ -274,11 +274,11 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     register_install(registry)
     register_service_doctor(registry)
     config = CliRegistry(
-        registry.identity, prog="cgpd config", description="Validate the daemon's config file.",
+        registry.identity, prog="cgprofiled config", description="Validate the daemon's config file.",
         global_options=registry.global_options, unexpected_exceptions="report")
     config.register(VerbSpec(
         "check", description="validate the config file without starting anything", group=read,
-        include_progress=False, examples=("cgpd config check", "cgpd config check --file ./cgpd.toml"),
+        include_progress=False, examples=("cgprofiled config check", "cgprofiled config check --file ./cgprofiled.toml"),
         options=(_opt("--file", "validate this file instead of --config", group="CONFIG", metavar="PATH"),),
         handler=_config_check))
     registry.register(VerbSpec("config", None, "validate the daemon's config file",
@@ -286,7 +286,7 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     registry.register(VerbSpec(
         "reload", description="signal the running daemon to re-read its config (root only)",
         group=modify, mutating=True, include_progress=False,
-        examples=("cgpd reload", "cgpd reload --reset-overrides"),
+        examples=("cgprofiled reload", "cgprofiled reload --reset-overrides"),
         options=(_opt("--reset-overrides", "drop every runtime override first (config-reset all)",
                       group="RELOAD", action="store_true"),),
         handler=_reload))
@@ -301,7 +301,7 @@ def _rendered(args: argparse.Namespace) -> Dict[str, str]:
     except unitfiles.UnitError as exc:
         raise _refuse(str(exc)) from None
     except daemon_config.ConfigError as exc:
-        raise _refuse(str(exc), "check it with: cgpd config check") from None
+        raise _refuse(str(exc), "check it with: cgprofiled config check") from None
 
 
 def _unit_print(args: argparse.Namespace, runtime: CliRuntime) -> int:
@@ -327,7 +327,7 @@ def _unit_check(args: argparse.Namespace, runtime: CliRuntime) -> int:
     problems = unitfiles.check(installed, rendered)
     if problems:
         raise _refuse(f"unit drift: {problems[0]}" + (f" (+{len(problems) - 1} more)" if len(problems) > 1 else ""),
-                      "reinstall the units: cgpd unit print --unit NAME > /etc/systemd/system/NAME")
+                      "reinstall the units: cgprofiled unit print --unit NAME > /etc/systemd/system/NAME")
     body = {"schema": SCHEMA, "ok": True, "checked": installed}
     runtime.output.primary(body if runtime.json_mode else
                            "units match: " + ", ".join(f"{n} ({p})" for n, p in installed.items()))
@@ -338,20 +338,20 @@ def _unit_options() -> Tuple[OptionSpec, ...]:
     return (
         _opt("--install-root", "install root of the versioned venvs (default /opt/cgprofile)",
              group="RENDER", metavar="PATH", default=unitfiles.DEFAULT_INSTALL_ROOT),
-        _opt("--wheel-venv", "the venv holding bin/cgpd (default <install-root>/current/venv)",
+        _opt("--wheel-venv", "the venv holding bin/cgprofiled (default <install-root>/current/venv)",
              group="RENDER", metavar="PATH"),
     )
 
 
 def _register_unit(registry: CliRegistry) -> None:
     unit = CliRegistry(
-        registry.identity, prog="cgpd unit", description="Render and verify the systemd units.",
+        registry.identity, prog="cgprofiled unit", description="Render and verify the systemd units.",
         global_options=registry.global_options, unexpected_exceptions="report")
     read = VerbGroup.EXPLORATION.value
     unit.register(VerbSpec(
         "print", description="print service, socket, slice and sysusers resources from the wheel",
         group=read, include_progress=False,
-        examples=("cgpd unit print", "cgpd unit print --unit cgpd.service --wheel-venv /opt/cgprofile/2.0.0/venv"),
+        examples=("cgprofiled unit print", "cgprofiled unit print --unit cgprofiled.service --wheel-venv /opt/cgprofile/2.0.0/venv"),
         options=(*_unit_options(),
                  _opt("--unit", "print only this unit, verbatim", group="RENDER", metavar="NAME",
                       choices=tuple(unitfiles.TEMPLATES))),
@@ -359,7 +359,7 @@ def _register_unit(registry: CliRegistry) -> None:
     unit.register(VerbSpec(
         "check", description="compare installed unit files with the rendered output (exit 2 on drift)",
         group=read, include_progress=False,
-        examples=("cgpd unit check", "cgpd unit check --installed /etc/systemd/system/cgpd.service"),
+        examples=("cgprofiled unit check", "cgprofiled unit check --installed /etc/systemd/system/cgprofiled.service"),
         options=(*_unit_options(),
                  _opt("--installed", "installed unit file(s) to compare (default /etc/systemd/system/<both>)",
                       group="RENDER", metavar="PATH", nargs="+")),
@@ -369,7 +369,7 @@ def _register_unit(registry: CliRegistry) -> None:
 
 
 def _expand_config_test(argv: Sequence[str]) -> list[str]:
-    """Expand only ``cgpd -t`` and ``cgpd [--config PATH] -t``.
+    """Expand only ``cgprofiled -t`` and ``cgprofiled [--config PATH] -t``.
 
     Other placements are left intact so the regular parser reports ``-t`` as
     an invalid option for that verb instead of reinterpreting the command.

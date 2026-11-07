@@ -93,8 +93,8 @@ def test_the_guard_passes_only_on_a_fresh_harness_guest(tmp_path):
     ({"existing": ["/opt/cgprofile"]}, "/opt/cgprofile already exists"),
     ({"existing": ["/etc/cgprofile"]}, "/etc/cgprofile already exists"),
     ({"existing": ["/run/cgprofile"]}, "/run/cgprofile already exists"),
-    ({"existing": ["/etc/systemd/system/cgpd.service"]}, "cgpd.service already exists"),
-    ({"service_active": True}, "cgpd.service is running"),
+    ({"existing": ["/etc/systemd/system/cgprofiled.service"]}, "cgprofiled.service already exists"),
+    ({"service_active": True}, "cgprofiled.service is running"),
 ])
 @pytest.mark.parametrize("mode", ["guard-check", "clean-guest", "old-layout-guest"])
 def test_every_mode_refuses_on_a_real_host_look_alike(tmp_path, mode, kwargs, message):

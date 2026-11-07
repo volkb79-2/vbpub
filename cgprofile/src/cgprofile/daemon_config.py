@@ -1,8 +1,8 @@
-"""The ``cgpd`` configuration: schema, file, runtime overrides, effective values.
+"""The ``cgprofiled`` configuration: schema, file, runtime overrides, effective values.
 
 Authority: ``docs/CGPCTL-SPEC.md`` sections 3.2 to 3.5. Root keys and fixed
-``[sockets.<level>]`` tables in ``/etc/cgprofile/cgpd.toml``, one validation
-function shared by the file loader, ``cgpd config check`` and the
+``[sockets.<level>]`` tables in ``/etc/cgprofile/cgprofiled.toml``, one validation
+function shared by the file loader, ``cgprofiled config check`` and the
 ``config-set`` verb, and runtime overrides above the file (uid 0 only,
 optionally persisted to ``/var/lib/cgprofile/overrides.toml``). Precedence,
 highest first: override, file, built-in default.
@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
-DEFAULT_CONFIG_PATH = "/etc/cgprofile/cgpd.toml"
+DEFAULT_CONFIG_PATH = "/etc/cgprofile/cgprofiled.toml"
 DEFAULT_OVERRIDES_PATH = "/var/lib/cgprofile/overrides.toml"
 DEFAULT_CONTROL_SOCKET = "/run/cgprofile/control/cgprofile.sock"
 DEFAULT_OBSERVER_SOCKET = "/run/cgprofile/observer/cgprofile.sock"

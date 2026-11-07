@@ -1,4 +1,4 @@
-"""Render and compare the systemd units (``cgpd unit print`` / ``unit check``).
+"""Render and compare the systemd units (``cgprofiled unit print`` / ``unit check``).
 
 The templates ship inside the wheel (``cgprofile/data/*.in``); the only
 inputs are the install root and the wheel venv path, so nothing is read from
@@ -21,7 +21,7 @@ DEFAULT_SYSUSERS_DIR = "/etc/sysusers.d"
 #: unit file name -> template shipped in the wheel
 TEMPLATES: Dict[str, str] = {
     "cgprofile.slice": "cgprofile.slice.in",
-    "cgpd.service": "cgpd.service.in",
+    "cgprofiled.service": "cgprofiled.service.in",
     "cgprofile-control.socket": "",
     "cgprofile-observer.socket": "",
     "cgprofile.sysusers": "",
@@ -59,7 +59,7 @@ def _socket_unit(level: str, settings: Mapping[str, str]) -> str:
         "DirectoryMode=0755\n"
         f"FileDescriptorName={level}\n"
         "RemoveOnStop=no\n"
-        "Service=cgpd.service\n"
+        "Service=cgprofiled.service\n"
         "\n[Install]\n"
         "WantedBy=sockets.target\n"
     )
@@ -77,7 +77,7 @@ def render(
     sockets = daemon_config.socket_settings(values)
     rendered = {
         name: template_text(name).replace("@WHEEL_VENV@", venv)
-        for name in ("cgprofile.slice", "cgpd.service")
+        for name in ("cgprofile.slice", "cgprofiled.service")
     }
     rendered["cgprofile-control.socket"] = _socket_unit("control", sockets["control"])
     rendered["cgprofile-observer.socket"] = _socket_unit("observer", sockets["observer"])
@@ -136,7 +136,7 @@ def default_installed_map() -> Dict[str, str]:
     """Return the canonical installation locations for every resource."""
     return {
         "cgprofile.slice": os.path.join(DEFAULT_UNIT_DIR, "cgprofile.slice"),
-        "cgpd.service": os.path.join(DEFAULT_UNIT_DIR, "cgpd.service"),
+        "cgprofiled.service": os.path.join(DEFAULT_UNIT_DIR, "cgprofiled.service"),
         "cgprofile-control.socket": os.path.join(DEFAULT_UNIT_DIR, "cgprofile-control.socket"),
         "cgprofile-observer.socket": os.path.join(DEFAULT_UNIT_DIR, "cgprofile-observer.socket"),
         "cgprofile.sysusers": os.path.join(DEFAULT_SYSUSERS_DIR, "cgprofile.conf"),

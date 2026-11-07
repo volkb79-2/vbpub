@@ -14,13 +14,13 @@ reports; whether a run was acceptable stays the calling gate's decision.
 ## 0. Once per host
 
 ```bash
-pip install 'cgprofile[report]'   # cgpctl; the report extra renders reports locally
-cgpctl doctor                      # socket, group, versions, observer dir, report extra
+pip install 'cgprofile[report]'   # cgprofilectl; the report extra renders reports locally
+cgprofilectl doctor                      # socket, group, versions, observer dir, report extra
 ```
 
 `doctor` names what this process can reach and the exact fix for what it cannot
-(for example the group that owns the daemon's socket). `cgpctl run` and
-`cgpctl mark` need no daemon; every other verb talks to the host daemon's socket
+(for example the group that owns the daemon's socket). `cgprofilectl run` and
+`cgprofilectl mark` need no daemon; every other verb talks to the host daemon's socket
 (`--socket`, `$CGPCTL_SOCKET`, else
 `/run/cgprofile/control/cgprofile.sock`).
 
@@ -28,8 +28,8 @@ Two ways to profile, one CLI:
 
 | Mode | Verb | Needs | Result |
 |---|---|---|---|
-| Direct | `cgpctl run -- CMD` | cgroupfs visible to the caller; no daemon | a run directory with the report inputs |
-| Daemon | `cgpctl start --target T` ... `cgpctl stop ID` | access to the daemon's socket | a stored session, rendered on demand with `cgpctl report ID` |
+| Direct | `cgprofilectl run -- CMD` | cgroupfs visible to the caller; no daemon | a run directory with the report inputs |
+| Daemon | `cgprofilectl start --target T` ... `cgprofilectl stop ID` | access to the daemon's socket | a stored session, rendered on demand with `cgprofilectl report ID` |
 
 Direct mode profiles the wrapped command in the caller's own cgroup subtree.
 Everything that observes something else (a container, a cgroup, a slice), places
@@ -43,17 +43,17 @@ The simplest useful form. Profile the gate locally (direct mode, needs the host
 cgroup view):
 
 ```bash
-cgpctl run --phase gate --propagate-exit \
+cgprofilectl run --phase gate --propagate-exit \
   -- ../../shared-ramdisk-depot-manager/tools/gate.sh
 ```
 
-- `cgpctl run` profiles the wrapped command itself (target `self@follow`: the
+- `cgprofilectl run` profiles the wrapped command itself (target `self@follow`: the
   command and the containers it spawns afterwards). To profile another target
-  or to watch neighbours, use a daemon session (`cgpctl start --target ...`,
+  or to watch neighbours, use a daemon session (`cgprofilectl start --target ...`,
   section 2).
-- With `--propagate-exit` the wrapped command's exit code becomes `cgpctl`'s exit
+- With `--propagate-exit` the wrapped command's exit code becomes `cgprofilectl`'s exit
   code, so this drops into an existing script without changing its semantics;
-  without it `cgpctl run` exits 0 and prints the run directory and the command's
+  without it `cgprofilectl run` exits 0 and prints the run directory and the command's
   status.
 
 Where the estate's gates run (a gate tier slice, `dev-gates.slice` by default):
@@ -65,7 +65,7 @@ Where the estate's gates run (a gate tier slice, `dev-gates.slice` by default):
 | `ciu` | `src/ciu/governance.py` | `[<root>.governance].cgroup_parent` → same |
 
 SRDM and CMRU gate launchers resolve to `dev-gates.slice`, so
-`cgpctl start --target slice:dev-gates.slice` covers that gate workload. CIU's
+`cgprofilectl start --target slice:dev-gates.slice` covers that gate workload. CIU's
 governance value remains the background tier for long-running application
 stacks. A stack started deliberately by a gate should be profiled separately
 under `dev-background.slice` when needed.
@@ -75,16 +75,16 @@ under `dev-background.slice` when needed.
 ## 2. Attach to something already running
 
 ```bash
-cgpctl start --target container:my-service          # prints the session id
-cgpctl watch s-20261104T101500Z-9f01                 # stream readings until it ends
-cgpctl stop s-20261104T101500Z-9f01                  # finalize; prints the summary
-cgpctl report s-20261104T101500Z-9f01                # export from the daemon and render locally
+cgprofilectl start --target container:my-service          # prints the session id
+cgprofilectl watch s-20261104T101500Z-9f01                 # stream readings until it ends
+cgprofilectl stop s-20261104T101500Z-9f01                  # finalize; prints the summary
+cgprofilectl report s-20261104T101500Z-9f01                # export from the daemon and render locally
 ```
 
 A daemon session is bounded by `stop` (or the daemon's stall policy:
-`--idle-bound`, `--ceiling`, `--on-stall`). `cgpctl sessions` lists live and
-stored sessions, `cgpctl show ID` prints the live counters or the stored summary.
-`cgpctl start --dry-run --target T` resolves a target and prints its effective
+`--idle-bound`, `--ceiling`, `--on-stall`). `cgprofilectl sessions` lists live and
+stored sessions, `cgprofilectl show ID` prints the live counters or the stored summary.
+`cgprofilectl start --dry-run --target T` resolves a target and prints its effective
 limits without starting anything. Targets are `containerid:<64hex>`,
 `container:NAME` (resolved client-side with `docker inspect` when docker is
 reachable), `cgroup:/abs/path` and `slice:NAME.slice`. `sessions`, `show`,
@@ -96,16 +96,16 @@ daemon they exit 3 with the cause `contract-unsupported`.
 ## 3. Phase marks — the optional upgrade
 
 Marks are what turn a flat timeline into "startup / warm-up / job A / idle".
-`cgpctl run` exports `CGPROFILE_RUN_DIR` (the run directory; the mark channel
+`cgprofilectl run` exports `CGPROFILE_RUN_DIR` (the run directory; the mark channel
 lives there) into the wrapped command's environment and puts the directory of
-`cgpctl` first on its `PATH`.
+`cgprofilectl` first on its `PATH`.
 
 So a gate that wants to label its own phases does:
 
 ```bash
-cgpctl mark "restoring fixture db"
-cgpctl mark "running suite"
-cgpctl mark "teardown complete" --kind event
+cgprofilectl mark "restoring fixture db"
+cgprofilectl mark "running suite"
+cgprofilectl mark "teardown complete" --kind event
 ```
 
 `--kind phase` (the default) opens a new phase and closes the previous one.
@@ -114,17 +114,17 @@ cgpctl mark "teardown complete" --kind event
 Guard it so the gate still runs unprofiled:
 
 ```bash
-mark() { [ -n "${CGPROFILE_RUN_DIR:-}" ] && cgpctl mark "$@" || true; }
+mark() { [ -n "${CGPROFILE_RUN_DIR:-}" ] && cgprofilectl mark "$@" || true; }
 mark "building image"
 ```
 
-`cgpctl mark` needs no daemon and no host cgroup tree — it appends one line to
+`cgprofilectl mark` needs no daemon and no host cgroup tree — it appends one line to
 a file. That is why it works from inside a gate container.
 
 ### Marking from inside a container
 
 The mark channel is a file in the run directory, so a container only needs that
-directory bind-mounted and `cgpctl` installed (it needs nothing else for `mark`):
+directory bind-mounted and `cgprofilectl` installed (it needs nothing else for `mark`):
 
 ```bash
 docker run --rm \
@@ -132,7 +132,7 @@ docker run --rm \
   -v "$CGPROFILE_RUN_DIR:$CGPROFILE_RUN_DIR" \
   -e CGPROFILE_RUN_DIR \
   my-gate-image \
-  sh -c 'cgpctl mark "suite start"; run-the-suite'   # cgpctl installed in my-gate-image
+  sh -c 'cgprofilectl mark "suite start"; run-the-suite'   # cgprofilectl installed in my-gate-image
 ```
 
 Appends are a single `write()` under `O_APPEND`, so several containers marking
@@ -152,7 +152,7 @@ runs/run-YYYYmmdd-HHMMSS-xxxxxxxx/
 
 The interactive report is one self-contained file and needs no server and no
 network. plotly.js alone is 4.7 MiB of that; a measured 20-second capture of a
-slice with 29 cgroups came to 6.9 MiB total. `cgpctl report --md-only` writes
+slice with 29 cgroups came to 6.9 MiB total. `cgprofilectl report --md-only` writes
 the static twin without the interactive file when size matters.
 
 Read it in this order:
@@ -178,7 +178,7 @@ its verified gates slice, moves the lane's processes into a leaf and sets the
 leaf's controls, then restores everything at `stop`.
 
 ```bash
-cgpctl start --target "containerid:$CONTAINER_ID" --scope container-shared \
+cgprofilectl start --target "containerid:$CONTAINER_ID" --scope container-shared \
   --token "$TOKEN" --place --memory-max 2147483648 --cpu-weight 50
 ```
 
@@ -193,12 +193,12 @@ observe targets are never placed and never killed.
 
 ## 6. DAMON
 
-`cgpctl start --damon on|off` adds a working-set hot/warm/cold breakdown
+`cgprofilectl start --damon on|off` adds a working-set hot/warm/cold breakdown
 alongside the counters; omitting it uses the daemon's `damon_default`. The
 daemon owns a shared DAMON pool that supports concurrent sessions, and
-`cgpctl host` reports whether DAMON is available. DAMON is optional evidence:
+`cgprofilectl host` reports whether DAMON is available. DAMON is optional evidence:
 if it cannot start, the session and the profiled workload continue without the
-series. `cgpctl run` (direct mode) samples the counters only.
+series. `cgprofilectl run` (direct mode) samples the counters only.
 
 ---
 
@@ -207,7 +207,7 @@ series. `cgpctl run` (direct mode) samples the counters only.
 The profiler is meant to be run on a host that is already under pressure, so
 its own footprint is part of the design:
 
-- Direct-mode sampling (`cgpctl run`) is adaptive: 250 ms while anything is
+- Direct-mode sampling (`cgprofilectl run`) is adaptive: 250 ms while anything is
   moving, backing off to 2 s when quiet. **Read that literally: it backs off
   only when *nothing* in the sampled set is moving.** A tier that also holds a
   large service stack never goes quiet. Point the target at what you actually
@@ -219,11 +219,11 @@ its own footprint is part of the design:
   across 29 cgroups. Samples are gzipped on the way to disk (5.9x measured),
   which turns a ~600 MB half-hour run into ~100 MB, still a real number to
   budget for on a small disk. The daemon bounds its store by retention
-  (`keep_sessions`, `keep_days`; `cgpctl prune`).
+  (`keep_sessions`, `keep_days`; `cgprofilectl prune`).
 - The collector and the daemon are standard-library only and hold no series in
   memory: every sample is appended and forgotten.
 - Analysis and rendering happen **after** the run, in the caller's process
-  (`cgpctl report`), never in the daemon and never during profiling.
+  (`cgprofilectl report`), never in the daemon and never during profiling.
 - Nothing is installed, downloaded, or built at run time. Without the `report`
   extra collection still works and only the report step complains.
 
@@ -232,7 +232,7 @@ its own footprint is part of the design:
 ## 8. Profiling a run-gate lane
 
 This is the daemon mode RG-55 added: a long-lived, privileged native service
-(`cgpd`, see the README's "Product overview" and
+(`cgprofiled`, see the README's "Product overview" and
 `docs/NATIVE-DEPLOYMENT.md`) that run-gate talks to over a Unix socket, per
 lane invocation, instead of spawning a collector each time. `RG55-INTERFACE-CONTRACT.md` is the full
 wire contract; this section is the short version of how a lane gets found.
@@ -244,7 +244,7 @@ then resolves the container id with `docker inspect --format '{{.Id}}'`
 and calls:
 
 ```bash
-cgpctl start \
+cgprofilectl start \
   --target "containerid:$CONTAINER_ID" \
   --scope container \
   --token "$TOKEN" \
@@ -264,8 +264,8 @@ session (`"reused": true`) rather than starting a second one.
 
 **By session id.** The `start` response's `"session"` field
 (`s-<timestamp>-<4 hex>`) is what every later call names —
-`cgpctl show <session>`, `cgpctl stop <session>` (run in the same `finally` as
-container teardown, before `docker rm -f`), `cgpctl report <session>` for a
+`cgprofilectl show <session>`, `cgprofilectl stop <session>` (run in the same `finally` as
+container teardown, before `docker rm -f`), `cgprofilectl report <session>` for a
 human afterwards. `stop` is idempotent too: a second call on an
 already-finished session returns the same stored summary with
 `"already_stopped": true`, never an error. A session belongs to the uid that
@@ -276,7 +276,7 @@ tag such as `socket-missing` or `socket-permission`), a timeout, or an
 unparsable answer means "profiling unavailable for this call". run-gate's own
 basic fallback (`method: "basic"`, sampling the lane container's own cgroup
 directly, no daemon involved) takes over silently; see the contract §4.3.
-`cgpctl doctor` names the cause and the fix. Direct mode (`cgpctl run`,
+`cgprofilectl doctor` names the cause and the fix. Direct mode (`cgprofilectl run`,
 sections 1 and 3) never talks to the daemon.
 
 ## 9. Liveness watch and placement, from a consumer's view (D-20/D-27/D-31, §8.2-§8.4)
@@ -290,7 +290,7 @@ RG-55 exists for — see CP-8): pass `--progress-stream`, `--idle-bound`,
 `--ceiling` and/or `--on-stall kill|report` on `start`. The daemon outlives
 the caller's own process, so its observation survives a caller crash — the
 one thing an in-process watcher cannot do. A consumer that wants to observe the
-judgement live (rather than poll `cgpctl show`) holds ONE `cgpctl watch
+judgement live (rather than poll `cgprofilectl show`) holds ONE `cgprofilectl watch
 <session>` open per lane — the one verb that streams more than one
 response per connection (`docs/PROTOCOL.md` §1's documented exception to
 "one request per connection, then close"). Three line shapes only:

@@ -1,4 +1,4 @@
-"""Read-only service-side ``cgpd doctor`` checks for the native install.
+"""Read-only service-side ``cgprofiled doctor`` checks for the native install.
 
 The check names, the skip rules (a level the caller is not in, a path a non-root
 caller cannot read) and the remedies are the same as the ``toposd doctor`` ones.
@@ -42,13 +42,13 @@ def _paths(args: argparse.Namespace) -> InstallPaths:
 
 
 def _config(args: argparse.Namespace) -> Tuple[str, Dict[str, Any]]:
-    cache = getattr(args, "_cgpd_service_doctor_config", None)
+    cache = getattr(args, "_cgprofiled_service_doctor_config", None)
     if cache is not None:
         return cache
     path = args.config or _paths(args).config
     values, _digest = daemon_config.read_config_file(path, explicit=bool(args.config))
     result = (path, values)
-    args._cgpd_service_doctor_config = result
+    args._cgprofiled_service_doctor_config = result
     return result
 
 
@@ -64,7 +64,7 @@ def _check_config_valid(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
     except daemon_config.ConfigError as exc:
         if os.geteuid() != 0 and "permission denied" in str(exc).lower():
             return CheckResult("skip", "config is unreadable; run as root")
-        return CheckResult("fail", str(exc), remedy="repair the config, then run cgpd config check")
+        return CheckResult("fail", str(exc), remedy="repair the config, then run cgprofiled config check")
     return CheckResult("ok", f"{path} is valid", details={"keys": sorted(values)})
 
 
@@ -81,7 +81,7 @@ def _config_or_skip(args: argparse.Namespace) -> Tuple[Optional[Dict[str, Any]],
 def _installed_resources(paths: InstallPaths) -> Dict[str, str]:
     return {
         "cgprofile.slice": os.path.join(paths.unit_dir, "cgprofile.slice"),
-        "cgpd.service": os.path.join(paths.unit_dir, "cgpd.service"),
+        "cgprofiled.service": os.path.join(paths.unit_dir, "cgprofiled.service"),
         "cgprofile-control.socket": os.path.join(paths.unit_dir, "cgprofile-control.socket"),
         "cgprofile-observer.socket": os.path.join(paths.unit_dir, "cgprofile-observer.socket"),
         "cgprofile.sysusers": os.path.join(paths.sysusers_dir, "cgprofile.conf"),
@@ -108,7 +108,7 @@ def _check_units_current(runtime: CliRuntime, args: argparse.Namespace) -> Check
         if difference is not None:
             problems.append(f"{name}: {installed[name]} differs from the rendered unit, {difference}")
     if problems:
-        return CheckResult("fail", problems[0], remedy="rerun cgpd install with the intended wheel pin",
+        return CheckResult("fail", problems[0], remedy="rerun cgprofiled install with the intended wheel pin",
                            details={"problems": problems})
     return CheckResult("ok", "service, socket, slice and sysusers resources match the installed config")
 
@@ -133,7 +133,7 @@ def _check_groups(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
     for level, name in groups.items():
         if name == "docker":
             return CheckResult("fail", f"{level} group must not be docker",
-                               remedy="configure a dedicated level group and rerun cgpd install")
+                               remedy="configure a dedicated level group and rerun cgprofiled install")
         try:
             entry = grp.getgrnam(name)
         except KeyError:
@@ -144,11 +144,11 @@ def _check_groups(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
     if missing:
         return CheckResult("fail", "missing socket group(s): " + ", ".join(missing),
                            remedy=("create missing mapped groups, or use the default cgprofile level groups; "
-                                   "then rerun cgpd install"))
+                                   "then rerun cgprofiled install"))
     for level, gid in gids.items():
         if gid == 0:
             return CheckResult("fail", f"{level} group resolves to GID 0",
-                               remedy="configure a non-root dedicated level group and rerun cgpd install")
+                               remedy="configure a non-root dedicated level group and rerun cgprofiled install")
     try:
         docker_gid = grp.getgrnam("docker").gr_gid
     except KeyError:
@@ -160,10 +160,10 @@ def _check_groups(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
                                    remedy="configure a dedicated level group with a different GID")
     if groups["control"] == groups["observer"]:
         return CheckResult("fail", "control and observer groups must differ",
-                           remedy="configure separate groups and rerun cgpd install")
+                           remedy="configure separate groups and rerun cgprofiled install")
     if gids["control"] == gids["observer"]:
         return CheckResult("fail", "control and observer groups resolve to the same GID",
-                           remedy="configure separate groups and rerun cgpd install")
+                           remedy="configure separate groups and rerun cgprofiled install")
     paths = _paths(args)
     try:
         record = _read_install_record(paths.install_record)
@@ -172,7 +172,7 @@ def _check_groups(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
         if skipped:
             return skipped
         return CheckResult("fail", f"cannot read {paths.install_record}: {exc.strerror or exc}",
-                           remedy="make the install record readable, then rerun cgpd doctor")
+                           remedy="make the install record readable, then rerun cgprofiled doctor")
     details: Dict[str, Any] = {}
     missing_members: List[Tuple[str, str]] = []
     missing_accounts: List[Tuple[str, str]] = []
@@ -181,7 +181,7 @@ def _check_groups(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
         try:
             recorded = _record_words(record.get(key), key)
         except InstallError as exc:
-            return CheckResult("fail", str(exc), remedy="repair the cgpd install record and rerun cgpd install")
+            return CheckResult("fail", str(exc), remedy="repair the cgprofiled install record and rerun cgprofiled install")
         entry = group_entries[level]
         members = set(entry.gr_mem)
         for user in recorded:
@@ -206,7 +206,7 @@ def _check_groups(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
         summary += "; ".join(f"recorded user {user} for {level} does not exist" for level, user in missing_accounts)
         return CheckResult(
             "warn", summary,
-            remedy="rerun cgpd install (recorded users are re-added) or --add-user LEVEL=USER",
+            remedy="rerun cgprofiled install (recorded users are re-added) or --add-user LEVEL=USER",
             details={"groups": details, "gids": gids},
         )
     return CheckResult("ok", "control and observer groups are dedicated and their recorded members are present",
@@ -232,7 +232,7 @@ def _check_socket_units(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
             problems.append(f"{unit} is not active")
     if problems:
         return CheckResult("fail", "; ".join(problems),
-                           remedy="run cgpd install --enable to enable and start both socket units")
+                           remedy="run cgprofiled install --enable to enable and start both socket units")
     return CheckResult("ok", "both per-level socket units are enabled and active")
 
 
@@ -308,7 +308,7 @@ def _check_socket_dirs(runtime: CliRuntime, args: argparse.Namespace) -> CheckRe
                 f"{path}: {info.st_uid}:{info.st_gid} {mode:04o}, expected root-owned and not group/other writable")
     if problems:
         return CheckResult("fail", problems[0],
-                           remedy="remove the mismatched runtime tree and rerun cgpd install",
+                           remedy="remove the mismatched runtime tree and rerun cgprofiled install",
                            details={"problems": problems})
     return CheckResult("ok", "socket directories are root-owned and not group- or other-writable")
 
@@ -322,11 +322,11 @@ def _check_state_dir(runtime: CliRuntime, args: argparse.Namespace) -> CheckResu
         if permission:
             return permission
         return CheckResult("fail", f"{path}: {exc.strerror or type(exc).__name__}",
-                           remedy="restart cgpd.service to create its state directory")
+                           remedy="restart cgprofiled.service to create its state directory")
     mode = stat.S_IMODE(info.st_mode)
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or mode != 0o700:
         return CheckResult("fail", f"{path} is {info.st_uid}:{info.st_gid} {mode:04o}, expected root:root 0700",
-                           remedy="stop cgpd.service, remove the mismatched state directory, then restart it")
+                           remedy="stop cgprofiled.service, remove the mismatched state directory, then restart it")
     return CheckResult("ok", f"{path} is root:root 0700")
 
 
@@ -384,8 +384,8 @@ def _version_request(path: str) -> Dict[str, Any]:
 
 def _check_service(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
     paths = _paths(args)
-    if not _systemctl("is-active", "--quiet", "cgpd.service"):
-        return CheckResult("fail", "cgpd.service is not active", remedy="run systemctl start cgpd.service")
+    if not _systemctl("is-active", "--quiet", "cgprofiled.service"):
+        return CheckResult("fail", "cgprofiled.service is not active", remedy="run systemctl start cgprofiled.service")
     try:
         version = _installed_version(paths)
     except PermissionError:
@@ -395,7 +395,7 @@ def _check_service(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
                            remedy="check /opt/cgprofile and /etc/cgprofile/install.toml permissions")
     if version is None:
         return CheckResult("fail", "the /opt/cgprofile/current version pointer is missing or invalid",
-                           remedy="run cgpd install with the intended release pin")
+                           remedy="run cgprofiled install with the intended release pin")
     values, skipped = _config_or_skip(args)
     if skipped:
         return skipped
@@ -410,27 +410,27 @@ def _check_service(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
     try:
         response = _version_request(paths.at(control["path"]))
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        return CheckResult("fail", f"cannot verify the running cgpd version: {type(exc).__name__}: {exc}",
-                           remedy="check cgpd.service and its control socket")
+        return CheckResult("fail", f"cannot verify the running cgprofiled version: {type(exc).__name__}: {exc}",
+                           remedy="check cgprofiled.service and its control socket")
     daemon = response.get("daemon") if isinstance(response.get("daemon"), dict) else {}
     running_version = daemon.get("version")
     if running_version != version:
-        return CheckResult("fail", f"cgpd reports {running_version}, current points to {version}",
-                           remedy="restart cgpd.service so it runs the installed version")
+        return CheckResult("fail", f"cgprofiled reports {running_version}, current points to {version}",
+                           remedy="restart cgprofiled.service so it runs the installed version")
     activation = response.get("socket_activation")
     if not isinstance(activation, dict):
-        return CheckResult("fail", "cgpd does not report socket activation state",
-                           remedy="install the 2.2.0 service units and restart cgpd.service")
+        return CheckResult("fail", "cgprofiled does not report socket activation state",
+                           remedy="install the 2.2.0 service units and restart cgprofiled.service")
     fds = activation.get("fds", {})
     if (activation.get("mode") != "activated" or not isinstance(fds, dict)
             or set(fds) != set(daemon_config.SOCKET_LEVELS)
             or any(type(fds.get(level)) is not int or fds[level] not in (0, 1)
                    for level in daemon_config.SOCKET_LEVELS)):
-        return CheckResult("fail", "cgpd is not running with valid systemd socket activation",
-                           remedy="start cgpd.service through both cgprofile socket units")
+        return CheckResult("fail", "cgprofiled is not running with valid systemd socket activation",
+                           remedy="start cgprofiled.service through both cgprofile socket units")
     state = (f"mode={activation.get('mode')} control_fds={fds.get('control', 0)} "
              f"observer_fds={fds.get('observer', 0)}")
-    return CheckResult("ok", f"cgpd.service is active at version {version}; {state}",
+    return CheckResult("ok", f"cgprofiled.service is active at version {version}; {state}",
                        details={"version": version, "socket_activation": state})
 
 
@@ -490,7 +490,7 @@ def _check_connect(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult
             results[level] = "fail"
     if problems:
         return CheckResult("fail", problems[0],
-                           remedy="restart the matching cgprofile socket unit and inspect cgpd logs",
+                           remedy="restart the matching cgprofile socket unit and inspect cgprofiled logs",
                            details=results)
     suffix = f"; skipped expected access for {', '.join(skipped_levels)}" if skipped_levels else ""
     return CheckResult("ok", "available access levels answer their health probes" + suffix, details=results)
@@ -542,14 +542,14 @@ def _check_caller_access(runtime: CliRuntime, args: argparse.Namespace) -> Check
 
 
 SERVICE_DOCTOR_CHECKS = (
-    DoctorCheck("config-valid", "configured cgpd settings parse and validate", _check_config_valid),
+    DoctorCheck("config-valid", "configured cgprofiled settings parse and validate", _check_config_valid),
     DoctorCheck("units-current", "installed service resources match the rendered config", _check_units_current),
     DoctorCheck("groups", "both dedicated groups exist with safe, distinct GIDs and listed members", _check_groups),
     DoctorCheck("socket-units", "both per-level socket units are enabled and active", _check_socket_units),
     DoctorCheck("socket-nodes", "both listening nodes are sockets with configured owner, group and mode", _check_socket_nodes),
     DoctorCheck("socket-dirs", "socket directories are root-owned and not writable by group or others", _check_socket_dirs),
     DoctorCheck("state-dir", "daemon state directory is root-owned mode 0700", _check_state_dir),
-    DoctorCheck("service", "cgpd service is active at the installed version", _check_service),
+    DoctorCheck("service", "cgprofiled service is active at the installed version", _check_service),
     DoctorCheck("connect", "each accessible socket answers a health or contract probe", _check_connect),
     DoctorCheck("foreign-rules", "no old or foreign state conflicts with the service", _check_foreign_rules),
     DoctorCheck("caller-access", "report the caller's access-group memberships", _check_caller_access),
@@ -558,4 +558,4 @@ SERVICE_DOCTOR_CHECKS = (
 
 def register_service_doctor(registry: CliRegistry) -> None:
     register_doctor(registry, SERVICE_DOCTOR_CHECKS,
-                    description="check cgpd installation, systemd sockets, permissions and connectivity")
+                    description="check cgprofiled installation, systemd sockets, permissions and connectivity")

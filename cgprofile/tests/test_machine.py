@@ -92,14 +92,14 @@ def test_parse_cpu_list(text, expected):
 
 def test_affinity_reads_cpus_allowed_list(tmp_path):
     (tmp_path / "self").mkdir()
-    (tmp_path / "self" / "status").write_text("Name:\tcgpd\nCpus_allowed_list:\t0-2,5\n")
+    (tmp_path / "self" / "status").write_text("Name:\tcgprofiled\nCpus_allowed_list:\t0-2,5\n")
     assert machine.affinity_cpus(str(tmp_path)) == 4
 
 
 def test_affinity_unknown_when_absent(tmp_path):
     assert machine.affinity_cpus(str(tmp_path)) is None
     (tmp_path / "self").mkdir()
-    (tmp_path / "self" / "status").write_text("Name:\tcgpd\n")
+    (tmp_path / "self" / "status").write_text("Name:\tcgprofiled\n")
     assert machine.affinity_cpus(str(tmp_path)) is None
 
 

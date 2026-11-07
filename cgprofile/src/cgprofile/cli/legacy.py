@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""The collector child shared by ``cgpctl run`` (direct mode) and the daemon.
+"""The collector child shared by ``cgprofilectl run`` (direct mode) and the daemon.
 
 What remains of the 1.x ``cgprofile`` CLI:
 
     legacy.py _collect --run-dir DIR --target …    the collector child (direct mode)
 
-The daemon is ``cgpd`` (``cgprofile.cli.cgpd``) and the user-facing client is
-``cgpctl`` (``cgprofile.cli.cgpctl``); the 1.x ``serve`` and ``report``
+The daemon is ``cgprofiled`` (``cgprofile.cli.cgprofiled``) and the user-facing client is
+``cgprofilectl`` (``cgprofile.cli.cgprofilectl``); the 1.x ``serve`` and ``report``
 subcommands, ``run``/``attach``/``mark``/``targets``/``doctor``/``ctl``, the
 helper container, the log tailers, the bash shim and ``setup.sh`` are gone
 (2.0.0).
@@ -266,7 +266,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
                         for region in regions:
                             run.append("damon", {"mono": record["mono"], **region})
                 # A phase mark can be written by a different process sharing
-                # this run directory (``cgpctl mark``, a wrapper boundary — see
+                # this run directory (``cgprofilectl mark``, a wrapper boundary — see
                 # DESIGN.md §3) — this sampler has no other way to notice one,
                 # so poll for new marks each tick and give any that arrived the
                 # same next-tick-snaps-to-hot treatment as an event or a
@@ -308,7 +308,7 @@ class _nullcontext:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cgprofile-legacy",
-        description="The collector child; the daemon is `cgpd`, the user client `cgpctl`.",
+        description="The collector child; the daemon is `cgprofiled`, the user client `cgprofilectl`.",
     )
     parser.add_argument(
         "--version", action="version", version=f"cgprofile {__version__}"

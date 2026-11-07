@@ -1,5 +1,5 @@
-# LEGACY cgprofile container image. Native deployments use `cgpd install` and
-# systemd-owned per-level sockets; do not use this image with cgpd 2.2.0+.
+# LEGACY cgprofile container image. Native deployments use `cgprofiled install` and
+# systemd-owned per-level sockets; do not use this image with cgprofiled 2.2.0+.
 # See docs/NATIVE-DEPLOYMENT.md.
 #
 # cgprofile — the RG-55 profiling daemon (RG55-INTERFACE-CONTRACT.md).
@@ -84,7 +84,7 @@ COPY docs/ ./docs/
 # `damon_analysis` build context that used to deliver the sibling checkout's
 # copy is no longer read by this Dockerfile.
 # The bash shim `cgprofile` is gone (package 2); the daemon starts as
-# `python3 -m cgprofile.cli.cgpd run` (the `cgpd` console script's module).
+# `python3 -m cgprofile.cli.cgprofiled run` (the `cgprofiled` console script's module).
 RUN find . -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 # `/var/lib/cgprofile/sessions` is the contract's own default (§1.8) and
@@ -95,11 +95,11 @@ RUN find . -name '__pycache__' -type d -prune -exec rm -rf {} +
 RUN mkdir -p /var/lib/cgprofile/sessions
 
 # No EXPOSE: the legacy daemon uses Unix-domain sockets, not a TCP port.
-# 2.0: the daemon is `cgpd run` (config file, no flags, no CGPROFILE_* daemon
+# 2.0: the daemon is `cgprofiled run` (config file, no flags, no CGPROFILE_* daemon
 # environment). This image path is superseded by the native wheel deployment
 # (docs/NATIVE-DEPLOYMENT.md); a container run needs cli-extended on the
-# image's python path and a mounted /etc/cgprofile/cgpd.toml, which the 1.x
+# image's python path and a mounted /etc/cgprofile/cgprofiled.toml, which the 1.x
 # ciu stack does not provide (backlog CP-54).
 ENV PYTHONPATH=/opt/cgprofile/src
-ENTRYPOINT ["python3", "-m", "cgprofile.cli.cgpd"]
+ENTRYPOINT ["python3", "-m", "cgprofile.cli.cgprofiled"]
 CMD ["run"]

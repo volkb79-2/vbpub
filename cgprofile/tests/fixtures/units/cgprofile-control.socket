@@ -10,7 +10,7 @@ SocketMode=0660
 DirectoryMode=0755
 FileDescriptorName=control
 RemoveOnStop=no
-Service=cgpd.service
+Service=cgprofiled.service
 
 [Install]
 WantedBy=sockets.target

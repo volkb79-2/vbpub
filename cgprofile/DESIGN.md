@@ -14,8 +14,8 @@ to that production container?"* — so observing a **victim** alongside the
 
 ## CLI identity
 
-Two console scripts ship in the `cgprofile` wheel: `cgpctl` (the client) and
-`cgpd` (the daemon). Both are built on cli-extended and read their version
+Two console scripts ship in the `cgprofile` wheel: `cgprofilectl` (the client) and
+`cgprofiled` (the daemon). Both are built on cli-extended and read their version
 from the installed distribution (scm-derived from the `cgprofile-v` release
 tag; an untagged build is `0.0.0-dev`). `--version` prints one identity line,
 exits 0 and needs neither the daemon nor the `report` extra. At every nested
@@ -32,15 +32,15 @@ boundary cannot sustain a 250 ms cadence, so the profiler never tries. There
 are exactly two places the sampling code runs, and it is byte-identical in
 both:
 
-- **Direct mode** (`cgpctl run`): in the caller's own process tree, where the
+- **Direct mode** (`cgprofilectl run`): in the caller's own process tree, where the
   caller can see cgroupfs. Where it cannot, `run` refuses with one line naming
   the daemon alternative. `access.py` owns the proc-root selection.
-- **The daemon** (`cgpd`): a native service on the host, which sees host
+- **The daemon** (`cgprofiled`): a native service on the host, which sees host
   `/proc` and the host cgroup tree directly. Callers in containers reach it
   through the bind-mounted control socket; they never need host views.
 
 Container names, labels and `self` are resolved to immutable container IDs on
-the Docker-aware caller (`cgpctl start --target container:NAME` runs
+the Docker-aware caller (`cgprofilectl start --target container:NAME` runs
 `docker inspect`); the daemon accepts only `containerid:`, `cgroup:` and
 `slice:` targets and locates a container in the host cgroup tree by its ID. It
 is never inferred from a namespace-relative `/proc/<pid>/cgroup` string, and
@@ -71,8 +71,8 @@ than a huge negative spike. Nothing downstream may reintroduce that spike.
   report, matplotlib for the static twin, ruptures for changepoint detection,
   scipy/numpy underneath. Do not hand-roll any of that.
 
-**The always-on daemon (RG-55).** `cgpd run` is a privileged, long-lived native
-systemd service (`cgpd.service`, inside a bounded `cgprofile.slice`). Running
+**The always-on daemon (RG-55).** `cgprofiled run` is a privileged, long-lived native
+systemd service (`cgprofiled.service`, inside a bounded `cgprofile.slice`). Running
 natively it sees the host PID namespace (so DAMON sysfs resolves host
 `pid_target` values), host `/proc` and the host cgroup tree, and talks to host
 systemd over the system bus for placement. It has no network use and no Docker
@@ -89,7 +89,7 @@ run-gate talks to this daemon over a Unix socket per lane instead of spawning
 a collector each time. `RG55-INTERFACE-CONTRACT.md` is the full wire contract
 and `docs/PROTOCOL.md` the request side. The daemon is STILL collector-tier:
 `serve.py` never imports pandas. It does not render reports; it streams a
-stored session through the `export` operation (§4.13) and `cgpctl report`
+stored session through the `export` operation (§4.13) and `cgprofilectl report`
 renders the real interactive report in the caller's process, so the tier split
 holds. Packaging, the unit and the install path are in
 `docs/NATIVE-DEPLOYMENT.md`; the operator's-eye view is the README's
@@ -112,15 +112,15 @@ scripts/cgroup-profiler/
   pyproject.toml          distribution `cgprofile`, console scripts, `report` extra
   cmru.toml               release contract (scm versioning, wheel artifact)
   src/cgprofile/
-    cli/cgpctl.py         the client (cli-extended registry; verbs of CGPCTL-SPEC.md)
-    cli/cgpd.py           the daemon entry: run | unit | config | reload
-    cli/legacy.py         the collector child shared by `cgpctl run` and the daemon
+    cli/cgprofilectl.py         the client (cli-extended registry; verbs of CGPCTL-SPEC.md)
+    cli/cgprofiled.py           the daemon entry: run | unit | config | reload
+    cli/legacy.py         the collector child shared by `cgprofilectl run` and the daemon
     ctlwire.py            the client side of the control protocol
-    direct.py             `cgpctl run`: direct-mode runner
-    daemon_config.py      the cgpd.toml schema, loader, reload, overrides layer
-    unitfiles.py          `cgpd unit print|check` renderer
+    direct.py             `cgprofilectl run`: direct-mode runner
+    daemon_config.py      the cgprofiled.toml schema, loader, reload, overrides layer
+    unitfiles.py          `cgprofiled unit print|check` renderer
     data/                 unit templates and the default config (package data)
-    skills/cgpctl/        the packaged agent skill
+    skills/cgprofilectl/        the packaged agent skill
     _damon/               vendored DAMON analysis (byte-synced by a test)
     model.py              shared dataclasses (Mark/Phase/Event/Series/Proposal/Analysis)
     util.py               file readers, unit parsing, rate(), ancestors(), formatting
@@ -152,7 +152,7 @@ writing anything**; they define the idioms the rest of the package follows.
 <out-dir>/<run-id>/
   manifest.json    run metadata, resolved targets, host facts, limit snapshots
   samples.jsonl    one JSON object per sample tick
-  marks.jsonl      phase marks — appended by `cgpctl mark`, possibly from
+  marks.jsonl      phase marks — appended by `cgprofilectl mark`, possibly from
                    inside another container sharing the directory
   events.jsonl     detected events
   damon.jsonl      DAMON region snapshots (only when --damon)
@@ -605,23 +605,23 @@ Hard rules from the house data-viz standard, all of which apply here:
 - Past 8 series in a panel, fold the tail into "Other" — never generate a 9th
   hue.
 
-### 4.12 `cli/cgpctl.py` and `cli/cgpd.py` (integrators — not an agent's files)
+### 4.12 `cli/cgprofilectl.py` and `cli/cgprofiled.py` (integrators — not an agent's files)
 
 The grammar is the cli-extended registry of each module; the generated
 inventory is `docs/CLI-SPEC.md` and the behaviour is `docs/CGPCTL-SPEC.md`.
 In outline:
 
 ```
-cgpctl run [--phase N] [--out-dir D] [--propagate-exit] -- <command>   direct mode
-cgpctl mark <name> [--kind phase|event] [--meta JSON]                  appends to $CGPROFILE_RUN_DIR
-cgpctl report <session> | --run-dir D   [--out D] [--html-only|--md-only|--export-only D]
-cgpctl start --target T [...] / stop / watch / show / sessions / status / host / prune
-cgpctl config show | set KEY VALUE [--persist] | reset KEY|--all
-cgpctl doctor | skills install|uninstall|check|list
-cgpd run | unit print|check | config check | reload [--reset-overrides]
+cgprofilectl run [--phase N] [--out-dir D] [--propagate-exit] -- <command>   direct mode
+cgprofilectl mark <name> [--kind phase|event] [--meta JSON]                  appends to $CGPROFILE_RUN_DIR
+cgprofilectl report <session> | --run-dir D   [--out D] [--html-only|--md-only|--export-only D]
+cgprofilectl start --target T [...] / stop / watch / show / sessions / status / host / prune
+cgprofilectl config show | set KEY VALUE [--persist] | reset KEY|--all
+cgprofilectl doctor | skills install|uninstall|check|list
+cgprofiled run | unit print|check | config check | reload [--reset-overrides]
 ```
 
-The daemon's settings are the keys of `cgpd.toml` (`daemon_config.py`), not
+The daemon's settings are the keys of `cgprofiled.toml` (`daemon_config.py`), not
 command-line flags.
 
 ---
@@ -671,7 +671,7 @@ rather than threading `limits.py` through the sampler).
 `SessionServer` listens on a Unix socket (JSON-lines request/response, one
 request per connection — `_accept_loop`/`_handle_connection`), running one
 sampling thread per live session at a FIXED cadence (the adaptive
-hot/idle back-off §4.4 describes for `cgpctl run` is deliberately off
+hot/idle back-off §4.4 describes for `cgprofilectl run` is deliberately off
 here — the contract's own computation rules, §7, assume samples land every
 `interval_seconds` with no gaps). It owns: the in-memory + on-disk session
 registry (restart recovery finalizes any session a previous daemon process
@@ -682,13 +682,13 @@ DAMON admin sysfs root — every raw write this module or `damon.py` issues
 directly is checked against it; `RunDir`'s own writes are already confined
 by construction), and SIGTERM/SIGINT handling (`serve_forever` — every
 live session is finalized `aborted: "daemon-stopped"` before the socket
-closes). `cli/cgpd.py` (§4.12) is the CLI layer; the client's wire module
+closes). `cli/cgprofiled.py` (§4.12) is the CLI layer; the client's wire module
 (`ctlwire.py`) is a one-document-in/one-document-out socket call, nothing more
 (`watch` excepted).
 
 **Reports and the tier split.** This module never imports pandas and has no
 report verb. The `export` operation streams a stored session as four digest-
-verified parts (`docs/PROTOCOL.md` section 10.3) and `cgpctl report` rebuilds
+verified parts (`docs/PROTOCOL.md` section 10.3) and `cgprofilectl report` rebuilds
 a run directory from them and renders it in the caller's process with the
 `report` extra. For that to work, every session directory this module writes
 is ALSO a valid `store.RunDir` in the §3/§4.3 sense — `_manifest_for` carries
@@ -728,7 +728,7 @@ admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire
   (one `watch` per lane, `killed` → the lane's own stall-exit path,
   `reported` → a warning line) is the whole of what a caller owes.
 - **D-29 — `cgprofile.slice`, the daemon's own containment.** A systemd unit
-  rendered by `cgpd unit print` and installed by the host's installer
+  rendered by `cgprofiled unit print` and installed by the host's installer
   (`docs/NATIVE-DEPLOYMENT.md` section 4), never software the daemon writes
   itself; the `host` verb's `daemon_slice`/`gates_slice` blocks (§8.5) report presence
   rather than assuming installation happened. Since 1.1.0 (Sol B4) the daemon
@@ -846,7 +846,7 @@ number.
 - The estate's tier slices are `dev-interactive.slice` (cockpits),
   `dev-gates.slice` (gate and lane containers, and the placed `rg-*` leaves)
   and `dev-background.slice` (long-running application stacks). The names are
-  `cgpd.toml` defaults (`gates_slice`, `observe_slices`), never assumptions.
+  `cgprofiled.toml` defaults (`gates_slice`, `observe_slices`), never assumptions.
 - Python 3.11 or newer. The `report` extra is installed into the client's
   environment, not the daemon's.
 - A `venv` created with `--system-site-packages` from an interpreter that is

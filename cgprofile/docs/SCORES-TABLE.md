@@ -1,6 +1,6 @@
 # Fallback score table (`cgprofile-scores/1`)
 
-The table is a fallback only. cgpd normally takes the CPU speed from the host benchmark that `mdt host-setup cpu-benchmark` (or the installer)
+The table is a fallback only. cgprofiled normally takes the CPU speed from the host benchmark that `mdt host-setup cpu-benchmark` (or the installer)
 persisted in `/var/lib/mdt/host-facts/cpu-benchmark.json`. The table is read when that record is absent, invalid, incomplete or stale (the CPU
 model or the CPU count changed). It is single-core only: a per-model multi-core score describes the whole chip, not the vCPUs a VM gets.
 

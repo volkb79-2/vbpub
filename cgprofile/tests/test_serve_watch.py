@@ -942,7 +942,7 @@ class TestEdges:
 
 
 class TestWatchThroughTheShippedClient:
-    """`cgprofile.ctlwire.watch_lines`, the client `cgpctl watch` uses,
+    """`cgprofile.ctlwire.watch_lines`, the client `cgprofilectl watch` uses,
     against a real streaming daemon (its fault handling is covered by
     tests/test_ctlwire.py)."""
 

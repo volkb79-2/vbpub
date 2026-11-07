@@ -1,5 +1,5 @@
-# cgpd.service: the native cgprofile daemon unit.
-# Template shipped inside the cgprofile wheel; `cgpd unit print` renders it.
+# cgprofiled.service: the native cgprofile daemon unit.
+# Template shipped inside the cgprofile wheel; `cgprofiled unit print` renders it.
 # The wheel venv path (ExecStart) is the only substituted value (default
 # /opt/cgprofile/current/venv; `--install-root` / `--wheel-venv` change it).
 # Values are the NATIVE-DEPLOYMENT.md section 4.2 proposals. OOMScoreAdjust is
@@ -14,8 +14,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-ExecStartPre=/opt/cgprofile/current/venv/bin/cgpd -t
-ExecStart=/opt/cgprofile/current/venv/bin/cgpd run
+ExecStartPre=@WHEEL_VENV@/bin/cgprofiled -t
+ExecStart=@WHEEL_VENV@/bin/cgprofiled run
 ExecReload=/bin/kill -HUP $MAINPID
 Slice=cgprofile.slice
 User=root

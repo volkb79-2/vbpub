@@ -157,7 +157,7 @@ class Policy:
 def _parse_bound(raw: Any, *, option: str, allow_none: bool) -> Union[str, float, None]:
     """``auto``/a positive number/(optionally) ``null``, or ``PolicyError``.
 
-    ``cgpctl`` accepts ``auto`` or seconds as CLI text and forwards the value
+    ``cgprofilectl`` accepts ``auto`` or seconds as CLI text and forwards the value
     unchanged. Keeping policy parsing here gives CLI and socket callers the
     same ``bad-policy`` response for malformed values.
     """

@@ -7,7 +7,7 @@ process's own identity comes from local ``/proc``, whose PID namespace is
 determined by deployment (host for the managed daemon).
 
 The 1.x helper-container mode (re-executing the profiler inside a privileged
-helper container) was removed with cgprofile 2.0 package 2: ``cgpctl`` talks to
+helper container) was removed with cgprofile 2.0 package 2: ``cgprofilectl`` talks to
 the daemon, or runs the collector directly where the host view exists
 (``cgprofile.direct``).
 """

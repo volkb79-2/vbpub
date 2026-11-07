@@ -59,7 +59,7 @@ def test_collector_command_targets_self_follow(tmp_path):
 
 def test_note_goes_to_stderr(capsys):
     direct._note("hello")
-    assert capsys.readouterr().err == "[cgpctl] hello\n"
+    assert capsys.readouterr().err == "[cgprofilectl] hello\n"
 
 
 def test_wait_for_sees_an_existing_file_and_times_out_otherwise(tmp_path):
@@ -157,18 +157,18 @@ def test_run_command_records_marks_and_exports_the_run_dir(tmp_path, monkeypatch
     _install_fake_collector(monkeypatch)
     outcome = direct.run_command(
         [sys.executable, "-c", "import os, sys; sys.exit(3 if os.environ['CGPROFILE_RUN_DIR'] else 0)"],
-        out_dir=str(tmp_path), phase=None, cgpctl_dir="/opt/cgpctl-bin")
+        out_dir=str(tmp_path), phase=None, cgprofilectl_dir="/opt/cgprofilectl-bin")
     assert outcome.exit_status == 3 and os.path.isdir(outcome.run_dir)
     names = [m.get("name") for m in _marks(outcome.run_dir)]
     assert names[0] == os.path.basename(sys.executable) and names[-1].endswith(":done")
     assert os.path.exists(os.path.join(outcome.run_dir, legacy.STOP_FILE))
 
 
-def test_run_command_puts_cgpctl_first_on_path_and_uses_the_phase(tmp_path, monkeypatch):
+def test_run_command_puts_cgprofilectl_first_on_path_and_uses_the_phase(tmp_path, monkeypatch):
     _install_fake_collector(monkeypatch)
-    probe = "import os, sys; sys.exit(0 if os.environ['PATH'].startswith('/opt/cgpctl-bin') else 9)"
+    probe = "import os, sys; sys.exit(0 if os.environ['PATH'].startswith('/opt/cgprofilectl-bin') else 9)"
     outcome = direct.run_command([sys.executable, "-c", probe], out_dir=str(tmp_path), phase="build",
-                                 cgpctl_dir="/opt/cgpctl-bin", run_id="run-fixed")
+                                 cgprofilectl_dir="/opt/cgprofilectl-bin", run_id="run-fixed")
     assert outcome.exit_status == 0 and outcome.run_dir.endswith("run-fixed")
     assert _marks(outcome.run_dir)[0]["name"] == "build"
 
@@ -177,7 +177,7 @@ def test_run_command_reports_a_command_that_cannot_start(tmp_path, monkeypatch):
     holder = _install_fake_collector(monkeypatch)
     with pytest.raises(WireFailure) as caught:
         direct.run_command(["/nonexistent/definitely-not-a-binary"], out_dir=str(tmp_path), phase=None,
-                           cgpctl_dir="/x")
+                           cgprofilectl_dir="/x")
     assert (caught.value.exit_code, caught.value.code) == (1, "run-failed")
     run_dirs = [p for p in os.listdir(tmp_path)]
     assert len(run_dirs) == 1 and os.path.exists(os.path.join(tmp_path, run_dirs[0], legacy.STOP_FILE))

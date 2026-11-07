@@ -26,7 +26,7 @@ dynamic = ["version"]        # scm-derived from the cgprofile-v tag; no literal,
 # standard library only, by contract (DESIGN.md §1). The one runtime
 # dependency is cli-extended, the estate's shared CLI contract library
 # (stdlib-only itself). Floor 0.5.1: CLI-EXT-30, the option-collision filter
-# the cgpctl/cgpd registries rely on. Packages 2 and 3 import it; package 1
+# the cgprofilectl/cgprofiled registries rely on. Packages 2 and 3 import it; package 1
 # declares it so the wheel's dependency closure is final from the start.
 dependencies = ["cli-extended>=0.5.1"]
 
@@ -53,15 +53,15 @@ test = [
 ]
 
 [project.scripts]
-# cgpctl is the cli-extended client, cgpd the cli-extended daemon entry
+# cgprofilectl is the cli-extended client, cgprofiled the cli-extended daemon entry
 # (config file, unit renderer, reload).
-cgpctl = "cgprofile.cli.cgpctl:main"
-cgpd = "cgprofile.cli.cgpd:main"
+cgprofilectl = "cgprofile.cli.cgprofilectl:main"
+cgprofiled = "cgprofile.cli.cgprofiled:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Non-Python files read at run time: the unit templates `cgpd unit print`
+# Non-Python files read at run time: the unit templates `cgprofiled unit print`
 # renders (package 3) and the documented default config. The skill joins in
 # package 2. Nothing else is shipped as data.
 [tool.setuptools.package-data]
@@ -82,8 +82,8 @@ git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--mat
 schema_version = 1
 
 [[tool.cli-extended.clis]]
-id = "cgpctl"
-factory = "cgprofile.cli.cgpctl:build_cli"
+id = "cgprofilectl"
+factory = "cgprofile.cli.cgprofilectl:build_cli"
 review = "docs/cli-review.toml"
 manifest = "docs/cli-surface.json"
 spec = "docs/CLI-SPEC.md"

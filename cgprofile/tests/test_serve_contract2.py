@@ -1,10 +1,10 @@
-"""cgpd control contract 2 in the daemon: negotiation, ownership, the config
+"""cgprofiled control contract 2 in the daemon: negotiation, ownership, the config
 verbs, gc arguments, status states and the live-reload plumbing
 (PROTOCOL 10.1-10.7, CGPCTL-SPEC 3).
 
 Everything drives `SessionServer._dispatch` with an explicit peer
 `(pid, uid, gid)` so the SO_PEERCRED-derived context is exercised without a
-socket; the goldens freeze the contract-2 documents P-cgpctl codes against.
+socket; the goldens freeze the contract-2 documents P-cgprofilectl codes against.
 """
 
 from __future__ import annotations
@@ -528,9 +528,9 @@ class TestSighup:
         while "thread" not in seen and time.time() < deadline:
             time.sleep(0.01)
         for thread in threading.enumerate():
-            if thread.name == "cgpd-reload":
+            if thread.name == "cgprofiled-reload":
                 thread.join(timeout=5)
-        assert seen["thread"] == "cgpd-reload" and server.keep_days == 6
+        assert seen["thread"] == "cgprofiled-reload" and server.keep_days == 6
         handlers[serve.signal.SIGTERM](serve.signal.SIGTERM, None)
         assert server._stopping is True
 

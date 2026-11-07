@@ -26,8 +26,8 @@ RUNTIME_CODES = frozenset({
 
 CAUSE_REMEDY = {
     "socket-not-mounted": "bind-mount /run/cgprofile/control into this environment",
-    "socket-missing": "the daemon is not running: systemctl status cgpd; systemctl start cgpd",
-    "daemon-refusing": "journalctl -u cgpd; report it if it loops",
+    "socket-missing": "the daemon is not running: systemctl status cgprofiled; systemctl start cgprofiled",
+    "daemon-refusing": "journalctl -u cgprofiled; report it if it loops",
     "socket-permission": "join the socket's group (or the allow_uids list) and re-login",
     "contract-unsupported": "install a cgprofile version whose daemon and client share a contract",
 }

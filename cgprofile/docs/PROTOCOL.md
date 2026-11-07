@@ -1,6 +1,6 @@
 # cgprofile daemon protocol — the wire, verb by verb
 
-**Scope.** How a consumer talks to `cgpd`. The authority for the
+**Scope.** How a consumer talks to `cgprofiled`. The authority for the
 CONTENT of every response is `RG55-INTERFACE-CONTRACT.md` (§2 the verbs, §3
 the Summary, §7 the computation rules, §8 the v1.1 amendment, §9 the native
 R2 observer); this file is
@@ -21,16 +21,16 @@ and every error code below is live.
 
 The control protocol travels over one carrier. Connect to the control socket
 (`/run/cgprofile/control/cgprofile.sock` by default, configured by
-`[sockets.control].path` in `cgpd.toml`) and write ONE request line; the daemon answers with one line and
-closes. The only exception is `watch`, which streams. `cgpctl` is the reference client: whatever its
+`[sockets.control].path` in `cgprofiled.toml`) and write ONE request line; the daemon answers with one line and
+closes. The only exception is `watch`, which streams. `cgprofilectl` is the reference client: whatever its
 `ctlwire` module builds for a given command line is what any other consumer should send. The frozen bytes
 are in `tests/fixtures/rg55/socket/<verb>-request.json`.
 
 | aspect | rule |
 |---|---|
-| who may connect | the group that owns the control socket (set by `cgprofile-control.socket` from `[sockets.control].group`), plus the `allow_uids` list of `cgpd.toml` when it is non-empty (section 4) |
+| who may connect | the group that owns the control socket (set by `cgprofile-control.socket` from `[sockets.control].group`), plus the `allow_uids` list of `cgprofiled.toml` when it is non-empty (section 4) |
 | who is root-equivalent | uid 0 is always allowed |
-| there is no fallback | a caller without access to the socket has no other path to the daemon; `cgpctl doctor` names the remedy |
+| there is no fallback | a caller without access to the socket has no other path to the daemon; `cgprofilectl doctor` names the remedy |
 
 ## 2. The request line
 
@@ -157,12 +157,12 @@ note in `docs/CONSUMERS.md` and the rationale in `docs/DESIGN-GUIDE.md`.
 
 1. The socket node's group and mode decide who may connect. Systemd creates
    `/run/cgprofile/control/cgprofile.sock` as `root:<sockets.control.group>`
-   with the configured mode; cgpd adopts the listening descriptor and never
+   with the configured mode; cgprofiled adopts the listening descriptor and never
    changes or unlinks the node.
 2. Runtime directories are root-owned and mode `0755`; they do not grant
    socket access by themselves. Each consumer mounts only its entitled level
    directory.
-3. The `allow_uids` key of `cgpd.toml` (an array of uids; runtime-tunable by
+3. The `allow_uids` key of `cgprofiled.toml` (an array of uids; runtime-tunable by
    uid 0, `CGPCTL-SPEC.md` section 3.5) adds an `SO_PEERCRED` check: uid 0 is
    always allowed, listed uids are allowed, everything else gets
    `{"ok": false, "contract": 1, "error": {"code": "peer-refused", "message": …}}`
@@ -199,7 +199,7 @@ R2 consumers still fail closed when their configured endpoint is unavailable.
 
 Response shape is always
 `{"ok": false, "contract": 1, "error": {"code": "<kebab-code>", "message": "…"}}`
-(the `contract` field echoes the request's). `cgpctl` maps codes to exit
+(the `contract` field echoes the request's). `cgprofilectl` maps codes to exit
 codes in `CGPCTL-SPEC.md` section 1. Codes: `bad-argument`,
 `target-not-found`, `too-many-sessions`, `unknown-session`,
 `report-unavailable`, `report-failed`, `stop-incomplete` (a `stop` whose
@@ -377,7 +377,7 @@ windows are not persisted: after a restart a close gets `window-lost`.
 
 ## 10. ctl contract 2 (cgprofile 2.0.0)
 
-Specification. Contract 2 is the control-socket contract of the native `cgpd` daemon. It is additive for
+Specification. Contract 2 is the control-socket contract of the native `cgprofiled` daemon. It is additive for
 every verb that exists in contract 1 except one: the `report` verb is removed. The observer socket
 (sections 8 and 9, contracts 2 and 3) is a separate protocol with its own numbers and is not touched.
 
@@ -395,13 +395,13 @@ every verb that exists in contract 1 except one: the `report` verb is removed. T
 * `export`, `config`, `config-set` and `config-reset` exist only at contract 2. At contract 1 they are refused with `bad-argument`
   naming both numbers, exactly as a 1.x daemon refuses contract 2 today.
 * A contract-2 client always opens with `version` at contract 1 (every daemon understands it), reads
-  `contracts`, and uses contract 2 only when it is listed. Against a 1.x daemon, `cgpctl` therefore keeps
+  `contracts`, and uses contract 2 only when it is listed. Against a 1.x daemon, `cgprofilectl` therefore keeps
   working for `status`, `host`, `start`, `stop`, `watch`, `prune` (all contract 1) and fails `report` and
   `config show` / `config set` / `config reset` with exit 3, cause `contract-unsupported`, naming the daemon version that provides them.
 * **How 1.x clients are told.** A 1.x client (run-gate's `_wire_args`, the 1.x in-image `ctl`) that sends
   `report` to a 2.x daemon at contract 1 receives a normal contract-1 error, never a silent drop:
   `{"ok": false, "contract": 1, "error": {"code": "report-removed", "message": "the daemon no longer
-  renders reports; export the session with contract 2 and render locally (cgpctl report <session>)"}}`.
+  renders reports; export the session with contract 2 and render locally (cgprofilectl report <session>)"}}`.
   `report-removed` is a new additive error code; a 1.x client that does not know it treats it like any
   unknown error code (exit 2 over the old carrier). Nothing else changes for contract-1 callers, which is
   why run-gate's socket-only change (RG-next) ships against 1.x and 2.x alike.
@@ -414,7 +414,7 @@ every verb that exists in contract 1 except one: the `report` verb is removed. T
   and `report-failed` and the 2-job report bound stay documented for 1.x; a 2.x daemon never produces
   them. The daemon holds no pandas, plotly or matplotlib and runs no report subprocess.
 * The `exec` carrier. The daemon has no in-image client and no `docker exec` entry. A caller without
-  access to the socket has no fallback by design; `cgpctl doctor` names the remedy.
+  access to the socket has no fallback by design; `cgprofilectl doctor` names the remedy.
 
 ### 10.3 `export`
 
@@ -486,7 +486,7 @@ The manifest records `owner_uid` for every session (section 10.5).
 {"verb": "config", "args": {}, "contract": 2}
 ```
 
-Response: `{"ok": true, "contract": 2, "config": {"file": "/etc/cgprofile/cgpd.toml", "digest":
+Response: `{"ok": true, "contract": 2, "config": {"file": "/etc/cgprofile/cgprofiled.toml", "digest":
 "sha256:<hex>", "loaded_at": "...", "reloads": 0, "last_reload_error": null, "overrides_file":
 "/var/lib/cgprofile/overrides.toml", "overrides_ignored": 0, "keys": {"<key>": {"value": ..., "source":
 "default" | "file" | "override", "reloadable": true, "tunable": true, "persisted": false, "shadows":
@@ -526,7 +526,7 @@ override from memory and from the overrides file. Response: `{"ok": true, "contr
 "18"}}`; a key without an override yields an empty `reset`, not an error.
 
 **`version`** at contract 2 also carries `config: {"digest": "...", "last_reload_error": null,
-"overrides": 0}`, so `cgpctl status` and the host-setup check read the digest and the override count
+"overrides": 0}`, so `cgprofilectl status` and the host-setup check read the digest and the override count
 without a second call.
 
 ### 10.5 Session ownership
@@ -584,8 +584,8 @@ the session; `machine` is fixed at session start, stored in the manifest, and so
 - `cpu_model`: first `model name` of `/proc/cpuinfo`, whitespace collapsed; `cpus_online`: its `processor` count. `cpus_available`: the CPUs in
   `Cpus_allowed_list` intersected with the tightest `cpu.max` quota/period from the cgroup up to the root; `null` when neither is readable.
   `smt` is `/sys/devices/system/cpu/smt/active` (informational; unreliable in VMs). Any unreadable fact is `null`, never a guess.
-- `speed` comes from `/var/lib/mdt/host-facts/cpu-benchmark.json` (`mdt-host-cpu-benchmark/1`, written once by the host benchmark tool). cgpd reads
-  it at start and on reload (SIGHUP or `cgpd reload`) and never measures. It is accepted (`basis: "geekbench<major>-measured"`) only while its
+- `speed` comes from `/var/lib/mdt/host-facts/cpu-benchmark.json` (`mdt-host-cpu-benchmark/1`, written once by the host benchmark tool). cgprofiled reads
+  it at start and on reload (SIGHUP or `cgprofiled reload`) and never measures. It is accepted (`basis: "geekbench<major>-measured"`) only while its
   `cpu_model` and `cpus_online` equal the live values and `single_core` is a valid score.
 - Otherwise the packaged table `cgprofile-scores/1` (see `docs/SCORES-TABLE.md`) is looked up by CPU model and Geekbench major:
   `basis: "geekbench<major>-table"`, `multi_core: null`, plus `source_url` and `retrieved`. `speed_reason` says why the host record was not used:

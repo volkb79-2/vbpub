@@ -1,4 +1,4 @@
-"""Fake-root coverage for the service-side cgpd doctor."""
+"""Fake-root coverage for the service-side cgprofiled doctor."""
 
 from __future__ import annotations
 
@@ -144,12 +144,12 @@ def test_units_current_accepts_all_resources_and_reports_drift(monkeypatch, tmp_
     installed = _install_units(tmp_path)
     assert service_doctor._check_units_current(_runtime(), _args(tmp_path)).status == "ok"
 
-    Path(installed["cgpd.service"]).write_text("drift\n", encoding="utf-8")
+    Path(installed["cgprofiled.service"]).write_text("drift\n", encoding="utf-8")
     result = service_doctor._check_units_current(_runtime(), _args(tmp_path))
-    assert result.status == "fail" and "cgpd.service" in result.summary
+    assert result.status == "fail" and "cgprofiled.service" in result.summary
     assert result.remedy and result.details["problems"]
 
-    Path(installed["cgpd.service"]).unlink()
+    Path(installed["cgprofiled.service"]).unlink()
     result = service_doctor._check_units_current(_runtime(), _args(tmp_path))
     assert result.status == "fail" and "cannot read" in result.summary
 
@@ -264,11 +264,11 @@ def test_groups_check_lists_actual_and_recorded_members(monkeypatch, tmp_path):
     groups["cgprofile-control"] = (10, ["other"])
     result = service_doctor._check_groups(_runtime(), _args(tmp_path, config))
     assert result.status == "warn" and "alice" in result.summary
-    assert result.remedy == "rerun cgpd install (recorded users are re-added) or --add-user LEVEL=USER"
+    assert result.remedy == "rerun cgprofiled install (recorded users are re-added) or --add-user LEVEL=USER"
     accounts["alice"] = False
     result = service_doctor._check_groups(_runtime(), _args(tmp_path, config))
     assert result.status == "warn" and "does not exist" in result.summary
-    assert result.remedy == "rerun cgpd install (recorded users are re-added) or --add-user LEVEL=USER"
+    assert result.remedy == "rerun cgprofiled install (recorded users are re-added) or --add-user LEVEL=USER"
 
 
 @pytest.mark.parametrize("level,group,gids,needle", [
@@ -511,7 +511,7 @@ def _install_record(root, version="2.2.0", *, with_tree=True, link=True):
     if with_tree:
         manifest = Path(paths.opt) / version / "MANIFEST"
         manifest.parent.mkdir(parents=True, exist_ok=True)
-        manifest.write_text(f"installer=cgpd install {version}\n", encoding="utf-8")
+        manifest.write_text(f"installer=cgprofiled install {version}\n", encoding="utf-8")
     if link:
         os.symlink(version, paths.current)
     Path(paths.install_record).parent.mkdir(parents=True, exist_ok=True)
@@ -576,7 +576,7 @@ def test_service_check_requires_active_matching_activated_daemon(monkeypatch, tm
     monkeypatch.setattr(service_doctor, "_version_request",
                         lambda _path: (_ for _ in ()).throw(OSError("unavailable")))
     result = service_doctor._check_service(_runtime(), _args(tmp_path))
-    assert result.status == "fail" and "cannot verify the running cgpd version" in result.summary
+    assert result.status == "fail" and "cannot verify the running cgprofiled version" in result.summary
 
 
 def test_service_check_inactive_service_and_missing_version_pointer(monkeypatch, tmp_path):

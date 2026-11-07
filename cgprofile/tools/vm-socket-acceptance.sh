@@ -22,8 +22,8 @@
 # FORGOTTEN_USER (default cgptest-retired), a disposable account removed during the rerun case.
 #
 # The TTY wizard install is not automated (questionary needs a pty and key input): run
-# `cgpd install` without flags once by hand on a TTY on the clean guest, and finish it with
-# `cgpd doctor --json`. Everything else below is.
+# `cgprofiled install` without flags once by hand on a TTY on the clean guest, and finish it with
+# `cgprofiled doctor --json`. Everything else below is.
 set -u
 
 WHEELS="${WHEELS:-/root/wheels}"
@@ -73,10 +73,10 @@ need_guest() {
     [ "$(hostname)" = vbpub-test ] && id tester >/dev/null 2>&1 \
         || refuse "this is not a run-vm-harness guest (hostname vbpub-test and user tester expected)"
     local path
-    for path in /opt/cgprofile /etc/cgprofile /etc/systemd/system/cgpd.service /run/cgprofile; do
+    for path in /opt/cgprofile /etc/cgprofile /etc/systemd/system/cgprofiled.service /run/cgprofile; do
         [ ! -e "$root$path" ] && [ ! -L "$root$path" ] || refuse "$path already exists: cgprofile is installed here, this is not a fresh disposable guest"
     done
-    ! systemctl is-active --quiet cgpd.service || refuse "cgpd.service is running: this is not a fresh disposable guest"
+    ! systemctl is-active --quiet cgprofiled.service || refuse "cgprofiled.service is running: this is not a fresh disposable guest"
     : "${CGPROFILE_PIN:?set CGPROFILE_PIN}" "${CLI_EXTENDED_PIN:?set CLI_EXTENDED_PIN}"
 }
 
@@ -85,10 +85,10 @@ bootstrap() {
     local cgprofile_wheel clix_wheel
     cgprofile_wheel="$(ls "$WHEELS"/cgprofile-*-py3-none-any.whl | head -n1)"
     clix_wheel="$(ls "$WHEELS"/cli_extended-*-py3-none-any.whl | head -n1)"
-    PYTHONPATH="$cgprofile_wheel:$clix_wheel" python3 -m cgprofile.cli.cgpd "$@"
+    PYTHONPATH="$cgprofile_wheel:$clix_wheel" python3 -m cgprofile.cli.cgprofiled "$@"
 }
-CGPD=/opt/cgprofile/current/venv/bin/cgpd
-CGPCTL=/opt/cgprofile/current/venv/bin/cgpctl
+CGPD=/opt/cgprofile/current/venv/bin/cgprofiled
+CGPCTL=/opt/cgprofile/current/venv/bin/cgprofilectl
 CONTROL=/run/cgprofile/control/cgprofile.sock
 OBSERVER=/run/cgprofile/observer/cgprofile.sock
 
@@ -98,13 +98,13 @@ install_flags=(--wheel "${CGPROFILE_PIN:-}" --cli-extended-wheel "${CLI_EXTENDED
 p5_refusal() {
     local description="$1" config_before record_before pending_before current_before opt_before
     shift
-    config_before="$(sha256sum /etc/cgprofile/cgpd.toml)"
+    config_before="$(sha256sum /etc/cgprofile/cgprofiled.toml)"
     record_before="$(sha256sum /etc/cgprofile/install.toml)"
     pending_before="$(if [ -e /opt/cgprofile/PENDING ]; then cat /opt/cgprofile/PENDING; else echo absent; fi)"
     current_before="$(readlink /opt/cgprofile/current)"
     opt_before="$(find /opt/cgprofile -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)"
     expect_exit 2 "$description" "$CGPD" install --yes "$@"
-    if [ "$config_before" = "$(sha256sum /etc/cgprofile/cgpd.toml)" ] \
+    if [ "$config_before" = "$(sha256sum /etc/cgprofile/cgprofiled.toml)" ] \
         && [ "$record_before" = "$(sha256sum /etc/cgprofile/install.toml)" ] \
         && [ "$pending_before" = "$(if [ -e /opt/cgprofile/PENDING ]; then cat /opt/cgprofile/PENDING; else echo absent; fi)" ] \
         && [ "$current_before" = "$(readlink /opt/cgprofile/current)" ] \
@@ -165,8 +165,8 @@ clean_guest() {
     useradd --no-create-home --shell /usr/sbin/nologin "$FORGOTTEN_USER"
     expect_exit 0 "unattended pinned install" bootstrap install "${install_flags[@]}" \
         --add-user "control=$CONTROL_USER" --add-user "observer=$FORGOTTEN_USER"
-    check "cgpd doctor --json is green" bash -c "$CGPD doctor --json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if all(c[\"status\"] in (\"ok\",\"skip\") for c in d[\"checks\"]) else 1)'"
-    check "cgpctl doctor --json runs" bash -c "$CGPCTL doctor --json >/dev/null"
+    check "cgprofiled doctor --json is green" bash -c "$CGPD doctor --json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if all(c[\"status\"] in (\"ok\",\"skip\") for c in d[\"checks\"]) else 1)'"
+    check "cgprofilectl doctor --json runs" bash -c "$CGPCTL doctor --json >/dev/null"
 
     CASE="1 P-5 install flag refusals"
     p5_groups
@@ -179,7 +179,7 @@ clean_guest() {
         bash -c "[ \"\$(stat -c '%U:%G %a' /run/cgprofile/state)\" = 'root:root 700' ] && [ \"\$(stat -c '%U:%G %a' /run/cgprofile)\" = 'root:root 755' ]"
     check "control node root:cgprofile-control 0660" bash -c "[ \"\$(stat -c '%U:%G %a' $CONTROL)\" = 'root:cgprofile-control 660' ]"
     check "observer node root:cgprofile-observer 0660" bash -c "[ \"\$(stat -c '%U:%G %a' $OBSERVER)\" = 'root:cgprofile-observer 660' ]"
-    check "systemd-analyze verify" systemd-analyze verify /etc/systemd/system/cgpd.service \
+    check "systemd-analyze verify" systemd-analyze verify /etc/systemd/system/cgprofiled.service \
         /etc/systemd/system/cgprofile-control.socket /etc/systemd/system/cgprofile-observer.socket
     for unit in control observer; do
         check "cgprofile-$unit.socket has exactly one ListenStream" \
@@ -190,22 +190,22 @@ clean_guest() {
     CASE="3 restarts keep or change the inode as designed"
     local control_before observer_before
     control_before="$(inode $CONTROL)"; observer_before="$(inode $OBSERVER)"
-    check "restart cgpd.service" systemctl restart cgpd.service
+    check "restart cgprofiled.service" systemctl restart cgprofiled.service
     [ "$(inode $CONTROL)" = "$control_before" ] && [ "$(inode $OBSERVER)" = "$observer_before" ] \
         && pass "service restart keeps both inodes" || fail "service restart changed an inode"
     check "both levels answer after the service restart" bash -c "$CGPCTL status --json >/dev/null && $CGPD doctor --check connect --json >/dev/null"
     local service_pid
-    service_pid="$(systemctl show -p MainPID --value cgpd.service)"
+    service_pid="$(systemctl show -p MainPID --value cgprofiled.service)"
     check "restart cgprofile-control.socket" systemctl restart cgprofile-control.socket
     [ "$(inode $CONTROL)" != "$control_before" ] && pass "control socket restart gives a new inode" || fail "control inode unchanged"
     sleep 1
-    check "the service restarted through Requires=" bash -c "[ \"\$(systemctl show -p MainPID --value cgpd.service)\" != '$service_pid' ]"
+    check "the service restarted through Requires=" bash -c "[ \"\$(systemctl show -p MainPID --value cgprofiled.service)\" != '$service_pid' ]"
     check "control answers on the new inode" bash -c "$CGPCTL status --json >/dev/null"
     check "restart cgprofile-observer.socket" systemctl restart cgprofile-observer.socket
     check "observer answers on its new inode" bash -c "$CGPD doctor --check connect --json >/dev/null"
 
     CASE="4 activation contract"
-    expect_exit 2 "cgpd run without LISTEN_FDS and without --self-bind refuses" env -u LISTEN_FDS -u LISTEN_PID "$CGPD" run
+    expect_exit 2 "cgprofiled run without LISTEN_FDS and without --self-bind refuses" env -u LISTEN_FDS -u LISTEN_PID "$CGPD" run
     local cfg=/tmp/cgp-selfbind.toml dir=/tmp/cgp-selfbind
     mkdir -p "$dir/control" "$dir/observer" "$dir/sessions"
     cat >"$cfg" <<EOF
@@ -264,12 +264,12 @@ EOF
     CASE="10 rerun with a saved record that lists users (H2)"
     check "control user is a member before the rerun" group_has_member cgprofile-control "$CONTROL_USER"
     check "observer test user is a member before the rerun" group_has_member cgprofile-observer "$FORGOTTEN_USER"
-    expect_exit 0 "cgpd install --yes with no other flag reapplies the recorded inputs" "$CGPD" install --yes
+    expect_exit 0 "cgprofiled install --yes with no other flag reapplies the recorded inputs" "$CGPD" install --yes
     check "install.toml still lists the control user" grep -q "control_users = \[\"$CONTROL_USER\"\]" /etc/cgprofile/install.toml
     check "install.toml still lists the observer test user" grep -q "observer_users = \[\"$FORGOTTEN_USER\"\]" /etc/cgprofile/install.toml
     check "rerun without --add-user keeps control membership" group_has_member cgprofile-control "$CONTROL_USER"
     check "rerun without --add-user keeps observer membership" group_has_member cgprofile-observer "$FORGOTTEN_USER"
-    check "a config edit survives the rerun" bash -c "echo '# kept' >> /etc/cgprofile/cgpd.toml && $CGPD install --yes && grep -q '^# kept' /etc/cgprofile/cgpd.toml"
+    check "a config edit survives the rerun" bash -c "echo '# kept' >> /etc/cgprofile/cgprofiled.toml && $CGPD install --yes && grep -q '^# kept' /etc/cgprofile/cgprofiled.toml"
     userdel "$FORGOTTEN_USER"
     expect_exit 0 "rerun drops a recorded user whose account was deleted" "$CGPD" install --yes
     if grep -q "dropped recorded users that no longer exist: $FORGOTTEN_USER" /tmp/vm-accept.out; then
@@ -299,9 +299,9 @@ uninstall_checks() {  # uninstall_checks "<command words>"
     expect_exit 0 "uninstall --yes" $runner uninstall --yes
     check "cgprofile.slice is not active after uninstall (and not merely unloaded)" \
         bash -c "[ \"\$(systemctl show -p ActiveState --value cgprofile.slice)\" != active ]"
-    for leftover in /etc/systemd/system/cgpd.service /etc/systemd/system/cgprofile.slice \
+    for leftover in /etc/systemd/system/cgprofiled.service /etc/systemd/system/cgprofile.slice \
         /etc/systemd/system/cgprofile-control.socket /etc/systemd/system/cgprofile-observer.socket \
-        /etc/sysusers.d/cgprofile.conf /etc/cgprofile /opt/cgprofile /run/cgprofile /usr/local/bin/cgpctl; do
+        /etc/sysusers.d/cgprofile.conf /etc/cgprofile /opt/cgprofile /run/cgprofile /usr/local/bin/cgprofilectl; do
         check "$leftover is gone" bash -c "[ ! -e $leftover ] && [ ! -L $leftover ]"
     done
     check "no failed cgprofile unit remains" bash -c "! systemctl --failed --no-legend | grep -q cgp"
@@ -332,7 +332,7 @@ seed_old_layout() {
     printf 'd /run/cgprofile 0770 root docker -\n' >/etc/tmpfiles.d/mdt-cgprofile.conf
     printf 'd /run/cgprofile/observer 0751 root cgprofile-observer -\n' >/etc/tmpfiles.d/mdt-cgprofile-observer.conf
     printf 'g cgprofile-observer - - -\n' >/etc/sysusers.d/mdt-cgprofile.conf
-    printf 'ctl_socket = "/run/cgprofile/ctl.sock"\n' >/etc/cgprofile/cgpd.toml
+    printf 'ctl_socket = "/run/cgprofile/ctl.sock"\n' >/etc/cgprofile/cgprofiled.toml
     printf 'installer=mdt host-setup (MDT-055)\n' >/opt/cgprofile/2.1.0/MANIFEST
     printf 'seeded by vm-socket-acceptance.sh\n' >/opt/cgprofile/.vm-acceptance-seed
     chmod 0770 /run/cgprofile

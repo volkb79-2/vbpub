@@ -16,7 +16,7 @@ import tomllib
 import pytest
 
 from cgprofile import version
-from cgprofile.cli import cgpctl, cgpd, legacy
+from cgprofile.cli import cgprofilectl, cgprofiled, legacy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_DIR = PROJECT_ROOT / "src" / "cgprofile"
@@ -41,7 +41,7 @@ def test_the_package_lives_under_src_and_is_the_one_imported():
     assert (PACKAGE_DIR / "_damon" / "__init__.py").is_file()
 
 
-@pytest.mark.parametrize("name", ["cgpd.service.in", "cgpd.toml.default", "cgprofile.slice.in"])
+@pytest.mark.parametrize("name", ["cgprofiled.service.in", "cgprofiled.toml.default", "cgprofile.slice.in"])
 def test_package_data_files_exist_and_are_not_empty(name):
     assert (PACKAGE_DIR / "data" / name).stat().st_size > 0
 
@@ -72,26 +72,26 @@ def test_installed_version_falls_back_to_the_source_tree_marker(monkeypatch):
 
 @pytest.fixture
 def fixed_version(monkeypatch):
-    monkeypatch.setattr(cgpctl, "installed_version", lambda: "9.9.9")
-    monkeypatch.setattr(cgpd, "installed_version", lambda: "9.9.9")
+    monkeypatch.setattr(cgprofilectl, "installed_version", lambda: "9.9.9")
+    monkeypatch.setattr(cgprofiled, "installed_version", lambda: "9.9.9")
 
 
-def test_cgpctl_version(capsys, fixed_version):
-    assert cgpctl.main(["--version"]) == 0
-    assert capsys.readouterr().out == "cgpctl 9.9.9\n"
+def test_cgprofilectl_version(capsys, fixed_version):
+    assert cgprofilectl.main(["--version"]) == 0
+    assert capsys.readouterr().out == "cgprofilectl 9.9.9\n"
 
 
-def test_cgpd_version(capsys, fixed_version):
-    assert cgpd.main(["--version"]) == 0
-    assert capsys.readouterr().out == "cgpd 9.9.9\n"
+def test_cgprofiled_version(capsys, fixed_version):
+    assert cgprofiled.main(["--version"]) == 0
+    assert capsys.readouterr().out == "cgprofiled 9.9.9\n"
 
 
 def test_the_stubs_read_sys_argv_when_called_without_arguments(monkeypatch, capsys, fixed_version):
-    monkeypatch.setattr("sys.argv", ["cgpctl", "--version"])
-    assert cgpctl.main() == 0
-    monkeypatch.setattr("sys.argv", ["cgpd", "--version"])
-    assert cgpd.main() == 0
-    assert capsys.readouterr().out == "cgpctl 9.9.9\ncgpd 9.9.9\n"
+    monkeypatch.setattr("sys.argv", ["cgprofilectl", "--version"])
+    assert cgprofilectl.main() == 0
+    monkeypatch.setattr("sys.argv", ["cgprofiled", "--version"])
+    assert cgprofiled.main() == 0
+    assert capsys.readouterr().out == "cgprofilectl 9.9.9\ncgprofiled 9.9.9\n"
 
 
 # ── pyproject and cmru facts ────────────────────────────────────────────────
@@ -104,8 +104,8 @@ def test_pyproject_wheel_facts():
     assert "version" not in project
     assert project["dependencies"] == ["cli-extended>=0.5.1"]
     assert project["scripts"] == {
-        "cgpctl": "cgprofile.cli.cgpctl:main",
-        "cgpd": "cgprofile.cli.cgpd:main",
+        "cgprofilectl": "cgprofile.cli.cgprofilectl:main",
+        "cgprofiled": "cgprofile.cli.cgprofiled:main",
     }
     assert data["tool"]["setuptools"]["packages"]["find"] == {"where": ["src"]}
     assert data["tool"]["setuptools"]["package-data"] == {

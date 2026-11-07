@@ -1,4 +1,4 @@
-"""Pure and fake-root coverage for cgpd's standalone installer."""
+"""Pure and fake-root coverage for cgprofiled's standalone installer."""
 
 from __future__ import annotations
 
@@ -121,24 +121,24 @@ def _fake_run(commands, group_gids=None, active=None, fail=None):
         if len(argv) >= 3 and argv[1:3] == ["-m", "venv"]:
             bindir = Path(argv[-1]) / "bin"
             bindir.mkdir(parents=True, exist_ok=True)
-            (bindir / "cgpd").write_text("", encoding="utf-8")
-            (bindir / "cgpctl").write_text("", encoding="utf-8")
+            (bindir / "cgprofiled").write_text("", encoding="utf-8")
+            (bindir / "cgprofilectl").write_text("", encoding="utf-8")
         if argv and argv[0] == "systemd-sysusers":
             group_gids.update({"cgprofile-control": 7101, "cgprofile-observer": 7102})
         if argv and argv[0] == "groupdel":
             group_gids.pop(argv[1], None)
         if argv and argv[0] == "systemctl" and len(argv) >= 4 and argv[1] == "is-active":
             return subprocess.CompletedProcess(argv, 0 if active.get(argv[-1], False) else 3, "", "")
-        if argv and argv[0].endswith("/cgpd") and "--version" in argv:
-            # .../opt/cgprofile/<version>/venv/bin/cgpd
-            return subprocess.CompletedProcess(argv, 0, f"cgpd {Path(argv[0]).parents[2].name}\n", "")
+        if argv and argv[0].endswith("/cgprofiled") and "--version" in argv:
+            # .../opt/cgprofile/<version>/venv/bin/cgprofiled
+            return subprocess.CompletedProcess(argv, 0, f"cgprofiled {Path(argv[0]).parents[2].name}\n", "")
         if argv and "unit" in argv and "print" in argv:
             unit = argv[argv.index("--unit") + 1]
             config = argv[argv.index("--config") + 1]
             values, _digest = daemon_config.read_config_file(config, explicit=True)
             rendered = unitfiles.render(config_values=values)
             return subprocess.CompletedProcess(argv, 0, rendered[unit], "")
-        if argv and argv[0].endswith("/cgpctl") and "sessions" in argv:
+        if argv and argv[0].endswith("/cgprofilectl") and "sessions" in argv:
             return subprocess.CompletedProcess(argv, 0, json.dumps({"sessions": []}), "")
         if argv and "status" in argv:
             return subprocess.CompletedProcess(argv, 0, json.dumps({
@@ -240,7 +240,7 @@ def test_old_installation_scan_reports_each_p11_condition(tmp_path):
     tmpfiles = paths.at("/etc/tmpfiles.d/mdt-cgprofile.conf")
     Path(tmpfiles).parent.mkdir(parents=True)
     Path(tmpfiles).write_text("d /run/cgprofile 0770 root docker -\n", encoding="utf-8")
-    dropin = paths.at("/etc/systemd/system/cgpd.service.d/50-mdt.conf")
+    dropin = paths.at("/etc/systemd/system/cgprofiled.service.d/50-mdt.conf")
     Path(dropin).parent.mkdir(parents=True)
     Path(dropin).write_text("[Service]\nGroup=docker\n", encoding="utf-8")
     old_sysusers = paths.at("/etc/sysusers.d/mdt-cgprofile.conf")
@@ -255,7 +255,7 @@ def test_old_installation_scan_reports_each_p11_condition(tmp_path):
     (old_version / "MANIFEST").write_text("installer=mdt host-setup (MDT-055)\n", encoding="utf-8")
     (opt / "PENDING").write_text("2.2.0\n", encoding="utf-8")
     (opt / "current.new").write_text("leftover\n", encoding="utf-8")
-    unit = Path(paths.unit_dir) / "cgpd.service"
+    unit = Path(paths.unit_dir) / "cgprofiled.service"
     unit.parent.mkdir(parents=True, exist_ok=True)
     unit.write_text("old\n", encoding="utf-8")
 
@@ -270,12 +270,12 @@ def test_old_installation_scan_reports_each_p11_condition(tmp_path):
     assert any("mdt host-setup MANIFEST" in problem for problem in problems)
     assert any("leftover install marker" in problem for problem in problems)
     assert "Manual steps:" in message and "keep /var/lib/cgprofile" in message
-    assert "cgpd install refused" in message
+    assert "cgprofiled install refused" in message
 
 
 def test_units_without_an_install_record_or_pending_are_not_ours(tmp_path):
     paths = _paths(tmp_path)
-    for name in ("cgpd.service", "cgprofile.slice", "cgprofile-control.socket", "cgprofile-observer.socket"):
+    for name in ("cgprofiled.service", "cgprofile.slice", "cgprofile-control.socket", "cgprofile-observer.socket"):
         unit = Path(paths.unit_dir) / name
         unit.parent.mkdir(parents=True, exist_ok=True)
         unit.write_text("old\n", encoding="utf-8")
@@ -302,11 +302,11 @@ def test_version_root_findings_get_their_own_message_not_the_old_host_steps(tmp_
     (opt / "2.0.0").mkdir()
     (opt / "2.0.0" / "MANIFEST").mkdir()  # unreadable as a file
     (opt / ".stage.abc").mkdir()
-    (opt / ".cgpd-render.abc").mkdir()
+    (opt / ".cgprofiled-render.abc").mkdir()
     (opt / "PENDING").write_text("2.2.0\n", encoding="utf-8")
     (opt / "linked").symlink_to("2.2.0")
     (opt / "1.9.0").mkdir()
-    (opt / "1.9.0" / "MANIFEST").write_text("installer=cgpd install 1.9.0\n", encoding="utf-8")
+    (opt / "1.9.0" / "MANIFEST").write_text("installer=cgprofiled install 1.9.0\n", encoding="utf-8")
 
     problems = installer.old_installation_problems(paths)
     message = installer.manual_removal_message(problems)
@@ -319,7 +319,7 @@ def test_version_root_findings_get_their_own_message_not_the_old_host_steps(tmp_
     assert any(item.startswith("leftover install marker:") for item in problems)
     assert not any("1.9.0" in item for item in problems)
     assert "Under /opt/cgprofile" in message
-    assert "cgpd uninstall --yes" in message
+    assert "cgprofiled uninstall --yes" in message
     assert "Manual steps:" not in message
     assert "remove the old installation" not in message
     assert installer.manual_removal_message([]).count("Manual steps:") == 1
@@ -354,7 +354,7 @@ def test_foreign_rules_read_failures_are_findings(tmp_path):
     rule = Path(paths.at("/etc/tmpfiles.d/other.conf"))
     rule.parent.mkdir(parents=True)
     rule.write_bytes(b"\xff\xfe")
-    dropin = Path(paths.at("/etc/systemd/system/cgpd.service.d/10-x.conf"))
+    dropin = Path(paths.at("/etc/systemd/system/cgprofiled.service.d/10-x.conf"))
     dropin.parent.mkdir(parents=True)
     dropin.write_bytes(b"\xff\xfe")
     found = installer.find_foreign_rules(paths)
@@ -622,7 +622,7 @@ def test_preflight_refuses_downgrade_until_the_operator_allows_it(tmp_path):
     paths = _paths(tmp_path)
     opt = Path(paths.opt)
     (opt / "2.2.0").mkdir(parents=True)
-    (opt / "2.2.0" / "MANIFEST").write_text("installer=cgpd install 2.2.0\n", encoding="utf-8")
+    (opt / "2.2.0" / "MANIFEST").write_text("installer=cgprofiled install 2.2.0\n", encoding="utf-8")
     (opt / "current").symlink_to("2.2.0")
     Path(paths.install_record).parent.mkdir(parents=True)
     Path(paths.install_record).write_text("created_groups = []\n", encoding="utf-8")
@@ -644,7 +644,7 @@ def test_preflight_downgrade_without_socket_units_names_the_plain_refusal(tmp_pa
     paths = _paths(tmp_path)
     opt = Path(paths.opt)
     (opt / "2.3.0").mkdir(parents=True)
-    (opt / "2.3.0" / "MANIFEST").write_text("installer=cgpd install 2.3.0\n", encoding="utf-8")
+    (opt / "2.3.0" / "MANIFEST").write_text("installer=cgprofiled install 2.3.0\n", encoding="utf-8")
     (opt / "current").symlink_to("2.3.0")
     Path(paths.install_record).parent.mkdir(parents=True)
     Path(paths.install_record).write_text("created_groups = []\n", encoding="utf-8")
@@ -659,7 +659,7 @@ def test_preflight_manifest_digest_mismatch_and_unreadable_manifest(tmp_path):
     version = Path(paths.opt) / "2.2.0"
     version.mkdir(parents=True)
     manifest = version / "MANIFEST"
-    manifest.write_text("installer=cgpd install 2.2.0\ncgprofile_sha256=ffff\n", encoding="utf-8")
+    manifest.write_text("installer=cgprofiled install 2.2.0\ncgprofile_sha256=ffff\n", encoding="utf-8")
     values = {"version": "2.2.0", "wheel_sha": CGPROFILE_SHA, "cli_extended_sha": CLI_EXTENDED_SHA,
               "allow_downgrade": False}
     with pytest.raises(installer.InstallError, match="immutable and its wheel digest differs"):
@@ -687,7 +687,7 @@ def test_current_pointer_must_be_a_complete_relative_version(tmp_path):
     with pytest.raises(installer.InstallError, match="incomplete version tree"):
         subject._current_version()
     (opt / "2.2.0").mkdir()
-    (opt / "2.2.0" / "MANIFEST").write_text("installer=cgpd install 2.2.0\n", encoding="utf-8")
+    (opt / "2.2.0" / "MANIFEST").write_text("installer=cgprofiled install 2.2.0\n", encoding="utf-8")
     assert subject._current_version() == "2.2.0"
 
 
@@ -777,7 +777,7 @@ def test_drain_deadline_writes_pending_and_force_records_live_sessions(tmp_path)
     subject = _installer(tmp_path, monotonic=lambda: next(clock), sleep=lambda _seconds: None)
     subject._live_sessions = lambda _current: [{"session": "s-live"}]
     values = {"version": "2.2.0", "drain_seconds": 10, "drain_timeout": "10s", "force_restart": False}
-    with pytest.raises(installer.DrainTimeout, match="rerun cgpd install when the sessions have ended") as caught:
+    with pytest.raises(installer.DrainTimeout, match="rerun cgprofiled install when the sessions have ended") as caught:
         subject._drain_or_refuse("2.1.0", values)
     assert caught.value.exit_code == 3
     assert "remove" not in str(caught.value)
@@ -1020,7 +1020,7 @@ def test_install_applies_config_units_groups_links_and_start(tmp_path, monkeypat
     record = Path(paths.install_record).read_text(encoding="utf-8")
     assert "created_groups = [\"cgprofile-control\", \"cgprofile-observer\"]" in record
     assert ["systemctl", "start", "cgprofile-control.socket", "cgprofile-observer.socket"] in commands
-    assert ["systemctl", "start", "cgpd.service"] in commands
+    assert ["systemctl", "start", "cgprofiled.service"] in commands
     assert group_gids == {"cgprofile-control": 7101, "cgprofile-observer": 7102}
     assert not Path(paths.pending).exists()
 
@@ -1038,14 +1038,14 @@ def test_install_restarts_inactive_socket_units_after_drain(tmp_path, monkeypatc
     opt = Path(paths.opt)
     opt.mkdir(parents=True)
     (opt / "2.1.0").mkdir()
-    (opt / "2.1.0" / "MANIFEST").write_text("installer=cgpd install 2.1.0\n", encoding="utf-8")
+    (opt / "2.1.0" / "MANIFEST").write_text("installer=cgprofiled install 2.1.0\n", encoding="utf-8")
     (opt / "current").symlink_to("2.1.0")
     Path(paths.install_record).parent.mkdir(parents=True)
     Path(paths.install_record).write_text("created_groups = []\n", encoding="utf-8")
     commands = []
     group_gids = {"cgprofile-control": 7101, "cgprofile-observer": 7102}
     monkeypatch.setattr(installer, "_group_gid", lambda name: group_gids.get(name))
-    active = {"cgpd.service": True}
+    active = {"cgprofiled.service": True}
     subject = installer.Installer(paths, run=_fake_run(commands, group_gids, active),
                                   fetch=_fake_fetch, geteuid=lambda: 0, python="python3")
     drained = []
@@ -1061,7 +1061,7 @@ def test_install_restarts_inactive_socket_units_after_drain(tmp_path, monkeypatc
 
 
 def test_active_service_without_a_current_pointer_is_a_refusal_not_a_traceback(tmp_path, monkeypatch):
-    host = Host(tmp_path, monkeypatch, active={"cgpd.service": True})
+    host = Host(tmp_path, monkeypatch, active={"cgprofiled.service": True})
     with pytest.raises(installer.InstallError, match="current is missing"):
         host.install()
     # nothing was applied and PENDING did not survive the refusal
@@ -1133,20 +1133,20 @@ def test_unreadable_record_is_refused(host):
         installer._record_created_groups(installer._read_record(host.paths.install_record))
 
 
-# --- M1: a foreign /usr/local/bin/cgpctl entry is never replaced --------------------------
+# --- M1: a foreign /usr/local/bin/cgprofilectl entry is never replaced --------------------------
 
 
 def test_foreign_client_link_is_refused_before_any_change(host):
     link = Path(host.paths.client_link)
     link.parent.mkdir(parents=True)
     link.write_text("#!/bin/sh\n# pip console script\n", encoding="utf-8")
-    with pytest.raises(installer.InstallError, match="was not written by cgpd install"):
+    with pytest.raises(installer.InstallError, match="was not written by cgprofiled install"):
         host.install()
     assert link.read_text(encoding="utf-8").startswith("#!/bin/sh")
     assert not os.path.lexists(host.paths.opt) and not host.commands
     link.unlink()
     link.symlink_to("/usr/bin/true")
-    with pytest.raises(installer.InstallError, match="was not written by cgpd install"):
+    with pytest.raises(installer.InstallError, match="was not written by cgprofiled install"):
         host.install()
     assert os.readlink(link) == "/usr/bin/true"
 
@@ -1158,7 +1158,7 @@ def test_our_own_client_link_is_replaced_on_upgrade(host):
     assert again["ok"]
 
 
-# --- M7: an existing cgpd.toml is the operator's -------------------------------------------
+# --- M7: an existing cgprofiled.toml is the operator's -------------------------------------------
 
 
 def _write_config(host, text):
@@ -1207,7 +1207,7 @@ def test_target_config_reports_unreadable_and_invalid_existing_files(host):
     values = installer._gather_inputs(_args(), _runtime(), host.paths)
     Path(host.paths.config).parent.mkdir(parents=True, exist_ok=True)
     Path(host.paths.config).write_bytes(b"\xff")
-    with pytest.raises(installer.InstallError, match="cannot read .*cgpd.toml"):
+    with pytest.raises(installer.InstallError, match="cannot read .*cgprofiled.toml"):
         host.subject._target_config(host.paths.config, values)
 
     Path(host.paths.config).write_text("unknown = 1\n", encoding="utf-8")
@@ -1220,7 +1220,7 @@ def test_unreadable_existing_config_is_refused(host):
     Path(host.paths.config).write_bytes(b"\xff\xfe")
     with pytest.raises(installer.InstallError, match="cannot inspect existing config"):
         host.install()
-    with pytest.raises(installer.InstallError, match="cannot inspect existing config .*cgpd.toml"):
+    with pytest.raises(installer.InstallError, match="cannot inspect existing config .*cgprofiled.toml"):
         installer._gather_inputs(_args(), _runtime(), host.paths)
 
 
@@ -1326,7 +1326,7 @@ def test_version_build_failures_are_bounded_and_clean_up(tmp_path, monkeypatch):
 
     def wrong_version(argv, **kwargs):
         if list(argv)[-1:] == ["--version"]:
-            return subprocess.CompletedProcess(argv, 0, "cgpd 9.9.9\n", "")
+            return subprocess.CompletedProcess(argv, 0, "cgprofiled 9.9.9\n", "")
         return original(argv, **kwargs)
 
     host.subject.run = wrong_version
@@ -1348,16 +1348,16 @@ def test_unmarked_version_directory_is_refused_not_built_over(tmp_path, monkeypa
 
 def test_immutable_version_without_its_venv_is_refused(host):
     host.install()
-    cgpd = Path(host.paths.opt) / "2.2.0" / "venv" / "bin" / "cgpd"
-    cgpd.unlink()
-    with pytest.raises(installer.InstallError, match="/cgpd is missing"):
+    cgprofiled = Path(host.paths.opt) / "2.2.0" / "venv" / "bin" / "cgprofiled"
+    cgprofiled.unlink()
+    with pytest.raises(installer.InstallError, match="/cgprofiled is missing"):
         host.install()
 
 
 def test_drain_timeout_keeps_pending_and_a_rerun_reapplies(tmp_path, monkeypatch):
     host = Host(tmp_path, monkeypatch)
     host.install()
-    host.active["cgpd.service"] = True
+    host.active["cgprofiled.service"] = True
     ticks = iter(range(0, 10**6, 700))
     host.subject.monotonic = lambda: float(next(ticks))
     host.subject.sleep = lambda _seconds: None
@@ -1429,7 +1429,7 @@ def test_a_first_install_that_failed_after_pending_needs_uninstall_not_a_blind_r
     assert Path(host.paths.pending).is_file() and not Path(host.paths.install_record).exists()
     with pytest.raises(installer.InstallError, match="leftover install marker") as caught:
         host.install()
-    assert "cgpd uninstall --yes" in str(caught.value)
+    assert "cgprofiled uninstall --yes" in str(caught.value)
     # ... and uninstall accepts the PENDING-marked host
     body = host.subject.uninstall(_args(), _runtime(yes=True))
     assert body["ok"] and not os.path.lexists(host.paths.opt)
@@ -1461,7 +1461,7 @@ def test_downgrade_install_removes_socket_units_and_renders_without_sockets(tmp_
 
     def run(argv, **kwargs):
         if list(argv)[-1:] == ["--version"]:
-            return subprocess.CompletedProcess(argv, 0, "cgpd 2.1.0\n", "")
+            return subprocess.CompletedProcess(argv, 0, "cgprofiled 2.1.0\n", "")
         if "unit" in argv and "print" in argv:
             unit = argv[argv.index("--unit") + 1]
             return subprocess.CompletedProcess(argv, 0, f"# {unit}\n", "")
@@ -1477,26 +1477,26 @@ def test_downgrade_install_removes_socket_units_and_renders_without_sockets(tmp_
 def test_active_service_is_reloaded_for_config_drift_and_restarted_for_unit_drift(tmp_path, monkeypatch):
     host = Host(tmp_path, monkeypatch)
     host.install()
-    host.active.update({"cgpd.service": True, "cgprofile-control.socket": True,
+    host.active.update({"cgprofiled.service": True, "cgprofile-control.socket": True,
                         "cgprofile-observer.socket": True})
     host.commands.clear()
     # same version, only a reloadable config key changes
     body = host.install(_args(allow_uids="1000"))
     assert body["config_drift"] is True
-    assert ["systemctl", "reload", "cgpd.service"] in host.commands
+    assert ["systemctl", "reload", "cgprofiled.service"] in host.commands
     assert not host.has("systemctl", "restart")
     # a unit text drift restarts the service
-    unit = Path(host.subject._resource_paths()["cgpd.service"])
+    unit = Path(host.subject._resource_paths()["cgprofiled.service"])
     unit.write_text("drifted\n", encoding="utf-8")
     host.commands.clear()
     host.install(_args(allow_uids="1000"))
-    assert ["systemctl", "restart", "cgpd.service"] in host.commands
+    assert ["systemctl", "restart", "cgprofiled.service"] in host.commands
 
 
 def test_forced_restart_records_the_live_sessions(tmp_path, monkeypatch):
     host = Host(tmp_path, monkeypatch)
     host.install()
-    host.active["cgpd.service"] = True
+    host.active["cgprofiled.service"] = True
     host.subject._live_sessions = lambda _current: [{"session": "s-live"}]
     body = host.install(_args(version="2.3.0", force_restart=True))
     assert body["forced_sessions"] == ["s-live"]
@@ -1529,9 +1529,9 @@ def _snapshot(root: Path):
 
 def test_uninstall_on_an_empty_host_reports_nothing_installed(host):
     body = host.subject.uninstall(_args(), _runtime(yes=True))
-    assert body["message"] == "nothing installed by cgpd install" and body["removed"] == []
+    assert body["message"] == "nothing installed by cgprofiled install" and body["removed"] == []
     assert not host.commands
-    assert installer._uninstall_summary(body) == "nothing installed by cgpd install"
+    assert installer._uninstall_summary(body) == "nothing installed by cgprofiled install"
 
 
 def test_uninstall_refuses_an_old_host_setup_install_before_any_change(host, tmp_path):
@@ -1543,14 +1543,14 @@ def test_uninstall_refuses_an_old_host_setup_install_before_any_change(host, tmp
     version.mkdir(parents=True)
     (version / "MANIFEST").write_text("installer=mdt host-setup (MDT-055)\n", encoding="utf-8")
     (Path(paths.opt) / "current").symlink_to("2.1.0")
-    unit = Path(paths.unit_dir) / "cgpd.service"
+    unit = Path(paths.unit_dir) / "cgprofiled.service"
     unit.parent.mkdir(parents=True)
     unit.write_text("old\n", encoding="utf-8")
     Path(paths.config).parent.mkdir(parents=True)
     Path(paths.config).write_text("", encoding="utf-8")
     Path(paths.state_data).mkdir(parents=True)
     before = _snapshot(tmp_path)
-    with pytest.raises(installer.InstallError, match="cgpd uninstall refused") as caught:
+    with pytest.raises(installer.InstallError, match="cgprofiled uninstall refused") as caught:
         host.subject.uninstall(_args(purge_data=True), _runtime(yes=True))
     assert "mdt-cgprofile.conf" in str(caught.value)
     assert _snapshot(tmp_path) == before and not host.commands
@@ -1632,14 +1632,14 @@ def test_uninstall_removes_everything_it_wrote_and_stops_the_slice(tmp_path, mon
     body = host.subject.uninstall(_args(), _runtime(yes=True))
     assert body["ok"] and body["data_purged"] is False and body["groups_removed"] == []
     for path in (host.paths.opt, host.paths.config, host.paths.install_record, host.paths.runtime_root,
-                 host.paths.unit_dir + "/cgpd.service", host.paths.unit_dir + "/cgprofile.slice",
+                 host.paths.unit_dir + "/cgprofiled.service", host.paths.unit_dir + "/cgprofile.slice",
                  host.paths.unit_dir + "/cgprofile-control.socket", host.paths.client_link,
                  host.paths.sysusers_dir + "/cgprofile.conf"):
         assert not os.path.lexists(path), path
     assert not os.path.lexists(os.path.dirname(host.paths.config))
     assert Path(host.paths.state_data, "keep").is_file()
     assert host.has("systemctl", "disable", "--now", "cgprofile-control.socket", "cgprofile-observer.socket",
-                    "cgpd.service")
+                    "cgprofiled.service")
     assert ["systemctl", "stop", "cgprofile.slice"] in host.commands
     assert host.commands.index(["systemctl", "stop", "cgprofile.slice"]) > next(
         index for index, command in enumerate(host.commands) if command[:3] == ["systemctl", "disable", "--now"])
@@ -1660,7 +1660,7 @@ def test_uninstall_reloads_systemd_right_after_the_unit_files_and_before_groups_
         log.append((list(argv), {
             "record": os.path.lexists(paths.install_record),
             "pending_or_opt": os.path.lexists(paths.opt),
-            "service_unit": os.path.lexists(paths.unit_dir + "/cgpd.service"),
+            "service_unit": os.path.lexists(paths.unit_dir + "/cgprofiled.service"),
         }))
         return original(argv, **kwargs)
 
@@ -1715,7 +1715,7 @@ def test_uninstall_purges_data_only_when_asked_and_reports_foreign_client_link_k
     body = host.subject.uninstall(_args(purge_data=True), _runtime(yes=True))
     assert body["data_purged"] is True and not Path(host.paths.state_data).exists()
     assert body["kept"] == [host.paths.client_link] and link.is_file()
-    assert "kept (not written by cgpd install)" in installer._uninstall_summary(body)
+    assert "kept (not written by cgprofiled install)" in installer._uninstall_summary(body)
 
 
 def test_uninstall_stops_when_systemd_disable_fails_and_keeps_every_file(tmp_path, monkeypatch):
@@ -1723,7 +1723,7 @@ def test_uninstall_stops_when_systemd_disable_fails_and_keeps_every_file(tmp_pat
     host.seeded_install()
     with pytest.raises(installer.InstallError, match="command failed.*disable"):
         host.subject.uninstall(_args(), _runtime(yes=True))
-    assert Path(host.paths.unit_dir, "cgpd.service").is_file()
+    assert Path(host.paths.unit_dir, "cgprofiled.service").is_file()
     assert Path(host.paths.install_record).is_file()
 
 
@@ -1914,7 +1914,7 @@ def test_handlers_print_before_the_deferred_removal_and_map_failures(tmp_path, m
 
     json_out = Out()
     assert installer._uninstall_handler(_args(), _handler_runtime(json_out, yes=True, json_mode=True)) == 0
-    assert json_out.printed[0]["message"] == "nothing installed by cgpd install"
+    assert json_out.printed[0]["message"] == "nothing installed by cgprofiled install"
 
 
 def test_handlers_turn_install_errors_into_cli_failures(tmp_path, monkeypatch):
@@ -1938,7 +1938,7 @@ def test_handlers_turn_install_errors_into_cli_failures(tmp_path, monkeypatch):
     with pytest.raises(installer.CliFailure):
         installer._uninstall_handler(_args(config="/nope"), _handler_runtime(first, yes=True))
 
-    # A deferred uninstall removes the interpreter that ran cgpd; the final
+    # A deferred uninstall removes the interpreter that ran cgprofiled; the final
     # failure must give manual cleanup steps rather than invoking that binary again.
     running = Path(host.paths.opt) / "2.2.0" / "venv"
     subject = real_installer(host.paths, run=host.subject.run, geteuid=lambda: 0,
@@ -1949,7 +1949,7 @@ def test_handlers_turn_install_errors_into_cli_failures(tmp_path, monkeypatch):
     with pytest.raises(installer.CliFailure, match="manual cleanup") as caught:
         installer._uninstall_handler(_args(remove_groups=True), _handler_runtime(_Output(), yes=True))
     assert "groupdel" in str(caught.value) and host.paths.install_record in str(caught.value)
-    assert "rerun cgpd uninstall" not in str(caught.value)
+    assert "rerun cgprofiled uninstall" not in str(caught.value)
 
     nondeferred_paths = installer.InstallPaths(str(tmp_path / "nondeferred"))
 
@@ -1995,7 +1995,7 @@ def test_summaries_describe_dry_runs_and_real_runs():
 def test_force_restart_proceeds_with_a_warning_when_the_session_list_is_unavailable(tmp_path, monkeypatch):
     host = Host(tmp_path, monkeypatch)
     host.install()
-    host.active["cgpd.service"] = True
+    host.active["cgprofiled.service"] = True
 
     def wedged(_current):
         raise installer.InstallError("cannot list live cgprofile sessions; refusing to restart")
@@ -2012,12 +2012,12 @@ def test_force_restart_proceeds_with_a_warning_when_the_session_list_is_unavaila
 
 
 def test_force_restart_without_a_current_pointer_also_proceeds(tmp_path, monkeypatch):
-    host = Host(tmp_path, monkeypatch, active={"cgpd.service": True})
+    host = Host(tmp_path, monkeypatch, active={"cgprofiled.service": True})
     body = host.install(_args(force_restart=True))
     assert body["forced_sessions"] == ["unknown (the session list was unavailable)"]
     assert "current is missing" in body["warnings"][0]
     with pytest.raises(installer.InstallError, match="current is missing"):
-        Host(tmp_path / "other", monkeypatch, active={"cgpd.service": True}).install()
+        Host(tmp_path / "other", monkeypatch, active={"cgprofiled.service": True}).install()
 
 
 def test_groups_created_by_an_interrupted_first_install_are_recorded_and_removable(tmp_path, monkeypatch):
@@ -2129,7 +2129,7 @@ def test_a_failing_groupdel_does_not_stop_the_rest_of_the_uninstall(tmp_path, mo
     assert "groupdel cgprofile-control" in str(caught.value)
     assert host.paths.opt in str(caught.value) and host.paths.current in str(caught.value)
     assert host.paths.install_record in str(caught.value) and host.paths.pending in str(caught.value)
-    assert "rerun cgpd uninstall" not in str(caught.value)
+    assert "rerun cgprofiled uninstall" not in str(caught.value)
     # the other group, data purge and config were still handled; current is preserved for manual cleanup
     assert "cgprofile-observer" not in host.group_gids and "cgprofile-control" in host.group_gids
     assert not Path(host.paths.state_data).exists() and not Path(host.paths.config).exists()
@@ -2172,7 +2172,7 @@ def test_registered_verbs_expose_the_documented_options():
 
 def test_the_client_link_target_is_prefixed_by_the_root(tmp_path):
     paths = _paths(tmp_path)
-    assert paths.client_target == str(tmp_path / "opt/cgprofile/current/venv/bin/cgpctl")
+    assert paths.client_target == str(tmp_path / "opt/cgprofile/current/venv/bin/cgprofilectl")
     assert paths.control_dir == str(tmp_path / "run/cgprofile/control")
     with pytest.raises(ValueError, match="absolute service path"):
         paths.at("relative/path")
@@ -2283,7 +2283,7 @@ def test_reapply_removes_a_leftover_current_new_marker(host):
 
 def test_nothing_to_restart_or_reload_when_an_active_install_is_unchanged(host):
     host.install()
-    host.active.update({"cgpd.service": True, "cgprofile-control.socket": True,
+    host.active.update({"cgprofiled.service": True, "cgprofile-control.socket": True,
                         "cgprofile-observer.socket": True})
     host.commands.clear()
     body = host.install()

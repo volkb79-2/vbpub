@@ -128,7 +128,7 @@ STREAMING_VERBS = frozenset({"watch", "export"})
 # RW-37: the host's own source of truth is mdt host-setup's
 # `mdt-cgprofile.conf`, NOT this daemon — the daemon only re-asserts).
 SOCKET_MODE = 0o660
-# The uid allowlist (§8.1) is the `allow_uids` setting (cgpd.toml, runtime
+# The uid allowlist (§8.1) is the `allow_uids` setting (cgprofiled.toml, runtime
 # `config-set`). Empty = no uid restriction beyond the dedicated socket group's
 # permissions (D-30).
 
@@ -694,7 +694,7 @@ class SessionServer:
             # arguments are the file layer of a config-less Settings, so the
             # `config` verbs work the same way for every server.
             settings = daemon_config.Settings(
-                os.path.join(os.path.dirname(sessions_dir), "cgpd.toml"),
+                os.path.join(os.path.dirname(sessions_dir), "cgprofiled.toml"),
                 overrides_path=os.path.join(os.path.dirname(sessions_dir), "overrides.toml"),
                 log=self._log,
             )
@@ -717,7 +717,7 @@ class SessionServer:
             })
         self.settings = settings
         self._applied: Dict[str, Any] = {}
-        # A Settings handed in (cgpd) is authoritative; one built above from
+        # A Settings handed in (cgprofiled) is authoritative; one built above from
         # the keyword arguments already equals the attributes, so it is only
         # snapshotted (an `allow_uids=[]` argument must stay a list).
         self._apply_settings(snapshot_only=seeded)
@@ -2894,7 +2894,7 @@ class SessionServer:
         raise RequestError(
             "report-removed",
             "the daemon no longer renders reports; export the session with "
-            "contract 2 and render locally (cgpctl report <session>)",
+            "contract 2 and render locally (cgprofilectl report <session>)",
         )
 
     # ── verb: gc / retention ─────────────────────────────────────────────
@@ -3007,7 +3007,7 @@ class SessionServer:
 
     # ── dispatch / socket loop ───────────────────────────────────────────
 
-    # ── settings (cgpd config, CGPCTL-SPEC 3) ────────────────────────────
+    # ── settings (cgprofiled config, CGPCTL-SPEC 3) ────────────────────────────
 
     #: settings key -> how a changed value reaches the running server.
     _APPLIED_KEYS = (
@@ -3045,7 +3045,7 @@ class SessionServer:
         self._applied = current
 
     def reload_settings(self) -> bool:
-        """SIGHUP / `cgpd reload`: re-read the file and apply. Never raises."""
+        """SIGHUP / `cgprofiled reload`: re-read the file and apply. Never raises."""
         ok = self.settings.reload()
         self._apply_settings()
         self._host_benchmark = machine_mod.load_host_benchmark(self.host_benchmark_path)
@@ -4016,7 +4016,7 @@ class SessionServer:
                 raise RequestError(
                     "export-too-large",
                     f"session {session_id} is {total} bytes, over export_max_bytes "
-                    f"({self.export_max_bytes}); raise it (cgpctl config set "
+                    f"({self.export_max_bytes}); raise it (cgprofilectl config set "
                     f"export_max_bytes) or export fewer parts",
                 )
             parts: List[Dict[str, Any]] = []
@@ -4104,7 +4104,7 @@ class SessionServer:
         """SIGHUP: reload off the signal handler. A handler runs on the main
         thread between bytecodes and could interrupt it while it holds the
         settings lock; a worker thread takes the lock like any other caller."""
-        threading.Thread(target=self.reload_settings, daemon=True, name="cgpd-reload").start()
+        threading.Thread(target=self.reload_settings, daemon=True, name="cgprofiled-reload").start()
 
     def _accept_loop(self) -> None:
         """The bind/accept/dispatch loop, with no signal installation of its

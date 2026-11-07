@@ -27,7 +27,7 @@ def installed_version() -> str:
     """The installed distribution's version, or the source-tree marker.
 
     The wheel's metadata version is derived from the ``cgprofile-v`` tag by
-    setuptools-scm at build time, so ``cgpctl --version``, ``cgpd --version``
+    setuptools-scm at build time, so ``cgprofilectl --version``, ``cgprofiled --version``
     and the release tag agree. Run from a checkout (the gate binds the source
     via PYTHONPATH, nothing is installed) there is no metadata and the
     ``0.0.0-dev`` marker is reported.

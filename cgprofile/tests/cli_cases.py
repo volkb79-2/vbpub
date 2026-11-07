@@ -4,7 +4,7 @@ An invocation is the argv recorded in docs/cli-review.toml. Two tokens are subst
 fake daemon's socket, contract 2) and ``{TMP}`` (a fresh scratch directory that is also the working directory and
 ``$HOME``). ``$CGPROFILE_RUN_DIR`` points at ``{TMP}/run`` (an existing, empty run directory) so ``mark`` has one.
 The report stack and the direct-mode runner are stand-ins (pandas is absent in some environments; ``run`` needs
-cgroupfs), exactly as in test_cgpctl.py.
+cgroupfs), exactly as in test_cgprofilectl.py.
 """
 from __future__ import annotations
 
@@ -20,13 +20,13 @@ from unittest import mock
 
 import _fakectl
 from cgprofile import access, direct
-from cgprofile.cli import cgpctl
+from cgprofile.cli import cgprofilectl
 from cli_extended import CliIdentity
 
-import test_cgpctl
+import test_cgprofilectl
 
 CATALOG = pathlib.Path(__file__).resolve().parents[1] / "docs" / "cli-review.toml"
-IDENT = CliIdentity("cgpctl", "2.0.0", "cgprofile control client", "cgpctl")
+IDENT = CliIdentity("cgprofilectl", "2.0.0", "cgprofile control client", "cgprofilectl")
 
 
 def _stage_modules():
@@ -57,7 +57,7 @@ def execute(argv):
     with tempfile.TemporaryDirectory(prefix="cgc") as tmp, contextlib.ExitStack() as stack:
         tmp = os.path.realpath(tmp)
         os.mkdir(os.path.join(tmp, "run"))
-        daemon = _fakectl.FakeDaemon(os.path.join(tmp, "c.sock"), test_cgpctl.handlers())
+        daemon = _fakectl.FakeDaemon(os.path.join(tmp, "c.sock"), test_cgprofilectl.handlers())
         stack.callback(daemon.close)
         stack.enter_context(mock.patch.dict(os.environ, {"HOME": tmp, "CGPROFILE_RUN_DIR": os.path.join(tmp, "run")}))
         os.environ.pop("CGPCTL_SOCKET", None)
@@ -68,14 +68,14 @@ def execute(argv):
         stack.enter_context(mock.patch.object(access, "have_host_cgroup_view", lambda: True))
         stack.enter_context(mock.patch.object(direct, "run_command", lambda command, **kw: direct.Outcome(
             os.path.join(kw["out_dir"], "run-1"), 0, 1.5)))
-        stack.enter_context(mock.patch.object(cgpctl, "resolve_container", lambda name: "c" * 64))
+        stack.enter_context(mock.patch.object(cgprofilectl, "resolve_container", lambda name: "c" * 64))
         # doctor reads host state (observer directory, cgprofile.slice): point both at nothing so it is host-independent
-        stack.enter_context(mock.patch.object(cgpctl, "OBSERVER_DIR", os.path.join(tmp, "no-observer")))
-        stack.enter_context(mock.patch.object(cgpctl, "SLICE_DIR", os.path.join(tmp, "no-slice")))
+        stack.enter_context(mock.patch.object(cgprofilectl, "OBSERVER_DIR", os.path.join(tmp, "no-observer")))
+        stack.enter_context(mock.patch.object(cgprofilectl, "SLICE_DIR", os.path.join(tmp, "no-slice")))
         previous = os.getcwd()
         os.chdir(tmp)
         stack.callback(os.chdir, previous)
-        code = cgpctl.build_cli(IDENT).run(argv=_substitute(argv, daemon.path, tmp), stdout=out, stderr=err)
+        code = cgprofilectl.build_cli(IDENT).run(argv=_substitute(argv, daemon.path, tmp), stdout=out, stderr=err)
     return code, out.getvalue(), err.getvalue()
 
 
@@ -85,5 +85,5 @@ def load_cases():
 
 
 def slug(case_id: str) -> str:
-    stem = case_id.removeprefix("case:route:entrypoint:cgpctl/")
-    return stem.replace("option:route:entrypoint:cgpctl/", "").replace("argument:route:entrypoint:cgpctl/", "").replace("/", ".")
+    stem = case_id.removeprefix("case:route:entrypoint:cgprofilectl/")
+    return stem.replace("option:route:entrypoint:cgprofilectl/", "").replace("argument:route:entrypoint:cgprofilectl/", "").replace("/", ".")

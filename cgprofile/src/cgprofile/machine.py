@@ -1,6 +1,6 @@
 """Machine facts (``machine/1``) and the CPU speed basis (rigor-evidence CP-1).
 
-cgpd never measures CPU speed. It reads the record that the shared host tool
+cgprofiled never measures CPU speed. It reads the record that the shared host tool
 (``scripts/debian-install-v2/tools/cpu_benchmark.py``, schema
 ``mdt-host-cpu-benchmark/1``) persisted in host state, and accepts it only while
 the CPU model and the online CPU count still equal the live values. Otherwise

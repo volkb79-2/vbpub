@@ -2,7 +2,7 @@
 
 This is the lane the layout facts cannot replace: it proves the wheel is
 self-contained (the vendored DAMON module, the package data and the entry
-points are inside it), that `cgpctl` and `cgpd` run from an installed copy with
+points are inside it), that `cgprofilectl` and `cgprofiled` run from an installed copy with
 no checkout on the path, and that no build-host path leaked into the artifact.
 
 The build runs from a COPY of pyproject.toml, README.md, NOTICE and src/ in a
@@ -71,7 +71,7 @@ def wheel(tmp_path_factory) -> Path:
 def cli_extended_wheel(tmp_path_factory) -> Path:
     """cli-extended built from THIS checkout (the library directory below the repository root), offline.
 
-    cgpctl imports cli_extended for real, and the gate image may carry an older release than the pin
+    cgprofilectl imports cli_extended for real, and the gate image may carry an older release than the pin
     (0.5.0 against >=0.5.1) with no index to resolve from. The clean venv therefore gets the checkout's own
     cli-extended as a wheel, built the same way as the cgprofile wheel above (copied tree, pretend version).
     """
@@ -120,15 +120,15 @@ def test_the_wheel_ships_the_package_the_data_and_the_vendored_module(wheel):
     for required in (
         "cgprofile/__init__.py",
         "cgprofile/serve.py",
-        "cgprofile/cli/cgpctl.py",
-        "cgprofile/cli/cgpd.py",
+        "cgprofile/cli/cgprofilectl.py",
+        "cgprofile/cli/cgprofiled.py",
         "cgprofile/cli/installer.py",
         "cgprofile/cli/service_doctor.py",
         "cgprofile/cli/legacy.py",
         "cgprofile/_damon/__init__.py",
         "cgprofile/_damon/damon_analysis.py",
-        "cgprofile/data/cgpd.service.in",
-        "cgprofile/data/cgpd.toml.default",
+        "cgprofile/data/cgprofiled.service.in",
+        "cgprofile/data/cgprofiled.toml.default",
         "cgprofile/data/cgprofile.slice.in",
         f"cgprofile-{PRETEND}.dist-info/METADATA",
         f"cgprofile-{PRETEND}.dist-info/entry_points.txt",
@@ -148,8 +148,8 @@ def test_the_wheel_metadata_declares_the_final_closure(wheel):
     assert f"Version: {PRETEND}" in lines
     unconditional = [l for l in lines if l.startswith("Requires-Dist:") and "extra ==" not in l]
     assert unconditional == ["Requires-Dist: cli-extended>=0.5.1"]
-    assert "cgpctl = cgprofile.cli.cgpctl:main" in entry_points
-    assert "cgpd = cgprofile.cli.cgpd:main" in entry_points
+    assert "cgprofilectl = cgprofile.cli.cgprofilectl:main" in entry_points
+    assert "cgprofiled = cgprofile.cli.cgprofiled:main" in entry_points
 
 
 def test_no_checkout_or_build_host_path_leaks_into_the_wheel(wheel):
@@ -167,7 +167,7 @@ def test_no_checkout_or_build_host_path_leaks_into_the_wheel(wheel):
                 assert needle not in text, f"{needle!r} in {info.filename}"
 
 
-@pytest.mark.parametrize("script", ["cgpctl", "cgpd"])
+@pytest.mark.parametrize("script", ["cgprofilectl", "cgprofiled"])
 def test_the_installed_console_script_reports_the_wheel_version(venv, script, tmp_path):
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "CGPROFILE_VERSION")}
     proc = _run([str(venv / "bin" / script), "--version"], env=env, cwd=str(tmp_path))

@@ -44,8 +44,8 @@ first cgroup-profiler release is 1.0.0.
 SemVer wheel. A copied project-local `run-gate.py` script is not supported;
 compatibility checks use the installed `run-gate --version`.
 
-Parties: **producer** = cgroup-profiler's daemon (`cgpd`) and its client
-(`cgpctl`); **consumer** = the installed Run-Gate wheel (stdlib-only
+Parties: **producer** = cgroup-profiler's daemon (`cgprofiled`) and its client
+(`cgprofilectl`); **consumer** = the installed Run-Gate wheel (stdlib-only
 runtime), whose `ProfilerClient` sends control-protocol requests directly over
 `/run/cgprofile/control/cgprofile.sock` (§8.1), or the configured socket path,
 from any devcontainer, worktree or instance. **RG-156 (2026-11-04):** the
@@ -53,30 +53,30 @@ socket is the only carrier Run-Gate uses; its former `docker exec
 cgprofile-host-daemon cgprofile ctl <verb> [args] --json` fallback, the
 `[profile] transport` and `[profile] daemon` settings and
 `RUN_GATE_PROFILE_TRANSPORT` were removed. Run-Gate never sends `report` or
-`gc`. The `cgpctl` client remains the producer's own operator interface and
+`gc`. The `cgprofilectl` client remains the producer's own operator interface and
 reference translator of the socket protocol.
 
 ---
 
 ## 1. Transport and I/O rules
 
-1. The control protocol is newline-delimited JSON. `cgpctl` translates its
+1. The control protocol is newline-delimited JSON. `cgprofilectl` translates its
    command-line requests to this protocol; Run-Gate's stdlib-only
    `ProfilerClient` builds the same wire requests directly and connects to
    `/run/cgprofile/control/cgprofile.sock` (or the configured socket path).
    Consumers mount the corresponding control-level directory at that path.
-2. **`cgpctl` CLI output:** stdout is exactly one JSON object (UTF-8, no
+2. **`cgprofilectl` CLI output:** stdout is exactly one JSON object (UTF-8, no
    other output). stderr is free text for diagnostics.
-3. **`cgpctl` CLI exit codes:** `0` ok; `2` bad request (the JSON still carries
+3. **`cgprofilectl` CLI exit codes:** `0` ok; `2` bad request (the JSON still carries
    `"ok": false, "error": {"code": "<kebab-code>", "message": "..."}`);
    `3` daemon fault (serve loop unreachable, sysfs error). Any non-zero
-   exit, timeout, or unparsable stdout is a failed `cgpctl` invocation.
-   Run-Gate does not invoke `cgpctl`; it makes direct socket requests and
+   exit, timeout, or unparsable stdout is a failed `cgprofilectl` invocation.
+   Run-Gate does not invoke `cgprofilectl`; it makes direct socket requests and
    handles unavailable profiling as specified in §8.1 (R-04, R-36h).
 4. **Every response carries `"contract": 1`.** run-gate accepts contract
    major 1 only; a different value is "unavailable" (warning names both).
 5. **Timeouts:** `version` and `host` 5 s; `start` 10 s; `status` 5 s;
-   `stop` 30 s. Run-Gate applies these as socket timeouts; `cgpctl` applies
+   `stop` 30 s. Run-Gate applies these as socket timeouts; `cgprofilectl` applies
    them to its CLI requests. The daemon MUST answer `stop` within 30 s for a
    session of any length: the summary is maintained incrementally at sampling
    time, never recomputed from the series at stop.
@@ -86,7 +86,7 @@ reference translator of the socket protocol.
    from microseconds to seconds (`*_stall_seconds`).
 7. **Absent is never zero.** A measurement the daemon could not take is
    `null`. Counters that were read but never incremented are `0`.
-8. Names: native systemd service `cgpd.service`; reported `daemon.name`
+8. Names: native systemd service `cgprofiled.service`; reported `daemon.name`
    remains `cgprofile-host-daemon`; sessions root
    `/var/lib/cgprofile/sessions`; deployment authority is cgroup-profiler's
    `docs/NATIVE-DEPLOYMENT.md`; session ids `s-<YYYYMMDDTHHMMSSZ>-<4 hex>`.
@@ -360,11 +360,11 @@ enumerated in §8.3; each placement cgroup write is checked by the D-25
 whitelist and recorded. The daemon reads process metadata through the
 configured `proc_root`; numeric PID signalling is never used for enforcement.
 
-The production daemon is the native systemd service `cgpd.service`, not a
+The production daemon is the native systemd service `cgprofiled.service`, not a
 container. Its unit runs as `root`, sets `PrivateNetwork=yes` and
 `Slice=cgprofile.slice`, and permits writes through `ReadWritePaths` including
 `/sys/fs/cgroup` and `/sys/kernel/mm/damon`. The service's proc view comes
-from the `proc_root` configuration, which cgpd exports as
+from the `proc_root` configuration, which cgprofiled exports as
 `CGPROFILE_PROC_ROOT`. cgroup-profiler's `docs/NATIVE-DEPLOYMENT.md` is the
 deployment authority. Run-Gate never passes `--cgroupns=host` or `--pid=host`
 to lane, gate, workload, helper, or test containers.
@@ -469,11 +469,11 @@ stay byte-identical.
 
 ### 8.1 Socket-only carrier (D-30)
 
-The `cgpd` serve loop speaks newline-delimited JSON, one request per
+The `cgprofiled` serve loop speaks newline-delimited JSON, one request per
 connection, on `/run/cgprofile/control/cgprofile.sock`. Its systemd socket
 unit creates a `root:root` level directory with mode `0755` and a
 `root:<configured dedicated control group>` socket with mode `0660`, then
-passes one descriptor named `control` to `cgpd`. The default control group is
+passes one descriptor named `control` to `cgprofiled`. The default control group is
 `cgprofile-control`; the observer has its own socket unit, dedicated group,
 level directory and `observer` descriptor. These level groups are distinct,
 and neither may be the Docker group or use its GID. Consumers mount only the
@@ -488,7 +488,7 @@ Rules: (1) the control and observer levels are separate endpoints; the
 control endpoint accepts daemon control verbs and the observer endpoint
 accepts only read-only observer requests; (2) `args` are the long-option
 names without dashes (`scope`, `token`, `damon`, `interval`, `meta` as a JSON
-object not a string, `place`, `memory_high`, …); `cgpctl` is the reference translator;
+object not a string, `place`, `memory_high`, …); `cgprofilectl` is the reference translator;
 (2a) on `start`, omitting `damon` selects the daemon's configured
 `damon_default`; if the key is present its value must be `on` or `off`, and
 `null` is refused with `bad-argument`;

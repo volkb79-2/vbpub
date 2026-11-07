@@ -1,4 +1,4 @@
-"""cgpd configuration: schema, file, reload, overrides (CGPCTL-SPEC 3.2-3.5)."""
+"""cgprofiled configuration: schema, file, reload, overrides (CGPCTL-SPEC 3.2-3.5)."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def _write(path, text, mode=None):
 
 
 def _settings(tmp_path, text=None, *, explicit=False, log=None, **kw):
-    cfg = tmp_path / "cgpd.toml"
+    cfg = tmp_path / "cgprofiled.toml"
     if text is not None:
         cfg.write_text(text)
     s = dc.Settings(
@@ -222,9 +222,9 @@ class TestStaleEnv:
     def test_names_the_replacement_key(self):
         problems = dc.stale_env_problems(
             {"CGPROFILE_ALLOW_UIDS": "1", "CGPROFILE_HELPER_IMAGE": "x", "PATH": "/bin"},
-            "/etc/cgprofile/cgpd.toml")
+            "/etc/cgprofile/cgprofiled.toml")
         assert problems == [
-            "CGPROFILE_ALLOW_UIDS is no longer read; set allow_uids in /etc/cgprofile/cgpd.toml",
+            "CGPROFILE_ALLOW_UIDS is no longer read; set allow_uids in /etc/cgprofile/cgprofiled.toml",
             "CGPROFILE_HELPER_IMAGE is no longer read; it was removed (helper mode is gone)",
         ]
 
@@ -277,7 +277,7 @@ class TestSettingsLoadAndReload:
         lines = []
         s = _settings(tmp_path, "interval = 2.0\n", log=lines.append)
         s.load()
-        (tmp_path / "cgpd.toml").write_text("interval = 3.0\nkeep_days = 5\n")
+        (tmp_path / "cgprofiled.toml").write_text("interval = 3.0\nkeep_days = 5\n")
         assert s.reload() is True
         assert s.get("interval") == 3.0 and s.get("keep_days") == 5
         assert s.reloads == 1 and s.last_reload_error is None
@@ -287,7 +287,7 @@ class TestSettingsLoadAndReload:
         s = _settings(tmp_path, "interval = 2.0\n")
         s.load()
         s.set_override("interval", 9)
-        (tmp_path / "cgpd.toml").write_text("interval = 3.0\n")
+        (tmp_path / "cgprofiled.toml").write_text("interval = 3.0\n")
         s.reload()
         assert s.get("interval") == 9.0 and s.source("interval") == "override"
         assert s.entry("interval")["shadows"]["value"] == 3.0
@@ -296,7 +296,7 @@ class TestSettingsLoadAndReload:
         lines = []
         s = _settings(tmp_path, "interval = 2.0\n", log=lines.append)
         s.load()
-        (tmp_path / "cgpd.toml").write_text("interval = -1\n")
+        (tmp_path / "cgprofiled.toml").write_text("interval = -1\n")
         assert s.reload() is False
         assert s.get("interval") == 2.0
         assert "greater than 0" in s.last_reload_error
@@ -305,20 +305,20 @@ class TestSettingsLoadAndReload:
     def test_fixed_key_change_is_reported_and_ignored(self, tmp_path):
         s = _settings(tmp_path, 'sessions_dir = "/a"\ninterval = 2.0\n')
         s.load()
-        (tmp_path / "cgpd.toml").write_text('sessions_dir = "/b"\ninterval = 3.0\n')
+        (tmp_path / "cgprofiled.toml").write_text('sessions_dir = "/b"\ninterval = 3.0\n')
         assert s.reload() is False
         assert s.get("sessions_dir") == "/a"
         assert s.get("interval") == 3.0
         assert s.last_reload_error == "restart required for sessions_dir"
         # an unchanged fixed key does not trip it, and the error clears
-        (tmp_path / "cgpd.toml").write_text('sessions_dir = "/a"\n')
+        (tmp_path / "cgprofiled.toml").write_text('sessions_dir = "/a"\n')
         assert s.reload() is True and s.last_reload_error is None
         assert s.get("sessions_dir") == "/a"
 
     def test_fixed_key_removed_from_file_is_a_change(self, tmp_path):
         s = _settings(tmp_path, 'sessions_dir = "/a"\n')
         s.load()
-        (tmp_path / "cgpd.toml").write_text("")
+        (tmp_path / "cgprofiled.toml").write_text("")
         assert s.reload() is False
         assert s.get("sessions_dir") == "/a"
 
@@ -389,7 +389,7 @@ class TestOverrides:
             s.set_override("keep_days", 3, persist=True)
         assert s.override_count == 0
         assert s.get("keep_days") == 14
-        assert os.listdir(tmp_path) == ["state"] or "cgpd.toml" in os.listdir(tmp_path)
+        assert os.listdir(tmp_path) == ["state"] or "cgprofiled.toml" in os.listdir(tmp_path)
 
     def test_unlink_failure_in_cleanup_is_tolerated(self, tmp_path, monkeypatch):
         s = _settings(tmp_path)

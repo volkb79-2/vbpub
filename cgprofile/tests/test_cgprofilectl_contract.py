@@ -1,9 +1,9 @@
-"""cgpctl obeys the shared cli-extended contract: the real executable, the committed surface artefacts and the audit."""
+"""cgprofilectl obeys the shared cli-extended contract: the real executable, the committed surface artefacts and the audit."""
 from __future__ import annotations
 
 import pathlib
 
-from cgprofile.cli import cgpctl
+from cgprofile.cli import cgprofilectl
 from cli_extended import (
     assert_cli_contract,
     check_cli_surface,
@@ -18,10 +18,10 @@ VERBS = ("status", "host", "sessions", "show", "start", "stop", "watch", "report
 
 
 def test_the_real_executable_obeys_the_cli_contract(tmp_path):
-    invoke = make_invoker("cgprofile.cli.cgpctl", module=True, home=tmp_path / "home",
+    invoke = make_invoker("cgprofile.cli.cgprofilectl", module=True, home=tmp_path / "home",
                           pythonpath=[PROJECT / "src"], cwd=tmp_path)
     assert_cli_contract(
-        invoke, cgpctl.identity(), VERBS,
+        invoke, cgprofilectl.identity(), VERBS,
         invalid_invocations={"unknown verb": ["bogus"], "show without a session": ["show"],
                              "report formats together": ["report", "--run-dir", ".", "--html-only", "--md-only"]},
         known_verb_errors={"show without a session": "show", "report formats together": "report"},
@@ -30,8 +30,8 @@ def test_the_real_executable_obeys_the_cli_contract(tmp_path):
 
 def test_the_committed_surface_artefacts_and_the_audit_pass():
     project = load_project_config(PROJECT / "pyproject.toml")
-    entry = project.select("cgpctl")
-    report = check_cli_surface(cgpctl.build_cli(), review_path=entry.review, manifest_path=entry.manifest,
+    entry = project.select("cgprofilectl")
+    report = check_cli_surface(cgprofilectl.build_cli(), review_path=entry.review, manifest_path=entry.manifest,
                                spec_path=entry.spec, findings_path=entry.findings)
     assert report.passed, report.render()
     items = run_audit(entry, project)

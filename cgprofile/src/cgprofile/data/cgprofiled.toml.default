@@ -1,4 +1,4 @@
-# /etc/cgprofile/cgpd.toml: cgpd configuration (CGPCTL-SPEC.md section 3.2).
+# /etc/cgprofile/cgprofiled.toml: cgprofiled configuration (CGPCTL-SPEC.md section 3.2).
 # Shipped inside the cgprofile wheel as the documented default; every key is
 # commented out because an absent file means exactly these defaults.
 #
@@ -16,8 +16,8 @@
 # proc_root        = "/proc"
 # busctl           = "busctl"
 #
-# Reloadable (systemctl reload cgpd); the ones marked [tunable] can also be
-# changed live by uid 0 with `cgpctl config set` (section 3.5):
+# Reloadable (systemctl reload cgprofiled); the ones marked [tunable] can also be
+# changed live by uid 0 with `cgprofilectl config set` (section 3.5):
 # export_max_bytes = 268435456   # [tunable]
 # max_exports      = 4           # [tunable]
 # max_watchers     = 32          # [tunable]

@@ -1,4 +1,4 @@
-"""cgpctl: every verb against a fake contract-1/contract-2 daemon (CGPCTL-SPEC.md)."""
+"""cgprofilectl: every verb against a fake contract-1/contract-2 daemon (CGPCTL-SPEC.md)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import pytest
 
 import _fakectl
 from cgprofile import ctlwire
-from cgprofile.cli import cgpctl
+from cgprofile.cli import cgprofilectl
 from cgprofile.ctlwire import WireFailure
 
 SESSION_LIVE = "s-20261104T100000Z-aaaa"
@@ -104,7 +104,7 @@ def _clean_env(monkeypatch):
 def cli(capsys):
     def run(*argv, socket_path=None):
         full = (["--socket", socket_path] if socket_path else []) + list(argv)
-        code = cgpctl.build_cli().run(argv=full)
+        code = cgprofilectl.build_cli().run(argv=full)
         captured = capsys.readouterr()
         return code, captured.out, captured.err
     return run
@@ -117,48 +117,48 @@ def jdoc(out):
 # ── plumbing ─────────────────────────────────────────────────────────────────
 
 def test_identity_and_main(capsys):
-    assert cgpctl.identity().command == "cgpctl"
-    assert cgpctl.main(["--version"]) == 0
-    assert capsys.readouterr().out.startswith("cgpctl ")
+    assert cgprofilectl.identity().command == "cgprofilectl"
+    assert cgprofilectl.main(["--version"]) == 0
+    assert capsys.readouterr().out.startswith("cgprofilectl ")
 
 
 def test_main_runs_the_given_argv(daemon, capsys):
     d = daemon()
-    assert cgpctl.main(["--socket", d.path, "status"]) == 0
+    assert cgprofilectl.main(["--socket", d.path, "status"]) == 0
 
 
 def test_seconds_since():
-    assert cgpctl._seconds_since(None) is None
-    assert cgpctl._seconds_since("garbage") is None
-    assert cgpctl._seconds_since("2026-11-04T10:00:10Z", now=1793786410.0 + 5) is not None
-    naive = cgpctl._seconds_since("2026-11-04T10:00:00", now=0.0)
+    assert cgprofilectl._seconds_since(None) is None
+    assert cgprofilectl._seconds_since("garbage") is None
+    assert cgprofilectl._seconds_since("2026-11-04T10:00:10Z", now=1793786410.0 + 5) is not None
+    naive = cgprofilectl._seconds_since("2026-11-04T10:00:00", now=0.0)
     assert naive < 0
-    assert cgpctl._seconds_since("2020-01-01T00:00:00Z") > 0
+    assert cgprofilectl._seconds_since("2020-01-01T00:00:00Z") > 0
 
 
 def test_iso():
-    assert cgpctl._iso("x") == "x" and cgpctl._iso(3) is None
+    assert cgprofilectl._iso("x") == "x" and cgprofilectl._iso(3) is None
 
 
 def test_socket_group_and_membership(tmp_path, monkeypatch):
-    assert cgpctl.socket_group(str(tmp_path / "absent")) == {"group": None, "gid": None}
-    present = cgpctl.socket_group(str(tmp_path))
+    assert cgprofilectl.socket_group(str(tmp_path / "absent")) == {"group": None, "gid": None}
+    present = cgprofilectl.socket_group(str(tmp_path))
     assert present["gid"] == os.stat(tmp_path).st_gid
-    monkeypatch.setattr(cgpctl.grp, "getgrgid", lambda gid: (_ for _ in ()).throw(KeyError(gid)))
-    assert cgpctl.socket_group(str(tmp_path))["group"] is None
-    assert cgpctl.caller_in_group(None) is False
-    assert cgpctl.caller_in_group(os.getegid()) is True
+    monkeypatch.setattr(cgprofilectl.grp, "getgrgid", lambda gid: (_ for _ in ()).throw(KeyError(gid)))
+    assert cgprofilectl.socket_group(str(tmp_path))["group"] is None
+    assert cgprofilectl.caller_in_group(None) is False
+    assert cgprofilectl.caller_in_group(os.getegid()) is True
     monkeypatch.setattr(os, "getegid", lambda: 1)
     monkeypatch.setattr(os, "getgroups", lambda: [5, 6])
-    assert cgpctl.caller_in_group(6) is True
-    assert cgpctl.caller_in_group(7) is False
+    assert cgprofilectl.caller_in_group(6) is True
+    assert cgprofilectl.caller_in_group(7) is False
 
 
 def test_skew():
-    assert cgpctl._skew("2.0.0", None) == "equal"
-    assert cgpctl._skew("2.0.0", "2.0.0") == "equal"
-    assert cgpctl._skew("1.2.0", "2.0.0") == "client-older"
-    assert cgpctl._skew("2.1.0", "2.0.0") == "client-newer"
+    assert cgprofilectl._skew("2.0.0", None) == "equal"
+    assert cgprofilectl._skew("2.0.0", "2.0.0") == "equal"
+    assert cgprofilectl._skew("1.2.0", "2.0.0") == "client-older"
+    assert cgprofilectl._skew("2.1.0", "2.0.0") == "client-newer"
 
 
 # ── failure rendering ────────────────────────────────────────────────────────
@@ -344,28 +344,28 @@ def test_start_against_a_1x_daemon(cli, daemon):
 
 
 def test_resolve_container(monkeypatch):
-    monkeypatch.setattr(cgpctl.shutil, "which", lambda name: None)
+    monkeypatch.setattr(cgprofilectl.shutil, "which", lambda name: None)
     with pytest.raises(WireFailure) as caught:
-        cgpctl.resolve_container("web")
+        cgprofilectl.resolve_container("web")
     assert "needs docker" in caught.value.message
-    monkeypatch.setattr(cgpctl.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(cgprofilectl.shutil, "which", lambda name: "/usr/bin/docker")
 
     def fake(stdout, code):
         return lambda *a, **k: subprocess.CompletedProcess(a, code, stdout=stdout, stderr="")
 
-    monkeypatch.setattr(cgpctl.subprocess, "run", fake("nothex\n", 0))
+    monkeypatch.setattr(cgprofilectl.subprocess, "run", fake("nothex\n", 0))
     with pytest.raises(WireFailure):
-        cgpctl.resolve_container("web")
-    monkeypatch.setattr(cgpctl.subprocess, "run", fake(CID + "\n", 1))
+        cgprofilectl.resolve_container("web")
+    monkeypatch.setattr(cgprofilectl.subprocess, "run", fake(CID + "\n", 1))
     with pytest.raises(WireFailure):
-        cgpctl.resolve_container("web")
-    monkeypatch.setattr(cgpctl.subprocess, "run", fake(CID + "\n", 0))
-    assert cgpctl.resolve_container("web") == CID
+        cgprofilectl.resolve_container("web")
+    monkeypatch.setattr(cgprofilectl.subprocess, "run", fake(CID + "\n", 0))
+    assert cgprofilectl.resolve_container("web") == CID
 
 
 def test_start_container_name_is_resolved_client_side(cli, daemon, monkeypatch):
     d = daemon()
-    monkeypatch.setattr(cgpctl, "resolve_container", lambda name: CID)
+    monkeypatch.setattr(cgprofilectl, "resolve_container", lambda name: CID)
     code, out, err = cli("start", "--target", "container:web", "--dry-run", "--json", socket_path=d.path)
     assert jdoc(out)["request"]["target"] == f"containerid:{CID}"
 
@@ -385,17 +385,17 @@ def test_stop_prints_the_summary(cli, daemon):
 def test_stop_by_root_confirms_for_a_foreign_owner(cli, daemon, monkeypatch):
     d = daemon()
     monkeypatch.setattr(os, "getuid", lambda: 0)
-    monkeypatch.setattr(cgpctl.CliRuntime, "confirm", lambda self, prompt: False)
+    monkeypatch.setattr(cgprofilectl.CliRuntime, "confirm", lambda self, prompt: False)
     code, out, err = cli("stop", SESSION_DONE, socket_path=d.path)
     assert code == 2 and "declined" in err
     assert not [r for r in d.requests if r["verb"] == "stop"]
-    monkeypatch.setattr(cgpctl.CliRuntime, "confirm", lambda self, prompt: True)
+    monkeypatch.setattr(cgprofilectl.CliRuntime, "confirm", lambda self, prompt: True)
     assert cli("stop", SESSION_DONE, socket_path=d.path)[0] == 0
 
 
 def test_stop_by_root_skips_the_prompt_for_root_unknown_or_non_integer_owners(cli, daemon, monkeypatch):
     monkeypatch.setattr(os, "getuid", lambda: 0)
-    monkeypatch.setattr(cgpctl.CliRuntime, "confirm", lambda self, prompt: pytest.fail("must not prompt"))
+    monkeypatch.setattr(cgprofilectl.CliRuntime, "confirm", lambda self, prompt: pytest.fail("must not prompt"))
     for entries in ([{"session": SESSION_DONE, "owner_uid": 0}], [{"session": SESSION_DONE, "owner_uid": None}],
                     [{"session": "s-other", "owner_uid": 5}, "junk"]):
         d = daemon(handlers(status=lambda a, c, entries=entries: {"ok": True, "sessions": entries}),
@@ -424,8 +424,8 @@ def test_watch_text_and_json(cli, daemon):
 
 
 def test_watch_line_without_a_live_object():
-    assert cgpctl._watch_line({"event": "reading", "at": "t", "live": "x"}).startswith("t mem=None")
-    assert cgpctl._watch_line({"event": "end"}) == "end"
+    assert cgprofilectl._watch_line({"event": "reading", "at": "t", "live": "x"}).startswith("t mem=None")
+    assert cgprofilectl._watch_line({"event": "end"}) == "end"
 
 
 # ── report ───────────────────────────────────────────────────────────────────
@@ -515,7 +515,7 @@ def test_render_without_the_report_extra_names_the_install(monkeypatch, tmp_path
     monkeypatch.setitem(sys.modules, "cgprofile.analyze", None)
     monkeypatch.delattr(cgprofile, "analyze", raising=False)
     with pytest.raises(WireFailure) as caught:
-        cgpctl._render(str(tmp_path / "run"), str(tmp_path / "o"), True, True)
+        cgprofilectl._render(str(tmp_path / "run"), str(tmp_path / "o"), True, True)
     assert caught.value.exit_code == 1 and "pip install 'cgprofile[report]'" in caught.value.message
 
 
@@ -551,7 +551,7 @@ def test_prune_declined_or_unconfirmed_removes_nothing(cli, daemon, monkeypatch)
     d = daemon()
     code, out, err = cli("prune", socket_path=d.path)
     assert code == 2 and "stdin is not interactive" in err
-    monkeypatch.setattr(cgpctl.CliRuntime, "confirm", lambda self, prompt: False)
+    monkeypatch.setattr(cgprofilectl.CliRuntime, "confirm", lambda self, prompt: False)
     code, out, err = cli("prune", socket_path=d.path)
     assert code == 2 and "declined" in err
     assert [r["args"]["dry_run"] for r in d.requests if r["verb"] == "gc"] == [True, True]
@@ -576,7 +576,7 @@ def test_run_refuses_without_cgroupfs_with_the_spec_line(cli, monkeypatch):
     from cgprofile import access
     monkeypatch.setattr(access, "have_host_cgroup_view", lambda: False)
     code, out, err = cli("run", "--", "true")
-    assert code == 2 and cgpctl.DIRECT_MODE_REFUSAL in err
+    assert code == 2 and cgprofilectl.DIRECT_MODE_REFUSAL in err
 
 
 def test_run_needs_a_command(cli):
@@ -627,9 +627,9 @@ def test_mark_imports_nothing_outside_the_stdlib_and_cli_extended(tmp_path):
     script = (
         "import json, os, sys\n"
         "sys.path[:0] = json.loads(sys.argv[2])\n"
-        "from cgprofile.cli import cgpctl\n"
+        "from cgprofile.cli import cgprofilectl\n"
         "os.environ['CGPROFILE_RUN_DIR'] = sys.argv[1]\n"
-        "code = cgpctl.main(['mark', 'm1'])\n"
+        "code = cgprofilectl.main(['mark', 'm1'])\n"
         "bad = sorted(m for m in sys.modules if m.split('.')[0] in "
         "('pandas', 'numpy', 'scipy', 'matplotlib', 'plotly', 'ruptures') or m in "
         "('cgprofile.analyze', 'cgprofile.report_html', 'cgprofile.report_md', 'cgprofile.serve'))\n"
@@ -651,7 +651,7 @@ def test_mark_imports_nothing_outside_the_stdlib_and_cli_extended(tmp_path):
     ("allow_uids", "1003, 1004", [1003, 1004]), ("allow_uids", "[5, 6]", [5, 6]), ("allow_uids", "", []),
 ])
 def test_parse_config_value(key, text, expected):
-    assert cgpctl.parse_config_value(key, text) == expected
+    assert cgprofilectl.parse_config_value(key, text) == expected
 
 
 @pytest.mark.parametrize("key,text", [
@@ -660,14 +660,14 @@ def test_parse_config_value(key, text, expected):
 ])
 def test_parse_config_value_rejects(key, text):
     with pytest.raises(WireFailure) as caught:
-        cgpctl.parse_config_value(key, text)
+        cgprofilectl.parse_config_value(key, text)
     assert caught.value.exit_code == 2
 
 
 def test_parse_config_value_rejects_a_non_list_json_value(monkeypatch):
-    monkeypatch.setattr(cgpctl.json, "loads", lambda text: {"a": 1})
+    monkeypatch.setattr(cgprofilectl.json, "loads", lambda text: {"a": 1})
     with pytest.raises(WireFailure):
-        cgpctl.parse_config_value("allow_uids", "[1]")
+        cgprofilectl.parse_config_value("allow_uids", "[1]")
 
 
 def test_config_show(cli, daemon):
@@ -722,7 +722,7 @@ def test_config_reset(cli, daemon):
 # ── doctor ───────────────────────────────────────────────────────────────────
 
 def _check(name, args):
-    check = next(c for c in cgpctl.DOCTOR_CHECKS if c.name == name)
+    check = next(c for c in cgprofilectl.DOCTOR_CHECKS if c.name == name)
     return check.run(None, args)
 
 
@@ -731,7 +731,7 @@ def _ns(path):
 
 
 def test_doctor_names_every_check_and_the_skills_check():
-    assert [c.name for c in cgpctl.DOCTOR_CHECKS] == [
+    assert [c.name for c in cgprofilectl.DOCTOR_CHECKS] == [
         "socket", "caller-group", "daemon-version", "contracts", "observer-dir", "slice", "damon",
         "sessions-dir", "overrides", "report-extra"]
 
@@ -775,23 +775,23 @@ def test_checks_degrade_when_the_daemon_is_missing(sockdir):
 
 def test_caller_group_fail_and_not_in_group(daemon, monkeypatch):
     d = daemon()
-    monkeypatch.setattr(cgpctl.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(cgpctl, "caller_in_group", lambda gid: False)
+    monkeypatch.setattr(cgprofilectl.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(cgprofilectl, "caller_in_group", lambda gid: False)
     result = _check("caller-group", _ns(d.path))
     assert result.status == "fail" and "re-login" in result.remedy
 
 
 def test_root_has_administrative_socket_access_without_group_membership(daemon, monkeypatch):
     d = daemon()
-    monkeypatch.setattr(cgpctl.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(cgpctl, "caller_in_group", lambda gid: False)
+    monkeypatch.setattr(cgprofilectl.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cgprofilectl, "caller_in_group", lambda gid: False)
     result = _check("caller-group", _ns(d.path))
     assert result.status == "ok" and "root has administrative access" in result.summary
 
 
 def test_daemon_version_equal_is_ok(daemon, monkeypatch):
     d = daemon()
-    monkeypatch.setattr(cgpctl, "installed_version", lambda: "2.0.0")
+    monkeypatch.setattr(cgprofilectl, "installed_version", lambda: "2.0.0")
     assert _check("daemon-version", _ns(d.path)).status == "ok"
 
 
@@ -827,7 +827,7 @@ def test_overrides_check_variants(daemon):
         "keep_days": {"value": 1, "source": "override"}, "x": "junk"}, "overrides_ignored": 2}}
     d2 = daemon({"version": lambda a, c: dict(_fakectl.V2_VERSION), "config": lambda a, c: shadow}, name="s.sock")
     result = _check("overrides", _ns(d2.path))
-    assert result.status == "warn" and "cgpctl config reset interval" in result.remedy
+    assert result.status == "warn" and "cgprofilectl config reset interval" in result.remedy
     assert "2 stored override entries were ignored" in result.summary
     only_shadow = {"ok": True, "config": {"keys": {
         "interval": {"value": 2, "source": "override", "shadows": {"source": "file"}}}}}
@@ -845,12 +845,12 @@ def test_observer_dir_check(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
     ns = _ns(str(tmp_path / "absent.sock"))
-    monkeypatch.setattr(cgpctl, "OBSERVER_DIR", str(tmp_path / "missing"))
+    monkeypatch.setattr(cgprofilectl, "OBSERVER_DIR", str(tmp_path / "missing"))
     assert _check("observer-dir", ns).status == "skip"
     observer = tmp_path / "observer"
     observer.mkdir()
-    monkeypatch.setattr(cgpctl, "OBSERVER_DIR", str(observer))
-    monkeypatch.setattr(cgpctl, "OBSERVER_SOCKET", str(observer / "cgprofile.sock"))
+    monkeypatch.setattr(cgprofilectl, "OBSERVER_DIR", str(observer))
+    monkeypatch.setattr(cgprofilectl, "OBSERVER_SOCKET", str(observer / "cgprofile.sock"))
     control_gid = 4242
     observer_gid = 4243
     real_lstat = os.lstat
@@ -862,9 +862,9 @@ def test_observer_dir_check(monkeypatch, tmp_path):
             return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=observer_gid)
         return real_lstat(path, *args, **kwargs)
 
-    monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
-    monkeypatch.setattr(cgpctl, "socket_group", lambda path: {"group": "control", "gid": control_gid})
-    monkeypatch.setattr(cgpctl.grp, "getgrgid", lambda gid: SimpleNamespace(gr_name="cgprofile-observer"))
+    monkeypatch.setattr(cgprofilectl.os, "lstat", fake_lstat)
+    monkeypatch.setattr(cgprofilectl, "socket_group", lambda path: {"group": "control", "gid": control_gid})
+    monkeypatch.setattr(cgprofilectl.grp, "getgrgid", lambda gid: SimpleNamespace(gr_name="cgprofile-observer"))
     assert _check("observer-dir", ns).status == "ok"
 
     def invalid_directory(path, *args, **kwargs):
@@ -872,11 +872,11 @@ def test_observer_dir_check(monkeypatch, tmp_path):
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=0)
         return fake_lstat(path, *args, **kwargs)
 
-    monkeypatch.setattr(cgpctl.os, "lstat", invalid_directory)
+    monkeypatch.setattr(cgprofilectl.os, "lstat", invalid_directory)
     assert "0751" in _check("observer-dir", ns).summary
 
-    monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
-    monkeypatch.setattr(cgpctl, "socket_group", lambda path: {"group": "control", "gid": observer_gid})
+    monkeypatch.setattr(cgprofilectl.os, "lstat", fake_lstat)
+    monkeypatch.setattr(cgprofilectl, "socket_group", lambda path: {"group": "control", "gid": observer_gid})
     assert "control socket group" in _check("observer-dir", ns).summary
 
 
@@ -894,7 +894,7 @@ def test_observer_dir_check_uses_configured_path_group_and_mode(monkeypatch, tmp
             "value": {"path": str(path), "group": "custom-observer", "mode": "0600"},
         }}},
     )
-    monkeypatch.setattr(cgpctl, "_probe", lambda _args: probe)
+    monkeypatch.setattr(cgprofilectl, "_probe", lambda _args: probe)
     real_lstat = os.lstat
 
     def fake_lstat(target, *args, **kwargs):
@@ -904,15 +904,15 @@ def test_observer_dir_check_uses_configured_path_group_and_mode(monkeypatch, tmp
             return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o600, st_uid=0, st_gid=observer_gid)
         return real_lstat(target, *args, **kwargs)
 
-    monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
-    monkeypatch.setattr(cgpctl, "socket_group", lambda _path: {"group": "control", "gid": control_gid})
+    monkeypatch.setattr(cgprofilectl.os, "lstat", fake_lstat)
+    monkeypatch.setattr(cgprofilectl, "socket_group", lambda _path: {"group": "control", "gid": control_gid})
     def getgrnam(name):
         if name != "custom-observer":
             raise KeyError(name)
         return SimpleNamespace(gr_gid=observer_gid)
 
-    monkeypatch.setattr(cgpctl.grp, "getgrnam", getgrnam)
-    monkeypatch.setattr(cgpctl.grp, "getgrgid", lambda gid: SimpleNamespace(gr_name="custom-observer"))
+    monkeypatch.setattr(cgprofilectl.grp, "getgrnam", getgrnam)
+    monkeypatch.setattr(cgprofilectl.grp, "getgrgid", lambda gid: SimpleNamespace(gr_name="custom-observer"))
 
     assert _check("observer-dir", _ns("/tmp/control.sock")).status == "ok"
 
@@ -933,7 +933,7 @@ def test_observer_dir_check_reports_each_way_the_socket_can_be_wrong(monkeypatch
 
     probe = SimpleNamespace(path="/tmp/control.sock", version={"resource_observer": {"path": str(path)}},
                             config=config)
-    monkeypatch.setattr(cgpctl, "_probe", lambda _args: probe)
+    monkeypatch.setattr(cgprofilectl, "_probe", lambda _args: probe)
     nodes = {
         str(observer_dir): SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0),
         str(path): SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=observer_gid),
@@ -947,9 +947,9 @@ def test_observer_dir_check_reports_each_way_the_socket_can_be_wrong(monkeypatch
             raise FileNotFoundError(target)
         return real_lstat(target, *args, **kwargs)
 
-    monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
+    monkeypatch.setattr(cgprofilectl.os, "lstat", fake_lstat)
     control = {"group": "control", "gid": control_gid}
-    monkeypatch.setattr(cgpctl, "socket_group", lambda _path: control)
+    monkeypatch.setattr(cgprofilectl, "socket_group", lambda _path: control)
     names = {"obs": observer_gid, "docker": 99}
 
     def getgrnam(name):
@@ -964,8 +964,8 @@ def test_observer_dir_check_reports_each_way_the_socket_can_be_wrong(monkeypatch
             raise KeyError(gid)
         return SimpleNamespace(gr_name=gid_names[gid])
 
-    monkeypatch.setattr(cgpctl.grp, "getgrnam", getgrnam)
-    monkeypatch.setattr(cgpctl.grp, "getgrgid", getgrgid)
+    monkeypatch.setattr(cgprofilectl.grp, "getgrnam", getgrnam)
+    monkeypatch.setattr(cgprofilectl.grp, "getgrgid", getgrgid)
     run = lambda: _check("observer-dir", _ns("/tmp/control.sock"))  # noqa: E731
 
     assert run().status == "ok"
@@ -1010,11 +1010,11 @@ def test_observer_dir_check_reports_each_way_the_socket_can_be_wrong(monkeypatch
 
 def test_slice_check(monkeypatch, tmp_path):
     ns = _ns("/none")
-    monkeypatch.setattr(cgpctl, "SLICE_DIR", str(tmp_path / "missing.slice"))
+    monkeypatch.setattr(cgprofilectl, "SLICE_DIR", str(tmp_path / "missing.slice"))
     assert _check("slice", ns).status == "skip"
     base = tmp_path / "cgprofile.slice"
     base.mkdir()
-    monkeypatch.setattr(cgpctl, "SLICE_DIR", str(base))
+    monkeypatch.setattr(cgprofilectl, "SLICE_DIR", str(base))
     assert _check("slice", ns).status == "warn"
     (base / "memory.max").write_text("2147483648\n")
     assert _check("slice", ns).status == "ok"
@@ -1033,8 +1033,8 @@ def test_report_extra_check(monkeypatch):
 def test_probe_is_cached_on_the_namespace(daemon):
     d = daemon()
     ns = _ns(d.path)
-    assert cgpctl._probe(ns) is cgpctl._probe(ns)
-    assert cgpctl._probe(_ns(d.path)) is not cgpctl._probe(ns)
+    assert cgprofilectl._probe(ns) is cgprofilectl._probe(ns)
+    assert cgprofilectl._probe(_ns(d.path)) is not cgprofilectl._probe(ns)
     assert ctlwire.resolve_socket(d.path)[1] == "flag"
 
 
@@ -1042,4 +1042,4 @@ def test_probe_is_cached_on_the_namespace(daemon):
 
 def test_skills_list_names_the_packaged_skill(cli):
     code, out, err = cli("skills", "list")
-    assert code == 0 and "cgpctl" in out
+    assert code == 0 and "cgprofilectl" in out

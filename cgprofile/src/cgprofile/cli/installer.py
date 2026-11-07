@@ -1,4 +1,4 @@
-"""Standalone ``cgpd install`` and ``cgpd uninstall`` service lifecycle.
+"""Standalone ``cgprofiled install`` and ``cgprofiled uninstall`` service lifecycle.
 
 This module is deliberately usable from the cgprofile wheel before a runtime
 venv exists. Its dependencies are the standard library, cli-extended, and
@@ -83,7 +83,7 @@ class InstallPaths:
 
     @property
     def client_link(self) -> str:
-        return self.at("/usr/local/bin/cgpctl")
+        return self.at("/usr/local/bin/cgprofilectl")
 
     @property
     def state_data(self) -> str:
@@ -107,7 +107,7 @@ class InstallPaths:
 
     @property
     def service_dropins(self) -> str:
-        return self.at("/etc/systemd/system/cgpd.service.d")
+        return self.at("/etc/systemd/system/cgprofiled.service.d")
 
     @property
     def pending(self) -> str:
@@ -123,7 +123,7 @@ class InstallPaths:
 
     @property
     def client_target(self) -> str:
-        return self.at("/opt/cgprofile/current/venv/bin/cgpctl")
+        return self.at("/opt/cgprofile/current/venv/bin/cgprofilectl")
 
 
 def parse_pin(value: str, label: str = "wheel") -> Tuple[str, str]:
@@ -180,7 +180,7 @@ def _render_config(values: Mapping[str, Any], version: str) -> str:
     return daemon_config.render_table(flat)
 
 
-# Findings under /opt/cgprofile come from an unfinished cgpd install (or from something
+# Findings under /opt/cgprofile come from an unfinished cgprofiled install (or from something
 # unknown there); the old host-setup layout is reported through the MANIFEST finding.
 _VERSION_ROOT_FINDINGS = (
     "leftover install marker:",
@@ -192,7 +192,7 @@ _VERSION_ROOT_FINDINGS = (
     "version tree is a symlink:",
     "version root is not a real directory:",
 )
-# The first three are what an interrupted cgpd install itself leaves behind.
+# The first three are what an interrupted cgprofiled install itself leaves behind.
 _OWN_INTERRUPTED_FINDINGS = _VERSION_ROOT_FINDINGS[:3]
 
 
@@ -200,25 +200,25 @@ def manual_removal_message(details: Iterable[str] = (), verb: str = "install") -
     listed = list(details)
     version_root = [item for item in listed if item.startswith(_VERSION_ROOT_FINDINGS)]
     old_host = [item for item in listed if item not in version_root]
-    lines = [f"cgpd {verb} refused: this host has files cgpd install did not write or did not finish."]
+    lines = [f"cgprofiled {verb} refused: this host has files cgprofiled install did not write or did not finish."]
     if listed:
         lines.append("Found:")
         lines.extend(f"  {item}" for item in listed)
     if old_host or not listed:
         lines.append("Manual steps: remove the old installation by hand, then rerun:")
         lines.extend(f"  - {step}" for step in (
-            "review and remove each listed foreign tmpfiles rule, sysusers file, or cgpd service drop-in",
+            "review and remove each listed foreign tmpfiles rule, sysusers file, or cgprofiled service drop-in",
             "remove /etc/sysusers.d/mdt-cgprofile.conf (keep the cgprofile-observer group and its GID)",
             "remove /usr/local/sbin/mdt-cgprofile-install.sh and the old /opt/cgprofile installation",
-            "remove /usr/local/bin/cgpctl, old cgpd.service/cgprofile.slice units, and /etc/cgprofile/cgpd.toml",
-            "stop old cgpd first, run systemctl daemon-reload, then remove /run/cgprofile",
+            "remove /usr/local/bin/cgprofilectl, old cgprofiled.service/cgprofile.slice units, and /etc/cgprofile/cgprofiled.toml",
+            "stop old cgprofiled first, run systemctl daemon-reload, then remove /run/cgprofile",
             "keep /var/lib/cgprofile unless data purge is intended",
         ))
     if version_root:
         lines.extend((
-            "Under /opt/cgprofile these are leftovers of a cgpd install that did not finish.",
-            "  Review and remove the listed paths and rerun, or run `cgpd uninstall --yes` to remove",
-            "  the whole install (it removes only what cgpd install writes).",
+            "Under /opt/cgprofile these are leftovers of a cgprofiled install that did not finish.",
+            "  Review and remove the listed paths and rerun, or run `cgprofiled uninstall --yes` to remove",
+            "  the whole install (it removes only what cgprofiled install writes).",
         ))
     return "\n".join(lines)
 
@@ -235,10 +235,10 @@ def _read_old_config_keys(config_path: str) -> List[str]:
 
 
 def find_foreign_rules(paths: InstallPaths) -> List[str]:
-    """Find old mdt tmpfiles, sysusers, or service drop-ins that claim cgpd."""
+    """Find old mdt tmpfiles, sysusers, or service drop-ins that claim cgprofiled."""
     found: List[str] = []
     for directory in (paths.at("/etc/tmpfiles.d"),
-                      paths.at("/etc/systemd/system/cgpd.service.d")):
+                      paths.at("/etc/systemd/system/cgprofiled.service.d")):
         try:
             names = sorted(os.listdir(directory))
         except FileNotFoundError:
@@ -260,7 +260,7 @@ def find_foreign_rules(paths: InstallPaths) -> List[str]:
                 continue
             if directory.endswith("tmpfiles.d") and "/run/cgprofile" in text:
                 found.append(path)
-            elif directory.endswith("cgpd.service.d") \
+            elif directory.endswith("cgprofiled.service.d") \
                     and ("mdt" in name.lower() or "/run/cgprofile" in text or "Group=" in text):
                 found.append(path)
     old_sysusers = paths.at("/etc/sysusers.d/mdt-cgprofile.conf")
@@ -307,10 +307,10 @@ def old_installation_problems(paths: InstallPaths, config_path: Optional[str] = 
         problems.append(f"{config}: old config keys: " + ", ".join(old_keys))
     problems.extend(f"foreign rule or drop-in: {path}" for path in find_foreign_rules(paths))
     problems.extend(_run_tree_problems(paths))
-    # Units next to PENDING come from an unfinished cgpd install (PENDING itself is
-    # reported below); without a record or PENDING they were not written by cgpd.
+    # Units next to PENDING come from an unfinished cgprofiled install (PENDING itself is
+    # reported below); without a record or PENDING they were not written by cgprofiled.
     if not os.path.lexists(paths.install_record) and not os.path.lexists(paths.pending):
-        for name in ("cgpd.service", "cgprofile.slice", "cgprofile-control.socket",
+        for name in ("cgprofiled.service", "cgprofile.slice", "cgprofile-control.socket",
                      "cgprofile-observer.socket"):
             unit = os.path.join(paths.unit_dir, name)
             if os.path.lexists(unit):
@@ -330,7 +330,7 @@ def old_installation_problems(paths: InstallPaths, config_path: Optional[str] = 
             if name in ("current", "current.new", "PENDING"):  # markers are reported above
                 continue
             version_dir = os.path.join(paths.opt, name)
-            if name.startswith((".stage.", ".cgpd-render.")):
+            if name.startswith((".stage.", ".cgprofiled-render.")):
                 problems.append(f"leftover version staging directory: {version_dir}")
             elif os.path.islink(version_dir):
                 problems.append(f"version tree is a symlink: {version_dir}")
@@ -355,7 +355,7 @@ def _version_tree_problems(version_dir: str) -> List[str]:
     if any(line.strip().startswith("installer=mdt") for line in lines):
         return [f"mdt host-setup MANIFEST: {manifest}"]
     version = os.path.basename(version_dir)
-    if f"installer=cgpd install {version}" not in lines:
+    if f"installer=cgprofiled install {version}" not in lines:
         return [f"unknown version tree MANIFEST: {manifest}"]
     return []
 
@@ -698,7 +698,7 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         raise InstallError("missing required --enable or --no-enable on a non-interactive run")
     else:
         try:
-            enable_now = runtime.prompts.confirm("Enable and start cgpd now?", default=True)
+            enable_now = runtime.prompts.confirm("Enable and start cgprofiled now?", default=True)
         except PromptCancelled:
             raise InstallError("installation prompts cancelled", exit_code=130) from None
     values = {
@@ -740,7 +740,7 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         raise InstallError(f"cgprofile {values['version']} does not provide the native host service")
     if not has_socket_units(values["version"]) and not values["allow_downgrade"]:
         raise InstallError(
-            f"cgpd install supports cgprofile {SOCKET_RELEASE} and later; {values['version']} has no "
+            f"cgprofiled install supports cgprofile {SOCKET_RELEASE} and later; {values['version']} has no "
             "socket units. To roll an installed host back, pass --allow-downgrade"
         )
     sockets = {
@@ -786,7 +786,7 @@ def _validate_group_mapping(control: Any, observer: Any, *, require_mapped: bool
 
 
 class Installer:
-    """Injectable implementation of the cgpd host installer."""
+    """Injectable implementation of the cgprofiled host installer."""
 
     def __init__(
         self,
@@ -824,11 +824,11 @@ class Installer:
         return result
 
     def _check_config_arg(self, args: argparse.Namespace) -> None:
-        """The installer owns /etc/cgprofile/cgpd.toml; it never writes another path."""
+        """The installer owns /etc/cgprofile/cgprofiled.toml; it never writes another path."""
         explicit = getattr(args, "config", None)
         if explicit and os.path.normpath(explicit) != os.path.normpath(self.paths.config):
             raise InstallError(
-                f"cgpd install and uninstall manage {self.paths.config} only; --config {explicit} is not supported"
+                f"cgprofiled install and uninstall manage {self.paths.config} only; --config {explicit} is not supported"
             )
 
     def _current_version(self) -> Optional[str]:
@@ -849,7 +849,7 @@ class Installer:
 
     def _preflight(self, values: Mapping[str, Any], config_path: str, *, dry_run: bool) -> Tuple[bool, bool]:
         if not dry_run and self.geteuid() != 0:
-            raise InstallError("cgpd install needs root")
+            raise InstallError("cgprofiled install needs root")
         problems = old_installation_problems(self.paths, config_path)
         if os.path.lexists(self.paths.install_record):
             # A failed upgrade of a finished install: every apply step is idempotent,
@@ -871,10 +871,10 @@ class Installer:
                 raise InstallError(
                     f"{version_dir} is immutable and its wheel digest differs from the pin; release a new version"
                 )
-        # A /usr/local/bin entry that cgpd install did not write is never replaced.
+        # A /usr/local/bin entry that cgprofiled install did not write is never replaced.
         if os.path.lexists(self.paths.client_link) and not _is_install_link(self.paths.client_link, self.paths):
             raise InstallError(
-                f"{self.paths.client_link} exists and was not written by cgpd install; move it away, then rerun"
+                f"{self.paths.client_link} exists and was not written by cgprofiled install; move it away, then rerun"
             )
         current = self._current_version()
         if current is None and not has_socket_units(values["version"]):
@@ -901,17 +901,17 @@ class Installer:
         return downgrade, current != values["version"]
 
     def _live_sessions(self, current: str) -> List[Dict[str, Any]]:
-        ctl = os.path.join(self.paths.opt, current, "venv", "bin", "cgpctl")
+        ctl = os.path.join(self.paths.opt, current, "venv", "bin", "cgprofilectl")
         result = self._command([ctl, "sessions", "--state", "live", "--json"], check=False, timeout=30)
         if result.returncode != 0:
             raise InstallError("cannot list live cgprofile sessions; refusing to restart")
         try:
             doc = __import__("json").loads(result.stdout)
         except ValueError:
-            raise InstallError("cgpctl sessions returned invalid JSON; refusing to restart") from None
+            raise InstallError("cgprofilectl sessions returned invalid JSON; refusing to restart") from None
         rows = doc.get("sessions") if isinstance(doc, dict) else None
         if not isinstance(rows, list):
-            raise InstallError("cgpctl sessions returned no session list; refusing to restart")
+            raise InstallError("cgprofilectl sessions returned no session list; refusing to restart")
         return [row for row in rows if isinstance(row, dict) and row.get("state", "live") == "live"]
 
     def _drain_or_refuse(self, current: Optional[str], values: Mapping[str, Any],
@@ -939,7 +939,7 @@ class Installer:
                 labels = ", ".join(str(row.get("session", "?")) for row in sessions)
                 raise DrainTimeout(
                     f"live sessions remain at the {values['drain_timeout']} drain deadline ({labels}); "
-                    f"version {values['version']} is pending; rerun cgpd install when the sessions have "
+                    f"version {values['version']} is pending; rerun cgprofiled install when the sessions have "
                     "ended, or pass --force-restart",
                     exit_code=3,
                 )
@@ -977,10 +977,10 @@ class Installer:
                         os.path.join(venv, "bin", "python"), "-m", "pip", "install", "--quiet",
                         "--no-index", "--no-deps", os.path.join(wheels, wheel), os.path.join(wheels, clix),
                     ], timeout=600)
-                    got = self._command([os.path.join(venv, "bin", "cgpd"), "--version"], timeout=30)
+                    got = self._command([os.path.join(venv, "bin", "cgprofiled"), "--version"], timeout=30)
                     if values["version"] not in (got.stdout + got.stderr):
                         raise InstallError(
-                            f"installed cgpd reports {(got.stdout + got.stderr).strip()!r}, expected {values['version']}"
+                            f"installed cgprofiled reports {(got.stdout + got.stderr).strip()!r}, expected {values['version']}"
                         )
                     manifest_text = "\n".join((
                         f"cgprofile_wheel={wheel}",
@@ -989,15 +989,15 @@ class Installer:
                         f"cli_extended_sha256={values['cli_extended_sha']}",
                         f"version={values['version']}",
                         f"installed_at={datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}",
-                        f"installer=cgpd install {values['version']}",
+                        f"installer=cgprofiled install {values['version']}",
                         "",
                     ))
                     _atomic_write(manifest, manifest_text, 0o644)
                 except BaseException:
                     shutil.rmtree(version_dir, ignore_errors=True)
                     raise
-            if not os.path.isfile(os.path.join(venv, "bin", "cgpd")):
-                raise InstallError(f"{venv}/bin/cgpd is missing")
+            if not os.path.isfile(os.path.join(venv, "bin", "cgprofiled")):
+                raise InstallError(f"{venv}/bin/cgprofiled is missing")
             return venv
         finally:
             shutil.rmtree(stage, ignore_errors=True)
@@ -1033,7 +1033,7 @@ class Installer:
             current = daemon_config.socket_settings(merged)[key.split(".")[1]]
             if current["path"] != fixed:
                 raise InstallError(
-                    f"{config_path} sets {key}.path = {current['path']!r}; cgpd uses the fixed path "
+                    f"{config_path} sets {key}.path = {current['path']!r}; cgprofiled uses the fixed path "
                     f"{fixed!r}, so remove the key or restore that value"
                 )
             wanted = requested[key]["group"]
@@ -1065,25 +1065,25 @@ class Installer:
                 raise InstallError(f"rendered config refused: {exc}") from None
 
     def _render_resources(self, venv: str, config_path: str, version: str) -> Dict[str, str]:
-        cgpd = os.path.join(venv, "bin", "cgpd")
+        cgprofiled = os.path.join(venv, "bin", "cgprofiled")
         result: Dict[str, str] = {}
-        names = ["cgprofile.slice", "cgpd.service"]
+        names = ["cgprofile.slice", "cgprofiled.service"]
         if has_socket_units(version):
             names.extend(("cgprofile-control.socket", "cgprofile-observer.socket", "cgprofile.sysusers"))
         for name in names:
             proc = self._command([
-                cgpd, "--config", config_path, "unit", "print",
+                cgprofiled, "--config", config_path, "unit", "print",
                 "--install-root", unitfiles.DEFAULT_INSTALL_ROOT, "--unit", name,
             ], check=False, timeout=30)
             if proc.returncode != 0:
-                raise InstallError(f"cgpd unit print refused {name}: {(proc.stderr or proc.stdout).strip()}")
+                raise InstallError(f"cgprofiled unit print refused {name}: {(proc.stderr or proc.stdout).strip()}")
             result[name] = proc.stdout
         return result
 
     def _resource_paths(self) -> Dict[str, str]:
         return {
             "cgprofile.slice": os.path.join(self.paths.unit_dir, "cgprofile.slice"),
-            "cgpd.service": os.path.join(self.paths.unit_dir, "cgpd.service"),
+            "cgprofiled.service": os.path.join(self.paths.unit_dir, "cgprofiled.service"),
             "cgprofile-control.socket": os.path.join(self.paths.unit_dir, "cgprofile-control.socket"),
             "cgprofile-observer.socket": os.path.join(self.paths.unit_dir, "cgprofile-observer.socket"),
             "cgprofile.sysusers": os.path.join(self.paths.sysusers_dir, "cgprofile.conf"),
@@ -1108,10 +1108,10 @@ class Installer:
         return False
 
     def _wait_ready(self, venv: str, version: str, timeout: float = 30.0) -> None:
-        cgpctl = os.path.join(venv, "bin", "cgpctl")
+        cgprofilectl = os.path.join(venv, "bin", "cgprofilectl")
         deadline = self.monotonic() + timeout
         while True:
-            result = self._command([cgpctl, "status", "--json"],
+            result = self._command([cgprofilectl, "status", "--json"],
                                    check=False, timeout=10)
             if result.returncode == 0:
                 try:
@@ -1126,7 +1126,7 @@ class Installer:
             if self.monotonic() >= deadline:
                 raise InstallError(
                     f"daemon did not report version {version} with a clean config within {timeout:g}s; "
-                    "inspect journalctl -u cgpd"
+                    "inspect journalctl -u cgprofiled"
                 )
             self.sleep(min(1.0, max(0.1, deadline - self.monotonic())))
 
@@ -1217,7 +1217,7 @@ class Installer:
             plan = self._plan(values, config_path, config_text, version_drift, earlier_pending)
             active = plan["active"]
             if active and plan["need_restart"]:
-                missing = ("cgpd.service is active but /opt/cgprofile/current is missing; "
+                missing = ("cgprofiled.service is active but /opt/cgprofile/current is missing; "
                            "cannot list live sessions, refusing to restart")
                 current = self._current_version()  # preflight already validated the pointer
                 if current is None and not values["force_restart"]:
@@ -1279,9 +1279,9 @@ class Installer:
         if resource_change or version_drift or earlier_pending:
             self._command([self.systemctl, "daemon-reload"], timeout=30)
         _atomic_symlink(self.paths.client_target, self.paths.client_link,
-                        self.paths.client_link + ".cgpd-new")
+                        self.paths.client_link + ".cgprofiled-new")
         if values["enable_now"]:
-            enabled = ["cgprofile.slice", "cgpd.service"]
+            enabled = ["cgprofile.slice", "cgprofiled.service"]
             if has_socket_units(values["version"]):
                 enabled.extend(("cgprofile-control.socket", "cgprofile-observer.socket"))
             self._command([self.systemctl, "enable", *enabled], timeout=60)
@@ -1290,15 +1290,15 @@ class Installer:
             if has_socket_units(values["version"]):
                 self._command([self.systemctl, "start", "cgprofile-control.socket",
                                "cgprofile-observer.socket"], timeout=30)
-            self._command([self.systemctl, "start", "cgpd.service"], timeout=60)
+            self._command([self.systemctl, "start", "cgprofiled.service"], timeout=60)
         elif active:
             if socket_restart:
                 for name in socket_restart:
                     self._command([self.systemctl, "restart", name], timeout=60)
             elif service_restart:
-                self._command([self.systemctl, "restart", "cgpd.service"], timeout=60)
+                self._command([self.systemctl, "restart", "cgprofiled.service"], timeout=60)
             elif config_drift:
-                self._command([self.systemctl, "reload", "cgpd.service"], timeout=30)
+                self._command([self.systemctl, "reload", "cgprofiled.service"], timeout=30)
         if active or values["enable_now"]:
             self._wait_ready(venv, values["version"])
 
@@ -1338,14 +1338,14 @@ class Installer:
               version_drift: bool, earlier_pending: bool) -> Dict[str, Any]:
         """Build the version tree, render and compare; nothing on the host is changed."""
         venv = self._ensure_version(values)
-        staged_dir = tempfile.mkdtemp(prefix=".cgpd-render.", dir=self.paths.opt)
-        config_stage = os.path.join(staged_dir, "cgpd.toml")
+        staged_dir = tempfile.mkdtemp(prefix=".cgprofiled-render.", dir=self.paths.opt)
+        config_stage = os.path.join(staged_dir, "cgprofiled.toml")
         try:
             _atomic_write(config_stage, config_text, 0o644)
-            check = self._command([os.path.join(venv, "bin", "cgpd"), "--config", config_stage,
+            check = self._command([os.path.join(venv, "bin", "cgprofiled"), "--config", config_stage,
                                    "config", "check"], check=False, timeout=30)
             if check.returncode != 0:
-                raise InstallError(f"cgpd config check refused the rendered config: {(check.stderr or check.stdout).strip()}")
+                raise InstallError(f"cgprofiled config check refused the rendered config: {(check.stderr or check.stdout).strip()}")
             rendered = self._render_resources(venv, config_stage, values["version"])
         finally:
             shutil.rmtree(staged_dir, ignore_errors=True)
@@ -1367,7 +1367,7 @@ class Installer:
             os.path.lexists(resource_paths[name])
             for name in ("cgprofile-control.socket", "cgprofile-observer.socket", "cgprofile.sysusers")
         )
-        active = self._is_active("cgpd.service")
+        active = self._is_active("cgprofiled.service")
         socket_active = {name: self._is_active(name) for name in (
             "cgprofile-control.socket", "cgprofile-observer.socket") if has_socket_units(values["version"])}
         fixed_change = self._fixed_config_changed(config_path, values["config_values"], config_text)
@@ -1378,7 +1378,7 @@ class Installer:
             resource_drift = dict.fromkeys(resource_drift, True)
             config_drift = True
         resource_change = any(resource_drift.values()) or removed_socket_units
-        service_restart = (version_drift or resource_drift.get("cgpd.service", False) or fixed_change
+        service_restart = (version_drift or resource_drift.get("cgprofiled.service", False) or fixed_change
                            or earlier_pending)
         socket_restart = [name for name, is_active in socket_active.items()
                           if resource_drift.get(name, False) or not is_active]
@@ -1399,10 +1399,10 @@ class Installer:
         return os.path.join(opt, prefix[len(opt) + 1:].split(os.sep)[0])
 
     def _uninstall_targets(self) -> Optional[List[str]]:
-        """Refuse before any change unless cgpd install owns this host.
+        """Refuse before any change unless cgprofiled install owns this host.
 
         Returns the existing paths uninstall would remove, or None when nothing
-        cgpd install writes is present.
+        cgprofiled install writes is present.
         """
         paths = self.paths
         owned = os.path.lexists(paths.install_record) or os.path.lexists(paths.pending)
@@ -1424,7 +1424,7 @@ class Installer:
                     problems.append(f"unknown path under the runtime tree: {os.path.join(directory, name)}")
         for name in _directory_names(paths.opt):
             path = os.path.join(paths.opt, name)
-            known = name in {"current", "current.new", "PENDING"} or name.startswith((".stage.", ".cgpd-render."))
+            known = name in {"current", "current.new", "PENDING"} or name.startswith((".stage.", ".cgprofiled-render."))
             if not known and not (VERSION_RE.fullmatch(name) and os.path.isdir(path) and not os.path.islink(path)):
                 problems.append(f"unknown path under the version root: {path}")
         for node in (paths.at(daemon_config.DEFAULT_CONTROL_SOCKET), paths.at(daemon_config.DEFAULT_OBSERVER_SOCKET)):
@@ -1436,7 +1436,7 @@ class Installer:
             return None
         candidates = [
             *(os.path.join(paths.unit_dir, unit) for unit in
-              ("cgpd.service", "cgprofile-control.socket", "cgprofile-observer.socket", "cgprofile.slice")),
+              ("cgprofiled.service", "cgprofile-control.socket", "cgprofile-observer.socket", "cgprofile.slice")),
             self._resource_paths()["cgprofile.sysusers"],
             *_mdt_dropins(paths),
             *([paths.client_link] if _is_install_link(paths.client_link, paths) else []),
@@ -1448,7 +1448,7 @@ class Installer:
         return [path for path in candidates if os.path.lexists(path)]
 
     def uninstall(self, args: argparse.Namespace, runtime: CliRuntime) -> Dict[str, Any]:
-        """Remove what cgpd install wrote.
+        """Remove what cgprofiled install wrote.
 
         The ownership markers go last (PENDING, then install.toml), preserving the
         group list through cleanup. The tree this process runs from is left for
@@ -1464,11 +1464,11 @@ class Installer:
         remove_groups = bool(getattr(args, "remove_groups", False))
         purge_data = bool(getattr(args, "purge_data", False))
         if not runtime.dry_run and self.geteuid() != 0:
-            raise InstallError("cgpd uninstall needs root")
+            raise InstallError("cgprofiled uninstall needs root")
         targets = self._uninstall_targets()
         if targets is None:
             return {"ok": True, "dry_run": runtime.dry_run, "removed": [], "groups_removed": [],
-                    "data_purged": False, "message": "nothing installed by cgpd install"}
+                    "data_purged": False, "message": "nothing installed by cgprofiled install"}
         if runtime.dry_run:
             return {
                 "ok": True, "dry_run": True, "removed": targets,
@@ -1479,7 +1479,7 @@ class Installer:
             raise InstallError("uninstallation was not confirmed")
 
         paths = self.paths
-        units = ("cgprofile-control.socket", "cgprofile-observer.socket", "cgpd.service")
+        units = ("cgprofile-control.socket", "cgprofile-observer.socket", "cgprofiled.service")
         # The sockets go first, so a connection during the stop cannot re-activate the service.
         installed_units = [unit for unit in units if os.path.lexists(os.path.join(paths.unit_dir, unit))]
         if installed_units:
@@ -1654,10 +1654,10 @@ def _uninstall_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
         steps = []
         if deferred:
             steps.append(f"verify and remove the remaining version tree {deferred} and {subject.paths.current} if present")
-        steps.extend(f"run `groupdel {group}` if the cgpd-created group still exists"
+        steps.extend(f"run `groupdel {group}` if the cgprofiled-created group still exists"
                      for group in body.get("manual_groups", []))
         steps.append(
-            f"after verifying the cgpd files are gone, remove {subject.paths.install_record} "
+            f"after verifying the cgprofiled files are gone, remove {subject.paths.install_record} "
             f"and {subject.paths.pending} if present"
         )
         raise CliFailure(f"{exc}; manual cleanup steps: " + "; ".join(steps),
@@ -1681,7 +1681,7 @@ def _install_summary(body: Mapping[str, Any]) -> str:
             lines.append(f"{verb} user {user} to {group} ({level})")
             addition_count += 1
     if addition_count:
-        lines.append("Membership applies on the user's next login or a restarted cgpd service.")
+        lines.append("Membership applies on the user's next login or a restarted cgprofiled service.")
     if body.get("users_forgotten"):
         lines.append("dropped recorded users that no longer exist: " + ", ".join(body["users_forgotten"]))
     lines.extend(f"WARNING: {warning}" for warning in body.get("warnings", []))
@@ -1694,7 +1694,7 @@ def _uninstall_summary(body: Mapping[str, Any]) -> str:
     verb = "would remove" if body.get("dry_run") else "removed"
     lines = [f"{verb}: {path}" for path in body.get("removed", [])]
     lines.extend(f"{verb} group: {group}" for group in body.get("groups_removed", []))
-    lines.extend(f"kept (not written by cgpd install): {path}" for path in body.get("kept", []))
+    lines.extend(f"kept (not written by cgprofiled install): {path}" for path in body.get("kept", []))
     return "\n".join(lines) if lines else "nothing to remove"
 
 
@@ -1723,29 +1723,29 @@ def register_install(registry: CliRegistry) -> None:
                    group="RESTART", parser_kwargs={"action": "store_true"}),
         OptionSpec(("--enable",), "enable and start the installed service", group="SERVICE",
                    parser_kwargs={"action": "store_true"}),
-        OptionSpec(("--no-enable",), "install resources without enabling or starting cgpd", group="SERVICE",
+        OptionSpec(("--no-enable",), "install resources without enabling or starting cgprofiled", group="SERVICE",
                    parser_kwargs={"action": "store_true"}),
     )
     registry.register(VerbSpec(
-        "install", description="install or upgrade cgpd, its systemd resources and access groups",
+        "install", description="install or upgrade cgprofiled, its systemd resources and access groups",
         group=VerbGroup.MODIFICATION.value, mutating=True, dry_run=True,
         include_progress=False, options=options, handler=_install_handler,
-        examples=("cgpd install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... --enable",
-                  "cgpd install --wheel-source ./wheels --control-group cgprofile-control "
+        examples=("cgprofiled install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... --enable",
+                  "cgprofiled install --wheel-source ./wheels --control-group cgprofile-control "
                   "--observer-group cgprofile-observer --add-user control=alice --no-enable"),
     ))
     registry.register(VerbSpec(
-        "uninstall", description="stop and remove cgpd service resources",
+        "uninstall", description="stop and remove cgprofiled service resources",
         group=VerbGroup.MODIFICATION.value, mutating=True, dry_run=True,
         include_progress=False,
         options=(
-            OptionSpec(("--remove-groups",), "remove groups created by cgpd install",
+            OptionSpec(("--remove-groups",), "remove groups created by cgprofiled install",
                        group="REMOVE", parser_kwargs={"action": "store_true"}),
             OptionSpec(("--purge-data",), "also remove /var/lib/cgprofile sessions and overrides",
                        group="REMOVE", parser_kwargs={"action": "store_true"}),
         ),
         handler=_uninstall_handler,
-        examples=("cgpd uninstall", "cgpd uninstall --remove-groups --purge-data --yes"),
+        examples=("cgprofiled uninstall", "cgprofiled uninstall --remove-groups --purge-data --yes"),
     ))
 
 

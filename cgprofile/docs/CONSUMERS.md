@@ -1,10 +1,10 @@
 # cgroup-profiler consumers
 
-The supported operator front door is the `cgpctl` console script of the wheel:
+The supported operator front door is the `cgprofilectl` console script of the wheel:
 
 ```bash
-cgpctl --version
-# cgpctl <installed-version>
+cgprofilectl --version
+# cgprofilectl <installed-version>
 ```
 
 The probe prints one identity line and exits 0; it needs neither the daemon nor
@@ -13,13 +13,13 @@ the `report` extra. The version is the installed wheel's (an untagged build is
 matching identity headline (cli-extended contract, `docs/CLI-SPEC.md`). Use
 [`ATTACH-GUIDE.md`](../ATTACH-GUIDE.md) for the complete gate integration
 recipe, [`CGPCTL-SPEC.md`](CGPCTL-SPEC.md) for every verb, and the
-[migration table](#migration-table-1x-command-to-cgpctl-verb) when an older
+[migration table](#migration-table-1x-command-to-cgprofilectl-verb) when an older
 command or script needs translating.
 
 ## Install and run the native service
 
 The daemon is a native systemd service installed from pinned wheels by
-`cgpd install`. Phase-1 releases are not deployed to cockpit hosts until
+`cgprofiled install`. Phase-1 releases are not deployed to cockpit hosts until
 phase 2 updates mdt host-setup; keep `CGPROFILE_WHEEL` below `2.2.0` until the
 operator's drained cutover. Old and new clients do not interoperate.
 
@@ -33,7 +33,7 @@ CGPROFILE_PIN='X.Y.Z@sha256:<cgprofile-sha256>'
 CLI_EXTENDED_PIN='X.Y.Z@sha256:<cli-extended-sha256>'
 
 PYTHONPATH="$CGPROFILE_WHEEL_FILE:$CLI_EXTENDED_WHEEL_FILE" \
-  python3 -m cgprofile.cli.cgpd install \
+  python3 -m cgprofile.cli.cgprofiled install \
   --wheel "$CGPROFILE_PIN" \
   --cli-extended-wheel "$CLI_EXTENDED_PIN" \
   --wheel-source ./wheels \
@@ -57,7 +57,7 @@ exist are dropped and reported; the install continues. Dry-run output lists
 each requested addition and any dropped recorded users.
 
 The control and observer groups must be distinct dedicated groups: they cannot
-share a name or GID. `cgpd install` and `cgpd config check` refuse a group named
+share a name or GID. `cgprofiled install` and `cgprofiled config check` refuse a group named
 `docker`, a group resolving to GID 0 or the docker GID, or two levels resolving
 to the same GID. The refusal applies to flags, saved records, existing config,
 and wizard answers, without an override. Cross-service group uniqueness is
@@ -66,14 +66,14 @@ checked by host-setup. See the [group design rationale](DESIGN-GUIDE.md#dedicate
 After installation, these checks should pass:
 
 ```bash
-sudo /opt/cgprofile/current/venv/bin/cgpd doctor --json
-sudo cgpctl doctor --json
-sudo cgpctl status --json
+sudo /opt/cgprofile/current/venv/bin/cgprofiled doctor --json
+sudo cgprofilectl doctor --json
+sudo cgprofilectl status --json
 ```
 
 The service CLI stays in the active versioned venv at
-`/opt/cgprofile/current/venv/bin/cgpd`; use that path for `install`, `doctor`,
-and `uninstall`. The installer links only the client command `cgpctl` into
+`/opt/cgprofile/current/venv/bin/cgprofiled`; use that path for `install`, `doctor`,
+and `uninstall`. The installer links only the client command `cgprofilectl` into
 `/usr/local/bin`.
 
 The control socket is `/run/cgprofile/control/cgprofile.sock`, owned by
@@ -81,12 +81,12 @@ The control socket is `/run/cgprofile/control/cgprofile.sock`, owned by
 `/run/cgprofile/observer/cgprofile.sock`, owned by
 `root:cgprofile-observer` mode `0660`. Their parent directories are
 `root:root` mode `0755`; the daemon never widens or adopts directory access.
-Only the observer group can use the read-only endpoint. `cgpd doctor` lists
+Only the observer group can use the read-only endpoint. `cgprofiled doctor` lists
 `config-valid`, `units-current`, `groups`, `socket-units`, `socket-nodes`,
 `socket-dirs`, `state-dir`, `service`, `connect`, `foreign-rules`, and
 `caller-access` checks.
 
-`cgpd install` refuses an old `ctl_socket` / `observer_socket` config, foreign
+`cgprofiled install` refuses an old `ctl_socket` / `observer_socket` config, foreign
 tmpfiles rules or service drop-ins, a mismatched `/run/cgprofile` tree, an mdt
 installer `MANIFEST`, and leftover `PENDING` or `current.new` markers. It
 prints the manual cleanup steps. It does not migrate, chmod, chown or remove
@@ -94,18 +94,18 @@ old installation state. See
 [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md#old-installation-refusal-and-manual-removal)
 for the exact list.
 
-For an upgrade, `cgpd install` compares the pinned version, config, and each
+For an upgrade, `cgprofiled install` compares the pinned version, config, and each
 rendered unit. If a restart is needed, it waits for live sessions to drain.
 A drain timeout exits 3 and leaves `PENDING`; once the sessions have ended,
-rerun `cgpd install` (with an install record it re-applies). It leaves an
-existing `cgpd.toml` as written (a group passed as a flag is applied, with no
+rerun `cgprofiled install` (with an install record it re-applies). It leaves an
+existing `cgprofiled.toml` as written (a group passed as a flag is applied, with no
 flag the file's value wins) and merges only what a flag changes. `--force-restart` skips the drain, proceeds with a warning when the
 session list is unavailable, and reports the
 sessions it may abort. `--allow-downgrade` is required for an older pin;
 rolling back below the socket-unit release removes the socket units first.
 
-`cgpd uninstall` removes service resources and socket nodes, but only on a host
-that `cgpd install` owns (`install.toml` or `PENDING`); on an old host-setup
+`cgprofiled uninstall` removes service resources and socket nodes, but only on a host
+that `cgprofiled install` owns (`install.toml` or `PENDING`); on an old host-setup
 install it refuses before changing anything. It stops `cgprofile.slice`, and
 keeps the ownership markers until cleanup finishes. If interrupted while the
 running version tree still exists, rerun uninstall from it; if that tree was
@@ -143,15 +143,15 @@ inspect the `cgprofile-v<version>` release and its tag before retrying (see the
 
 ## One-shot collector behavior
 
-If `cgpctl run` requests DAMON while the host's `nr_kdamonds` registry is
+If `cgprofilectl run` requests DAMON while the host's `nr_kdamonds` registry is
 nonempty, the collector refuses to resize it, even when its existing monitors
 are stopped, because Linux rebuilds every kdamond entry on a count write. The
 collector logs DAMON as unavailable, signals readiness, and continues ordinary
 cgroup, CPU and memory sampling. A later DAMON collection or cleanup failure
 also disables only DAMON and still writes the normal finished manifest.
-`cgpctl run` still launches the wrapped command; a DAMON problem must not
+`cgprofilectl run` still launches the wrapped command; a DAMON problem must not
 change the command's exit status (R-36h). Confirm actual DAMON collection from
-a persisted `damon.jsonl` series, not from `cgpctl doctor` or a visible DAMON
+a persisted `damon.jsonl` series, not from `cgprofilectl doctor` or a visible DAMON
 sysfs directory alone. Independent one-shot processes coordinate with the
 daemon through the host-shared `/run/cgprofile/state/damon.lock`; if another
 cgprofile writer holds the lock, the optional DAMON series is refused rather
@@ -160,8 +160,8 @@ than waiting or racing, and ordinary profiling proceeds.
 ## Daemon adoption
 
 This is the adoption guide: commands here are intended to be copied by an
-operator or a run-gate integration. Verbs are `cgpctl` verbs; the wire
-underneath is [`PROTOCOL.md`](PROTOCOL.md). Summaries returned by `cgpctl stop`
+operator or a run-gate integration. Verbs are `cgprofilectl` verbs; the wire
+underneath is [`PROTOCOL.md`](PROTOCOL.md). Summaries returned by `cgprofilectl stop`
 use schema 1. For the rationale, see
 [`DESIGN-GUIDE.md`](DESIGN-GUIDE.md#daemon-safety-and-placement).
 
@@ -189,7 +189,7 @@ resulting membership. Successful moves are written to the session's
 and recovery record intact and appears as `placement.error` in the stop
 summary. If that happens, keep the sessions directory and inspect the returned
 `session_dir`'s `placement-state.json`; a daemon restart retries the recorded
-restoration. `cgpctl prune` preserves an incomplete journal, including when the
+restoration. `cgprofilectl prune` preserves an incomplete journal, including when the
 normal count or age limit has been reached.
 
 Placement can also be refused before moving any PID when moving the selected
@@ -204,7 +204,7 @@ back to a parent cgroup.
 
 Before relying on `host.gates_slice` or requesting `start --place`, install
 the host's authored gates slice unit (`dev-gates.slice` by default,
-`gates_slice` in `cgpd.toml`). The daemon verifies the loaded, non-transient
+`gates_slice` in `cgprofiled.toml`). The daemon verifies the loaded, non-transient
 unit and finite positive memory and CPU ceilings; an existing cgroup directory
 without that evidence is reported as `present:false`, and placement is refused
 while profiling continues.
@@ -375,14 +375,14 @@ context only: on a shared host they are high for reasons unrelated to the lane.
 
 ## Resolve a target from a cockpit
 
-A cockpit or devcontainer runs `cgpctl` in its own private namespaces. Resolve
+A cockpit or devcontainer runs `cgprofilectl` in its own private namespaces. Resolve
 a target without starting anything:
 
 ```bash
-cgpctl start --target "container:$NAME" --dry-run    # prints the resolved request, starts nothing
+cgprofilectl start --target "container:$NAME" --dry-run    # prints the resolved request, starts nothing
 ```
 
-`cgpctl` resolves `container:NAME` through the docker CLI client-side;
+`cgprofilectl` resolves `container:NAME` through the docker CLI client-side;
 `containerid:<64hex>`, `cgroup:` and `slice:` need no docker call. `self` means
 the container that invoked the CLI. Container identity comes from the ID
 lookup, never from a namespace-local PID: host processes appear as PID `0` in
@@ -425,7 +425,7 @@ not change the control protocol's contract negotiation
 
 The version response's `daemon.damon: "available"` only means the library
 and admin sysfs interface are visible; it does not prove that the kernel will
-accept a configured context. Check the `damon` field in each `cgpctl start`
+accept a configured context. Check the `damon` field in each `cgprofilectl start`
 response (`on` or `unavailable:<reason>`), then check the stop response's
 top-level `series.damon` field for `damon.jsonl` before claiming DAMON samples
 or overhead. See the
@@ -452,10 +452,10 @@ carries `stop_forced: "sampler-still-running"` (manifest `aborted`), which is
 the operator recovery for a wedged worker; a daemon restart recovers a session
 left `running` as an orphan.
 
-`cgpd run` refuses to start unless its own cgroup is under a bounded top-level
-`cgprofile.slice` (see `cgpd unit print`).
+`cgprofiled run` refuses to start unless its own cgroup is under a bounded top-level
+`cgprofile.slice` (see `cgprofiled unit print`).
 
-**When `cgpctl` cannot reach the daemon**, the `could not reach the daemon`
+**When `cgprofilectl` cannot reach the daemon**, the `could not reach the daemon`
 line on stderr (exit 3) ends in a `[cause: ...]` that names which situation
 applies, using only what the calling process can see:
 
@@ -472,7 +472,7 @@ A running daemon also checks every few seconds that its socket path still holds
 its own listener. It rebinds when the node was removed or replaced, and exits 3
 (so the unit's restart policy recreates it) when it cannot. At start it never
 deletes a non-socket node and never replaces a socket another daemon still
-answers on: `cgpd run` exits 2 and names the path (CP-34).
+answers on: `cgprofiled run` exits 2 and names the path (CP-34).
 
 **Concurrency and `busy`** (CP-33). Every connection is served on its own
 thread, so a client that sends its request line slowly, or a long verb (`export`,
@@ -586,7 +586,7 @@ META="$(python3 -c 'import json; print(json.dumps({
   "worktree": "/workspaces/example", "commit": None,
   "run_gate_revision": 1, "kind": "command", "expected": None}))')"
 
-SESSION_ID="$(cgpctl start \
+SESSION_ID="$(cgprofilectl start \
   --target "containerid:${CONTAINER_ID}" \
   --scope container --token "$PROFILE_TOKEN" --damon on --interval 1.0 \
   --idle-bound 30 --on-stall kill \
@@ -595,18 +595,18 @@ SESSION_ID="$(cgpctl start \
 docker exec "$LANE_NAME" ./run-lane.sh
 LANE_STATUS=$?
 
-cgpctl stop "$SESSION_ID" --json
+cgprofilectl stop "$SESSION_ID" --json
 exit "$LANE_STATUS"
 ```
 
 In production code, put the stop call in the lane's `finally`/cleanup path so
-it runs when the lane fails. Read the `cgpctl` exit status directly: `0` is a
+it runs when the lane fails. Read the `cgprofilectl` exit status directly: `0` is a
 valid response, `2` is a usage or daemon-declared contract error, and `3` is
 unreachable or malformed-daemon state
 ([`CGPCTL-SPEC.md`](CGPCTL-SPEC.md) section 1). Do not pipe the command through
 a pager when deciding whether the stop succeeded.
 
-For `cgpctl start`, an exit-2 `target-not-found` means the daemon searched a
+For `cgprofilectl start`, an exit-2 `target-not-found` means the daemon searched a
 readable host cgroup tree and found no scope for that full container ID.
 An exit 3 can also mean the host cgroup tree became unreadable during lookup;
 record profiling as unavailable and inspect the daemon's journal. Do not
@@ -656,9 +656,9 @@ policy; when the lane's existing resource plan does not place it, request
 verdict authority. No path signals host PIDs. A `bad-policy` start refusal
 means the requested enforcement boundary was not established; a runtime
 `reported` verdict means a requested cgroup kill could not be confirmed.
-When consuming `cgpctl watch`, require its terminal `end` line. `cgpctl watch`
+When consuming `cgprofilectl watch`, require its terminal `end` line. `cgprofilectl watch`
 exits 3 if the socket closes before that line; treat it as profiling
-unavailable and reconcile the session through `cgpctl show` and `cgpctl stop`.
+unavailable and reconcile the session through `cgprofilectl show` and `cgprofilectl stop`.
 
 ## Closed values and response evidence
 
@@ -713,31 +713,31 @@ Run-gate can derive a different base when `--base` is omitted, so an omitted
 flag is not the P1 acceptance command. The rationale is in the
 [design guide](DESIGN-GUIDE.md#mutation-comparison-base).
 
-## Migration table: 1.x command to cgpctl verb
+## Migration table: 1.x command to cgprofilectl verb
 
 The command migration table below covers the 1.x CLI vocabulary; it does not describe transport compatibility. cgprofile 2.0.0 replaced the `cgprofile` command with
-`cgpctl` (client) and `cgpd` (daemon), the daemon is a native systemd service
+`cgprofilectl` (client) and `cgprofiled` (daemon), the daemon is a native systemd service
 installed by mdt host-setup, and the control socket speaks ctl contract 2. cgprofile 2.2.0 also moves service access to per-level systemd sockets at the new paths
 ([`CGPCTL-SPEC.md`](CGPCTL-SPEC.md), [`PROTOCOL.md`](PROTOCOL.md) section 10,
 [`NATIVE-DEPLOYMENT.md`](NATIVE-DEPLOYMENT.md)). There is no alias.
 
 | 1.x | 2.0 |
 |---|---|
-| `./cgprofile run -- CMD` | `cgpctl run -- CMD` |
-| `./cgprofile attach --target T` | `cgpctl start --target T` then `cgpctl stop ID` |
-| `./cgprofile mark NAME` | `cgpctl mark NAME` |
-| `./cgprofile report --run-dir D` | `cgpctl report --run-dir D` |
-| `./cgprofile targets --target T` | `cgpctl start --target T --dry-run` |
-| `./cgprofile doctor` | `cgpctl doctor` |
-| `./cgprofile serve ...` | `cgpd run` under systemd socket activation, configured by `/etc/cgprofile/cgpd.toml` |
-| `docker exec cgprofile-host-daemon cgprofile ctl version` | `cgpctl status` |
-| `... ctl host` | `cgpctl host` |
-| `... ctl status` | `cgpctl sessions` / `cgpctl show ID` |
-| `... ctl start` / `stop` / `watch` | `cgpctl start` / `stop` / `watch` |
-| `... ctl report ID` | `cgpctl report ID` (export, rendered on the client) |
-| `... ctl gc` | `cgpctl prune` |
+| `./cgprofile run -- CMD` | `cgprofilectl run -- CMD` |
+| `./cgprofile attach --target T` | `cgprofilectl start --target T` then `cgprofilectl stop ID` |
+| `./cgprofile mark NAME` | `cgprofilectl mark NAME` |
+| `./cgprofile report --run-dir D` | `cgprofilectl report --run-dir D` |
+| `./cgprofile targets --target T` | `cgprofilectl start --target T --dry-run` |
+| `./cgprofile doctor` | `cgprofilectl doctor` |
+| `./cgprofile serve ...` | `cgprofiled run` under systemd socket activation, configured by `/etc/cgprofile/cgprofiled.toml` |
+| `docker exec cgprofile-host-daemon cgprofile ctl version` | `cgprofilectl status` |
+| `... ctl host` | `cgprofilectl host` |
+| `... ctl status` | `cgprofilectl sessions` / `cgprofilectl show ID` |
+| `... ctl start` / `stop` / `watch` | `cgprofilectl start` / `stop` / `watch` |
+| `... ctl report ID` | `cgprofilectl report ID` (export, rendered on the client) |
+| `... ctl gc` | `cgprofilectl prune` |
 | `./setup.sh` | `pip install cgprofile[report]` for the report extra only |
-| `CGPROFILE_ALLOW_UIDS`, `serve` flags | keys of `/etc/cgprofile/cgpd.toml`; runtime change by `cgpctl config set` |
+| `CGPROFILE_ALLOW_UIDS`, `serve` flags | keys of `/etc/cgprofile/cgprofiled.toml`; runtime change by `cgprofilectl config set` |
 | helper mode, placement probe image | removed |
 | `--log-tail`, `--log-match` | removed |
 
@@ -745,14 +745,14 @@ Consumer notes:
 
 | Consumer | What to do |
 |---|---|
-| run-gate | Socket carrier only on `/run/cgprofile/control/cgprofile.sock`; no `exec`, `auto`, or old-path fallback. It keeps speaking contract 1, which the daemon serves for `version`, `host`, `status`, `start`, `stop`, `watch` and `gc`, and renders reports with `cgpctl report` or skips them. |
+| run-gate | Socket carrier only on `/run/cgprofile/control/cgprofile.sock`; no `exec`, `auto`, or old-path fallback. It keeps speaking contract 1, which the daemon serves for `version`, `host`, `status`, `start`, `stop`, `watch` and `gc`, and renders reports with `cgprofilectl report` or skips them. |
 | assay | Nothing: it uses only the observer socket (contracts 2 and 3). |
-| mdt cockpit image | Ships the `cgprofile` wheel (core only) so `cgpctl` is on `PATH`; the finalize step runs `cgpctl skills check`. |
+| mdt cockpit image | Ships the `cgprofile` wheel (core only) so `cgprofilectl` is on `PATH`; the finalize step runs `cgprofilectl skills check`. |
 | mdt host-setup | Phase 2 will call the install verbs, render its declared config, and run the service-side doctor. Do not deploy cgprofile 2.2.0 before that consumer update and the host cutover. |
-| Devcontainers and runners | After host cutover, mount only `/run/cgprofile/control` or `/run/cgprofile/observer` as required; run `cgpctl --socket PATH` (or set `CGPCTL_SOCKET`) for control. |
+| Devcontainers and runners | After host cutover, mount only `/run/cgprofile/control` or `/run/cgprofile/observer` as required; run `cgprofilectl --socket PATH` (or set `CGPCTL_SOCKET`) for control. |
 
 A contract-1 `report` request to a 2.x daemon is answered with the error code
-`report-removed`, naming `cgpctl report`. Ownership rules apply to `stop` and
+`report-removed`, naming `cgprofilectl report`. Ownership rules apply to `stop` and
 `prune`: a caller stops its own sessions, and only uid 0 stops or exports
 another uid's. Control and observer groups are separate; observer membership
 does not grant control operations.

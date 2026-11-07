@@ -11,29 +11,29 @@ production game server lose its anonymous pages?"** — so profiling a subject
 while observing a victim is a first-class mode, not a workaround.
 
 ```bash
-pip install cgprofile           # the wheel provides cgpctl (client) and cgpd (daemon)
-cgpctl --version                # cgpctl <version>
-cgpctl doctor                   # what can I reach?
+pip install cgprofile           # the wheel provides cgprofilectl (client) and cgprofiled (daemon)
+cgprofilectl --version                # cgprofilectl <version>
+cgprofilectl doctor                   # what can I reach?
 
-cgpctl run --phase gate -- ./gate.sh                   # profile one command locally (direct mode)
-cgpctl start --target slice:dev-gates.slice            # or ask the host daemon to profile a target
+cgprofilectl run --phase gate -- ./gate.sh                   # profile one command locally (direct mode)
+cgprofilectl start --target slice:dev-gates.slice            # or ask the host daemon to profile a target
 ```
 
-`cgpctl --version` is the documented operator identity probe. It prints the
+`cgprofilectl --version` is the documented operator identity probe. It prints the
 installed wheel version (derived from the `cgprofile-vX.Y.Z` release tag; an
-untagged build is `0.0.0-dev`). `cgpctl` and `cgpd` are built on cli-extended:
+untagged build is `0.0.0-dev`). `cgprofilectl` and `cgprofiled` are built on cli-extended:
 help, usage and error output at every depth begin with the matching identity
 headline, and the reviewed command surface is [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md).
-The 1.x commands map to `cgpctl` verbs in the
-[migration table](docs/CONSUMERS.md#migration-table-1x-command-to-cgpctl-verb).
+The 1.x commands map to `cgprofilectl` verbs in the
+[migration table](docs/CONSUMERS.md#migration-table-1x-command-to-cgprofilectl-verb).
 
 ## Product overview
 
 ### 1. What it is
 
-Two programs from one wheel. `cgpd` is the always-on host daemon, a native
+Two programs from one wheel. `cgprofiled` is the always-on host daemon, a native
 systemd service that samples cgroups, owns DAMON, stores sessions, and answers
-a Unix-socket protocol. `cgpctl` is the client: it talks to the daemon, renders
+a Unix-socket protocol. `cgprofilectl` is the client: it talks to the daemon, renders
 reports, and also profiles one command locally without any daemon. There is no
 container, no Docker use by the daemon, and no helper image. Normative
 documents: [`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) (command line),
@@ -42,7 +42,7 @@ documents: [`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) (command line),
 
 ### 2. Commands
 
-`cgpctl [--socket PATH] [--json] <verb>`; the full client table, flags, JSON
+`cgprofilectl [--socket PATH] [--json] <verb>`; the full client table, flags, JSON
 shapes and exit codes are in [`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md)
 section 2.
 
@@ -63,7 +63,7 @@ section 2.
 | `config` | `config show`, `config set KEY VALUE [--persist]`, `config reset` (uid 0 for writes) |
 | `skills` | install, check, list or remove the packaged agent skill |
 
-`cgpd [--config PATH] <verb>` is root-only for service changes and read-only
+`cgprofiled [--config PATH] <verb>` is root-only for service changes and read-only
 for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
 
 | verb | what |
@@ -73,14 +73,14 @@ for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
 | `uninstall` | stop and remove the service; `--remove-groups` and `--purge-data` are opt-in |
 | `doctor` | check config, units, groups, socket nodes, state, service, access and foreign rules |
 | `unit` | `unit print` renders the service, slice, two socket units and sysusers file; `unit check` reports drift |
-| `config` | `config check` validates the config file without starting anything; `cgpd -t` is the same exit-code check for service preflight |
+| `config` | `config check` validates the config file without starting anything; `cgprofiled -t` is the same exit-code check for service preflight |
 | `reload` | signal the running daemon to reload; `--reset-overrides` also drops runtime overrides |
 
 After installation, run the service CLI from the active versioned venv at
-`/opt/cgprofile/current/venv/bin/cgpd`. The installer links the client command
-`cgpctl` into `/usr/local/bin` but does not add a global `cgpd` symlink.
+`/opt/cgprofile/current/venv/bin/cgprofiled`. The installer links the client command
+`cgprofilectl` into `/usr/local/bin` but does not add a global `cgprofiled` symlink.
 
-The daemon reads `/etc/cgprofile/cgpd.toml`, plus uid-0 runtime overrides.
+The daemon reads `/etc/cgprofile/cgprofiled.toml`, plus uid-0 runtime overrides.
 A missing file means all defaults. Unknown keys are refused. Socket settings
 are fixed and require a service restart:
 
@@ -112,13 +112,13 @@ are fixed and require a service restart:
 | `/run/cgprofile/observer/cgprofile.sock` | parent `0755 root:root`; socket mode `0660`, group `root:cgprofile-observer` | observer contracts 2 and 3: resource counters and measurement windows ([`docs/PROTOCOL.md`](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)) |
 
 Each systemd socket unit has one `ListenStream` and passes one named fd to
-`cgpd.service`. Systemd owns the socket nodes across daemon restarts.
+`cgprofiled.service`. Systemd owns the socket nodes across daemon restarts.
 The control and observer groups must be distinct dedicated groups: neither can
 be named `docker`, resolve to GID 0 or the docker GID, or share a GID with the
 other cgprofile level. The installer and config checker refuse these values
 from flags, saved records, existing config, and wizard answers, with no
 override. Cross-service group uniqueness belongs to host-setup.
-Repeatable `cgpd install --add-user
+Repeatable `cgprofiled install --add-user
 LEVEL=USER` flags add existing users with `gpasswd -a`. A user named with
 `--add-user` must exist. The installer records and keeps additions, and
 uninstall never removes memberships. On reinstall, recorded users whose
@@ -190,7 +190,7 @@ can stop or export another uid's session. See
 
 ### 6. Protection
 
-`cgpd.service` runs inside a memory-bounded `cgprofile.slice`, and refuses to
+`cgprofiled.service` runs inside a memory-bounded `cgprofile.slice`, and refuses to
 start when its cgroup is not under that slice
 ([`docs/DESIGN-GUIDE.md`](docs/DESIGN-GUIDE.md#the-daemon-proves-the-slice-it-is-in-not-a-slice-by-name)).
 Optional placement puts a lane into a delegated scope beneath the gates slice;
@@ -201,7 +201,7 @@ An upgrade drains live sessions before restarting the service
 
 ### 7. Install
 
-Bootstrap `cgpd install` from the cgprofile and cli-extended wheels, each
+Bootstrap `cgprofiled install` from the cgprofile and cli-extended wheels, each
 pinned by version and SHA-256. The installer creates an immutable versioned
 venv, validates the config and rendered units, atomically updates `current`,
 and waits for the selected version to answer. It supports a TTY wizard and
@@ -258,7 +258,7 @@ current tree. See
 
 A daemon session stores `samples.jsonl.gz`, `events.jsonl`, `host.jsonl`,
 `manifest.json`, `summary.json`, and `damon.jsonl` only when DAMON samples were
-persisted; `cgpctl report ID` renders them locally from an `export`, so the
+persisted; `cgprofilectl report ID` renders them locally from an `export`, so the
 daemon process never imports the report libraries.
 
 ## The parts worth knowing about
@@ -276,12 +276,12 @@ quiet, snapping back to hot on any event. Designed to be run on a host that is
 already short of memory: the collector is standard-library only, holds no
 series in memory, and does all analysis after the run.
 
-**Phases three ways.** Explicit marks (`cgpctl mark "restoring db"`, callable
+**Phases three ways.** Explicit marks (`cgprofilectl mark "restoring db"`, callable
 from inside a gate container), wrapper-derived boundaries for gates that know
 nothing about the tool, and changepoint detection over the series so unlabelled
 regime shifts still get timestamped.
 
-**Targets resolve on the client.** `cgpctl start --target container:NAME`
+**Targets resolve on the client.** `cgprofilectl start --target container:NAME`
 resolves a name to a full container ID with `docker inspect` when the Docker
 CLI is reachable; otherwise use `containerid:`, `cgroup:` or `slice:`. `self`
 means the container that invoked the CLI. `pid:N` carries the caller's

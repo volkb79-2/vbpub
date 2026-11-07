@@ -60,7 +60,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/cgprofile && PYTHONPATH={worktree}/cgprofile/src:{worktree}/cgprofile:{worktree}/libraries/cli-extended/src exec /opt/tester-venv/bin/python -m pytest tests/test_daemon_config.py tests/test_cgpd_installer.py tests/test_cgpd_service_doctor.py tests/test_cgpd.py tests/test_cgpd_units.py tests/test_cgpctl.py tests/test_docs_sync.py -q -p no:cacheprovider --cli-case-partial",
+    "cd {worktree}/cgprofile && PYTHONPATH={worktree}/cgprofile/src:{worktree}/cgprofile:{worktree}/libraries/cli-extended/src exec /opt/tester-venv/bin/python -m pytest tests/test_daemon_config.py tests/test_cgprofiled_installer.py tests/test_cgprofiled_service_doctor.py tests/test_cgprofiled.py tests/test_cgprofiled_units.py tests/test_cgprofilectl.py tests/test_docs_sync.py -q -p no:cacheprovider --cli-case-partial",
 ]
 clean_tree = false
 budget = "10m"
