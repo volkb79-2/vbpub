@@ -10633,6 +10633,17 @@ class TestResourceObserverLane:
                 "fixture", "test.slice", "fixture", dry_run=dry_run,
                 profile_plan={"enabled": False, "disabled_reason": "test"})
 
+    def test_observer_directory_with_a_colon_is_refused_before_any_mount(
+            self, monkeypatch):
+        monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "/run/test/control.sock")
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", "/run/a:b/observer.sock")
+        monkeypatch.delenv(run_gate.EXTRA_MOUNT_ENV_VAR, raising=False)
+        with pytest.raises(run_gate.GateInfraError,
+                           match=r"CGPROFILE_OBSERVER_SOCKET directory"):
+            run_gate.resource_observer_docker_flags(
+                {"kind": "assay", "environment": "tester-unified",
+                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
     def test_observer_directory_mode_guide_matches_preflight(
             self, tmp_path, monkeypatch):
         guide = " ".join(
