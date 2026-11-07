@@ -193,6 +193,9 @@ def _install_review_mcp(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict
                     "final_url": "https://example.test",
                     "frames": [],
                 }
+            elif "__pwmcp_eval_result__" in function:
+                result: object = ["first", "second"] if "return values;" in function else "reviewed value"
+                value = {"__pwmcp_eval_result__": True, "truncated": False, "value": result}
             elif "new TextEncoder()" in function:
                 html = "<main>reviewed HTML</main>"
                 value = {
