@@ -235,7 +235,7 @@ def test_eval_uses_browser_evaluate_without_the_mcp_python_sdk(
     ]
     assert _call_args(server.state, "browser_navigate") == [{"url": "https://example.test/page"}]
     evaluated_function = _call_args(server.state, "browser_evaluate")[0]["function"]
-    assert evaluated_function.startswith("async () => { const value = await (() => (")
+    assert evaluated_function.startswith("async () => { const value = await (\n() => (")
     assert "document.title" in evaluated_function and "JSON.stringify(value)" in evaluated_function
     assert server.state.deleted_sessions == 1
 
