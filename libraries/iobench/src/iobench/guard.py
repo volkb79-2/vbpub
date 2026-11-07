@@ -19,6 +19,7 @@ from .host import TAIL_BYTES, Host, HostError, TargetRef
 
 MARKER_MAGIC = "IOBENCH-TARGET-1"
 GIB = 1 << 30
+MIB = 1 << 20
 SIGNATURE_KEYS = ("TYPE=", "PTTYPE=", "USAGE=")
 BAD_FS_TYPES = ("tmpfs", "ramfs", "devtmpfs", "devpts", "proc", "sysfs")  # volatile or pseudo filesystems: never a target or a work dir
 ROOT_MOUNTS = ("/", "/boot")
@@ -181,11 +182,45 @@ def find_disk(host: Host, *, model: str | None, serial: str | None, wwn: str | N
 
 
 def backing_disk(host: Host, path: str) -> str | None:
-    """The name of the disk behind the filesystem that holds ``path`` (a file target), ``None`` when no single block device is behind it."""
+    """The single disk behind ``path``; refuse btrfs when its member set is not exactly one device."""
     fs = fs_info(host, posixpath.dirname(path))
-    if not host.exists(f"/sys/dev/block/{fs.devno}"):
+    devno = fs.devno
+    if fs.fstype == "btrfs":
+        members = btrfs_member_devnos(host, fs.uuid)
+        if members is None or not members:
+            raise Refusal("target_fs_disk_unknown", f"{path} is on btrfs but its member devices cannot be resolved",
+                          "use a filesystem whose backing devices are visible in /sys/fs/btrfs/<uuid>/devices")
+        if len(members) != 1:
+            raise Refusal("target_fs_multi_device", f"{path} is on multi-device btrfs ({len(members)} member devices); disk-scope identity is ambiguous",
+                          "use a single-device filesystem for an iobench file target")
+        devno = members[0]
+    if not host.exists(f"/sys/dev/block/{devno}"):
         return None
-    return device_chain(host, fs.devno).disk_name
+    return device_chain(host, devno).disk_name
+
+
+def btrfs_member_devnos(host: Host, fs_uuid: str | None) -> tuple[str, ...] | None:
+    """Read btrfs's authoritative member set from sysfs; ``None`` means it could not be established."""
+    if not fs_uuid:
+        return None
+    path = f"/sys/fs/btrfs/{fs_uuid}/devices"
+    if not host.exists(path):
+        return None
+    try:
+        names = host.listdir(path)
+        members = []
+        for name in names:
+            device = host.realpath(f"{path}/{name}")
+            dev_path = device + "/dev"
+            if not host.exists(dev_path):
+                return None
+            devno = host.read_text(dev_path).strip()
+            if not re.fullmatch(r"[0-9]+:[0-9]+", devno):
+                return None
+            members.append(devno)
+        return tuple(sorted(set(members)))
+    except (OSError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -456,7 +491,14 @@ def fs_info(host: Host, path: str) -> FsInfo:
     e = max(entries, key=lambda e: len(e.mountpoint))
     uuid = blkid_fields(host, e.source).get("UUID") if e.source.startswith("/dev/") else None
     total, free = host.statfs(path)
-    return FsInfo(e.mountpoint, e.source, e.fstype, e.options, e.devno, uuid, total, free)
+    devno = e.devno
+    # Some filesystems (notably btrfs) expose a synthetic mountinfo device number.
+    # Use the block source's sysfs identity when that number has no sysfs entry.
+    # Overlay's source can name a lower layer, not the filesystem owning writes
+    # to the overlay, so it must retain its anonymous identity.
+    if e.fstype != "overlay" and not host.exists(f"/sys/dev/block/{devno}") and e.source.startswith("/dev/"):
+        devno = host.devno(e.source) or devno
+    return FsInfo(e.mountpoint, e.source, e.fstype, e.options, devno, uuid, total, free)
 
 
 def on_root_fs(host: Host, fs: FsInfo) -> bool:
@@ -480,6 +522,12 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
     require_host_namespaces(host)  # the root-filesystem and free-space rules read the mount table: it must be the host's
     _need(size is not None, "size_required", "a file target needs --size (the operator's upper bound for everything iobench writes)",
           "pass --size BYTES")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        raise Refusal("file_size_invalid", f"--size must be a positive integer number of bytes, got {size!r}", "pass a positive --size BYTES")
+    if size % MIB:
+        aligned = max(MIB, size // MIB * MIB)
+        raise Refusal("file_size_alignment", f"--size {size} is not a multiple of 1 MiB",
+                      f"pass a 1 MiB multiple such as {aligned} bytes")
     _need(own, "own_file_required", f"{path} would be created and overwritten by iobench", "pass --i-own-this-file")
     _need(":" not in path, "path_colon", f"{path} contains ':' (fio would split it into several files)", "use a path without ':'")
     st = host.stat(path)
@@ -490,6 +538,11 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
     _need(expect_fs_uuid is not None and fs.uuid == expect_fs_uuid, "fs_uuid_mismatch",
           f"--expect-fs-uuid {expect_fs_uuid} does not equal the filesystem UUID {fs.uuid} under {path}",
           f"pass --expect-fs-uuid {fs.uuid} if this is the intended filesystem")
+    # Init and calibrate share the same disk-scope admission rule. This refuses
+    # multi-device btrfs before fallocate can create a target that calibration cannot attribute.
+    if backing_disk(host, path) is None:
+        raise Refusal("target_fs_disk_unknown", f"{path} is on a filesystem with no single block device behind it ({fs.fstype} on {fs.source})",
+                      "use a file on a filesystem mounted from one visible block device")
     _need(st is None or sidecar_matches(host, path, st, fs), "exists_without_sidecar",
           f"{path} exists and has no iobench sidecar matching its inode, size and filesystem", "remove it yourself, or pick another path")
     _need(st is None or st.nlink <= 1, "hard_link", f"{path} has a link count above 1", "use a file with a single link")

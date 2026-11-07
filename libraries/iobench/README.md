@@ -19,7 +19,21 @@ requirements and the result schema.
 | Plausibility | checks sequential read/write ratios in every profile that measures both; >20x through 100x is inconclusive unless a hit-like cold probe corroborates it, while >100x or corroboration fails the verdict in every profile; a veryquick hit-like cold probe alone remains inconclusive; thresholds are provisional ([why](docs/DESIGN-GUIDE.md#72-the-veryquick-profile)); never keys on the `rotational` flag | `IOB-PLA`, `IOB-REF` |
 | Proposals | `proposals.writeback`, `proposals.caps`, `proposals.iocost_model`, `proposals.iocost_qos`, each value with `rule`, `inputs`, `status` | `IOB-DER` |
 | Ceiling history | append-only disk history; raw rows supply proposal values, while file/probe rows can confirm stability only; weak disks require the remembered device name and model, and a known stored machine-id must still match; a chroot record with no stored id stays unbound after first boot ([why](docs/DESIGN-GUIDE.md#71-the-key-is-the-disk-not-the-partition-host-tuning-review-b2-2026-11-05)) | `IOB-CEI` |
-| Safety | targets are a dedicated device **or a preallocated file** on an existing filesystem; refuses a target that is mounted, swap, signature-bearing or the root disk, writes nothing without its marker; the Host itself binds every writer and discard to the authorised extent (a plain `run`/`spawn` can only create `iobench-*` load files, never reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
+| Safety | targets are a dedicated raw device/partition or a preallocated file on an existing filesystem; refuses a target that is mounted, swap, signature-bearing or the root disk, writes nothing without its marker; the Host itself binds every writer and discard to the authorised extent (a plain `run`/`spawn` can only create `iobench-*` load files, never reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
+
+For install-time measurement used by iogovmon, `standard` on the dedicated raw
+partition is the intended target: it measures a dedicated raw partition, with
+history bound to the partition's backing disk. A preallocated file is a supported fallback when no raw target is
+available. A file on btrfs is supported only when its filesystem resolves to
+one backing disk; multi-device btrfs is refused. File results include the
+filesystem, extent mapping and copy-on-write layers, so they do not mean the
+same thing as a raw-partition result ([target choice and rationale](docs/DESIGN-GUIDE.md#72-the-veryquick-profile)).
+
+A saturating `standard` run can trip the io-full PSI stop threshold above 25
+within its first minute on an otherwise idle host: stalled fio tasks from the
+benchmark itself can cause it. Run install-time calibration before workloads
+start, or have the operator explicitly choose a relaxed `--abort-psi` threshold
+for that run ([guard details](docs/CONSUMERS.md#2-calibrate-once-per-host-or-storage-class)).
 
 ## Quick use
 

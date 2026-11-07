@@ -234,8 +234,8 @@ def test_cal_02_interrupted_fill_records_actual_bytes():
     sizes = {r["ws_bytes"] for r in cal["ladder"]["rungs"]}
     assert max(sizes) <= end and cal["fill"]["bytes"] == end
     props = out.result["proposals"]["caps"]["dev_aggregate"]
-    assert "budget_limited" in props["RIOPS"]["reasons"] and props["RIOPS"]["status"] == "unproven"
-    assert "limited-by-budget" in out.result["quality"]["limits"] and out.result["quality"]["cache_proof"] == "limited-by-budget"
+    assert "budget_limited" not in props["RIOPS"]["reasons"] and props["RIOPS"]["status"] == "unproven"
+    assert "limited-by-budget" not in out.result["quality"]["limits"] and out.result["quality"]["cache_proof"] != "limited-by-budget"
     assert not host.devices["/dev/vda7"].unwritten_reads
 
 
@@ -253,6 +253,22 @@ def test_cal_02_fill_replans_on_burst_capped_disk():
     for j in fio_jobs(host):
         if j.writes and j.io_size is not None and "-fill-" not in j.name:
             assert j.io_size <= 1.2 * cal["R_est_bps"] * j.runtime_s * 1.001, j.name
+
+
+def test_cal_02_failed_late_stage_persists_completed_measurements_as_incomplete(monkeypatch):
+    from iobench import calibrate as cal_mod
+    from iobench.errors import RunFailed
+    host = make_host(cache=INVERSION)
+
+    def fail_fresh_stage(self):
+        raise RunFailed("injected failure after the ladder")
+
+    monkeypatch.setattr(cal_mod.Calibrator, "fresh_vs_rewrite", fail_fresh_stage)
+    out = calibrate(host)
+    failed = read_json(host, "/var/lib/iobench/calibration.last-failed.json")
+    assert out.status == "failed" and failed["partial"]["status"] == "incomplete"
+    assert failed["partial"]["stages"]["E2"] == "ok"
+    assert failed["partial"]["ladder"]["rungs"] and failed["partial"]["extent_written"]
 
 
 def test_cal_03_unsteady_rung_is_extended_then_kept_unsteady():

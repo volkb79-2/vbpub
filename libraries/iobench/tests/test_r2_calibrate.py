@@ -71,7 +71,7 @@ def test_r2_cal_a_fill_chunk_that_fio_cut_short_ends_the_fill_at_once():
     cal = out.calibration["calibration"]
     assert len(jobs) == 3 and cal["fill"]["bytes"] == cal["extent_written"][0][1]
     assert cal["fill"]["bytes"] == pytest.approx(2.5 * chunk, rel=0.01) and cal["fill"]["bytes"] < cal["fill"]["planned_bytes"]
-    assert "limited-by-budget" in out.result["quality"]["limits"]
+    assert "limited-by-budget" not in out.result["quality"]["limits"]
 
 
 def test_r2_cal_an_untouched_fill_that_wrote_everything_is_not_limited_by_budget():

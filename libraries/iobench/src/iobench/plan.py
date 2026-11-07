@@ -11,8 +11,9 @@ from .host import TAIL_BYTES
 GIB = 1 << 30
 MIB = 1 << 20
 PROFILE_BUDGET_S = {"veryquick": 210, "quick": 720, "standard": 3600, "thorough": 4500, "matrix": 900, "knob": 480}
-# veryquick (IOB-PRF-03): a plan of 173 s inside a 210 s hard budget (the slack covers fio start-up and teardown)
-VQ_S0_S = 10
+# veryquick (IOB-PRF-03): 173 s prior plan + 16 s startup/reap allowance + 12 s longer sequential-write cell = 201 s.
+# S0 reserves 10 s for preflight and 16 s for the measured host-side start/reap allowance across the eleven fio jobs.
+VQ_S0_S = 26
 VQ_S1_S = 20
 VQ_FILL_S = 20            # the fill writes R_est x 20 s of data ...
 VQ_FILL_ALLOT_S = 25      # ... and may take 25 s
@@ -20,7 +21,8 @@ VQ_ECOLD_QD32_S = 15      # E-cold: QD32 random read on the cold region ...
 VQ_ECOLD_QD1_S = 15       # ... a QD1 latency histogram on the rest of it ...
 VQ_HITREF_S = 10          # ... and a QD1 histogram on the first GiB (the cache-hit reference)
 VQ_SERIES_S = 30          # one write time series over the written extent (burst and knee)
-VQ_CELL_S = 12            # S6: four 12 s cells (4 KiB random and 128 KiB sequential, read and write)
+VQ_CELL_S = 12            # S6: three 12 s cells (4 KiB random and 128 KiB sequential, read and write)
+VQ_SEQ_WRITE_S = 24        # the veryquick sequential write cell gets a 12 s longer steadiness window
 VQ_CELLS = 4
 VQ_LOG_AVG_MS = 500       # 500 ms samples: a 12 s cell still gives >= 8 points after its 2 s warm-up
 VQ_WARMUP_S = 2.0
@@ -136,15 +138,21 @@ def cache_idle_delay(profile: str, override_s: float | None) -> float | None:
 
 
 def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: int | None = None, *,
-                     cache_idle_delay_s: float | None = None) -> Allotment:
+                     cache_idle_delay_s: float | None = None, target_kind: str = "device") -> Allotment:
     """The stage allotment table of SPEC section 15, derived from the geometry."""
+    if target_kind == "file" and size_bytes % MIB:
+        aligned = max(MIB, size_bytes // MIB * MIB)
+        raise Refusal("file_size_alignment", f"file target size {size_bytes} is not a multiple of 1 MiB",
+                      f"re-run target init with a 1 MiB multiple such as --size {aligned}")
     budget = PROFILE_BUDGET_S[profile] if budget_s is None else budget_s
     idle_s = cache_idle_delay(profile, cache_idle_delay_s)
     if profile == "veryquick":
-        stages = (Stage("S0", VQ_S0_S, True), Stage("S1", VQ_S1_S, True), Stage("fill", VQ_FILL_ALLOT_S, True),
+        stages = (Stage("S0", VQ_S0_S, True, "10 s preflight + 16 s host start/reap allowance for eleven fio jobs"),
+                  Stage("S1", VQ_S1_S, True), Stage("fill", VQ_FILL_ALLOT_S, True),
                   Stage("E-cold", VQ_ECOLD_QD32_S + VQ_ECOLD_QD1_S + VQ_HITREF_S, False, "QD32 15 s + QD1 histogram 15 s + cache-hit reference 10 s"),
                   Stage("series", VQ_SERIES_S, True, "one 30 s write time series over the written extent"),
-                  Stage("S6", VQ_CELLS * VQ_CELL_S, True, "4 KiB random and 128 KiB sequential, read and write"))
+                  Stage("S6", (VQ_CELLS - 1) * VQ_CELL_S + VQ_SEQ_WRITE_S, True,
+                        "three 12 s cells and a 24 s sequential write cell"))
         ws = ws_max(size_bytes, r_est_bps, budget, fill_seconds=VQ_FILL_S)
         return Allotment(profile, budget, stages, ws, (ws,))
     quick = profile == "quick"

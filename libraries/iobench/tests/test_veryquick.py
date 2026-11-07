@@ -34,10 +34,10 @@ def values(out, section):
 
 
 # -- the plan ---------------------------------------------------------------------------------------------------------
-def test_prf_03_the_plan_fits_180_seconds_inside_a_210_second_budget():
+def test_prf_03_the_plan_matches_observed_runtime_inside_a_210_second_budget():
     alloc = plan.plan_calibration("veryquick", 435853320192, 1.36e9)
     assert [s.name for s in alloc.stages] == ["S0", "S1", "fill", "E-cold", "series", "S6"]
-    assert [s.allotted_s for s in alloc.stages] == [10, 20, 25, 40, 30, 48] and alloc.total == 173 <= 180
+    assert [s.allotted_s for s in alloc.stages] == [26, 20, 25, 40, 30, 60] and alloc.total == 201 <= 210
     assert alloc.budget_s == plan.PROFILE_BUDGET_S["veryquick"] == 210 >= alloc.total
     assert [s.name for s in alloc.stages if s.required] == ["S0", "S1", "fill", "series", "S6"]  # the cold probe is the one optional stage
     # the working set is what 20 s of fill writes at the measured rate, or the target's 85 %
@@ -81,7 +81,7 @@ def test_prf_03_veryquick_refuses_to_replace_an_unreadable_state_file():
 def test_prf_03_a_run_takes_the_planned_time_and_ends_complete(clean):
     host, out, elapsed = clean
     assert (out.status, out.exit_code) == ("complete", 0)
-    assert 150 <= elapsed <= 180  # simulated seconds: the fio runs add up to what the plan says (173) and stay inside the budget
+    assert 150 <= elapsed <= 180  # FakeHost counts fio runtime; the host-overhead model is pinned separately below.
     assert out.result["run"]["stages"] == {"S0": "ok", "S1": "ok", "fill": "ok", "E-cold": "ok", "series": "ok", "S6": "ok",
                                            "ladder": "skipped: very-quick-profile", "S7": "skipped: very-quick-profile"}
     assert out.result["run"]["profile"] == "veryquick" and out.result["run"]["budget_s"] == 210
@@ -173,6 +173,53 @@ def test_prf_03_the_cold_probe_reads_on_the_cold_tenth_and_its_reference_on_the_
     assert cal["cache"]["read"]["e_cold"]["region_bytes"] == cold_len
 
 
+def test_prf_03_veryquick_cold_class_is_not_assessed_and_names_its_install_time_scope(clean):
+    host = file_host()
+    _, out, _ = vq(host, target="/bench/target.img", work_dir="/bench/w")
+    cold = out.calibration["calibration"]["cache"]["read"]["e_cold"]
+    assert cold["class"] == "not_assessed" and cold["diagnostic_class"] in ("hit-like", "miss-like", "indeterminate", "n/a")
+    assert out.calibration["calibration"]["veryquick"]["intended_use"] == "install-time identity, sanity, read/write IOPS"
+    assert out.calibration["calibration"]["cache"]["read"]["cache_state"] == "undetermined"
+    assert "limited-by-budget" not in out.result["quality"]["limits"]
+
+
+def test_prf_03_pla19_names_an_unsteady_write_cell_and_uses_a_longer_window():
+    check = plausibility.pla_19(1.4e9, 120e6, read_state="steady", read_cv=0.03, write_state="unsteady", write_cv=0.266)
+    assert check.status == "not_applicable" and check.detail == "write cell unsteady (cv=0.266)"
+    jobs = shape.vq_grid(plan.VQ_CELL_S, plan.VQ_SEQ_BS, sequential_write_seconds=plan.VQ_SEQ_WRITE_S)
+    write = next(c for c in jobs if c.dir == "write" and c.pattern == "seq")
+    assert write.seconds == plan.VQ_SEQ_WRITE_S > plan.VQ_CELL_S
+
+
+def test_prf_03_fake_host_timing_matches_plan_with_fixed_startup_allowance(monkeypatch):
+    host = make_host(cache=None)
+    real_s0 = cal_mod.Calibrator.s0
+    real_fill = cal_mod.Calibrator.fill
+    real_fio = cal_mod.Calibrator.fio
+
+    def timed_s0(self, *, need_workdir):
+        self.host.sleep(10)
+        return real_s0(self, need_workdir=need_workdir)
+
+    def timed_fill(self, alloc):
+        real_fill(self, alloc)
+        self.host.sleep(5)  # allotted fill slack: 25 s for 20 s of planned bytes
+
+    def timed_fio(self, job):
+        self.host.sleep(16 / 11)  # deterministic 16 s of process startup/reap cost across eleven fio jobs
+        return real_fio(self, job)
+
+    monkeypatch.setattr(cal_mod.Calibrator, "s0", timed_s0)
+    monkeypatch.setattr(cal_mod.Calibrator, "fill", timed_fill)
+    monkeypatch.setattr(cal_mod.Calibrator, "fio", timed_fio)
+    started = host.now()
+    out = calibrate(host, profile="veryquick")
+    elapsed = host.now() - started
+    assert out.status == "complete"
+    assert elapsed == pytest.approx(plan.plan_calibration("veryquick", out.calibration["calibration"]["target"]["size_bytes"],
+                                                         out.calibration["calibration"]["R_est_bps"]).total, abs=0.01)
+
+
 def test_prf_03_the_series_is_one_30_second_write_run_and_the_grid_is_four_cells(clean):
     host, out, _ = clean
     ws = out.calibration["calibration"]["extent_written"][0][1]
@@ -180,7 +227,7 @@ def test_prf_03_the_series_is_one_30_second_write_run_and_the_grid_is_four_cells
     series = [j for j in jobs if j.name.endswith("-vq")]
     assert len(series) == 1 and (series[0].rw, series[0].iodepth, series[0].runtime_s, series[0].offset, series[0].size) == ("randwrite", 32, 30, 0, ws)
     cells = [j for j in jobs if re.search(r"-s6-\d$", j.name)]
-    assert [(j.rw, j.bs, j.runtime_s, j.iodepth) for j in cells] == [("randread", 4096, 12, 32), ("randwrite", 4096, 12, 32), ("read", 131072, 12, 32), ("write", 131072, 12, 32)]
+    assert [(j.rw, j.bs, j.runtime_s, j.iodepth) for j in cells] == [("randread", 4096, 12, 32), ("randwrite", 4096, 12, 32), ("read", 131072, 12, 32), ("write", 131072, 24, 32)]
     assert all((j.offset, j.size) == (0, ws) for j in cells)
     assert [(c.dir, c.pattern, c.bs, c.seconds) for c in shape.vq_grid(12, 131072)] == [("read", "rand", 4096, 12), ("write", "rand", 4096, 12), ("read", "seq", 131072, 12),
                                                                                          ("write", "seq", 131072, 12)]
@@ -224,24 +271,25 @@ def test_prf_03_a_cache_inflated_disk_fails_the_plausibility_verdict():
     assert all(v["status"] != "proven" for s in ("caps", "iocost_model") for v in values(out, s).values())
 
 
-def test_prf_03_a_hit_like_probe_makes_the_ratio_check_match_the_fail_verdict():
+def test_prf_03_veryquick_does_not_use_a_nonrepeatable_cold_class_to_corroborate_pla19():
     read = dict(iops_max=1_000_000, lat_us=60, bps_cap_seq=1e9, bps_cap_rand=1e9)
     write = dict(iops_max=4000, lat_us=440, bps_cap_seq=25e6, bps_cap_rand=25e6)
     _, out, _ = vq(make_host(cache=None, read=read, write=write))
-    assert verdict_of(out) == {"verdict": "fail", "cache_state": "cold_hit_like"}
+    assert verdict_of(out) == {"verdict": "inconclusive", "cache_state": "undetermined"}
     check = next(c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-19")
-    assert check["status"] == "fail" and 20 < check["value"] <= 100
-    assert "cold probe is hit-like" in check["detail"] and "cache inflation is corroborated" in check["detail"]
+    assert check["status"] == "info" and 20 < check["value"] <= 100
+    assert "inconclusive without a hit-like cold probe" in check["detail"]
 
 
-def test_prf_03_a_measured_cold_region_passes_and_an_undecidable_one_is_inconclusive():
+def test_prf_03_veryquick_cold_class_is_not_used_as_a_repeatable_cache_verdict():
     small = dict(capacity_gib=5, hit_iops=92000, write_allocate=True)  # the last GiB written is cached, the cold tenth is not
     _, out, _ = vq(make_host(cache=small))
-    assert verdict_of(out) == {"verdict": "pass", "cache_state": "cold_measured"}
-    assert out.calibration["calibration"]["cache"]["read"]["e_cold"]["class"] == "miss-like"
+    assert verdict_of(out) == {"verdict": "inconclusive", "cache_state": "undetermined"}
+    cold = out.calibration["calibration"]["cache"]["read"]["e_cold"]
+    assert cold["class"] == "not_assessed" and cold["diagnostic_class"] == "miss-like"
     assert next(c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-19")["status"] == "pass"
-    # no ladder: a cold region that reads like the reference cannot tell "no cache" from "a cache bigger than 20 s of writes"
-    assert verdict_of(vq()[1]) == {"verdict": "inconclusive", "cache_state": "cold_hit_like"}
+    # no ladder: one cold sample cannot establish a repeatable cache class
+    assert verdict_of(vq()[1]) == {"verdict": "inconclusive", "cache_state": "undetermined"}
     assert verdict_of(vq(make_host(cache=INVERSION))[1])["verdict"] == "inconclusive"
 
 
@@ -326,6 +374,7 @@ def test_prf_03_a_file_target_uses_the_veryquick_fill_budget_and_no_fresh_extent
     out = calibrate(host, target="/bench/target.img", work_dir="/bench/w", profile="veryquick")
     assert out.status == "complete" and out.result["identity"]["target"]["kind"] == "file"
     assert {"filesystem_layer", "very-quick-profile"} <= set(out.result["quality"]["limits"])
+    assert "limited-by-budget" not in out.result["quality"]["limits"]
     cal = out.calibration["calibration"]
     assert cal["fresh_vs_rewrite"] == {"measured": False, "reason": "veryquick_profile"}
     ws = cal["extent_written"][0][1]
@@ -343,7 +392,7 @@ def test_prf_03_the_dry_run_plans_the_jobs_the_real_run_runs(clean):
     host, out, _ = clean
     cal = out.calibration["calibration"]
     planned = dryrun.calibrate_plan(host, config(profile="veryquick", assume_r_est=cal["R_est_bps"]))
-    assert planned["profile"] == "veryquick" and planned["budget_s"] == 210 and planned["total_s"] == 173 and planned["preflight"] == "not_run"
+    assert planned["profile"] == "veryquick" and planned["budget_s"] == 210 and planned["total_s"] == 201 and planned["preflight"] == "not_run"
     assert [s["name"] for s in planned["stages"]] == ["S0", "S1", "fill", "E-cold", "series", "S6"]
     # the planned jobs are the real run's jobs (same names bar the run id, same offsets, sizes, depths, runtimes, sampling and byte bounds)
     stage_jobs = {s["name"]: [RUN_ID.sub("RUN", " ".join(e["argv"])) for e in s["jobs"]] for s in planned["stages"]}
@@ -367,7 +416,7 @@ def test_prf_03_the_cli_takes_the_profile_and_prints_the_plan():
     code = cli.build_cli(CliIdentity("iobench", "0.1.0", "x", "iobench"), host_factory=lambda: host).run(
         argv=["calibrate", "--target", "/dev/vda7", "--profile", "veryquick", "--dry-run", "--json"], stdout=out, stderr=err)
     doc = json.loads(out.getvalue())
-    assert code == 0 and doc["profile"] == "veryquick" and doc["total_s"] == 173 and cli.PROFILES == ("veryquick", "quick", "standard", "thorough")
+    assert code == 0 and doc["profile"] == "veryquick" and doc["total_s"] == 201 and cli.PROFILES == ("veryquick", "quick", "standard", "thorough")
     code = cli.build_cli(CliIdentity("iobench", "0.1.0", "x", "iobench"), host_factory=lambda: host).run(
         argv=["calibrate", "--target", "/dev/vda7", "--profile", "ludicrous", "--dry-run"], stdout=io.StringIO(), stderr=io.StringIO())
     assert code != 0

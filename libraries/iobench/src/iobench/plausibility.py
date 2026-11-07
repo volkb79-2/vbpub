@@ -134,10 +134,17 @@ READ_OVER_WRITE_WARN = 20.0  # [I] inferred: above this, flag the ratio for revi
 READ_OVER_WRITE_FAIL = 100.0  # [I] inferred: a gross mismatch fails without corroboration
 
 
-def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str | None = None) -> Check:
+def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str | None = None,
+           read_state: str | None = None, read_cv: float | None = None,
+           write_state: str | None = None, write_cv: float | None = None) -> Check:
     """An inferred gross cache-inflation check for every profile with sequential read and write cells.
 
     The thresholds are provisional [I] values; IOB-ACC-01 must calibrate them on the VM and a known cached device."""
+    unsteady = [("read", read_state, read_cv), ("write", write_state, write_cv)]
+    reasons = [f"{direction} cell unsteady (cv={'unknown' if cv is None else f'{cv:.3f}'})"
+               for direction, state, cv in unsteady if state == "unsteady"]
+    if reasons:
+        return Check("IOB-PLA-19", "not_applicable", "; ".join(reasons))
     if (not isinstance(read_bps, (int, float)) or isinstance(read_bps, bool) or not math.isfinite(read_bps) or read_bps <= 0
             or not isinstance(write_bps, (int, float)) or isinstance(write_bps, bool) or not math.isfinite(write_bps) or write_bps <= 0):
         return Check("IOB-PLA-19", "not_applicable", "sequential read and write rates must both be finite and positive")

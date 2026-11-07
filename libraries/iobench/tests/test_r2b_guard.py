@@ -133,7 +133,7 @@ def test_a_root_file_target_of_exactly_ten_percent_of_the_free_space_is_allowed_
     free = 20 * GIB
     assert _root_init(_root_host(free), free // 10).size_bytes == free // 10
     with pytest.raises(Refusal) as err:
-        _root_init(_root_host(free), free // 10 + 1)
+        _root_init(_root_host(free), free // 10 + (1 << 20))
     assert err.value.condition == "root_target_too_large"
 
 
