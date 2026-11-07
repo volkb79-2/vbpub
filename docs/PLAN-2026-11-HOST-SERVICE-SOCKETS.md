@@ -83,19 +83,29 @@ cockpit. The current split of responsibilities breaks that:
   group of another level of the same service. This generalises the existing observer
   refusal (`host-setup/install.sh:193-201`) to every level and moves it into
   `cgpd install` and `toposd install`. run-gate and assay rely on it for the observer
-  (`run_gate.py:2802`, `:8800`; `assay/tools/resource-observer-gid.sh:45`), and from
+  (`run_gate.py:~8801`; `assay/tools/resource-observer-gid.sh:44-47`), and from
   phase 1 also for the control level (5.5, 5.6).
+  - Groups are tool-specific, so no two estate socket levels share a group, across
+    services too (e.g. `topos-observe` ≠ `cgprofile-observer`, `mdt-buildkit` ≠
+    `cgprofile-control`). A service installer can only check its own levels; the
+    cross-service check lives in host-setup's wizard and `check.sh` (5.3.4, 5.3.5).
   - The installers run on the host as root, so they take the docker GID from
     `getent group docker`. Consumers inside a container cannot trust their own group
-    table (`run_gate.py:8796-8798`). They take it from a numeric value the host
-    launcher passes in: `MDT_HOST_DOCKER_GID` (5.4, 5.7), and assay's existing
-    `ASSAY_GATE_HOST_DOCKER_GID` (`resource-observer-gid.sh:59`). Today's fallback,
+    table (`run_gate.py:8796-8798`). They take it from a numeric value in their
+    environment: `MDT_HOST_DOCKER_GID`, set by the devcontainer (5.4), the runner
+    container (5.7) and, for host shells, host-setup's environment exports (5.3.8);
+    and assay's existing `ASSAY_GATE_HOST_DOCKER_GID` (`resource-observer-gid.sh:59`).
+    Today's fallback,
     the GID of `/run/cgprofile` with mode 0770, goes away: that directory is
     `root:root 0755` in the new layout.
 - **P-5a. The same rule binds every estate host socket.** host-setup's own BuildKit
   socket is chgrped to `docker` today (`units/mdt-buildkitd.service.in:112`); it moves
-  to a dedicated `mdt-buildkit` group (5.3.8). iogovmon already conforms (own
-  `iogovmon` system user and group, no docker).
+  to a dedicated `mdt-buildkit` group (5.3.8). The group name, the
+  `MDT_BUILDKIT_USERS` key and the access change for other BuildKit users are this
+  plan's choices under the ruling's "mdt-*" scope; confirm them with the operator
+  before phase 2. iogovmon has no socket today and runs as its own `iogovmon` system
+  user (`iogovmon/README.md:182`); a future socket follows this rule.
+  `/run/docker-api` stays on `docker`: it is docker access itself.
 - **P-6. topos gets a cli-extended admin entry point `toposd`** (daemon run, install,
   doctor, unit print/check, config check), mirroring `cgpd`. `topos` itself stays on
   argparse for now (`topos/src/topos/cli.py:122-124`). Rewriting the whole topos CLI
@@ -414,18 +424,23 @@ Safety therefore comes from the order below, with each host switched in one boun
 
 **Cutover steps (per host)**:
 1. Drain:
-   - Wait for, or stop, running lanes and cgpd live sessions. Never force without the
-     operator.
-   - Stop the devcontainers on that host. Their bind mounts of `/run/cgprofile` and
+   - Wait for, or stop, running lanes, cgpd live sessions and BuildKit builds. Never
+     force without the operator.
+   - Stop the devcontainers on that host, and the runner cockpit container
+     (`$COCKPIT_NAME` in `start-cockpit-runner.sh`, which binds `/run/cgprofile` and
+     `/run/mdt-buildkitd` at `:19-20`). Their bind mounts of `/run/cgprofile` and
      `/run/topos` die in step 3, and so do their terminals and the agent sessions inside
      them. Announce this to the operator before starting, naming the containers.
 2. Stop and disable the old `cgpd` and `topos` units.
 3. Manual removal, listed below.
 4. Install the phase-2 mdt host-setup, which installs the services, creates the level
-   groups and the `mdt-buildkit` group, and adds the users from `host-setup.env`.
-5. Check the memberships: `getent group cgprofile-control cgprofile-observer
-   topos-observe mdt-buildkit` lists the host login user and the runner user where
-   `host-setup.env` says so, and none of these GIDs is the docker GID.
+   groups and the `mdt-buildkit` group, adds the users from `host-setup.env`, writes
+   the GID exports (5.3.8) and restarts `mdt-buildkitd` so its socket moves to
+   `mdt-buildkit`.
+5. Check the memberships for the roles enabled on that host: `getent group` on
+   `cgprofile-control`, `cgprofile-observer`, `topos-observe` and `mdt-buildkit` lists
+   the host login user and the runner user where `host-setup.env` says so, and none
+   of these GIDs is the docker GID.
 6. Make the new memberships live:
    - the host login user logs out and in again (this also restarts the VS Code server
      on the host, so `${localEnv:...}` sees the GID exports of 5.4);
@@ -453,7 +468,8 @@ P-11 refusals print it. Remove:
   read by the new cgpd, so 5.1 keeps that file's format compatible, or refuses it by
   name.
 - then `systemctl daemon-reload`, and `rm -rf /run/cgprofile /run/topos`. Containers
-  that bind-mounted these lose them; they are recreated in step 8.
+  that bind-mounted these lose them; they are recreated in steps 6 (runner) and 8
+  (devcontainers).
 
 Phases 1 and 2 may be merged separately in either order, but no host is cut over before
 both are released.
@@ -631,10 +647,13 @@ rule, user-facing docs ship in the same change as the code.
    - `TOPOS_ENABLE`, `TOPOS_WHEEL`, `TOPOS_WHEEL_SOURCE`, `TOPOS_OBSERVE_GROUP`
      (default `topos-observe`);
    - `CGPROFILE_CONTROL_USERS`, `CGPROFILE_OBSERVER_USERS`, `TOPOS_OBSERVE_USERS`
-     (space-separated; default: the invoking host login user, from `SUDO_USER`, plus
-     `RUNNER_USER` when set), passed as `--add-user` flags.
+     (space-separated; default: the invoking host login user, from `SUDO_USER`),
+     passed as `--add-user` flags. The operator lists further users, such as the
+     Netcup runner user (`scripts/netcup/runner/runner.env.example:12`), explicitly;
+     host-setup does not read the runner's env file.
    The wizard validators refuse `docker` (and an existing group whose GID is the docker
-   GID) for every `*_GROUP` key, and the same group for two levels. Remove
+   GID) for every `*_GROUP` key, and the same group for two levels, across services
+   (P-5). Remove
    `CGPROFILE_*` keys that move into `cgpd install` flags only if they are unused
    afterwards.
 5. **`scripts/check.sh`**: replace `:463-488` (cgprofile dir), `:491-590` (observer),
@@ -650,18 +669,38 @@ rule, user-facing docs ship in the same change as the code.
    text (`:558`, "the existing `--group-add ${localEnv:DOCKER_GID}` runArg is" enough)
    is rewritten for the level groups. Also `CGROUP-NOTES.md:889` and CHANGES.
 8. **Host GID exports and the BuildKit group** (P-5, P-5a):
-   - install `/etc/profile.d/mdt-host-gids.sh`, which exports `DOCKER_GID`,
+   - Exported variables: `DOCKER_GID`, `MDT_HOST_DOCKER_GID` (same value),
      `CGPROFILE_CONTROL_GID`, `CGPROFILE_OBSERVER_GID`, `TOPOS_OBSERVE_GID` and
-     `MDT_BUILDKIT_GID` from `getent group` on the host, for the configured group
-     names. A group that does not exist exports nothing. This replaces the manual
-     `export DOCKER_GID=...` the templates ask for today
-     (`templates/devcontainer.json:219-220`);
+     `MDT_BUILDKIT_GID`, resolved with `getent group` on the host for the configured
+     group names at each host-setup run.
+   - Two routes, because `/etc/profile.d` reaches only sh/bash login shells
+     (`host-setup/etc/profile.d/mdt-buildkit.sh:9-11` says so for its own variable):
+     - a host-setup-managed block of literal `KEY=VALUE` lines in `/etc/environment`
+       (pam_env), which covers ssh sessions (including a Remote-SSH VS Code server),
+       sudo and cron;
+     - `/etc/profile.d/mdt-host-gids.sh` with the same values, for login shells that
+       do not go through pam_env.
+     A desktop-launched local VS Code sees neither; that path keeps the manual export
+     the templates document today (`templates/devcontainer.json:216-220`), and
+     `initializeCommand` names it when the values are missing.
+   - A group of a role that is not enabled has no GID. Its variable gets an inert
+     value instead, the GID of `nogroup` (`getent group nogroup`, 65534 on Debian), so
+     `--group-add` never receives an empty string (Dev Containers substitutes an unset
+     `localEnv` as empty, and Docker refuses `--group-add ""`). By convention no file
+     is owned by `nogroup`, so the value grants nothing; `check.sh` warns if a socket
+     or directory under `/run` has that group. A user's own primary GID would not do:
+     `/etc/environment` applies to every user.
    - add `g mdt-buildkit` to host-setup's sysusers file and `MDT_BUILDKIT_USERS` (same
-     default as above);
-   - `units/mdt-buildkitd.service.in:112`: chgrp the socket to `mdt-buildkit` and
-     verify against its GID, instead of `docker`;
-   - `check.sh` checks the BuildKit socket group the same way;
-   - tests: `test-render.sh` and the unit render tests pin the new group.
+     default as above). Every other host user that builds through `mdt-managed`
+     (`mdt-buildkit.sh` sets `BUILDKIT_HOST` for all login shells) must be listed
+     there, or loses access at the cutover; the README says so.
+   - `units/mdt-buildkitd.service.in:112`: chgrp the socket to `mdt-buildkit`, verify
+     against its GID instead of `docker`, and reword the final error ("did not become
+     safe and docker-group-accessible");
+   - `check.sh` checks the BuildKit socket group the same way, and the cross-service
+     distinct-group rule (P-5);
+   - tests: `host-setup/tests/test-render.sh:251-254`, `:278` pin `chgrp docker` and
+     move to the new group; the unit render tests too.
 
 ### 5.4 mdt-cockpit devcontainer templates and vbpub `.devcontainer` (phase 2)
 
@@ -673,9 +712,10 @@ rule, user-facing docs ship in the same change as the code.
      `.devcontainer` `:250`) becomes `/run/topos/observe:/run/topos/observe:ro`. Keep the
      `-v` (optional) form and its comment (`:229-241`).
    - Also bind `/run/cgprofile/observer` read-only. run-gate's observer preflight runs
-     in the devcontainer and `lstat`s that directory and socket (`run_gate.py:8754-8760`)
-     before it mounts them into a lane. The devcontainer does not get the observer GID,
-     so it cannot connect there; the lane gets it (5.5).
+     in the devcontainer and `lstat`s that directory and socket (`run_gate.py:8757-8763`)
+     before it mounts them into a lane. `lstat` needs only traversal of the 0755
+     directory, no connect, so the devcontainer does not get the observer GID and
+     cannot connect there; the lane gets it (5.5).
    - Rewrite the comments that say the sockets ship `root:docker` (`:84-88`,
      `:238-241`, and the host-folder and `.devcontainer` copies).
    **Group access: one numeric `--group-add` per level** (D2). Container group tables
@@ -685,24 +725,31 @@ rule, user-facing docs ship in the same change as the code.
      `--group-add ${localEnv:TOPOS_OBSERVE_GID}` and
      `--group-add ${localEnv:MDT_BUILDKIT_GID}`;
    - containerEnv gets `MDT_HOST_DOCKER_GID: ${localEnv:DOCKER_GID}` for run-gate and
-     assay (P-5);
-   - the values come from host-setup's `/etc/profile.d/mdt-host-gids.sh` (5.3.8).
-     `${localEnv:...}` is resolved from the VS Code server's environment before
-     `initializeCommand` runs, so `initializeCommand` cannot supply them; it verifies
-     them instead (item 3).
+     assay (P-5). It is the host's docker GID; the container-side `MDT_DOCKER_GID`
+     that `finalize_container_environment.py:41`, `:745` exports is a different
+     variable and stays as it is;
+   - the values come from host-setup's exports (5.3.8). Dev Containers resolves
+     `${localEnv:...}` from the environment of the process that reads
+     devcontainer.json (the VS Code server or the `devcontainer` CLI), and
+     `initializeCommand` cannot change that environment. It reads the same variables
+     from its own `os.environ` and verifies them (item 3).
 2. **Declared sockets**: new containerEnv key `MDT_HOST_SERVICE_SOCKETS`, for example
-   `cgprofile/control:required topos/observe:optional`. The level's group must exist
-   either way: optional means the daemon may be absent or not answering.
+   `cgprofile/control:required topos/observe:optional`.
 3. **`templates/initialize_container_environment.py`**: new
    `verify_host_service_sockets`, called in `main()` after `verify_host_cgroup_slices`
    (`:487-548`, call site `~:782`), in the same stderr `[mdt-bootstrap] ERROR` /
    return-1 style. First the GIDs: for each level, `getent group <name>` on the host
-   must match the `*_GID` variable the VS Code server exported (the same group names
-   host-setup uses, read from `host-setup.env` when present, else the defaults). A
-   missing or different value is an error with the remedy "log out and in again on
-   the host, or run host-setup" (the `--group-add` would otherwise get an empty or
-   stale value). A level GID equal to the docker GID is an error (P-5). Then, for each
-   declared socket:
+   must match the `*_GID` variable in its environment (the same group names
+   host-setup uses, read from `host-setup.env` when present, else the defaults).
+   - A missing variable, or one that differs from `getent`, is an error with the
+     remedy "log out and in again on the host, or run host-setup; a desktop-launched
+     VS Code needs the exports in its own environment" (the `--group-add` would
+     otherwise get an empty or stale value).
+   - A level whose group does not exist on the host is an error only when that level
+     is declared `required`; for an `optional` one the inert value (5.3.8) is accepted
+     with a warning.
+   - A level GID equal to the docker GID is an error (P-5).
+   Then, for each declared socket:
    - path exists and is a socket;
    - its gid is the GID of that level's group, never the docker GID;
    - `connect()` succeeds when the host user can.
@@ -712,8 +759,10 @@ rule, user-facing docs ship in the same change as the code.
 4. **In-container**: optionally add a `cgpctl doctor`/`toposd doctor --check connect`
    line to the finalize summary (`scripts/finalize_container_environment.py` already
    lists both CLIs at `:261`).
-5. **Docs**: template comments, `templates/README.md`, `docs/DEVCONTAINER-MECHANISMS.md`,
-   CHANGES.
+5. **Tests and docs**: `mdt-cockpit/scripts/test_devcontainer_audit.py:158-161` pins
+   the single `DOCKER_GID` runArg and its export comment and moves to the new runArgs;
+   template comments, `templates/README.md`, `docs/DEVCONTAINER-MECHANISMS.md:54`,
+   `docs/CONSUMERS.md:540`, CHANGES.
 
 ### 5.5 run-gate-project (phase 1)
 
@@ -734,12 +783,16 @@ rule, user-facing docs ship in the same change as the code.
      differs from both the docker gid and the control socket's gid.
    - `--group-add observed.st_gid` keeps using the socket's gid.
    - New, for the control level: wherever run-gate connects to the control socket
-     (`PROFILE_SOCKET_PATH_DEFAULT` users above), it first checks that the socket's
-     gid is non-zero, differs from the docker gid, and is one of the process's
-     supplementary groups. A control socket owned by the docker group is refused, not
+     (`PROFILE_SOCKET_PATH_DEFAULT` users above, e.g. the version preflight at
+     `:15987`), it first checks that the socket's gid is non-zero, differs from the
+     docker gid, and is one of the process's supplementary groups, or that the process
+     runs as uid 0 (the runner container runs `--user 0:0`). A control socket owned by
+     the docker group is refused, not
      accepted as an equivalent: control == docker is no longer a valid setup. An
      EACCES names the `cgprofile-control` group and the remedy (recreate the
      devcontainer with its `--group-add`, 5.4).
+   - The `socket_unreachable_cause` hint (`:2800-2803`) tells the user to bind-mount
+     `/run/cgprofile`; it names `/run/cgprofile/control` instead.
    - `:8832` compares the daemon-advertised observer path (`serve.py:1018`) with the old
      constant. Compare it with the new path.
    - The rules target the new layout only. A phase-1 run-gate on a host that has not
@@ -760,8 +813,15 @@ rule, user-facing docs ship in the same change as the code.
 - **Docker GID.** `assay_host_docker_gid` (`resource-observer-gid.sh:56-75`) drops the
   `/run/cgprofile` directory fallback (mode 0770, gid = docker). It reads
   `ASSAY_GATE_HOST_DOCKER_GID`, else `MDT_HOST_DOCKER_GID`, and fails naming both when
-  neither is a positive integer. The observer rule at `:45` stays, and a control socket
-  whose gid is the docker gid is refused the same way.
+  neither is a positive integer. Its directory argument goes away, and the callers
+  stop passing `/run/cgprofile` (`tester-unified-gate.sh:46`, `:1514`;
+  `self-qualification-container.sh:42`, `:351`). On a plain host shell the value comes
+  from host-setup's exports (5.3.8).
+- **Directory gid rule.** Drop `socket_gid != parent_gid` (`resource-observer-gid.sh:38-41`):
+  the new observer directory is `root:root 0755`, so the rule would fail on every
+  healthy host (the run-gate twin at `run_gate.py:8779` goes too, 5.5.3).
+- The observer rule at `:44-47` stays, and a control socket whose gid is the docker
+  gid is refused the same way.
 - **Docs.** `docs/CONSUMERS.md:538` ("never mount the control socket") stays true; update
   the basename there.
 
@@ -855,8 +915,12 @@ from section 4:
   - the new host-setup refuses on a VM with its old files and lists the manual removal;
   - after the removal it installs both services through their install verbs;
   - a devcontainer from the new templates has only the level directories mounted, and
-    its supplementary groups are the docker, `cgprofile-control`, `topos-observe` and
-    `mdt-buildkit` host GIDs (not the observer GID);
+    its supplementary groups are the docker GID plus the `cgprofile-control`,
+    `topos-observe` and `mdt-buildkit` host GIDs of the enabled roles (inert values
+    for the others), never the observer GID;
+  - a host with topos not enabled still starts a devcontainer, with a warning;
+  - a devcontainer started through a Remote-SSH session and one started with the
+    `devcontainer` CLI from a non-login shell both get every `*_GID` value;
   - the BuildKit socket has group `mdt-buildkit` and mode 0660, and a build
     through `mdt-managed` works from the devcontainer;
   - `initializeCommand` fails when a `*_GID` variable is missing or differs from the
