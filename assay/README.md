@@ -336,6 +336,10 @@ assay exists to close that gap mechanically, not by policy:
   use the old layout. See the
   [socket cutover rationale](docs/DESIGN-GUIDE.md#host-cgprofile-socket-cutover)
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+  Assay's tester launchers require the host Docker GID as a numeric value:
+  `ASSAY_GATE_HOST_DOCKER_GID` takes precedence over `MDT_HOST_DOCKER_GID`.
+  Missing or malformed selected values refuse launch. They do not infer it
+  from the Docker API socket, whose GID may belong to a proxy or relay.
   This does not observe per-process limits such as `RLIMIT_NPROC` or
   `RLIMIT_AS`. See the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)

@@ -349,7 +349,7 @@ b105_memory_limit=2g
 b105_memory_reserve_bytes=2147483648
 observer_gid="$(resource_observer_gid)"
 host_docker_gid="$(assay_host_docker_gid)" \
-  || die 'could not resolve the host Docker GID from ASSAY_GATE_HOST_DOCKER_GID or the Docker API socket'
+  || die 'could not resolve the host Docker GID from ASSAY_GATE_HOST_DOCKER_GID or MDT_HOST_DOCKER_GID'
 cgroup_parent="$("$project/tools/cgroup-parent.sh" \
   --memory-reserve-bytes "$b105_memory_reserve_bytes")" \
   || die 'the host gates cgroup tier or its 2 GiB RAM headroom is absent or unverified'

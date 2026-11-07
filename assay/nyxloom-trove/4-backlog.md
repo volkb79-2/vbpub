@@ -14081,39 +14081,15 @@ TB-13 phase 2, this entry and cmru KI-114 phase 3, run-gate RG-153 the default f
 
 **Dependencies and order.** After RG-151 and TB-13; in parallel with KI-114. Then RG-153.
 
-## B212 — assay observer launchers: drop `ASSAY_GATE_HOST_DOCKER_GID`, derive gids by `stat`, assert against both docker-class gids
+## B212 — Assay observer host Docker GID source and level-group separation
 
-**Status: PARTLY SUPERSEDED by B522 (2026-11-06).** B522 implements the `stat` derivation: the Docker GID is read from the owning GID of the socket `DOCKER_HOST` names (`unix://`, default `/var/run/docker.sock`), never from a name or group database, and the observer GID must be non-root and differ from it. Obsolete here: the `/run/cgprofile` directory-GID clause (level directories are `root:root` in the new layout) and the "remove the variable / a set variable is an error" clause. Changed on purpose: `ASSAY_GATE_HOST_DOCKER_GID` is KEPT as an explicit override of the socket-derived GID (a proxied or relayed socket can carry a non-docker GID; a root-owned or non-unix endpoint needs it; the inner tester already receives it from the outer launcher at `tester-unified-gate.sh` and `self-qualification-container.sh`). It is strict (plain non-root decimal; set but empty or malformed is an error) and identical to Run-Gate's `RUN_GATE_HOST_DOCKER_GID`. Operator decision reversed for the override only (the 2026-11-04 line "nothing reads a configured docker gid" no longer holds for it; flag to the operator when closing). Remaining open scope: the non-mdt, no-cgprofile acceptance.
+**Status: IMPLEMENTED on branch `sockets-assay-20261105`, pending controller gate evidence and independent review; amended 2026-11-07.** The original proposal to derive the host Docker GID from the Docker API socket is dropped. That socket's GID describes access to the socket and can belong to a proxy or relay; it is not an authoritative host Docker-group fact. The `/run/cgprofile` directory-GID fallback is also dropped because the new level directories are `root:root 0755`. Current source order is the strict `ASSAY_GATE_HOST_DOCKER_GID` override, then numeric `MDT_HOST_DOCKER_GID`; a malformed selected value refuses and absence names both. The observer GID must be nonzero and differ from Docker. The helper no longer uses a directory GID as a group-separation rule. The launcher tests use a private `unshare -rm` mount fixture at the canonical observer path.
 
-**Original status: OPEN (filed 2026-11-04).** Operator decision 2026-11-04: new fixed estate group `mdt-docker` (gid 2751) on the host relay socket and on
-`/run/cgprofile` (mdt-cockpit MDT-053, cgprofile CP-43); every consumer derives the gid by `stat` of the socket it mounts.
+The initial 2026-11-04 proposal to reject `ASSAY_GATE_HOST_DOCKER_GID` and infer Docker GIDs from socket and `/run/cgprofile` metadata is superseded by the amended source contract above. Keep `ASSAY_GATE_HOST_DOCKER_GID` because the controller supplies an explicit host fact for non-mdt callers; do not stat the Docker API socket or infer a GID from `/run/cgprofile`. Preserve the observer directory's root-UID and safe-mode checks, but do not require its GID to equal or differ from the socket GID.
 
-**Problem.** `tools/resource-observer-gid.sh:56-75` (`assay_host_docker_gid`) accepts an environment override `ASSAY_GATE_HOST_DOCKER_GID`
-(passed in "from the host launcher", which is the stale host-number pattern) and otherwise reads `/run/cgprofile` and requires mode 770.
-The observer gid must differ from the docker gid. On an mdt host there are now two docker-class gids (`mdt-docker` on the cgprofile
-directory and the relay socket, and the host `docker` group); on a non-mdt host there is one and possibly no cgprofile at all.
+**Controller acceptance still required.** Run the registered Assay gate with the new launcher mount fixture, verify fail-before/pass-after and 100% line plus branch coverage for changed source, and complete mutation proof. Run one pytest at a time under `nice`; do not use the cockpit pytest environment. Keep the non-mdt, no-cgprofile behavior in the supported gate's host acceptance coverage.
 
-**Design.**
-
-- Remove the `ASSAY_GATE_HOST_DOCKER_GID` input entirely (no alias; a set variable is an error naming the replacement, so no stale launcher
-  silently relies on it).
-- Derive the docker-class gid by `stat` of the docker socket the launcher mounts (`DOCKER_HOST` when `unix://`, else the default) and, when
-  present, of `/run/cgprofile`.
-- Assert the observer socket gid differs from every derived docker-class gid (socket gid, `/run/cgprofile` directory gid); keep the
-  existing mode and ownership checks of the observer directory.
-- Messages name the paths read, never a group name.
-
-**Acceptance criteria.**
-
-- The helper's tests cover: observer gid equal to the socket gid refused; equal to the `/run/cgprofile` gid refused; distinct accepted; the old
-  variable set gives a clear error.
-- No `ASSAY_GATE_HOST_DOCKER_GID` remains in `assay/`, docs or tests except the refusal test.
-- **Non-mdt path.** With no `/run/cgprofile` and an arbitrary-gid docker socket the launchers work without the observer (or refuse the observer
-  feature with one clear infrastructure message when it is required) and require no mdt group.
-
-**Test plan.** `bash` helper tests with injected `stat` results, plus the existing launcher tests updated.
-
-**Dependencies and order.** After CP-43 and with MDT-053; pairs with run-gate RG-152.
+**Dependencies and order.** Shares the observer cutover with B522 and Run-Gate RG-152.
 
 <!-- Id note (2026-11-04, ops-dstdns-r2 session): the ids below start at B213, one past the highest id on main (B212); B210 exists only on
      branch finish-assay-1-20261104. The controller resolves ordering on merge. -->
@@ -14322,4 +14298,4 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 ## B522 — Move Assay observer launchers to the new per-level cgprofile socket path
 
-**Status: FIXED on branch `sockets-assay-20261105`, pending independent review.** The registered tester and self-qualification launchers now use `/run/cgprofile/observer/cgprofile.sock` on the host and `/run/cgprofile-observer/cgprofile.sock` in the container. The shared guard takes the host Docker GID from the `ASSAY_GATE_HOST_DOCKER_GID` override, else the owning GID of the Docker API socket (`DOCKER_HOST` `unix://` or `/var/run/docker.sock`), never a group database (this implements the `stat` derivation of B212 and keeps the override B212 proposed dropping: see B212's status, the operator decision of 2026-11-04 is reversed for the override only). The override is strict (plain non-root decimal, set-but-empty is an error, identical to Run-Gate's `RUN_GATE_HOST_DOCKER_GID`); a non-`unix://` `DOCKER_HOST` or a root-group socket is refused with the override hint instead of guessed; collision messages print both GIDs and the source. The guard requires the observer GID to differ from Docker, and reports the host cutover when the new socket is absent. README, DESIGN-GUIDE, CONSUMERS and CHANGES describe the new paths and pin requirement.
+**Status: FIXED on branch `sockets-assay-20261105`, pending controller gate evidence and independent review; amended 2026-11-07.** The registered tester and self-qualification launchers use `/run/cgprofile/observer/cgprofile.sock` on the host and `/run/cgprofile-observer/cgprofile.sock` in the container. The shared guard reads `ASSAY_GATE_HOST_DOCKER_GID` first, then `MDT_HOST_DOCKER_GID`, with strict positive-decimal validation; if neither exists it names both. The Docker API socket-owner fallback from the first implementation is removed because a proxy or relay can own the socket with an unrelated access GID. The guard does not infer a Docker GID from `/run/cgprofile` or the observer directory. It requires a nonzero observer GID distinct from Docker and reports the host cutover when the new socket is absent. README, DESIGN-GUIDE, CONSUMERS and CHANGES describe the source order, no-fallback rule, and new paths.

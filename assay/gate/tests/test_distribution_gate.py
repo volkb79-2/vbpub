@@ -199,7 +199,7 @@ def test_gate_script_has_valid_bash_syntax() -> None:
         assert proc.returncode == 0, f"{script}: {proc.stderr}"
 
 
-def test_observer_guards_use_the_new_paths_and_docker_socket_gid() -> None:
+def test_observer_guards_use_the_new_paths_and_launcher_docker_gid() -> None:
     for script in (GATE_SCRIPT, SELF_QUALIFICATION_SCRIPT):
         source = script.read_text(encoding="utf-8")
         assert 'resource-observer-gid.sh' in source
@@ -211,20 +211,28 @@ def test_observer_guards_use_the_new_paths_and_docker_socket_gid() -> None:
         assert "ASSAY_GATE_HOST_DOCKER_GID" in source
     helper = OBSERVER_GID_HELPER.read_text(encoding="utf-8")
     assert "getent" not in helper
-    assert "/var/run/docker.sock" in helper
-    assert '"$parent_gid" == 0' in helper
+    assert "/var/run/docker.sock" not in helper
+    assert "DOCKER_HOST" not in helper
+    assert "MDT_HOST_DOCKER_GID" in helper
+    assert "ASSAY_GATE_HOST_DOCKER_GID" in helper
+    assert "parent_gid" not in helper
     assert '"$socket_gid" != "$host_docker_gid"' in helper
     assert 'socket_gid" =~ ^[1-9][0-9]*$' in helper
+    for script in (GATE_SCRIPT, SELF_QUALIFICATION_SCRIPT):
+        assert "assay_host_docker_gid /run/cgprofile" not in script.read_text(encoding="utf-8")
+    gate_source = GATE_SCRIPT.read_text(encoding="utf-8")
+    assert 'stat -Lc %g "$docker_socket_local"' not in gate_source
+    assert '"$docker_gid" =~ ^[1-9][0-9]*$' in gate_source
 
 
 @pytest.mark.parametrize(
     ("docker_gid", "socket_gid", "directory_gid",
      "directory_mode", "socket_mode", "expected_status", "error_text"),
     [
-        (994, 995, 0, "755", "660", 0, ""),
+        (994, 995, 995, "755", "660", 0, ""),
+        (994, 995, 994, "755", "660", 0, ""),
         (994, 0, 0, "755", "660", 1, "non-root group"),
         (994, 994, 0, "755", "660", 1, "dedicated group"),
-        (994, 995, 994, "751", "660", 1, "complete the host socket cutover"),
         (994, 995, 0, "770", "660", 1, "not writable"),
         (994, 995, 0, "755", "666", 1, "not accessible to other"),
         (994, 995, 0, "755", "640", 1, "group-connectable"),
@@ -239,10 +247,8 @@ def test_observer_gid_guard_rejects_wrong_host_group_facts(
     observer_dir = tmp_path / "observer"
     observer_dir.mkdir()
     observer_socket = observer_dir / "cgprofile.sock"
-    docker_socket = tmp_path / "docker.sock"
-    for node in (observer_socket, docker_socket):
-        with socket.socket(socket.AF_UNIX) as listener:
-            listener.bind(str(node))
+    with socket.socket(socket.AF_UNIX) as listener:
+        listener.bind(str(observer_socket))
     script = r'''source "$1"
 observer_socket="$2"
 fact_docker_gid="$3"
@@ -250,15 +256,20 @@ fact_socket_gid="$4"
 fact_directory_gid="$5"
 fact_directory_mode="$6"
 fact_socket_mode="$7"
-docker_socket="$8"
 observer_dir="$(dirname "$observer_socket")"
-unset ASSAY_GATE_HOST_DOCKER_GID
+unset ASSAY_GATE_HOST_DOCKER_GID MDT_HOST_DOCKER_GID DOCKER_HOST
+ASSAY_GATE_HOST_DOCKER_GID="$fact_docker_gid"
 stat() {
-  local path="${@: -1}"
+  local format="$2" path="${@: -1}"
   case "$path" in
-    "$observer_dir") printf '0 %s %s\n' "$fact_directory_gid" "$fact_directory_mode" ;;
+    "$observer_dir")
+      case "$format" in
+        '%u %a') printf '0 %s\n' "$fact_directory_mode" ;;
+        '%u %g %a') printf '0 %s %s\n' "$fact_directory_gid" "$fact_directory_mode" ;;
+        *) return 1 ;;
+      esac
+      ;;
     "$observer_socket") printf '0 %s %s\n' "$fact_socket_gid" "$fact_socket_mode" ;;
-    "$docker_socket") printf '%s\n' "$fact_docker_gid" ;;
     *) return 1 ;;
   esac
 }
@@ -269,10 +280,9 @@ assay_resource_observer_gid "$observer_socket"
             "bash", "-c", script, "observer-gid-test",
             str(OBSERVER_GID_HELPER), str(observer_socket), str(docker_gid),
             str(socket_gid), str(directory_gid), directory_mode, socket_mode,
-            str(docker_socket),
         ],
         capture_output=True, text=True,
-        env={**os.environ, "DOCKER_HOST": f"unix://{docker_socket}"},
+        env={**os.environ, "ASSAY_GATE_HOST_DOCKER_GID": str(docker_gid)},
     )
     assert proc.returncode == expected_status, proc.stderr
     if expected_status == 0:
@@ -292,11 +302,11 @@ def test_observer_gid_guard_refuses_when_host_docker_group_is_unavailable(
     script = r'''source "$1"
 observer_socket="$2"
 observer_dir="$(dirname "$observer_socket")"
-unset ASSAY_GATE_HOST_DOCKER_GID
+unset ASSAY_GATE_HOST_DOCKER_GID MDT_HOST_DOCKER_GID DOCKER_HOST
 stat() {
   local path="${@: -1}"
   case "$path" in
-    "$observer_dir") printf '0 0 755\n' ;;
+    "$observer_dir") printf '0 755\n' ;;
     "$observer_socket") printf '0 995 660\n' ;;
     *) return 1 ;;
   esac
@@ -307,12 +317,12 @@ assay_resource_observer_gid "$observer_socket"
         ["bash", "-c", script, "observer-gid-test", str(OBSERVER_GID_HELPER),
          str(observer_socket)],
         capture_output=True, text=True,
-        env={**os.environ, "DOCKER_HOST": f"unix://{tmp_path}/absent.sock"},
+        env={**os.environ},
     )
     assert proc.returncode != 0
     assert "host Docker GID is unavailable" in proc.stderr
     assert "ASSAY_GATE_HOST_DOCKER_GID" in proc.stderr
-    assert f"{tmp_path}/absent.sock" in proc.stderr
+    assert "MDT_HOST_DOCKER_GID" in proc.stderr
 
 
 def test_observer_gid_guard_names_cutover_when_new_socket_is_absent(
@@ -326,7 +336,7 @@ def test_observer_gid_guard_names_cutover_when_new_socket_is_absent(
         listener.bind(str(legacy_socket))
     script = r'''source "$1"
 observer_socket="$2"
-stat() { [[ "${@: -1}" == "$(dirname "$observer_socket")" ]] && printf '0 0 755\n'; }
+stat() { [[ "${@: -1}" == "$(dirname "$observer_socket")" ]] && printf '0 755\n'; }
 assay_resource_observer_gid "$observer_socket"
 '''
     proc = subprocess.run(
@@ -338,110 +348,21 @@ assay_resource_observer_gid "$observer_socket"
     assert "complete the host socket cutover" in proc.stderr
 
 
-@pytest.mark.parametrize("stat_result", ["0", "garbage", "FAIL"])
-def test_host_docker_gid_refuses_an_unusable_docker_socket_owner(
-    tmp_path: Path, stat_result: str,
-) -> None:
-    docker_socket = tmp_path / "docker.sock"
-    with socket.socket(socket.AF_UNIX) as listener:
-        listener.bind(str(docker_socket))
+def test_host_docker_gid_uses_mdt_value_without_statting_docker_socket() -> None:
     script = r'''source "$1"
-stat_result="$2"
 unset ASSAY_GATE_HOST_DOCKER_GID
-stat() {
-  [[ "$stat_result" != FAIL ]] || return 1
-  printf '%s\n' "$stat_result"
-}
-assay_host_docker_gid
-'''
-    proc = subprocess.run(
-        ["bash", "-c", script, "docker-gid-test", str(OBSERVER_GID_HELPER),
-         stat_result],
-        capture_output=True, text=True,
-        env={**os.environ, "DOCKER_HOST": f"unix://{docker_socket}"},
-    )
-    assert proc.returncode != 0
-    if stat_result == "0":
-        assert "owned by group 0" in proc.stderr
-    else:
-        assert "host Docker GID is unavailable" in proc.stderr
-    assert "ASSAY_GATE_HOST_DOCKER_GID" in proc.stderr
-    assert str(docker_socket) in proc.stderr
-
-
-def test_host_docker_gid_reads_the_docker_socket_owner_without_an_override(
-    tmp_path: Path,
-) -> None:
-    docker_socket = tmp_path / "docker.sock"
-    with socket.socket(socket.AF_UNIX) as listener:
-        listener.bind(str(docker_socket))
-    script = r'''source "$1"
-docker_socket="$2"
-unset ASSAY_GATE_HOST_DOCKER_GID
-stat() { [[ "${@: -1}" == "$docker_socket" ]] || return 1; printf '994\n'; }
-assay_host_docker_gid
-'''
-    proc = subprocess.run(
-        ["bash", "-c", script, "docker-gid-test", str(OBSERVER_GID_HELPER),
-         str(docker_socket)],
-        capture_output=True, text=True,
-        env={**os.environ, "DOCKER_HOST": f"unix://{docker_socket}"},
-    )
-    # The fake answers only for the DOCKER_HOST socket path, so success proves
-    # that exact path was read.
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == "994\n"
-
-
-def test_host_docker_gid_uses_the_default_docker_socket_when_docker_host_is_unset(
-    tmp_path: Path,
-) -> None:
-    # The helper's default socket path is a plain shell variable, so the test
-    # points it at a fixture and never depends on the machine's real socket.
-    default_socket = tmp_path / "default-docker.sock"
-    with socket.socket(socket.AF_UNIX) as listener:
-        listener.bind(str(default_socket))
-    script = r'''source "$1"
-_ASSAY_DEFAULT_DOCKER_SOCKET="$2"
-unset ASSAY_GATE_HOST_DOCKER_GID DOCKER_HOST
-stat() { [[ "${@: -1}" == "$_ASSAY_DEFAULT_DOCKER_SOCKET" ]] || return 1; printf '777\n'; }
+stat() { printf 'docker socket stat must not run\n' >&2; return 91; }
 assay_host_docker_gid
 assay_host_docker_gid_source
 '''
     proc = subprocess.run(
-        ["bash", "-c", script, "docker-gid-test", str(OBSERVER_GID_HELPER),
-         str(default_socket)],
+        ["bash", "-c", script, "docker-gid-test", str(OBSERVER_GID_HELPER)],
         capture_output=True, text=True,
+        env={**os.environ, "MDT_HOST_DOCKER_GID": "994",
+             "DOCKER_HOST": "tcp://proxy.invalid:2375"},
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == f"777\n{default_socket}\n"
-
-
-@pytest.mark.parametrize(
-    "docker_host", ["unix://", "tcp://127.0.0.1:2375", "ssh://host"],
-)
-def test_host_docker_gid_refuses_a_non_unix_docker_host_without_falling_back(
-    tmp_path: Path, docker_host: str,
-) -> None:
-    default_socket = tmp_path / "default-docker.sock"
-    with socket.socket(socket.AF_UNIX) as listener:
-        listener.bind(str(default_socket))
-    script = r'''source "$1"
-_ASSAY_DEFAULT_DOCKER_SOCKET="$2"
-unset ASSAY_GATE_HOST_DOCKER_GID
-stat() { printf '777\n'; }
-assay_host_docker_gid
-'''
-    proc = subprocess.run(
-        ["bash", "-c", script, "docker-gid-test", str(OBSERVER_GID_HELPER),
-         str(default_socket)],
-        capture_output=True, text=True,
-        env={**os.environ, "DOCKER_HOST": docker_host},
-    )
-    assert proc.returncode != 0
-    assert proc.stdout == ""
-    assert f"DOCKER_HOST={docker_host} is not a unix:// socket" in proc.stderr
-    assert "ASSAY_GATE_HOST_DOCKER_GID" in proc.stderr
+    assert proc.stdout == "994\nMDT_HOST_DOCKER_GID\n"
 
 
 def test_observer_gid_guard_collision_message_prints_both_gids_and_source(
@@ -456,7 +377,7 @@ def test_observer_gid_guard_collision_message_prints_both_gids_and_source(
 observer_socket="$2"
 stat() {
   case "${@: -1}" in
-    "$(dirname "$observer_socket")") printf '0 0 755\n' ;;
+    "$(dirname "$observer_socket")") printf '0 755\n' ;;
     "$observer_socket") printf '0 994 660\n' ;;
     *) return 1 ;;
   esac
@@ -487,20 +408,49 @@ def test_host_docker_gid_accepts_only_a_verified_explicit_override() -> None:
     assert valid.returncode == 0
     assert valid.stdout == "994\n"
 
-    # Strict and identical to Run-Gate's RUN_GATE_HOST_DOCKER_GID: a SET value
-    # is a plain non-root decimal GID or an error (empty included).
+    fallback = subprocess.run(
+        ["bash", "-c", 'source "$1"; unset ASSAY_GATE_HOST_DOCKER_GID; assay_host_docker_gid; assay_host_docker_gid_source',
+         "observer-gid-test", helper],
+        capture_output=True, text=True,
+        env={**os.environ, "MDT_HOST_DOCKER_GID": "995"},
+    )
+    assert fallback.returncode == 0
+    assert fallback.stdout == "995\nMDT_HOST_DOCKER_GID\n"
+
+    # The strict explicit override wins when both sources are present.
+    override_first = subprocess.run(
+        ["bash", "-c", 'source "$1"; assay_host_docker_gid; assay_host_docker_gid_source',
+         "observer-gid-test", helper],
+        capture_output=True, text=True,
+        env={**os.environ, "ASSAY_GATE_HOST_DOCKER_GID": "994",
+             "MDT_HOST_DOCKER_GID": "995"},
+    )
+    assert override_first.returncode == 0
+    assert override_first.stdout == "994\nASSAY_GATE_HOST_DOCKER_GID\n"
+
+    # A SET source must be a plain non-root decimal GID or an error.
     for bad in ("0", "", " 994", "994 ", "+5", "1_0", "docker", "-3"):
         invalid = subprocess.run(
             ["bash", "-c", 'source "$1"; assay_host_docker_gid',
              "observer-gid-test", helper],
             capture_output=True, text=True,
-            env={**os.environ, "ASSAY_GATE_HOST_DOCKER_GID": bad},
+            env={**os.environ, "ASSAY_GATE_HOST_DOCKER_GID": bad,
+                 "MDT_HOST_DOCKER_GID": "995"},
         )
         assert invalid.returncode != 0, bad
         assert (
             "ASSAY_GATE_HOST_DOCKER_GID must be a verified non-root numeric GID"
             in invalid.stderr
         ), bad
+
+    invalid_mdt = subprocess.run(
+        ["bash", "-c", 'source "$1"; unset ASSAY_GATE_HOST_DOCKER_GID; assay_host_docker_gid',
+         "observer-gid-test", helper],
+        capture_output=True, text=True,
+        env={**os.environ, "MDT_HOST_DOCKER_GID": "bad"},
+    )
+    assert invalid_mdt.returncode != 0
+    assert "MDT_HOST_DOCKER_GID must be a verified non-root numeric GID" in invalid_mdt.stderr
 
 
 def test_gate_driver_git_wrapper_overrides_local_maintenance_settings(tmp_path: Path) -> None:

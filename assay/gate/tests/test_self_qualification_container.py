@@ -11,7 +11,9 @@ import os
 import re
 import select
 import signal
+import shlex
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -32,6 +34,7 @@ PILOT_HOST_CHECK = PROJECT_ROOT / "tools" / "b110_pilot_host_check.py"
 ANALYSIS_PILOT_HOST_CHECK = PROJECT_ROOT / "tools" / "analysis_r2_pilot_host_check.py"
 CONTAINER_ID = "a" * 64
 ANALYSIS_PILOT_ATTESTATION = "f" * 64
+OBSERVER_SOURCE = "/run/cgprofile/observer/cgprofile.sock"
 
 
 FAKE_GIT = r'''#!/usr/bin/env python3
@@ -641,6 +644,54 @@ def record_run_gate_error_preserving_success(worktree: Path, receipt: dict) -> N
     history_path.write_text(json.dumps(store), encoding="utf-8")
 
 
+def _prepare_observer_fixture(tmp_path: Path, fake_bin: Path, env: dict[str, str]) -> None:
+    """Provide the canonical host socket only inside the launcher's mount namespace."""
+    observer_dir = tmp_path / "observer-fixture"
+    observer_dir.mkdir(mode=0o755, exist_ok=True)
+    observer_socket = observer_dir / "cgprofile.sock"
+    if not observer_socket.exists():
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(observer_socket))
+
+    real_stat = shutil.which("stat")
+    assert real_stat is not None
+    fake_stat = fake_bin / "stat"
+    fake_stat.write_text(
+        "#!/bin/bash\n"
+        'if [[ "$#" == 3 && "$1" == "-Lc" ]]; then\n'
+        '  if [[ "$2" == "%u %a" && "$3" == "/run/cgprofile/observer" ]]; then\n'
+        "    printf '0 755\\n'; exit 0\n"
+        "  fi\n"
+        '  if [[ "$2" == "%u %g %a" && "$3" == "/run/cgprofile/observer/cgprofile.sock" ]]; then\n'
+        "    printf '0 995 660\\n'; exit 0\n"
+        "  fi\n"
+        "fi\n"
+        f"exec {shlex.quote(real_stat)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    fake_stat.chmod(0o755)
+    env["ASSAY_TEST_OBSERVER_DIRECTORY"] = str(observer_dir)
+    env["ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"] = OBSERVER_SOURCE
+
+
+def _isolated_launcher_command(env: dict[str, str], *argv: str) -> list[str]:
+    unshare = shutil.which("unshare")
+    mount = shutil.which("mount")
+    mkdir = shutil.which("mkdir")
+    assert unshare is not None and mount is not None and mkdir is not None
+    setup = "\n".join(
+        (
+            "set -eu",
+            f"{shlex.quote(mount)} --make-rprivate /",
+            f"{shlex.quote(mount)} -t tmpfs -o mode=755,nosuid,nodev tmpfs /run",
+            f"{shlex.quote(mkdir)} -p /run/cgprofile/observer",
+            f"{shlex.quote(mount)} --bind \"$ASSAY_TEST_OBSERVER_DIRECTORY\" /run/cgprofile/observer",
+            'exec /bin/bash "$@"',
+        )
+    )
+    return [unshare, "-rm", "--", "/bin/bash", "-c", setup, "assay-observer-fixture", *argv]
+
+
 def run_launcher(
     tmp_path: Path,
     worktree: Path,
@@ -838,15 +889,19 @@ if '--archive-prior-snapshot' in sys.argv:
         minimal_bin.mkdir(exist_ok=True)
         for name in (
             "bash", "git", "findmnt", "realpath", "dirname", "flock", "chmod", "rm",
-            "mkdir", "mv", "python3", "stat",
+            "mkdir", "mv", "python3",
         ):
             target = shutil.which(name)
             assert target is not None
             (minimal_bin / name).symlink_to(target)
         env["PATH"] = str(minimal_bin)
+        stat_link = minimal_bin / "stat"
+        if not stat_link.is_symlink():
+            stat_link.symlink_to(fake_bin / "stat")
+    _prepare_observer_fixture(tmp_path, fake_bin, env)
     started = time.monotonic()
     proc = subprocess.run(
-        ["bash", str(SCRIPT), str(worktree), lane],
+        _isolated_launcher_command(env, str(SCRIPT), str(worktree), lane),
         env=env,
         capture_output=True,
         text=True,
@@ -889,6 +944,7 @@ def launch_env(tmp_path: Path, *, mode: str):
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
     env.pop("ASSAY_GATE_ALLOW_SHARED_HOST", None)
     env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
+    _prepare_observer_fixture(tmp_path, fake_bin, env)
     return env, trace
 
 
@@ -4149,7 +4205,9 @@ def test_runner_cancellation_stops_and_removes_its_owned_container(
     os.mkfifo(ready_path)
     ready_fd = os.open(ready_path, os.O_RDWR | os.O_NONBLOCK)
     proc = subprocess.Popen(
-        ["bash", str(SCRIPT), str(committed_worktree), "self-qualification-preflight"],
+        _isolated_launcher_command(
+            env, str(SCRIPT), str(committed_worktree), "self-qualification-preflight"
+        ),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -4210,7 +4268,9 @@ def test_cancellation_during_launch_reconciles_cidfile_and_owned_name(
     env, trace = launch_env(tmp_path, mode="blocked-launch")
     state_path = Path(env["DOCKER_STATE"])
     proc = subprocess.Popen(
-        ["bash", str(SCRIPT), str(committed_worktree), "self-qualification-preflight"],
+        _isolated_launcher_command(
+            env, str(SCRIPT), str(committed_worktree), "self-qualification-preflight"
+        ),
         env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:

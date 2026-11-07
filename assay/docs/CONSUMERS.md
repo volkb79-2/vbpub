@@ -544,6 +544,19 @@ layout. Never mount the control endpoint
 protocol read-only. The observer supplies verified ancestry and event-counter
 evidence; it is not a performance-profile stream.
 
+Assay's tester launchers read the host Docker GID from
+`ASSAY_GATE_HOST_DOCKER_GID` first, then `MDT_HOST_DOCKER_GID` from host-setup.
+Set the latter in the host environment before running a plain-host gate, for
+example `export MDT_HOST_DOCKER_GID=2751` (replace this example with the host's
+numeric Docker group GID). The optional explicit override takes precedence;
+both values must be positive decimal GIDs, and a malformed override refuses
+instead of falling through. If neither is present, launch refuses and names
+both variables. The Docker API socket's GID is not a fallback because a proxy
+or relay may own it with an unrelated access group. `/run/cgprofile` and the
+observer directory are not GID sources. The observer socket GID must be
+nonzero and different from Docker; Run-Gate also requires it to differ from
+the control socket GID.
+
 After R0/R1, B148/A-494 applies the same local-first observation rule before
 any selected native candidate starts: a configured observer can satisfy it
 only when the local reader specifically proves ancestors hidden. Without a

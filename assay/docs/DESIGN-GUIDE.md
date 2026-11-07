@@ -892,17 +892,15 @@ Assay's tester launchers consume the observer socket from
 `/run/cgprofile/control/cgprofile.sock` and is never mounted for observation.
 
 Systemd owns the per-level directories as `root:root`; the socket file's GID
-grants access. The launch guard takes the host Docker GID from the
-`ASSAY_GATE_HOST_DOCKER_GID` override forwarded by the outer launcher, else from
-the owning GID of the Docker API socket the launcher uses (`DOCKER_HOST`
-`unix://` path, default `/var/run/docker.sock`), never from a group database,
-and refuses naming both sources when neither is available. The override must
-be a plain non-root decimal GID (set but empty or malformed is an error, the
-same rule as Run-Gate's `RUN_GATE_HOST_DOCKER_GID`); a non-`unix://`
-`DOCKER_HOST` or a socket owned by group 0 is refused with the override hint
-rather than guessed. It requires the
-observer GID to be non-zero and different from Docker. It does not infer a socket group from its parent directory. Run-Gate's
-host preflight also checks that the observer and control socket groups differ.
+grants access. The launch guard reads the host Docker GID from the strict
+`ASSAY_GATE_HOST_DOCKER_GID` override first, then `MDT_HOST_DOCKER_GID` from
+host-setup. Each selected value must be a positive decimal GID, and a malformed
+override refuses instead of falling through. The Docker API socket's GID is
+not an authority for the host Docker group: a proxy or relay may use a separate
+access group. `/run/cgprofile` and the observer directory are not GID sources
+either; the level directories are `root:root 0755`. The observer socket GID
+must be nonzero and different from Docker. Run-Gate also requires the observer
+and control socket GIDs to differ.
 These clients use the new paths only. A host still on the earlier layout needs
 its socket cutover before using the updated Assay or Run-Gate release, so its
 existing pins stay in place until that host is switched.
