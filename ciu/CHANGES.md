@@ -21,6 +21,39 @@ the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [7.24.0] - 2026-11-06
+<!-- cmru: generated -->
+<!-- cmru: source-end=13cff77c1c7f5a3de59a74af8791a01a8723cd6b -->
+
+### Added
+- feat(ciu): complete one-shot run acceptance (0aabfe009)
+- feat(ciu): reap and protect one-shot runs (e9aca3f54)
+- feat(ciu): launch one-shot compose runs (b1a77a80d)
+- feat(ciu): add one-shot run plans (c827130d1)
+
+### Fixed
+- fix(ciu): clean pre-validation reports an undeterminable compose project instead of a traceback (R3-1) (698bf65c1)
+- fix(ciu): reap floor from State.FinishedAt, wider --extend deny list, doc dry-run preparation (R2-3, R2-4, R2-5) (327f1a6c7)
+- fix(ciu): ciu clean evaluates the one-shot guard before step 1 removes anything (R2-1) (8cb3f7782)
+- fix(ciu): ciu run never removes a container it did not create; harden extension, dry-run, launch semantics (F1-F6, F8, F10) (eed62e5b6)
+- fix(ciu): global-only root clean keeps --vanilla and identity-network removal; direct predicate tests (CIU-202 review fixes) (a0a529289)
+- fix(ciu): keep up --dry-run free of compose input evaluation (F7) (4857bed7d)
+- fix(ciu): handle global-only roots in sibling cleanup (58a2b4420)
+
+### Changed
+- Merge origin/main into ciu-run-20261105 (CIU-202); keep both sides' CHANGES/backlog entries, drop absolute report path (70b4d9a96)
+- Merge origin/main into ciu-sibling-roots-20261105 (c427dd084)
+- Merge origin/main into ciu-run-20261105 (b70c8849c)
+- chore: retire modern-debian-tools-python-debug; mdt-cockpit is its successor (2015c4e00)
+- refactor(ciu): expose stack preparation inputs (069d081d3)
+
+### Documentation
+- docs(ciu): document ciu run name-collision refusal, extension limits, launch semantics; add collision case to real-docker acceptance (F1-F9 docs) (ccd25d5ea)
+
+### Testing
+- test(ciu): close the 100% coverage gap on the CIU-141/138/202 refusal paths (worktree rm, ciu run CLI, clean one-shot guard, global-only clean, procutil.popen) (4bbf8d49a)
+- test(ciu): pin reap floor boundary, non-UTC FinishedAt offsets and nanosecond truncation (R3-2); backlog header wording (R3-3) (781b1a01e)
+
 ## [7.23.2] - 2026-11-05
 <!-- cmru: generated -->
 <!-- cmru: source-end=3f5283109f50e0467a2aea61009a0b41c8098520 -->
@@ -32,12 +65,20 @@ the technical detail below it.
 - test(ciu): kill R2 survivors of ciu 7.23.0 (CIU-201); _is_linked_git_worktree via procutil (equivalent mutants removed) (77820f737)
 
 <!-- cmru: pending release notes begin -->
+### Added
+- `ciu run [--detach --json] <stack>[:<service>] -- ARGV...` runs one command in a fresh container using the rendered service's identity, mounts, network, secrets, user and cgroup settings. Foreground mode reports the inspected exit status before exact-name cleanup and offers a separate JSONL event channel; detached mode returns the inspected full container ID and leaves cleanup to its observer. `ciu run reap` surveys abandoned runs and removes only eligible, proven-owned containers (CIU-141).
+
 ### Fixed
+- `ciu run` (pre-release review fixes, CIU-141): a `--name` already held by any container (for example a persistent `test-runner`) is now refused before anything is created, in foreground, detached and `--dry-run` modes, and that container is never touched; every removal and signal is keyed on the full container ID and this run's `ciu.run.id` label rather than the name. All `docker inspect` calls are limited to containers and a hex-only `--name` is refused (Docker would read it as an ID). `--extend` no longer accepts `cap_add`/`security_opt`, refuses bind sources `/` and Docker sockets (including symlinked or normalised spellings) and compares mount targets after normalisation. `launched` is emitted only for a container that actually started. `--dry-run --json` now runs the network and name checks and reports the effective name, runtime labels and injected environment. SIGHUP is forwarded and SIGWINCH relayed; a broken event sink is reported once and no longer kills the command. `up --dry-run` is again free of compose-input evaluation. Second review round: `ciu clean` now evaluates the foreign-one-shot guard for every selected stack before step 1 removes any container (it previously ran only inside the reset, after containers were gone), and `--dry-run` reports the refusal; `ciu run reap` removes an exited run only 300 seconds after its `State.FinishedAt` (independent of `--older-than`, `docker rm` without `-f`; an unreadable finish time leaves it alone) and force-removes only aged running ones; the `--extend` bind deny list also covers containerd/podman sockets and `/etc`, `/proc`, `/var/lib/docker`, `/var/lib/containerd` (documented as a safety net, not a sandbox); `--dry-run` is documented as still running stack preparation.
+- `ciu clean` can now invoke stack reset from the checkout root while still targeting that stack's rendered Compose file and overlays. Absolute stack-scoped file paths let Compose remove the selected checkout's one-shots as documented (CIU-141).
 - fix(ciu): `ciu clean` / `ciu worktree rm` no longer fail on roots without `[deploy.labels]` (tls-edge, pwmcp, topos, nyxloom): `reset_service` derives the orphan-sweep label prefix from `deploy.project_name` when `deploy.labels.prefix` is unset (CIU-200). Clean now evaluates reset's preconditions for every selected stack BEFORE removing any container and refuses with `[CIU-200] ... nothing was removed`; `--dry-run` reports the same refusal. Explains CIU-198's half-cleaned state.
+- fix(ciu): global-only CIU roots clean as a successful no-op, and `worktree rm` preflights every committed root before cleaning the first one; `--dry-run` reports root cleanup failures (CIU-202). `ciu clean --vanilla` in a global-only root still removes the workspace identity network and the generated reset files instead of reporting "nothing to clean".
 - Test-strength closeout of the ciu 7.23.0 R2 mutation survivors (CIU-201): new behavioural tests pin the clean ownership helpers (listing, endpoint and network inspection run through a fake `docker` executable), the clean plan, `--dry-run` forwarding of `clean` and `worktree rm`, the symlink-free walks, the own-container inspect, the leftover-adoption tail and the linked-worktree hint shape. `_is_linked_git_worktree` now calls `procutil.run_cmd` (two provably equivalent mutation sites removed). No behaviour change.
 
 ### Adoption / Migration Notes
+- Additive: no config change is required. `ciu run` requires the declared network to exist and does not start dependencies; a detached container stays until its owner removes it or `ciu run reap` proves it abandoned. `ciu clean` removes this checkout's own one-shots and refuses before teardown if another or unknown checkout owns a matching one.
 - Safe to ignore: no config change needed; an explicit `deploy.labels.prefix` still wins.
+- Safe to ignore: global-only roots need no stack template; `ciu clean` reports that there's nothing to clean.
 <!-- cmru: pending release notes end -->
 
 ## [7.23.1] - 2026-11-05

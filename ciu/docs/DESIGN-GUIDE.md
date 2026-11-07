@@ -26,6 +26,29 @@ operator-owned and later edits are left alone. The workspace operation still
 prepares all committed roots, while ordinary stack verbs resolve the nearest
 root above their invocation directory.
 
+### Global-only roots and stack cleanup
+
+`ciu.global.defaults.toml.j2` is the committed CIU-root marker. The per-stack
+`ciu.defaults.toml.j2` marks a native stack; a shipped `docker-compose.yml`
+also names a stack, while `ciu.install.override.toml.j2` does not. A root can
+therefore own global configuration and an identity without owning a stack.
+Keeping it in root discovery preserves the root's lifecycle identity and lets
+its global settings remain available. Direct `ciu clean` in that root is a
+successful no-op with `[INFO] global-only root: nothing to clean`; only the
+stack, container and volume parts are skipped, so `ciu clean --vanilla` still
+removes the workspace identity network and then the generated reset files
+(the root's identity record is what names that network). A nested CIU
+root has its own identity and cleanup, even when its parent root is global-only.
+
+Worktree removal discovers roots from the target checkout's committed tree.
+When there are sibling roots, it runs `ciu clean --dry-run` for every sibling
+and for the selected root before the first cleanup. Without `--force`, a
+nonzero plan refuses removal before any root is cleaned; `--dry-run` shows the
+root-plan blockers. A single-root removal keeps `ciu clean`'s existing
+stack-level preflight. The root preflight doesn't make later cleanups atomic,
+but prevents a known failure in a later root from stranding an earlier root
+after a partial teardown.
+
 The schema-v5 record keeps `initial_overlay_pending` separate from the
 worktree's lifecycle state. It starts true and is cleared in the same record
 write that first publishes `ready`. Root repair can later move a ready record
@@ -813,6 +836,66 @@ cannot be interpreted by a shell or misparsed as CIU flags. The child's exit
 code is returned exactly — an automation lane that runs a gate command through
 `exec` needs that code, not a wrapper's guess.
 
+## Why `ciu run` uses a fresh one-shot service container
+
+The rendered Compose service already owns the runtime facts a command needs:
+its image, user, working directory, network, secrets, mounts and cgroup parent.
+`ciu run` prepares that service through CIU, then asks Compose to run one
+command in a new container under the same project. A caller does not need to
+rebuild the service environment or keep a shared runner alive between tasks.
+
+The command always suppresses dependencies and service aliases. CIU stacks
+already have an explicit startup order, and creating or attaching another
+service during a one-shot would change that lifecycle. The declared network
+must exist before `ciu run`; this makes a missing or foreign network a refusal
+instead of a hidden network-creation side effect.
+
+Foreground execution uses `docker compose run --name N` without `--rm`.
+Compose streams the command correctly and keeps even an immediate exit
+inspectable. CIU polls the exact supplied name, emits the full inspected ID,
+checks the inspected exit status, and then removes that exact container. A
+detached run emits the inspected ID as JSON and leaves cleanup to its caller.
+This preserves an observer's chance to attach and avoids an auto-remove race.
+CIU forwards SIGINT and SIGTERM to the named container because Compose's
+foreground run does not forward them itself.
+
+The observer can attach after the launch event, but v1 has no first-instruction
+readiness barrier. A barrier would require changing the container entrypoint
+and would constrain images that do not contain a shell. If measured gate
+evidence shows that early work is missed, add a separately designed barrier;
+the v1 run contract makes no claim that sampling begins before the command's
+first instruction.
+
+CIU gives every one-shot ownership labels so a dead controller can be
+recovered with `ciu run reap`. The reaper combines Compose's project and
+one-off labels with CIU's run marker, then checks the exact container's root,
+stack, and owner process identity before removing its full ID. `ciu down`
+preserves these one-shots. `ciu clean` uses `down --remove-orphans`, so it
+removes this checkout's own runs and refuses before teardown if a matching
+one-shot belongs to another or unknown checkout.
+
+The per-run extension is a narrow YAML fragment, not an alternate service
+definition. CIU validates its keys and rejects mount-target or append-field
+collisions before Compose runs. Compose appends `group_add`; other accepted
+settings merge by their normal Compose rules. `cap_add` and `security_opt` are
+not accepted at all, and a bind source of `/`, of a container-daemon socket
+(or its parent directory), or inside `/etc`, `/proc`, `/var/lib/docker` or
+`/var/lib/containerd` (also through a symlink) is refused: a per-run fragment
+should not casually widen the container's privileges or hand it the daemon.
+This is a safety net against the common mistakes, not a sandbox; the extension
+file is operator-trusted and symlinks resolve in the controller's own mount
+namespace only. That explicit boundary lets a
+gate add measured resource limits and a read-only observer mount while leaving
+the rendered service authoritative.
+
+The cleanup rule is deliberately one-directional. A name collision is detected
+before anything is created and is a refusal, not something CIU "fixes": a fixed
+`--name` such as a persistent `test-runner` must never be removed because a
+second launch used the same name. Once CIU has created a container, it removes
+only by full ID and only after proving the container carries this run's
+`ciu.run.id` label; Compose failures, mismatched IDs and unstarted containers
+are cleaned up through that label query, never through the name.
+
 ## Why worktree startup is one declared, combined deploy
 
 A worktree's test environment is project policy: every new linked checkout of
@@ -943,7 +1026,7 @@ two known aliases for the same root. Missing or contradictory evidence is an
 unknown owner, so CIU refuses before Compose runs. This check belongs at
 deployment time because worktree allocation does not yet know which selected
 stack will start. See [the normative rules](SPEC.md#s88-explicit-container-name-ownership-preflight-ciu-104)
-and [the consumer steps](CONSUMERS.md#25-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
+and [the consumer steps](CONSUMERS.md#26-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
 
 ## Rejected alternatives
 
