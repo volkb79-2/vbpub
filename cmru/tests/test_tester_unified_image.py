@@ -3721,19 +3721,30 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
     assert f"docker pull {declared_env['CMRU_TESTER_CGROUP_PROBE_IMAGE']}" in bootstrap
 
 
-def test_the_orchestration_tester_image_is_overridable_per_release():
+def test_the_orchestration_tester_image_is_overridable_per_release(monkeypatch):
     """One release can use a side-tagged tester image (environment wins).
 
     A phase of work whose run-gate must not be promoted to ``:local`` yet (for
     example the host-service-sockets phase 1 image) is used for a single release
     by exporting ``CMRU_TESTER_UNIFIED_IMAGE``; unset, the promoted ``:local``
-    image is the default.
+    image is the default. The REAL estate orchestration file is loaded through
+    the strict config reader, so a loader change that stopped expanding the
+    reference would fail here, not only a text edit.
     """
+    from cmru import config
+
     orchestration = tomllib.loads(
         (REPO_ROOT / "cmru.orchestration.toml").read_text("utf-8"),
     )
     declared = orchestration["orchestration"]["defaults"]["env"]["CMRU_TESTER_UNIFIED_IMAGE"]
     assert declared == "${CMRU_TESTER_UNIFIED_IMAGE:-tester-unified:local}"
+
+    path = REPO_ROOT / "cmru.orchestration.toml"
+    monkeypatch.delenv("CMRU_TESTER_UNIFIED_IMAGE", raising=False)
+    assert config.load_forge_config(path).env["CMRU_TESTER_UNIFIED_IMAGE"] == "tester-unified:local"
+    monkeypatch.setenv("CMRU_TESTER_UNIFIED_IMAGE", "tester-unified:phase1-20261107")
+    assert (config.load_forge_config(path).env["CMRU_TESTER_UNIFIED_IMAGE"]
+            == "tester-unified:phase1-20261107")
 
 
 def test_the_final_stage_labels_the_base_it_was_built_from():
