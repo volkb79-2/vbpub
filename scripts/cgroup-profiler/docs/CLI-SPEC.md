@@ -6,6 +6,10 @@ contract is [`CGPCTL-SPEC.md`](CGPCTL-SPEC.md); reviewed semantic decisions are 
 [`cli-review.toml`](cli-review.toml) and review findings in [`cli-review-findings.toml`](cli-review-findings.toml).
 The surface is declared in [`../pyproject.toml`](../pyproject.toml) (`[tool.cli-extended]`).
 
+The administrative daemon CLI `cgpd` is specified in
+[`CGPCTL-SPEC.md` section 3](CGPCTL-SPEC.md#3-cgpd), including its `-t`
+config-test option and repeatable `install --add-user LEVEL=USER` option.
+
 <!-- cli-extended-surface:start -->
 ## Generated CLI surface and semantic review
 

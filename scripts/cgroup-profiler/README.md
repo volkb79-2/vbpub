@@ -69,11 +69,11 @@ for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
 | verb | what |
 |---|---|
 | `run` | explicit service entrypoint: serve systemd-passed sockets; `--self-bind` is for tests and development |
-| `install` | fetch pinned wheels, render config and systemd resources, drain before restart; `--enable`, `--no-enable`, `--allow-downgrade` |
+| `install` | fetch pinned wheels, render config and systemd resources, drain before restart; repeatable `--add-user LEVEL=USER`, `--enable`, `--no-enable`, `--allow-downgrade` |
 | `uninstall` | stop and remove the service; `--remove-groups` and `--purge-data` are opt-in |
 | `doctor` | check config, units, groups, socket nodes, state, service, access and foreign rules |
 | `unit` | `unit print` renders the service, slice, two socket units and sysusers file; `unit check` reports drift |
-| `config` | `config check` validates the config file without starting anything |
+| `config` | `config check` validates the config file without starting anything; `cgpd -t` is the same exit-code check for service preflight |
 | `reload` | signal the running daemon to reload; `--reset-overrides` also drops runtime overrides |
 
 After installation, run the service CLI from the active versioned venv at
@@ -113,8 +113,15 @@ are fixed and require a service restart:
 
 Each systemd socket unit has one `ListenStream` and passes one named fd to
 `cgpd.service`. Systemd owns the socket nodes across daemon restarts. The
-control group grants control access; observer group membership grants only
-read-only observer access. `allow_uids` can further narrow control access.
+Both level groups must be dedicated: neither can be named `docker`, resolve to
+GID 0 or the docker GID, or share a GID with the other cgprofile level. The
+installer and config checker refuse these values from flags, saved records,
+existing config, and wizard answers, with no override. Cross-service group
+uniqueness belongs to host-setup. Repeatable `cgpd install --add-user
+LEVEL=USER` flags add existing users with `gpasswd -a`; the installer records
+and keeps additions, and uninstall never removes memberships. `allow_uids` can
+further narrow control access. See the [access-group design](docs/DESIGN-GUIDE.md#dedicated-groups-for-each-socket-level)
+and [install examples](docs/CONSUMERS.md#install-and-run-the-native-service).
 
 The control socket is one carrier: there is no `exec` carrier. A version reply
 looks like this (the `cgprofile` field is the installed version):

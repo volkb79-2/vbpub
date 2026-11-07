@@ -52,12 +52,23 @@ mode = "0660"
 damon_lock = "/run/cgprofile/state/damon.lock"
 ```
 
-The socket keys are fixed at service start. `sockets.control.group` may map
-to an existing group such as `docker`; `sockets.observer.group` must be a
-different group and its GID must not equal the docker GID. The installer
-creates the default groups through the rendered sysusers file and can add
-named users to them. Access to the observer group grants read-only observer
-operations, not control access.
+The socket keys are fixed at service start. Both level groups must be dedicated:
+neither may be named `docker`, resolve to GID 0 or the docker GID, or resolve to
+the other cgprofile level's GID. `config check` and `install` enforce this when
+the groups exist. The same refusal applies to flags, the saved install record,
+an existing config, and wizard answers; there is no override. Cross-service
+group distinctness is an estate check owned by host-setup, not cgpd's installer.
+The installer creates the default groups through the rendered sysusers file.
+Access to the observer group grants read-only observer operations, not control
+access.
+
+Use repeatable `--add-user LEVEL=USER` flags to add existing accounts to a
+level group. The installer validates each account, adds it with `gpasswd -a`,
+and records the requested members in `install.toml`. Additions are cumulative:
+reruns keep the recorded users and append new ones. Membership takes effect at
+the user's next login or after a restarted service. Uninstall never removes
+users from groups individually; groups remain unless `--remove-groups` is
+requested, which deletes only cgpd-created groups.
 
 `cgpd.service` requires and follows both socket units, uses
 `RuntimeDirectory=cgprofile/state` with mode `0700` and preservation enabled,
@@ -65,6 +76,8 @@ and keeps `/run/cgprofile/state` in `ReadWritePaths`. The socket directories
 are created by systemd from the unit paths and `DirectoryMode=0755`. The VM
 acceptance must verify the actual directory ownership and modes on the target
 systemd version; do not infer the parent-directory behavior from unit text.
+`ExecStartPre` runs `cgpd -t`, the config-test alias for `cgpd config check`;
+it exits non-zero for invalid config before systemd starts the daemon.
 
 ## 3. Install and upgrade
 
@@ -93,13 +106,14 @@ PYTHONPATH="$CGPROFILE_WHEEL:$CLI_EXTENDED_WHEEL" \
   --wheel-source ./wheels \
   --control-group cgprofile-control \
   --observer-group cgprofile-observer \
+  --add-user "control=$USER" \
   --enable --yes
 ```
 
 Replace both example pins with the release's verified values. Each input comes
 from its flag, else from `/etc/cgprofile/install.toml` written by the previous
 run, else (on a TTY only) from a prompt: `cgpd install` asks for missing pins,
-group creation or mapping, users, and whether to enable the service. A
+group creation or mapping, users for each level, and whether to enable the service. A
 non-interactive run must provide each required value explicitly; use
 `--no-enable` for an install that should not start the service. A rerun with no
 flags therefore reapplies the recorded inputs, users included. `install` and
@@ -118,6 +132,18 @@ install output lists what changed as `config_changes`. The socket paths are
 fixed by the layout, so a file that sets another path is refused. A dry run
 never prompts and needs no `--enable`/`--no-enable`. `--config` is not supported for `install` and
 `uninstall`: they manage `/etc/cgprofile/cgpd.toml` only.
+
+Each level group must be dedicated: its name cannot be `docker`, its GID cannot
+be 0 or the docker GID, and the control and observer GIDs must differ. Both
+`cgpd config check` and `cgpd install` enforce this rule. Invalid saved records
+and existing config are refused even when a flag supplies a replacement; the
+wizard validates each answer and the pair before applying. No override exists.
+The installer checks only cgprofile's own levels; host-setup checks uniqueness
+across services. Repeat `--add-user LEVEL=USER` to add existing users. The
+installer validates each account, runs `gpasswd -a`, stores the names in
+`install.toml`, and adds recorded users on later installs. Dry-run output lists
+each requested membership. Memberships are never individually removed;
+`--remove-groups` explicitly deletes only groups created by cgpd.
 
 The installer performs these steps:
 
@@ -206,16 +232,22 @@ link, socket nodes, level directories and `/run/cgprofile/state`, then runs
 install (`--remove-groups`; a group that no longer resolves is skipped, and a
 group that cannot be removed, for example because it is a user's primary
 group, is reported at the end while everything else still goes; the install
-record stays so a rerun can retry), the
+record stays for manual cleanup), the
 data directory (`--purge-data`), the config, `/opt/cgprofile` and finally the
-ownership markers `PENDING` and `install.toml`, so an interrupted uninstall can
-be rerun and still knows which groups it created. The version tree the command
+ownership markers `PENDING` and `install.toml`, preserving the group list until
+cleanup is complete. If interrupted while the running version tree still
+exists, uninstall can be rerun from it; if the version tree was already
+removed, use the manual cleanup steps below. The version tree the command
 runs from (`/opt/cgprofile/current/venv/bin/cgpd uninstall --yes`) is removed
-after the result was printed, and its markers last. Groups and memberships remain
-unless `--remove-groups` is given; `/var/lib/cgprofile` sessions and overrides
-remain unless `--purge-data` is given. `cgpd uninstall --dry-run` prints the
-plan; a `/usr/local/bin/cgpctl` that is not the installer's link is kept and
-reported.
+after the result is printed. If this deferred removal fails, cgpd prints
+manual steps: remove any remaining `/opt/cgprofile` version tree and `current`
+link, run `groupdel` for any requested group that still exists, then remove
+`/etc/cgprofile/install.toml` and `/opt/cgprofile/PENDING` after verifying the
+owned files are gone. Do not rerun the cgpd binary from a version tree that has
+already been removed. Groups and memberships remain unless `--remove-groups`
+is given; `/var/lib/cgprofile` sessions and overrides remain unless
+`--purge-data` is given. `cgpd uninstall --dry-run` prints the plan; a
+`/usr/local/bin/cgpctl` that is not the installer's link is kept and reported.
 
 `cgpd doctor` reports the following checks, each with a remedy on failure:
 

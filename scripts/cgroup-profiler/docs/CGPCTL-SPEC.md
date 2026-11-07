@@ -270,10 +270,10 @@ not an error (`reset` is empty). Audit-logged like `config set`.
 | `cgprofile-observer` group member | nothing in `cgpctl`; the observer socket is reached by consumers directly, by design |
 
 A daemon verb without access exits 3 with cause `socket-permission`, the socket's group, the caller's
-groups and the remedy; no verb retries. The ctl group is root-equivalent on mdt hosts (it is the Docker
-relay group), so session ownership is hygiene, not a security boundary, and this document says so on
-purpose. Ownership is enforced by the daemon from `SO_PEERCRED` (PROTOCOL.md section 10.5), never by the
-client.
+groups and the remedy; no verb retries. The control socket group is a dedicated cgprofile access grant
+and must not be the Docker group, GID 0, the docker GID, or the observer level's GID. Docker API access
+is not part of the control-group policy. Ownership is enforced by the daemon from `SO_PEERCRED`
+(PROTOCOL.md section 10.5), never by the client.
 
 ### 2.5 Environment read by `cgpctl`
 
@@ -287,6 +287,7 @@ client.
 
 ```
 cgpd [--config PATH] <verb>
+cgpd -t [--config PATH]
 ```
 
 Root only. `cgpd run` refuses to start as a non-root euid (exit 2) and `cgpd unit` / `cgpd config` run
@@ -294,17 +295,21 @@ as any user (they read and render, never touch live state). `cgpd` is a service 
 cli-extended's sense: `--help`, `--version` and malformed arguments never start the service, create state
 or touch the socket.
 
+`cgpd -t` validates the selected config and exits 0 when valid or non-zero when
+invalid. It is equivalent to `cgpd config check` and is suitable for systemd
+`ExecStartPre`.
+
 ### 3.1 Verbs
 
 | Verb | Summary |
 |---|---|
 | `run [--self-bind]` | Explicit, never a default verb (`cgpd` without a verb prints usage and exits 2); the unit's `ExecStart` is `cgpd run`. Adopts systemd's named `control` and `observer` sockets; `--self-bind` is only for tests and development. |
-| `install` | Fetches hash-pinned wheels, renders config and systemd resources, checks drift, drains live sessions before restart, then applies the service install. A TTY can prompt for missing values. |
+| `install` | Fetches hash-pinned wheels, renders config and systemd resources, checks drift, drains live sessions before restart, then applies the service install. A TTY can prompt for missing values; repeat `--add-user LEVEL=USER` to add existing users. |
 | `uninstall [--remove-groups] [--purge-data]` | Stops and removes service resources; keeps groups and `/var/lib/cgprofile` unless the corresponding flags are supplied. |
 | `doctor [--check NAME] [--json]` | Checks config, rendered resources, groups, socket units and nodes, state directory, running version, connections, foreign rules, and caller access. |
 | `unit print [--wheel-venv PATH] [--install-root PATH]` | Prints the service, slice, per-level socket units and sysusers file from the wheel. Nothing is read from a checkout. |
 | `unit check [--installed PATH ...]` | Compares installed service resources with the rendered output; exit 2 on drift, naming the first differing line. |
-| `config check [--file PATH]` | Validates the file (unknown keys, types, ranges, slice names, uid list, and socket tables) without starting anything. Exit 0 valid, 2 invalid. |
+| `config check [--file PATH]` | Validates the file (unknown keys, types, ranges, slice names, uid list, and socket tables) without starting anything. Exit 0 valid, 2 invalid. `cgpd -t` is its config-test alias. |
 | `reload [--reset-overrides]` | Root only. Signals the running daemon to reload (what `systemctl reload cgpd` does); with `--reset-overrides` it first removes every runtime override through the socket (`config-reset` with `all`). Overrides are kept without the flag. |
 | `skills` | Not registered: `cgpd` has no agent skill. Client-side diagnosis remains available as `cgpctl doctor`. |
 
@@ -360,7 +365,17 @@ distribution's, via scm; it is no longer an environment input).
 
 Validation reuses the 1.x rules: slice names must expand to a cgroup path (`a--b`, `-a` and names with a
 `/` are refused); `allow_uids` entries are non-negative integers; `max_sessions` bounds the handler pool
-sizing. `interval` is clamped to [0.25, 30] at use, as on the wire.
+sizing. `interval` is clamped to [0.25, 30] at use, as on the wire. Both socket groups are dedicated:
+neither may be named `docker`, resolve to GID 0 or the docker GID, or resolve to the other level's GID.
+`config check`, the daemon loader and the installer share this rule. The installer refuses invalid group
+values from flags, saved `install.toml`, existing `cgpd.toml`, and wizard answers, with no override.
+Cross-service group uniqueness belongs to host-setup.
+
+`cgpd install --add-user LEVEL=USER` is repeatable for `LEVEL=control` or `LEVEL=observer`. The installer
+requires each account to exist, adds it with `gpasswd -a`, and records the requested users in
+`/etc/cgprofile/install.toml`. Reinstalls retain and re-add recorded members; memberships are never
+individually removed on uninstall. `--dry-run` lists the user and target group for each addition. The
+`groups` doctor check reports both level GIDs, current group members and users named in the install record.
 
 ### 3.3 Reload
 

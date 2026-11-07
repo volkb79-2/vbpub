@@ -79,8 +79,7 @@ def _args(*, version="2.2.0", enable=True, **overrides):
         "wheel_source": None,
         "control_group": "cgprofile-control",
         "observer_group": "cgprofile-observer",
-        "control_users": "",
-        "observer_users": "",
+        "add_user": None,
         "gates_slice": None,
         "observe_slices": None,
         "allow_uids": None,
@@ -418,7 +417,7 @@ def test_tty_wizard_resolves_missing_pins_groups_and_enable(tmp_path, monkeypatc
                                   f"0.5.1@sha256:{CLI_EXTENDED_SHA}", "alice", ""],
                       confirm_value=True)
     args = _args(wheel=None, cli_extended_wheel=None, control_group=None, observer_group=None,
-                 control_users=None, observer_users=None, enable=False, no_enable=False)
+                 add_user=None, enable=False, no_enable=False)
 
     values = installer._gather_inputs(args, _runtime(interactive=True, prompts=prompts), _paths(tmp_path))
 
@@ -454,6 +453,19 @@ def test_tty_prompts_cancelled_exit_130(tmp_path, monkeypatch):
     assert caught.value.exit_code == 130
 
 
+def test_tty_enable_prompt_cancellation_exits_130(tmp_path, monkeypatch):
+    monkeypatch.setattr(installer, "_group_gid", lambda _name: None)
+    paths = _paths(tmp_path)
+    Path(paths.install_record).parent.mkdir(parents=True, exist_ok=True)
+    Path(paths.install_record).write_text(
+        'control_users = []\nobserver_users = []\n', encoding="utf-8")
+    args = _args(enable=False, no_enable=False)
+    runtime = _runtime(interactive=True, prompts=CancelledPrompts())
+    with pytest.raises(installer.InstallError) as caught:
+        installer._gather_inputs(args, runtime, paths)
+    assert caught.value.exit_code == 130 and "prompts cancelled" in str(caught.value)
+
+
 def test_a_dry_run_needs_no_enable_decision_but_a_real_pipe_run_does(tmp_path):
     args = _args(enable=False, no_enable=False)
     assert installer._gather_inputs(args, _runtime(dry_run=True), _paths(tmp_path))["enable_now"] is False
@@ -470,6 +482,25 @@ def test_missing_user_and_bad_user_names_are_refused(monkeypatch):
         installer._validate_users(["-evil"])
     with pytest.raises(installer.InstallError, match="does not exist"):
         installer._validate_users(["ghost"])
+
+
+@pytest.mark.parametrize("spec,match", [
+    ("", "LEVEL=USER"),
+    ("admin=alice", "unknown --add-user access level"),
+    ("control=", "non-empty user"),
+    ("observer=alice=extra", "not a usable Unix user name"),
+])
+def test_add_user_flag_requires_one_level_and_existing_user(monkeypatch, spec, match):
+    monkeypatch.setattr(installer.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
+    with pytest.raises(installer.InstallError, match=match):
+        installer._parse_add_users([spec])
+
+
+def test_add_user_flag_is_repeatable_and_keeps_level_order(monkeypatch):
+    monkeypatch.setattr(installer.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
+    assert installer._parse_add_users(["observer=bob", "control=alice", "control=alice"]) == {
+        "control": ["alice"], "observer": ["bob"],
+    }
 
 
 def test_uid_list_parsing_rejects_garbage():
@@ -492,19 +523,58 @@ def test_pre_socket_release_needs_allow_downgrade_and_an_installation(tmp_path, 
         host.subject._preflight(values, host.paths.config, dry_run=True)
 
 
-def test_mapped_group_must_exist_and_observer_must_not_be_docker(monkeypatch):
-    gids = {"docker": 100, "same": 200, "control": 200, "observer": 200}
+def test_mapped_group_must_exist_and_all_levels_reject_docker_root_and_duplicate_gids(monkeypatch):
+    gids = {"docker": 100, "same": 200, "control": 200, "observer": 200, "root": 0,
+            "docker-alias": 100}
     monkeypatch.setattr(installer, "_group_gid", lambda name: gids.get(name))
     with pytest.raises(installer.InstallError, match="mapped control group.*does not exist"):
         installer._validate_group_mapping("missing", "cgprofile-observer")
     with pytest.raises(installer.InstallError, match="mapped observer group.*does not exist"):
         installer._validate_group_mapping("cgprofile-control", "gone")
     with pytest.raises(installer.InstallError, match="must not be docker"):
-        installer._validate_group_mapping("cgprofile-control", "docker")
+        installer._validate_group_mapping("docker", "cgprofile-observer")
+    with pytest.raises(installer.InstallError, match="GID 0"):
+        installer._validate_group_mapping("root", "cgprofile-observer")
+    with pytest.raises(installer.InstallError, match="GID 0"):
+        installer._validate_group_mapping("cgprofile-control", "root")
+    with pytest.raises(installer.InstallError, match="docker GID"):
+        installer._validate_group_mapping("docker-alias", "cgprofile-observer")
+    with pytest.raises(installer.InstallError, match="docker GID"):
+        installer._validate_group_mapping("cgprofile-control", "docker-alias")
     with pytest.raises(installer.InstallError, match="must differ"):
         installer._validate_group_mapping("same", "same")
     with pytest.raises(installer.InstallError, match="same GID"):
         installer._validate_group_mapping("control", "observer")
+
+
+def test_every_saved_group_input_is_validated_even_when_a_flag_overrides_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(installer, "_group_gid", lambda name: {"cgprofile-control": 7100,
+                                                                 "cgprofile-observer": 7101,
+                                                                 "safe": 7102}.get(name))
+    paths = _paths(tmp_path)
+    Path(paths.install_record).parent.mkdir(parents=True)
+    Path(paths.install_record).write_text('control_group = "docker"\n', encoding="utf-8")
+    with pytest.raises(installer.InstallError, match="must not be docker"):
+        installer._gather_inputs(_args(control_group="safe"), _runtime(), paths)
+
+
+def test_existing_config_group_is_not_overridden_when_unsafe(tmp_path, monkeypatch):
+    monkeypatch.setattr(installer, "_group_gid", lambda name: {"safe": 7100,
+                                                                 "cgprofile-observer": 7101}.get(name))
+    paths = _paths(tmp_path)
+    Path(paths.config).parent.mkdir(parents=True)
+    Path(paths.config).write_text(
+        '[sockets.control]\npath = "/run/cgprofile/control/cgprofile.sock"\n'
+        'group = "docker"\nmode = "0660"\n', encoding="utf-8")
+    with pytest.raises(installer.InstallError, match="docker"):
+        installer._gather_inputs(_args(control_group="safe"), _runtime(), paths)
+
+
+def test_tty_group_prompt_is_subject_to_the_same_group_policy(monkeypatch):
+    runtime = _runtime(interactive=True, prompts=Prompts(text_values=["docker"],
+                                                        select_value="map an existing group"))
+    with pytest.raises(installer.InstallError, match="must not be docker"):
+        installer._prompt_group(runtime, "control", "cgprofile-control", None, None)
 
 
 def test_wheel_fetch_copies_local_sources_and_rejects_missing_or_insecure_sources(tmp_path):
@@ -756,15 +826,21 @@ def test_prune_keeps_the_newest_two_and_the_current_version(tmp_path):
     assert shutil_missing == []
 
 
-def test_install_dry_run_only_reports_the_candidate(tmp_path, monkeypatch):
+def test_install_dry_run_reports_candidate_and_add_user_memberships(tmp_path, monkeypatch):
     subject = _installer(tmp_path)
     gids = {"cgprofile-control": 7100, "cgprofile-observer": 7101}
     monkeypatch.setattr(installer, "_group_gid", lambda name: gids.get(name))
+    monkeypatch.setattr(installer.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
 
-    body = subject.install(_args(), _runtime(dry_run=True))
+    body = subject.install(_args(add_user=["control=alice", "observer=bob"]), _runtime(dry_run=True))
 
     assert body["dry_run"] is True and body["version"] == "2.2.0"
     assert body["socket_mode"] == "activated"
+    assert body["users_to_add"] == {
+        "control": {"group": "cgprofile-control", "users": ["alice"]},
+        "observer": {"group": "cgprofile-observer", "users": ["bob"]},
+    }
+    assert "would add user alice to cgprofile-control" in installer._install_summary(body)
     assert not Path(_paths(tmp_path).opt).exists()
 
 
@@ -850,7 +926,7 @@ def test_saved_record_lists_are_used_as_lists(host):
     Path(host.paths.install_record).write_text(
         'control_users = ["root"]\nobserver_users = ["daemon", "nobody"]\n'
         'observe_slices = ["a.slice"]\nallow_uids = [0, 1000]\n', encoding="utf-8")
-    args = _args(control_users=None, observer_users=None)
+    args = _args(add_user=None)
     values = installer._gather_inputs(args, _runtime(), host.paths)
     assert values["control_users"] == ["root"]
     assert values["observer_users"] == ["daemon", "nobody"]
@@ -858,18 +934,27 @@ def test_saved_record_lists_are_used_as_lists(host):
     assert values["allow_uids"] == [0, 1000]
 
 
-def test_install_twice_with_users_keeps_working_without_flags(host):
-    first = host.install(_args(control_users="root", observer_users="daemon", observe_slices="a.slice",
+def test_install_twice_with_users_keeps_working_without_flags(host, monkeypatch):
+    monkeypatch.setattr(installer.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
+    first = host.install(_args(add_user=["control=root", "observer=daemon"], observe_slices="a.slice",
                                allow_uids="1000"))
     assert first["ok"]
     record = Path(host.paths.install_record).read_text(encoding="utf-8")
     assert 'control_users = ["root"]' in record and 'observer_users = ["daemon"]' in record
     host.commands.clear()
     again = host.install(_args(wheel=None, cli_extended_wheel=None, control_group=None, observer_group=None,
-                               control_users=None, observer_users=None, enable=False, no_enable=False))
+                               add_user=None, enable=False, no_enable=False))
     assert again["ok"] and again["config_changes"] == []
-    assert ["usermod", "-a", "-G", "cgprofile-control", "root"] in host.commands
+    assert ["gpasswd", "-a", "root", "cgprofile-control"] in host.commands
     assert Path(host.paths.install_record).read_text(encoding="utf-8") == record
+
+
+def test_add_user_appends_to_the_saved_record_without_forgetting_prior_members(host, monkeypatch):
+    monkeypatch.setattr(installer.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
+    Path(host.paths.install_record).parent.mkdir(parents=True)
+    Path(host.paths.install_record).write_text('control_users = ["alice"]\n', encoding="utf-8")
+    values = installer._gather_inputs(_args(add_user=["control=bob"]), _runtime(), host.paths)
+    assert values["control_users"] == ["alice", "bob"]
 
 
 def test_invalid_saved_record_values_are_refused_by_name(host):
@@ -882,7 +967,7 @@ def test_invalid_saved_record_values_are_refused_by_name(host):
         Path(host.paths.install_record).parent.mkdir(parents=True, exist_ok=True)
         Path(host.paths.install_record).write_text(body, encoding="utf-8")
         with pytest.raises(installer.InstallError, match=match):
-            installer._gather_inputs(_args(control_users=None, observer_users=None), _runtime(), host.paths)
+            installer._gather_inputs(_args(add_user=None), _runtime(), host.paths)
     assert installer._record_words("a, b", "x") == ["a", "b"] and installer._record_words(None, "x") == []
     assert installer._record_uids(None) == []
 
@@ -967,14 +1052,25 @@ def test_existing_config_with_other_socket_path_or_invalid_text_is_refused(host)
     assert not Path(host.paths.pending).exists()
 
 
+def test_target_config_reports_unreadable_and_invalid_existing_files(host):
+    values = installer._gather_inputs(_args(), _runtime(), host.paths)
+    Path(host.paths.config).parent.mkdir(parents=True, exist_ok=True)
+    Path(host.paths.config).write_bytes(b"\xff")
+    with pytest.raises(installer.InstallError, match="cannot read .*cgpd.toml"):
+        host.subject._target_config(host.paths.config, values)
+
+    Path(host.paths.config).write_text("unknown = 1\n", encoding="utf-8")
+    with pytest.raises(installer.InstallError, match="is invalid: .*fix or remove it"):
+        host.subject._target_config(host.paths.config, values)
+
+
 def test_unreadable_existing_config_is_refused(host):
     _write_config(host, "")
     Path(host.paths.config).write_bytes(b"\xff\xfe")
     with pytest.raises(installer.InstallError, match="cannot inspect existing config"):
         host.install()
-    values = installer._gather_inputs(_args(), _runtime(), host.paths)
-    with pytest.raises(installer.InstallError, match="cannot read .*cgpd.toml"):
-        host.subject._target_config(host.paths.config, values)
+    with pytest.raises(installer.InstallError, match="cannot inspect existing config .*cgpd.toml"):
+        installer._gather_inputs(_args(), _runtime(), host.paths)
 
 
 def test_rollback_render_drops_the_socket_tables(host):
@@ -1691,19 +1787,50 @@ def test_handlers_turn_install_errors_into_cli_failures(tmp_path, monkeypatch):
     with pytest.raises(installer.CliFailure):
         installer._uninstall_handler(_args(config="/nope"), _handler_runtime(first, yes=True))
 
-    # a failure while removing the deferred tree is reported with the rerun hint
+    # A deferred uninstall removes the interpreter that ran cgpd; the final
+    # failure must give manual cleanup steps rather than invoking that binary again.
     running = Path(host.paths.opt) / "2.2.0" / "venv"
     subject = real_installer(host.paths, run=host.subject.run, geteuid=lambda: 0,
                              running_prefix=str(running))
     monkeypatch.setattr(installer, "Installer", lambda: subject)
     monkeypatch.setattr(subject, "finish_uninstall",
                         lambda body: (_ for _ in ()).throw(installer.InstallError("cannot remove /opt/x")))
-    with pytest.raises(installer.CliFailure, match="rerun cgpd uninstall --yes to finish"):
+    with pytest.raises(installer.CliFailure, match="manual cleanup") as caught:
+        installer._uninstall_handler(_args(remove_groups=True), _handler_runtime(_Output(), yes=True))
+    assert "groupdel" in str(caught.value) and host.paths.install_record in str(caught.value)
+    assert "rerun cgpd uninstall" not in str(caught.value)
+
+    nondeferred_paths = installer.InstallPaths(str(tmp_path / "nondeferred"))
+
+    def fail_after_non_deferred_cleanup(_body):
+        raise installer.InstallError("cannot finish ownership-marker cleanup")
+
+    nondeferred = SimpleNamespace(
+        paths=nondeferred_paths,
+        uninstall=lambda *_args: {"ok": True, "dry_run": False, "removed": [], "manual_groups": []},
+        finish_uninstall=fail_after_non_deferred_cleanup,
+    )
+    monkeypatch.setattr(installer, "Installer", lambda: nondeferred)
+    with pytest.raises(installer.CliFailure, match="manual cleanup") as caught:
         installer._uninstall_handler(_args(), _handler_runtime(_Output(), yes=True))
+    assert nondeferred_paths.install_record in str(caught.value)
+    assert "remaining version tree" not in str(caught.value) and "groupdel" not in str(caught.value)
+
+
+def test_uninstall_never_runs_user_membership_removal_commands(host):
+    host.seeded_install()
+    host.commands.clear()
+    host.subject.uninstall(_args(), _runtime(yes=True))
+    assert not any(command[:2] == ["gpasswd", "-d"] for command in host.commands)
+    assert not any(command and command[0] == "usermod" for command in host.commands)
 
 
 def test_summaries_describe_dry_runs_and_real_runs():
     assert "would be installed" in installer._install_summary({"dry_run": True, "version": "2.2.0"})
+    assert "would add user alice to cgprofile-control" in installer._install_summary({
+        "dry_run": True, "version": "2.2.0",
+        "users_to_add": {"control": {"group": "cgprofile-control", "users": ["alice"]}},
+    })
     assert "no resource drift" in installer._install_summary(
         {"dry_run": False, "version": "2.2.0", "resources_changed": [], "enabled": True})
     assert installer._uninstall_summary({"dry_run": True, "removed": ["/a"], "groups_removed": ["g"]}) \
@@ -1832,7 +1959,8 @@ def test_a_unit_path_that_is_a_directory_is_a_bounded_uninstall_failure(tmp_path
 
 
 def test_a_failing_groupdel_does_not_stop_the_rest_of_the_uninstall(tmp_path, monkeypatch):
-    host = Host(tmp_path, monkeypatch)
+    running = Path(tmp_path) / "opt" / "cgprofile" / "2.2.0" / "venv"
+    host = Host(tmp_path, monkeypatch, running_prefix=str(running))
     host.install()
     original = host.subject.run
     host.group_gids.update({"cgprofile-control": 7101, "cgprofile-observer": 7102})
@@ -1846,11 +1974,16 @@ def test_a_failing_groupdel_does_not_stop_the_rest_of_the_uninstall(tmp_path, mo
     Path(host.paths.state_data).mkdir(parents=True)
     with pytest.raises(installer.InstallError, match="could not remove group.*cgprofile-control") as caught:
         host.subject.uninstall(_args(remove_groups=True, purge_data=True), _runtime(yes=True))
-    assert "install record is kept" in str(caught.value)
-    # the other group, the data purge, the config and the version trees were all still handled
+    assert "ownership markers are kept" in str(caught.value)
+    assert "groupdel cgprofile-control" in str(caught.value)
+    assert host.paths.opt in str(caught.value) and host.paths.current in str(caught.value)
+    assert host.paths.install_record in str(caught.value) and host.paths.pending in str(caught.value)
+    assert "rerun cgpd uninstall" not in str(caught.value)
+    # the other group, data purge and config were still handled; current is preserved for manual cleanup
     assert "cgprofile-observer" not in host.group_gids and "cgprofile-control" in host.group_gids
     assert not Path(host.paths.state_data).exists() and not Path(host.paths.config).exists()
-    assert not (Path(host.paths.opt) / "2.2.0").exists() and Path(host.paths.install_record).is_file()
+    assert (Path(host.paths.opt) / "2.2.0").exists() and Path(host.paths.current).is_symlink()
+    assert Path(host.paths.install_record).is_file()
 
 
 def test_the_current_link_stays_until_the_deferred_step(tmp_path, monkeypatch):

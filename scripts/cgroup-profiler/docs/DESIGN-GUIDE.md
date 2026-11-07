@@ -789,11 +789,18 @@ restart command. The service never binds, chmods, chowns, or unlinks an
 activated node. `--self-bind` remains available only for tests and development;
 it may set the node mode but does not create or change the parent directory.
 
-The access groups are deliberately separate. A control client can start and
-stop profiling sessions; an observer client can read only the observer
-contract. The observer GID must differ from docker's GID. The parent and level
-directories remain `root:root 0755`, so traversal does not grant access by
-itself. The socket group is the access decision.
+### Dedicated groups for each socket level
+
+The control and observer groups are separate, dedicated access grants. A
+control client can start and stop profiling sessions; an observer client can
+read only the observer contract. Neither group may be named `docker`, resolve
+to GID 0 or the docker GID, or resolve to the other cgprofile level's GID.
+`cgpd` checks its own levels; host-setup owns uniqueness across services. The
+installer applies this rule to flags, saved records, existing config, and
+wizard answers, without an override. This keeps control access independent of
+Docker API access and leaves estate-wide group allocation to its owner. The
+parent and level directories remain `root:root 0755`, so traversal does not
+grant access by itself. The socket group is the access decision.
 
 The service config is the single source for `unit print`, `install`, and
 `doctor`. Paths, groups, and octal modes live under `[sockets.control]` and

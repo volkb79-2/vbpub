@@ -92,7 +92,7 @@ install_flags=(--wheel "${CGPROFILE_PIN:-}" --cli-extended-wheel "${CLI_EXTENDED
 
 clean_guest() {
     CASE="1 install + doctor"
-    expect_exit 0 "unattended pinned install" bootstrap install "${install_flags[@]}" --control-users "$CONTROL_USER"
+    expect_exit 0 "unattended pinned install" bootstrap install "${install_flags[@]}" --add-user "control=$CONTROL_USER"
     check "cgpd doctor --json is green" bash -c "$CGPD doctor --json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if all(c[\"status\"] in (\"ok\",\"skip\") for c in d[\"checks\"]) else 1)'"
     check "cgpctl doctor --json runs" bash -c "$CGPCTL doctor --json >/dev/null"
 
@@ -153,7 +153,7 @@ EOF
 
     CASE="5 observer-only user"
     id cgptest-obs >/dev/null 2>&1 || useradd --no-create-home --shell /usr/sbin/nologin cgptest-obs
-    usermod -a -G cgprofile-observer cgptest-obs
+    gpasswd -a cgptest-obs cgprofile-observer
     check "observer endpoint answers for the observer-only user" runuser -u cgptest-obs -- python3 - <<EOF
 import json, socket
 s = socket.socket(socket.AF_UNIX); s.connect("$OBSERVER"); s.sendall(b'{"verb":"host","args":{},"contract":1}\n')

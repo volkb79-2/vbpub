@@ -541,9 +541,9 @@ without a second call.
 | `config-set`, `config-reset` | uid 0 only, including when `allow_uids` is empty; the access list itself (`allow_uids`) is therefore changeable only by uid 0 over the socket |
 
 Anything else is `peer-refused` with a message naming the owner uid. Unreadable credentials fail closed
-for these operations even when no `allow_uids` is configured. This rule is hygiene, not a security
-boundary: on an mdt host the ctl group is the Docker relay group and therefore root-equivalent, which the
-product documentation states plainly. `on_stall=kill` keeps its separate, stricter rule (exact
+for these operations even when no `allow_uids` is configured. This rule is
+hygiene; the control socket uses a dedicated cgprofile level group and is not
+the Docker relay group. `on_stall=kill` keeps its separate, stricter rule (exact
 gates-slice container cgroups only, section 3). Contract-1 callers are subject to the same ownership
 rules: run-gate starts and stops its sessions as one uid, so nothing changes for it.
 

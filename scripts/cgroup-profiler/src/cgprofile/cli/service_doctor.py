@@ -10,6 +10,7 @@ import argparse
 import grp
 import json
 import os
+import pwd
 import socket
 import stat
 import subprocess
@@ -27,6 +28,7 @@ from .installer import (
     manual_removal_message,
     old_installation_problems,
     parse_pin,
+    _record_words,
     version_key,
 )
 
@@ -112,36 +114,107 @@ def _check_units_current(runtime: CliRuntime, args: argparse.Namespace) -> Check
 
 
 def _check_groups(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
-    values, skipped = _config_or_skip(args)
-    if skipped:
-        return skipped
-    assert values is not None
-    sockets = daemon_config.socket_settings(values)
-    groups = {level: sockets[level]["group"] for level in daemon_config.SOCKET_LEVELS}
-    gids: Dict[str, Optional[int]] = {}
+    path = args.config or _paths(args).config
+    try:
+        values, _digest = daemon_config.read_config_file(path, explicit=bool(args.config), validate_groups=False)
+    except daemon_config.ConfigError as exc:
+        if os.geteuid() != 0 and "permission denied" in str(exc).lower():
+            return CheckResult("skip", "config is unreadable; run as root")
+        return CheckResult("skip", f"config could not be loaded: {exc}")
+    groups = {
+        level: daemon_config.validate(
+            f"sockets.{level}", values.get(f"sockets.{level}", daemon_config.KEYS[f"sockets.{level}"].default)
+        )["group"]
+        for level in daemon_config.SOCKET_LEVELS
+    }
+    group_entries: Dict[str, Any] = {}
+    gids: Dict[str, int] = {}
     missing = []
     for level, name in groups.items():
+        if name == "docker":
+            return CheckResult("fail", f"{level} group must not be docker",
+                               remedy="configure a dedicated level group and rerun cgpd install")
         try:
-            gids[level] = grp.getgrnam(name).gr_gid
+            entry = grp.getgrnam(name)
         except KeyError:
-            gids[level] = None
             missing.append(name)
+            continue
+        group_entries[level] = entry
+        gids[level] = entry.gr_gid
     if missing:
         return CheckResult("fail", "missing socket group(s): " + ", ".join(missing),
                            remedy=("create missing mapped groups, or use the default cgprofile level groups; "
                                    "then rerun cgpd install"))
-    if gids["control"] == gids["observer"]:
-        return CheckResult("fail", "control and observer groups resolve to the same GID",
-                           remedy="configure separate groups and rerun cgpd install")
+    for level, gid in gids.items():
+        if gid == 0:
+            return CheckResult("fail", f"{level} group resolves to GID 0",
+                               remedy="configure a non-root dedicated level group and rerun cgpd install")
     try:
         docker_gid = grp.getgrnam("docker").gr_gid
     except KeyError:
         docker_gid = None
-    if gids["observer"] == docker_gid:
-        return CheckResult("fail", "observer group resolves to the docker GID",
-                           remedy="configure cgprofile-observer or another non-docker group")
-    return CheckResult("ok", "control and observer groups exist and the observer GID differs from docker",
-                       details={"groups": groups, "gids": gids})
+    if docker_gid is not None:
+        for level, gid in gids.items():
+            if gid == docker_gid:
+                return CheckResult("fail", f"{level} group resolves to the docker GID",
+                                   remedy="configure a dedicated level group with a different GID")
+    if groups["control"] == groups["observer"]:
+        return CheckResult("fail", "control and observer groups must differ",
+                           remedy="configure separate groups and rerun cgpd install")
+    if gids["control"] == gids["observer"]:
+        return CheckResult("fail", "control and observer groups resolve to the same GID",
+                           remedy="configure separate groups and rerun cgpd install")
+    paths = _paths(args)
+    try:
+        record = _read_install_record(paths.install_record)
+    except PermissionError as exc:
+        skipped = _permission_skip(exc, paths.install_record)
+        if skipped:
+            return skipped
+        return CheckResult("fail", f"cannot read {paths.install_record}: {exc.strerror or exc}",
+                           remedy="make the install record readable, then rerun cgpd doctor")
+    details: Dict[str, Any] = {}
+    missing_members: List[Tuple[str, str]] = []
+    missing_accounts: List[Tuple[str, str]] = []
+    for level, name in groups.items():
+        key = f"{level}_users"
+        try:
+            recorded = _record_words(record.get(key), key)
+        except InstallError as exc:
+            return CheckResult("fail", str(exc), remedy="repair the cgpd install record and rerun cgpd install")
+        entry = group_entries[level]
+        members = set(entry.gr_mem)
+        for user in recorded:
+            if user in members:
+                continue
+            try:
+                account = pwd.getpwnam(user)
+            except KeyError:
+                missing_accounts.append((level, user))
+            else:
+                if account.pw_gid == gids[level]:
+                    members.add(user)
+                else:
+                    missing_members.append((level, user))
+        details[level] = {
+            "name": name, "gid": gids[level], "members": sorted(members),
+            "recorded_users": recorded,
+        }
+    if missing_members or missing_accounts:
+        summary = "; ".join(f"{level} group is missing recorded user {user}" for level, user in missing_members)
+        summary += ("; " if summary and missing_accounts else "")
+        summary += "; ".join(f"recorded user {user} for {level} does not exist" for level, user in missing_accounts)
+        remedies = ", ".join(f"--add-user {level}={user}" for level, user in missing_members)
+        steps = []
+        if missing_accounts:
+            steps.append("restore the recorded account(s) first: " + ", ".join(
+                f"{user} ({level})" for level, user in missing_accounts))
+        if missing_members:
+            steps.append(f"restore memberships with cgpd install {remedies}")
+        return CheckResult("fail", summary, remedy="; then ".join(steps),
+                           details={"groups": details, "gids": gids})
+    return CheckResult("ok", "control and observer groups are dedicated and their recorded members are present",
+                       details={"groups": details, "gids": gids})
 
 
 def _systemctl(*argv: str) -> bool:
@@ -475,7 +548,7 @@ def _check_caller_access(runtime: CliRuntime, args: argparse.Namespace) -> Check
 SERVICE_DOCTOR_CHECKS = (
     DoctorCheck("config-valid", "configured cgpd settings parse and validate", _check_config_valid),
     DoctorCheck("units-current", "installed service resources match the rendered config", _check_units_current),
-    DoctorCheck("groups", "both access groups exist and observer differs from docker", _check_groups),
+    DoctorCheck("groups", "both dedicated groups exist with safe, distinct GIDs and listed members", _check_groups),
     DoctorCheck("socket-units", "both per-level socket units are enabled and active", _check_socket_units),
     DoctorCheck("socket-nodes", "both listening nodes are sockets with configured owner, group and mode", _check_socket_nodes),
     DoctorCheck("socket-dirs", "socket directories are root-owned and not writable by group or others", _check_socket_dirs),

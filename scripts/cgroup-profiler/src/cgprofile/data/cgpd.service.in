@@ -14,6 +14,7 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+ExecStartPre=@WHEEL_VENV@/bin/cgpd -t
 ExecStart=@WHEEL_VENV@/bin/cgpd run
 ExecReload=/bin/kill -HUP $MAINPID
 Slice=cgprofile.slice

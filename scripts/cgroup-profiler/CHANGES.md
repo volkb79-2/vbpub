@@ -10,6 +10,8 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ### Added
 - feat(cgprofile): systemd-owned per-level control and observer sockets, `cgpd install` / `uninstall` / `doctor`, and explicit `--self-bind` for tests and development (phase 1, plan 5.1)
+- feat(cgprofile): repeatable `cgpd install --add-user LEVEL=USER`; existing users are added with `gpasswd -a`, recorded for reruns and never individually removed on uninstall
+- feat(cgprofile): `cgpd -t` config-test alias for systemd `ExecStartPre`
 
 ### Changed
 - breaking(cgprofile): socket defaults move to `/run/cgprofile/control/cgprofile.sock` and `/run/cgprofile/observer/cgprofile.sock`; old config keys are refused and clients have no legacy-path fallback
@@ -20,6 +22,8 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - fix(cgprofile): `cgpd doctor` skips unreadable paths for non-root callers and `foreign-rules` runs the whole old-installation scan
 - fix(cgprofile): `cgpd install --force-restart` proceeds with a warning when the session list is unavailable; groups created by an interrupted first install are named in `PENDING` so `uninstall --remove-groups` removes them; with no flag a hand-edited socket group in `cgpd.toml` wins over the install record; a dry run needs no `--enable`; the wheels install with `--no-deps`
 - fix(cgprofile): `cgpd uninstall` keeps `current` until the running tree is removed, continues past a `groupdel` failure and reports it, only ever removes the two default groups, and `install` never prunes the tree it runs from
+- fix(cgprofile): both socket groups reject Docker by name or GID, GID 0, and same-service duplicate GIDs on every install/config input path; `cgpd doctor groups` reports the group IDs and members, including recorded users
+- fix(cgprofile): deferred uninstall failures give manual tree, `groupdel`, and install-record cleanup steps instead of asking operators to rerun a cgpd binary that may have been removed
 - refactor(cgprofile): remove the unused `damon.prepare_registry_lock_file`
 
 ### Tests

@@ -147,21 +147,45 @@ class TestFile:
          {"path": "/observer", "group": "same", "mode": "0660"}, "sockets.control.group and sockets.observer.group must differ"),
         ({"path": "/same", "group": "control", "mode": "0660"},
          {"path": "/same", "group": "observer", "mode": "0660"}, "sockets.control.path and sockets.observer.path must differ"),
-        ({"path": "/control", "group": "control", "mode": "0660"},
-         {"path": "/observer", "group": "docker", "mode": "0660"}, "must not be docker"),
     ])
     def test_socket_table_cross_validation(self, control, observer, needle):
         with pytest.raises(dc.ConfigError, match=needle):
             dc.render_config({"sockets.control": control, "sockets.observer": observer})
 
-    def test_parse_table_refuses_the_docker_group_for_the_observer(self):
-        # the observer socket is for unprivileged readers: docker is root-equivalent
-        text = ('[sockets.control]\npath = "/run/cgprofile/control/cgprofile.sock"\n'
-                'group = "cgprofile-control"\nmode = "0660"\n\n'
-                '[sockets.observer]\npath = "/run/cgprofile/observer/cgprofile.sock"\n'
-                'group = "docker"\nmode = "0660"\n')
-        with pytest.raises(dc.ConfigError, match="sockets.observer.group must not be docker"):
-            dc.parse_table(text)
+    @pytest.mark.parametrize("level", ["control", "observer"])
+    def test_parse_table_refuses_docker_for_every_level(self, level):
+        other = "observer" if level == "control" else "control"
+        tables = {
+            "control": {"path": "/run/cgprofile/control/cgprofile.sock", "group": "ops-control", "mode": "0660"},
+            "observer": {"path": "/run/cgprofile/observer/cgprofile.sock", "group": "ops-observer", "mode": "0660"},
+        }
+        tables[level]["group"] = "docker"
+        with pytest.raises(dc.ConfigError, match=rf"sockets\.{level}\.group must not be docker"):
+            dc.render_config({f"sockets.{name}": table for name, table in tables.items()})
+
+    @pytest.mark.parametrize("control_group,observer_group,gids,needle", [
+        ("root-level", "observer-level", {"root-level": 0, "observer-level": 100}, "GID 0"),
+        ("control-level", "root-level", {"control-level": 100, "root-level": 0}, "GID 0"),
+        ("control-level", "docker-alias", {"control-level": 100, "docker": 2375,
+                                                "docker-alias": 2375}, "docker GID"),
+        ("docker-alias", "observer-level", {"observer-level": 100, "docker": 2375,
+                                               "docker-alias": 2375}, "docker GID"),
+        ("control-alias", "observer-alias", {"control-alias": 500, "observer-alias": 500}, "same GID"),
+    ])
+    def test_socket_groups_reject_root_docker_and_duplicate_gids(
+            self, monkeypatch, control_group, observer_group, gids, needle):
+        def getgrnam(name):
+            if name not in gids:
+                raise KeyError(name)
+            return type("Group", (), {"gr_gid": gids[name]})()
+
+        monkeypatch.setattr(dc.grp, "getgrnam", getgrnam)
+        values = {
+            "sockets.control": {"path": "/control", "group": control_group, "mode": "0660"},
+            "sockets.observer": {"path": "/observer", "group": observer_group, "mode": "0660"},
+        }
+        with pytest.raises(dc.ConfigError, match=needle):
+            dc.socket_settings(values)
 
     @pytest.mark.parametrize("table, message", [
         ('path = "/a"\ngroup = "g"\n', "sockets.control: missing mode"),
@@ -186,10 +210,10 @@ class TestFile:
         with pytest.raises(dc.ConfigError, match="control.path and sockets.observer.path must differ"):
             dc.parse_table(same_path)
 
-    def test_socket_settings_refuses_the_docker_group_for_the_observer(self):
-        values = {"sockets.observer": {"path": "/run/cgprofile/observer/cgprofile.sock",
-                                       "group": "docker", "mode": "0660"}}
-        with pytest.raises(dc.ConfigError, match="sockets.observer.group must not be docker"):
+    def test_socket_settings_refuses_the_docker_group_for_control(self):
+        values = {"sockets.control": {"path": "/run/cgprofile/control/cgprofile.sock",
+                                      "group": "docker", "mode": "0660"}}
+        with pytest.raises(dc.ConfigError, match="sockets.control.group must not be docker"):
             dc.socket_settings(values)
 
 

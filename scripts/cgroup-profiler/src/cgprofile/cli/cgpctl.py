@@ -678,7 +678,8 @@ def _check_observer_dir(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
     mode = stat.S_IMODE(info.st_mode)
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or mode != 0o755:
         problems.append(f"directory identity is {info.st_uid}:{info.st_gid} {mode:04o}, expected root:root 0755")
-    control_gid = socket_group(probe.path)["gid"]
+    control = socket_group(probe.path)
+    control_gid = control["gid"]
     try:
         observer = os.lstat(observer_path)
     except OSError:
@@ -706,8 +707,20 @@ def _check_observer_dir(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
         else:
             if observer.st_gid != expected_gid:
                 problems.append(f"observer socket gid is {observer.st_gid}, expected {expected_group} ({expected_gid})")
-    if observer_group == "docker":
-        problems.append("observer socket uses the docker group")
+    try:
+        docker_gid = grp.getgrnam("docker").gr_gid
+    except KeyError:
+        docker_gid = None
+    for level, name, gid in (
+        ("control", control.get("group"), control_gid),
+        ("observer", observer_group, observer.st_gid),
+    ):
+        if name == "docker":
+            problems.append(f"{level} socket uses the docker group")
+        elif docker_gid is not None and gid == docker_gid:
+            problems.append(f"{level} socket group resolves to the docker GID")
+        if gid == 0:
+            problems.append(f"{level} socket group resolves to GID 0")
     if problems:
         return CheckResult("warn", "; ".join(problems), remedy="run cgpd doctor and repair the socket unit configuration")
     return CheckResult("ok", f"{observer_dir} is root:root 0755 and the observer socket has a separate group")

@@ -150,6 +150,29 @@ def test_cgpd_run_is_explicit_in_the_spec_and_the_readme():
     assert "explicit service entrypoint" in README.read_text(encoding="utf-8")
 
 
+def test_socket_group_user_and_config_test_contract_stays_in_sync():
+    design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "CGPCTL-SPEC.md").read_text(encoding="utf-8")
+    cli_spec = (ROOT / "docs" / "CLI-SPEC.md").read_text(encoding="utf-8")
+    native = (ROOT / "docs" / "NATIVE-DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "--add-user LEVEL=USER" in README.read_text(encoding="utf-8")
+    assert "cgpd -t" in README.read_text(encoding="utf-8")
+    assert "GID 0 or the docker GID" in design
+    assert "host-setup owns uniqueness across services" in design
+    assert "--add-user control=alice --add-user observer=runner" in consumers
+    assert "gpasswd -a" in consumers and "uninstall never removes them" in consumers
+    assert "--add-user LEVEL=USER" in spec and "gpasswd -a" in spec
+    assert "memberships are never" in spec and "Cross-service group uniqueness belongs to host-setup" in spec
+    assert "cgpd -t" in spec and "ExecStartPre" in spec
+    assert "CGPCTL-SPEC.md` section 3" in cli_spec and "config-test option" in cli_spec
+    assert "No override exists" in native and "manual cleanup" in native
+    assert "Do not rerun the cgpd binary from a version tree" in native
+    assert "root-equivalent on mdt hosts" not in spec
+    assert "ctl group is the Docker relay group" not in (ROOT / "docs" / "PROTOCOL.md").read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize(
     "old,new",
     [

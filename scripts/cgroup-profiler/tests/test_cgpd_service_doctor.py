@@ -35,15 +35,18 @@ def _config_file(root):
     return str(path)
 
 
-def _group(name, gid):
-    return SimpleNamespace(gr_name=name, gr_gid=gid)
+def _group(name, gid, members=()):
+    return SimpleNamespace(gr_name=name, gr_gid=gid, gr_mem=list(members))
 
 
 def _groups(monkeypatch, mapping):
     def getgrnam(name):
         if name not in mapping:
             raise KeyError(name)
-        return _group(name, mapping[name])
+        entry = mapping[name]
+        if isinstance(entry, tuple):
+            return _group(name, entry[0], entry[1])
+        return _group(name, entry)
 
     monkeypatch.setattr(service_doctor.grp, "getgrnam", getgrnam)
 
@@ -171,7 +174,7 @@ def test_checks_that_need_the_config_skip_when_it_cannot_load(tmp_path):
         assert result.status == "skip" and "config could not be loaded" in result.summary, check.__name__
 
 
-def test_groups_check_requires_distinct_existing_non_docker_groups(monkeypatch, tmp_path):
+def test_groups_check_requires_distinct_existing_dedicated_groups(monkeypatch, tmp_path):
     _config_file(tmp_path)
     gids = {"cgprofile-control": 10, "cgprofile-observer": 11, "docker": 12}
     _groups(monkeypatch, gids)
@@ -187,6 +190,107 @@ def test_groups_check_requires_distinct_existing_non_docker_groups(monkeypatch, 
     assert "same GID" in service_doctor._check_groups(_runtime(), _args(tmp_path)).summary
     gids["cgprofile-observer"] = 12
     assert "docker GID" in service_doctor._check_groups(_runtime(), _args(tmp_path)).summary
+    gids["cgprofile-control"] = 0
+    result = service_doctor._check_groups(_runtime(), _args(tmp_path))
+    assert result.status == "fail" and "GID 0" in result.summary and result.remedy
+
+
+def test_groups_check_skips_unreadable_config_for_nonroot(monkeypatch, tmp_path):
+    _as(monkeypatch, 1000)
+    monkeypatch.setattr(
+        service_doctor.daemon_config, "read_config_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(daemon_config.ConfigError("Permission denied")),
+    )
+    result = service_doctor._check_groups(_runtime(), _args(tmp_path))
+    assert result.status == "skip" and "run as root" in result.summary
+
+
+def test_groups_check_reports_repeated_name_and_record_read_errors(monkeypatch, tmp_path):
+    config = Path(_paths(tmp_path).config)
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(
+        '[sockets.control]\npath = "/run/cgprofile/control/cgprofile.sock"\n'
+        'group = "same"\nmode = "0660"\n\n'
+        '[sockets.observer]\npath = "/run/cgprofile/observer/cgprofile.sock"\n'
+        'group = "same"\nmode = "0660"\n', encoding="utf-8")
+    _groups(monkeypatch, {"same": 10})
+    repeated = service_doctor._check_groups(_runtime(), _args(tmp_path))
+    assert repeated.status == "fail" and "groups must differ" in repeated.summary
+
+    _config_file(tmp_path)
+    _groups(monkeypatch, {"cgprofile-control": 10, "cgprofile-observer": 11})
+    monkeypatch.setattr(service_doctor, "_read_install_record", lambda _path: {"control_users": 7})
+    invalid = service_doctor._check_groups(_runtime(), _args(tmp_path))
+    assert invalid.status == "fail" and "control_users" in invalid.summary
+
+    def unreadable(_path):
+        raise PermissionError(13, "denied")
+
+    monkeypatch.setattr(service_doctor, "_read_install_record", unreadable)
+    _as(monkeypatch, 1000)
+    skipped = service_doctor._check_groups(_runtime(), _args(tmp_path))
+    assert skipped.status == "skip" and "run as root" in skipped.summary
+    _as(monkeypatch, 0)
+    refused = service_doctor._check_groups(_runtime(), _args(tmp_path))
+    assert refused.status == "fail" and "cannot read" in refused.summary
+
+
+def test_groups_check_lists_actual_and_recorded_members(monkeypatch, tmp_path):
+    config = _config_file(tmp_path)
+    _install_record(tmp_path)
+    paths = _paths(tmp_path)
+    Path(paths.install_record).write_text(
+        'control_users = ["alice", "primary"]\nobserver_users = ["bob"]\n', encoding="utf-8")
+    groups = {
+        "cgprofile-control": (10, ["alice", "other"]),
+        "cgprofile-observer": (11, ["bob"]),
+        "docker": 12,
+    }
+    _groups(monkeypatch, groups)
+    accounts = {"alice": True, "bob": True, "primary": True}
+
+    def getpwnam(name):
+        if not accounts.get(name, False):
+            raise KeyError(name)
+        return SimpleNamespace(pw_gid=10 if name == "primary" else 99)
+
+    monkeypatch.setattr(service_doctor.pwd, "getpwnam", getpwnam)
+    result = service_doctor._check_groups(_runtime(), _args(tmp_path, config))
+    assert result.status == "ok"
+    assert result.details["groups"]["control"]["members"] == ["alice", "other", "primary"]
+    assert result.details["groups"]["control"]["recorded_users"] == ["alice", "primary"]
+    assert result.details["groups"]["observer"]["recorded_users"] == ["bob"]
+
+    groups["cgprofile-control"] = (10, ["other"])
+    result = service_doctor._check_groups(_runtime(), _args(tmp_path, config))
+    assert result.status == "fail" and "alice" in result.summary and "cgpd install --add-user control=alice" in result.remedy
+    accounts["alice"] = False
+    result = service_doctor._check_groups(_runtime(), _args(tmp_path, config))
+    assert "does not exist" in result.summary and "restore the recorded account" in result.remedy
+    assert "cgpd install --add-user control=alice" not in result.remedy
+
+
+@pytest.mark.parametrize("level,group,gids,needle", [
+    ("control", "docker", {"docker": 12}, "must not be docker"),
+    ("control", "root-alias", {"root-alias": 0}, "GID 0"),
+    ("observer", "docker-alias", {"docker": 12, "docker-alias": 12}, "docker GID"),
+])
+def test_groups_check_reports_each_forbidden_gid_even_when_config_check_fails(
+        monkeypatch, tmp_path, level, group, gids, needle):
+    control = group if level == "control" else "cgprofile-control"
+    observer = group if level == "observer" else "cgprofile-observer"
+    path = Path(_paths(tmp_path).config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'[sockets.control]\npath = "/run/cgprofile/control/cgprofile.sock"\n'
+        f'group = "{control}"\nmode = "0660"\n\n'
+        f'[sockets.observer]\npath = "/run/cgprofile/observer/cgprofile.sock"\n'
+        f'group = "{observer}"\nmode = "0660"\n', encoding="utf-8")
+    gids.setdefault("cgprofile-control", 10)
+    gids.setdefault("cgprofile-observer", 11)
+    _groups(monkeypatch, gids)
+    result = service_doctor._check_groups(_runtime(), _args(tmp_path))
+    assert result.status == "fail" and needle in result.summary and result.remedy
 
 
 def test_socket_units_check_reports_enabled_and_active_state(monkeypatch):
@@ -246,10 +350,16 @@ def test_socket_nodes_check_uses_configured_mode_and_group(monkeypatch, tmp_path
     nodes = {level: paths.at(sockets[level]["path"]) for level in daemon_config.SOCKET_LEVELS}
     listeners = [_bind_socket(node, 0o660) for node in nodes.values()]
     try:
-        info = os.lstat(nodes["control"])
-        _groups(monkeypatch, {"cgprofile-control": info.st_gid, "cgprofile-observer": info.st_gid})
-        # the fake root belongs to the test user, so report the nodes as root-owned
-        _owned_by(monkeypatch, 0)
+        _groups(monkeypatch, {"cgprofile-control": 7101, "cgprofile-observer": 7102})
+
+        def answer(path):
+            if str(path) == nodes["control"]:
+                return SimpleNamespace(st_mode=_REAL_LSTAT(path).st_mode, st_uid=0, st_gid=7101)
+            if str(path) == nodes["observer"]:
+                return SimpleNamespace(st_mode=_REAL_LSTAT(path).st_mode, st_uid=0, st_gid=7102)
+            return _REAL_LSTAT(path)
+
+        _patch_lstat(monkeypatch, answer)
         assert service_doctor._check_socket_nodes(_runtime(), _args(tmp_path)).status == "ok"
         os.chmod(nodes["observer"], 0o600)
         result = service_doctor._check_socket_nodes(_runtime(), _args(tmp_path))

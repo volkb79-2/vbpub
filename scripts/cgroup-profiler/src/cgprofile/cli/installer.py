@@ -528,6 +528,23 @@ def _validate_users(users: Sequence[str]) -> List[str]:
     return result
 
 
+def _parse_add_users(values: Optional[Sequence[str]]) -> Dict[str, List[str]]:
+    """Parse repeatable ``LEVEL=USER`` options and validate each account now."""
+    result = {level: [] for level in daemon_config.SOCKET_LEVELS}
+    for value in values or ():
+        if not isinstance(value, str) or "=" not in value:
+            raise InstallError("--add-user must use LEVEL=USER, with LEVEL control or observer")
+        level, user = value.split("=", 1)
+        if level not in result:
+            raise InstallError(f"unknown --add-user access level {level!r}; use control or observer")
+        if not user:
+            raise InstallError("--add-user requires a non-empty user after LEVEL=")
+        validated = _validate_users([user])[0]
+        if validated not in result[level]:
+            result[level].append(validated)
+    return result
+
+
 def _record_words(value: Any, label: str) -> List[str]:
     """A list-valued install-record field (TOML array); a comma string is tolerated."""
     if value is None:
@@ -547,14 +564,16 @@ def _record_uids(value: Any) -> List[int]:
     raise InstallError("the saved allow_uids value is invalid; repair the install record manually")
 
 
-def _resolve_users(runtime: CliRuntime, flag_value: Optional[str], record: Mapping[str, Any],
-                   key: str, flag: str, message: str) -> List[str]:
-    """Flag, then the install record, then (TTY only) a prompt; the record holds a list."""
-    if flag_value is not None:
-        return _parse_words(flag_value)
-    if key in record:
-        return _record_words(record[key], key)
-    return _parse_words(_prompt_missing(runtime, None, flag, message, required=False))
+def _resolve_users(runtime: CliRuntime, record: Mapping[str, Any], key: str, level: str,
+                   requested: Sequence[str]) -> List[str]:
+    """Accumulate saved and requested users; memberships are only ever added."""
+    saved = _record_words(record[key], key) if key in record else []
+    prompted: List[str] = []
+    if not requested and key not in record:
+        prompt = _prompt_missing(runtime, None, f"--add-user {level}=USER",
+                                 f"Users to add to the {level} group (comma-separated)", required=False)
+        prompted = _parse_words(prompt)
+    return _validate_users([*saved, *requested, *prompted])
 
 
 def _prompt_missing(runtime: CliRuntime, value: Optional[str], flag: str, message: str,
@@ -574,9 +593,9 @@ def _prompt_missing(runtime: CliRuntime, value: Optional[str], flag: str, messag
 def _prompt_group(runtime: CliRuntime, level: str, default: str, saved: Optional[str],
                   explicit: Optional[str]) -> str:
     if explicit is not None:
-        return explicit
-    if saved:
-        return str(saved)
+        return _validate_install_group(level, explicit)
+    if saved is not None:
+        return _validate_install_group(level, saved)
     flag = f"--{level}-group"
     if runtime.dry_run or runtime.json_mode or not runtime.output.is_interactive:
         raise InstallError(f"missing required {flag}; provide it on a non-interactive run")
@@ -587,26 +606,51 @@ def _prompt_group(runtime: CliRuntime, level: str, default: str, saved: Optional
             default=f"create {default}",
         )
         if choice == f"create {default}":
-            return default
+            return _validate_install_group(level, default)
         mapped = runtime.prompts.text(f"Existing group for {level}", required=True)
-        return mapped
+        return _validate_install_group(level, mapped)
     except PromptCancelled:
         raise InstallError("installation prompts cancelled", exit_code=130) from None
 
 
 def _config_groups(paths: InstallPaths) -> Dict[str, str]:
-    """The socket groups an existing, valid cgpd.toml sets; anything else is reported later."""
+    """Read existing socket groups; an invalid file cannot be hidden by flags."""
     try:
-        parsed = daemon_config.parse_table(Path(paths.config).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, daemon_config.ConfigError):
+        text = Path(paths.config).read_text(encoding="utf-8")
+    except FileNotFoundError:
         return {}
+    except (OSError, UnicodeDecodeError) as exc:
+        raise InstallError(f"cannot inspect existing config {paths.config}: {exc}") from None
+    try:
+        parsed = daemon_config.parse_table(text)
+    except daemon_config.ConfigError as exc:
+        raise InstallError(
+            f"existing config {paths.config} is invalid: {exc}; installer flags cannot override it; "
+            "fix or remove it, then rerun") from None
     return {level: parsed[f"sockets.{level}"]["group"] for level in daemon_config.SOCKET_LEVELS
             if f"sockets.{level}" in parsed}
+
+
+def _validate_install_group(level: str, name: Any) -> str:
+    try:
+        validated = daemon_config.validate(
+            f"sockets.{level}",
+            {"path": daemon_config.KEYS[f"sockets.{level}"].default["path"],
+             "group": name, "mode": "0660"},
+        )
+        daemon_config._validate_socket_group(level, validated["group"], _group_gid)
+    except daemon_config.ConfigError as exc:
+        raise InstallError(str(exc)) from None
+    return validated["group"]
 
 
 def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: InstallPaths) -> Dict[str, Any]:
     record = _read_record(paths.install_record)
     prior_created_groups = list(dict.fromkeys([*_record_created_groups(record), *_pending_created_groups(paths)]))
+    saved_control = record.get("control_group", daemon_config.DEFAULT_CONTROL_GROUP)
+    saved_observer = record.get("observer_group", daemon_config.DEFAULT_OBSERVER_GROUP)
+    if "control_group" in record or "observer_group" in record:
+        _validate_group_mapping(saved_control, saved_observer, require_mapped=False)
     wheel = args.wheel or record.get("wheel")
     wheel = _prompt_missing(runtime, wheel, "--wheel", "cgprofile release pin")
     clix = args.cli_extended_wheel or record.get("cli_extended_wheel")
@@ -614,20 +658,22 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     # A group passed as a flag is applied; with no flag the config file's value wins
     # over the install record (an operator's hand edit is never reverted).
     file_groups = _config_groups(paths)
+    if file_groups:
+        _validate_group_mapping(
+            file_groups.get("control", daemon_config.DEFAULT_CONTROL_GROUP),
+            file_groups.get("observer", daemon_config.DEFAULT_OBSERVER_GROUP),
+        )
     control_group = _prompt_group(
         runtime, "control", daemon_config.DEFAULT_CONTROL_GROUP,
-        file_groups.get("control") or record.get("control_group"), args.control_group,
+        file_groups.get("control", record.get("control_group")), args.control_group,
     )
     observer_group = _prompt_group(
         runtime, "observer", daemon_config.DEFAULT_OBSERVER_GROUP,
-        file_groups.get("observer") or record.get("observer_group"), args.observer_group,
+        file_groups.get("observer", record.get("observer_group")), args.observer_group,
     )
-    control_users = _resolve_users(
-        runtime, args.control_users, record, "control_users", "--control-users",
-        "Users to add to the control group (comma-separated)")
-    observer_users = _resolve_users(
-        runtime, args.observer_users, record, "observer_users", "--observer-users",
-        "Users to add to the observer group (comma-separated)")
+    requested_users = _parse_add_users(getattr(args, "add_user", None))
+    control_users = _resolve_users(runtime, record, "control_users", "control", requested_users["control"])
+    observer_users = _resolve_users(runtime, record, "observer_users", "observer", requested_users["observer"])
     enable_now: Optional[bool] = None
     if args.enable and args.no_enable:
         raise InstallError("choose only one of --enable and --no-enable")
@@ -654,6 +700,12 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         "observer_group": observer_group,
         "control_users": control_users,
         "observer_users": observer_users,
+        "users_to_add": {
+            level: {"group": group, "users": users}
+            for level, group, users in (
+                ("control", control_group, control_users), ("observer", observer_group, observer_users))
+            if users
+        },
         "gates_slice": args.gates_slice or record.get("gates_slice") or "dev-gates.slice",
         "observe_slices": _parse_words(args.observe_slices) if args.observe_slices is not None
         else _record_words(record.get("observe_slices"), "observe_slices"),
@@ -669,8 +721,6 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         "allow_downgrade": bool(args.allow_downgrade),
         "prior_created_groups": prior_created_groups,
     }
-    values["control_users"] = _validate_users(values["control_users"])
-    values["observer_users"] = _validate_users(values["observer_users"])
     values["drain_seconds"] = parse_duration(values["drain_timeout"])
     values["version"], values["wheel_sha"] = parse_pin(values["wheel"], "--wheel")
     values["cli_extended_version"], values["cli_extended_sha"] = parse_pin(
@@ -705,20 +755,24 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     return values
 
 
-def _validate_group_mapping(control: str, observer: str) -> None:
-    if control == observer:
-        raise InstallError("control and observer groups must differ")
+def _validate_group_mapping(control: Any, observer: Any, *, require_mapped: bool = True) -> None:
+    control = _validate_install_group("control", control)
+    observer = _validate_install_group("observer", observer)
+    try:
+        daemon_config.validate_socket_groups(
+            {"control": {"group": control}, "observer": {"group": observer}},
+            gid_lookup=_group_gid,
+        )
+    except daemon_config.ConfigError as exc:
+        raise InstallError(str(exc)) from None
+    if not require_mapped:
+        return
     control_gid = _group_gid(control)
     observer_gid = _group_gid(observer)
     if control != daemon_config.DEFAULT_CONTROL_GROUP and control_gid is None:
         raise InstallError(f"mapped control group {control!r} does not exist")
     if observer != daemon_config.DEFAULT_OBSERVER_GROUP and observer_gid is None:
         raise InstallError(f"mapped observer group {observer!r} does not exist")
-    docker_gid = _group_gid("docker")
-    if observer == "docker" or (observer_gid is not None and observer_gid == docker_gid):
-        raise InstallError("observer group must not be docker or share its GID")
-    if control_gid is not None and observer_gid is not None and control_gid == observer_gid:
-        raise InstallError("control and observer groups resolve to the same GID")
 
 
 class Installer:
@@ -1136,6 +1190,7 @@ class Installer:
                 "ok": True, "dry_run": True, "version": values["version"],
                 "config": config_path, "config_changes": config_changes,
                 "socket_mode": "activated" if has_socket_units(values["version"]) else "legacy rollback",
+                "users_to_add": values["users_to_add"],
                 "message": "no files, wheels, groups, units, or services changed",
             }
         if not runtime.yes and not runtime.confirm("Install or upgrade the cgprofile host service?"):
@@ -1207,7 +1262,7 @@ class Installer:
         for group, users in ((values["control_group"], values["control_users"]),
                              (values["observer_group"], values["observer_users"])):
             for user in users:
-                self._command(["usermod", "-a", "-G", group, user], timeout=30)
+                self._command(["gpasswd", "-a", user, group], timeout=30)
 
         os.makedirs(self.paths.unit_dir, mode=0o755, exist_ok=True)
         if resource_change or version_drift or earlier_pending:
@@ -1264,6 +1319,7 @@ class Installer:
             "pruned": removed, "enabled": values["enable_now"], "downgrade": downgrade,
             "forced_sessions": values.get("forced_sessions", []),
             "warnings": values.get("warnings", []),
+            "users_to_add": values["users_to_add"],
         }
 
     def _plan(self, values: Mapping[str, Any], config_path: str, config_text: str,
@@ -1382,10 +1438,11 @@ class Installer:
     def uninstall(self, args: argparse.Namespace, runtime: CliRuntime) -> Dict[str, Any]:
         """Remove what cgpd install wrote.
 
-        The ownership markers go last (PENDING, then install.toml), so an interrupted
-        uninstall can be rerun with the group list still known. The tree this process
-        runs from is left for ``finish_uninstall``, which the handler calls after the
-        result was printed.
+        The ownership markers go last (PENDING, then install.toml), preserving the
+        group list through cleanup. The tree this process runs from is left for
+        ``finish_uninstall``, which the handler calls after printing the result; if
+        that deferred step fails, the handler gives manual cleanup steps because this
+        executable may already have been removed.
         """
         self._check_config_arg(args)
         record = _read_record(self.paths.install_record)
@@ -1455,6 +1512,7 @@ class Installer:
 
         removed_groups: List[str] = []
         failed_groups: List[str] = []
+        failed_group_names: List[str] = []
         if remove_groups:
             for group in created_groups:
                 # A rerun after a partial uninstall finds some groups already gone.
@@ -1465,6 +1523,7 @@ class Installer:
                     removed_groups.append(group)
                 else:
                     detail = (result.stderr or result.stdout or "").strip().splitlines()
+                    failed_group_names.append(group)
                     failed_groups.append(f"{group} ({detail[-1] if detail else 'exit ' + str(result.returncode)})")
         if purge_data:
             try:
@@ -1480,15 +1539,22 @@ class Installer:
         body: Dict[str, Any] = {
             "ok": True, "dry_run": False, "removed": targets, "groups_removed": removed_groups,
             "data_purged": purge_data, "kept": kept,
+            "manual_groups": created_groups if remove_groups else [],
         }
         running = self._running_version_dir()
         self._remove_version_root(keep=running)
         if failed_groups:
-            # Everything else is done; the markers stay so a rerun finds the group list.
+            # Keep the ownership markers and running version tree for explicit cleanup.
+            group_steps = "; ".join(f"run `groupdel {group}` if that group still exists"
+                                     for group in failed_group_names)
             raise InstallError(
                 "could not remove group(s) " + ", ".join(failed_groups)
-                + "; everything else was removed and the install record is kept: free the group "
-                "(it is probably a user's primary group), then rerun cgpd uninstall --remove-groups --yes"
+                + "; service resources were removed and the ownership markers are kept. Manual cleanup:"
+                + f" after this command exits, remove any remaining version tree under {self.paths.opt} "
+                f"and {self.paths.current} if present;"
+                + f" free the group (it is probably a user's primary group), {group_steps}; then remove "
+                f"{self.paths.install_record} and {self.paths.pending} if present after verifying the owned "
+                "files are gone"
             )
         if running is None:
             self._remove_markers(body)
@@ -1567,20 +1633,43 @@ def _uninstall_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
     except InstallError as exc:
         raise CliFailure(str(exc), exit_code=exc.exit_code) from None
     # Print before the tree this process runs from is deleted (see finish_uninstall).
-    shown = {key: value for key, value in body.items() if key != "deferred"}
+    shown = {key: value for key, value in body.items() if key not in {"deferred", "manual_groups"}}
     runtime.output.primary(shown if runtime.json_mode else _uninstall_summary(shown))
+    deferred = body.get("deferred")
     try:
         subject.finish_uninstall(body)
     except InstallError as exc:
-        raise CliFailure(f"{exc}; rerun cgpd uninstall --yes to finish", exit_code=exc.exit_code) from None
+        steps = []
+        if deferred:
+            steps.append(f"verify and remove the remaining version tree {deferred} and {subject.paths.current} if present")
+        steps.extend(f"run `groupdel {group}` if the cgpd-created group still exists"
+                     for group in body.get("manual_groups", []))
+        steps.append(
+            f"after verifying the cgpd files are gone, remove {subject.paths.install_record} "
+            f"and {subject.paths.pending} if present"
+        )
+        raise CliFailure(f"{exc}; manual cleanup steps: " + "; ".join(steps),
+                         exit_code=exc.exit_code) from None
     return 0
 
 
 def _install_summary(body: Mapping[str, Any]) -> str:
     if body.get("dry_run"):
-        return f"dry run: cgprofile {body['version']} would be installed; no changes made"
-    resources = ", ".join(body.get("resources_changed", [])) or "no resource drift"
-    lines = [f"cgprofile {body['version']} installed; {resources}; enabled={body['enabled']}"]
+        lines = [f"dry run: cgprofile {body['version']} would be installed; no changes made"]
+        verb = "would add"
+    else:
+        resources = ", ".join(body.get("resources_changed", [])) or "no resource drift"
+        lines = [f"cgprofile {body['version']} installed; {resources}; enabled={body['enabled']}"]
+        verb = "added"
+    addition_count = 0
+    for level in daemon_config.SOCKET_LEVELS:
+        entry = body.get("users_to_add", {}).get(level, {})
+        group = entry.get("group")
+        for user in entry.get("users", []):
+            lines.append(f"{verb} user {user} to {group} ({level})")
+            addition_count += 1
+    if addition_count:
+        lines.append("Membership applies on the user's next login or a restarted cgpd service.")
     lines.extend(f"WARNING: {warning}" for warning in body.get("warnings", []))
     return "\n".join(lines)
 
@@ -1607,10 +1696,8 @@ def register_install(registry: CliRegistry) -> None:
                    group="ACCESS", metavar="GROUP"),
         OptionSpec(("--observer-group",), "create cgprofile-observer or map observer access to an existing group",
                    group="ACCESS", metavar="GROUP"),
-        OptionSpec(("--control-users",), "comma-separated existing users to add to the control group",
-                   group="ACCESS", metavar="USERS"),
-        OptionSpec(("--observer-users",), "comma-separated existing users to add to the observer group",
-                   group="ACCESS", metavar="USERS"),
+        OptionSpec(("--add-user",), "add an existing user to a socket access group (repeatable)",
+                   group="ACCESS", metavar="LEVEL=USER", parser_kwargs={"action": "append"}),
         OptionSpec(("--gates-slice",), "configured admission-capacity slice", group="CONFIG", metavar="SLICE"),
         OptionSpec(("--observe-slices",), "comma-separated observed slice names", group="CONFIG", metavar="SLICES"),
         OptionSpec(("--allow-uids",), "comma-separated control-socket UID allowlist", group="CONFIG", metavar="UIDS"),
@@ -1630,7 +1717,8 @@ def register_install(registry: CliRegistry) -> None:
         group=VerbGroup.MODIFICATION.value, mutating=True, dry_run=True,
         include_progress=False, options=options, handler=_install_handler,
         examples=("cgpd install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... --enable",
-                  "cgpd install --wheel-source ./wheels --control-group docker --observer-group cgprofile-observer --no-enable"),
+                  "cgpd install --wheel-source ./wheels --control-group cgprofile-control "
+                  "--observer-group cgprofile-observer --add-user control=alice --no-enable"),
     ))
     registry.register(VerbSpec(
         "uninstall", description="stop and remove cgpd service resources",

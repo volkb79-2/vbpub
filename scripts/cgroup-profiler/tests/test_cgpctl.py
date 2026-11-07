@@ -906,7 +906,12 @@ def test_observer_dir_check_uses_configured_path_group_and_mode(monkeypatch, tmp
 
     monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
     monkeypatch.setattr(cgpctl, "socket_group", lambda _path: {"group": "control", "gid": control_gid})
-    monkeypatch.setattr(cgpctl.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid=observer_gid))
+    def getgrnam(name):
+        if name != "custom-observer":
+            raise KeyError(name)
+        return SimpleNamespace(gr_gid=observer_gid)
+
+    monkeypatch.setattr(cgpctl.grp, "getgrnam", getgrnam)
     monkeypatch.setattr(cgpctl.grp, "getgrgid", lambda gid: SimpleNamespace(gr_name="custom-observer"))
 
     assert _check("observer-dir", _ns("/tmp/control.sock")).status == "ok"
@@ -943,7 +948,8 @@ def test_observer_dir_check_reports_each_way_the_socket_can_be_wrong(monkeypatch
         return real_lstat(target, *args, **kwargs)
 
     monkeypatch.setattr(cgpctl.os, "lstat", fake_lstat)
-    monkeypatch.setattr(cgpctl, "socket_group", lambda _path: {"group": "control", "gid": control_gid})
+    control = {"group": "control", "gid": control_gid}
+    monkeypatch.setattr(cgpctl, "socket_group", lambda _path: control)
     names = {"obs": observer_gid, "docker": 99}
 
     def getgrnam(name):
@@ -980,6 +986,22 @@ def test_observer_dir_check_reports_each_way_the_socket_can_be_wrong(monkeypatch
     assert "'gone' does not exist" in run().summary and "docker group" in run().summary
     nodes[str(path)] = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=777)
     assert run().status == "warn"  # a gid with no name: nothing to say about docker, the group still mismatches
+    state["config"] = {"keys": {"sockets.observer": {"value": {"group": "docker-alias", "mode": "0660"}}}}
+    names["docker-alias"] = 99
+    gid_names[99] = "docker-alias"
+    nodes[str(path)] = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=99)
+    assert "docker GID" in run().summary
+    nodes[str(path)] = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=0)
+    gid_names[0] = "root"
+    assert "GID 0" in run().summary
+    control.update(group="docker", gid=99)
+    nodes[str(path)] = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=observer_gid)
+    state["config"] = {"keys": {"sockets.observer": {"value": {"group": "obs", "mode": "0660"}}}}
+    assert "control socket uses the docker group" in run().summary
+    control.update(group="control", gid=99)
+    assert "control socket group resolves to the docker GID" in run().summary
+    control.update(gid=0)
+    assert "control socket group resolves to GID 0" in run().summary
     del nodes[str(path)]
     assert run().status == "warn" and "is absent" in run().summary
     del nodes[str(observer_dir)]

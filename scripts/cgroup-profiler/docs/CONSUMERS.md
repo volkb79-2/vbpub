@@ -39,6 +39,7 @@ PYTHONPATH="$CGPROFILE_WHEEL_FILE:$CLI_EXTENDED_WHEEL_FILE" \
   --wheel-source ./wheels \
   --control-group cgprofile-control \
   --observer-group cgprofile-observer \
+  --add-user "control=$USER" \
   --enable --yes
 ```
 
@@ -46,7 +47,18 @@ PYTHONPATH="$CGPROFILE_WHEEL_FILE:$CLI_EXTENDED_WHEEL_FILE" \
 release base. The installer verifies each SHA-256 before unpacking. A TTY
 operator can omit required flags and use the wizard to enter the pins, create
 or map groups, select users, and enable the service. A non-interactive run
-must provide the pins, groups, and either `--enable` or `--no-enable`.
+must provide the pins, groups, and either `--enable` or `--no-enable`. Repeat
+`--add-user LEVEL=USER` for each existing account to add, for example
+`--add-user control=alice --add-user observer=runner`. The installer uses
+`gpasswd -a`, records these users, and only adds memberships; later installs
+retain them and uninstall never removes them. Dry-run output lists each user
+and level group it would add.
+
+Both groups must be dedicated. `cgpd install` and `cgpd config check` refuse a
+group named `docker`, a group resolving to GID 0 or the docker GID, or two
+levels resolving to the same GID. The refusal applies to flags, saved records,
+existing config, and wizard answers, without an override. Cross-service group
+uniqueness is checked by host-setup. See the [group design rationale](DESIGN-GUIDE.md#dedicated-groups-for-each-socket-level).
 
 After installation, these checks should pass:
 
@@ -92,9 +104,11 @@ rolling back below the socket-unit release removes the socket units first.
 `cgpd uninstall` removes service resources and socket nodes, but only on a host
 that `cgpd install` owns (`install.toml` or `PENDING`); on an old host-setup
 install it refuses before changing anything. It stops `cgprofile.slice`, and
-the ownership markers go last so an interrupted uninstall can be rerun. Groups
-remain unless `--remove-groups` is requested; `/var/lib/cgprofile` remains
-unless `--purge-data` is requested. See the
+keeps the ownership markers until cleanup finishes. If interrupted while the
+running version tree still exists, rerun uninstall from it; if that tree was
+already removed, use the manual cleanup steps in the deployment contract.
+Groups remain unless `--remove-groups` is requested; `/var/lib/cgprofile`
+remains unless `--purge-data` is requested. See the
 [deployment contract](NATIVE-DEPLOYMENT.md#4-uninstall-and-doctor).
 
 ### Preview the GitHub Release body

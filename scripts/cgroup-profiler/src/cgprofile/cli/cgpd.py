@@ -253,7 +253,7 @@ def build_cli(cli_identity: Optional[CliIdentity] = None) -> RegisteredCli:
     registry = CliRegistry(
         cli_identity or identity(), prog="cgpd",
         description="The cgprofile host daemon: run it, render its units, check its config.",
-        getting_started=("cgpd config check", "cgpd unit print", "cgpd run"),
+        getting_started=("cgpd -t", "cgpd config check", "cgpd unit print", "cgpd run"),
         global_options=(_opt("--config", "config file (default /etc/cgprofile/cgpd.toml; "
                                          "a missing explicit file is an error)",
                              group="CONFIG", metavar="PATH"),),
@@ -369,7 +369,12 @@ def _register_unit(registry: CliRegistry) -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    return build_cli().run(argv=None if argv is None else list(argv))
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if "-t" in arguments:
+        # Match the conventional daemon config-test switch while keeping the
+        # cli-extended config checker as the one validation implementation.
+        arguments = ["config", "check", *(token for token in arguments if token != "-t")]
+    return build_cli().run(argv=arguments)
 
 
 if __name__ == "__main__":

@@ -49,7 +49,9 @@ class TestRender:
         assert not any(line.startswith("RestartForceExitStatus") for line in service)
 
     def test_exec_start_follows_the_install_root_or_the_venv(self):
+        assert "ExecStartPre=/opt/cgprofile/current/venv/bin/cgpd -t\n" in unitfiles.render()["cgpd.service"]
         assert "ExecStart=/opt/cgprofile/current/venv/bin/cgpd run\n" in unitfiles.render()["cgpd.service"]
+        assert "ExecStartPre=/srv/cg/current/venv/bin/cgpd -t\n" in unitfiles.render("/srv/cg")["cgpd.service"]
         assert "ExecStart=/srv/cg/current/venv/bin/cgpd run\n" in unitfiles.render("/srv/cg")["cgpd.service"]
         assert "ExecStart=/srv/cg/2.0.0/venv/bin/cgpd run\n" in unitfiles.render(
             "/srv/cg", "/srv/cg/2.0.0/venv/")["cgpd.service"]
@@ -190,7 +192,7 @@ class TestCheck:
     def test_check_renders_with_the_given_venv(self, cli, installed):
         code, _out, err = cli("unit", "check", "--wheel-venv", "/srv/other/venv", "--installed",
                               str(installed / "cgpd.service"))
-        assert code == 2 and "ExecStart=/srv/other/venv/bin/cgpd run" in err
+        assert code == 2 and "ExecStartPre=/srv/other/venv/bin/cgpd -t" in err
 
     def test_check_with_a_bad_install_root(self, cli):
         assert cli("unit", "check", "--install-root", "relative")[0] == 2

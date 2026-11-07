@@ -14,6 +14,7 @@ Stdlib only (``tomllib``). Nothing here touches the sockets or the sessions;
 from __future__ import annotations
 
 import difflib
+import grp
 import hashlib
 import json
 import math
@@ -211,7 +212,47 @@ def validate(key: str, value: Any) -> Any:
     return uids
 
 
-def parse_table(text: str) -> Dict[str, Any]:
+def _group_gid(name: str) -> Optional[int]:
+    try:
+        return grp.getgrnam(name).gr_gid
+    except KeyError:
+        return None
+
+
+def _validate_socket_group(level: str, name: str,
+                           gid_lookup: Callable[[str], Optional[int]] = _group_gid,
+                           docker_gid: Optional[int] = None) -> Optional[int]:
+    """Validate one dedicated socket group and return its GID when it exists."""
+    if name == "docker":
+        raise ConfigError(f"sockets.{level}.group must not be docker")
+    gid = gid_lookup(name)
+    if gid == 0:
+        raise ConfigError(f"sockets.{level}.group must not resolve to GID 0")
+    if docker_gid is None:
+        docker_gid = gid_lookup("docker")
+    if gid is not None and docker_gid is not None and gid == docker_gid:
+        raise ConfigError(f"sockets.{level}.group must not resolve to the docker GID")
+    return gid
+
+
+def validate_socket_groups(
+    sockets: Mapping[str, Mapping[str, str]],
+    *,
+    gid_lookup: Callable[[str], Optional[int]] = _group_gid,
+) -> None:
+    """Reject Docker/root access groups and duplicate same-service level GIDs."""
+    docker_gid = gid_lookup("docker")
+    gids: Dict[str, Optional[int]] = {}
+    for level in SOCKET_LEVELS:
+        gids[level] = _validate_socket_group(
+            level, sockets[level]["group"], gid_lookup, docker_gid)
+    if sockets["control"]["group"] == sockets["observer"]["group"]:
+        raise ConfigError("sockets.control.group and sockets.observer.group must differ")
+    if gids["control"] is not None and gids["control"] == gids["observer"]:
+        raise ConfigError("sockets.control.group and sockets.observer.group resolve to the same GID")
+
+
+def parse_table(text: str, *, validate_groups: bool = True) -> Dict[str, Any]:
     """Parse and validate one flat TOML table (the file and the overrides)."""
     try:
         raw = tomllib.loads(text)
@@ -234,10 +275,8 @@ def parse_table(text: str) -> Dict[str, Any]:
     values = {key: validate(key, value) for key, value in flattened.items()}
     control = values.get("sockets.control", KEYS["sockets.control"].default)
     observer = values.get("sockets.observer", KEYS["sockets.observer"].default)
-    if control["group"] == observer["group"]:
-        raise ConfigError("sockets.control.group and sockets.observer.group must differ")
-    if observer["group"] == "docker":
-        raise ConfigError("sockets.observer.group must not be docker")
+    if validate_groups:
+        validate_socket_groups({"control": control, "observer": observer})
     if os.path.normpath(control["path"]) == os.path.normpath(observer["path"]):
         raise ConfigError("sockets.control.path and sockets.observer.path must differ")
     return values
@@ -249,10 +288,7 @@ def socket_settings(values: Mapping[str, Any]) -> Dict[str, Dict[str, str]]:
     for level in SOCKET_LEVELS:
         key = f"sockets.{level}"
         result[level] = validate(key, values.get(key, KEYS[key].default))
-    if result["control"]["group"] == result["observer"]["group"]:
-        raise ConfigError("sockets.control.group and sockets.observer.group must differ")
-    if result["observer"]["group"] == "docker":
-        raise ConfigError("sockets.observer.group must not be docker")
+    validate_socket_groups(result)
     if os.path.normpath(result["control"]["path"]) == os.path.normpath(result["observer"]["path"]):
         raise ConfigError("sockets.control.path and sockets.observer.path must differ")
     return result
@@ -289,7 +325,7 @@ def digest_of(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def read_config_file(path: str, *, explicit: bool) -> Tuple[Dict[str, Any], str]:
+def read_config_file(path: str, *, explicit: bool, validate_groups: bool = True) -> Tuple[Dict[str, Any], str]:
     """``(values, digest)`` for ``path``; a missing default file is empty."""
     try:
         with open(path, "rb") as fh:
@@ -305,7 +341,7 @@ def read_config_file(path: str, *, explicit: bool) -> Tuple[Dict[str, Any], str]
     except UnicodeDecodeError:
         raise ConfigError(f"config file {path} is not UTF-8") from None
     try:
-        return parse_table(text), digest_of(data)
+        return parse_table(text, validate_groups=validate_groups), digest_of(data)
     except ConfigError as exc:
         raise ConfigError(f"{path}: {exc}") from None
 

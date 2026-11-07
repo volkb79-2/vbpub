@@ -142,6 +142,27 @@ class TestConfigCheck:
         code, out, _ = cli("--config", write_config(sockdir, ""), "config", "check")
         assert code == 0 and "0 key(s)" in out
 
+    @pytest.mark.parametrize("argv_order", ["before", "after"])
+    def test_short_test_option_validates_config_without_starting_daemon(self, capsys, sockdir, argv_order):
+        path = write_config(sockdir, "interval = 2\n")
+        args = ["--config", path, "-t"] if argv_order == "before" else ["-t", "--config", path]
+        assert cgpd.main(args) == 0
+        captured = capsys.readouterr()
+        assert f"config ok: {path}" in captured.out
+        assert "event=start" not in captured.err
+
+    def test_short_test_option_returns_nonzero_for_invalid_config(self, capsys, sockdir):
+        path = write_config(sockdir, "interval = 'fast'\n")
+        assert cgpd.main(["--config", path, "-t"]) == 2
+        captured = capsys.readouterr()
+        assert "interval" in captured.err
+
+    def test_install_exposes_the_repeatable_add_user_flag(self, capsys):
+        assert cgpd.build_cli().run(argv=["install", "--help"]) == 0
+        captured = capsys.readouterr()
+        assert "--add-user LEVEL=USER" in captured.out
+        assert "--control-users" not in captured.out and "--observer-users" not in captured.out
+
 
 # ── preflight ──────────────────────────────────────────────────────────────
 
