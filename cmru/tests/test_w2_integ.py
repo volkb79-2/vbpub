@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -620,10 +621,26 @@ def test_estate_python_callers_import_only_what_cmru_exports():
     files = _estate_python_outside_cmru()
     problems = _estate_cmru_import_problems(files)
     assert not problems, "\n".join(problems)
-    mdt = REPO_ROOT / "modern-debian-tools-python-debug" / "build-push.py"
+    mdt = REPO_ROOT / "mdt-cockpit" / "build-push.py"
     if mdt.is_file():  # the consumer that the removed run_step broke
         assert mdt in files
-        assert "from cmru.runner import run_step" in mdt.read_text(encoding="utf-8")
+        # Assay snapshots may resolve a sibling project path from a shared
+        # COW tree. The API contract is about the commit being judged, so read
+        # this tracked consumer from that commit rather than the overlay file.
+        mdt_source = subprocess.run(
+            ["git", "show", "HEAD:mdt-cockpit/build-push.py"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        mdt_tree = ast.parse(mdt_source)
+        assert any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "cmru.runner"
+            and any(alias.name == "run_step" for alias in node.names)
+            for node in ast.walk(mdt_tree)
+        )
 
 
 # The process-environment leak check moved to tests/test_zz_environment_probe.py (W3-PREP).

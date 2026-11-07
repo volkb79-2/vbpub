@@ -35,6 +35,9 @@ def _tokens(*argv: str) -> list[str]:
          ["up", "--profile", "a", "--profile", "b", "--phases", "1,2"]),
         # library controls become the implementation's flags
         (["up", "--yes", "--dry-run"], ["up", "--yes", "--dry-run"]),
+        # CIU-201: --dry-run reaches the implementation of the two removal verbs
+        (["clean", "--dry-run"], ["clean", "--dry-run"]),
+        (["worktree", "rm", "one", "--dry-run"], ["worktree", "rm", "one", "--dry-run"]),
         (["status", "--json"], ["status", "--json"]),
         (["graph", "--json"], ["graph", "--format", "json"]),
         (["resolve", "--json"], ["resolve", "--json"]),
@@ -48,6 +51,18 @@ def _tokens(*argv: str) -> list[str]:
         # the command after `--` reaches the child byte for byte, `--` included
         (["exec", "api:web", "--", "pytest", "-q", "--help"],
          ["exec", "api:web", "--", "pytest", "-q", "--help"]),
+        (["run", "--root-folder", "/repo", "--profile", "test", "--name", "rg-one",
+          "--label", "run-gate.job=job1", "--env-name", "SCHEMA_GATE_DSN",
+          "--extend", "/tmp/limits.yml", "--detach", "--json", "tools/runner:worker",
+          "--", "python", "-c", "print('lane')"],
+         ["run", "--root-folder", "/repo", "--profile", "test", "--name", "rg-one",
+          "--label", "run-gate.job=job1", "--env-name", "SCHEMA_GATE_DSN",
+          "--extend", "/tmp/limits.yml", "--detach", "--json", "tools/runner:worker",
+          "--", "python", "-c", "print('lane')"]),
+        (["run", "--root-folder", "/repo", "--older-than", "30m", "reap", "--yes"],
+         ["run", "--root-folder", "/repo", "--older-than", "30m", "--yes", "reap"]),
+        (["run", "--dry-run", "--json", "tools/runner:worker", "--", "python", "-V"],
+         ["run", "--json", "--dry-run", "tools/runner:worker", "--", "python", "-V"]),
         (["worktree", "exec", "one", "--target", "web", "--", "ls", "-l"],
          ["worktree", "exec", "one", "--target", "web", "--", "ls", "-l"]),
         (["ssh", "web", "--admin", "--", "uptime"], ["ssh", "web", "--admin", "--", "uptime"]),

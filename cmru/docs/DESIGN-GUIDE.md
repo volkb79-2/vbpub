@@ -780,6 +780,15 @@ after the first stable tag exists. Once a stable CMRU release is published,
 subsequent release candidates return to the normal pinned R1 and tag-based R2
 paths.
 
+### Whole-target Assay inventories list executable modules
+
+The first-release lanes use Assay's whole-target mode, which needs at least one
+executable line in every target. CMRU's package initializer contains only its
+module docstring, so including it makes Assay refuse the baseline as
+`TARGET_NOT_MEASURED`. The lane inventory test derives the source-module set
+from Python syntax and checks both first-release lanes against it; adding or
+removing a production module therefore requires an explicit target-list update.
+
 #### Mutation process-tree isolation
 
 Each mutation command starts in a fresh process group while CMRU's host
@@ -1041,6 +1050,9 @@ published-wheel, and image-label identity preflight; it inspects the selected
 image without starting a tester container, and downloads the published
 Run-Gate wheel from GitHub to compare digests, so it needs network access. If Docker is unavailable, it says
 `SKIPPED` instead of treating an unreachable image as empty or as a match. The
+identity check also requires the inspected result to report a non-empty Run-Gate
+version and a valid wheel SHA-256. A missing value is a failed precondition:
+substituting `unknown` would turn an incomplete check into a success-shaped result. The
 bootstrap comparison uses one parser shared with the zero-release sequence
 test, so the preflight and test reject the same stale or conflicting version
 references.

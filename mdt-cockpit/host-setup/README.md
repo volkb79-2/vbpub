@@ -786,6 +786,76 @@ at install time. All four memory controls may be omitted. The manual path requir
 complete valid config; the wizard writes its candidate only after the prompts
 complete and the installer backs up any existing config only after validation.
 
+### run-gate gates admission cap (MDT-077)
+
+run-gate's count admission is a project switch (`[admission] enabled = true` in the consumer's `run-gate.toml`,
+dstdns sets it). The cap it enforces is not in any file: it is a Docker-daemon object, a never-started
+`ciu-admission-<generation>` container whose label `ciu.admission.tiers.gates.max_concurrent` is the number, and
+only `run-gate admission set --max-concurrent N` creates it. A reinstalled host has a new daemon and so no cap,
+and every lane of an admission-enabled project then ends `NOT_RUN no-headroom` ("no gates limit is published")
+while the host idles. The limit is the host's to state (AGENTS.md, "limits are host-owned"), so host-setup derives
+it from the capacity it already enforces on `dev-gates.slice` and publishes it. Section 9 of
+`host-setup.env.example` holds the keys; all are optional in an older `/etc/mdt/host-setup.env`.
+
+**Formula**
+
+```
+cap = max(1, min(cpu_cap, memory_cap))
+cpu_cap    = floor(gates CPU cores / ADMISSION_CPUS_PER_GATE)          # default 2 CPUs per concurrent gate
+memory_cap = floor(gates MemoryHigh / ADMISSION_MEMORY_PER_GATE)       # default 2G per gate; no term when the tier has no MemoryHigh
+```
+
+`gates CPU cores` is the effective minimum of the parent `dev.slice` and `dev-gates.slice` CPUQuota. `mdt_capacity`
+supplies the auto-derived shares, while explicit `DEV_CPU_QUOTA` and `DEV_GATES_CPU_QUOTA` percentages cap those
+shares; `-` omits that level's quota. For example, `DEV_CPU_QUOTA=200%` on an 8-core host limits the gate tier to
+2 cores even when its own quota is larger. `gates MemoryHigh` is what the tier is rendered with: on `HOST_ROLE=dedicated-dev`
+the derivation of "Memory of the dedicated-dev role" (`mdt_capacity.dedicated_memory`: dev.slice's High minus the
+protected tiers' MemoryLow, so a leak ends in the tier first), otherwise `DEV_GATES_MEMORY_HIGH`. The defaults are
+planning figures, not limits (the tier is overcommitted by design and PSI is what bounds real load): one gate per
+2 vCPU is the conservative figure the operator published by hand on v1001, 2G is the memory budget of a typical
+lane. Examples: a 4 vCPU / 8 GB dedicated-dev host (v1001, r1002) gives 2, an 8 vCPU / 16 GB one gives 4, a
+shared-prod host with the example's `DEV_GATES_MEMORY_HIGH=800M` gives the minimum 1. A host that should run more
+(r1002 was hand-raised to 4 for a dstdns campaign) says so in `host-setup.env`: `ADMISSION_MAX_CONCURRENT=4`, or
+`ADMISSION_CPUS_PER_GATE=1` and `ADMISSION_MEMORY_PER_GATE=1G` to keep the formula. See the [publication policy rationale](../docs/DESIGN-GUIDE.md#mdt-077-admission-cap-publication-policy)
+and [pasteable operator steps](../docs/CONSUMERS.md#run-gate-admission-cap).
+`python3 mdt_admission.py derive /etc/mdt/host-setup.env` prints the number and the arithmetic behind it without
+touching anything.
+
+**Keys**
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ADMISSION_PUBLISH` | `auto` | `auto`: a full install publishes only when no readable cap exists and keeps a differing readable cap; `sudo ./host-setup/install.sh --admission-only` reconciles differences. `missing`: publish only when no readable cap exists and never replace. `replace`: full install and `--admission-only` replace differences. `off`: leave the cap alone. |
+| `ADMISSION_MAX_CONCURRENT` | `auto` | `auto` = the formula; a whole number of at least 1 pins the desired cap and always takes precedence over the computed value |
+| `ADMISSION_UNREADABLE_POLICY` | `refuse` | published with the cap: what a client does when it cannot read one (`refuse` = `NOT_RUN`, `unbudgeted` = run without a ticket) |
+| `ADMISSION_CPUS_PER_GATE` / `ADMISSION_MEMORY_PER_GATE` | `2` / `2G` | the formula's two budgets |
+| `ADMISSION_COCKPIT` | empty | empty = run-gate on the host; a container name = that running cockpit, as `ADMISSION_COCKPIT_USER` (default `vscode`) |
+| `ADMISSION_RUN_GATE` | empty | the run-gate to call (a path on the host, or inside the cockpit); empty = `run-gate` on `PATH` |
+| `ADMISSION_TICKET_IMAGE` | empty | a LOCAL image that provides `/bin/true` (run-gate never pulls it); empty = the cockpit's own image. There is no default on a host without a cockpit |
+
+**What runs, when.** The full install runs the step after the tiers and services are up, and
+`sudo ./host-setup/install.sh --admission-only` runs only it (strictly validating the installed config first, no wizard, no
+other change). It writes a minimal `run-gate.toml` (`[admission]` with the ticket image and policy; no lanes) into
+a private temporary directory or, for a cockpit, over stdin into one inside the container, exports
+`CGROUP_PARENT_DEV_GATES=dev-gates.slice`, and runs `run-gate admission show` first. A cap equal in value and
+policy is left alone (no new generation). A missing cap is published with `run-gate admission set`. Under the
+default `auto`, the full install keeps a differing readable cap; the explicit `--admission-only` command reconciles
+it with `--replace`. `replace` opts the full install into the same reconciliation, while `missing` never replaces.
+The explicit `--admission-only` action also uses `--replace` to repair a published object whose limit cannot be
+parsed. The cap is read back after every write. Prerequisites a fresh host does not have yet (Docker CLI missing,
+Docker daemon unavailable, run-gate missing on the host or in the cockpit, cockpit stopped, ticket image absent)
+are distinct printed `NOTE`s and exit 0. After reinstall, operators must run
+`sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist. A publish that was
+attempted and failed (run-gate refuses or read-back differs) is printed with run-gate's reason; the rest of the
+install completes and the run exits non-zero.
+
+**Verification.** `mdt-host-check.sh` reads the cap through the same code: FAIL when no cap is published, OK when it
+equals the host policy, WARN when it differs, FAIL when it differs while `ADMISSION_MAX_CONCURRENT` is pinned, and
+WARN when a prerequisite prevents reading it (naming which). A difference remains a warning under `missing`;
+`off` reports INFO. Admission is local to one
+Docker daemon: nothing here applies to a remote daemon, and projects that leave `[admission]` off are unaffected
+whatever is published.
+
 ### Writeback and root-queue settings (MDT-HS-05)
 
 The wizard (step 8, after the IO caps) asks for four host-global keys and install.sh renders, applies and
@@ -841,7 +911,9 @@ value in an earlier-sorting `sysctl.d` file is lowered to 524288 at the next boo
 A raised limit is only half the fix: generated trees (git worktrees, run-gate and pytest output) can still consume most
 of it. The devcontainer template therefore sets `files.watcherExclude` and `search.exclude` under
 `customizations.vscode.settings`; trim those patterns to the consumer repo. The cost: the Source Control view does not
-live-refresh inside a worktree under `.worktrees/`.
+live-refresh inside a worktree under `.worktrees/`. These settings land in the persisted home's
+`~/.vscode-server/data/Machine/settings.json`, which a rebuild does not rewrite: after the template block changes, apply
+it as `templates/vscode/README.md` ("Template settings and the persisted home") describes.
 
 ### IO scheduler and io.cost (MDT-HS-07)
 
@@ -973,6 +1045,7 @@ the test stacks.
 | `scripts/mdt-slice-memory-min-low-audit.py` | `/usr/local/sbin/` | read-only audit of only `memory.min`/`memory.low` — logs a `[WARN]` when an ancestor makes a value ineffective |
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | shared Linux-derived `io.cost` coefficient matrix against a persistent file → `/var/lib/mdt/io-baseline.env` (identity-bound benchmark results) |
 | `mdt-host-setup-wizard.py` (a sibling of `install.sh`, not under `scripts/`, because it is never installed onto the host) | not installed — run from this directory via `install.sh --wizard`, or directly as `sudo ./mdt-host-setup-wizard.py` to reconfigure an already-installed host | interactive `/etc/mdt/host-setup.env` builder (see Quick start); template surgery on `host-setup.env.example`, never generated from scratch |
+| `mdt_admission.py` | `/usr/local/sbin/mdt_admission.py` | derives the run-gate gates admission cap from host capacity and publishes it (`install.sh`, `install.sh --admission-only`); read by `mdt-host-check.sh` (MDT-077) |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
 | `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | the LEGACY BFQ path, kept only while `IO_ROOT_SCHEDULER` is not set; with it set, `60-mdt-io-scheduler.rules` replaces it and the module file is installed only for `bfq` |
 | (merged, not copied) | `/etc/docker/daemon.json` | `cgroup-parent` (D-G7 default) + `live-restore`/log rotation — this is the file's ONE owner now; every key is merged in, nothing else in the file is touched |
@@ -1403,7 +1476,8 @@ effective cgroupfs values (including `io.bfq.weight` next to `io.weight` —
 under BFQ only the former is what schedules), zswap-writeback policy,
 `dev.slice`'s `io.max` + baseline device/target identity, the `docker-.scope.d` backstop's
 presence, BFQ scheduler, timer enablement, and lists every running
-container's cgroup parent. Exit 0 = no failures (warnings possible).
+container's cgroup parent, and the published run-gate gates admission cap against the host policy (MDT-077,
+above). Exit 0 = no failures (warnings possible).
 
 The one failure it reports as FAIL rather than WARN is a missing
 `memory_recursiveprot`: with that flag absent every `MemoryLow`/`MemoryMin` in

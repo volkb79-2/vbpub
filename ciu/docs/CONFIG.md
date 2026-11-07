@@ -294,7 +294,7 @@ Subsections:
 
 | Section | Purpose | Spec |
 |---|---|---|
-| `[deploy.labels]` | Container label prefix for orphan cleanup | S6.4 |
+| `[deploy.labels]` | Container label prefix for orphan cleanup; optional, defaults to `deploy.project_name` (CIU-200) | S6.4 |
 | `[deploy.health]` | Docker `HEALTHCHECK` timings (`interval`, `timeout`, `retries`, `start_period`) — `timeout` is ONE probe attempt's duration — plus `gate_timeout`, the S7.7 gate's OVERALL wait budget for a container to reach `healthy` (CIU-67). Two different questions, two keys; `gate_timeout` is overridable per phase-service via `health_timeout` (see below) | S7.7 |
 | `[deploy.env.defaults]` | Env injected into every service (TZ, PYTHONUNBUFFERED…) | S5.5 |
 | `[deploy.env.shared]` | Machine facts exposed to templates (CONTAINER_UID, DOCKER_GID, repo roots) | S2.6, S2.7 |

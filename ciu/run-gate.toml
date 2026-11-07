@@ -75,3 +75,15 @@ required_env = ["DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"]
 profile = false
 argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_ENROLL_REQUIRED=1 PYTHONPATH=src:../cmru/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/tests/test_getpy_enroll.py -k 'TestEnrollAgainstRealSystem or registered_enroll_lane' -q --cli-case-partial"]
 budget = "20m"
+
+# Real Compose acceptance for CIU-141. CMRU's registered tester-gate launches
+# this command inside tester-unified with an isolated DinD sidecar; the lane
+# itself runs there in host mode so it can reach tcp://localhost:2375. Do not
+# make this a default unit test or mount the host Docker socket.
+[lanes.ciu-run-os-integration]
+kind = "command"
+environment = "enroll-tester"
+required_env = ["DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"]
+profile = false
+argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_RUN_OS_INTEGRATION=1 PYTHONPATH=src:../cmru/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 nice -n 10 /opt/tester-venv/bin/python -m pytest -p no:cacheprovider -m os_integration tests/os_integration/test_ciu_run_real_docker.py -q --cli-case-partial"]
+budget = "20m"

@@ -64,7 +64,11 @@ budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
 [lanes.selftest.resources]
-memory = "1g"
+# 2g: the 25.2.0 release candidates recorded a footprint peak of 1021-1024 MiB, i.e.
+# clamped at the former 1g cap (true demand unknown; the October manifest median
+# peak was ~595 MiB), which produced oom_kill events (lane verdict forced to
+# ERROR) with all 2960 tests green. Re-read the footprint line after the first run.
+memory = "2g"
 memory_swap = "16g"
 cpus = "3"
 

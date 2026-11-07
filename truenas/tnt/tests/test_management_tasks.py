@@ -5,6 +5,7 @@ import asyncio
 import pytest
 from textual.widgets import DataTable, Static, Tree
 
+from helpers import wait_until
 from tnt.actions import apply_plan, make_plan
 from tnt.cli import build_cli
 from tnt.errors import Refused
@@ -118,11 +119,7 @@ def test_data_protection_tui_views_load_snapshot_replication_and_cloudsync(confi
                     find(tree.root)
                     assert target is not None
                     tree.select_node(target)
-                    for _ in range(40):
-                        await pilot.pause(0.05)
-                        note = str(app.query_one("#workflow-note", Static).render())
-                        if "loaded." in note:
-                            break
+                    await wait_until(pilot, lambda: "loaded." in str(app.query_one("#workflow-note", Static).render()))
                     table = app.query_one("#workflow-table", DataTable)
                     assert any(expected_method == call for call in server.called())
                     if expected_value is not None:

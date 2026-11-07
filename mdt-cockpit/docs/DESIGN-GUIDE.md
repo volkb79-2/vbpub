@@ -416,7 +416,7 @@ The fork publishes the native and VSC image families as `mdt-cockpit` and
 `mdt-cockpit-devcontainer`, and the runtime namespace now matches: the image's
 support files live in `/usr/local/share/mdt-cockpit` and the user's overrides in
 `~/.config/mdt-cockpit`. The original project's paths
-(`modern-debian-tools-python-debug`) are not carried over. That is possible
+Predecessor-specific project customization files are not carried over. That is possible
 exactly because a fork user starts with an empty home and copies old content by
 hand ([Moving from modern-debian-tools-python-debug](HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug));
 there is no persisted file that depends on the old name, so keeping it would
@@ -755,6 +755,31 @@ or an option cannot be classified, startup refuses instead of accepting a
 decoy.
 See the [consumer setup](CONSUMERS.md#host-cgroup-preflight) for the required
 install and rebuild steps.
+
+## MDT-077 admission-cap publication policy
+
+The gate cap follows the limits host-setup actually renders: the effective CPU
+budget is bounded by both `dev.slice`'s `DEV_CPU_QUOTA` and
+`dev-gates.slice`'s `DEV_GATES_CPU_QUOTA`, with auto-derived shares coming from
+`mdt_capacity`. This makes a parent quota pin visible to admission even when
+the gate tier's own configured quota is larger.
+
+`ADMISSION_PUBLISH=auto` is safe for the broad full-install path: it creates a
+cap when none can be read and preserves a differing readable value, which may
+have been deliberately raised for a campaign. The explicit
+`install.sh --admission-only` action is the reconciliation point for that
+default. `missing` always preserves an existing readable value, `replace`
+allows a full install to reconcile differences, and `off` leaves admission
+outside host-setup management. `ADMISSION_MAX_CONCURRENT` remains the value
+source when pinned; the checker warns on a computed mismatch and fails when a
+pin disagrees or when the cap is missing.
+
+The full-install path does not silently lower a manual cap because that
+workflow also applies unrelated host policy. Operators can choose the narrower
+reconcile command when they intend to apply the current formula or pin. The
+[host guide](../host-setup/README.md#run-gate-gates-admission-cap-mdt-077)
+describes the behavior, and the [consumer steps](CONSUMERS.md#run-gate-admission-cap)
+show the command to paste.
 
 ## Narrow cgprofile observer provisioning
 

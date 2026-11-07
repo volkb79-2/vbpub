@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import deploy  # noqa: E402
 from ciu import engine  # noqa: E402
+from ciu.config_constants import SHIPPED_COMPOSE  # noqa: E402
 
 REPO_NAME = "dstdns"
 INSTANCE_ID = "abc123"
@@ -149,6 +150,9 @@ def _identity_repo(tmp_path: Path, *, with_env: bool = True, with_keys: bool = T
     """A checkout whose global config carries NO deploy tags."""
     (tmp_path / "apps" / "vault").mkdir(parents=True)
     (tmp_path / "apps" / "ghost").mkdir(parents=True)
+    (tmp_path / "apps" / "vault" / SHIPPED_COMPOSE).write_text(
+        "services: {}\n", encoding="utf-8",
+    )
     if with_env:
         # CIU-75: `identity_compose_project_name` reads the generated overlay
         # table, not the legacy `ciu.env` export.

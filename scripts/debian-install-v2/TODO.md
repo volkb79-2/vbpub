@@ -102,9 +102,8 @@ Not designed or scoped beyond the above; no code exists yet.
 _Captured 2026-09-08 from the live gstammtisch soulmask-stall investigation;
 filed by Claude per operator request. debian-install-v2 has no CHANGES.md or
 managed nyxloom backlog yet (checked `nyxloom.toml` for `[backlog_entries]`
-— absent), so this file is the tracker, mirroring the same convention used
-in `modern-debian-tools-python-debug/TODO.md` for the host-escape-helper
-request filed earlier the same session._
+— absent), so this file is the tracker. The host-escape helper request filed
+earlier that session has since been implemented in `mdt-cockpit`.
 
 _2026-09-08: feasibility report + implementation plan now exist —
 [`zswap-shrinker-threshold-feasibility.md`](zswap-shrinker-threshold-feasibility.md)._

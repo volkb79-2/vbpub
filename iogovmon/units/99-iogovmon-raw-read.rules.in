@@ -1,0 +1,6 @@
+# TEMPLATE, NOT INSTALLED. Grants the iogovmon user READ-ONLY access to exactly one disk, by a stable identity. Never the `disk`
+# group (that grants write on every disk) and no CAP_SYS_RAWIO (read(2) on a node needs neither).
+# Pick @IOGOVMON_DISK_ID_PATH@ from `udevadm info -q property -n <disk>` (ID_PATH), and verify the match with `udevadm test`.
+# This is a permission change on a (possibly production) disk node: it needs the live review of WP-IGM-ACC before it is a default
+# (if that review rejects the ACL, a root-owned helper handing a read-only fd replaces this rule).
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_PATH}=="@IOGOVMON_DISK_ID_PATH@", RUN+="/usr/bin/setfacl -m u:@IOGOVMON_USER@:r /dev/%k"

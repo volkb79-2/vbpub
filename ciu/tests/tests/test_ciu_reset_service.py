@@ -63,6 +63,15 @@ def _ok(returncode=0, stdout="", stderr=""):
     return m
 
 
+def _compose_down_call(mock_run):
+    return next(
+        call.args[0]
+        for call in mock_run.call_args_list
+        if call.args[0][:3] == ["docker", "compose", "-p"]
+        and "down" in call.args[0]
+    )
+
+
 class TestResetServiceDockerComposeDown:
     def test_runs_docker_compose_down(self, tmp_path):
         config = _base_config()
@@ -76,9 +85,9 @@ class TestResetServiceDockerComposeDown:
         config = _base_config()
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()) as mock_run:
             _reset(config, tmp_path, assume_yes=True)
-            first_cmd = mock_run.call_args_list[0].args[0]
-            assert "down" in first_cmd and "-v" in first_cmd
-            assert "--remove-orphans" in first_cmd
+            down_cmd = _compose_down_call(mock_run)
+            assert "-v" in down_cmd
+            assert "--remove-orphans" in down_cmd
 
     def test_down_includes_overlay_when_present(self, tmp_path):
         config = _base_config()
@@ -87,8 +96,10 @@ class TestResetServiceDockerComposeDown:
         overlay.write_text("secrets: {}\n")
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()) as mock_run:
             _reset(config, tmp_path, assume_yes=True)
-            first_cmd = mock_run.call_args_list[0].args[0]
-            assert ".ciu/ciu.compose.overlay.yml" in first_cmd
+            down_cmd = _compose_down_call(mock_run)
+            assert any(
+                item.endswith(".ciu/ciu.compose.overlay.yml") for item in down_cmd
+            )
 
 
 class TestResetServiceVolumeDirectories:
@@ -352,14 +363,19 @@ class TestResetServiceOrphanedContainers:
         config = _base_config()
 
         def run(cmd, **kw):
-            if "ps" in cmd:
+            if "label=ciu.run=1" in cmd:
+                return _ok(stdout="")
+            if any(item.startswith("label=dstdns.component=") for item in cmd):
                 return _ok(stdout="orphan-1\norphan-2\n")
             return _ok()
 
         with patch.object(engine.procutil, "run_cmd", side_effect=run) as mock_run:
             _reset(config, tmp_path, assume_yes=True)
 
-        ps_calls = [c.args[0] for c in mock_run.call_args_list if "ps" in c.args[0]]
+        ps_calls = [
+            c.args[0] for c in mock_run.call_args_list
+            if any(item.startswith("label=dstdns.component=") for item in c.args[0])
+        ]
         assert ps_calls, "expected a docker ps call"
         # Anchored label equality: <prefix>.component=<service> (S6.4).
         assert any(f"label=dstdns.component={tmp_path.name}" in c for c in ps_calls)
@@ -383,14 +399,23 @@ class TestResetServiceOrphanedContainers:
         config["deploy"]["environment_tag"] = "abc123"
 
         def run(cmd, **kw):
-            if "ps" in cmd:
+            if "label=ciu.run=1" in cmd:
+                return _ok(stdout="")
+            if any(item.startswith("label=com.docker.compose.project=") for item in cmd):
                 return _ok(stdout="orphan-1\n")
             return _ok()
 
         with patch.object(engine.procutil, "run_cmd", side_effect=run) as mock_run:
             _reset(config, tmp_path, assume_yes=True)
 
-        ps = next(c.args[0] for c in mock_run.call_args_list if "ps" in c.args[0])
+        ps = next(
+            c.args[0] for c in mock_run.call_args_list
+            if any(
+                item.startswith("label=com.docker.compose.project=")
+                for item in c.args[0]
+            )
+            and "label=ciu.run=1" not in c.args[0]
+        )
         expected = engine.compose_project_name(config, tmp_path)
         assert f"label=com.docker.compose.project={expected}" in ps, (
             "orphan sweep must be scoped to this instance's compose project; "
@@ -422,10 +447,41 @@ class TestResetServiceValidation:
         with pytest.raises(ValueError, match="deploy.project_name"):
             reset_service({}, tmp_path, assume_yes=True)
 
-    def test_requires_label_prefix(self, tmp_path):
-        config = {"deploy": {"project_name": "test"}}
-        with pytest.raises(ValueError, match="deploy.labels.prefix"):
+    def test_label_prefix_defaults_to_project_name(self, tmp_path):
+        """CIU-200: a root without the optional [deploy.labels] table (tls-edge,
+        pwmcp, topos, nyxloom) resets, sweeping on <project_name>.component --
+        the label the scaffolded stack template stamps."""
+        config = {"deploy": {"project_name": "tls-edge"}}
+        with patch.object(engine.procutil, "run_cmd", return_value=_ok(stdout="")) as run:
             _reset(config, tmp_path, assume_yes=True)
+        ps = next(
+            c.args[0] for c in run.call_args_list
+            if f"label=tls-edge.component={tmp_path.name}" in c.args[0]
+        )
+        assert f"label=tls-edge.component={tmp_path.name}" in ps
+
+    def test_explicit_label_prefix_wins_over_project_name(self, tmp_path):
+        config = {"deploy": {"project_name": "tls-edge", "labels": {"prefix": "x"}}}
+        with patch.object(engine.procutil, "run_cmd", return_value=_ok(stdout="")) as run:
+            _reset(config, tmp_path, assume_yes=True)
+        ps = next(
+            c.args[0] for c in run.call_args_list
+            if f"label=x.component={tmp_path.name}" in c.args[0]
+        )
+        assert f"label=x.component={tmp_path.name}" in ps
+        assert not any("tls-edge.component" in str(a) for a in ps)
+
+    def test_refusal_helper_names_both_missing_keys(self):
+        assert engine.reset_refusal({}) == "deploy.project_name is required for reset"
+        assert engine.reset_refusal({"deploy": {"project_name": "p"}}) is None
+        assert engine.reset_label_prefix({"deploy": {}}) is None
+        assert engine.reset_label_prefix({"deploy": {"labels": None, "project_name": "p"}}) == "p"
+        # Unreachable through reset_refusal today (the prefix falls back to the
+        # project name); the guard stays for a future caller-visible change.
+        with patch.object(engine, "reset_label_prefix", return_value=None):
+            assert engine.reset_refusal({"deploy": {"project_name": "p"}}) == (
+                "deploy.labels.prefix is required for reset"
+            )
 
     def test_requires_repo_root_even_when_naming_pair_present(self, tmp_path):
         """CIU-71: --project-directory needs repo_root REGARDLESS of whether
@@ -452,6 +508,6 @@ class TestResetServiceIdentityNaming:
         cfg = _base_config()
         with patch.object(engine.procutil, "run_cmd", return_value=_ok()) as mock_run:
             _reset(cfg, tmp_path, assume_yes=True)
-        first_cmd = mock_run.call_args_list[0].args[0]
+        first_cmd = _compose_down_call(mock_run)
         expected = engine.identity_compose_project_name(tmp_path, tmp_path)
         assert first_cmd[:4] == ["docker", "compose", "-p", expected]

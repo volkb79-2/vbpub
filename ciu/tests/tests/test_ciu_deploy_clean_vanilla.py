@@ -53,6 +53,9 @@ def _workspace(tmp_path: Path, *, present=RESET_FILES) -> Path:
     # exactly the named files and nothing adjacent.
     (tmp_path / "ciu.global.toml.j2").write_text("[ciu]\n", encoding="utf-8")
     (tmp_path / "ciu.global.defaults.toml.j2").write_text("[ciu]\n", encoding="utf-8")
+    (tmp_path / "applications" / "api" / "ciu.defaults.toml.j2").write_text(
+        "[api]\n", encoding="utf-8",
+    )
     return tmp_path
 
 

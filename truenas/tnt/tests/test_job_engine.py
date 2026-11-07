@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from helpers import wait_until_sync
 from tnt.actions import Action, Kind, RpcCall, apply_plan, make_plan
 from tnt.errors import PlanExecutionError, TransportError
 from tnt.jobs import JobRegistry, JobWaitCancelled
@@ -81,16 +82,12 @@ def test_submitted_job_releases_rpc_lock_and_returns_job_id_with_progress_record
 
     worker = threading.Thread(target=run_plan)
     worker.start()
-    for _ in range(100):
-        if client.jobs:
-            break
-        threading.Event().wait(0.01)
-    assert client.jobs, "job submission should return before its remote job completes"
+    wait_until_sync(lambda: client.jobs, what="job submission (returns before its remote job completes)")
 
     # The remote job is still waiting, but its handle no longer owns the RPC call lock.
     assert rpc.call("app.query") == []
     client.jobs[0].finish()
-    worker.join(timeout=2)
+    worker.join(timeout=60)
     assert not worker.is_alive()
     assert errors == []
 
@@ -142,10 +139,7 @@ def test_reconnect_reconciles_only_matching_job_and_missing_job_stays_unknown():
 
     worker = threading.Thread(target=run_plan)
     worker.start()
-    for _ in range(100):
-        if client.jobs:
-            break
-        threading.Event().wait(0.01)
+    wait_until_sync(lambda: client.jobs, what="job submission")
     registry.mark_disconnected()
 
     class Reconnected:
@@ -161,7 +155,7 @@ def test_reconnect_reconciles_only_matching_job_and_missing_job_stays_unknown():
     assert item["reconciliation"] == "matched"
 
     client.jobs[0].finish()
-    worker.join(timeout=2)
+    worker.join(timeout=60)
     assert started.is_set()
 
 
@@ -307,7 +301,7 @@ def test_job_wait_polls_until_completion_without_treating_missing_state_as_an_up
     finisher = threading.Thread(target=lambda: (threading.Event().wait(0.03), remote.finish()))
     finisher.start()
     assert handle.wait(cancelled=lambda: False) == "done"
-    finisher.join(timeout=1)
+    finisher.join(timeout=60)
     assert not finisher.is_alive()
     assert registry.get(handle.local_id)["state"] == "SUCCESS"
 

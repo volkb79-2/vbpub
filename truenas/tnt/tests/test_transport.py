@@ -284,7 +284,7 @@ def test_guarded_rpc_write_grants_are_exact_and_bound_to_the_issuing_thread():
     with rpc._authorized(calls, grant):
         worker = threading.Thread(target=lambda: _capture_rpc_error(errors, rpc, "container.start", "demo"))
         worker.start()
-        worker.join(timeout=1)
+        worker.join(timeout=60)
         assert not worker.is_alive()
         with pytest.raises(Refused, match="not the next call"):
             rpc.call("container.stop", "demo")

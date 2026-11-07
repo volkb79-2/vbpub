@@ -48,6 +48,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -93,6 +94,21 @@ from .workspace_env import (  # P8 contract — relied on exactly, never edited 
 
 # Global logger instance (configured after parsing config).
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class PreparedStack:
+    """The rendered inputs shared by ``ciu up`` and stack-scoped one-shots."""
+
+    working_dir: Path
+    repo_root: Path
+    project: str
+    file_args: list[str]
+    compose_env: dict[str, str]
+    rendered_compose: str
+    ownership_path: Path | None
+    config: dict[str, Any]
+    secret_values: frozenset[str] = field(repr=False, compare=False)
 
 
 # ===========================================================================
@@ -976,6 +992,161 @@ def create_hostdirs(
 # ===========================================================================
 
 
+def reset_label_prefix(config: dict) -> Optional[str]:
+    """The container label prefix reset's orphan sweep filters on (CIU-200).
+
+    ``deploy.labels.prefix`` when set; otherwise ``deploy.project_name``, the
+    prefix the scaffolded stack template stamps (``<project_name>.component``)
+    and the value the scaffolded ``[deploy.labels]`` table is documented to
+    mirror. A root that omits the optional table (tls-edge, pwmcp, topos,
+    nyxloom) therefore resets instead of failing after clean already removed
+    its containers.
+    """
+    deployment = config.get("deploy", {})
+    explicit = (deployment.get("labels") or {}).get("prefix")
+    return explicit or deployment.get("project_name") or None
+
+
+def reset_refusal(config: dict) -> Optional[str]:
+    """Why :func:`reset_service` would refuse *config*, or ``None`` (CIU-200).
+
+    The ONE place reset's config preconditions live, so ``ciu clean`` (and its
+    ``--dry-run`` plan) can evaluate them for every selected stack BEFORE any
+    container is removed — a refusal discovered mid-clean is not atomic.
+    """
+    if not config.get("deploy", {}).get("project_name"):
+        return "deploy.project_name is required for reset"
+    if not reset_label_prefix(config):
+        return "deploy.labels.prefix is required for reset"
+    return None
+
+
+def reset_compose_project(
+    config: dict, stack_dir: Path, repo_root: Optional[Path],
+) -> str:
+    """The compose project ``reset_service`` runs ``down`` under (S8.7 / CIU-46)."""
+    try:
+        return compose_project_name(config, stack_dir)
+    except ValueError:
+        if repo_root is None:
+            raise ValueError(
+                "[S8.7] deploy.project_name/environment_tag not set and no "
+                "repo_root was provided to derive the workspace-identity "
+                "compose project; set both tags or pass repo_root."
+            )
+        return identity_compose_project_name(Path(repo_root), stack_dir)
+
+
+def guard_clean_stack(config: dict, stack_dir: Path, *, repo_root: Path) -> None:
+    """Run the clean one-shot guard for one stack exactly as ``reset_service`` will.
+
+    ``ciu clean`` calls this for every selected stack BEFORE it removes
+    anything, so a refusal leaves the checkout untouched; ``reset_service``
+    keeps its own call as the second line of defence.
+    """
+    stack = Path(stack_dir).resolve()
+    guard_clean_one_shots(
+        reset_compose_project(config, stack, repo_root),
+        repo_root=Path(repo_root), stack_dir=stack,
+    )
+
+
+def guard_clean_one_shots(
+    project: str, *, repo_root: Path, stack_dir: Path,
+) -> None:
+    """Refuse clean when Compose would remove another checkout's CIU run."""
+    root = Path(repo_root).resolve()
+    stack = Path(stack_dir).resolve()
+    try:
+        stack_rel = stack.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise ComposeError(
+            f"[CIU-141] cannot prove clean stack {stack} belongs to CIU root {root}"
+        ) from exc
+    try:
+        expected_ownership = workspace_ownership_labels(root)
+    except (OSError, ValueError, worktree.WorktreeError) as exc:
+        raise ComposeError(
+            f"[CIU-141] cannot prove this checkout's ownership before clean: {exc}"
+        ) from exc
+
+    query = [
+        "docker", "ps", "-a", "--no-trunc",
+        "--filter", f"label=com.docker.compose.project={project}",
+        "--filter", "label=com.docker.compose.oneoff=True",
+        "--filter", "label=ciu.run=1",
+        "--format", "{{.ID}}",
+    ]
+    # Preserve FileNotFoundError for reset_service's established CIU-137
+    # reporting and artifact-preservation contract. Other Docker errors still
+    # fail closed below.
+    listed = procutil.run_cmd(query, check=False, capture=True)
+    if listed.returncode != 0:
+        raise ComposeError("[CIU-141] Docker failed while guarding clean one-shots")
+    container_ids = [
+        line.strip() for line in (listed.stdout or "").splitlines() if line.strip()
+    ]
+    if any(not re.fullmatch(r"[0-9a-f]{64}", container_id) for container_id in container_ids):
+        raise ComposeError("[CIU-141] Docker did not return full IDs while guarding clean")
+
+    for container_id in sorted(set(container_ids)):
+        inspected = procutil.run_cmd(
+            ["docker", "inspect", "--type", "container", container_id],
+            check=False, capture=True,
+        )
+        if inspected.returncode != 0:
+            raise ComposeError(
+                f"[CIU-141] one-shot {container_id} changed during clean ownership inspection"
+            )
+        try:
+            document = json.loads(inspected.stdout or "")
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ComposeError(
+                f"[CIU-141] Docker returned invalid inspect data for one-shot {container_id}"
+            ) from exc
+        if not isinstance(document, list) or len(document) != 1 or not isinstance(document[0], dict):
+            raise ComposeError(
+                f"[CIU-141] Docker did not identify exact one-shot {container_id}"
+            )
+        container = document[0]
+        if container.get("Id") != container_id:
+            raise ComposeError(f"[CIU-141] Docker inspect changed one-shot ID {container_id}")
+        config = container.get("Config") or {}
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        if not isinstance(labels, dict):
+            raise ComposeError(
+                f"[CIU-141] one-shot {container_id} has no provable ownership labels"
+            )
+        if (
+            labels.get("com.docker.compose.project") != project
+            or labels.get("com.docker.compose.oneoff") != "True"
+            or labels.get("ciu.run") != "1"
+        ):
+            raise ComposeError(
+                f"[CIU-141] one-shot {container_id} changed its clean ownership labels"
+            )
+        if expected_ownership is not None:
+            owns_root = all(
+                labels.get(key) == value for key, value in expected_ownership.items()
+            )
+        else:
+            # Primary checkouts deliberately carry no ciu.instance/ciu.repo-root
+            # labels. Compose's project working_dir is their existing exact-root
+            # evidence; the run's repo-relative stack label closes same-root
+            # cross-stack collisions.
+            owns_root = (
+                labels.get("com.docker.compose.project.working_dir") == str(root)
+            )
+        owns_stack = labels.get("ciu.run.stack") == stack_rel
+        if not owns_root or not owns_stack:
+            name = str(container.get("Name", "")).lstrip("/")
+            raise ComposeError(
+                f"[CIU-141] refusing clean: Compose project {project!r} contains CIU "
+                f"one-shot {container_id} ({name}) from another checkout or stack; "
+                "let its owner remove it, then retry clean"
+            )
+
+
 def reset_service(
     config: dict,
     stack_dir: Path,
@@ -1009,14 +1180,11 @@ def reset_service(
     materialize.reset_secrets semantics apply (rm the stack/project store files).
     """
     stack_dir = Path(stack_dir).resolve()
-    deployment = config.get("deploy", {})
-    project_name = deployment.get("project_name")
-    label_prefix = deployment.get("labels", {}).get("prefix")
-
-    if not project_name:
-        raise ValueError("deploy.project_name is required for reset")
-    if not label_prefix:
-        raise ValueError("deploy.labels.prefix is required for reset")
+    refusal = reset_refusal(config)
+    if refusal:
+        raise ValueError(refusal)
+    project_name = config["deploy"]["project_name"]
+    label_prefix = reset_label_prefix(config)
 
     service_name = stack_dir.name
     print(f"[INFO] Resetting service: {service_name} (project: {project_name})", flush=True)
@@ -1038,16 +1206,7 @@ def reset_service(
     # clean and collided across checkouts.
     # S8.7 / CIU-46 cutover: ONE compose project name drives the down `-p`
     # AND step 4's orphan-sweep scope — they can never disagree.
-    try:
-        compose_project = compose_project_name(config, stack_dir)
-    except ValueError:
-        if repo_root is None:
-            raise ValueError(
-                "[S8.7] deploy.project_name/environment_tag not set and no "
-                "repo_root was provided to derive the workspace-identity "
-                "compose project; set both tags or pass repo_root."
-            )
-        compose_project = identity_compose_project_name(Path(repo_root), stack_dir)
+    compose_project = reset_compose_project(config, stack_dir, repo_root)
     # CIU-71: --project-directory is required unconditionally, independent of
     # which branch above resolved compose_project — down's relative paths
     # (e.g. a build.context restated by an overlay) must resolve against the
@@ -1062,17 +1221,20 @@ def reset_service(
     down_cmd = [
         "docker", "compose", "-p", compose_project,
         "--project-directory", str(Path(repo_root).resolve()),
-        "-f", CIU_COMPOSE_OUTPUT,
+        "-f", str(stack_dir / CIU_COMPOSE_OUTPUT),
     ]
     if overlay_path.exists():
-        down_cmd += ["-f", f"{MACHINE_DIR}/{OVERLAY_NAME}"]
+        down_cmd += ["-f", str(overlay_path)]
     # S16.9: the same file set `up` composed with, so `down` addresses exactly
     # the project `up` created (a fragment silently dropped here would leave
     # compose reasoning about a different merged model than the one running).
     if ownership_path.exists():
-        down_cmd += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
+        down_cmd += ["-f", str(ownership_path)]
     down_cmd += ["down", "-v", "--remove-orphans"]
     try:
+        guard_clean_one_shots(
+            compose_project, repo_root=Path(repo_root), stack_dir=stack_dir,
+        )
         result = procutil.run_cmd(down_cmd, check=False)
         if result.returncode != 0:
             print(f"[WARN]   docker compose down failed: {result.stderr}", flush=True)
@@ -1844,6 +2006,7 @@ def main_execution(
     compose_profiles: Optional[list[str]] = None,
     ciu_context: Optional[dict] = None,
     primary_image_references: set[str] | Callable[[], set[str]] | None = None,
+    _prepare_only: bool = False,
 ) -> dict:
     """Run the S8.3 pipeline for one stack. Returns a result dict with 'status'.
 
@@ -2319,11 +2482,10 @@ def main_execution(
                 ownership_path.read_text(encoding="utf-8"), materialized
             )
 
-        # ---- Step 16: compose up (S8.1) ----
-        if dry_run:
-            print("[STEP 16/17] --dry-run: skipping docker compose up", flush=True)
-        else:
-            print("[STEP 16/17] Starting stack (docker compose up -d)...", flush=True)
+        # `up --dry-run` evaluates none of the compose inputs (it never did:
+        # compose_project_name raises without deploy.project_name/
+        # environment_tag). Only a real start or a prepare-only render needs them.
+        if _prepare_only or not dry_run:
             compose_env = composefile.compose_process_env(
                 specs, materialized, compose_profiles=compose_profiles
             )
@@ -2331,6 +2493,32 @@ def main_execution(
             if ownership_path is not None:
                 file_args += ["-f", f"{MACHINE_DIR}/{OWNERSHIP_OVERLAY_NAME}"]
             project = compose_project_name(global_config, working_dir)
+
+        # ---- Step 16: compose up (S8.1) ----
+        if _prepare_only:
+            print("[STEP 16/17] Preparing rendered service; skipping compose up", flush=True)
+            prepared = PreparedStack(
+                working_dir=working_dir,
+                repo_root=repo_root,
+                project=project,
+                file_args=file_args,
+                compose_env=compose_env,
+                rendered_compose=rendered_compose,
+                ownership_path=ownership_path,
+                config=composefile.redact_config(merged, specs),
+                secret_values=frozenset(
+                    str(value)
+                    for secret in materialized.values()
+                    if (value := getattr(secret, "value", None)) not in (None, "")
+                ),
+            )
+            result["prepared_stack"] = prepared
+            result["config"] = prepared.config
+            return result
+        if dry_run:
+            print("[STEP 16/17] --dry-run: skipping docker compose up", flush=True)
+        else:
+            print("[STEP 16/17] Starting stack (docker compose up -d)...", flush=True)
             guard_container_name_owners(
                 rendered_compose,
                 expected_project=project,
@@ -2413,6 +2601,40 @@ def main_execution(
     finally:
         # S8.4 / B10: always restore cwd on every path.
         os.chdir(original_cwd)
+
+
+def prepare_stack(
+    working_dir: Path,
+    *,
+    compose_file: str = CIU_COMPOSE_TEMPLATE,
+    define_root: Optional[Path] = None,
+    skip_hostdir_check: bool = False,
+    skip_hooks: bool = False,
+    compose_profiles: Optional[list[str]] = None,
+    ciu_context: Optional[dict] = None,
+    primary_image_references: set[str] | Callable[[], set[str]] | None = None,
+) -> PreparedStack:
+    """Render a stack exactly as ``ciu up`` does, without starting Compose.
+
+    Preparation still performs the normal environment, secret, hook, configfile,
+    leak-scan, overlay, and ownership-label work. It deliberately skips the
+    optional reset and both Compose lifecycle hooks because no stack is started.
+    """
+    result = main_execution(
+        working_dir=working_dir,
+        compose_file=compose_file,
+        define_root=define_root,
+        skip_hostdir_check=skip_hostdir_check,
+        skip_hooks=skip_hooks,
+        compose_profiles=compose_profiles,
+        ciu_context=ciu_context,
+        primary_image_references=primary_image_references,
+        _prepare_only=True,
+    )
+    prepared = result.get("prepared_stack")
+    if not isinstance(prepared, PreparedStack):
+        raise ComposeError("[S8.3] stack preparation completed without rendered Compose inputs")
+    return prepared
 
 
 def run_shipped(

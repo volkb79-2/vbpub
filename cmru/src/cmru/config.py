@@ -208,8 +208,7 @@ def question_problems(questions: List[dict]) -> List[str]:
                 continue
         elif choices:
             problems.append(f"{where}.choices is only valid for a choice question")
-        required = q.get("required", True)
-        if not isinstance(required, bool):
+        if "required" in q and not isinstance(q["required"], bool):
             problems.append(f"{where}.required must be true or false")
         default = q.get("default")
         if default is None:
@@ -1097,7 +1096,7 @@ def is_reserved_internal_env(name: str) -> bool:
 
 
 def _scalar_env(
-    raw: object, where: str, *, reject_credentials: bool = False,
+    raw: object, where: str, *, reject_credentials: bool,
 ) -> dict[str, str]:
     if raw is None:
         return {}
@@ -1453,7 +1452,9 @@ def _parse_project_document(
         github = None
         targets = None
     env = _scalar_env(raw.get("env", {}), "env", reject_credentials=True)
-    metadata = _scalar_env(raw.get("build_metadata", {}), "build_metadata")
+    metadata = _scalar_env(
+        raw.get("build_metadata", {}), "build_metadata", reject_credentials=False,
+    )
     versions = _parse_versions(
         raw.get("versions"), f"{PROJECT_CONFIG_FILENAME} [versions]",
         allow_partial=not require_repository_facts,
@@ -1770,7 +1771,9 @@ def _load_orchestration_config(
                     f"orchestration.project_order must include dependency {dependency!r} "
                     f"of {project_id!r}"
                 )
-            if positions[dependency] >= positions[project_id]:
+            # Self edges were refused above; the unique project_order positions
+            # make equality impossible here for distinct project IDs.
+            if positions[dependency] > positions[project_id]:
                 _error(
                     f"orchestration.project.{project_id}.depends_on requires {dependency!r} "
                     "to appear earlier in orchestration.project_order"
@@ -1910,7 +1913,7 @@ def resolve_invocation_context(
             selected_reference = current / PROJECT_CONFIG_FILENAME
         selected = selected_reference.resolve()
     if selected.name == ORCHESTRATION_CONFIG_FILENAME:
-        forge = load_forge_config(selected, require_orchestration=True)
+        forge = load_forge_config(selected)
         _refuse_unregistered_project(forge, current)
         project_name = _project_for_directory(forge, current)
         git_scope = (

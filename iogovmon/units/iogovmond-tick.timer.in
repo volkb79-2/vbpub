@@ -1,0 +1,13 @@
+# TEMPLATE, NOT INSTALLED.
+[Unit]
+Description=iogovmond tick timer
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=@IOGOVMON_TICK_INTERVAL@
+RandomizedDelaySec=30
+AccuracySec=10s
+Unit=iogovmond-tick.service
+
+[Install]
+WantedBy=timers.target

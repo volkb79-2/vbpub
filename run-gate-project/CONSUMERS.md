@@ -476,7 +476,7 @@ slice's remaining budget. If those files are hidden or unreadable, it warns and
 continues under the other shared-infrastructure checks; it does not prove
 ancestor or whole-host headroom. Check and record those limits and current use
 before a high-memory campaign, and serialize campaigns when capacity is tight.
-See the [host sizing guidance](../modern-debian-tools-python-debug/host-setup/README.md).
+See the [host sizing guidance](../mdt-cockpit/host-setup/README.md).
 
 For daemon-backed `exec`/`bare-host` lanes, `resources.memory_max` is an
 optional placement ceiling, not a second Docker memory limit. Without it,
@@ -2262,7 +2262,7 @@ clean_tree = false
 budget = "30m"
 ```
 
-**Image-building / host-tooling projects (modern-debian-tools-python-debug,
+**Image-building / host-tooling projects (mdt-cockpit,
 tester-unified, tester-unified-go):** mostly not Python-coverage material —
 assay's R1 judge has nothing to bite. They still get lanes:
 
@@ -2291,6 +2291,31 @@ same two-token argv as the Python ones.
 `go test ./... -cover` in the Go image environment; if assay grows a Go
 coverage adapter later, the lane flips to `kind="assay"` without any consumer
 noticing — that boundary is the point.
+
+## Finding a lane's container (RG-242)
+
+An ephemeral (container) lane runs as `<repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9>`,
+e.g. `vbpub-run-gate-cmru-assay-r2-s4-ccd96cda-261105-1425-123456789` (UTC; `<ns9>` = `date +%N`).
+`<repo>` is the repository name (a commit-named release checkout falls back to its `origin` URL's
+last component); `<project>` is the project directory; `<sha8>` the judged HEAD (`00000000` if
+unresolvable). Parts are sanitised to docker's `[a-zA-Z0-9_.-]` and truncated (24/24/32), so the
+name is for people. **Tools filter by label**, which carry the full unsanitised values:
+
+```
+docker ps --filter label=run-gate.lane                              # every run-gate lane container
+docker ps --filter label=run-gate.project=cmru --filter label=run-gate.lane=assay-r2-s4
+docker ps --filter label=run-gate.commit=<full 40-hex>              # one commit's lanes
+docker ps --format '{{.Names}}\t{{.Label "run-gate.started"}}'
+```
+
+Labels: `run-gate.repo`, `.project`, `.lane`, `.commit` (full), `.started` (ISO UTC), `.name-schema`
+(`2`), and `.job` / `.campaign` when the launcher exported `RUN_GATE_JOB` / `RUN_GATE_CAMPAIGN`.
+Uniqueness: nanosecond stamp, never reissued within a process, and docker refuses a duplicate
+`--name`; re-attach trusts the in-flight record's stored name, not a name pattern.
+
+**Transition:** containers started before RG-242 are named `run-gate-<repo|sha>-<lane>-<pid>-<epoch>`
+and have no `run-gate.*` labels. A cancel/cleanup tool must match BOTH: the label filter and
+`^run-gate-` by name (dedupe with `sort -u`). Exec-mode containers keep the declared `container_name`.
 
 ## Partner integration notes
 

@@ -3681,9 +3681,12 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
     # MDTC-02: the default base is tester-base (the floating MDT cockpit image is no longer the
     # gate environment); the zero-release path stays an explicit --base-image.
     assert re.search(r"^ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local$", dockerfile, re.MULTILINE)
-    assert "modern-debian-tools-python-debug" not in "\n".join(
+    code_lines = "\n".join(
         line for line in dockerfile.splitlines() if not line.lstrip().startswith("#")
     )
+    # Neither the retired MDT image nor its mdt-cockpit successor is a gate input.
+    assert "modern-debian-tools-python-debug" not in code_lines
+    assert "mdt-cockpit" not in code_lines
     assert "FROM ${TESTER_UNIFIED_BASE_IMAGE}" in dockerfile
     assert "docker compose version" in dockerfile
     assert 'packages="$packages docker-cli"' in dockerfile
@@ -3876,6 +3879,7 @@ def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():
     assert_tester_base_has_no_published_vbpub_input(REPO_ROOT)
     assert "apt-get install -y --no-install-recommends ca-certificates git passwd" in dockerfile
     assert "ghcr.io/volkb79-2/modern-debian-tools-python-debug" not in dockerfile
+    assert "ghcr.io/volkb79-2/mdt-cockpit-devcontainer" not in dockerfile
     for document in (readme, design, consumers):
         assert "CMRU_BOOTSTRAP_CLI_EXTENDED=source" in document
         assert "BOOTSTRAP-FROM-ZERO.md" in document
@@ -5161,9 +5165,23 @@ def test_the_shared_transport_caps_a_response_body(monkeypatch):
         net._urlopen_bytes("https://github.com/x", max_bytes=10)
 
 
-def _published_build(tmp_path, sidecar_text):
+def _published_build(tmp_path, sidecar_text, *, delayed_identity_parser=False):
     """build-image.sh --run-gate-published against a stub fetcher that stages a wheel and, optionally, a sidecar."""
     script, env, log, _wheel_dir = _stub_docker_tree(tmp_path)
+    if delayed_identity_parser:
+        python = script.parent.parent.parent / "bin" / "python3"
+        python.write_text(
+            "#!/bin/bash\n"
+            f"{shlex.quote(sys.executable)} \"$@\"\n"
+            "status=$?\n"
+            "if [[ ${1:-} == -c ]]; then\n"
+            "  exec 1>&-\n"
+            "  sleep 0.5\n"
+            "fi\n"
+            "exit \"$status\"\n",
+            encoding="utf-8",
+        )
+        python.chmod(0o755)
     fetcher = script.with_name("fetch-run-gate-wheel.py")
     sidecar = "" if sidecar_text is None else (
         f"(dest / 'run_gate-1.0.0-py3-none-any.whl.sha256').write_text({sidecar_text!r})\n")
@@ -5187,6 +5205,16 @@ def test_build_image_requires_the_fetchers_digest_to_equal_its_own_hash(tmp_path
     assert result.returncode == 2 and "does not match the digest the fetcher verified" in result.stderr
     result = _published_build(tmp_path / "none", None)
     assert result.returncode == 2 and "left no run_gate-1.0.0-py3-none-any.whl.sha256" in result.stderr
+
+
+def test_build_image_waits_for_identity_parser_before_refusing_bad_digest(tmp_path):
+    result = _published_build(
+        tmp_path,
+        "0" * 64 + "  run_gate-1.0.0-py3-none-any.whl\n",
+        delayed_identity_parser=True,
+    )
+    assert result.returncode == 2
+    assert "does not match the digest the fetcher verified" in result.stderr
 
 
 def _promote(tmp_path, *args, present=None, tag_log=None):

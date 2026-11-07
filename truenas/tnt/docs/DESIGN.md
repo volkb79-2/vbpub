@@ -652,10 +652,13 @@ additional arguments after `HOST` is not supported.
   The live lane is separate from the ordinary FakeServer gate.
 - Drift lane (TNT-23, It4): manifests vs the fetched API reference. Optional dependencies required by the suite fail, never skip.
 - Gate: CMRU release runs `run-gate.toml` lanes `r0-r1` (full pytest suite with branch coverage) and `ux-focused`
-  (Pilot, host-picker, and tmux terminal checks); `live-v27` is opt-in host acceptance. The tmux cases report a clear
-  skip while tester-unified lacks that package. The full unit lane retains its 97% floor; the separate mutation lane is
-  It4 work (TNT-30). Tests are deterministic under host load: they poll for screen and worker conditions until bounded
-  deadlines instead of asserting fixed response times.
+  (Pilot, host-picker, and tmux terminal checks); `live-v27` is opt-in host acceptance. `tester-unified` installs tmux,
+  and the registered R0/R1, UX, and R2 lanes fail if it is missing, so an absent package cannot hide the tmux teardown
+  regression. A local workstation without tmux can set
+  `TNT_TEST_ALLOW_MISSING_TMUX_FOR_LOCAL_DEV=1` for direct local development runs; the registered lanes explicitly
+  disable that opt-out. The full unit lane retains its 97% floor; the separate mutation lane is It4 work (TNT-30).
+  Tests are deterministic under host load: they poll for screen and worker conditions until bounded deadlines instead
+  of asserting fixed response times. See the [test-gate examples](CONSUMERS.md#run-the-test-gates).
 
 ## 10. Milestones
 
@@ -706,7 +709,7 @@ only, so importing `tnt.testing` without the test extra fails, and nothing in th
 CMRU estate registration is complete (TNT-32): project id `tnt` points to `truenas/tnt/cmru.toml`, declares its
 first-party `cli-extended` dependency, and publishes a wheel plus SHA256 under tag and GitHub Release `tnt-vX.Y.Z`.
 The `VERSION` file is the version source used by both setuptools and CMRU. CMRU's release gate runs the registered
-`r0-r1` and `ux-focused` Run-Gate lanes. The `ux-focused` lane includes real tmux terminal checks, but those cases
-skip while `tester-unified` lacks tmux; TNT-54 tracks that image capability. No tester image was changed for this
-registration. The `live-v27` and `live-update` lanes remain operator-run and are not release gates; the separately
-reported `live-inspect` lane belongs to estate gate tooling elsewhere.
+`r0-r1` and `ux-focused` Run-Gate lanes. The `ux-focused` lane includes real tmux terminal checks; `tester-unified`
+installs tmux, and the registered R0/R1, UX, and R2 lanes fail if it is missing. TNT-54 tracks that image capability.
+No tester image was changed for this registration. The `live-v27` and `live-update` lanes remain operator-run and
+are not release gates; the separately reported `live-inspect` lane belongs to estate gate tooling elsewhere.

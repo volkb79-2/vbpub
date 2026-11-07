@@ -441,6 +441,35 @@ esac
     assert removed.read_text().split() == ["run-gate-mine"]
 
 
+def test_job_cleanup_finds_label_and_legacy_names_once(tmp_path):
+    """RG-242: new `<repo>-run-gate-...` names are found by label, pre-RG-242 `run-gate-*` by name, each once."""
+    ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, ""))])
+    rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "t9"))
+    job = (tmp_path / "out" / "t9" / "job.sh").read_text()
+    body = job.split("finish() {", 1)[1].split("\n}\ntrap finish EXIT", 1)[0]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    removed = tmp_path / "removed"
+    new_name = "vbpub-run-gate-cmru-r2-ccd96cda-261105-1425-123456789"
+    (bindir / "docker").write_text(f"""#!/usr/bin/env bash
+case "$1" in
+  ps) case "$*" in
+        *label=run-gate.lane*) printf '{new_name}\\n' ;;
+        *) printf 'run-gate-legacy\\nunrelated\\n{new_name}\\n' ;;
+      esac ;;
+  inspect) echo '"Source": "/h/.worktrees/rg-t9-{SHA[:12]}"' ;;
+  rm) echo "${{@: -1}}" >> {removed} ;;
+esac
+""")
+    (bindir / "docker").chmod(0o755)
+    d = tmp_path / "D"
+    d.mkdir()
+    script = (f'export PATH={bindir}:$PATH; D={d}; CK=rg-t9-{SHA[:12]}; CKDIR=/nonexistent/x; COCKPIT=c; PIDF=/tmp/p; rc=0\n'
+              f'log() {{ :; }}\nfinish() {{{body}\n}}\n')
+    assert _bash(script + "LANE_STARTED=1; finish").returncode == 0
+    assert sorted(removed.read_text().split()) == sorted([new_name, "run-gate-legacy"])
+
+
 # ---- --base must reach the host (job exit 72 'base ... missing on the host') ----
 
 BASE = "c" * 40

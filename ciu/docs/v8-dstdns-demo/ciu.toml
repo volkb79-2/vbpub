@@ -619,7 +619,7 @@ LANG = "en_US.UTF-8"
 python_version = "3.14"
 python_base_image = "python:3.14-slim-trixie"
 mock_python_base_image = "python:3.14-slim"
-devcontainer_image = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest"
+devcontainer_image = "ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest"
 
 [authentik]
 oidc_slug = "dstdns-ui"
