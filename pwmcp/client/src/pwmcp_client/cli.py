@@ -1036,7 +1036,7 @@ def _eval(args: argparse.Namespace, runtime: CliRuntime) -> None:
             return
         value = value.get("value")
         encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    encoded_bytes = encoded.encode("utf-8")
+    encoded_bytes = encoded.encode("utf-8", errors="backslashreplace")
     if len(encoded_bytes) <= args.max_bytes:
         runtime.output.primary_json(value)
         return

@@ -93,10 +93,11 @@ value prints a JSON preview and a truncation marker; `--json` returns a
 `preview`, `truncated`, and `max_bytes` object. An unmatched selector returns
 `null` (or `[]` with `--all`); an absent attribute also returns `null`.
 
-Expressions follow one wrapping rule: a leading `function` followed by
-whitespace, `*`, or `(`, and an arrow function with an identifier or
-parenthesized parameter list (optionally after `async`), are passed through.
-Every other input loses one final semicolon and is wrapped as:
+Expressions follow one wrapping rule: a whole function expression and a whole
+arrow function with an identifier or parenthesized parameter list (optionally
+after `async`) are passed through. Leading comments are skipped when checking
+whether the whole expression is a function. For other scannable expressions,
+trailing semicolons and trailing comments are stripped before wrapping:
 
 ```javascript
 () => (
@@ -104,8 +105,9 @@ EXPRESSION
 )
 ```
 
-The final newline keeps a trailing `//` comment inside the expression. Use an
-explicit function with `return` for multiple statements. JavaScript runs in
+The final newline keeps a trailing `//` comment inside the expression. If slash
+syntax remains ambiguous, PWMCP leaves the source unchanged. Use an explicit
+function with `return` for multiple statements. JavaScript runs in
 the page context with that page's origin permissions; use it only on pages the
 user is authorized to inspect. In shared browser mode, callers share a
 persistent profile, so `eval` can read cookies and `localStorage` left by other

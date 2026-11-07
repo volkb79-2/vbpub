@@ -507,49 +507,116 @@ def _skip_js_regex(source: str, start: int) -> int | None:
     return None
 
 
-def _skip_js_template_expression(source: str, start: int, nesting: int) -> int | None:
-    """Skip `${...}` code inside a template, returning after its closing brace."""
+def _skip_js_balanced_group(source: str, start: int, nesting: int = 0) -> int | None:
+    """Skip one balanced JS delimiter group without mistaking literals for delimiters."""
 
-    depth = 1
-    index = start
+    closing_for = {"(": ")", "[": "]", "{": "}"}
+    if start >= len(source) or source[start] not in closing_for:
+        return None
+    stack = [closing_for[source[start]]]
+    index = start + 1
+    previous_can_end_expression = False
+    previous_is_brace_close = False
     while index < len(source):
         character = source[index]
         if character.isspace():
             index += 1
-        elif character in "'\"":
-            end = _skip_js_quoted(source, index, character)
-            if end is None:
-                return None
-            index = end
-        elif character == "`":
-            end = _skip_js_template(source, index, nesting + 1)
-            if end is None:
-                return None
-            index = end
-        elif character == "/" and index + 1 < len(source) and source[index + 1] == "/":
+            continue
+        if character == "/" and index + 1 < len(source) and source[index + 1] == "/":
             index += 2
             while index < len(source) and source[index] not in "\r\n\u2028\u2029":
                 index += 1
-        elif character == "/" and index + 1 < len(source) and source[index + 1] == "*":
+            continue
+        if character == "/" and index + 1 < len(source) and source[index + 1] == "*":
             end = _skip_js_block_comment(source, index)
             if end is None:
                 return None
             index = end
-        elif character == "/":
-            # Distinguishing division from a regex here needs a token parser.
-            # Preserve the source untouched rather than guessing at a delimiter.
-            return None
-        elif character == "{":
-            depth += 1
+            continue
+        if character in "'\"":
+            end = _skip_js_quoted(source, index, character)
+            if end is None:
+                return None
+            index = end
+            previous_can_end_expression = True
+            previous_is_brace_close = False
+            continue
+        if character == "`":
+            end = _skip_js_template(source, index, nesting + 1)
+            if end is None:
+                return None
+            index = end
+            previous_can_end_expression = True
+            previous_is_brace_close = False
+            continue
+        if character == "/":
+            if previous_is_brace_close:
+                return None
+            if previous_can_end_expression:
+                index += 2 if index + 1 < len(source) and source[index + 1] == "=" else 1
+                previous_can_end_expression = False
+                previous_is_brace_close = False
+            else:
+                end = _skip_js_regex(source, index)
+                if end is None:
+                    return None
+                index = end
+                previous_can_end_expression = True
+                previous_is_brace_close = False
+            continue
+        if character.isalpha() or character in "_$" or ord(character) >= 128:
+            start_word = index
             index += 1
-        elif character == "}":
-            depth -= 1
+            while index < len(source) and _identifier_character(source[index]):
+                index += 1
+            previous_can_end_expression = source[start_word:index] not in _REGEX_PREFIX_WORDS
+            previous_is_brace_close = False
+            continue
+        if character.isdigit():
             index += 1
-            if depth == 0:
+            while index < len(source) and (source[index].isalnum() or source[index] in "._"):
+                index += 1
+            previous_can_end_expression = True
+            previous_is_brace_close = False
+            continue
+        if character in closing_for:
+            stack.append(closing_for[character])
+            index += 1
+            previous_can_end_expression = False
+            previous_is_brace_close = False
+            continue
+        if character in ")]}":
+            if not stack or stack[-1] != character:
+                return None
+            stack.pop()
+            index += 1
+            if not stack:
                 return index
+            previous_can_end_expression = True
+            previous_is_brace_close = character == "}"
+            continue
+
+        two_character = source[index : index + 2]
+        three_character = source[index : index + 3]
+        token = (
+            three_character
+            if three_character in _THREE_CHARACTER_JS_OPERATORS
+            else two_character
+        )
+        if token in _TWO_CHARACTER_JS_OPERATORS or token in _THREE_CHARACTER_JS_OPERATORS:
+            index += len(token)
         else:
+            token = character
             index += 1
+        previous_can_end_expression = token in {"++", "--"}
+        previous_is_brace_close = False
     return None
+
+
+def _skip_js_template_expression(source: str, start: int, nesting: int) -> int | None:
+    """Skip `${...}` code inside a template, returning after its closing brace."""
+
+    return _skip_js_balanced_group(source, start - 1, nesting)
 
 
 def _skip_js_template(source: str, start: int, nesting: int = 0) -> int | None:
@@ -581,6 +648,215 @@ def _skip_js_template(source: str, start: int, nesting: int = 0) -> int | None:
 
 def _identifier_character(character: str) -> bool:
     return character.isalnum() or character in "_$" or ord(character) >= 128
+
+
+def _identifier_end(source: str, start: int) -> int | None:
+    """Return the end of an identifier beginning at ``start``."""
+
+    if start >= len(source):
+        return None
+    character = source[start]
+    if not (character.isalpha() or character in "_$" or ord(character) >= 128):
+        return None
+    index = start + 1
+    while index < len(source) and _identifier_character(source[index]):
+        index += 1
+    return index
+
+
+def _skip_js_trivia(source: str, start: int) -> int | None:
+    """Skip whitespace and comments, or return None for an unterminated block comment."""
+
+    index = start
+    while index < len(source):
+        if source[index].isspace():
+            index += 1
+        elif source[index] == "/" and index + 1 < len(source) and source[index + 1] == "/":
+            index += 2
+            while index < len(source) and source[index] not in "\r\n\u2028\u2029":
+                index += 1
+        elif source[index] == "/" and index + 1 < len(source) and source[index + 1] == "*":
+            end = _skip_js_block_comment(source, index)
+            if end is None:
+                return None
+            index = end
+        else:
+            break
+    return index
+
+
+def _arrow_body_has_top_level_comma(source: str, start: int) -> bool:
+    """Return true for a sequence expression or syntax the scanner cannot classify safely."""
+
+    index = start
+    previous_can_end_expression = False
+    previous_is_brace_close = False
+    while index < len(source):
+        next_index = _skip_js_trivia(source, index)
+        if next_index is None:
+            return True
+        index = next_index
+        if index >= len(source):
+            return False
+        character = source[index]
+        if character in "'\"":
+            end = _skip_js_quoted(source, index, character)
+            if end is None:
+                return True
+            index = end
+            previous_can_end_expression = True
+            previous_is_brace_close = False
+            continue
+        if character == "`":
+            end = _skip_js_template(source, index)
+            if end is None:
+                return True
+            index = end
+            previous_can_end_expression = True
+            previous_is_brace_close = False
+            continue
+        if character in "([{":
+            end = _skip_js_balanced_group(source, index)
+            if end is None:
+                return True
+            previous_is_brace_close = source[index] == "{"
+            index = end
+            previous_can_end_expression = True
+            continue
+        if character == "," or character == ";":
+            return True
+        if character == "/":
+            if previous_is_brace_close:
+                return True
+            if previous_can_end_expression:
+                index += 2 if index + 1 < len(source) and source[index + 1] == "=" else 1
+                previous_can_end_expression = False
+                previous_is_brace_close = False
+            else:
+                end = _skip_js_regex(source, index)
+                if end is None:
+                    return True
+                index = end
+                previous_can_end_expression = True
+                previous_is_brace_close = False
+            continue
+        identifier_end = _identifier_end(source, index)
+        if identifier_end is not None:
+            previous_can_end_expression = source[index:identifier_end] not in _REGEX_PREFIX_WORDS
+            previous_is_brace_close = False
+            index = identifier_end
+            continue
+        if character.isdigit():
+            index += 1
+            while index < len(source) and (source[index].isalnum() or source[index] in "._"):
+                index += 1
+            previous_can_end_expression = True
+            previous_is_brace_close = False
+            continue
+        two_character = source[index : index + 2]
+        three_character = source[index : index + 3]
+        token = (
+            three_character
+            if three_character in _THREE_CHARACTER_JS_OPERATORS
+            else two_character
+        )
+        if token in _TWO_CHARACTER_JS_OPERATORS or token in _THREE_CHARACTER_JS_OPERATORS:
+            index += len(token)
+        else:
+            token = character
+            index += 1
+        previous_can_end_expression = token in {"++", "--"}
+        previous_is_brace_close = False
+    return False
+
+
+def _is_whole_arrow_function(source: str) -> bool:
+    """Recognise one arrow function, never an arrow token inside another expression."""
+
+    def arrow_at(start: int) -> bool:
+        index = _skip_js_trivia(source, start)
+        if index is None or index >= len(source):
+            return False
+        if source[index] == "(":
+            parameter_end = _skip_js_balanced_group(source, index)
+            if parameter_end is None:
+                return False
+        else:
+            parameter_end = _identifier_end(source, index)
+            if parameter_end is None:
+                return False
+        arrow_start = _skip_js_trivia(source, parameter_end)
+        if arrow_start is None or not source.startswith("=>", arrow_start):
+            return False
+        body_start = _skip_js_trivia(source, arrow_start + 2)
+        if body_start is None or body_start >= len(source):
+            return False
+        if source[body_start] == "{":
+            body_end = _skip_js_balanced_group(source, body_start)
+            if body_end is None:
+                return False
+            trailing = _skip_js_trivia(source, body_end)
+            return trailing == len(source)
+        return not _arrow_body_has_top_level_comma(source, body_start)
+
+    start = _skip_js_trivia(source, 0)
+    if start is None or start >= len(source):
+        return False
+    async_end = _identifier_end(source, start)
+    if async_end is not None and source[start:async_end] == "async":
+        async_parameters = _skip_js_trivia(source, async_end)
+        if async_parameters is not None and arrow_at(async_parameters):
+            return True
+    return arrow_at(start)
+
+
+def _is_whole_function_expression(source: str) -> bool:
+    """Recognise a complete function expression, including generator expressions."""
+
+    index = 0
+    if index >= len(source):
+        return False
+    word_end = _identifier_end(source, index)
+    if word_end is None:
+        return False
+    word = source[index:word_end]
+    if word == "async":
+        index = _skip_js_trivia(source, word_end)
+        if index is None or index >= len(source):
+            return False
+        word_end = _identifier_end(source, index)
+        if word_end is None:
+            return False
+        word = source[index:word_end]
+    if word != "function":
+        return False
+    index = _skip_js_trivia(source, word_end)
+    if index is None:
+        return False
+    if index < len(source) and source[index] == "*":
+        index = _skip_js_trivia(source, index + 1)
+        if index is None:
+            return False
+    if index < len(source) and source[index] != "(":
+        name_end = _identifier_end(source, index)
+        if name_end is None:
+            return False
+        index = _skip_js_trivia(source, name_end)
+        if index is None:
+            return False
+    if index >= len(source) or source[index] != "(":
+        return False
+    parameters_end = _skip_js_balanced_group(source, index)
+    if parameters_end is None:
+        return False
+    body_start = _skip_js_trivia(source, parameters_end)
+    if body_start is None or body_start >= len(source) or source[body_start] != "{":
+        return False
+    body_end = _skip_js_balanced_group(source, body_start)
+    if body_end is None:
+        return False
+    trailing = _skip_js_trivia(source, body_end)
+    return trailing == len(source)
 
 
 def _strip_trailing_javascript(source: str) -> tuple[str, int]:
@@ -715,7 +991,7 @@ def _bounded_evaluation_function(function_source: str, max_bytes: int) -> str:
     """Call a page function and cap its compact JSON representation before MCP replies."""
 
     return (
-        "async () => { const value = await (" + function_source + ")(); "
+        "async () => { const value = await (\n" + function_source + "\n)(); "
         "const serialized = JSON.stringify(value); if (typeof serialized !== 'string') return value; "
         "const encoded = new TextEncoder().encode(serialized); "
         f"const maxBytes = {max_bytes}; "
@@ -769,16 +1045,9 @@ def evaluation_function(
     source, first_token = _strip_trailing_javascript(expression.strip())
     code_source = source[first_token:]
     function_source: str | None = None
-    if re.match(r"^(?:async\s+)?function(?:\s|\*|\()", code_source):
+    if _is_whole_function_expression(code_source):
         function_source = source
-    head, separator, _body = code_source.partition("=>")
-    stripped_head = head.strip()
-    if stripped_head.startswith("async "):
-        stripped_head = stripped_head[len("async ") :].strip()
-    if separator and (
-        stripped_head.isidentifier()
-        or (stripped_head.startswith("(") and stripped_head.endswith(")"))
-    ):
+    if function_source is None and _is_whole_arrow_function(code_source):
         function_source = source
     if function_source is None:
         function_source = f"() => (\n{source}\n)"

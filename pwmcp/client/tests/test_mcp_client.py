@@ -400,6 +400,15 @@ def test_eval_response_limit_scales_with_the_requested_output_limit(
         # The value fits under --max-bytes, while JSON-RPC/SSE framing makes
         # the MCP response exceed 1000 bytes.
         server.state.eval_value = "x" * 900
+        response_text = "### Result\n" + json.dumps(server.state.eval_value, ensure_ascii=False)
+        response_message = {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "result": {"content": [{"type": "text", "text": response_text}]},
+        }
+        assert len(json.dumps(response_message, separators=(",", ":")).encode()) + len(
+            b"event: message\ndata: \n\n"
+        ) > 1000
         monkeypatch.setenv("PWMCP_MCP_URL", server.url)
         assert cli_module.main([
             "eval", "https://example.test", "document.body.innerText", "--max-bytes", "1024"
@@ -418,12 +427,17 @@ def test_eval_outputs_lone_surrogates_without_crashing(
     with _FakeMcpServer() as server:
         server.state.eval_value = value
         monkeypatch.setenv("PWMCP_MCP_URL", server.url)
-        args = ["eval", "https://example.test", "document.body.innerText"]
+        args = ["eval", "https://example.test", "document.body.innerText", "--max-bytes", "4"]
         if json_mode:
             args.append("--json")
         assert cli_module.main(args) == 0
-        output = json.loads(capsys.readouterr().out)
-    assert output == value
+        captured = capsys.readouterr()
+    if json_mode:
+        output = json.loads(captured.out)
+        assert output == {"preview": '"a\\u', "truncated": True, "max_bytes": 4}
+    else:
+        assert captured.out == '"a\\u\n'
+        assert "[truncated after 4 bytes]" in captured.err
 
 
 def test_eval_caps_a_large_page_value_inside_the_page_function() -> None:
@@ -1662,6 +1676,10 @@ def test_evaluation_function_supports_function_source_and_element_properties() -
         ("`value ${ {item: 'x; // y'} /* block */ // line\n.item}`", "value x; // y"),
         ("`outer ${`inner ${'nested'}`}`", "outer inner nested"),
         ("`value ${a / b}`;", "value 3"),
+        ("`value ${(6) / 2}`;", "value 3"),
+        ("`value ${[6][0] / 2}`;", "value 3"),
+        (r"`value ${/a\//.test('a/')}`;", "value true"),
+        ("`outer ${`inner ${6 / 2}`}`;", "outer inner 3"),
         (r"/a;\/\/b/.test('a;//b');", True),
         (r"/[;/]+/gi.test(';/');", True),
         (r"/\//.test('/');", True),
@@ -1727,8 +1745,13 @@ def test_passthrough_call_wrapper_keeps_closers_after_a_line_comment() -> None:
     [
         ("(1) + '(x) => y'", [], "value", "1(x) => y"),
         ("(document.title) || (() => 2)", [], "returned-function", 2),
+        ("x => x, 4", [], "value", 4),
         ("async x => x", [7], "value", 7),
         ("async (a, b) => a + b", [3, 4], "value", 7),
+        ("x => x / 2", [8], "value", 4),
+        ("x => { return x + 1; }", [2], "value", 3),
+        ("x => /a,b/.test(x)", ["a,b"], "value", True),
+        ("x => 'a,b'", [], "value", "a,b"),
         ("function () { return 5; }", [], "value", 5),
         ("function* () { yield 5; }", [], "generator", {"value": 5, "done": False}),
         ("functionality()", [], "value", 9),
@@ -1843,6 +1866,71 @@ def test_javascript_scanner_preserves_uncertain_or_incomplete_expressions() -> N
 
     assert mcp_client._strip_trailing_javascript("value /= 2;") == ("value /= 2", 0)
     assert mcp_client._strip_trailing_javascript("a /* c */ + b") == ("a /* c */ + b", 0)
+    ambiguous_template = "`value ${{value: 1} / 2}`;"
+    assert mcp_client._strip_trailing_javascript(ambiguous_template) == (ambiguous_template, 0)
+
+
+def test_javascript_balanced_group_scanner_handles_tokens_and_uncertainty() -> None:
+    assert mcp_client._identifier_end("", 0) is None
+    assert mcp_client._identifier_end("9value", 0) is None
+    assert mcp_client._identifier_end("name_2", 0) == len("name_2")
+    assert mcp_client._skip_js_trivia(" \n/* block */ // line\nvalue", 0) == len(" \n/* block */ // line\n")
+    assert mcp_client._skip_js_trivia("/* unterminated", 0) is None
+
+    for source in (
+        "(a / b)",
+        "(2 / b)",
+        "((2) / b)",
+        "([2][0] / b)",
+        "(value /= 2)",
+        "({value: /[()]/, nested: `v${2 / 1}`})",
+        "(a /* block */ + // line\n b)",
+    ):
+        assert mcp_client._skip_js_balanced_group(source, 0) == len(source)
+
+    for source in (
+        "",
+        "value",
+        "(]",
+        "('unterminated)",
+        "(/* unterminated",
+        "(/unterminated)",
+        "(`unterminated)",
+        "({value: 1} / 2)",
+        "(value",
+    ):
+        assert mcp_client._skip_js_balanced_group(source, 0) is None
+
+    assert mcp_client._arrow_body_has_top_level_comma("", 0) is False
+    assert mcp_client._arrow_body_has_top_level_comma("a, b", 0) is True
+    assert mcp_client._arrow_body_has_top_level_comma("a; b", 0) is True
+    assert mcp_client._arrow_body_has_top_level_comma("(a, b)", 0) is False
+    assert mcp_client._arrow_body_has_top_level_comma("'a,b'", 0) is False
+    assert mcp_client._arrow_body_has_top_level_comma("`value ${1, 2}`", 0) is False
+    assert mcp_client._arrow_body_has_top_level_comma("/[a,b]/.test(value)", 0) is False
+    assert mcp_client._arrow_body_has_top_level_comma("a / b", 0) is False
+    assert mcp_client._arrow_body_has_top_level_comma("({value: 1} / 2)", 0) is True
+    assert mcp_client._arrow_body_has_top_level_comma("'unterminated", 0) is True
+    assert mcp_client._arrow_body_has_top_level_comma("/* unterminated", 0) is True
+    assert mcp_client._arrow_body_has_top_level_comma("`unterminated", 0) is True
+
+    assert not mcp_client._is_whole_arrow_function("")
+    assert not mcp_client._is_whole_arrow_function("/* unterminated")
+    assert not mcp_client._is_whole_arrow_function("(x")
+    assert not mcp_client._is_whole_arrow_function("x =>")
+    assert mcp_client._is_whole_arrow_function("async (a, b) => a + b")
+    assert mcp_client._is_whole_arrow_function("async => async")
+    assert mcp_client._is_whole_arrow_function("x => {}")
+    assert not mcp_client._is_whole_arrow_function("(1) + '=>'")
+    assert not mcp_client._is_whole_arrow_function("x => x, 2")
+    assert not mcp_client._is_whole_arrow_function("x => {} + 1")
+    assert not mcp_client._is_whole_arrow_function("x => {")
+    assert not mcp_client._is_whole_function_expression("")
+    assert not mcp_client._is_whole_function_expression("function/* unterminated")
+    assert not mcp_client._is_whole_function_expression("function(")
+    assert not mcp_client._is_whole_function_expression("function() {")
+    assert mcp_client._is_whole_function_expression("async function* named() { return /x/; }")
+    assert not mcp_client._is_whole_function_expression("functionality()")
 
 
 def test_javascript_scanner_caps_nested_template_recursion_conservatively() -> None:
