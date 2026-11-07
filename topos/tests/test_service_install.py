@@ -6,6 +6,7 @@ import argparse
 import builtins
 import hashlib
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -740,6 +741,85 @@ def test_existing_config_group_reports_read_and_parse_failures(tmp_path: Path, m
         install._existing_config_group(paths)
 
 
+def test_a_config_without_a_group_key_names_no_group(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    _groups(monkeypatch, {"ops": 993})
+    Path(paths.config).parent.mkdir(parents=True)
+    Path(paths.config).write_text('state_dir = "/run/topos/state"\n', encoding="utf-8")
+    args, _wheels = _install_args(observe_group=None, enable=False)
+
+    assert install._existing_config_group(paths) is None
+    # A pipe run with no flag, no record and a file that names no group is an error,
+    # not the default group.
+    with pytest.raises(InstallError, match="missing required --observe-group"):
+        Installer(paths, geteuid=lambda: 0).install(args, _runtime(dry_run=True))
+
+    # The record's group is then applied to the file and reported.
+    Path(paths.install_record).write_text('observe_group = "ops"\n', encoding="utf-8")
+    body = Installer(paths, geteuid=lambda: 0).install(args, _runtime(dry_run=True))
+    assert body["observe_group"] == "ops" and body["config_changes"] == ["sockets.observe.group"]
+
+    # A record that names the default group changes nothing in the file.
+    Path(paths.install_record).write_text('observe_group = "topos-observe"\n', encoding="utf-8")
+    body = Installer(paths, geteuid=lambda: 0).install(args, _runtime(dry_run=True))
+    assert body["observe_group"] == "topos-observe" and body["config_changes"] == []
+
+    # Dotted and table forms both count as naming a group.
+    for text in ('sockets.observe.group = "ops"\n', '[sockets.observe]\ngroup = "ops"\n'):
+        Path(paths.config).write_text(text, encoding="utf-8")
+        assert install._existing_config_group(paths) == "ops"
+
+
+def test_config_group_editor_returns_text_unchanged_when_the_group_already_matches(tmp_path: Path) -> None:
+    text = install._render_config("docker")
+
+    assert install._edit_config_group(text, "docker", str(tmp_path / "toposd.toml")) == text
+
+
+def test_a_fresh_install_creates_its_config_and_reports_no_edit(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    _groups(monkeypatch)
+    args, _wheels = _install_args(observe_group="topos-observe", enable=False)
+
+    body = Installer(paths, geteuid=lambda: 0).install(args, _runtime(dry_run=True))
+
+    assert body["config_changes"] == []
+    assert "set sockets.observe.group" not in install._install_summary(body)
+
+
+def test_a_group_edit_keeps_the_mode_of_the_operators_config(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args(observe_group="redis")
+    groups = _groups(monkeypatch, {"redis": 992})
+    Path(paths.config).parent.mkdir(parents=True)
+    Path(paths.config).write_text(install._render_config("topos-observe"), encoding="utf-8")
+    os.chmod(paths.config, 0o640)
+    subject = Installer(paths, run=_fake_run([], groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+
+    body = subject.install(args, _runtime(yes=True))
+
+    assert body["config_changes"] == ["sockets.observe.group"]
+    assert 'group = "redis"' in Path(paths.config).read_text(encoding="utf-8")
+    assert stat.S_IMODE(os.stat(paths.config).st_mode) == 0o640
+
+
+@pytest.mark.parametrize("which", ("sysusers", "dropin"))
+def test_uninstall_refuses_a_directory_at_every_unlinked_path_of_an_owned_host(
+    tmp_path: Path, which: str
+) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    target = Path(paths.sysusers) if which == "sysusers" else Path(paths.service_dropins, "50-mdt-socket-group.conf")
+    target.mkdir(parents=True)
+    commands = []
+
+    with pytest.raises(InstallError, match=f"unit path is a directory: {re.escape(str(target))}"):
+        Installer(paths, run=_fake_run(commands), geteuid=lambda: 0).uninstall(_args(), _runtime(yes=True))
+
+    assert commands == [] and target.is_dir()
+
+
 def test_config_group_edit_is_idempotent_and_duplicate_target_refuses(tmp_path: Path) -> None:
     paths = InstallPaths(tmp_path)
     Path(paths.config).parent.mkdir(parents=True)
@@ -1231,9 +1311,10 @@ def test_uninstall_handler_maps_finish_failure_to_rerun_hint(monkeypatch) -> Non
     printed = []
     runtime.output.primary = printed.append
 
-    with pytest.raises(CliFailure, match="cannot remove /version: busy; rerun toposd uninstall --yes to finish"):
+    with pytest.raises(CliFailure, match=r"cannot remove /version: busy; finish by hand: remove /opt/topos, then /fake/etc/topos/install.toml") as caught:
         install._uninstall_handler(argparse.Namespace(root="/", remove_groups=False), runtime)
     assert printed
+    assert "rerun" not in str(caught.value)  # the toposd that ran is gone with its tree
 
 
 def test_pending_only_host_keeps_its_marker_until_the_end(tmp_path: Path, monkeypatch) -> None:
@@ -1297,9 +1378,10 @@ def test_groupdel_failure_is_reported_after_cleanup_and_can_be_rerun_without_rem
     printed = []
     runtime.output.primary = printed.append
 
-    with pytest.raises(CliFailure, match="could not remove groups topos-observe.*without --remove-groups") as caught:
+    with pytest.raises(CliFailure, match="could not remove groups topos-observe; run groupdel for them") as caught:
         install._uninstall_handler(argparse.Namespace(root="/", remove_groups=True), runtime)
 
+    assert paths.install_record in str(caught.value) and "rerun" not in str(caught.value)
     assert caught.value.exit_code == 2
     result = printed[0]
     assert result["ok"] is False
@@ -1987,10 +2069,7 @@ def test_install_and_uninstall_handlers_print_summaries_and_map_refusals(tmp_pat
     args.root = str(tmp_path)
     runtime, printed = _handler_runtime()
     assert install._install_handler(args, runtime) == 0
-    assert printed == [
-        f"dry run: topos 0.7.3 would be installed; no changes made; "
-        f"set sockets.observe.group = topos-observe in {InstallPaths(tmp_path).config}"
-    ]
+    assert printed == ["dry run: topos 0.7.3 would be installed; no changes made"]
     runtime, printed = _handler_runtime(json_mode=True)
     assert install._uninstall_handler(argparse.Namespace(root=str(tmp_path), remove_groups=False), runtime) == 0
     assert printed[0]["message"] == "nothing installed by toposd install"

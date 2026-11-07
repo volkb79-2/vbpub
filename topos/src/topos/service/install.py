@@ -604,7 +604,10 @@ def _existing_config_group(paths: InstallPaths) -> str | None:
         config = parse_config(text, source=paths.config)
     except ConfigError as exc:
         raise InstallError(f"{paths.config} is invalid: {exc}; fix or remove it, then rerun") from None
-    return config.sockets.observe.group
+    # parse_config fills in the default group when the key is absent; only a group
+    # the file names itself counts, or a pipe run would silently get the default.
+    raw = tomllib.loads(text).get("sockets", {}).get("observe", {})
+    return config.sockets.observe.group if "group" in raw else None
 
 
 def _resolve_group(
@@ -1021,13 +1024,19 @@ class Installer:
         values = _gather_inputs(args, runtime, self.paths)
         running_version = self._running_version_dir()
         downgrade, version_drift = self._preflight(values, dry_run=runtime.dry_run)
+        config_existed = os.path.lexists(self.paths.config)
+        # A flag is applied to the file; so is a group from the record or a prompt
+        # when the file names none. A group the file names itself is never replaced.
         config_text, config, config_changed = self._config(
-            values["observe_group"], apply_group=getattr(args, "observe_group", None) is not None
+            values["observe_group"],
+            apply_group=getattr(args, "observe_group", None) is not None
+            or _existing_config_group(self.paths) is None,
         )
         values["observe_group"] = config.sockets.observe.group
         if _group_gid(values["observe_group"]) is None and values["observe_group"] != DEFAULT_OBSERVE_GROUP:
             raise InstallError(f"mapped observe group {values['observe_group']!r} does not exist")
-        config_changes = ["sockets.observe.group"] if config_changed else []
+        # A new file is created, not edited: only an existing file can have changes.
+        config_changes = ["sockets.observe.group"] if config_changed and config_existed else []
         rendered = render_units(config)
         if runtime.dry_run:
             return {
@@ -1073,7 +1082,9 @@ class Installer:
         socket_was_active = self._is_active(socket_name)
 
         if config_changed:
-            _atomic_write(self.paths.config, config_text)
+            # An edit keeps the operator's file mode; only a new file gets 0644.
+            _atomic_write(self.paths.config, config_text,
+                          stat.S_IMODE(os.stat(self.paths.config).st_mode) if config_existed else 0o644)
         for name, content in rendered.items():
             _atomic_write(resource_paths[name], content)
         if os.path.lexists(self.paths.current_new):  # left by a failed upgrade being re-applied
@@ -1164,7 +1175,7 @@ class Installer:
             config = parse_config(text, source=self.paths.config)
         except ConfigError as exc:
             raise InstallError(f"{self.paths.config} is invalid: {exc}; fix or remove it, then rerun") from None
-        if existing is not None and apply_group:
+        if existing is not None and apply_group and group != config.sockets.observe.group:
             text = _edit_config_group(existing, group, self.paths.config)
             if text != existing:
                 try:
@@ -1203,8 +1214,13 @@ class Installer:
             if item != f"foreign rule or drop-in: {mdt_dropin}"
             and not (owned and item.startswith(_VERSION_ROOT_FINDINGS[:3]))
         ]
-        for unit in ("topos-observe.socket", "topos.service", "topos.slice"):
-            path = os.path.join(paths.unit_dir, unit)
+        # Uninstall unlinks these, so a directory there would fail it midway. A host
+        # toposd install does not own is reported as "nothing installed" instead.
+        for path in (
+            *(os.path.join(paths.unit_dir, unit) for unit in ("topos-observe.socket", "topos.service", "topos.slice")),
+            paths.sysusers,
+            mdt_dropin,
+        ) if owned else ():
             try:
                 info = os.lstat(path)
             except FileNotFoundError:
@@ -1450,11 +1466,18 @@ def _uninstall_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
     try:
         subject.finish_uninstall(body)
     except InstallError as exc:
-        raise CliFailure(f"{exc}; rerun toposd uninstall --yes to finish", exit_code=exc.exit_code) from None
+        # The toposd that ran this lives in the tree being removed, so the operator
+        # cannot rerun it; name what is left instead.
+        raise CliFailure(
+            f"{exc}; finish by hand: remove /opt/topos, then {paths.install_record}",
+            exit_code=exc.exit_code,
+        ) from None
     if body.get("group_failures"):
         groups = ", ".join(body.get("groups_kept", []))
+        # This toposd is gone with its version tree, so it cannot be rerun.
         raise CliFailure(
-            f"could not remove groups {groups}; rerun toposd uninstall --yes without --remove-groups to finish",
+            f"could not remove groups {groups}; run groupdel for them once they are free, "
+            f"then remove {paths.install_record}",
             exit_code=2,
         )
     return 0

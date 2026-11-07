@@ -87,8 +87,10 @@ the service files without enabling or starting the socket/service.
 `/etc/topos/toposd.toml` is written only when it is absent. With
 `--observe-group`, the installer updates only `sockets.observe.group`, preserves
 the other lines and comments, and reports the change in the install result and
-dry-run summary. Without the flag, an existing config's group wins over the
-install record and is saved back into the record. A mapped group must already
+dry-run summary; a rewrite keeps the file's mode. Without the flag, a group the
+existing config names wins over the install record and is saved back into the
+record; a config without a `group` key names none, so the record or a prompt
+decides, and a pipe run with neither errors. A mapped group must already
 exist; `topos-observe` may be created by the installer. If the config uses a
 form the installer cannot safely edit, it refuses and tells you what to change
 by hand. The config's `state_dir` and socket `path` must keep the fixed layout
@@ -139,7 +141,10 @@ Uninstall keeps groups and memberships by default. `--remove-groups` removes
 only groups that the install record says `toposd install` created. If
 `groupdel` refuses a group, uninstall finishes the service, config, and version
 cleanup, keeps that group and the install record, prints the failure, and exits
-2. Rerun without `--remove-groups` to finish.
+2. The `toposd` that ran is removed with its version tree, so it cannot be
+rerun: run `groupdel` for the kept group once it is free, then delete
+`/etc/topos/install.toml`. If removing the version tree itself fails, remove
+`/opt/topos` and the install record by hand.
 
 Uninstall acts only on a host where `toposd install` left its record
 (`/etc/topos/install.toml`) or its `PENDING` marker; otherwise it reports that

@@ -107,7 +107,8 @@ sudo toposd uninstall --yes
 
 `--remove-groups` removes only groups listed as created by `toposd install` in
 the install record. If group removal fails, the command prints which group was
-kept, exits 2, and leaves the record; rerun without `--remove-groups` to finish.
+kept, exits 2, and leaves the record; remove that group with `groupdel` and
+delete the record by hand, because the `toposd` that ran is gone with its version tree.
 The old path `/run/topos/topos.sock` is no longer served.
 
 ## Manual removal of an old installation
