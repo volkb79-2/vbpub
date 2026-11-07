@@ -504,7 +504,7 @@ def _inspect_html(args: argparse.Namespace, runtime: CliRuntime) -> None:
                 )
             break
         except McpError as exc:
-            retryable_page_crash = is_browser_crash(exc)
+            retryable_page_crash = is_retryable_page_crash(exc)
             browser_lease_closed = is_browser_crash(exc) and not retryable_page_crash
             automatic_crash_retry = args.retries is None and number == 1 and retryable_page_crash
             explicit_retry = (
@@ -1037,7 +1037,7 @@ def _eval(args: argparse.Namespace, runtime: CliRuntime) -> None:
         value = value.get("value")
         encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     encoded_bytes = encoded.encode("utf-8")
-    if len(encoded_bytes) < args.max_bytes:
+    if len(encoded_bytes) <= args.max_bytes:
         runtime.output.primary_json(value)
         return
     preview = encoded_bytes[: args.max_bytes].decode("utf-8", errors="ignore")

@@ -155,7 +155,7 @@ def _sse_message(body: bytes, expected_id: int) -> dict[str, object]:
         raise McpError("MCP server returned non-UTF-8 event data") from exc
     data_lines: list[str] = []
     mismatched_response: dict[str, object] | None = None
-    for line in (*text.split("\n"), ""):
+    for line in (*re.split(r"\r\n|\r|\n", text), ""):
         if line == "":
             if data_lines:
                 data = "\n".join(data_lines)
@@ -820,7 +820,7 @@ def html_extraction_function(selector: str | None, mode: str, max_bytes: int) ->
         "let included = ''; let included_bytes = 0; let total_bytes = 0; let prefix = true; "
         "for (const character of source) { const point = character.codePointAt(0); "
         "const width = point <= 0x7f ? 1 : point <= 0x7ff ? 2 : point <= 0xffff ? 3 : 4; "
-        "total_bytes += width; if (included_bytes + width <= limit) { included += character; "
+        "total_bytes += width; if (prefix && included_bytes + width <= limit) { included += character; "
         "included_bytes += width; } else { prefix = false; } } "
         "const bytes = new TextEncoder().encode(included); let binary = ''; "
         "for (let offset = 0; offset < bytes.length; offset += 32768) { "
