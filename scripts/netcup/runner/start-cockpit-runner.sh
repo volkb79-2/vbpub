@@ -4,8 +4,9 @@ set -Eeuo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
 source "$here/lib.sh"
-load_host_endpoints
+load_host_endpoints /etc/host-endpoints.env || exit $?
 identity_check
+require_host_docker_group_match
 : "${COCKPIT_NAME:?}" "${COCKPIT_CONFIG_DIR:?}" "${COCKPIT_HOME_DIR:?}" "${COCKPIT_TMP_DIR:?}" "${COCKPIT_IMAGE:?}" "${INTERACTIVE_SLICE:?}" "${BACKGROUND_SLICE:?}"
 cfg=$COCKPIT_CONFIG_DIR
 home=$COCKPIT_HOME_DIR
@@ -34,6 +35,7 @@ docker run -d --init --user 0:0 --name "$COCKPIT_NAME" --hostname "$COCKPIT_NAME
   -e "CGPROFILE_CONTROL_SOCKET=$CGPROFILE_CONTROL_SOCKET" \
   -e "CGPROFILE_CONTROL_SOCKET_DIR=$CGPROFILE_CONTROL_SOCKET_DIR" \
   -e "CGPROFILE_CONTROL_GID=$CGPROFILE_CONTROL_GID" \
+  -e "CGPROFILE_OBSERVER_SOCKET=$CGPROFILE_OBSERVER_SOCKET" \
   -e "CGPROFILE_OBSERVER_SOCKET_DIR=$CGPROFILE_OBSERVER_SOCKET_DIR" \
   -e "TOPOS_OBSERVE_SOCKET=$TOPOS_OBSERVE_SOCKET" \
   -e "TOPOS_OBSERVE_SOCKET_DIR=$TOPOS_OBSERVE_SOCKET_DIR" \

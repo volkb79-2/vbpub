@@ -410,14 +410,23 @@ cd "$HOME/runner-scripts"
 ```
 
 The runner requires the Docker API and BuildKit facts from host-setup, the
-cgprofile control socket and GID, the cgprofile observer directory, and the
-topos observe socket and GID. If startup names a missing variable, repair it
-through the publisher that owns it: host-setup, `cgpd install`, or `toposd
-install`. Run that publisher's checker and inspect the aggregate record again,
-then retry startup. Do not copy a value from another host or add a local
-fallback. The cockpit binds each published socket directory read-only at the
-same path, receives the endpoint values in its environment, and gets numeric
-group access for Docker, cgprofile control, topos observe and BuildKit. It
-does not receive the observer GID; Run-Gate grants that to an observer lane
-when it starts the lane container. See the [design rationale](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record)
+cgprofile control socket, directory and GID, the cgprofile observer socket
+and directory, and the topos observe socket, directory and GID. The loader
+requires `/etc/host-endpoints.env` to be a root-owned regular file with no
+group or other write permission; it rejects symlinks, duplicate keys and
+values outside the published alphabet before any Docker call. If startup names
+a missing variable, repair it through the publisher that owns it: host-setup,
+`cgpd install`, or `toposd install`. Run that publisher's checker and inspect
+the aggregate record again, then retry startup. Do not copy a value from
+another host or add a local fallback. The cockpit binds each published socket
+directory read-only at the same path and receives the socket values in its
+environment. It gets numeric group access for Docker, cgprofile control,
+topos observe and BuildKit. It does not receive the observer GID; Run-Gate
+grants that to an observer lane when it starts the lane container.
+
+`provision-runner.sh` runs before endpoint publication in the normal setup
+order. During that bootstrap only, it adds the runner to the host group named
+`docker`; host-setup later publishes the GID of that same group. A provisioning
+rerun validates an existing record, and cockpit startup checks that the
+published GID still matches the local group. See the [design rationale](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record)
 and [`runner/README.md`](runner/README.md).
