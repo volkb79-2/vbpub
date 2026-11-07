@@ -18,6 +18,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - fix(cgprofile): `cgpd uninstall` needs `install.toml` or `PENDING` and refuses unknown or old-layout paths before any change, stops `cgprofile.slice`, reloads systemd right after the unit files, skips groups that no longer resolve, and removes `PENDING` then `install.toml` last so an interrupted run can be rerun
 - fix(cgprofile): `cgpd.service` has `RestartPreventExitStatus=2`, so a refusal exit is not restarted; a failed self-bind observer setup no longer leaves a closed socket assigned
 - fix(cgprofile): `cgpd doctor` skips unreadable paths for non-root callers and `foreign-rules` runs the whole old-installation scan
+- fix(cgprofile): `cgpd install --force-restart` proceeds with a warning when the session list is unavailable; groups created by an interrupted first install are named in `PENDING` so `uninstall --remove-groups` removes them; with no flag a hand-edited socket group in `cgpd.toml` wins over the install record; a dry run needs no `--enable`; the wheels install with `--no-deps`
+- fix(cgprofile): `cgpd uninstall` keeps `current` until the running tree is removed, continues past a `groupdel` failure and reports it, only ever removes the two default groups, and `install` never prunes the tree it runs from
+- refactor(cgprofile): remove the unused `damon.prepare_registry_lock_file`
 
 ### Tests
 - tests(cgprofile): kill the four 2.1.0 R2 survivors in machine.py/metrics.py (CP-60)

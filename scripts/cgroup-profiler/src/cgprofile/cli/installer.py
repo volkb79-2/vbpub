@@ -426,12 +426,36 @@ def _read_record(path: str) -> Dict[str, Any]:
     return raw
 
 
+# The only groups the installer can create (systemd-sysusers); no other group is ever removed.
+CREATABLE_GROUPS = (daemon_config.DEFAULT_CONTROL_GROUP, daemon_config.DEFAULT_OBSERVER_GROUP)
+
+
 def _record_created_groups(record: Mapping[str, Any]) -> List[str]:
     raw = record.get("created_groups", [])
-    if not isinstance(raw, list) or any(not isinstance(name, str) or not USER_RE.fullmatch(name)
-                                        for name in raw):
+    if not isinstance(raw, list) or any(name not in CREATABLE_GROUPS for name in raw):
         raise InstallError("the existing install record has an invalid created_groups list; repair it manually")
     return list(dict.fromkeys(raw))
+
+
+def _pending_created_groups(paths: InstallPaths) -> List[str]:
+    """Groups an unfinished install recorded in PENDING (``created_groups=a,b``)."""
+    try:
+        lines = Path(paths.pending).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    found: List[str] = []
+    for line in lines:
+        if line.startswith("created_groups="):
+            found.extend(name for name in _parse_words(line.partition("=")[2]) if name in CREATABLE_GROUPS)
+    return list(dict.fromkeys(found))
+
+
+def _write_pending(paths: InstallPaths, version: str, new_groups: Iterable[str] = ()) -> None:
+    """Write PENDING, keeping the groups it already names (the install record comes last)."""
+    groups = list(dict.fromkeys([*_pending_created_groups(paths), *new_groups]))
+    text = version + "\n" + (f"created_groups={','.join(groups)}\n" if groups else "")
+    os.makedirs(paths.opt, mode=0o755, exist_ok=True)
+    _atomic_write(paths.pending, text)
 
 
 def _render_record(values: Mapping[str, Any]) -> str:
@@ -570,20 +594,33 @@ def _prompt_group(runtime: CliRuntime, level: str, default: str, saved: Optional
         raise InstallError("installation prompts cancelled", exit_code=130) from None
 
 
+def _config_groups(paths: InstallPaths) -> Dict[str, str]:
+    """The socket groups an existing, valid cgpd.toml sets; anything else is reported later."""
+    try:
+        parsed = daemon_config.parse_table(Path(paths.config).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, daemon_config.ConfigError):
+        return {}
+    return {level: parsed[f"sockets.{level}"]["group"] for level in daemon_config.SOCKET_LEVELS
+            if f"sockets.{level}" in parsed}
+
+
 def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: InstallPaths) -> Dict[str, Any]:
     record = _read_record(paths.install_record)
-    prior_created_groups = _record_created_groups(record)
+    prior_created_groups = list(dict.fromkeys([*_record_created_groups(record), *_pending_created_groups(paths)]))
     wheel = args.wheel or record.get("wheel")
     wheel = _prompt_missing(runtime, wheel, "--wheel", "cgprofile release pin")
     clix = args.cli_extended_wheel or record.get("cli_extended_wheel")
     clix = _prompt_missing(runtime, clix, "--cli-extended-wheel", "cli-extended release pin")
+    # A group passed as a flag is applied; with no flag the config file's value wins
+    # over the install record (an operator's hand edit is never reverted).
+    file_groups = _config_groups(paths)
     control_group = _prompt_group(
         runtime, "control", daemon_config.DEFAULT_CONTROL_GROUP,
-        record.get("control_group"), args.control_group,
+        file_groups.get("control") or record.get("control_group"), args.control_group,
     )
     observer_group = _prompt_group(
         runtime, "observer", daemon_config.DEFAULT_OBSERVER_GROUP,
-        record.get("observer_group"), args.observer_group,
+        file_groups.get("observer") or record.get("observer_group"), args.observer_group,
     )
     control_users = _resolve_users(
         runtime, args.control_users, record, "control_users", "--control-users",
@@ -600,7 +637,9 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         enable_now = False
     elif "enable_now" in record:
         enable_now = bool(record["enable_now"])
-    elif runtime.dry_run or runtime.json_mode or not runtime.output.is_interactive:
+    elif runtime.dry_run:
+        enable_now = False  # a dry run never prompts and changes nothing
+    elif runtime.json_mode or not runtime.output.is_interactive:
         raise InstallError("missing required --enable or --no-enable on a non-interactive run")
     else:
         try:
@@ -811,9 +850,19 @@ class Installer:
             raise InstallError("cgpctl sessions returned no session list; refusing to restart")
         return [row for row in rows if isinstance(row, dict) and row.get("state", "live") == "live"]
 
-    def _drain_or_refuse(self, current: str, values: Mapping[str, Any]) -> None:
+    def _drain_or_refuse(self, current: Optional[str], values: Mapping[str, Any],
+                         unavailable: str = "") -> None:
         if values["force_restart"]:
-            sessions = self._live_sessions(current)
+            # --force-restart exists for a daemon that cannot answer: when the session
+            # list is unavailable it proceeds, and says so.
+            try:
+                if current is None:
+                    raise InstallError(unavailable)
+                sessions = self._live_sessions(current)
+            except InstallError as exc:
+                values["forced_sessions"] = ["unknown (the session list was unavailable)"]
+                values["warnings"] = [f"--force-restart proceeds without knowing the live sessions: {exc}"]
+                return
             values["forced_sessions"] = [str(row.get("session", "?")) for row in sessions]
             return
         deadline = self.monotonic() + values["drain_seconds"]
@@ -822,9 +871,7 @@ class Installer:
             if not sessions:
                 return
             if self.monotonic() >= deadline:
-                marker = self.paths.pending
-                os.makedirs(self.paths.opt, exist_ok=True)
-                _atomic_write(marker, values["version"] + "\n")
+                _write_pending(self.paths, values["version"])
                 labels = ", ".join(str(row.get("session", "?")) for row in sessions)
                 raise DrainTimeout(
                     f"live sessions remain at the {values['drain_timeout']} drain deadline ({labels}); "
@@ -861,9 +908,10 @@ class Installer:
                 os.makedirs(version_dir, mode=0o755)
                 try:
                     self._command([self.python, "-m", "venv", venv], timeout=120)
+                    # exactly the two sha256-pinned wheels: a new dependency fails closed
                     self._command([
                         os.path.join(venv, "bin", "python"), "-m", "pip", "install", "--quiet",
-                        "--no-index", "--find-links", wheels, f"cgprofile=={values['version']}",
+                        "--no-index", "--no-deps", os.path.join(wheels, wheel), os.path.join(wheels, clix),
                     ], timeout=600)
                     got = self._command([os.path.join(venv, "bin", "cgpd"), "--version"], timeout=30)
                     if values["version"] not in (got.stdout + got.stderr):
@@ -1028,6 +1076,9 @@ class Installer:
                 candidates.append(name)
         newest = sorted(candidates, key=version_key, reverse=True)[:2]
         keep = set(newest) | {current}
+        running = self._running_version_dir()
+        if running is not None:  # never delete the tree this very process runs from
+            keep.add(os.path.basename(running))
         removed: List[str] = []
         for name in candidates:
             if name in keep:
@@ -1094,14 +1145,18 @@ class Installer:
         # an install record, re-applies) and uninstall knows the leftovers are its own.
         # Until the first host change a failed fetch, pin check or config check drops
         # it again; a drain timeout keeps it (it names the wanted version).
-        os.makedirs(self.paths.opt, mode=0o755, exist_ok=True)
         earlier_pending = os.path.lexists(self.paths.pending)
-        _atomic_write(self.paths.pending, values["version"] + "\n")
+        _write_pending(self.paths, values["version"])
         try:
             plan = self._plan(values, config_path, config_text, version_drift, earlier_pending)
             active = plan["active"]
             if active and plan["need_restart"]:
-                self._drain_or_refuse(self._installed_for_drain(), values)
+                missing = ("cgpd.service is active but /opt/cgprofile/current is missing; "
+                           "cannot list live sessions, refusing to restart")
+                current = self._current_version()  # preflight already validated the pointer
+                if current is None and not values["force_restart"]:
+                    raise InstallError(missing)
+                self._drain_or_refuse(current, values, missing)
         except BaseException as exc:
             if not earlier_pending and not isinstance(exc, DrainTimeout):
                 Path(self.paths.pending).unlink(missing_ok=True)
@@ -1141,6 +1196,10 @@ class Installer:
             values[flag + "_created"] = group in groups_before_sysusers
         sysusers_path = resource_paths["cgprofile.sysusers"]
         if has_socket_units(values["version"]):
+            # Name the groups sysusers is about to create in PENDING first: if anything
+            # later fails, `uninstall --remove-groups` still knows them (the install
+            # record is only written at the very end).
+            _write_pending(self.paths, values["version"], sorted(groups_before_sysusers))
             self._command(["systemd-sysusers", sysusers_path], timeout=30)
             for group in groups_before_sysusers:
                 if _group_gid(group) is None:
@@ -1204,15 +1263,8 @@ class Installer:
             "resources_changed": sorted(name for name, changed in resource_drift.items() if changed),
             "pruned": removed, "enabled": values["enable_now"], "downgrade": downgrade,
             "forced_sessions": values.get("forced_sessions", []),
+            "warnings": values.get("warnings", []),
         }
-
-    def _installed_for_drain(self) -> str:
-        """The installed version whose cgpctl lists the live sessions."""
-        current = self._current_version()
-        if current is None:
-            raise InstallError("cgpd.service is active but /opt/cgprofile/current is missing; "
-                               "cannot list live sessions, refusing to restart")
-        return current
 
     def _plan(self, values: Mapping[str, Any], config_path: str, config_text: str,
               version_drift: bool, earlier_pending: bool) -> Dict[str, Any]:
@@ -1337,7 +1389,9 @@ class Installer:
         """
         self._check_config_arg(args)
         record = _read_record(self.paths.install_record)
-        created_groups = _record_created_groups(record)
+        # An interrupted first install names its groups in PENDING; the record has the rest.
+        created_groups = list(dict.fromkeys(
+            [*_record_created_groups(record), *_pending_created_groups(self.paths)]))
         remove_groups = bool(getattr(args, "remove_groups", False))
         purge_data = bool(getattr(args, "purge_data", False))
         if not runtime.dry_run and self.geteuid() != 0:
@@ -1381,6 +1435,8 @@ class Installer:
                 os.unlink(path)
             except FileNotFoundError:
                 pass
+            except OSError as exc:
+                raise InstallError(f"cannot remove {path}: {exc.strerror or exc}") from None
         for directory in (paths.service_dropins, paths.control_dir, paths.observer_dir):
             try:
                 os.rmdir(directory)
@@ -1398,13 +1454,18 @@ class Installer:
         self._command([self.systemctl, "reset-failed", *units, "cgprofile.slice"], check=False, timeout=30)
 
         removed_groups: List[str] = []
+        failed_groups: List[str] = []
         if remove_groups:
             for group in created_groups:
                 # A rerun after a partial uninstall finds some groups already gone.
                 if _group_gid(group) is None:
                     continue
-                self._command(["groupdel", group], timeout=30)
-                removed_groups.append(group)
+                result = self._command(["groupdel", group], check=False, timeout=30)
+                if result.returncode == 0:
+                    removed_groups.append(group)
+                else:
+                    detail = (result.stderr or result.stdout or "").strip().splitlines()
+                    failed_groups.append(f"{group} ({detail[-1] if detail else 'exit ' + str(result.returncode)})")
         if purge_data:
             try:
                 shutil.rmtree(paths.state_data)
@@ -1422,6 +1483,13 @@ class Installer:
         }
         running = self._running_version_dir()
         self._remove_version_root(keep=running)
+        if failed_groups:
+            # Everything else is done; the markers stay so a rerun finds the group list.
+            raise InstallError(
+                "could not remove group(s) " + ", ".join(failed_groups)
+                + "; everything else was removed and the install record is kept: free the group "
+                "(it is probably a user's primary group), then rerun cgpd uninstall --remove-groups --yes"
+            )
         if running is None:
             self._remove_markers(body)
         else:
@@ -1436,6 +1504,8 @@ class Installer:
                 if name == "PENDING" or (keep is not None and not os.path.islink(path)
                                          and os.path.realpath(path) == keep):
                     continue
+                if keep is not None and name == "current":
+                    continue  # the running process may reach its tree through it; see finish_uninstall
                 if os.path.isdir(path) and not os.path.islink(path):
                     shutil.rmtree(path)
                 else:
@@ -1475,6 +1545,7 @@ class Installer:
             return
         try:
             shutil.rmtree(running)
+            Path(self.paths.current).unlink(missing_ok=True)
         except OSError as exc:
             raise InstallError(f"cannot remove {exc.filename or running}: {exc}") from None
         self._remove_markers(body)
@@ -1509,7 +1580,9 @@ def _install_summary(body: Mapping[str, Any]) -> str:
     if body.get("dry_run"):
         return f"dry run: cgprofile {body['version']} would be installed; no changes made"
     resources = ", ".join(body.get("resources_changed", [])) or "no resource drift"
-    return f"cgprofile {body['version']} installed; {resources}; enabled={body['enabled']}"
+    lines = [f"cgprofile {body['version']} installed; {resources}; enabled={body['enabled']}"]
+    lines.extend(f"WARNING: {warning}" for warning in body.get("warnings", []))
+    return "\n".join(lines)
 
 
 def _uninstall_summary(body: Mapping[str, Any]) -> str:

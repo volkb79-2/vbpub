@@ -107,12 +107,16 @@ flags therefore reapplies the recorded inputs, users included. `install` and
 `--yes` is refused.
 
 `/etc/cgprofile/cgpd.toml` is the operator's file once it exists. The
-installer creates it only when it is absent. On a rerun it keeps the file as
-written (comments and every other key included) and merges only the socket
-groups and the keys passed as flags on that run (`--gates-slice`,
-`--observe-slices`, `--allow-uids`); the install output lists what it merged
-as `config_changes`. The socket paths are fixed by the layout, so a file that
-sets another path is refused. `--config` is not supported for `install` and
+installer creates it only when it is absent. On a rerun a socket group passed
+as a flag (`--control-group`, `--observer-group`) is applied; with no flag the
+file's value wins over the install record, so a hand edit is never reverted,
+and the record is updated from it. The file is kept byte for byte unless a
+flag changes something; then only the socket groups and the keys passed as
+flags (`--gates-slice`, `--observe-slices`, `--allow-uids`) are merged, the
+file is rewritten from its parsed keys (comments are not preserved), and the
+install output lists what changed as `config_changes`. The socket paths are
+fixed by the layout, so a file that sets another path is refused. A dry run
+never prompts and needs no `--enable`/`--no-enable`. `--config` is not supported for `install` and
 `uninstall`: they manage `/etc/cgprofile/cgpd.toml` only.
 
 The installer performs these steps:
@@ -128,14 +132,21 @@ The installer performs these steps:
 4. Compare version, config and each resource with the installation. If a
    restart is needed, poll live sessions until drained or the requested
    deadline. A timeout exits 3 and leaves `PENDING`; rerun `cgpd install` when
-   the sessions have ended. `--force-restart` requires explicit confirmation
-   and reports the sessions it may abort. A failure up to this point (fetch,
+   the sessions have ended. `--force-restart` skips the drain (the verb's
+   usual `--yes`/confirmation still applies) and reports the sessions it may
+   abort; when the session list cannot be read at all (a wedged daemon, a lost
+   socket, a missing `current`) it still proceeds and prints a warning that
+   the sessions are unknown. A failure up to this point (fetch,
    pin, config check) removes `PENDING` again, because nothing on the host
    has changed yet.
 5. Atomically write config and resources, update `current`, run
    `systemd-sysusers`, reload systemd, and restart only the changed socket
-   units or service as required. From here a failure leaves `PENDING` in
-   place; with an install record the next `cgpd install` re-applies (it
+   units or service as required. The groups `systemd-sysusers` is about to
+   create are written to `PENDING` (`created_groups=`) before it runs, so
+   `cgpd uninstall --remove-groups` finds them even if the install fails
+   before `install.toml` exists. The wheels are installed with `--no-index
+   --no-deps`: exactly the two pinned wheels. From here a failure leaves
+   `PENDING` in place; with an install record the next `cgpd install` re-applies (it
    reloads and restarts unconditionally), otherwise it refuses and points to
    `cgpd uninstall --yes`.
 6. Wait for the selected daemon version and clean config status, prune older
@@ -192,7 +203,10 @@ service, stops `cgprofile.slice`, removes the service, slice and socket unit
 files, sysusers file, a leftover mdt drop-in, the owned `/usr/local/bin/cgpctl`
 link, socket nodes, level directories and `/run/cgprofile/state`, then runs
 `daemon-reload` and `reset-failed`. Then it removes groups created by the
-install (`--remove-groups`; a group that no longer resolves is skipped), the
+install (`--remove-groups`; a group that no longer resolves is skipped, and a
+group that cannot be removed, for example because it is a user's primary
+group, is reported at the end while everything else still goes; the install
+record stays so a rerun can retry), the
 data directory (`--purge-data`), the config, `/opt/cgprofile` and finally the
 ownership markers `PENDING` and `install.toml`, so an interrupted uninstall can
 be rerun and still knows which groups it created. The version tree the command

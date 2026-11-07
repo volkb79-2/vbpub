@@ -454,10 +454,11 @@ def test_tty_prompts_cancelled_exit_130(tmp_path, monkeypatch):
     assert caught.value.exit_code == 130
 
 
-def test_noninteractive_dry_run_requires_an_enable_decision(tmp_path):
+def test_a_dry_run_needs_no_enable_decision_but_a_real_pipe_run_does(tmp_path):
     args = _args(enable=False, no_enable=False)
+    assert installer._gather_inputs(args, _runtime(dry_run=True), _paths(tmp_path))["enable_now"] is False
     with pytest.raises(installer.InstallError, match="--enable or --no-enable"):
-        installer._gather_inputs(args, _runtime(dry_run=True), _paths(tmp_path))
+        installer._gather_inputs(args, _runtime(json_mode=True), _paths(tmp_path))
 
 
 def test_missing_user_and_bad_user_names_are_refused(monkeypatch):
@@ -770,7 +771,7 @@ def test_install_dry_run_only_reports_the_candidate(tmp_path, monkeypatch):
 def test_install_applies_config_units_groups_links_and_start(tmp_path, monkeypatch):
     paths = _paths(tmp_path)
     Path(paths.install_record).parent.mkdir(parents=True, exist_ok=True)
-    Path(paths.install_record).write_text('created_groups = ["prior-created-group"]\n', encoding="utf-8")
+    Path(paths.install_record).write_text('created_groups = ["cgprofile-control"]\n', encoding="utf-8")
     commands = []
     group_gids = {}
     monkeypatch.setattr(installer, "_group_gid", lambda name: group_gids.get(name))
@@ -790,7 +791,7 @@ def test_install_applies_config_units_groups_links_and_start(tmp_path, monkeypat
     assert Path(paths.client_link).is_symlink()
     assert os.readlink(paths.client_link) == paths.client_target
     record = Path(paths.install_record).read_text(encoding="utf-8")
-    assert "created_groups = [\"prior-created-group\", \"cgprofile-control\", \"cgprofile-observer\"]" in record
+    assert "created_groups = [\"cgprofile-control\", \"cgprofile-observer\"]" in record
     assert ["systemctl", "start", "cgprofile-control.socket", "cgprofile-observer.socket"] in commands
     assert ["systemctl", "start", "cgpd.service"] in commands
     assert group_gids == {"cgprofile-control": 7101, "cgprofile-observer": 7102}
@@ -822,7 +823,7 @@ def test_install_restarts_inactive_socket_units_after_drain(tmp_path, monkeypatc
                                   fetch=_fake_fetch, geteuid=lambda: 0, python="python3")
     drained = []
     monkeypatch.setattr(installer.Installer, "_drain_or_refuse",
-                        lambda self, _current, _values: drained.append(_current))
+                        lambda self, _current, _values, *_rest: drained.append(_current))
     monkeypatch.setattr(installer.Installer, "_wait_ready", lambda self, _venv, _version: None)
 
     body = subject.install(_args(), _runtime(yes=True))
@@ -1420,7 +1421,7 @@ def test_interrupted_uninstall_can_be_rerun_and_still_removes_the_groups(tmp_pat
         return original(argv, **kwargs)
 
     host.subject.run = run
-    with pytest.raises(installer.InstallError, match="groupdel"):
+    with pytest.raises(installer.InstallError, match="could not remove group.*cgprofile-observer"):
         host.subject.uninstall(_args(remove_groups=True), _runtime(yes=True))
     # the first group is gone, the record and the opt tree remain for the rerun
     assert "cgprofile-control" not in host.group_gids and "cgprofile-observer" in host.group_gids
@@ -1558,7 +1559,7 @@ def test_uninstall_defers_the_running_version_tree_and_the_markers(tmp_path, mon
     body = host_subject.uninstall(_args(), _runtime(yes=True))
     assert body["deferred"] == os.path.realpath(Path(first.paths.opt) / "2.2.0")
     assert (Path(first.paths.opt) / "2.2.0" / "venv").is_dir()
-    assert not os.path.lexists(Path(first.paths.opt) / "current")
+    assert os.path.islink(Path(first.paths.opt) / "current")  # kept until finish_uninstall
     # the ownership markers stay until the deferred tree is gone, so a kill here is rerunnable
     assert Path(first.paths.install_record).is_file()
     host_subject.finish_uninstall(body)
@@ -1686,6 +1687,167 @@ def test_summaries_describe_dry_runs_and_real_runs():
     assert installer._uninstall_summary({"dry_run": True, "removed": ["/a"], "groups_removed": ["g"]}) \
         == "would remove: /a\nwould remove group: g"
     assert installer._uninstall_summary({"dry_run": False}) == "nothing to remove"
+
+
+# --- round 2 ------------------------------------------------------------------------------
+
+
+def test_force_restart_proceeds_with_a_warning_when_the_session_list_is_unavailable(tmp_path, monkeypatch):
+    host = Host(tmp_path, monkeypatch)
+    host.install()
+    host.active["cgpd.service"] = True
+
+    def wedged(_current):
+        raise installer.InstallError("cannot list live cgprofile sessions; refusing to restart")
+
+    host.subject._live_sessions = wedged
+    with pytest.raises(installer.InstallError, match="cannot list live cgprofile sessions"):
+        host.install(_args(version="2.3.0"))
+    assert not Path(host.paths.pending).exists() or Path(host.paths.install_record).exists()
+    body = host.install(_args(version="2.3.0", force_restart=True))
+    assert body["ok"] and body["forced_sessions"] == ["unknown (the session list was unavailable)"]
+    assert "cannot list live cgprofile sessions" in body["warnings"][0]
+    assert "WARNING" in installer._install_summary(body)
+    assert os.readlink(host.paths.current) == "2.3.0"
+
+
+def test_force_restart_without_a_current_pointer_also_proceeds(tmp_path, monkeypatch):
+    host = Host(tmp_path, monkeypatch, active={"cgpd.service": True})
+    body = host.install(_args(force_restart=True))
+    assert body["forced_sessions"] == ["unknown (the session list was unavailable)"]
+    assert "current is missing" in body["warnings"][0]
+    with pytest.raises(installer.InstallError, match="current is missing"):
+        Host(tmp_path / "other", monkeypatch, active={"cgpd.service": True}).install()
+
+
+def test_groups_created_by_an_interrupted_first_install_are_recorded_and_removable(tmp_path, monkeypatch):
+    host = Host(tmp_path, monkeypatch)
+
+    def timeout(self, _venv, _version):
+        raise installer.InstallError("daemon did not report version 2.2.0")
+
+    monkeypatch.setattr(installer.Installer, "_wait_ready", timeout)
+    with pytest.raises(installer.InstallError, match="did not report"):
+        host.install()
+    assert not Path(host.paths.install_record).exists()
+    pending = Path(host.paths.pending).read_text(encoding="utf-8")
+    assert pending.splitlines() == ["2.2.0", "created_groups=cgprofile-control,cgprofile-observer"]
+    assert set(host.group_gids) == {"cgprofile-control", "cgprofile-observer"}
+    body = host.subject.uninstall(_args(remove_groups=True), _runtime(yes=True))
+    assert body["groups_removed"] == ["cgprofile-control", "cgprofile-observer"]
+    assert host.group_gids == {} and not os.path.lexists(host.paths.opt)
+
+
+def test_pending_group_lines_survive_rewrites_and_feed_the_record_on_a_reapply(tmp_path, monkeypatch):
+    host = Host(tmp_path, monkeypatch)
+    host.install()
+    Path(host.paths.pending).write_text(
+        "2.2.0\ncreated_groups=cgprofile-observer,evil-group\nunrelated=1\n", encoding="utf-8")
+    assert installer._pending_created_groups(host.paths) == ["cgprofile-observer"]
+    installer._write_pending(host.paths, "2.3.0", ["cgprofile-control"])
+    assert Path(host.paths.pending).read_text(encoding="utf-8").splitlines() == [
+        "2.3.0", "created_groups=cgprofile-observer,cgprofile-control"]
+    Path(host.paths.pending).write_text("2.2.0\ncreated_groups=cgprofile-observer\n", encoding="utf-8")
+    Path(host.paths.install_record).write_text("created_groups = []\n", encoding="utf-8")
+    body = host.install()
+    assert body["ok"] and not Path(host.paths.pending).exists()
+    assert 'created_groups = ["cgprofile-observer"]' in Path(host.paths.install_record).read_text(encoding="utf-8")
+    Path(host.paths.pending).write_bytes(b"\xff\xfe")
+    assert installer._pending_created_groups(host.paths) == []
+    Path(host.paths.pending).unlink()
+    assert installer._pending_created_groups(host.paths) == []
+
+
+def test_created_groups_in_a_record_are_limited_to_the_two_default_groups(host):
+    Path(host.paths.install_record).parent.mkdir(parents=True)
+    Path(host.paths.install_record).write_text('created_groups = ["root"]\n', encoding="utf-8")
+    with pytest.raises(installer.InstallError, match="invalid created_groups"):
+        host.subject.uninstall(_args(remove_groups=True), _runtime(yes=True))
+    assert not host.has("groupdel")
+
+
+_SOCKETS = ('[sockets.control]\npath = "/run/cgprofile/control/cgprofile.sock"\ngroup = "{control}"\nmode = "0660"\n\n'
+            '[sockets.observer]\npath = "/run/cgprofile/observer/cgprofile.sock"\ngroup = "{observer}"\nmode = "0660"\n')
+
+
+def test_a_hand_edited_socket_group_wins_over_the_record_when_no_flag_is_given(host):
+    host.install()
+    host.group_gids["ops"] = 4200
+    edited = _SOCKETS.format(control="ops", observer="cgprofile-observer")
+    Path(host.paths.config).write_text("# mine\n" + edited, encoding="utf-8")
+    again = host.install(_args(control_group=None, observer_group=None))
+    assert again["config_changes"] == []
+    assert Path(host.paths.config).read_text(encoding="utf-8").startswith("# mine\n")
+    record = Path(host.paths.install_record).read_text(encoding="utf-8")
+    assert 'control_group = "ops"' in record and 'observer_group = "cgprofile-observer"' in record
+    # a group passed as a flag is applied to the file
+    flagged = host.install(_args(control_group="cgprofile-control", observer_group=None))
+    assert flagged["config_changes"] == ["sockets.control.group"]
+    assert daemon_config.parse_table(Path(host.paths.config).read_text(encoding="utf-8"))[
+        "sockets.control"]["group"] == "cgprofile-control"
+
+
+def test_prune_never_deletes_the_tree_the_installer_runs_from(tmp_path, monkeypatch):
+    host = Host(tmp_path, monkeypatch)
+    opt = Path(host.paths.opt)
+    for version in ("2.0.0", "2.1.0", "2.2.0", "2.3.0"):
+        (opt / version / "venv").mkdir(parents=True)
+    running = installer.Installer(host.paths, geteuid=lambda: 0, running_prefix=str(opt / "2.1.0" / "venv"))
+    assert running._prune_versions("2.3.0") == ["2.0.0"]
+    assert (opt / "2.1.0").is_dir() and not (opt / "2.0.0").exists()
+
+
+def test_a_unit_path_that_is_a_directory_is_a_bounded_uninstall_failure(tmp_path, monkeypatch):
+    host = Host(tmp_path, monkeypatch)
+    host.seeded_install()
+    unit = Path(host.paths.unit_dir) / "cgprofile.slice"
+    unit.unlink()
+    unit.mkdir()
+    with pytest.raises(installer.InstallError, match="cannot remove .*cgprofile.slice"):
+        host.subject.uninstall(_args(), _runtime(yes=True))
+    assert Path(host.paths.install_record).is_file()
+
+
+def test_a_failing_groupdel_does_not_stop_the_rest_of_the_uninstall(tmp_path, monkeypatch):
+    host = Host(tmp_path, monkeypatch)
+    host.install()
+    original = host.subject.run
+    host.group_gids.update({"cgprofile-control": 7101, "cgprofile-observer": 7102})
+
+    def run(argv, **kwargs):
+        if list(argv)[:2] == ["groupdel", "cgprofile-control"]:
+            return subprocess.CompletedProcess(argv, 8, "", "is a primary group")
+        return original(argv, **kwargs)
+
+    host.subject.run = run
+    Path(host.paths.state_data).mkdir(parents=True)
+    with pytest.raises(installer.InstallError, match="could not remove group.*cgprofile-control") as caught:
+        host.subject.uninstall(_args(remove_groups=True, purge_data=True), _runtime(yes=True))
+    assert "install record is kept" in str(caught.value)
+    # the other group, the data purge, the config and the version trees were all still handled
+    assert "cgprofile-observer" not in host.group_gids and "cgprofile-control" in host.group_gids
+    assert not Path(host.paths.state_data).exists() and not Path(host.paths.config).exists()
+    assert not (Path(host.paths.opt) / "2.2.0").exists() and Path(host.paths.install_record).is_file()
+
+
+def test_the_current_link_stays_until_the_deferred_step(tmp_path, monkeypatch):
+    first = Host(tmp_path, monkeypatch)
+    first.seeded_install()
+    running = Path(first.paths.opt) / "current" / "venv"
+    subject = installer.Installer(first.paths, run=first.subject.run, geteuid=lambda: 0,
+                                  running_prefix=str(running))
+    body = subject.uninstall(_args(), _runtime(yes=True))
+    assert os.path.islink(first.paths.current) and (Path(first.paths.opt) / "2.2.0" / "venv").is_dir()
+    subject.finish_uninstall(body)
+    assert not os.path.lexists(first.paths.opt)
+
+
+def test_pip_installs_exactly_the_two_pinned_wheels_without_resolving(host):
+    host.install()
+    pip = next(c for c in host.commands if c[1:4] == ["-m", "pip", "install"])
+    assert "--no-deps" in pip and "--no-index" in pip
+    assert [Path(item).name for item in pip if item.endswith(".whl")] == [
+        "cgprofile-2.2.0-py3-none-any.whl", "cli_extended-0.5.1-py3-none-any.whl"]
 
 
 def test_registered_verbs_expose_the_documented_options():
