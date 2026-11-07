@@ -736,7 +736,7 @@ def test_writer_owner_and_unusable_entry_items_are_refused(tmp_path):
     with pytest.raises(CliFailure, match="writer must contain"):
         endpoints.publish("svc", {"A": "b"}, writer=None, root=root)
     with pytest.raises(CliFailure, match="writer must contain"):
-        endpoints.publish("svc", {"A": "b"}, writer="x" * 257, root=root)
+        endpoints.publish("svc", {"A": "b"}, writer="installer " + "v" * 247, root=root)
     assert any("owner must match" in problem for problem in endpoints.plan(None, {"A": "b"}, root=root))
     assert any("key/value pair" in problem for problem in endpoints.plan("svc", [1], root=root))
     assert any("root directory does not exist" in problem for problem in endpoints.plan("svc", {"A": "b"}, root=tmp_path / "missing"))
