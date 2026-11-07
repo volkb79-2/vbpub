@@ -160,6 +160,12 @@ are generated service data, and a dedicated data volume there is a supported
 persistent-journal pattern. `/var/log` itself and other log subtrees remain
 protected.
 
+The install-time journal remains on the root filesystem and is hidden when
+stage two mounts the data filesystem there; it is not copied or seeded onto
+the new filesystem. The mounted directory will not show those earlier files.
+After installation, `journalctl --flush` or a reboot lets journald resume
+persistent writes on the mounted filesystem.
+
 The runner finds its planned CoW partition by GPT PARTLABEL `MDT_COW`; it does
 not carve or guess a partition number.
 Copyable configs and offline previews are in

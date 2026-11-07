@@ -182,14 +182,15 @@ recipe command.
 # Equivalent compatibility spelling:
 ./install-host.py configure
 
-# Review the generated file, then install exactly that file and monitor it.
-./install-host.py install
+# The wizard prints the generated per-host file path. Review that file, then
+# pass the same path to install to submit exactly that request.
+./install-host.py install --config ./artifacts/install-host/target-host.v1001.vxxu.de.jsonc
 
 # Preview the gathered payload and account-key decision. Authentication,
 # target lookup, and the protected-server check happen before the local
 # controller key is reused/generated. No mutating API call is made and no
-# target-host.jsonc is saved.
-./install-host.py wizard --dry-run
+# no wizard output file is saved.
+./install-host.py wizard --dry-run --image 128
 
 # Build a Debian-v2 hook in its own project, then let the Netcup wizard consume
 # the resulting JSON bundle (the wizard remains provider-agnostic):
@@ -201,8 +202,17 @@ recipe command.
 ./install-host.py install --config target-host-r1002.jsonc
 ```
 
-The installer writes `target-host.jsonc` before its final install confirmation
-so the exact request can be reviewed or reused. It is local and gitignored.
+The wizard writes `target-host.<hostname>.jsonc` before its final install
+confirmation so the exact request can be reviewed or reused. By default it
+stores the file under the ignored
+`scripts/netcup/artifacts/install-host/` directory; use `--out-dir DIR` to
+choose another directory. The host-specific filename keeps separate targets
+from overwriting one another. Non-interactive wizard runs require an explicit
+`--image ID` or `--image newest`; `--yes` never chooses newest silently.
+Interactive runs without `--yes` still offer the image picker. To install a
+saved wizard request, pass its printed path to
+`install --config FILE`; the `install` verb's `target-host.jsonc` default is
+separate and is not inferred from the wizard output directory.
 Existing Netcup account keys are persistent operator keys: choose `all`,
 `none`, or a comma-separated selection, or repeat `--ssh-key-id`. The
 installer never creates an account key. The separate local controller
@@ -237,6 +247,14 @@ non-interactive:
 
 `--yes` skips confirmation, so use it only after reviewing the dry-run and
 the selected customScript source.
+
+For the guarded data-area-v2 reinstall of v1001 and r1002, use
+`pre-reinstall-export.py` for the allowlisted read-only evidence snapshot and
+`pre-reinstall.py` for bundle/offline-plan validation, API and SSH identity
+checks, an explicit image pin, and a logged dry-run or consented submit. The
+operator commands and exact stale-payload quarantine list are in the
+[consumer guide](CONSUMERS.md#guarded-data-area-v2-reinstall) and its
+preflight rationale is in the [design guide](DESIGN-GUIDE.md#guarded-destructive-reinstall).
 
 The wizard does not invent a customScript. Use `--custom-script-file` to
 consume a plain command or a JSON bundle with `customScript` (and optionally

@@ -142,7 +142,8 @@ def test_impossible_pool_shapes_are_refused_at_schema_validation(partitioning, m
         ("/var/lib/dpkg", "/var/lib/dpkg"), ("/var/lib/dpkg/status", "/var/lib/dpkg"),
         ("/var/lib/apt", "/var/lib/apt"), ("/var/lib/apt/lists", "/var/lib/apt"),
         ("/var/cache/apt", "/var/cache/apt"), ("/var/log", "/var/log"),
-        ("/var/log/audit", "/var/log"),
+        ("/var/log/audit", "/var/log"), ("/var/log/journalx", "/var/log"),
+        ("/var/log/journal2", "/var/log"),
         ("/lib64", "/lib64"), ("/lib32", "/lib32"), ("/libx32", "/libx32"),
         ("/var/lib/systemd", "/var/lib/systemd"), ("/var/lib/systemd/random-seed", "/var/lib/systemd"),
         ("/var/lib/cloud", "/var/lib/cloud"), ("/var/lib/cloud/instance", "/var/lib/cloud"),
@@ -186,6 +187,8 @@ def test_var_cache_parent_is_refused_when_it_would_cover_apt_cache():
         "/var/cache/vbpub",
         "/srv/cow", "/srv/data/archive", "/home/runner", "/home/runner/cache",
         "/var/log/journal", "/var/log/journal/host",
+        "/etcx", "/rootfs", "/tmp2", "/bootx", "/libexec",
+        "/var/lib/dockerx", "/var/lib/containerdx", "/var/lib/cloudy",
     ],
 )
 def test_data_mounts_under_allowed_paths_are_accepted(mount):
@@ -197,6 +200,18 @@ def test_journal_data_mount_exception_is_limited_to_journald_tree():
         lp.disk_spec(parts(vol(mount="/var/log/audit")))
     with pytest.raises(lp.LayoutPolicyError, match="protected system path '/var/log'"):
         lp.disk_spec(parts(vol(mount="/var/log")))
+
+
+def test_reserved_mount_parents_remain_refused_without_runtime_parent_clause():
+    """The separate Docker/containerd parent clause is redundant for these parents.
+
+    `/` has its own guard, and `/var` plus `/var/lib` are rejected by the
+    reserved-mount policy later in `_check_mount`; removing the earlier
+    `path.startswith(mount + "/")` runtime clause therefore changes no result.
+    """
+    for mount in ("/", "/var", "/var/lib"):
+        with pytest.raises(lp.LayoutPolicyError):
+            lp.disk_spec(parts(vol(mount=mount)))
 
 
 def test_fixed_reserve_is_subtracted_before_percent_sizes():

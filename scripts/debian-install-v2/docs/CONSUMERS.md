@@ -157,6 +157,12 @@ seed that state.
 data; `/var/log` itself and other log paths remain protected. For example, a
 formatted ext4 volume can use this mount in `partitioning.data.volumes`:
 
+The install-time journal stays on the root filesystem and is hidden when the
+data filesystem is mounted there; it is not copied into the new filesystem.
+The mounted directory will not show those earlier files. After installation,
+run `journalctl --flush` or reboot so journald resumes persistent writes on the
+mounted filesystem.
+
 ```json
 {
   "schema_version": 1,

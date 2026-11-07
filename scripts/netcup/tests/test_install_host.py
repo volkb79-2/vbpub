@@ -527,15 +527,56 @@ def test_resolve_image_flavour_uses_preselected(install_host_mod, fake_client):
     assert result == {"id": 99, "name": "preset"}
 
 
-def test_resolve_image_flavour_auto_selects_newest_noninteractive(install_host_mod, fake_client):
+def test_resolve_image_flavour_requires_a_selection_noninteractive(install_host_mod, fake_client):
     flavours = [
         {"id": 1, "image": {"name": "Debian 12.0 UEFI amd64"}},
         {"id": 2, "image": {"name": "Debian 13.2 UEFI amd64"}},
         {"id": 3, "image": {"name": "Ubuntu 24.04 UEFI amd64"}},
     ]
     client = fake_client(get_responses=[flavours])
-    result = install_host_mod._resolve_image_flavour(client, 1, None, interactive=False)
+    with pytest.raises(CliFailure, match="--image"):
+        install_host_mod._resolve_image_flavour(client, 1, None, interactive=False)
+
+
+def test_wizard_yes_refuses_implicit_image_before_api_work(
+    install_host_mod, monkeypatch
+):
+    monkeypatch.setattr(
+        install_host_mod,
+        "_build_authenticated_client",
+        lambda: pytest.fail("image selection refusal must precede authentication"),
+    )
+    args = types.SimpleNamespace(command="wizard", yes=True, image=None)
+    with pytest.raises(CliFailure, match="wizard --yes requires an explicit --image"):
+        install_host_mod._run_install_workflow_body(args, None)
+
+
+def test_resolve_image_flavour_uses_explicit_newest_selection(install_host_mod, fake_client):
+    flavours = [
+        {"id": 1, "image": {"name": "Debian 12.0 UEFI amd64"}},
+        {"id": 2, "image": {"name": "Debian 13.2 UEFI amd64"}},
+    ]
+    client = fake_client(get_responses=[flavours])
+    result = install_host_mod._resolve_image_flavour(
+        client, 1, None, interactive=False, selection="newest"
+    )
     assert result["id"] == 2  # newest Debian
+
+
+def test_resolve_image_flavour_uses_explicit_id_and_refuses_unavailable_id(install_host_mod, fake_client):
+    flavours = [
+        {"id": 128, "image": {"name": "Debian 13.2 UEFI amd64"}},
+        {"id": 129, "image": {"name": "Ubuntu 24.04 UEFI amd64"}},
+    ]
+    client = fake_client(get_responses=[flavours])
+    assert install_host_mod._resolve_image_flavour(
+        client, 1, None, interactive=False, selection="128"
+    ) == {"id": 128, "name": "Debian 13.2 UEFI amd64"}
+    client = fake_client(get_responses=[flavours])
+    with pytest.raises(CliFailure, match="not an available Debian UEFI image"):
+        install_host_mod._resolve_image_flavour(
+            client, 1, None, interactive=False, selection="129"
+        )
 
 
 def test_resolve_image_flavour_interactive_prompts(install_host_mod, fake_client, monkeypatch):
@@ -547,6 +588,66 @@ def test_resolve_image_flavour_interactive_prompts(install_host_mod, fake_client
     monkeypatch.setattr("builtins.input", lambda prompt="": "2")  # 2nd listed = older (sorted newest-first)
     result = install_host_mod._resolve_image_flavour(client, 1, None, interactive=True)
     assert result["id"] == 1
+
+
+def test_wizard_output_path_is_per_host_under_runtime_dir(install_host_mod, tmp_path):
+    default = install_host_mod._wizard_output_path(None, "v1001.vxxu.de")
+    assert default == install_host_mod.DEFAULT_RUNTIME_DIR / "target-host.v1001.vxxu.de.jsonc"
+    assert default.is_relative_to(install_host_mod.NETCUP_DIR)
+    assert "artifacts" in default.parts
+    assert install_host_mod._wizard_output_path(None, "r1002.vxxu.de") != default
+
+    explicit = install_host_mod._wizard_output_path(tmp_path, "r1002.vxxu.de")
+    assert explicit == tmp_path / "target-host.r1002.vxxu.de.jsonc"
+    assert install_host_mod._wizard_output_path(tmp_path, "odd/host name") == (
+        tmp_path / "target-host.odd-host-name.jsonc"
+    )
+    with pytest.raises(CliFailure, match="worktree root"):
+        install_host_mod._wizard_output_path(install_host_mod.WORKTREE_ROOT, "v1001.vxxu.de")
+
+
+def test_debian_v2_bundle_rejects_stale_config_before_any_api_work(
+    install_host_mod, monkeypatch, tmp_path
+):
+    stale_config = {
+        "schema_version": 1,
+        "root_max_size_gb": 40,
+        "root_resize_policy": "grow",
+        "disk_layout": "dev-host",
+    }
+    bundle = tmp_path / "stale-bundle.json"
+    bundle.write_text(
+        json.dumps({
+            "config": stale_config,
+            "customScript": _v2_script(stale_config),
+            "completionMarker": "/var/lib/vbpub/bootstrap/stage2_done",
+        }),
+        encoding="utf-8",
+    )
+
+    def no_api_calls():
+        raise AssertionError("stale bundle must be refused before Netcup API work")
+
+    monkeypatch.setattr(install_host_mod, "_build_authenticated_client", no_api_calls)
+    assert install_host_mod.main([
+        "wizard", "--dry-run", "--yes", "--image", "128",
+        "--server-id", "804027", "--custom-script-file", str(bundle),
+    ]) == 2
+
+
+def test_debian_v2_bundle_rejects_disagreeing_embedded_and_script_configs(
+    install_host_mod, tmp_path
+):
+    valid = {"schema_version": 1, "fresh_install": True}
+    stale = {"schema_version": 1, "fresh_install": True, "root_resize_policy": "grow"}
+    bundle = tmp_path / "mismatch.json"
+    bundle.write_text(json.dumps({
+        "config": valid,
+        "customScript": _v2_script(stale),
+        "completionMarker": "/var/lib/vbpub/bootstrap/stage2_done",
+    }), encoding="utf-8")
+    with pytest.raises(CliFailure, match="strict v2 config validation"):
+        install_host_mod._load_custom_script_file(str(bundle))
 
 
 def test_resolve_ssh_key_ids_uses_preselected(install_host_mod, fake_client):
@@ -873,6 +974,9 @@ def _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, a
     if not hasattr(args, "command"):
         args.command = "wizard"
     args.verb = args.command
+    monkeypatch.setattr(
+        install_host_mod, "DEFAULT_RUNTIME_DIR", Path.cwd() / "artifacts" / "install-host"
+    )
     monkeypatch.setattr(install_host_mod, "SERVER_NAME", "test-server")
     monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
     monkeypatch.setattr(install_host_mod, "NetcupSCPClient", lambda *a, **kw: client)
@@ -922,7 +1026,7 @@ def test_main_interactive_dry_run_preserves_existing_target_host_jsonc(
     client = _fake_gather_client(fake_client)
     args = types.SimpleNamespace(
         attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
-        ssh_identity_file=str(identity_file),
+        image="2", ssh_identity_file=str(identity_file),
     )
     _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
 
@@ -931,7 +1035,7 @@ def test_main_interactive_dry_run_preserves_existing_target_host_jsonc(
     assert existing.read_text() == existing_content, "dry-run must not touch an existing target-host.jsonc"
     assert not any(c[0] == "post" for c in client.calls)
     out = capsys.readouterr().out
-    assert "NOT saving to target-host.jsonc" in out
+    assert "NOT saving to target-host.target.example.jsonc" in out
 
 
 def test_main_interactive_dry_run_does_not_create_target_host_jsonc(
@@ -944,7 +1048,7 @@ def test_main_interactive_dry_run_does_not_create_target_host_jsonc(
     client = _fake_gather_client(fake_client)
     args = types.SimpleNamespace(
         attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
-        ssh_identity_file=str(identity_file),
+        image="2", ssh_identity_file=str(identity_file),
     )
     _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
 
@@ -965,7 +1069,7 @@ def test_main_wizard_uses_built_in_defaults_and_can_omit_bootstrap(
     args = types.SimpleNamespace(
         command="wizard", attach_only=False, payload=None, config_path=None,
         poweroff=False, dry_run=True, yes=True, debian_install_v2=False,
-        ssh_identity_file=str(identity_file),
+        image="2", ssh_identity_file=str(identity_file),
     )
     _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
 
@@ -1031,7 +1135,7 @@ def test_main_interactive_uses_live_hostname_for_identity_label_not_raw_server_n
     identity_template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
     args = types.SimpleNamespace(
         attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
-        ssh_identity_file=identity_template, custom_script_file=str(custom_script_file),
+        image="2", ssh_identity_file=identity_template, custom_script_file=str(custom_script_file),
     )
     _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
 
@@ -1059,7 +1163,7 @@ def test_main_interactive_falls_back_to_server_name_when_no_live_hostname(
     identity_template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
     args = types.SimpleNamespace(
         attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
-        ssh_identity_file=identity_template, custom_script_file=str(custom_script_file),
+        image="2", ssh_identity_file=identity_template, custom_script_file=str(custom_script_file),
     )
     _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
 
@@ -1087,7 +1191,7 @@ def test_main_interactive_recovers_from_labeling_lookup_failure(
     identity_template = str(tmp_path / "vbpub-scp_installer-{host}-{date}-ed25519")
     args = types.SimpleNamespace(
         attach_only=False, payload=None, poweroff=False, dry_run=True, yes=True,
-        ssh_identity_file=identity_template,
+        image="2", ssh_identity_file=identity_template,
     )
     _patch_main_for_interactive_dry_run(install_host_mod, monkeypatch, client, args)
     monkeypatch.setattr(install_host_mod, "get_access_token", lambda rt: "fake-token")
@@ -1424,7 +1528,7 @@ def test_main_configure_is_the_same_target_picker_flow_as_wizard(
     args = types.SimpleNamespace(
         command="configure", config_path=None, payload=None, debug=False,
         attach_only=False, dry_run=True, yes=True, custom_script_file=None,
-        ssh_identity_file=None, ssh_key_ids=None, no_monitor=False,
+        image="2", ssh_identity_file=None, ssh_key_ids=None, no_monitor=False,
         monitor=False, local_controller_key="retain",
     )
     client = _fake_gather_client(fake_client)

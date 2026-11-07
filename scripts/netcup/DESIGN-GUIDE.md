@@ -35,13 +35,15 @@ cancellation, and Debian image installation are guarded.
 
 The interactive `wizard` is the API-backed gather-and-install path. It resolves
 the target through the same picker as normal installation, writes a complete
-`target-host.jsonc`, asks for final confirmation, and starts the image install.
+`target-host.<hostname>.jsonc`, asks for final confirmation, and starts the image install.
 `configure` is only a compatibility alias for that wizard; it is not a
 server-dependent default-recipe mode. A bare invocation prints usage and does
 not authenticate or touch SSH state.
 
 The file-driven `install` path reads exactly `target-host.jsonc` by default, or
-the file supplied with `--config`. It validates the complete target locally
+the file supplied with `--config`. A file written by `wizard` under its runtime
+directory is selected explicitly with `install --config FILE`; no path is
+guessed between the two workflows. It validates the complete target locally
 before authentication and key work, then submits the saved payload and follows
 the task by default. `--no-monitor` is the explicit task-creation-only mode.
 `sshKeyIds` and `customScript` are optional in the file: the former means no
@@ -61,16 +63,42 @@ temporary controller key.
 
 ## Generated target and source selection
 
-`target-host.jsonc` is an operator-local reviewed request, not a portable
-repository configuration. It is ignored because image IDs, account-key
-choices, and target identity are account-specific facts. `wizard` writes it;
-`install` reads it. There is no hidden `default-recipe.jsonc` fallback.
+`target-host.<hostname>.jsonc` is an operator-local reviewed request, not a
+portable repository configuration. It is ignored because image IDs,
+account-key choices, and target identity are account-specific facts. The
+wizard writes per-host files under the ignored runtime directory by default;
+`--out-dir` changes that directory. This avoids putting a customScript-bearing
+payload in the checkout and keeps separate host plans distinct. `install`
+reads its selected file. There is no hidden `default-recipe.jsonc` fallback.
+
+Non-interactive wizard runs require an explicit `--image ID` or the explicit
+choice `--image newest`. The provider's newest image changes over time, so
+automation must record the image it intends to install. `--yes` consents to
+submission only after that selection and the local payload validation succeed.
 
 The customScript source is intentionally outside `install-host.toml`. A
 producer such as Debian v2 renders its URL, repository branch, strict JSON
 configuration, credentials, and remote retention policy into a bundle. This
 prevents the Netcup frontend from acquiring an operating-system-specific
 environment-variable list or a second bootstrap template.
+
+## Guarded destructive reinstall
+
+The v1001/r1002 data-area-v2 preflight reuses the Debian-v2 config loader and
+offline planner before it reaches the provider wizard. It checks the generated
+bundle against its source config, embedded customScript config, completion
+marker, image, disk, branch, and live root geometry, and records the bundle
+SHA-256. The API guard identifies the expected Netcup server before the pinned
+SSH helper checks the host name, server-ID file, disk name, and partition
+geometry. Both dry-run and submit executions record `START` and `EXIT`; the
+dry-run validates the wizard-generated request without sending a provider
+install request.
+
+The read-only export uses an explicit allowlist and redacts secret-like fields
+and private-key blocks before writing local evidence. It lists Docker volume
+names only. This limits the evidence copy to the partition table, fstab,
+installer state/logs, iobench/iogovmon state, environment files, and checksums
+needed for the reinstall decision.
 
 ## Notification backend and Mattermost boundary
 

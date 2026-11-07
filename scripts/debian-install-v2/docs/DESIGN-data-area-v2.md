@@ -137,6 +137,12 @@ data and a dedicated volume there is a supported persistent-journal pattern;
 mounts include `/srv/cow`, `/srv/data`, and `/home/runner`. Mounts must be
 absolute, cannot collide with each other, and are written to fstab by UUID.
 
+The install-time journal files remain on the root filesystem and are hidden
+when stage two mounts the data filesystem at `/var/log/journal`. They are not
+copied into the new filesystem, so the mounted directory will not show those
+earlier files. After installation, `journalctl --flush` or a reboot lets
+journald resume persistent writes on the mounted filesystem.
+
 ## Partition recognition and limits
 
 Configured data partitions are recognized only by both Linux partition type

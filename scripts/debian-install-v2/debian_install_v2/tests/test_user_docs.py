@@ -72,6 +72,14 @@ def test_each_user_doc_explains_one_plan_and_the_raw_benchmark_partition():
         assert "swap_policy" in text and "off" in text and "on" in text, path
 
 
+def test_each_user_doc_explains_journal_visibility_during_data_mount():
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8").lower()
+        assert "install-time journal" in text, path
+        assert "hidden" in text and "/var/log/journal" in text, path
+        assert "journalctl --flush" in text, path
+
+
 def test_readme_keeps_the_plain_defaults_next_to_the_partitioning_layout():
     examples = list(_markdown_config_examples(PROJECT / "README.md"))
     assert any(

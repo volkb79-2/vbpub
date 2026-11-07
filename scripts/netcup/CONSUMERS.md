@@ -299,6 +299,48 @@ For the saved 512 GiB layout, the physical order is vda3 root at sector
 Partition numbers follow their disk position; the runner uses PARTLABEL so a
 changed plan does not require an environment-file device-number edit.
 
+## Guarded data-area-v2 reinstall
+
+For the v1001/r1002 reinstall flow, export evidence before submission. The
+exporter verifies the API identity first, uses the pinned SSH helper, checks
+the host name and server-ID file remotely, and writes an allowlisted snapshot
+under each host's `pre-reinstall-<date>/` directory. It redacts keys matching
+`TOKEN`, `PASSWORD`, or `SECRET` and private-key blocks; the Docker inventory
+contains names only. Verify every exported file against `SHA256SUMS` before
+continuing. Run v1001 first, then r1002 only after v1001 passes post-install
+checks.
+
+From `scripts/netcup`, use the exact saved root geometry for the host and
+reviewed config/bundle. The following uses the recorded 512 GiB disk, root
+partition 3, and root start sector `2500608`:
+
+```bash
+R=/home/vscode/vbpub-release-program-20261027
+./pre-reinstall-export.py v1001 --date 20261107
+sha256sum -c "$R/v1001/pre-reinstall-20261107/SHA256SUMS"
+
+./pre-reinstall.py v1001 \
+  --config "$R/v1001/debian-install-v2-20261107.json" \
+  --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
+  --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
+  --repo-branch main --run-dir "$R/v1001/reinstall-20261107" --dry-run
+```
+
+Inspect `reinstall.log`, confirm the API/SSH identity and image ID `128`, and
+review the wizard's complete payload. The dry-run records `EXIT=0` and does not
+submit the install. After the maintenance window is approved, repeat the same
+preflight command with `--yes` instead of `--dry-run`; it repeats all checks
+and submits only after strict config validation and the offline plan succeed.
+The wrapper writes the bundle checksum and a `reinstall.log.EXIT` record. Its
+wizard output goes to the requested run directory as
+`target-host.<hostname>.jsonc`.
+
+Use the matching r1002 paths and image ID only after v1001 passes verification.
+Before generating or selecting a bundle, move the exact stale payloads listed
+in the operator runbook to that host's `stale-<date>/` directory. Keep those
+files; never delete them or attach them. The preflight rejects removed Debian
+v2 config keys before it can start the wizard.
+
 ## Remote gate (run a lane on a test host)
 
 `runner/remote-gate.py` runs one registered Run-Gate lane on a dedicated test host instead of the shared controller
