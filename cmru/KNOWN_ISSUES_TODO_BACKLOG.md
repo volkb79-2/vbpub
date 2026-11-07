@@ -2945,8 +2945,8 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 | `config.py:963` | `Or`->`And` (tool dependency path type) | gap | `test_tool_dependency_path_must_be_a_nonempty_string` |
 | `config.py:1100` | default `reject_credentials=False`->True | gap/default hazard | Removed the default; `_scalar_env` now requires each call site to choose its credential policy. `test_scalar_env_requires_the_call_site_to_choose_credential_policy` |
 | `config.py:1108` | `Or`->`And` (environment key validation) | gap | `test_scalar_env_rejects_non_string_keys` |
-| `config.py:1132` | `Or`->`And` (empty GitHub owner) | gap | `test_github_config_rejects_an_empty_owner` |
-| `config.py:1132` | second `Or`->`And` (owner/repo grouping) | gap | same test |
+| `config.py:1132` | `Or`->`And` (empty GitHub owner; token column 34, 0-based) | gap | `test_github_config_rejects_an_empty_owner` |
+| `config.py:1132` | second `Or`->`And` (owner/repo grouping; token column 55, 0-based) | gap | same test |
 | `config.py:1138` | `Is`->`IsNot` (missing token source diagnostic) | gap | `test_missing_github_token_source_is_reported_as_missing` |
 | `config.py:1214` | `text=True`->False (`gh auth token`) | gap | `test_gh_token_reads_text_output_without_echoing_the_secret` |
 | `config.py:1215` | `check=False`->True (`gh auth token`) | gap | `test_gh_token_reports_the_nonzero_exit_code` |
@@ -2954,8 +2954,8 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 | `config.py:1288` | `And`->`Or` (deep-merge shape collision) | gap | `test_deep_merge_replaces_values_when_the_shapes_do_not_both_match` |
 | `config.py:1297` | empty token `''`->`None` | gap | `test_empty_resolved_secret_token_is_an_empty_string` |
 | `config.py:1377` | `Or`->`And` (runner steps must be non-empty) | gap | `test_runner_steps_must_be_a_nonempty_table` |
-| `config.py:1386` | `Or`->`And` (runner step name type) | gap | `test_runner_step_names_must_be_strings` |
-| `config.py:1386` | second `Or`->`And` (runner step name non-empty) | gap | `test_runner_step_names_must_not_be_empty` |
+| `config.py:1386` | `Or`->`And` (runner step name type; token column 42, 0-based) | gap | `test_runner_step_names_must_be_strings` |
+| `config.py:1386` | second `Or`->`And` (runner step name non-empty; token column 59, 0-based) | gap | `test_runner_step_names_must_not_be_empty` |
 | `config.py:1399` | `Or`->`And` (runner cwd type) | gap | `test_runner_command_cwd_must_be_a_nonempty_string` |
 | `config.py:1490` | `Lt`->`LtE` (template revision one) | gap | `test_template_revision_one_is_valid` |
 | `config.py:1512` | `Or`->`And` (release build-step type) | gap | `test_project_release_build_step_type_errors_are_configuration_refusals` |
@@ -2969,11 +2969,11 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 | `release_preconditions.py:52` | `Or`->`And` (stderr/stdout error detail) | gap | `test_git_blob_reader_uses_stdout_when_git_has_no_stderr` |
 | `release_preconditions.py:121` | `Or`->`And` (empty project table) | gap | `test_gate_identity_config_refuses_an_empty_project_table` |
 | `release_preconditions.py:124` | `exist_ok=True`->False (destination directory) | gap | `test_gate_identity_config_materialization_creates_nested_parents_and_is_repeatable` |
-| `release_preconditions.py:143` | `parents=True`->False (nested config parent) | gap | same test |
-| `release_preconditions.py:143` | `exist_ok=True`->False (repeat materialization) | gap | same test |
+| `release_preconditions.py:143` | `parents=True`->False (nested config parent; `True` token column 36, 0-based) | gap | same test |
+| `release_preconditions.py:143` | `exist_ok=True`->False (repeat materialization; `True` token column 51, 0-based) | gap | same test |
 | `release_preconditions.py:169` | `Is`->`IsNot` (image error extraction) | gap | `test_gate_identity_preflight_extracts_the_selected_image_from_its_error` |
-| `release_preconditions.py:210` | `Or`->`And` (missing version fallback) | gap/fail-closed defect | Reject a missing or empty version in the check result; `test_gate_identity_preflight_fails_when_the_check_omits_its_version` |
+| `release_preconditions.py:210` | `Or`->`And` (missing version fallback) | gap/fail-closed defect | Reject a missing, empty, or non-string version in the check result; `test_gate_identity_preflight_fails_when_the_check_returns_an_invalid_version` |
 
-**Additional fixes.** `assay-first-release` and `assay-first-release-r2` included the docstring-only `src/cmru/__init__.py`, so Assay refused to measure the baseline. Both target lists now omit it. `test_assay_lane_inventory.py` derives executable modules from AST and requires exact equality with both target lists; its controlled wrong-target case was verified red after adding the initializer back. The same Run-Gate preflight now rejects a missing or malformed published-wheel digest instead of reporting `sha256 unknown` in a PASS row; its controlled wrong-digest oracle was also verified red. The one full-suite run exposed that `test_estate_python_callers_import_only_what_cmru_exports` read `mdt-cockpit/build-push.py` from a shared COW overlay; its asserted contract is the checked commit. The oracle now reads that tracked blob with `git show HEAD:<path>` and checks its import with AST, so harmless import formatting does not cause a false failure. The same run exposed three `TYPE_CHECKING`-excluded lines in `tool_deps.py`, which violate the lane's strict whole-target exclusion policy. `ToolDependency` is now imported at runtime so the type reference is measurable. The full lane is not rerun under the one-run constraint; the follow-up validation is the focused registered gate.
+**Additional fixes.** `assay-first-release` and `assay-first-release-r2` included the docstring-only `src/cmru/__init__.py`, so Assay refused to measure the baseline. Both target lists now omit it. `test_assay_lane_inventory.py` derives executable modules from AST and requires exact equality with both target lists; its controlled wrong-target case was verified red after adding the initializer back. The same Run-Gate preflight now rejects a missing or malformed published-wheel digest instead of reporting `sha256 unknown` in a PASS row; its controlled wrong-digest oracle was also verified red. The one full-suite run exposed that `test_estate_python_callers_import_only_what_cmru_exports` read `mdt-cockpit/build-push.py` from a shared COW overlay; its asserted contract is the checked commit. The oracle now reads that tracked blob with `git show HEAD:<path>` and checks its import with AST, so harmless import formatting does not cause a false failure. R0 runs against the committed checkout; R1+ uses a private Git snapshot whose `HEAD` is the judged commit and whose shallow boundary retains that commit's complete tree, so `git show HEAD:<path>` does not require history or refs. The same run exposed three `TYPE_CHECKING`-excluded lines in `tool_deps.py`, which violate the lane's strict whole-target exclusion policy. `ToolDependency` is now imported at runtime so the type reference is measurable. The original closeout's full lane failed before these follow-up corrections; the fix-round report records the final-commit rerun.
 
 The reusable closeout oracles live in `tests/test_r2_survivors_s1.py`; the inventory oracle is in `tests/test_assay_lane_inventory.py`. The source/test changes and focused tester-unified gate are recorded in `/home/vscode/vbpub-release-program-20261027/reports/cmru-surv1-REPORT.md`.

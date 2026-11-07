@@ -404,20 +404,33 @@ def test_gate_identity_preflight_extracts_the_selected_image_from_its_error(monk
     assert "tester-unified:local" in row.remedy
 
 
-def test_gate_identity_preflight_fails_when_the_check_omits_its_version(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("include_version", "version"),
+    [
+        pytest.param(False, None, id="missing"),
+        pytest.param(True, "", id="empty"),
+        pytest.param(True, 24, id="non-string"),
+    ],
+)
+def test_gate_identity_preflight_fails_when_the_check_returns_an_invalid_version(
+    include_version, version, monkeypatch, tmp_path,
+):
     monkeypatch.setattr(
         release_preconditions,
         "_selected_tester_image_from_source",
         lambda *_args: "tester-unified:local",
     )
+    identity = {
+        "tester_image": "tester-unified:local",
+        "published_wheel_sha256": "a" * 64,
+    }
+    if include_version:
+        identity["version"] = version
     monkeypatch.setattr(
         release_preconditions,
         "_load_release_gate",
         lambda *_args: SimpleNamespace(
-            _current_run_gate_identity=lambda _root: {
-                "tester_image": "tester-unified:local",
-                "published_wheel_sha256": "a" * 64,
-            },
+            _current_run_gate_identity=lambda _root: identity,
         ),
     )
     monkeypatch.setattr(
