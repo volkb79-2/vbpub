@@ -63,7 +63,7 @@ commands = [
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "mdt-cockpit: run-gate smoke lane (pytest-style staging tests, host-setup and iogov tests)", argv = ["run-gate", "smoke"], cwd = "." },
+  { label = "mdt-cockpit: run-gate smoke lane (pytest-style staging tests and host-setup tests)", argv = ["run-gate", "smoke"], cwd = "." },
   { label = "mdt-cockpit: run-gate release lane", argv = ["run-gate", "release"], cwd = "." },
   { label = "mdt-cockpit: run-gate oci-push lane (runs in the image this release just built)", argv = ["run-gate", "oci-push"], cwd = "." },
   { label = "mdt-cockpit: run-gate image-runtime-built lane (runtime acceptance of the images this release just built)", argv = ["run-gate", "image-runtime-built"], cwd = "." },

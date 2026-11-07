@@ -16,6 +16,7 @@ one config and one installed CLI.
 | **pwmcp** (Playwright-MCP service) | [`pwmcp/`](pwmcp/) | OCI image + stack bundle | cmru — `pwmcp-v<playwright>-r<N>` |
 | **nyxloom** | [`nyxloom/`](nyxloom/) | Deterministic multi-project agent workflow control plane | cmru — `nyxloom-v*` |
 | **tls-edge** | [`tls-edge/`](tls-edge/) | tarball | cmru — `tls-edge-v*` |
+| **iogovmon** (background IO recorder, own `iogovmon.slice`) | [`iogovmon/`](iogovmon/) | Python wheel (stdlib only) | cmru — `iogovmon-v*`; **not yet released** (gated on live acceptance, see [`iogovmon/BACKLOG.md`](iogovmon/BACKLOG.md) IGM-01) |
 | **run-gate** | [`run-gate-project/`](run-gate-project/) | Python wheel | cmru — `run-gate-v*` |
 | **cli-extended** | [`libraries/cli-extended/`](libraries/cli-extended/) | Shared Python CLI library (wheel) | cmru — `cli-extended-v*`; the root of the dependency graph (zero-release order: [`docs/BOOTSTRAP-FROM-ZERO.md`](docs/BOOTSTRAP-FROM-ZERO.md)) |
 | **empyrion-translation** | [`game_stuff/empyrion/`](game_stuff/empyrion/) | tarball | *(delegated, on-demand)* — date-tagged |

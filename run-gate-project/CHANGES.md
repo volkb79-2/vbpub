@@ -9,13 +9,22 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.2.1] - 2026-11-06
+<!-- cmru: generated -->
+<!-- cmru: source-end=9e802ce2b0bebd09ee88805e49b7ddb51bab269c -->
+
+### Changed
+- chore: retire modern-debian-tools-python-debug; mdt-cockpit is its successor (2015c4e00)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - `DEFAULT_HOST_IMAGE` (the host image when `RUN_GATE_HOST_IMAGE` is unset) is now
   `ghcr.io/volkb79-2/mdt-cockpit-devcontainer:trixie-py3.14-php8.5-latest`. The previous
   default, `modern-debian-tools-python-debug-vsc-devcontainer`, belongs to the retired
   predecessor project and is no longer built; `mdt-cockpit` is its successor.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.2.0] - 2026-11-05
 <!-- cmru: generated -->

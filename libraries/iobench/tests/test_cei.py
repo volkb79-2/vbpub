@@ -7,14 +7,15 @@ from iobench import ceilings
 from iobench.errors import Refusal
 from iobench.testing import standard_host
 
-IDENT = {"target": {"kind": "device"}, "disk": {"devno": "254:7", "partuuid": "p", "size_bytes": 1, "model": None, "serial": None, "wwn": None}}
+SCOPE = {"model": "M", "serial": "S1", "wwn": None, "size_bytes": 1 << 40, "strength": "strong", "machine_id_hash": None, "name": "vda"}
+IDENT = {"target": {"kind": "device"}, "disk": {"devno": "254:7", "partuuid": "p", "size_bytes": 1}, "disk_scope": SCOPE}
 DIGEST = ceilings.identity_digest(IDENT)
 PATH = "/var/lib/iobench/ceilings.jsonl"
 T0 = 1_792_550_400.0
 
 
-def obs(ts=T0, d="write", w="seq1m", bps=14_680_064, dur=600, src="governor", **kw):
-    return {"ts": ceilings.iso(ts), "dir": d, "workload": w, "plateau_bps": bps, "duration_s": dur, "source": src, **kw}
+def obs(ts=T0, d="write", w="seq1m", bps=14_680_064, dur=600, src="governor", kind="raw", **kw):
+    return {"ts": ceilings.iso(ts), "dir": d, "workload": w, "plateau_bps": bps, "duration_s": dur, "source": src, "kind": kind, **kw}
 
 
 def test_cei_01_append_only_atomic():
@@ -28,8 +29,8 @@ def test_cei_01_append_only_atomic():
     # the file is only ever appended to after the header (single write per observation)
     assert host.files[PATH].startswith(lines[0] + "\n") and host.files[PATH].endswith("\n")
     # a history of another identity is never appended to
-    other = ceilings.identity_digest({**IDENT, "target": {"kind": "file"}})
-    assert other != DIGEST  # TGT-09: the target kind is part of the digest
+    other = ceilings.identity_digest({**IDENT, "disk_scope": {**SCOPE, "serial": "S2"}})
+    assert other != DIGEST  # another disk is another history
     with pytest.raises(Refusal) as err:
         ceilings.append(host, PATH, obs(), other)
     assert err.value.condition == "history_identity_mismatch"
@@ -41,15 +42,25 @@ def test_cei_02_refusals():
                       (obs(bps=float("inf")), "ceiling_plateau"), (obs(bps="x"), "ceiling_plateau"), (obs(bps=True), "ceiling_plateau"),
                       (obs(dur=59), "ceiling_duration"), (obs(dur=float("nan")), "ceiling_duration"), (obs(dur="x"), "ceiling_duration"),
                       (obs(src="oracle"), "ceiling_source"),
-                      (obs(w="rand8k"), "ceiling_workload"), (obs(d="both"), "ceiling_dir")):
+                      (obs(w="rand8k"), "ceiling_workload"), (obs(d="both"), "ceiling_dir"),
+                      (obs(kind="ssd"), "ceiling_kind"), (obs(kind=None), "ceiling_kind"), (obs(kind="probe", d="write", src="probe"), "ceiling_kind"),
+                      (obs(kind="file", src="probe"), "ceiling_kind"), (obs(kind="probe", src="benchmark"), "ceiling_kind"),
+                      (obs(kind="probe", src="governor"), "ceiling_kind")):
         with pytest.raises(Refusal) as err:
             ceilings.validate(bad)
         assert err.value.condition == cond, bad
     ceilings.validate(obs(dur=60))
     # the reference-shift note is exempt from the 60 s rule (15 s)
-    ceilings.validate(ceilings.reference_shift(ceilings.iso(T0), "write", 86_000_000.0))
+    ceilings.validate(ceilings.reference_shift(ceilings.iso(T0), "write", 86_000_000.0, "raw"))
     with pytest.raises(Refusal):
         ceilings.validate(obs(dur=14, note="reference_shift"))
+    for src, kind, d in (("benchmark", "raw", "read"), ("benchmark", "raw", "write"), ("benchmark", "file", "read"),
+                         ("benchmark", "file", "write"), ("governor", "raw", "read"), ("governor", "file", "write"),
+                         ("probe", "probe", "read")):
+        ceilings.validate(obs(kind=kind, d=d, src=src))
+    with pytest.raises(Refusal) as err:
+        ceilings.validate(obs(kind="probe", d="write", src="probe"))
+    assert "a probe only reads" in str(err.value)
     with pytest.raises(Refusal):
         ceilings.validate(obs(dur=15))
 
@@ -59,7 +70,7 @@ def test_cei_03_summary_and_identity():
     host.makedirs("/var/lib/iobench")
     for i, bps in enumerate((18_874_368, 14_680_064, 6_291_456)):
         ceilings.append(host, PATH, obs(ts=T0 - i * 3600, bps=bps), DIGEST)
-    ceilings.append(host, PATH, ceilings.reference_shift(ceilings.iso(T0), "write", 1.0), DIGEST)
+    ceilings.append(host, PATH, ceilings.reference_shift(ceilings.iso(T0), "write", 1.0, "raw"), DIGEST)
     ceilings.append(host, PATH, obs(ts=T0 - 40 * 86400, bps=1), DIGEST)  # outside the 30 d window
     ceilings.append(host, PATH, obs(ts=T0, d="read", bps=1_400_000_000), DIGEST)
     rows, warns = ceilings.load(host, PATH, DIGEST)
@@ -92,7 +103,7 @@ def test_cei_04_recalibrate_rule():
     assert not ceilings.recalibrate_recommended(series((1, 12e6), (14, 13e6)), cal, T0)
     # a window without observations is not a shift; reference shifts are ignored; other keys are ignored
     assert not ceilings.recalibrate_recommended(series((1, 6e6)), cal, T0)
-    shifts = low + [ceilings.reference_shift(ceilings.iso(T0), "write", 1.0)]
+    shifts = low + [ceilings.reference_shift(ceilings.iso(T0), "write", 1.0, "raw")]
     assert ceilings.recalibrate_recommended(shifts, cal, T0)
     assert not ceilings.recalibrate_recommended(low, {"read/seq1m": 1e9}, T0)
     assert not ceilings.recalibrate_recommended([], cal, T0)
@@ -103,8 +114,11 @@ def test_cei_05_run_appends_plateaus():
                 {"dir": "read", "workload": "rand4k", "plateau_bps": 40e6, "observation_s": 120, "state": "flat"},
                 {"dir": "write", "workload": "seq1m", "plateau_bps": 9e6, "observation_s": 30, "state": "steady"},
                 {"dir": "read", "workload": "rand4k", "plateau_bps": 1e6, "observation_s": 120, "state": "unsteady"}]
-    rows = ceilings.run_observations(plateaus, ceilings.iso(T0))
+    rows = ceilings.run_observations(plateaus, ceilings.iso(T0), "raw", {"devno": "254:7", "partuuid": "p-7"})
     assert [(r["dir"], r["workload"], r["duration_s"], r["source"]) for r in rows] == [("write", "rand4k", 240, "benchmark"), ("read", "rand4k", 120, "benchmark")]
+    # the kind and the partition the run measured are fields of the observation, not of the history key
+    assert all((r["kind"], r["devno"], r["partuuid"]) == ("raw", "254:7", "p-7") for r in rows)
+    assert all("devno" not in r and "partuuid" not in r for r in ceilings.run_observations(plateaus, ceilings.iso(T0), "file"))
     for r in rows:
         ceilings.validate(r)
 

@@ -34,8 +34,9 @@ def test_cli_01_commands_and_exit_codes():
     assert code == 0 and "caps" in json.loads(out)["object"]
     code, out, _ = run(host, "ceilings", "summary", "--json")
     assert code == 0 and "read" in json.loads(out)
-    code, out, _ = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--json")
-    assert code == 0 and json.loads(out)["appended"] is True
+    code, out, _ = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor",
+                       "--kind", "file", "--json")
+    assert code == 0 and json.loads(out)["appended"] is True and json.loads(out)["observation"]["kind"] == "file"
     code, out, _ = run(host, "restore", "--json")
     assert code == 0
     code, out, _ = run(host, "restore", "--dry-run", "--json")
@@ -160,9 +161,10 @@ def test_cli_restore_and_ceilings_refusals():
     code, out, _ = run(host, "ceilings", "summary", "--json")
     assert code == 0 and json.loads(out)["history"] == "single-run"
     assert calibrate(host).status == "complete"
-    code, _, err = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "10", "--source", "governor")
-    assert code == 2
-    code, out, _ = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run", "--json")
+    code, _, err = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "10", "--source", "governor", "--kind", "file")
+    assert code == 2 and "duration_s" in err
+    code, out, _ = run(host, "ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor",
+                       "--kind", "file", "--dry-run", "--json")
     assert code == 0 and json.loads(out)["appended"] is False
 
 
