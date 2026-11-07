@@ -6,12 +6,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import importlib.util
 import io
-import json
 import os
-import re
 import shutil
-import stat
 import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
@@ -34,34 +32,25 @@ HOSTS = {
 }
 
 MAX_FILE_BYTES = 1024 * 1024
-SENSITIVE_FRAGMENT = r"(?:TOKEN|PASSWORD|PASSWD|PASS|SECRET|PRIVATE|CREDENTIAL|AUTHORIZATION|(?:API|ACCESS)[_-]?KEY|PAT|PSK|JWT)"
-SENSITIVE_KEY_RE = re.compile(rf"(?i)(?<![A-Z0-9]){SENSITIVE_FRAGMENT}(?![A-Z0-9])")
-SENSITIVE_PAIR_RE = re.compile(
-    r'''(?ix)
-    (?P<prefix>(?P<key_quote>["']?)(?P<key>[A-Z0-9_.-]+)(?P=key_quote)\s*[:=]\s*)
-    (?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)
-    '''
-)
-SENSITIVE_ASSIGNMENT_RE = re.compile(
-    rf"(?im)^(?P<prefix>\s*(?:export\s+)?(?:[A-Z0-9_.-]*{SENSITIVE_FRAGMENT}[A-Z0-9_.-]*)\s*=\s*)(?P<value>[^\r\n]*)"
-)
-AUTHORIZATION_RE = re.compile(
-    r'''(?im)(?P<prefix>(?:["']?authorization["']?)\s*[:=]\s*)(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,}\r\n]+)'''
-)
-CLI_SECRET_RE = re.compile(
-    rf'''(?i)(?P<prefix>--(?:{SENSITIVE_FRAGMENT})(?:=|\s+))(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)'''
-)
-URL_USERINFO_RE = re.compile(r"(?i)(https?://)[^/@\s]+@")
-PRIVATE_KEY_RE = re.compile(
-    r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----",
-    re.DOTALL,
-)
+
+# The redaction logic lives in ONE file that is both imported here (controller
+# side pass) and embedded verbatim into the remote collector (host side pass).
+REDACTION_PATH = Path(__file__).resolve().with_name("export_redaction.py")
+
+
+def _load_redaction():
+    spec = importlib.util.spec_from_file_location("netcup_export_redaction", REDACTION_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+export_redaction = _load_redaction()
+REDACTION_SOURCE = REDACTION_PATH.read_text(encoding="utf-8")
+SENSITIVE_PATH_RE = export_redaction.SENSITIVE_PATH_RE
 ALLOWED_ARCHIVE_ROOTS = {
     "partition", "etc", "home", "installer", "iobench", "iogovmon", "docker", "runner", "logs", "meta",
 }
-SENSITIVE_PATH_RE = re.compile(
-    r"(?i)(?:token|password|passwd|secret|private.?key|credential|api.?key|(?<![a-z0-9])pass(?![a-z0-9])|\.ssh)"
-)
 
 
 REMOTE_COLLECTOR = r"""#!/usr/bin/env python3
@@ -78,26 +67,8 @@ from pathlib import Path
 EXPECTED = __HOST_EXPECTATION__
 MAX_FILE_BYTES = __MAX_FILE_BYTES__
 ROOT = Path("/")
-SENSITIVE_FRAGMENT = r"(?:TOKEN|PASSWORD|PASSWD|PASS|SECRET|PRIVATE|CREDENTIAL|AUTHORIZATION|(?:API|ACCESS)[_-]?KEY|PAT|PSK|JWT)"
-SENSITIVE_KEY_RE = re.compile(rf"(?i)(?<![A-Z0-9]){SENSITIVE_FRAGMENT}(?![A-Z0-9])")
-SENSITIVE_PAIR_RE = re.compile(
-    r'''(?ix)
-    (?P<prefix>(?P<key_quote>["']?)(?P<key>[A-Z0-9_.-]+)(?P=key_quote)\s*[:=]\s*)
-    (?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)
-    '''
-)
-SENSITIVE_ASSIGNMENT_RE = re.compile(
-    r'''(?im)^(?P<prefix>\s*(?:export\s+)?[A-Z0-9_.-]*(?:TOKEN|PASSWORD|PASSWD|PASS|SECRET|PRIVATE|CREDENTIAL|AUTHORIZATION|(?:API|ACCESS)[_-]?KEY|PAT|PSK|JWT)[A-Z0-9_.-]*\s*=\s*)(?P<value>[^\r\n]*)'''
-)
-AUTHORIZATION_RE = re.compile(
-    r'''(?im)(?P<prefix>(?:["']?authorization["']?)\s*[:=]\s*)(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^,}\r\n]+)'''
-)
-CLI_SECRET_RE = re.compile(
-    r'''(?i)(?P<prefix>--(?:TOKEN|PASSWORD|PASSWD|PASS|SECRET|PRIVATE|CREDENTIAL|AUTHORIZATION|(?:API|ACCESS)[_-]?KEY|PAT|PSK|JWT)(?:=|\s+))(?P<value>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)'''
-)
-URL_USERINFO_RE = re.compile(r"(?i)(https?://)[^/@\s]+@")
-PRIVATE_KEY_RE = re.compile(r"-----BEGIN [^-\r\n]*PRIVATE KEY-----.*?-----END [^-\r\n]*PRIVATE KEY-----", re.S)
-SENSITIVE_PATH_RE = re.compile(r"(?i)(?:token|password|passwd|secret|private.?key|credential|api.?key|(?<![a-z0-9])pass(?![a-z0-9])|\.ssh)")
+
+__REDACTION_SOURCE__
 
 def host_path(value):
     path = Path(value)
@@ -118,111 +89,6 @@ def identity():
         raise SystemExit("remote host identity mismatch; evidence export refused")
     return facts
 
-def replace_value(match):
-    value = match.group("value")
-    if value[:1] in {"'", '"'} and value[-1:] == value[:1]:
-        replacement = value[0] + "***REDACTED***" + value[0]
-    else:
-        replacement = "***REDACTED***"
-    return match.group("prefix") + replacement
-
-def strip_jsonc_comments(text):
-    output = []
-    index = 0
-    in_string = escaped = False
-    while index < len(text):
-        char = text[index]
-        next_char = text[index + 1] if index + 1 < len(text) else ""
-        if in_string:
-            output.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            index += 1
-        elif char == '"':
-            in_string = True
-            output.append(char)
-            index += 1
-        elif char == "/" and next_char == "/":
-            index += 2
-            while index < len(text) and text[index] not in "\r\n":
-                index += 1
-        elif char == "/" and next_char == "*":
-            index += 2
-            while index + 1 < len(text) and text[index:index + 2] != "*/":
-                if text[index] in "\r\n":
-                    output.append(text[index])
-                index += 1
-            index = min(len(text), index + 2)
-        else:
-            output.append(char)
-            index += 1
-    return "".join(output)
-
-def redact_text(text):
-    text = PRIVATE_KEY_RE.sub("***REDACTED PRIVATE KEY***", text)
-    text = URL_USERINFO_RE.sub(r"\1", text)
-    text = CLI_SECRET_RE.sub(replace_value, text)
-    text = AUTHORIZATION_RE.sub(replace_value, text)
-    text = SENSITIVE_ASSIGNMENT_RE.sub(replace_value, text)
-    def redact_pair(match):
-        return replace_value(match) if SENSITIVE_KEY_RE.search(match.group("key")) else match.group(0)
-    return SENSITIVE_PAIR_RE.sub(redact_pair, text)
-
-def redact(value, key=""):
-    if key and SENSITIVE_KEY_RE.search(key):
-        return "***REDACTED***"
-    if isinstance(value, dict):
-        return {k: redact(v, str(k)) for k, v in value.items()}
-    if isinstance(value, list):
-        return [redact(v) for v in value]
-    if isinstance(value, str):
-        return redact_text(value)
-    return value
-
-def has_unredacted(text):
-    for pattern in (AUTHORIZATION_RE, SENSITIVE_ASSIGNMENT_RE, SENSITIVE_PAIR_RE, CLI_SECRET_RE):
-        for match in pattern.finditer(text):
-            key = match.groupdict().get("key", "")
-            if key and not SENSITIVE_KEY_RE.search(key):
-                continue
-            if match.group("value").strip().strip("'\"") != "***REDACTED***":
-                return True
-    return bool(PRIVATE_KEY_RE.search(text) or URL_USERINFO_RE.search(text))
-
-def safe_bytes(path, data):
-    if SENSITIVE_PATH_RE.search(path) or b"\x00" in data:
-        return None
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    try:
-        parsed = json.loads(strip_jsonc_comments(text))
-    except json.JSONDecodeError:
-        parsed = None
-    else:
-        cleaned = (json.dumps(redact(parsed), indent=2, sort_keys=True) + "\n").encode()
-        if has_unredacted(cleaned.decode("utf-8")):
-            raise ValueError("unredacted secret-like value remains: " + path)
-        return cleaned
-    if path.endswith(".jsonl"):
-        rows = []
-        for line in text.splitlines():
-            try:
-                rows.append(json.dumps(redact(json.loads(strip_jsonc_comments(line))), sort_keys=True))
-            except json.JSONDecodeError:
-                rows.append(redact_text(line))
-        text = "\n".join(rows) + ("\n" if rows else "")
-    else:
-        text = redact_text(text)
-    if has_unredacted(text):
-        raise ValueError("unredacted secret-like value remains: " + path)
-    return text.encode()
-
 def add_bytes(archive, name, data):
     info = tarfile.TarInfo(name)
     info.size = len(data)
@@ -230,8 +96,10 @@ def add_bytes(archive, name, data):
     archive.addfile(info, io.BytesIO(data))
 
 def read_regular(path, source, notes):
+    # O_NONBLOCK: opening a FIFO for reading blocks forever without it, and the
+    # S_ISREG check below only runs after the open succeeded.
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
     except OSError as exc:
         notes.append("skipped unreadable file: " + source + " (" + str(exc) + ")")
         return None
@@ -275,7 +143,7 @@ def add_path(archive, source, destination, notes):
             for filename in sorted(filenames):
                 item = current_path / filename
                 relative = item.relative_to(path)
-                if any(SENSITIVE_KEY_RE.search(part) or SENSITIVE_PATH_RE.search(part) for part in relative.parts):
+                if any(key_is_sensitive(part) or SENSITIVE_PATH_RE.search(part) for part in relative.parts):
                     notes.append("skipped sensitive filename: " + str(item))
                     continue
                 candidates.append((item, str(Path(destination) / relative)))
@@ -287,9 +155,10 @@ def add_path(archive, source, destination, notes):
         data = read_regular(item, source_name, notes)
         if data is None:
             continue
-        content = safe_bytes(archive_name, data)
-        if content is None:
-            notes.append("skipped binary or sensitive file: " + source_name)
+        try:
+            content = redact_bytes(archive_name, data)
+        except ValueError as exc:
+            notes.append("skipped binary, sensitive or unredactable file: " + source_name + " (" + str(exc)[:120] + ")")
             continue
         add_bytes(archive, archive_name, content)
         notes.append("exported: " + source_name)
@@ -372,6 +241,7 @@ def remote_collector(host: str, *, max_file_bytes: int = MAX_FILE_BYTES) -> str:
         REMOTE_COLLECTOR
         .replace("__HOST_EXPECTATION__", repr(expectation))
         .replace("__MAX_FILE_BYTES__", str(max_file_bytes))
+        .replace("__REDACTION_SOURCE__", REDACTION_SOURCE)
     )
 
 def ssh_command(host: str) -> str:
@@ -385,132 +255,9 @@ def ssh_command(host: str) -> str:
     )
 
 
-def _replace_sensitive_value(match: re.Match[str]) -> str:
-    value = match.group("value")
-    if value[:1] in {"'", '"'} and value[-1:] == value[:1]:
-        replacement = value[0] + "***REDACTED***" + value[0]
-    else:
-        replacement = "***REDACTED***"
-    return match.group("prefix") + replacement
-
-
-def _strip_jsonc_comments(text: str) -> str:
-    """Remove JSONC comments without changing comment-like text inside strings."""
-    output = []
-    index = 0
-    in_string = False
-    escaped = False
-    while index < len(text):
-        char = text[index]
-        next_char = text[index + 1] if index + 1 < len(text) else ""
-        if in_string:
-            output.append(char)
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            index += 1
-            continue
-        if char == '"':
-            in_string = True
-            output.append(char)
-            index += 1
-            continue
-        if char == "/" and next_char == "/":
-            index += 2
-            while index < len(text) and text[index] not in "\r\n":
-                index += 1
-            continue
-        if char == "/" and next_char == "*":
-            index += 2
-            while index + 1 < len(text) and text[index:index + 2] != "*/":
-                if text[index] in "\r\n":
-                    output.append(text[index])
-                index += 1
-            index = min(len(text), index + 2)
-            continue
-        output.append(char)
-        index += 1
-    return "".join(output)
-
-
-def _redact_text(text: str) -> str:
-    text = PRIVATE_KEY_RE.sub("***REDACTED PRIVATE KEY***", text)
-    text = URL_USERINFO_RE.sub(r"\1", text)
-    text = CLI_SECRET_RE.sub(_replace_sensitive_value, text)
-    text = AUTHORIZATION_RE.sub(_replace_sensitive_value, text)
-    text = SENSITIVE_ASSIGNMENT_RE.sub(_replace_sensitive_value, text)
-
-    def redact_pair(match: re.Match[str]) -> str:
-        if not SENSITIVE_KEY_RE.search(match.group("key")):
-            return match.group(0)
-        return _replace_sensitive_value(match)
-
-    text = SENSITIVE_PAIR_RE.sub(redact_pair, text)
-    return text
-
-
-def _redact_json(value, key: str = ""):
-    if key and SENSITIVE_KEY_RE.search(key):
-        return "***REDACTED***"
-    if isinstance(value, dict):
-        return {item_key: _redact_json(item, str(item_key)) for item_key, item in value.items()}
-    if isinstance(value, list):
-        return [_redact_json(item) for item in value]
-    if isinstance(value, str):
-        return _redact_text(value)
-    return value
-
-
-def _has_unredacted_secret(text: str) -> bool:
-    for pattern in (AUTHORIZATION_RE, SENSITIVE_ASSIGNMENT_RE, SENSITIVE_PAIR_RE, CLI_SECRET_RE):
-        for match in pattern.finditer(text):
-            key = match.groupdict().get("key", "")
-            if key and not SENSITIVE_KEY_RE.search(key):
-                continue
-            value = match.group("value").strip().strip("'\"")
-            if value != "***REDACTED***":
-                return True
-    return bool(PRIVATE_KEY_RE.search(text) or URL_USERINFO_RE.search(text))
-
-
 def redact_export_bytes(name: str, content: bytes) -> bytes:
     """Redact sensitive fields and refuse binary or incompletely redacted content."""
-    if SENSITIVE_PATH_RE.search(name):
-        raise ValueError(f"sensitive export path refused: {name}")
-    if b"\x00" in content:
-        raise ValueError(f"binary NUL content refused: {name}")
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError(f"non-text content refused: {name}") from exc
-
-    candidate = _strip_jsonc_comments(text)
-    try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError:
-        parsed = None
-    else:
-        cleaned = (json.dumps(_redact_json(parsed), indent=2, sort_keys=True) + "\n").encode()
-        if _has_unredacted_secret(cleaned.decode("utf-8")):
-            raise ValueError(f"unredacted secret-like value remains in {name}")
-        return cleaned
-
-    if name.endswith(".jsonl"):
-        rows = []
-        for line in text.splitlines():
-            try:
-                rows.append(json.dumps(_redact_json(json.loads(_strip_jsonc_comments(line))), sort_keys=True))
-            except json.JSONDecodeError:
-                rows.append(_redact_text(line))
-        text = "\n".join(rows) + ("\n" if rows else "")
-    else:
-        text = _redact_text(text)
-    if _has_unredacted_secret(text):
-        raise ValueError(f"unredacted secret-like value remains in {name}")
-    return text.encode()
+    return export_redaction.redact_bytes(name, content)
 
 
 def _safe_member_name(name: str) -> str:
@@ -633,14 +380,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Manifest: {destination / 'SHA256SUMS'}")
     notes = destination / "meta" / "collection.txt"
     if notes.is_file():
-        oversized = [
-            line for line in notes.read_text(encoding="utf-8").splitlines()
-            if line.startswith("skipped oversized file:")
-        ]
-        if oversized:
-            print("Oversized files skipped (listed in meta/collection.txt):")
-            for line in oversized:
-                print(f"  {line}")
+        lines = notes.read_text(encoding="utf-8").splitlines()
+        for heading, prefix in (
+            ("Oversized files skipped", "skipped oversized file:"),
+            ("Files skipped as binary, sensitive or unredactable", "skipped binary, sensitive or unredactable file:"),
+        ):
+            skipped = [line for line in lines if line.startswith(prefix)]
+            if skipped:
+                print(f"{heading} (listed in meta/collection.txt):")
+                for line in skipped:
+                    print(f"  {line}")
     return 0
 
 
