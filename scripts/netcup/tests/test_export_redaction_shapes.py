@@ -80,7 +80,7 @@ SHAPES = {
     "key-pwd": f"PWD={SECRET}\n",
     "key-presharedkey": f"PresharedKey = {SECRET}\n",
     "yaml-sequence-at-parent-indent": f"secrets:\n- {SECRET}\nkeep: harmless\n",
-    "yaml-multiword-plain-value": f"password: my secret phrase\n",
+    "yaml-multiword-plain-value": f"password: my {SECRET} secret phrase\n",
     "netrc-password": f"machine example.invalid login operator password {SECRET}\n",
     "curl-user-short": f"curl -u operator:{SECRET} https://example.invalid/\n",
     "curl-user-long": f"curl --user operator:{SECRET} https://example.invalid/\n",
