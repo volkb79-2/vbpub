@@ -70,6 +70,11 @@ def calibrate_plan(host: Any, cfg: Config) -> dict[str, Any]:
         rungs += [run.job(f"rung-r32-{r // MIB}", "randread", 4096, 32, RUNG_S, 0, r),
                   run.job(f"rung-w32-{r // MIB}", "randwrite", 4096, 32, RUNG_S, 0, r, io_size=run.bound(RUNG_S))]
     per_stage = {"S1": [first], "fill": fills, "ladder": rungs}
+    if any(stage.name == "cache-evidence" for stage in alloc.stages):
+        region = min(GIB, ws)
+        offset = ws - region
+        per_stage["cache-evidence"] = [run.job("cache-readback", "randread", 4096, 1, plan.CACHE_READ_S, offset, region, log_avg_ms=1000),
+                                       run.job("cache-repeat", "randread", 4096, 1, plan.CACHE_READ_S, offset, region, log_avg_ms=1000)]
     if not run.quick:
         half = ladder.align(min(32 * GIB, 0.1 * ws) / 2)
         per_stage["E-cold"] = [run.job("ecold", "randread", 4096, 32, COLD_QD32_S, 0, half),

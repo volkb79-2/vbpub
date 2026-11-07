@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .errors import Refusal
 from .host import TAIL_BYTES
 
 GIB = 1 << 30
@@ -24,6 +25,9 @@ VQ_CELLS = 4
 VQ_LOG_AVG_MS = 500       # 500 ms samples: a 12 s cell still gives >= 8 points after its 2 s warm-up
 VQ_WARMUP_S = 2.0
 VQ_SEQ_BS = 131072
+CACHE_READ_S = 15
+CACHE_IDLE_DELAY_S = {"standard": 30, "thorough": 60}
+CACHE_IDLE_DELAY_MAX_S = {"standard": 230, "thorough": 290}
 FILL_BUDGET_FRACTION = 0.12
 VOLUME_FACTOR = 1.2
 SLOW_DISK_BPS = 5_000_000
@@ -112,9 +116,26 @@ class Allotment:
                            for s in self.stages]}
 
 
-def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: int | None = None) -> Allotment:
+def cache_idle_delay(profile: str, override_s: float | None) -> float | None:
+    """The optional direct-read delay, bounded so its allotment still fits that profile's hard budget."""
+    if override_s is None:
+        return float(CACHE_IDLE_DELAY_S[profile]) if profile in CACHE_IDLE_DELAY_S else None
+    if profile not in CACHE_IDLE_DELAY_S:
+        raise Refusal("cache_idle_delay", f"--cache-idle-delay-s is only available for standard and thorough, not {profile}",
+                      "use standard or thorough, or omit the option")
+    maximum = CACHE_IDLE_DELAY_MAX_S[profile]
+    if (not isinstance(override_s, (int, float)) or isinstance(override_s, bool) or not math.isfinite(override_s)
+            or override_s < 0 or override_s > maximum):
+        raise Refusal("cache_idle_delay", f"cache idle delay {override_s!r} must be between 0 and {maximum} seconds for {profile}",
+                      f"pass a delay from 0 to {maximum} seconds for {profile}; this keeps the plan within its hard budget")
+    return float(override_s) if override_s > 0 else None
+
+
+def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: int | None = None, *,
+                     cache_idle_delay_s: float | None = None) -> Allotment:
     """The stage allotment table of SPEC section 15, derived from the geometry."""
     budget = PROFILE_BUDGET_S[profile] if budget_s is None else budget_s
+    idle_s = cache_idle_delay(profile, cache_idle_delay_s)
     if profile == "veryquick":
         stages = (Stage("S0", VQ_S0_S, True), Stage("S1", VQ_S1_S, True), Stage("fill", VQ_FILL_ALLOT_S, True),
                   Stage("E-cold", VQ_ECOLD_QD32_S + VQ_ECOLD_QD1_S + VQ_HITREF_S, False, "QD32 15 s + QD1 histogram 15 s + cache-hit reference 10 s"),
@@ -131,6 +152,9 @@ def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: 
     stages = [Stage("S0", S0_S, True), Stage("S1", S1_S, True), Stage("fill", fill_s, True)]
     if not quick:
         stages.append(Stage("E-cold", 140, False, "QD32 70 s + QD1 histogram 60 s + setup"))
+        if idle_s is not None:
+            stages.append(Stage("cache-evidence", math.ceil(idle_s) + 2 * CACHE_READ_S, False,
+                                f"after E-cold: {idle_s:g} s idle, then two direct QD1 reads of the last written GiB"))
     stages.append(Stage("ladder", n_rungs * 2 * RUNG_RUNTIME, True))
     if not quick:
         stages += [Stage("ladder-qd", 120 + (60 if thorough else 0), False, "largest rung QD1/QD8" + (" + QD64" if thorough else "")),

@@ -268,6 +268,30 @@ def test_pla_19_boundaries():
     assert plausibility.READ_OVER_WRITE_WARN == 20.0 and plausibility.READ_OVER_WRITE_FAIL == 100.0
 
 
+def test_pla_19_is_recorded_for_every_profile_with_sequential_cells():
+    expected_sizes = {"veryquick": 128 * 1024, "quick": 64 * 1024, "standard": 1 << 20, "thorough": 1 << 20}
+    for profile in ("veryquick", "quick", "standard", "thorough"):
+        out = calibrate(make_host(cache=INVERSION), profile=profile)
+        checks = [c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-19"]
+        assert len(checks) == 1, profile
+        check = checks[0]
+        assert check["status"] in ("pass", "info", "fail"), profile
+        cells = out.calibration["calibration"]["shape"]["cells"]
+        seq = {c["dir"]: c for c in cells if c["pattern"] == "seq" and c["bs"] == expected_sizes[profile]
+               and c["block_state"] == "rewrite" and not c["repeat"] and c["state"] in ("steady", "flat")}
+        assert set(seq) == {"read", "write"}, profile
+        assert check["value"] == pytest.approx(seq["read"]["steady_bps"] / seq["write"]["steady_bps"], abs=0.1), profile
+        assert out.result["quality"]["plausibility"] == plausibility.verdict(
+            out.result["quality"]["plausibility"]["cache_state"], vq=profile == "veryquick", rate_status=check["status"])
+    # A 20–100x mismatch remains inconclusive without cold-probe corroboration;
+    # a standard calibration still keeps its own cache verdict semantics.
+    out = calibrate(make_host(cache=None, read=MDT016_READ, write=MDT016_WRITE), profile="standard")
+    check = next(c for c in out.result["quality"]["checks"] if c["id"] == "IOB-PLA-19")
+    assert check["status"] == "fail"
+    state = out.result["quality"]["plausibility"]["cache_state"]
+    assert out.result["quality"]["plausibility"] == plausibility.verdict(state)
+
+
 def test_prf_03_the_verdict_table():
     expect = {"cold_measured": "pass", "rate_cap": "pass", "cold_hit_like": "fail", "no_cache_observed": "inconclusive", "undetermined": "inconclusive"}
     assert plausibility.VERDICTS == expect and set(expect) == set(P.CACHE_STATES)

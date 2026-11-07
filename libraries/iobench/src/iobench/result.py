@@ -7,12 +7,12 @@ import posixpath
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from . import ceilings, guard, proposals
+from . import capability, ceilings, guard, proposals
 from .errors import Refusal
 from .host import Host
 
 SCHEMA = 1
-SCHEMA_MINOR = 1  # 1: identity.disk_scope (IOB-CEI-06), calibration quality.plausibility, the veryquick profile
+SCHEMA_MINOR = 2  # 1: disk-scope identity / cache plausibility / veryquick; 2: read-cache evidence hints and capability history
 DEFAULT_DIR = "/var/lib/iobench"
 NOT_MEASURED = "not_measured"
 REQUIRED_TOP = ("schema", "schema_minor", "tool", "run", "identity", "targets", "evidence", "proposals", "quality", "restore")
@@ -34,6 +34,7 @@ def paths(state_dir: str) -> dict[str, str]:
     return {"dir": state_dir, "result": posixpath.join(state_dir, "result.json"),
             "calibration": posixpath.join(state_dir, "calibration.json"),
             "ceilings": posixpath.join(state_dir, "ceilings.jsonl"),
+            "capability": posixpath.join(state_dir, "capability.jsonl"),
             "result_failed": posixpath.join(state_dir, "result.last-failed.json"),
             "calibration_failed": posixpath.join(state_dir, "calibration.last-failed.json")}
 
@@ -264,6 +265,7 @@ class CheckResult:
     result: str | None = None
     calibration_id: str | None = None
     history: str = "single-run"
+    capability: dict[str, Any] | None = None
 
     @property
     def exit_code(self) -> int:
@@ -272,7 +274,7 @@ class CheckResult:
     def as_dict(self) -> dict[str, Any]:
         return {"state": self.state, "reasons": self.reasons, "warnings": self.warnings, "limits": self.limits,
                 "identity_strength": self.identity_strength, "sections": self.sections, "result": self.result,
-                "calibration_id": self.calibration_id, "history": self.history}
+                "calibration_id": self.calibration_id, "history": self.history, "capability": self.capability}
 
 
 def check(host: Host, state_dir: str, *, calibration: bool = False, sections: tuple[str, ...] | None = None, now: float,
@@ -300,10 +302,18 @@ def check(host: Host, state_dir: str, *, calibration: bool = False, sections: tu
     live = live_identity(host, doc["identity"])
     res = CheckResult("current", result=path, calibration_id=calibration_id,
                       identity_strength=doc["identity"]["identity_strength"], limits=list(doc["quality"]["limits"]))
+    try:
+        digest = ceilings.identity_digest(doc["identity"])
+    except Refusal:
+        capability_rows, capability_warnings = [], []
+    else:
+        capability_rows, capability_warnings = capability.load(host, p["capability"], digest)
+    res.capability = capability.latest_summary(capability_rows)
+    res.warnings.extend(capability_warnings)
     if identity_differs(doc["identity"], live):
         res.state = "stale"
         return res
-    res.warnings = advisory_warnings(doc["identity"], live, ceilings.parse_iso(doc["run"]["started"]), now)
+    res.warnings.extend(advisory_warnings(doc["identity"], live, ceilings.parse_iso(doc["run"]["started"]), now))
     rows, _ = ceilings.load(host, p["ceilings"], ceilings.identity_digest(doc["identity"]))
     res.history = ceilings.summary(rows, now)["history"]
     if "calibration" in cal_doc and ceilings.recalibrate_recommended(rows, cal_doc["calibration"].get("plateau_bps", {}), now):

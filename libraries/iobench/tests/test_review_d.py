@@ -1,10 +1,5 @@
 """IOB-BL-06 (review r3 SHOULDs, safety): abort stops the probe unit, bounded reaping, exclusive device writers, tighter fio allowlist."""
-import ctypes
-import os
-import shlex
-import signal
 import subprocess
-import time
 
 import pytest
 
@@ -15,29 +10,6 @@ from iobench.testing import R1002_PARTUUID, R1002_SIZE
 from test_cov import calibrated
 
 DEV = "/dev/vda7"
-
-
-def _set_child_subreaper(enabled):
-    libc = ctypes.CDLL(None, use_errno=True)
-    previous = ctypes.c_int()
-    if libc.prctl(37, ctypes.byref(previous), 0, 0, 0) != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error))
-    if libc.prctl(36, int(enabled), 0, 0, 0) != 0:
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error))
-    return bool(previous.value)
-
-
-def _detached_sleep_script(pidfile, seconds):
-    # Record the PID from inside the process that entered the new session.
-    # `$!` names the outer `setsid` command, which may fork before exec when
-    # its caller is already a process-group leader.
-    child = f"echo $$ > {shlex.quote(str(pidfile))}; exec sleep {seconds}"
-    # Replace the outer shell with its foreground sleeper. If SIGKILL hits a
-    # shell and its child together, the shell cannot reap that child; pytest's
-    # subreaper then inherits a zombie that outlives the session.
-    return f"setsid sh -c {shlex.quote(child)} & exec sleep 28"
 
 
 def _abort_when_probe_starts(host, stuck=False):
@@ -100,52 +72,52 @@ def test_bl06_stop_is_allowlisted_only_for_probe_units():
 
 
 # -- N-r3-2: reaping a killed command is bounded -----------------------------------------------------------------------------------
-def test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run(tmp_path, monkeypatch):
+def test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run(monkeypatch):
     from iobench.errors import Aborted
-    monkeypatch.setattr(host_mod, "REAP_TIMEOUT_S", 0.5)
-    pidfiles = (tmp_path / "abort.pid", tmp_path / "timeout.pid")
-    # the grandchild leaves the process group (setsid), so killpg misses it and it keeps the stdout pipe open
-    real = RealHost()
-    real._escalated = True
-    started = time.time()
-    previous_subreaper = _set_child_subreaper(True)
-    try:
-        script = _detached_sleep_script(pidfiles[0], 29)
-        with pytest.raises(Aborted, match="second signal"):
-            real._run_polled(["sh", "-c", script], None)
-        assert time.time() - started < 10
-        assert pidfiles[0].exists()
-        pid = int(pidfiles[0].read_text().strip())
-        assert os.getsid(pid) == pid
 
-        real._escalated = False
-        started = time.time()
-        script = _detached_sleep_script(pidfiles[1], 29)
-        with pytest.raises(subprocess.TimeoutExpired):
-            real._run_polled(["sh", "-c", script], 1.0)
-        assert time.time() - started < 10
-        assert pidfiles[1].exists()
-        pid = int(pidfiles[1].read_text().strip())
-        assert os.getsid(pid) == pid
-    finally:
-        try:
-            for pidfile in pidfiles:
-                raw_pid = pidfile.read_text().strip() if pidfile.exists() else ""
-                if not raw_pid:
-                    continue
-                pid = int(raw_pid)
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                try:
-                    os.waitpid(pid, 0)
-                except ChildProcessError as exc:
-                    raise AssertionError(
-                        f"detached test child {pid} was not adopted for cleanup"
-                    ) from exc
-        finally:
-            _set_child_subreaper(previous_subreaper)
+    class Pipe:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    class PipeHoldingProcess:
+        """Deterministically model a surviving descendant that keeps both captured pipes open."""
+
+        pid = 12345
+
+        def __init__(self):
+            self.stdout, self.stderr = Pipe(), Pipe()
+            self.timeouts = []
+
+        def communicate(self, timeout=None):
+            self.timeouts.append(timeout)
+            raise subprocess.TimeoutExpired(["fake-child"], timeout)
+
+    monkeypatch.setattr(host_mod, "REAP_TIMEOUT_S", 0.5)
+    process = PipeHoldingProcess()
+    killed = []
+    monkeypatch.setattr(host_mod.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(host_mod.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    host = RealHost()
+    with pytest.raises(subprocess.TimeoutExpired):
+        host._run_polled(["sh", "-c", "sleep"], 1.0)
+    assert process.timeouts == [0.5, 0.5, 0.5]  # two polling slices, then bounded reap
+    assert process.stdout.closed and process.stderr.closed
+    assert killed == [(process.pid, host_mod.signal.SIGKILL)]
+
+    process = PipeHoldingProcess()
+    monkeypatch.setattr(host_mod.subprocess, "Popen", lambda *args, **kwargs: process)
+    killed.clear()
+    host = RealHost()
+    host._escalated = True
+    with pytest.raises(Aborted, match="second signal"):
+        host._run_polled(["sh", "-c", "sleep"], None)
+    assert process.timeouts == [0.5, 0.5]  # one poll, then bounded reap
+    assert process.stdout.closed and process.stderr.closed
+    assert killed == [(process.pid, host_mod.signal.SIGKILL)]
 
 
 # -- N-r3-3: a device writer must be exclusive -----------------------------------------------------------------------------------

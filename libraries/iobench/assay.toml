@@ -33,6 +33,7 @@ mode = "whole_target"
 targets = [
   "src/iobench/cache.py",
   "src/iobench/calibrate.py",
+  "src/iobench/capability.py",
   "src/iobench/ceilings.py",
   "src/iobench/cli.py",
   "src/iobench/derive.py",

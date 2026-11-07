@@ -12,7 +12,7 @@ from typing import Any, Callable
 from cli_extended import (ArgumentSpec, CliFailure, CliIdentity, CliRegistry, CliRuntime, OptionSpec, RegisteredCli, Requires, VerbGroup,
                           VerbSpec)
 
-from . import calibrate, ceilings, dryrun, guard, matrix, proposals, restore
+from . import calibrate, capability, ceilings, dryrun, guard, matrix, proposals, restore
 from . import result as res
 from .errors import IobenchError, Refusal
 from .host import Host, HostError, RealHost
@@ -39,7 +39,7 @@ def _value(flags: tuple[str, ...], text: str, metavar: str, group: str = "OPTION
     return OptionSpec(flags, text, group=group, metavar=metavar, parser_kwargs={"default": None, **kw})
 
 
-STATE_DIR = _value(("--state-dir",), "Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).", "DIR", "STATE")
+STATE_DIR = _value(("--state-dir",), "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).", "DIR", "STATE")
 GUARDS = (
     _flag(("--confirm-quiet-window",), "Confirm that production work may be disturbed now (required on a live host; unlisted systemd units are not detected).", "LIVE HOST"),
     _value(("--protect-cgroup",), "Cgroup whose io.pressure is watched; a live-host run needs it with --abort-psi (no default).", "CGROUP", "LIVE HOST"),
@@ -64,6 +64,7 @@ RUN_OPTIONS = (
 CAL_OPTIONS = (
     _value(("--profile",), "Calibration profile (veryquick 3, quick 12, standard 60, thorough 75 minutes).", "PROFILE", "RUN", choices=PROFILES, default="standard"),
     _value(("--budget-minutes",), "Hard wall-clock budget in minutes; overrides the profile.", "MINUTES", "RUN", type=float),
+    _value(("--cache-idle-delay-s",), "Idle delay before optional direct read-back evidence (defaults: 30 s standard, 60 s thorough; 0 disables; maximum: 230 s standard, 290 s thorough).", "SECONDS", "RUN", type=float),
     _value(("--metering",), "Typed metering override; dependent values become unproven: operator_override.", "KIND", "RUN", choices=("byte", "iops", "mixed")),
     _value(("--assume-r-est",), "With --dry-run: the write rate (bytes/s) to plan with; otherwise READ from calibration.json.", "BYTES_PER_S", "RUN", type=float),
 )
@@ -91,7 +92,8 @@ def _config(args: Any, version: str, *, profile: str = "standard") -> Config:
         except ValueError:
             raise Refusal("candidates", f"--candidates {args.candidates!r} is not a comma list of integers", "for example --candidates 64,128,256") from None
     return Config(target=args.target, tool_version=version, work_dir=args.work_dir, profile=getattr(args, "profile", None) or profile,
-                  budget_minutes=getattr(args, "budget_minutes", None), state_dir=args.state_dir, confirm_quiet_window=args.confirm_quiet_window,
+                  budget_minutes=getattr(args, "budget_minutes", None), cache_idle_delay_s=getattr(args, "cache_idle_delay_s", None),
+                  state_dir=args.state_dir, confirm_quiet_window=args.confirm_quiet_window,
                   protect_cgroup=args.protect_cgroup, abort_psi=args.abort_psi, installer=args.installer,
                   production_pattern=args.production_pattern, production_units=tuple(args.production_unit or ()),
                   metering=getattr(args, "metering", None), full_sweep=getattr(args, "full_sweep", False), knob=getattr(args, "knob", None),
@@ -183,6 +185,11 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
                  _value(("--section",), "Only this proposal group (repeatable).", "GROUP", choices=SECTIONS, action="append"),
                  _flag(("--require-strong-identity",), "Treat a weak identity (no serial or wwn) as identity_weak on every value."), STATE_DIR),
         handler=lambda args, runtime: _check(args, runtime, host_factory)))
+    registry.register(VerbSpec(
+        "capability", None, "Read the append-only cache and burst observations for the calibrated disk.",
+        group=VerbGroup.EXPLORATION.value, examples=("iobench capability --json", "iobench capability --since 2026-11-01T00:00:00Z --json"),
+        options=(_value(("--since",), "Include observations at or after this UTC timestamp (YYYY-MM-DDTHH:MM:SSZ).", "TIMESTAMP"), STATE_DIR),
+        handler=lambda args, runtime: _capability(args, runtime, host_factory)))
     registry.register(VerbSpec(
         "show", None, "Print a stored object exactly (never recomputes, never modifies).", group=VerbGroup.EXPLORATION.value,
         examples=("iobench show --proposals --json", "iobench show --ceilings --json"),
@@ -285,6 +292,27 @@ def _check(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
                     require_strong_identity=args.require_strong_identity, result_path=result_path)
     _emit(runtime, out.as_dict())
     return out.exit_code
+
+
+def _capability(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
+    host = factory()
+    state = res.state_dir_of(host, args.state_dir)
+    p = res.paths(state)
+    warnings: list[str] = []
+    try:
+        identity = _ceilings_identity(host, state)
+        digest = ceilings.identity_digest(identity)
+        rows, warnings = capability.load(host, p["capability"], digest)
+    except (res.LoadError, Refusal):
+        rows, digest = [], None
+        warnings.append("calibration_identity_unavailable")
+    selected = capability.select_since(rows, args.since)
+    out = {"schema": capability.SCHEMA, "identity_digest": digest, "since": args.since,
+           **capability.latest_summary(selected), "observations": selected}
+    if warnings:
+        out["warnings"] = warnings
+    _emit(runtime, out)
+    return 0
 
 
 def _show(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:

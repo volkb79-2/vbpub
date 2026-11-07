@@ -235,7 +235,7 @@ def test_chk_01_exit_codes(world):
     assert weak.sections["iocost_qos"]["proven"] == 0
     # the JSON shape
     d = c.as_dict()
-    assert set(d) == {"state", "reasons", "warnings", "limits", "identity_strength", "sections", "result", "calibration_id", "history"}
+    assert set(d) == {"state", "reasons", "warnings", "limits", "identity_strength", "sections", "result", "calibration_id", "history", "capability"}
     assert d["history"] == "recorded" and d["calibration_id"].startswith("cal-")  # the benchmark appended its own plateaus (CEI-05)
 
 

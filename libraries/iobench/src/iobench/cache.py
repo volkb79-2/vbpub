@@ -8,7 +8,7 @@ import bisect
 import math
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from .devio import HIST_BINS, bin_value_us
 from .series import Reading, SeriesError
@@ -23,6 +23,7 @@ MISS_LIKE = 2.5
 E2_GAP_MAX_S = 60.0
 E2_TOLERANCE = (0.7, 1.43)
 MARGIN = 1.2
+READ_SPEEDUP_HINT = 1.2  # [I] advisory threshold for indirect repeat-read evidence; calibrate with IOB-ACC-01
 PROOF_MIN_AFTER_S = 120.0
 PROOF_BURST_FACTOR = 2.0
 
@@ -316,6 +317,37 @@ def read_value(state: CacheState, measured_largest: float, e1: E1 | None) -> Rea
     else:
         value = measured_largest
     return ReadValue(value, "unproven", state.reasons)
+
+
+def _positive_rate(value: Any) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+        return None
+    return float(value)
+
+
+def read_cache_hints(delayed: Mapping[str, Any], repeated: Mapping[str, Any], cold_bps: float | None) -> dict[str, Any]:
+    """Summarise optional direct-read comparisons as hints; they never determine a cache state or proposal value."""
+    cold = _positive_rate(cold_bps)
+    delayed_rate = _positive_rate(delayed.get("rate_bps")) if delayed.get("status") == "measured" else None
+    if cold is not None and delayed_rate is not None:
+        delayed_hint = "hit-like" if delayed_rate > READ_SPEEDUP_HINT * cold else "miss-like"
+    else:
+        delayed_hint = "undetermined"
+    first = _positive_rate(repeated.get("first_bps")) if repeated.get("status") == "measured" else None
+    second = _positive_rate(repeated.get("second_bps")) if repeated.get("status") == "measured" else None
+    if first is not None and second is not None:
+        repeat_hint = "hit-like" if second / first > READ_SPEEDUP_HINT else "miss-like"
+    else:
+        repeat_hint = "undetermined"
+    available = [hint for hint in (delayed_hint, repeat_hint) if hint != "undetermined"]
+    if not available:
+        hint = "undetermined"
+    elif len(available) == 2 and available[0] != available[1]:
+        hint = "mixed"
+    else:
+        hint = available[0]
+    return {"hint": hint, "delayed_readback": delayed_hint, "repeat_pass": repeat_hint,
+            "speedup_threshold": READ_SPEEDUP_HINT, "source": "indirect_direct_io"}
 
 
 # -- write time proof (IOB-CCH-07) --------------------------------------------------

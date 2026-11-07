@@ -36,7 +36,8 @@ root refusals can never be overridden. Without a marker no `calibrate` or `matri
 iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
 
-* Hard budgets: `veryquick` 3.5 min (173 s planned), `quick` 12 min, `standard` 60 min, `thorough` 75 min. Skipped stages are recorded, never shortened silently.
+* Hard budgets: `veryquick` 3.5 min (173 s planned), `quick` 12 min, `standard` 60 min (3400 s planned), `thorough` 75 min (4270 s planned). Skipped stages are recorded, never shortened silently.
+* Standard and thorough include an optional direct-read cache-evidence stage after E-cold: 30 s idle + two 15 s reads in standard, 60 s idle + two 15 s reads in thorough. Set `--cache-idle-delay-s 0` to skip it; the maximum is 230 s for standard and 290 s for thorough so the planned stage total stays within its hard budget. Quick and veryquick omit it. These are indirect hints: the guest cannot see which hypervisor/provider cache layer served a read, and the hints do not supply proposals. See the [design rationale](DESIGN-GUIDE.md#73-cache-and-burst-observations).
 * A live host REQUIRES `--confirm-quiet-window`, `--protect-cgroup` and `--abort-psi` (no defaults; the run refuses without them). Unlisted systemd units are not detected: you are the guard.
 * Output: `/var/lib/iobench/calibration.json`. Re-run on an identity change (`check` exit 3) or when `check` warns `recalibrate_recommended`.
 * `quick` reports every cache-dependent value as `unproven: quick_profile` (honest, not absent).
@@ -47,7 +48,16 @@ iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile st
   ```
 
   `veryquick` refuses to replace `calibration.json` or `result.json` if either contains a non-veryquick or unreadable record.
-* Every calibration records `quality.plausibility = {verdict, cache_state}`. For veryquick, a read/write ratio up to 20x passes IOB-PLA-19; above 20x through 100x is `info` and the verdict is inconclusive without a hit-like cold probe, which makes both the check and verdict fail; above 100x fails on its own. These thresholds are inferred and IOB-ACC-01 must calibrate them. A veryquick `pass` describes only the available probe evidence; it does not prove that no cache exists.
+* Every profile that has sequential read and write cells records IOB-PLA-19 using matching block size, queue depth and region. A ratio up to 20x passes; above 20x through 100x is inconclusive unless a hit-like cold probe corroborates it; above 100x fails without corroboration. The thresholds are inferred and IOB-ACC-01 must calibrate them. Only veryquick carries the ratio status into its existing plausibility-verdict semantics; a veryquick `pass` describes only its available evidence and does not prove that no cache exists.
+
+Read the append-only cache/burst history with:
+
+```bash
+iobench capability --json
+iobench capability --since 2026-11-01T00:00:00Z --json
+```
+
+Calibration rows are keyed to the whole-disk scope and carry their `raw` or `file` evidence kind. `check --json` also includes the count and latest matching row. These records describe observations only: they never feed the io.cost coefficients or other proposal values. Veryquick stores only its measured `write_burst_seen` boolean; numeric capability fields are null because that short profile does not measure them.
 
 ## 3. Matrix iteration (the fast path)
 
@@ -75,7 +85,7 @@ Also from `iobench`: `1` runtime failure, `2` refusal or usage, `8` run aborted 
 ```json
 {"state": "current_unproven", "reasons": [], "warnings": ["scheduler_changed"], "limits": ["bucket_exclusion_s<=240"], "identity_strength": "weak",
  "sections": {"caps": {"proven": 0, "unproven": [{"key": "RIOPS", "reasons": ["cache_model_undetermined"]}], "absent": []}},
- "result": "/var/lib/iobench/result.json", "calibration_id": "cal-20261021T020000Z-7b2d0c1e"}
+ "result": "/var/lib/iobench/result.json", "calibration_id": "cal-20261021T020000Z-7b2d0c1e", "capability": {"count": 0, "latest": null}}
 ```
 
 The `proposals` object (schema 1). Every value has its own status, rule and inputs:

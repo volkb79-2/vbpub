@@ -134,7 +134,7 @@ READ_OVER_WRITE_FAIL = 100.0  # [I] inferred: a gross mismatch fails without cor
 
 
 def pla_19(read_bps: float | None, write_bps: float | None, *, cache_state: str | None = None) -> Check:
-    """veryquick only: an inferred gross cache-inflation check, calibrated against the cold probe when possible.
+    """An inferred gross cache-inflation check for every profile with sequential read and write cells.
 
     The thresholds are provisional [I] values; IOB-ACC-01 must calibrate them on the VM and a known cached device."""
     if read_bps is None or write_bps is None:

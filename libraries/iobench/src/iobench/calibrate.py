@@ -8,7 +8,7 @@ from dataclasses import replace
 from typing import Any
 
 from .derive import latency_knee
-from . import cache, ceilings, devio, guard, ladder, plan, plausibility, proposals, shape
+from . import cache, capability, ceilings, devio, guard, ladder, plan, plausibility, proposals, shape
 from . import result as res
 from . import series as S
 from .devio import FioResult
@@ -17,7 +17,7 @@ from .extents import Extents
 from .host import HostError
 from .stages import GIB, MIB, Config, IntegrityViolation, Outcome, Runner, StageSkipped
 
-METHOD = "ladder-v1+cachefit-v1+shape-v1+latcurve-v1+drain-v1+sweep-v1+readcost-v1"
+METHOD = "ladder-v1+cachefit-v1+shape-v1+latcurve-v1+drain-v1+sweep-v1+readcost-v1+cache-evidence-v1"
 COLD_MAX = 32 * GIB
 COLD_SHARE = 0.10
 E_COLD_QD32_S = 70
@@ -68,6 +68,7 @@ def _basis(value: float | None, reasons: list[str], absent: str | None = None) -
 
 class Calibrator(Runner):
     def __init__(self, host: Any, cfg: Config) -> None:
+        plan.cache_idle_delay(cfg.profile, cfg.cache_idle_delay_s)  # reject an over-budget delay before Runner performs host probes
         super().__init__(host, cfg, command="calibrate")
         self.profile, self.quick = cfg.profile, cfg.profile in ("quick", "veryquick")  # quick: every profile that cuts the ladder and the observation runs
         self.vq = cfg.profile == "veryquick"
@@ -95,6 +96,8 @@ class Calibrator(Runner):
         self.fill_info: dict[str, Any] = {}
         self.cells: list[dict[str, Any]] = []
         self.cold_raw: dict[str, Any] | None = None
+        self.delayed_readback: dict[str, Any] = {"status": "not_measured", "reason": "profile"}
+        self.repeat_pass: dict[str, Any] = {"status": "not_measured", "reason": "profile"}
         self.hit_ref_us: float | None = None
         self.e2_raw: dict[str, Any] | None = None
         self.fvr: dict[str, Any] | None = None
@@ -104,6 +107,7 @@ class Calibrator(Runner):
         self.little: list[plausibility.Check] = []
         self.last_started = 0.0
         self.history_rotated: str | None = None
+        self.capability_history_rotated: str | None = None
         self.calibration_id = f"cal-{self.run_id[4:].rsplit('-', 1)[0]}-{host.token()}{host.token()}"
 
     # -- helpers ---------------------------------------------------------------------------------------
@@ -163,7 +167,8 @@ class Calibrator(Runner):
     def make_plan(self) -> plan.Allotment:
         budget = self.cfg.budget_s(plan.PROFILE_BUDGET_S[self.profile])
         self.start_budget(budget)
-        alloc = plan.plan_calibration(self.profile, self.target.size_bytes, self.r_est, budget)
+        alloc = plan.plan_calibration(self.profile, self.target.size_bytes, self.r_est, budget,
+                                      cache_idle_delay_s=self.cfg.cache_idle_delay_s)
         ws, fresh_len = alloc.ws_max, 0
         if self.target.kind == "file":
             fs = guard.fs_info(self.host, self.target.path.rsplit("/", 1)[0])
@@ -182,6 +187,57 @@ class Calibrator(Runner):
         self.rung_sizes = plan.rung_plan(self.ws_planned, quick=self.quick)
         self.budget_limited = self.target.kind == "device" and alloc.ws_max < int(0.85 * self.target.usable_bytes)
         return alloc
+
+    def cache_evidence(self, idle_s: float) -> None:
+        """After idle, read the last written GiB and immediately read that same region again (indirect cache evidence only)."""
+        region_bytes = min(GIB, int(self.fill_info["bytes"]))
+        if region_bytes < MIB:
+            raise StageSkipped("region_too_small", "the fill left less than 1 MiB for the optional cache reads")
+        offset = int(self.fill_info["bytes"]) - region_bytes
+        self.host.sleep(idle_s)
+        first = self.run_job("cache-readback", "randread", 4096, 1, plan.CACHE_READ_S, offset, region_bytes, key="cache_readback",
+                             log_avg_ms=1000)
+        first_bps = first.stats.bw_bps
+        self.delayed_readback = {"status": "measured", "idle_s": idle_s, "region_bytes": region_bytes, "rate_bps": first_bps}
+        second = self.run_job("cache-repeat", "randread", 4096, 1, plan.CACHE_READ_S, offset, region_bytes, key="cache_repeat",
+                              log_avg_ms=1000)
+        second_bps = second.stats.bw_bps
+        self.repeat_pass = {"status": "measured", "region_bytes": region_bytes, "first_bps": first_bps, "second_bps": second_bps,
+                            "speedup_ratio": second_bps / first_bps if first_bps > 0 else None}
+
+    def cache_evidence_stage(self, alloc: plan.Allotment) -> None:
+        if self.profile not in plan.CACHE_IDLE_DELAY_S:
+            return
+        idle_s = plan.cache_idle_delay(self.profile, self.cfg.cache_idle_delay_s)
+        if idle_s is None:
+            self.delayed_readback = {"status": "not_measured", "reason": "disabled"}
+            self.repeat_pass = {"status": "not_measured", "reason": "disabled"}
+            self.skip("cache-evidence", "disabled")
+            return
+        if alloc.total > alloc.budget_s:
+            self.delayed_readback = {"status": "not_measured", "reason": "budget"}
+            self.repeat_pass = {"status": "not_measured", "reason": "budget"}
+            self.skip("cache-evidence", "budget")
+            return
+        if not self.stage("cache-evidence", lambda: self.cache_evidence(idle_s), min_s=alloc.seconds("cache-evidence")):
+            status = self.stages.get("cache-evidence", "skipped: budget")
+            reason = status.split(": ", 1)[-1]
+            self.delayed_readback = {"status": "not_measured", "reason": reason}
+            self.repeat_pass = {"status": "not_measured", "reason": reason}
+
+    def write_time_proof_doc(self) -> dict[str, Any] | None:
+        if "rewrite" not in self.proof:
+            return None
+        doc = self.proof["rewrite"].as_dict()
+        if "write" in self.obs:
+            post = self.obs["write"].steady * 4096
+            knee = doc["knee_s"]
+            doc["post_cliff_bps"] = post
+            doc["pre_cliff_bps"] = post + doc["burst_bytes"] / knee if knee is not None and knee > 0 else None
+        else:
+            doc["post_cliff_bps"] = None
+            doc["pre_cliff_bps"] = None
+        return doc
 
     # -- the fill ------------------------------------------------------------------------------------------
     def fill(self, alloc: plan.Allotment) -> None:
@@ -677,9 +733,10 @@ class Calibrator(Runner):
                        "best_read_rung_iops": a["best"], "measured_largest": {"read": a["largest"]["steady_iops"], "write": a["writes"][-1]["steady_iops"]}},
             "cache": {"read": {**state.as_dict(), "e_cold": a["cold"].as_dict() if a["cold"] else None,
                                "E2": a["e2"].as_dict() if a["e2"] else None, "E1": a["e1"].as_dict(), "hit_ref_us": self.hit_ref_us,
+                               "delayed_readback": self.delayed_readback, "repeat_pass": self.repeat_pass,
                                "read_cache_headroom": a["headroom"],
                                "read_value": {"value": a["read_value"].value, "status": a["read_value"].status, "reasons": list(a["read_value"].reasons)}},
-                      "write": {"time_proof": self.proof["rewrite"].as_dict() if "rewrite" in self.proof else None,
+                      "write": {"time_proof": self.write_time_proof_doc(),
                                 "fresh_proof": self.proof["fresh"].as_dict() if "fresh" in self.proof else None}},
             "cap_basis": cap_basis,
             "fresh_vs_rewrite": self.fvr or {"measured": False, "reason": self.fresh_unmeasured_note()},
@@ -690,15 +747,15 @@ class Calibrator(Runner):
             "latency_knee": {d: latency_knee(self.curve, d) for d in ("read", "write")},
             "windows": {"write_seq1m_bps": windows},
             "plateau_bps": {f"{d}/rand4k": self.obs[d].steady * 4096 for d in ("read", "write") if d in self.obs},
+            "capability_history_rotated": self.capability_history_rotated,
             "stages": dict(self.stages),
         }
-        rate_status = "pass"
+        seq_bs = plan.VQ_SEQ_BS if self.vq else (shape.QUICK_SIZES[-1] if self.profile == "quick" else shape.SIZES[-1])
+        p19 = plausibility.pla_19(self.cell_bps("read", "seq", seq_bs), self.cell_bps("write", "seq", seq_bs), cache_state=state.state)
+        self.checks.append(p19)
+        rate_status = p19.status
         if self.vq:
             wl = a["writes"][-1]
-            p19 = plausibility.pla_19(self.cell_bps("read", "seq", plan.VQ_SEQ_BS), self.cell_bps("write", "seq", plan.VQ_SEQ_BS),
-                                      cache_state=state.state)
-            self.checks.append(p19)
-            rate_status = p19.status
             cal["coarse_model"] = self.coarse_model()
             # a burst that ends inside the 30 s series shows; one that outlives it cannot be seen (and no write value is proven either way)
             cal["veryquick"] = {"series_s": plan.VQ_SERIES_S, "write_burst_seen": wl["state"] != "unsteady" and bool(wl["knee_s"]) and wl["burst_units"] > 0,
@@ -709,7 +766,9 @@ class Calibrator(Runner):
         cal["iocost_keys"] = {k: (v["value"] if v["status"] != "absent" else None) for k, v in props["iocost_model"].items()}
         limits = self.final_limits(history)
         run_checks = [c.as_dict() for c in self.checks]
-        quality = {"cache_proof": self.cache_proof(), "limits": limits, "checks": run_checks,
+        cold_bps = a["cold"].r_cold * 4096 if a["cold"] else None
+        cache_state_hint = cache.read_cache_hints(self.delayed_readback, self.repeat_pass, cold_bps)
+        quality = {"cache_proof": self.cache_proof(), "cache_state": cache_state_hint, "limits": limits, "checks": run_checks,
                    "plausibility": plausibility.verdict(state.state, vq=self.vq, rate_status=rate_status)}
         tgt = dict(proposals.DEFAULT_TARGETS)
         targets = {**self.cfg.targets, "source": "default" if self.cfg.targets == tgt else "operator"}
@@ -763,6 +822,7 @@ class Calibrator(Runner):
             return Outcome(status, code, message, doc, doc)
         digest = ceilings.identity_digest(self.identity)
         self.history_rotated = ceilings.rotate_foreign(self.host, p["ceilings"], digest, ceilings.iso(self.host.now()))
+        self.capability_history_rotated = capability.rotate_foreign(self.host, p["capability"], digest, ceilings.iso(self.host.now()))
         calibration, result = self.assemble(report)
         res.write_json(self.host, p["calibration"], calibration)
         res.write_json(self.host, p["result"], result)
@@ -776,6 +836,8 @@ class Calibrator(Runner):
             if moved:
                 for d in ("read", "write"):
                     ceilings.append(self.host, p["ceilings"], plausibility.shift_observation(ts, d, self.refs[self.ref_tag][d], kind), digest)
+        cap_row = capability.run_observation(calibration["calibration"], self.identity, self.profile, kind, calibration["run"]["finished"])
+        capability.append(self.host, p["capability"], cap_row, digest)
         return Outcome(status, code, message, result, calibration)
 
     # -- the run ---------------------------------------------------------------------------------------------
@@ -786,6 +848,7 @@ class Calibrator(Runner):
         alloc = self.make_plan()
         self.stage("fill", lambda: self.fill(alloc), required=True)
         self.stage("E-cold", self.e_cold, min_s=alloc.seconds("E-cold"))
+        self.cache_evidence_stage(alloc)
         self.stage("series", self.series_vq, required=True)
         self.stage("S6", self.s6_vq, required=True)
         for stage in ("ladder", "S7"):
@@ -818,6 +881,7 @@ class Calibrator(Runner):
         self.stage("fill", lambda: self.fill(alloc), required=True)
         if not self.quick:
             self.stage("E-cold", self.e_cold, min_s=alloc.seconds("E-cold"))
+        self.cache_evidence_stage(alloc)
         self.stage("ladder", self.run_ladder, required=True)
         self.mark("reference", "ok")
         if not self.quick:
