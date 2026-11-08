@@ -186,6 +186,23 @@ def test_an_existing_first_release_prose_file_gets_both_canonical_structure_part
     )
 
 
+def test_an_existing_first_release_marker_gets_the_unreleased_heading_above_it(
+    tmp_path,
+):
+    _first_release_repo(
+        tmp_path,
+        "# Changelog\n\n<!-- cmru: release history -->\n",
+    )
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert (
+        "# Changelog\n\n## [Unreleased]\n\n<!-- cmru: release history -->\n\n## [0.1.0]"
+        in history
+    )
+
+
 def test_a_duplicate_history_marker_still_refuses_first_release_generation(tmp_path):
     _first_release_repo(
         tmp_path,
@@ -210,6 +227,21 @@ def test_a_duplicate_or_noncanonical_unreleased_heading_still_refuses(tmp_path):
     before = path.read_bytes()
 
     with pytest.raises(RefusedBeforeChange, match="exact `## \\[Unreleased\\]` heading"):
+        generate_release_changelog(tmp_path, _project())
+
+    assert path.read_bytes() == before
+
+
+def test_an_unreleased_heading_below_the_marker_still_refuses(tmp_path):
+    _first_release_repo(
+        tmp_path,
+        "# Changelog\n\n<!-- cmru: release history -->\n\n"
+        "## [Unreleased]\n\n- Late note.\n",
+    )
+    path = tmp_path / "demo" / "CHANGES.md"
+    before = path.read_bytes()
+
+    with pytest.raises(RefusedBeforeChange, match="canonical heading must be above the marker"):
         generate_release_changelog(tmp_path, _project())
 
     assert path.read_bytes() == before

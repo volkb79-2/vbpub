@@ -228,6 +228,14 @@ def test_ki68_a_section_without_a_cursor_or_with_an_unlistable_range_yields_no_e
     ) == []
 
 
+def test_a_historical_merge_hash_that_cannot_be_resolved_is_not_a_merge(tmp_path, monkeypatch):
+    def missing_commit(*_args, **_kwargs):
+        raise RuntimeError("unknown revision")
+
+    monkeypatch.setattr(changelog, "_git", missing_commit)
+    assert changelog._entry_is_merge_commit(tmp_path, "- historical subject (a1b2c3d)") is False
+
+
 def _file_project() -> SimpleNamespace:
     project = _project()
     project.version = SimpleNamespace(strategy="file:VERSION", bump="conventional")

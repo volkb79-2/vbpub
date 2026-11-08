@@ -17,7 +17,10 @@ import pytest
 from cmru import cli, exit_codes, transaction, version
 from cmru.version import ReleasePlanRefused
 
-pytestmark = pytest.mark.real_release_version_plan
+pytestmark = [
+    pytest.mark.real_release_version_plan,
+    pytest.mark.real_release_target_tag_guard,
+]
 
 BASE = "a" * 40
 
@@ -211,6 +214,137 @@ CONFIGS = {
     "demo": SimpleNamespace(name="demo", git_tag=True, version=None),
     "raw": SimpleNamespace(name="raw", git_tag=False, version=None),
 }
+
+
+# --- KI-130: already-tagged release targets ---------------------------------
+
+
+def test_release_target_tag_exists_accepts_a_local_match_without_querying_origin(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(
+        cli,
+        "run_local_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="demo-v1.2.3\n", stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_release_tag_origin_refs",
+        lambda *_args, **_kwargs: pytest.fail("origin must not be queried after a local match"),
+    )
+
+    assert cli._release_target_tag_exists(tmp_path, "demo-v1.2.3", git_auth=None) is True
+
+
+@pytest.mark.parametrize(
+    ("origin_refs", "expected"),
+    [({}, False), ({"refs/tags/demo-v1.2.3": "a" * 40}, True)],
+)
+def test_release_target_tag_exists_checks_origin_after_a_local_miss(
+    tmp_path, monkeypatch, origin_refs, expected,
+):
+    monkeypatch.setattr(
+        cli,
+        "run_local_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="", stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "_release_tag_origin_refs", lambda *_args, **_kwargs: origin_refs,
+    )
+
+    assert cli._release_target_tag_exists(
+        tmp_path, "demo-v1.2.3", git_auth=None,
+    ) is expected
+
+
+@pytest.mark.parametrize(("stdout", "stderr", "detail"), [
+    ("local tag lookup failed\n", "", "local tag lookup failed"),
+    ("", "", "no diagnostic output"),
+])
+def test_release_target_tag_exists_refuses_a_failed_local_lookup(
+    tmp_path, monkeypatch, stdout, stderr, detail,
+):
+    monkeypatch.setattr(
+        cli,
+        "run_local_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, stdout=stdout, stderr=stderr,
+        ),
+    )
+
+    with pytest.raises(ReleasePlanRefused, match=f"cannot inspect local release tags.*{detail}"):
+        cli._release_target_tag_exists(tmp_path, "demo-v1.2.3", git_auth=None)
+
+
+def test_release_target_tag_exists_refuses_a_failed_origin_lookup(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "run_local_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="", stderr="",
+        ),
+    )
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("origin unavailable")
+
+    monkeypatch.setattr(cli, "_release_tag_origin_refs", unavailable)
+
+    with pytest.raises(
+        ReleasePlanRefused,
+        match="cannot verify whether release tag demo-v1.2.3 already exists on origin: "
+        "origin unavailable",
+    ):
+        cli._release_target_tag_exists(tmp_path, "demo-v1.2.3", git_auth=None)
+
+
+def test_refuse_existing_release_targets_skips_non_tag_and_unplanned_projects(
+    tmp_path, monkeypatch,
+):
+    from cmru import changelog
+
+    configs = {
+        "raw": SimpleNamespace(
+            name="raw", git_tag=False, version=None, known_project_names=(),
+        ),
+        "demo": SimpleNamespace(
+            name="demo", git_tag=True, version=None, prefix="demo-v",
+            known_project_names=(),
+        ),
+    }
+    monkeypatch.setattr(
+        changelog, "_project_release_plan", lambda *_args, **_kwargs: (None, None),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_release_target_tag_exists",
+        lambda *_args, **_kwargs: pytest.fail("an unplanned project has no target tag"),
+    )
+
+    cli._refuse_existing_release_targets(
+        tmp_path, configs, ["raw", "demo"], None,
+        minor=False, major=False, set_version=None, git_auth=None,
+    )
+
+
+def test_refuse_existing_release_targets_refuses_a_recorded_tagged_plan(
+    tmp_path, monkeypatch,
+):
+    configs = {"demo": SimpleNamespace(name="demo", git_tag=True, version=None)}
+    monkeypatch.setattr(cli, "_release_target_tag_exists", lambda *_args, **_kwargs: True)
+
+    with pytest.raises(
+        ReleasePlanRefused,
+        match="demo-v1.2.3 already exists.*Bump the project's release coordinate",
+    ):
+        cli._refuse_existing_release_targets(
+            tmp_path, configs, ["demo"], {"demo": "1.2.3"},
+            minor=False, major=False, set_version=None, git_auth=None,
+        )
 
 
 @pytest.fixture
