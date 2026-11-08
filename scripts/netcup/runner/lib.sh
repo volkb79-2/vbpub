@@ -9,7 +9,7 @@ if [[ ! -f $runner_env ]]; then
 fi
 # shellcheck disable=SC1090
 source "$runner_env"
-for _v in RUNNER_FQDN RUNNER_SHORT RUNNER_SERVER_ID RUNNER_USER RUNNER_UID RUNNER_HOME COW_DEVICE COW_PARENT_DISK \
+for _v in RUNNER_FQDN RUNNER_SHORT RUNNER_SERVER_ID RUNNER_USER RUNNER_UID RUNNER_HOME COW_PARENT_DISK \
     COW_MOUNT COW_ROOT GATES_SLICE; do
   [[ -n ${!_v:-} ]] || { echo "runner env: $_v is not set in $runner_env" >&2; exit 2; }
 done

@@ -1,17 +1,18 @@
-"""Disk layout policy: sizing rules and refusals, as pure functions.
+"""Disk layout policy: the explicit `partitioning` plan, as pure functions.
 
-Layout contract (README "Disk layout policy"):
+Layout contract (README "Disk layout", docs/DESIGN-data-area-v2.md):
 
-    ESP | /boot | root (ext4) | [unallocated: cow area + reserve] | swap (END)
+    [pre-root partitions] | root | DATA PARTITION(S) or one LVM PV | [reserve] | raw iobench | swap (END)
 
 * Swap is always the LAST thing on the disk. Whatever sits before it (root,
-  later a Btrfs cow partition, spare space) can then be grown or added to
-  without moving or deleting swap. The r1002/v1001 layout (root 40G, swap in
-  the middle, cow after it) made growth of root and cow impossible.
-* Root is sized generously. A root below `min_root_gib(disk)` is refused.
-* Space between root and swap stays unallocated; the operator tooling
-  (`scripts/netcup/runner/provision-runner.sh`) carves the cow partition from
-  it, sized by `recommended_layout`, and leaves the rest as reserve.
+  the data area, a reserve) can then be grown or added to without moving swap.
+* Partition numbers after root ascend with DISK POSITION: root, then the data
+  partitions in config order, then the swaps. (Pre-root partitions keep the
+  numbers they have; cloud images number root 1 with 14/15 before it.)
+* The layout depends ONLY on the config (`partitioning` plus `swap_*`). There
+  is no rule-based sizing and no hidden reserve: the plan accounts for the whole
+  disk except GPT backup metadata and alignment slack before it, or the
+  installer refuses it.
 
 Everything here is arithmetic on integers (GiB or 512-byte sectors); nothing
 touches a device.
@@ -25,90 +26,18 @@ import re
 GIB = 1024 ** 3
 SECTOR = 512
 SECTORS_PER_GIB = GIB // SECTOR
+ALIGN = 2048  # 1 MiB in sectors
+MIB_SECTORS = 2048
 
-# Root floor: 20% of the disk, at least 8 GiB, never demanding more than 100 GiB.
-MIN_ROOT_FLOOR_GIB = 8
-MIN_ROOT_CEIL_GIB = 100
-MIN_ROOT_FRACTION_PERCENT = 20
-
-# dev-host recommendation: root = 5/16 of the disk (31.25%), cow = 1/3.
-ROOT_RECOMMENDED_NUM = 5
-ROOT_RECOMMENDED_DEN = 16
-ROOT_RECOMMENDED_MIN_GIB = 24
-ROOT_RECOMMENDED_MAX_GIB = 200
-COW_FRACTION_DEN = 3
-ROUND_GIB = 8
-
-# A swap partition may end at most this far before the disk end: the planner
-# reserves a 1 MiB end buffer after rounding to 1 MiB alignment.
+# Maximum accepted slack after the final partition. The planner ends at the
+# 1 MiB-aligned boundary before GPT's 34-sector backup metadata, leaving 34 to
+# 2081 sectors depending on the disk size's alignment remainder.
 SWAP_END_SLACK_SECTORS = 4096
-
-DISK_LAYOUTS = ("full-root", "dev-host")
+GPT_LAST_USABLE_OFFSET = 34
 
 
 class LayoutPolicyError(ValueError):
-    """A layout violates the policy (swap not last, root too small)."""
-
-
-def _round_down(value: int, step: int) -> int:
-    return (value // step) * step
-
-
-def min_root_gib(disk_gib: float) -> int:
-    """Smallest root the installer accepts on a disk of `disk_gib` GiB."""
-    wanted = -(-int(disk_gib * MIN_ROOT_FRACTION_PERCENT) // 100)
-    return max(MIN_ROOT_FLOOR_GIB, min(MIN_ROOT_CEIL_GIB, wanted))
-
-
-def recommended_root_gib(disk_gib: float) -> int:
-    """Root size of the `dev-host` layout: 5/16 of the disk, 8 GiB steps, 24..200."""
-    raw = int(disk_gib * ROOT_RECOMMENDED_NUM // ROOT_RECOMMENDED_DEN)
-    return max(ROOT_RECOMMENDED_MIN_GIB, min(ROOT_RECOMMENDED_MAX_GIB, _round_down(raw, ROUND_GIB)))
-
-
-@dataclass(frozen=True)
-class LayoutRecommendation:
-    disk_gib: float
-    root_gib: int
-    cow_gib: int
-    swap_gib: int
-    boot_gib: float
-    reserve_gib: float
-
-
-def recommended_layout(disk_gib: float, swap_gib: int, boot_gib: float = 1.25) -> LayoutRecommendation:
-    """Rule-based sizes for a disposable dev/test host.
-
-    root: 5/16 of the disk (160 GiB on 512): docker data (images, layers, build
-    cache), runner checkouts and logs fit with at least 3x headroom over the
-    measured 27 GB docker footprint. cow: 1/3 of the disk (168 GiB on 512,
-    8 GiB steps). The remainder (~166 GiB on 512) is unallocated reserve that
-    stays directly behind root (cow sits at the end of the gap, before swap):
-    root can be extended into it; cow is re-created or extended by a device.
-    Raises LayoutPolicyError when the pieces do not fit.
-    """
-    root = recommended_root_gib(disk_gib)
-    cow = _round_down(int(disk_gib // COW_FRACTION_DEN), ROUND_GIB)
-    reserve = disk_gib - boot_gib - root - cow - swap_gib
-    if root < min_root_gib(disk_gib):
-        raise LayoutPolicyError(f"recommended root {root} GiB is below the minimum {min_root_gib(disk_gib)} GiB")
-    if reserve < 0:
-        raise LayoutPolicyError(
-            f"disk of {disk_gib:g} GiB cannot hold root {root} + cow {cow} + swap {swap_gib} GiB"
-        )
-    return LayoutRecommendation(disk_gib, root, cow, swap_gib, boot_gib, reserve)
-
-
-def validate_root_size(root_sectors: int, disk_sectors: int) -> None:
-    """Refuse a planned root below the minimum for this disk."""
-    root_gib = root_sectors / SECTORS_PER_GIB
-    minimum = min_root_gib(disk_sectors / SECTORS_PER_GIB)
-    if root_gib + 1e-9 < minimum:
-        raise LayoutPolicyError(
-            f"planned root is {root_gib:.2f} GiB, below the minimum of {minimum} GiB for a "
-            f"{disk_sectors / SECTORS_PER_GIB:.0f} GiB disk; docker data, checkouts and growth "
-            "do not fit (raise root_max_size_gb or use disk_layout=dev-host)"
-        )
+    """A layout violates the policy (swap not last, plan does not fit, bad schema)."""
 
 
 def validate_swap_last(
@@ -139,94 +68,238 @@ def validate_swap_last(
         )
 
 
+def gpt_safe_end(disk_sectors: int) -> int:
+    """Aligned exclusive end for planned partitions, before backup-GPT metadata."""
+    if disk_sectors <= GPT_LAST_USABLE_OFFSET:
+        raise LayoutPolicyError(f"disk has no usable GPT sectors ({disk_sectors} total sectors)")
+    return (disk_sectors - GPT_LAST_USABLE_OFFSET) // ALIGN * ALIGN
+
+
+def pool_end(disk_sectors: int, swap_extents: list[tuple[int, int]] | tuple[tuple[int, int], ...] = ()) -> int:
+    """One pool boundary for the data planner and swap planner.
+
+    A managed swap plan ends at the first swap start. With swap off (or no
+    tail swap) the root/data pool ends at the aligned last usable GPT sector.
+    """
+    return min((start for start, _size in swap_extents), default=gpt_safe_end(disk_sectors))
+
+
 # --------------------------------------------------------------------------
-# Data area: the flexible middle partition (README "Data area").
+# Schema
 #
-#     ESP | /boot | root | [reserve] | DATA AREA | swap (END)
-#
-# `none`      nothing is created; the space behind root stays unallocated and
-#             `scripts/netcup/runner/cow-carve.sh` may carve a cow partition
-#             after install (legacy behaviour).
-# `partition` one GPT partition with one filesystem (btrfs/ext4/xfs).
-# `lvm`       one GPT partition used as the only PV of one VG, with LVs
-#             {name, size_gb, fs, mount, label}; VG free space is left for
-#             later lvcreate/lvextend (zfs as a managed filesystem is NOT in
-#             scope: an LV meant for zfs is left unformatted with fs "none").
-# The data area is always placed directly in front of swap, the reserve sits
-# between root and the data area, so root can still be extended into it.
+#   "partitioning": {
+#     "root": "*" | "keep" | 160 | "40%",     default "*"
+#     "reserve_gb": 0 | 25 | "*",              default 0
+#     "data": {"kind": "partitions"|"lvm", "vg", "pv_size", "vg_free_gib", "volumes": [...]}
+#   }
 # --------------------------------------------------------------------------
 
-DATA_AREA_MODES = ("none", "partition", "lvm")
+DATA_KINDS = ("partitions", "lvm")
 DATA_FILESYSTEMS = ("btrfs", "ext4", "xfs")
+PART_FILESYSTEMS = DATA_FILESYSTEMS + ("none",)
 LV_FILESYSTEMS = DATA_FILESYSTEMS + ("none",)
-DATA_PARTITION_DEFAULTS = {
-    "fs": "btrfs",
-    "size_gb": None,
-    "size_fraction": "1/3",
-    "mount": "/srv/cow",
-    "label": "MDT_COW",
-}
-DATA_PARTITION_KEYS = frozenset(DATA_PARTITION_DEFAULTS)
-DATA_LVM_KEYS = frozenset({"vg", "pv_size_gb", "pv_size_fraction", "pv_label", "lvs"})
-DATA_LV_KEYS = frozenset({"name", "size_gb", "fs", "mount", "label"})
 LVM_PV_PARTLABEL = "MDT_LVM_PV"
 LINUX_FS_TYPE_GUID = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
 LINUX_LVM_TYPE_GUID = "E6D6D379-F507-44C2-A23C-238F2A3DF928"
+ZFS_TYPE_GUID = "6A898CC3-1DD2-11B2-99A6-080020736631"
 COW_LABEL = "MDT_COW"
-# Capacity LVM keeps for its own metadata and extent alignment.
-LVM_METADATA_GIB = 1
-FRACTION_RE = re.compile(r"([1-9][0-9]?)/([1-9][0-9]?)")
+IOBENCH_PARTLABEL = "iobench-raw"
+DEFAULT_IOBENCH_RAW_GB = 8
+LVM_EXTENT_MIB = 4
 LABEL_RE = re.compile(r"[A-Za-z0-9_.-]{1,12}")  # xfs limits labels to 12 characters
 LV_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+-]{0,30}")
-_RESERVED_MOUNT_PREFIXES = (
-    "/boot", "/etc", "/usr", "/var/lib/dpkg", "/proc", "/sys", "/dev", "/run", "/bin", "/sbin", "/lib",
+PERCENT_RE = re.compile(r"(0|[1-9][0-9]{0,2})(?:\.([0-9]{1,2}))?%")
+RESERVED_LABELS = frozenset({"esp", "efi", "boot", "root", "swap", LVM_PV_PARTLABEL, IOBENCH_PARTLABEL})
+_RESERVED_MOUNT_TREES = (
+    "/boot", "/etc", "/usr", "/root", "/tmp", "/proc", "/sys", "/dev", "/run", "/bin", "/sbin", "/lib",
+    "/lib64", "/lib32", "/libx32",
+    "/var/lib/dpkg", "/var/lib/apt", "/var/lib/systemd", "/var/lib/cloud", "/var/cache/apt", "/var/log",
     # runner tree-cache paths (mdt-cockpit): a data area must never shadow them
     "/srv/tree-cache", "/srv/tree-upper",
 )
-DATA_ALIGN_SECTORS = 2048
+# A separate data filesystem is a supported home for generated journald data.
+# Keep the exception limited to /var/log/journal; other /var/log state remains protected.
+_MOUNT_SUBTREE_EXCEPTIONS = {"/var/log": ("/var/log/journal",)}
+# The installer configures the data filesystem in stage two, after stage one
+# installs and starts Docker. It neither stops those services nor seeds their
+# live stores, so mounts intersecting these paths must be rejected.
+_UNSEEDED_RUNTIME_MOUNT_TREES = (
+    ("/var/lib/docker", "Docker"),
+    ("/var/lib/containerd", "containerd"),
+)
+# These paths themselves contain or anchor OS state. Child data mounts are
+# allowed unless they intersect one of the protected trees above.
+_RESERVED_MOUNT_POINTS = ("/var", "/var/lib", "/srv", "/home")
+PREPOPULATED_SYSTEM_MOUNTS: frozenset[str] = frozenset()
+MAX_GIB = 10240
+GPT_MAX_PARTITIONS = 128
+# Minimum sizes (sectors) per entry type; messages name entry, size and minimum.
+MIN_SECTORS = {"btrfs": 512 * MIB_SECTORS, "xfs": 512 * MIB_SECTORS, "ext4": 64 * MIB_SECTORS,
+               "none": 64 * MIB_SECTORS, "pv": 2 * SECTORS_PER_GIB}
+MIN_LV_EXTENTS = 16  # 64 MiB
+PARTITIONING_KEYS = frozenset({"root", "reserve_gb", "data", "iobench_raw_gb"})
+DATA_KEYS = {
+    "partitions": frozenset({"kind", "volumes"}),
+    "lvm": frozenset({"kind", "vg", "pv_size", "vg_free_gib", "volumes"}),
+}
+PARTITION_VOLUME_KEYS = frozenset({"size", "fs", "mount", "label", "type", "subvol"})
+LV_VOLUME_KEYS = frozenset({"name", "size", "fs", "mount", "label", "subvol"})
+REMOVED_KEYS = (
+    "disk_layout", "root_max_size_gb", "data_area", "data_partition", "data_lvm", "root_resize_policy",
+)
+DOC = "docs/DESIGN-data-area-v2.md"
 
 
 @dataclass(frozen=True)
-class DataLV:
-    name: str
-    size_gb: int
+class Size:
+    """One size request. kind: gib | percent | star | keep.
+
+    value: GiB for gib, hundredths of a percent for percent (4000 == "40%").
+    """
+
+    kind: str
+    value: int = 0
+
+    @property
+    def is_star(self) -> bool:
+        return self.kind == "star"
+
+    def describe(self) -> str:
+        if self.kind == "gib":
+            return f"{self.value} GiB"
+        if self.kind == "percent":
+            return f"{self.value / 100:g}%"
+        return "*" if self.kind == "star" else "keep"
+
+
+STAR = Size("star")
+KEEP = Size("keep")
+
+
+def parse_size(raw: object, what: str, *, allow_keep: bool = False) -> Size:
+    """GiB integer (or digit string), 'N%' (0 < N <= 100, 2 decimals) or '*'; root also 'keep'."""
+    if raw == "*":
+        return STAR
+    if raw == "keep" and allow_keep:
+        return KEEP
+    expected = (
+        f"{what}: size must be an integer GiB value, a percent like \"40%\" (0-100, 2 decimals) or \"*\""
+        + (" or \"keep\"" if allow_keep else "")
+    )
+    if isinstance(raw, bool):
+        raise LayoutPolicyError(expected)
+    if isinstance(raw, int):
+        if not 1 <= raw <= MAX_GIB:
+            raise LayoutPolicyError(f"{what}: size must be an integer GiB value from 1 to {MAX_GIB}")
+        return Size("gib", raw)
+    if isinstance(raw, str):
+        if raw.isdigit():
+            return parse_size(int(raw), what)
+        match = PERCENT_RE.fullmatch(raw)
+        if match:
+            hundredths = int(match.group(1)) * 100 + int((match.group(2) or "0").ljust(2, "0"))
+            if 0 < hundredths <= 10000:
+                return Size("percent", hundredths)
+    raise LayoutPolicyError(expected)
+
+
+@dataclass(frozen=True)
+class DataVolume:
+    """A data partition (partitions kind) or a logical volume (lvm kind)."""
+
+    name: str  # LV name; "" for a partition
+    size: Size
     fs: str
     mount: str | None
     label: str | None
+    ptype: str = "linux"  # raw partitions only: linux | zfs (GPT type GUID)
+
+    @property
+    def type_guid(self) -> str:
+        return ZFS_TYPE_GUID if self.ptype == "zfs" else LINUX_FS_TYPE_GUID
+
+
+@dataclass(frozen=True)
+class PoolEntry:
+    """One data partition as the pool planner sees it."""
+
+    name: str  # for messages
+    partlabel: str
+    type_guid: str
+    size: Size
+    min_sectors: int
 
 
 @dataclass(frozen=True)
 class DataArea:
-    mode: str
-    # partition mode
-    fs: str = ""
-    mount: str = ""
-    label: str = ""
-    # lvm mode
+    kind: str  # none | partitions | lvm
     vg: str = ""
-    lvs: tuple[DataLV, ...] = ()
-    # both: size of the partition (the PV in lvm mode)
-    size_gb: int | None = None
-    size_fraction: tuple[int, int] | None = None
+    volumes: tuple[DataVolume, ...] = ()
+    pv_size: Size = STAR  # lvm: size of the PV partition
+    vg_free_gib: int = 0
 
     @property
-    def partlabel(self) -> str:
-        return LVM_PV_PARTLABEL if self.mode == "lvm" else self.label
+    def mode(self) -> str:  # alias used by the installer's "is there a data area" checks
+        return self.kind
 
     @property
-    def type_guid(self) -> str:
-        return LINUX_LVM_TYPE_GUID if self.mode == "lvm" else LINUX_FS_TYPE_GUID
+    def partition_count(self) -> int:
+        if self.kind == "partitions":
+            return len(self.volumes)
+        return 1 if self.kind == "lvm" else 0
+
+    def entries(self) -> list[PoolEntry]:
+        """The data partitions in disk order."""
+        if self.kind == "partitions":
+            return [
+                PoolEntry(f"volume[{i}] ({v.label})", v.label or "", v.type_guid, v.size, MIN_SECTORS[v.fs])
+                for i, v in enumerate(self.volumes)
+            ]
+        if self.kind == "lvm":
+            return [PoolEntry("PV", LVM_PV_PARTLABEL, LINUX_LVM_TYPE_GUID, self.pv_size, MIN_SECTORS["pv"])]
+        return []
 
     def mounts(self) -> list[str]:
-        if self.mode == "partition":
-            return [self.mount]
-        return [lv.mount for lv in self.lvs if lv.mount]
+        return [v.mount for v in self.volumes if v.mount]
+
+    @property
+    def filesystems(self) -> set[str]:
+        return {v.fs for v in self.volumes}
 
 
-def _int_gib(value: object, what: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 10240:
-        raise LayoutPolicyError(f"{what} must be an integer GiB value from 1 to 10240")
-    return value
+@dataclass(frozen=True)
+class DiskSpec:
+    """The normalized plan: root, reserve and data area."""
+
+    root: Size
+    reserve: Size  # gib (0 = none) or star
+    data: DataArea
+    iobench_raw_gb: int | None = DEFAULT_IOBENCH_RAW_GB
+
+    @property
+    def partition_count(self) -> int:
+        return self.data.partition_count + (1 if self.iobench_raw_gb is not None else 0)
+
+    def entries(self) -> list[PoolEntry]:
+        """All planned GPT partitions between root and swap, in disk order."""
+        entries = self.data.entries()
+        if self.iobench_raw_gb is not None:
+            entries.append(
+                PoolEntry(
+                    "iobench raw", IOBENCH_PARTLABEL, LINUX_FS_TYPE_GUID,
+                    Size("gib", self.iobench_raw_gb), MIN_SECTORS["none"],
+                )
+            )
+        return entries
+
+    @property
+    def root_policy(self) -> str:
+        """The resize behaviour derived from `root`: keep => untouched, anything else => resize."""
+        return "untouched" if self.root.kind == "keep" else "resize"
+
+    @property
+    def root_fixed_or_percent(self) -> bool:
+        return self.root.kind in {"gib", "percent"}
 
 
 def _check_mount(mount: object, what: str) -> str:
@@ -234,121 +307,41 @@ def _check_mount(mount: object, what: str) -> str:
         raise LayoutPolicyError(f"{what} mount must be an absolute path without a trailing slash")
     if not re.fullmatch(r"/[A-Za-z0-9_.@+/-]*", mount) or "//" in mount or "/." in mount + "/":
         raise LayoutPolicyError(f"{what} mount {mount!r} contains unsupported characters or dot segments")
-    if mount == "/" or any(mount == p or mount.startswith(p + "/") for p in _RESERVED_MOUNT_PREFIXES):
-        raise LayoutPolicyError(f"{what} mount {mount!r} collides with the system tree (root, /boot, /etc, /usr, ...)")
+    if mount == "/":
+        raise LayoutPolicyError(f"{what} mount {mount!r} would hide protected system path '/'")
+    if mount in PREPOPULATED_SYSTEM_MOUNTS:
+        return mount
+    for protected in _RESERVED_MOUNT_TREES:
+        if any(
+            mount == allowed or mount.startswith(allowed + "/")
+            for allowed in _MOUNT_SUBTREE_EXCEPTIONS.get(protected, ())
+        ):
+            continue
+        if mount == protected or mount.startswith(protected + "/") or protected.startswith(mount + "/"):
+            raise LayoutPolicyError(
+                f"{what} mount {mount!r} would hide protected system path {protected!r}"
+            )
+    for path, service in _UNSEEDED_RUNTIME_MOUNT_TREES:
+        if mount == path or mount.startswith(path + "/") or path.startswith(mount + "/"):
+            raise LayoutPolicyError(
+                f"{what} mount {mount!r} intersects live {service} state at {path!r}; data-area mounts are "
+                "configured in stage two, after stage one installs or starts these services, and the installer "
+                "does not stop or seed their state. Choose a separate mount point."
+            )
+    for protected in _RESERVED_MOUNT_POINTS:
+        if mount == protected or protected.startswith(mount + "/"):
+            raise LayoutPolicyError(
+                f"{what} mount {mount!r} would hide protected system path {protected!r}"
+            )
     return mount
 
 
 def _check_label(label: object, what: str) -> str:
     if not isinstance(label, str) or not LABEL_RE.fullmatch(label):
         raise LayoutPolicyError(f"{what} label must be 1-12 characters of [A-Za-z0-9_.-]")
+    if label.lower() in RESERVED_LABELS or label.startswith("vbpub-swap"):
+        raise LayoutPolicyError(f"{what} label {label!r} collides with a system partition/swap label")
     return label
-
-
-def _size_fields(raw: dict, what: str) -> tuple[int | None, tuple[int, int] | None]:
-    size = raw.get("size_gb" if what == "data_partition" else "pv_size_gb")
-    fraction = raw.get("size_fraction" if what == "data_partition" else "pv_size_fraction")
-    if size is not None and fraction is not None:
-        raise LayoutPolicyError(f"{what}: give either a size in GiB or a disk fraction, not both")
-    if size is not None:
-        return _int_gib(size, f"{what} size"), None
-    if fraction is None:
-        raise LayoutPolicyError(f"{what}: a size in GiB or a disk fraction such as \"1/3\" is required")
-    match = FRACTION_RE.fullmatch(fraction) if isinstance(fraction, str) else None
-    if not match or int(match.group(1)) >= int(match.group(2)):
-        raise LayoutPolicyError(f"{what}: fraction must look like \"1/3\" (numerator < denominator, below 1)")
-    return None, (int(match.group(1)), int(match.group(2)))
-
-
-def parse_data_area(mode: object, partition: object, lvm: object) -> DataArea:
-    """Validate the three config fields and return the normalized data area.
-
-    Pure and static: everything that needs the disk size (does it fit?) is in
-    `plan_data_area`. Raises LayoutPolicyError on the first problem.
-    """
-    if not isinstance(mode, str) or mode not in DATA_AREA_MODES:
-        raise LayoutPolicyError("data_area must be none, partition or lvm")
-    if partition is not None and not isinstance(partition, dict):
-        raise LayoutPolicyError("data_partition must be an object")
-    if lvm is not None and not isinstance(lvm, dict):
-        raise LayoutPolicyError("data_lvm must be an object")
-    if mode == "none":
-        return DataArea("none")
-    if mode == "partition":
-        raw = {**DATA_PARTITION_DEFAULTS, **(partition or {})}
-        unknown = sorted(set(partition or {}) - DATA_PARTITION_KEYS)
-        if unknown:
-            raise LayoutPolicyError(f"data_partition has unknown key(s): {', '.join(unknown)}")
-        if partition and "size_gb" in partition and "size_fraction" not in partition:
-            raw["size_fraction"] = None  # an explicit size replaces the default fraction
-        if raw["fs"] not in DATA_FILESYSTEMS:
-            raise LayoutPolicyError(f"data_partition fs must be one of {', '.join(DATA_FILESYSTEMS)}")
-        size, fraction = _size_fields(raw, "data_partition")
-        if raw["label"] != COW_LABEL:
-            raise LayoutPolicyError(
-                f"data_partition label must be {COW_LABEL}: the runner's cow detection (cow-carve/provision-runner) "
-                "finds the cow area by that label only"
-            )
-        return DataArea(
-            "partition", fs=raw["fs"], mount=_check_mount(raw["mount"], "data_partition"),
-            label=_check_label(raw["label"], "data_partition"), size_gb=size, size_fraction=fraction,
-        )
-    # lvm
-    if not lvm:
-        raise LayoutPolicyError("data_area=lvm requires data_lvm with vg and lvs")
-    unknown = sorted(set(lvm) - DATA_LVM_KEYS)
-    if unknown:
-        raise LayoutPolicyError(f"data_lvm has unknown key(s): {', '.join(unknown)}")
-    raw = {"pv_size_fraction": "1/3", **lvm}
-    if "pv_size_gb" in lvm and "pv_size_fraction" not in lvm:
-        raw["pv_size_fraction"] = None
-    vg = raw.get("vg")
-    if not isinstance(vg, str) or not LV_NAME_RE.fullmatch(vg) or vg in {".", ".."}:
-        raise LayoutPolicyError("data_lvm vg must be a valid volume group name")
-    size, fraction = _size_fields(raw, "data_lvm")
-    lvs_raw = raw.get("lvs")
-    if not isinstance(lvs_raw, list) or not lvs_raw:
-        raise LayoutPolicyError("data_lvm lvs must be a non-empty list of {name, size_gb, fs, mount, label}")
-    lvs: list[DataLV] = []
-    names: set[str] = set()
-    labels: set[str] = set()
-    mounts: list[str] = []
-    for item in lvs_raw:
-        if not isinstance(item, dict):
-            raise LayoutPolicyError("data_lvm lvs entries must be objects")
-        unknown = sorted(set(item) - DATA_LV_KEYS)
-        if unknown:
-            raise LayoutPolicyError(f"data_lvm lv has unknown key(s): {', '.join(unknown)}")
-        name = item.get("name")
-        if not isinstance(name, str) or not LV_NAME_RE.fullmatch(name) or name in {".", "..", "snapshot", "pvmove"}:
-            raise LayoutPolicyError(f"data_lvm lv name {name!r} is invalid")
-        if name in names:
-            raise LayoutPolicyError(f"data_lvm lv name {name!r} is used twice")
-        names.add(name)
-        fs = item.get("fs", "none")
-        if fs not in LV_FILESYSTEMS:
-            raise LayoutPolicyError(
-                f"data_lvm lv {name}: fs must be one of {', '.join(LV_FILESYSTEMS)} "
-                "(zfs is not managed: leave the LV unformatted with fs \"none\")"
-            )
-        mount = item.get("mount")
-        label = item.get("label")
-        if fs == "none":
-            if mount is not None or label is not None:
-                raise LayoutPolicyError(f"data_lvm lv {name}: an unformatted LV (fs none) takes no mount or label")
-        else:
-            if mount is None:
-                raise LayoutPolicyError(f"data_lvm lv {name}: a formatted LV needs a mount point")
-            _check_mount(mount, f"data_lvm lv {name}")
-            mounts.append(mount)
-            if label is not None:
-                _check_label(label, f"data_lvm lv {name}")
-                if label in labels:
-                    raise LayoutPolicyError(f"data_lvm label {label!r} is used twice")
-                labels.add(label)
-        lvs.append(DataLV(name, _int_gib(item.get("size_gb"), f"data_lvm lv {name} size"), fs, mount, label))
-    _check_mounts_distinct(mounts)
-    return DataArea("lvm", vg=vg, lvs=tuple(lvs), size_gb=size, size_fraction=fraction)
 
 
 def _check_mounts_distinct(mounts: list[str]) -> None:
@@ -360,89 +353,447 @@ def _check_mounts_distinct(mounts: list[str]) -> None:
                 )
 
 
-def data_area_size_gib(area: DataArea, disk_gib: float) -> int:
-    """Partition size in GiB: explicit, or the fraction of the disk in 8 GiB steps (1/3 of 512 -> 168)."""
-    if area.size_gb is not None:
-        return area.size_gb
-    assert area.size_fraction is not None
-    num, den = area.size_fraction
-    return _round_down(int(disk_gib * num // den), ROUND_GIB)
+def _check_fs(fs: object, what: str, allowed: tuple[str, ...]) -> str:
+    if fs == "zfs":
+        raise LayoutPolicyError(
+            f"{what}: fs zfs is not supported yet (the installer has no zfs package/pool path; btrfs is the "
+            f"supported COW filesystem). Use fs \"none\" for an unformatted volume, one of {', '.join(allowed)}"
+        )
+    if not isinstance(fs, str) or fs not in allowed:
+        raise LayoutPolicyError(f"{what}: fs must be one of {', '.join(allowed)}")
+    return fs
 
+
+def _parse_volume(item: object, kind: str, index: int) -> DataVolume:
+    what = f"partitioning.data.volumes[{index}]"
+    if not isinstance(item, dict):
+        raise LayoutPolicyError(f"{what} must be an object")
+    unknown = sorted(set(item) - (PARTITION_VOLUME_KEYS if kind == "partitions" else LV_VOLUME_KEYS))
+    if unknown:
+        raise LayoutPolicyError(f"{what} has unknown key(s): {', '.join(unknown)}")
+    name = ""
+    if kind == "lvm":
+        name = item.get("name")  # type: ignore[assignment]
+        if not isinstance(name, str) or not LV_NAME_RE.fullmatch(name) or name in {".", "..", "snapshot", "pvmove"}:
+            raise LayoutPolicyError(f"{what} lv name {name!r} is invalid")
+        what = f"{what} ({name})"
+    elif "name" in item:
+        raise LayoutPolicyError(f"{what}: name is only allowed for lvm volumes")
+    if "subvol" in item:
+        raise LayoutPolicyError(f"{what}: subvol is not supported yet (the mount is the filesystem top level)")
+    size = parse_size(item.get("size", "*"), what)
+    fs = _check_fs(item.get("fs", "none" if kind == "lvm" else None), what, PART_FILESYSTEMS if kind == "partitions" else LV_FILESYSTEMS)
+    mount, label = item.get("mount"), item.get("label")
+    ptype = item.get("type", "linux")
+    if ptype not in {"linux", "zfs"}:
+        raise LayoutPolicyError(f"{what}: type must be linux or zfs")
+    if ptype == "zfs" and fs != "none":
+        raise LayoutPolicyError(f"{what}: type zfs is only for a raw partition (fs \"none\")")
+    if fs == "none":
+        if mount is not None:
+            raise LayoutPolicyError(f"{what}: an unformatted volume (fs none) takes no mount")
+        if kind == "lvm" and label is not None:
+            raise LayoutPolicyError(f"{what}: an unformatted LV (fs none) takes no label")
+    else:
+        if mount is None:
+            raise LayoutPolicyError(f"{what}: a formatted volume needs a mount point")
+        _check_mount(mount, what)
+    if label is None and kind == "partitions":
+        raise LayoutPolicyError(
+            f"{what}: a data partition needs a label (it is the GPT partition name used to recognise the "
+            "partition on a rerun; use MDT_COW for the runner's cow area)"
+        )
+    if label is not None:
+        _check_label(label, what)
+    return DataVolume(name, size, fs, mount, label, ptype)
+
+
+def _count_stars(named: list[tuple[str, Size]]) -> None:
+    if sum(size.value for _name, size in named if size.kind == "percent") > 10000:
+        raise LayoutPolicyError(
+            "the percentages add up to more than 100% (" + ", ".join(
+                f"{name} {size.describe()}" for name, size in named if size.kind == "percent") + ")"
+        )
+    stars = [name for name, size in named if size.is_star]
+    if len(stars) > 1:
+        raise LayoutPolicyError(
+            f"exactly one \"*\" is allowed per plan, but {' and '.join(stars)} are all \"*\" "
+            "(an omitted size is \"*\"): give all but one an explicit size"
+        )
+
+
+def _validate_static_pool_shape(named: list[tuple[str, Size]], *, allow_empty: bool = False) -> None:
+    """Refuse pool shapes that cannot account for a disk at any disk size."""
+    if not named and allow_empty:
+        return
+    _count_stars(named)
+    kinds = {size.kind for _name, size in named}
+    describe = ", ".join(f"{name} {size.describe()}" for name, size in named)
+    if "gib" in kinds and "percent" in kinds:
+        raise LayoutPolicyError(
+            f"mixing percent and fixed sizes is ambiguous ({describe}); percentages are a share "
+            "of the whole pool: use percentages only or fixed sizes with one growable entry"
+        )
+    if any(size.is_star for _name, size in named):
+        return
+    if kinds == {"percent"}:
+        total = sum(size.value for _name, size in named)
+        if total != 10000:
+            raise LayoutPolicyError(
+                f"without a \"*\" the percentages must add up to 100% ({describe} = {total / 100:g}%)"
+            )
+    elif "gib" in kinds:
+        raise LayoutPolicyError(
+            f"fixed sizes without a growable entry cannot account for the whole disk ({describe}); "
+            "set one size to \"*\" or use percentages that add up to 100%"
+        )
+
+
+def parse_partitioning(raw: object) -> DiskSpec:
+    """Validate the `partitioning` object (static checks; the fit against a disk is plan_pool/plan_lvs)."""
+    if not isinstance(raw, dict):
+        raise LayoutPolicyError("partitioning must be an object")
+    unknown = sorted(set(raw) - PARTITIONING_KEYS)
+    if unknown:
+        raise LayoutPolicyError(f"partitioning has unknown key(s): {', '.join(unknown)}")
+    root = parse_size(raw.get("root", "*"), "partitioning.root", allow_keep=True)
+    raw_iobench = raw.get("iobench_raw_gb", DEFAULT_IOBENCH_RAW_GB)
+    if raw_iobench is False:
+        iobench_raw_gb: int | None = None
+    elif isinstance(raw_iobench, bool) or not isinstance(raw_iobench, int) or not 2 <= raw_iobench <= MAX_GIB:
+        raise LayoutPolicyError(
+            f"partitioning.iobench_raw_gb must be an integer GiB value from 2 to {MAX_GIB} or false to disable"
+        )
+    else:
+        iobench_raw_gb = raw_iobench
+    reserve_raw = raw.get("reserve_gb", 0)
+    if reserve_raw == "*":
+        reserve = STAR
+    elif isinstance(reserve_raw, bool) or not isinstance(reserve_raw, int) or not 0 <= reserve_raw <= MAX_GIB:
+        raise LayoutPolicyError(f"partitioning.reserve_gb must be an integer GiB value from 0 to {MAX_GIB} or \"*\"")
+    else:
+        reserve = Size("gib", reserve_raw)
+    data_raw = raw.get("data")
+    if data_raw is None:
+        if root.kind == "keep" and not reserve.is_star:
+            raise LayoutPolicyError("root keep leaves space unallocated: add a data volume or set reserve_gb to \"*\"")
+        entries = [("root", root)]
+        if reserve.is_star:
+            entries.append(("reserve_gb", reserve))
+        if root.kind == "keep":
+            entries = [("reserve_gb", reserve)] if reserve.is_star else []
+        if reserve.is_star and any(size.kind == "percent" for _name, size in entries):
+            raise LayoutPolicyError(
+                "percent sizes need a known pool: they cannot be combined with reserve_gb \"*\" "
+                "(the reserve is the remainder)"
+            )
+        _validate_static_pool_shape(entries, allow_empty=reserve.is_star)
+        return DiskSpec(root, reserve, DataArea("none"), iobench_raw_gb)
+    if not isinstance(data_raw, dict):
+        raise LayoutPolicyError("partitioning.data must be an object")
+    kind = data_raw.get("kind")
+    if kind not in DATA_KINDS:
+        raise LayoutPolicyError("partitioning.data.kind must be partitions or lvm")
+    unknown = sorted(set(data_raw) - DATA_KEYS[kind])
+    if unknown:
+        raise LayoutPolicyError(f"partitioning.data has unknown key(s): {', '.join(unknown)}")
+    volumes_raw = data_raw.get("volumes")
+    if not isinstance(volumes_raw, list) or not volumes_raw:
+        raise LayoutPolicyError("partitioning.data.volumes must be a non-empty list")
+    volumes = [_parse_volume(item, kind, i) for i, item in enumerate(volumes_raw)]
+    names = [v.name for v in volumes if v.name]
+    if len(names) != len(set(names)):
+        raise LayoutPolicyError("partitioning.data: lv names must be unique")
+    for label in sorted({v.label for v in volumes if v.label}):
+        if sum(1 for v in volumes if v.label == label) > 1:
+            raise LayoutPolicyError(f"label {label} is used twice (labels must be unique across the plan)")
+    _check_mounts_distinct([v.mount for v in volumes if v.mount])  # type: ignore[misc]
+    if kind == "partitions":
+        pool = ([] if root.kind == "keep" else [("root", root)]) + [
+            (f"volume[{i}]", v.size) for i, v in enumerate(volumes)
+        ]
+        if root.kind == "keep" and not volumes and not reserve.is_star:
+            raise LayoutPolicyError("root keep leaves space unallocated: add a data volume or set reserve_gb to \"*\"")
+        if reserve.is_star:
+            pool.append(("reserve_gb", reserve))
+        if reserve.is_star and any(size.kind == "percent" for _name, size in pool):
+            raise LayoutPolicyError(
+                "percent sizes need a known pool: they cannot be combined with reserve_gb \"*\" "
+                "(the reserve is the remainder)"
+            )
+        _validate_static_pool_shape(pool, allow_empty=reserve.is_star)
+        area = DataArea("partitions", volumes=tuple(volumes))
+    else:
+        vg = data_raw.get("vg")
+        if not isinstance(vg, str) or not LV_NAME_RE.fullmatch(vg) or vg in {".", ".."}:
+            raise LayoutPolicyError("partitioning.data.vg must be a valid volume group name")
+        pv = parse_size(data_raw.get("pv_size", "*"), "partitioning.data.pv_size")
+        free = data_raw.get("vg_free_gib", 0)
+        if isinstance(free, bool) or not isinstance(free, int) or not 0 <= free <= MAX_GIB:
+            raise LayoutPolicyError(f"partitioning.data.vg_free_gib must be an integer GiB value from 0 to {MAX_GIB}")
+        pool = ([] if root.kind == "keep" else [("root", root)]) + [("pv_size", pv)]
+        if reserve.is_star:
+            pool.append(("reserve_gb", reserve))
+        if reserve.is_star and any(size.kind == "percent" for _name, size in pool):
+            raise LayoutPolicyError(
+                "percent sizes need a known pool: they cannot be combined with reserve_gb \"*\" "
+                "(the reserve is the remainder)"
+            )
+        _validate_static_pool_shape(pool)
+        _count_stars([(f"volume[{i}]", v.size) for i, v in enumerate(volumes)])
+        area = DataArea("lvm", vg=vg, volumes=tuple(volumes), pv_size=pv, vg_free_gib=free)
+        if sum(v.size.value for v in volumes if v.size.kind == "percent") > 10000:
+            raise LayoutPolicyError("partitioning.data.volumes: the percentages add up to more than 100%")
+    return DiskSpec(root, reserve, area, iobench_raw_gb)
+
+
+def disk_spec(partitioning: object) -> DiskSpec:
+    """The single disk plan; omitted settings resolve to root `*` plus the raw benchmark partition."""
+    return parse_partitioning(partitioning or {})
+
+
+def removed_keys_message(present: list[str]) -> str:
+    return (
+        f"configuration key(s) {', '.join(present)} were removed; the disk layout is now the single "
+        f"`partitioning` object (see {DOC}): root \"*\"|\"keep\"|GiB|\"N%\", reserve_gb, data {{kind, volumes}}"
+    )
+
+
+def validate_prereqs(*, swap_policy: str) -> None:
+    """A plan lays out the whole tail of the disk; it needs swap managed (on) or absent (off)."""
+    if swap_policy not in {"on", "off"}:
+        raise LayoutPolicyError(
+            "partitioning needs swap_policy=on or off: with swap_policy=untouched the installer cannot know where "
+            "the pool ends"
+        )
+
+
+# ---- the pool planner -----------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class DataAreaPlan:
-    start: int  # sectors
-    size: int   # sectors
-    reserve_sectors: int  # unallocated gap between root end and data start
-    lv_free_gib: float | None
+class PoolPlan:
+    root_size: int  # sectors
+    extents: tuple[tuple[int, int], ...]  # (start, size) of each data partition, in disk order
+    reserve_start: int
+    reserve_sectors: int
 
 
-def plan_data_area(
-    area: DataArea,
+def _gib(sectors: int) -> str:
+    return f"{sectors / SECTORS_PER_GIB:.2f} GiB"
+
+
+def _align_up(value: int) -> int:
+    return -(-value // ALIGN) * ALIGN
+
+
+def _align_down(value: int) -> int:
+    return (value // ALIGN) * ALIGN
+
+
+def plan_pool(
+    spec: DiskSpec,
     *,
-    disk_sectors: int,
-    root_end: int,
-    first_swap_start: int,
-) -> DataAreaPlan:
-    """Place the data area directly in front of swap, behind root; refuse what does not fit.
+    root_start: int,
+    pool_end: int,
+    root_current_size: int,
+    min_root_sectors: int = 0,
+) -> PoolPlan:
+    """Lay out root + data partitions contiguously from `root_start` to `pool_end` (first swap start, aligned).
 
-    All numbers are 512-byte sectors. `root_end` is the first sector after the
-    planned root, `first_swap_start` the first swap sector (swap is last).
+    Percent is a share of the pool after subtracting the raw iobench partition
+    and any fixed reserve (with root `keep`: the pool behind the kept root).
+    Every boundary is 1 MiB aligned; the `*` entry (root, data partition, PV,
+    or reserve) absorbs every remainder, so nothing is left over. Raises
+    LayoutPolicyError with the numbers on any problem.
     """
-    if area.mode == "none":
-        raise LayoutPolicyError("no data area to plan")
-    want_gib = data_area_size_gib(area, disk_sectors / SECTORS_PER_GIB)
-    size = want_gib * SECTORS_PER_GIB
-    end = (first_swap_start // DATA_ALIGN_SECTORS) * DATA_ALIGN_SECTORS
-    start = end - size
-    root_end_aligned = -(-root_end // DATA_ALIGN_SECTORS) * DATA_ALIGN_SECTORS
-    if start < root_end_aligned:
+    keep = spec.root.kind == "keep"
+    reserve_fixed = spec.reserve.value * SECTORS_PER_GIB if spec.reserve.kind == "gib" else 0
+    reserve_star = spec.reserve.is_star
+    data = spec.data.entries()
+    raw_sectors = (spec.iobench_raw_gb or 0) * SECTORS_PER_GIB
+    allocation_end = pool_end - raw_sectors
+    # entries in disk order: root first (unless keep, which is a fixed, exact size)
+    names = ["root"] + [e.name for e in data]
+    sizes = [spec.root] + [e.size for e in data]
+    mins = [min_root_sectors] + [e.min_sectors for e in data]
+    cursor0 = root_start
+    if keep:
+        cursor0 = _align_up(root_start + root_current_size)
+    first_pool = 1 if keep else 0
+    end_total = allocation_end - reserve_fixed
+    total = end_total - (cursor0 if keep else root_start)
+    if total <= 0:
         raise LayoutPolicyError(
-            f"the data area of {want_gib} GiB does not fit between root and swap: only "
-            f"{max(0, end - root_end_aligned) / SECTORS_PER_GIB:.2f} GiB are free there "
-            "(reduce the data area, the root cap or swap)"
+            f"no space is left for the plan: swap, raw iobench ({spec.iobench_raw_gb or 0} GiB), and reserve_gb "
+            f"take the disk down to {_gib(max(end_total, 0))} "
+            f"while root starts at {_gib(root_start)}"
         )
-    lv_free = None
-    if area.mode == "lvm":
-        total = sum(lv.size_gb for lv in area.lvs)
-        usable = want_gib - LVM_METADATA_GIB
-        if total > usable:
+    items = [(n, s, m) for n, s, m in zip(names, sizes, mins)][first_pool:]
+    n_star = sum(1 for _n, s, _m in items if s.is_star) + (1 if reserve_star else 0)
+    kinds = {s.kind for _n, s, _m in items}
+    if "gib" in kinds and "percent" in kinds:
+        raise LayoutPolicyError(
+            "mixing percent and fixed sizes is ambiguous: use percentages only or fixed sizes with one growable entry"
+        )
+
+    def fixed(size: Size) -> int | None:
+        if size.kind == "gib":
+            return size.value * SECTORS_PER_GIB
+        if size.kind == "percent":
+            return _align_down(total * size.value // 10000)
+        return None
+
+    requested = [fixed(s) for _n, s, _m in items]
+    describe = ", ".join(f"{n} {s.describe()}" for n, s, _m in items)
+    if not items and not reserve_star:
+        raise LayoutPolicyError(
+            f"root keep leaves {_gib(max(total, 0))} unallocated: add a data volume or set reserve_gb to \"*\""
+        )
+    if n_star == 0:
+        if "gib" in kinds and "percent" in kinds:
             raise LayoutPolicyError(
-                f"LV sizes ({total} GiB) exceed the physical volume ({want_gib} GiB less "
-                f"{LVM_METADATA_GIB} GiB LVM metadata); the VG must keep free space"
+                f"mixing percent and fixed sizes without a \"*\" is ambiguous ({describe}); percentages are a share "
+                f"of the whole pool ({_gib(total)}): give one entry \"*\" or use percentages only"
             )
-        if total == usable:
+        if kinds == {"percent"}:
+            if sum(s.value for _n, s, _m in items) != 10000:
+                raise LayoutPolicyError(
+                    f"without a \"*\" the percentages must add up to 100% ({describe} = "
+                    f"{sum(s.value for _n, s, _m in items) / 100:g}%)"
+                )
+        else:
+            used = sum(r or 0 for r in requested)
+            if used > total:
+                raise LayoutPolicyError(
+                    f"the plan over-allocates the pool by {_gib(used - total)}: {describe} do not fit into "
+                    f"{_gib(total)} (swap and reserve already taken)"
+                )
+            last = items[-1][0]
             raise LayoutPolicyError(
-                f"LV sizes ({total} GiB) leave no free VG space in a {want_gib} GiB physical volume; "
-                "keep some free space for later lvextend/snapshots"
+                f"{describe} leave {_gib(total - used)} of the disk unallocated: set {last} to \"*\" (it becomes "
+                f"{_gib(total - used + (requested[-1] or 0))}), or set reserve_gb to \"*\" to keep it free on purpose"
             )
-        lv_free = float(usable - total)
-    return DataAreaPlan(start, size, start - root_end_aligned, lv_free)
+    # lay out sequentially
+    later_fixed = [sum(r or 0 for r in requested[i + 1:]) for i in range(len(items))]
+    layout: list[tuple[int, int]] = []
+    cursor = cursor0 if keep else root_start
+    for i, (name, size, _m) in enumerate(items):
+        if size.is_star:
+            got = end_total - cursor - later_fixed[i]
+            length = got
+        else:
+            length = requested[i] or 0
+            if i == 0 and not keep:  # an unaligned root start: align the END, not the length
+                length = _align_down(cursor + length) - cursor
+        layout.append((cursor, length))
+        cursor += length
+    leftover = end_total - cursor
+    if kinds == {"percent"} and not reserve_star and leftover > 0:
+        start, length = layout[-1]
+        layout[-1] = (start, length + leftover)  # rounding remainder goes to the last percent entry
+        leftover = 0
+    reserve_sectors = reserve_fixed
+    if reserve_star:
+        if leftover < 0:
+            raise LayoutPolicyError(
+                f"the plan over-allocates the pool by {_gib(-leftover)}: {describe} do not fit into "
+                f"{_gib(total)} (swap and the raw iobench partition already take their space)"
+            )
+        reserve_sectors = leftover + reserve_fixed
+        leftover = 0
+    if leftover < 0 or any(length <= 0 for _s, length in layout):
+        raise LayoutPolicyError(
+            f"the plan over-allocates the pool by {_gib(max(-leftover, sum(r or 0 for r in requested) - total))}: "
+            f"{describe} do not fit into {_gib(total)} (swap and reserve already taken)"
+        )
+    if leftover:
+        raise LayoutPolicyError(f"internal error: {_gib(leftover)} unallocated after planning")  # pragma: no cover
+    for (name, _s, minimum), (_start, length) in zip(items, layout):
+        if length < minimum:
+            raise LayoutPolicyError(
+                f"{name} is {length // MIB_SECTORS} MiB, below the minimum of "
+                f"{minimum // MIB_SECTORS} MiB (preserve_root_size_gb)"
+            )
+    reserve_start = allocation_end - reserve_sectors
+    raw_extent = (pool_end - raw_sectors, raw_sectors) if raw_sectors else None
+    if keep:
+        extents = [*layout]
+        if raw_extent:
+            extents.append(raw_extent)
+        return PoolPlan(root_current_size, tuple(extents), reserve_start, reserve_sectors)
+    extents = [*layout[1:]]
+    if raw_extent:
+        extents.append(raw_extent)
+    return PoolPlan(layout[0][1], tuple(extents), reserve_start, reserve_sectors)
 
 
-def validate_data_area_prereqs(*, swap_policy: str, root_resize_policy: str, root_capped: bool) -> None:
-    """Refuse data-area configurations whose geometry cannot be guaranteed."""
-    if swap_policy != "on":
+# ---- the LV planner -------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class LvPlan:
+    name: str
+    args: tuple[str, ...]  # lvcreate size arguments: ("-L", "120G") | ("-l", "123") | ("-l", "100%FREE")
+    star: bool
+    fs: str
+    mount: str | None
+    label: str | None
+
+
+def estimate_vg_extents(pv_sectors: int) -> int:
+    """Plan-time estimate of the extents of a one-PV VG (1 MiB metadata area, 4 MiB extents)."""
+    return max(0, (pv_sectors // MIB_SECTORS - 1) // LVM_EXTENT_MIB)
+
+
+def plan_lvs(area: DataArea, vg_extents: int) -> list[LvPlan]:
+    """Concrete lvcreate arguments for a VG of `vg_extents` extents; the `*` LV is created LAST.
+
+    Percent is a share of the whole VG (`-l N` with N floor(extents * p), what `-l P%VG` means, but exact to
+    two decimals). `vg_free_gib` is kept free (taken from the `*` LV, or required to remain when there is none).
+    """
+    free_keep = area.vg_free_gib * 1024 // LVM_EXTENT_MIB
+    fixed: dict[str, int] = {}
+    for lv in area.volumes:
+        if lv.size.kind == "gib":
+            fixed[lv.name] = lv.size.value * 1024 // LVM_EXTENT_MIB
+        elif lv.size.kind == "percent":
+            fixed[lv.name] = vg_extents * lv.size.value // 10000
+    used = sum(fixed.values())
+    has_star = any(lv.size.is_star for lv in area.volumes)
+    gib = lambda extents: f"{extents * LVM_EXTENT_MIB / 1024:.2f} GiB"  # noqa: E731
+    if used > vg_extents - free_keep:
         raise LayoutPolicyError(
-            "data_area needs swap_policy=on: the data area sits directly in front of the "
-            "swap partition(s), which must be the last allocation on the disk"
+            f"LV sizes ({gib(used)}) exceed the VG ({gib(vg_extents)}"
+            + (f" less vg_free_gib {area.vg_free_gib} GiB" if free_keep else "") + ")"
         )
-    if root_resize_policy != "resize":
-        raise LayoutPolicyError("data_area needs root_resize_policy=resize (the installer lays out the whole tail)")
-    if not root_capped:
+    for lv in area.volumes:
+        if lv.name in fixed and fixed[lv.name] < MIN_LV_EXTENTS:
+            raise LayoutPolicyError(f"LV {lv.name} is {fixed[lv.name] * LVM_EXTENT_MIB} MiB, below the minimum of 64 MiB")
+    star_extents = vg_extents - used - free_keep
+    if has_star and star_extents < MIN_LV_EXTENTS:
         raise LayoutPolicyError(
-            "data_area needs a capped root: set disk_layout=dev-host or root_max_size_gb, "
-            "otherwise root takes all space and no room remains for the data area"
+            f"the \"*\" LV would get {max(star_extents, 0) * LVM_EXTENT_MIB} MiB, below the minimum of 64 MiB: "
+            "the other LVs take the whole VG"
         )
+    plans: list[LvPlan] = []
+    for lv in area.volumes:
+        if lv.size.is_star:
+            continue
+        args = ("-L", f"{lv.size.value}G") if lv.size.kind == "gib" else ("-l", str(fixed[lv.name]))
+        plans.append(LvPlan(lv.name, args, False, lv.fs, lv.mount, lv.label))
+    for lv in area.volumes:
+        if lv.size.is_star:
+            args = ("-l", "100%FREE") if not free_keep else ("-l", str(star_extents))
+            plans.append(LvPlan(lv.name, args, True, lv.fs, lv.mount, lv.label))
+    return plans
 
 
 def data_area_packages(area: DataArea) -> list[str]:
     """Packages the data area needs on the host (installed in stage two, before any mkfs/pvcreate)."""
-    if area.mode == "none":
+    if area.kind == "none":
         return []
-    filesystems = {area.fs} if area.mode == "partition" else {lv.fs for lv in area.lvs}
+    filesystems = area.filesystems
     packages: list[str] = []
-    if area.mode == "lvm":
+    if area.kind == "lvm":
         packages.append("lvm2")
     if "btrfs" in filesystems:
         packages.append("btrfs-progs")

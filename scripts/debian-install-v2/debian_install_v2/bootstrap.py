@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +20,9 @@ from .actions import ActionError, HostActions
 from .config import (
     Config, ConfigError, load_config, persisted_config_data, require_notify_credentials, save_config,
 )
-from .customscript import build_customscript_bundle, describe_fetch_source
+from .customscript import build_customscript_bundle, describe_fetch_source, validate_repo_commit
 from .installer import Installer, InstallerError
+from .plan_preview import PlanPreviewError, format_table, resolve_plan
 from .notify import NotifyConfigError, validate_host_label, validate_webhook_url
 from .state import StateError, StateStore
 
@@ -218,6 +220,18 @@ def _render_status(status: dict[str, Any]) -> str:
 
 
 def _render_plan(plan: dict[str, Any]) -> str:
+    if "release" not in plan:
+        return "\n".join((
+            f"Disk size: {plan['disk_size_gib']:.2f} GiB; root starts at sector "
+            f"{plan['root_start_sector']} ({plan['root_start_gib']:.2f} GiB)",
+            f"Swap policy: {plan['swap_policy']}" + (
+                f" ({plan['swap_total_gib']} GiB)" if plan["swap_policy"] == "on" else ""
+            ),
+            "Resolved plan table (GiB):",
+            format_table(plan["plan_table"]),
+            "Assumptions:",
+            *(f"  - {item}" for item in plan["assumptions"]),
+        ))
     lines = [
         f"Release: {plan['release']}",
         f"Root device: {plan['root_device']}",
@@ -237,7 +251,9 @@ def _render_plan(plan: dict[str, Any]) -> str:
         lines.append(
             f"  {swap['device']}: start={swap['start']}, sectors={swap['sectors']}"
         )
-    lines.extend(("Partition-table plan:", plan["sfdisk_plan"].rstrip()))
+    if "sfdisk_plan" in plan:
+        lines.extend(("Resolved plan table (GiB):", format_table(plan["plan_table"]),
+                      "Partition-table plan:", plan["sfdisk_plan"].rstrip()))
     return "\n".join(lines)
 
 
@@ -339,8 +355,44 @@ def _disable_stage2(args: Any, runtime: Any) -> int:
 
 
 def _plan(args: Any, runtime: Any) -> int:
+    if args.disk_size:
+        installer = _make_installer(args, runtime, inspect_host=False)
+        try:
+            preview = resolve_plan(
+                installer.config,
+                disk_size=args.disk_size,
+                ram_gib=args.ram_gib,
+                root_start_sector=args.root_start_sector,
+                root_number=args.root_number,
+                root_current_size_gib=args.root_current_size_gib,
+            )
+        except PlanPreviewError as exc:
+            raise CliFailure(str(exc), exit_code=2) from exc
+        if runtime.json_mode:
+            runtime.output.primary(preview)
+        else:
+            runtime.output.primary(_render_plan(preview))
+        return 0
     installer = _make_installer(args, runtime)
-    plan = installer.show_plan()
+    try:
+        plan = installer.show_plan()
+    except InstallerError as exc:
+        try:
+            disk_sectors, root_start, root_current = installer._disk_facts()
+            preview = resolve_plan(
+                installer.config,
+                disk_size=f"{Decimal(disk_sectors * 512) / Decimal(1024 ** 3)}GiB",
+                ram_bytes=installer._memory_total_bytes(),
+                root_start_sector=root_start,
+                root_number=installer.root_number,
+                root_current_size_sectors=root_current,
+            )
+            detail = "Resolved disk table (GiB):\n" + format_table(preview["plan_table"])
+        except PlanPreviewError as preview_error:
+            detail = str(preview_error)
+        except Exception as preview_error:
+            detail = f"Resolved plan table unavailable: {preview_error}"
+        raise CliFailure(f"{exc}\n{detail}", exit_code=2) from exc
     if runtime.json_mode:
         runtime.output.primary(plan)
     else:
@@ -357,6 +409,7 @@ def _build_customscript(args: Any, runtime: Any) -> int:
             repo_branch=args.repo_branch,
             bootstrap_url=args.bootstrap_url,
             controller_ssh_placeholder=args.controller_ssh_placeholder,
+            repo_commit=args.repo_commit,
         )
     except (ValueError, ConfigError) as exc:
         raise CliFailure(str(exc), exit_code=2, show_help=True) from exc
@@ -364,6 +417,7 @@ def _build_customscript(args: Any, runtime: Any) -> int:
     # `main`, which silently ran old code on a feature-branch test).
     info_lines, warning_lines = describe_fetch_source(
         args.repo_url, args.repo_branch, checkout_dir=str(Path(__file__).resolve().parent),
+        repo_commit=validate_repo_commit(args.repo_commit),
     )
     for line in info_lines:
         runtime.output.info(line)
@@ -535,15 +589,38 @@ def build_cli():
     registry.register(
         VerbSpec(
             name="plan",
-            description="read the target host and show its root-disk/swap plan without applying changes",
+            description="show the target disk plan, or resolve one offline with --disk-size",
             group=VerbGroup.EXPLORATION.value,
             examples=(
                 f"{PROG}.py plan --config install.json",
                 f"{PROG}.py plan --config install.json --json",
+                f"{PROG}.py plan --config install.json --disk-size 512GiB --ram-gib 16",
             ),
             include_json=True,
             include_progress=False,
-            options=configuration,
+            options=(
+                *configuration,
+                OptionSpec(
+                    ("--disk-size",), "resolve a host-independent plan for a stated disk size",
+                    group="OFFLINE PLAN", metavar="SIZE",
+                ),
+                OptionSpec(
+                    ("--ram-gib",), "guest RAM in GiB when swap_disk_total_gb is automatic",
+                    group="OFFLINE PLAN", metavar="GIB", parser_kwargs={"type": int},
+                ),
+                OptionSpec(
+                    ("--root-start-sector",), "root partition start sector (offline plans default to 2048)",
+                    group="OFFLINE PLAN", metavar="SECTOR", parser_kwargs={"type": int, "default": 2048},
+                ),
+                OptionSpec(
+                    ("--root-number",), "root partition number (offline plans default to 1)",
+                    group="OFFLINE PLAN", metavar="NUMBER", parser_kwargs={"type": int, "default": 1},
+                ),
+                OptionSpec(
+                    ("--root-current-size-gib",), "current root size when partitioning.root is keep",
+                    group="OFFLINE PLAN", metavar="GIB", parser_kwargs={"type": int},
+                ),
+            ),
             handler=_plan,
         )
     )
@@ -590,6 +667,12 @@ def build_cli():
                     group="BOOTSTRAP SOURCE",
                     metavar="BRANCH",
                     parser_kwargs={"default": "main"},
+                ),
+                OptionSpec(
+                    ("--repo-commit",),
+                    "full commit SHA the host must run instead of the moving branch head",
+                    group="BOOTSTRAP SOURCE",
+                    metavar="SHA",
                 ),
                 OptionSpec(
                     ("--bootstrap-url",),

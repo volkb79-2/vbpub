@@ -21,7 +21,7 @@ export DEBIAN_FRONTEND=noninteractive
 identity_check
 apt-get update
 identity_check
-apt-get install -y btrfs-progs parted python3.13 python3.13-venv git rsync tmux jq curl ca-certificates
+apt-get install -y btrfs-progs python3.13 python3.13-venv git rsync tmux jq curl ca-certificates
 
 # The runner uid must equal the tester-unified lane uid (1003): checkouts, the CoW root and the lane user then share
 # one owner (Run-Gate RG-150, netcup NC-04). Refuse to silently keep or change a different existing uid.
@@ -65,84 +65,44 @@ fi
 usermod -aG docker "$RUNNER_USER"
 
 identity_check
-# shellcheck source=cow-carve.sh
-source "$here/cow-carve.sh"
-# Idempotence is keyed on the PARTITION LABEL (PARTLABEL=MDT_COW or a btrfs filesystem labelled MDT_COW), never on a
-# device number: partition numbering differs between layouts, and a re-run must never carve a second cow.
+# shellcheck source=cow-select.sh
+source "$here/cow-select.sh"
+# The CoW volume is a planned partition with PARTLABEL=MDT_COW. Resolve it by
+# that label because its partition number follows its physical position.
 cow_rc=0
-cow_found="$(lsblk -P -o PATH,PARTLABEL,FSTYPE,LABEL "$COW_PARENT_DISK" | cow_select_device)" || cow_rc=$?
+cow_found="$(lsblk -P -o PATH,PARTLABEL "$COW_PARENT_DISK" | cow_select_device)" || cow_rc=$?
 if test "$cow_rc" = 3; then
-  echo "more than one MDT_COW candidate on $COW_PARENT_DISK; resolve by hand" >&2
+  echo "more than one PARTLABEL=MDT_COW partition on $COW_PARENT_DISK; resolve by hand" >&2
   exit 6
 elif test "$cow_rc" = 0; then
-  # Found by label: either carved by an earlier run or created by the installer (debian-install-v2 data_area, a
-  # partition or an LVM LV labelled MDT_COW). Never carve; a volume mounted elsewhere than COW_MOUNT is refused.
-  COW_DEVICE=$cow_found
-  cow_mounted_at="$(findmnt -rn -o TARGET --source "$COW_DEVICE" | head -n1 || true)"
+  cow_mounted_at="$(findmnt -rn -o TARGET --source "$cow_found" | head -n1 || true)"
   if test -n "$cow_mounted_at" && test "$cow_mounted_at" != "$COW_MOUNT"; then
-    echo "$COW_DEVICE is mounted at $cow_mounted_at, but COW_MOUNT is $COW_MOUNT; make data_area mount and COW_MOUNT agree" >&2
+    echo "$cow_found is mounted at $cow_mounted_at, but COW_MOUNT is $COW_MOUNT; make partitioning.data mount and COW_MOUNT agree" >&2
     exit 8
   fi
-elif test -b "$COW_DEVICE" && test "$(lsblk -dn -o PKNAME "$COW_DEVICE")" = "$(basename "$COW_PARENT_DISK")"; then
-  # legacy: an unlabelled partition at the configured device; the filesystem checks below refuse anything foreign
-  :
 else
-  # The debian-install-v2 layout (disk_layout=dev-host) leaves the cow area + reserve UNALLOCATED between root and
-  # the END-of-disk swap, so the cow partition is carved from the LARGEST free row (never the last row, which is a
-  # sliver after swap), ends at the row end, and takes COW_SIZE_GIB (default: a third of the disk, 8 GiB steps,
-  # capped to the row). The rest stays unallocated reserve directly behind root.
-  disk_mib=$(( $(blockdev --getsize64 "$COW_PARENT_DISK") / 1048576 ))
-  cow_gib=${COW_SIZE_GIB:-$(( disk_mib / 1024 / 3 / 8 * 8 ))}
-  # The free row must hold the whole cow (no silent clipping) and at least COW_MIN_GIB (default 20): a tail sliver
-  # or a small leftover is refused, never turned into a useless partition.
-  if test "$cow_gib" -lt "${COW_MIN_GIB:-20}"; then cow_gib=${COW_MIN_GIB:-20}; fi
-  cow_mib=$(( cow_gib * 1024 ))
-  free_row="$(parted -m -s "$COW_PARENT_DISK" unit MiB print free | cow_pick_free_row "$cow_mib")"
-  free_start_mib=${free_row%%:*}
-  free_end_mib=${free_row##*:}
-  # The cow partition is placed at the END of the gap (right before swap); the reserve stays directly behind root,
-  # so root can grow into it (sfdisk + resize2fs) and cow, a disposable cache, is re-created larger if needed.
-  cow_range="$(cow_plan_range "$free_start_mib" "$free_end_mib" "$cow_mib")"
-  cow_start_mib=${cow_range%%:*}
-  echo "carving $COW_LABEL: ${cow_start_mib}..${free_end_mib} MiB ($(( (free_end_mib - cow_start_mib) / 1024 )) GiB) from the free row ${free_start_mib}..${free_end_mib} MiB"
-  parted -s "$COW_PARENT_DISK" mkpart "$COW_LABEL" btrfs "${cow_start_mib}MiB" "${free_end_mib}MiB"
-  partprobe "$COW_PARENT_DISK"
-  udevadm settle
-  COW_DEVICE="$(lsblk -P -o PATH,PARTLABEL,FSTYPE,LABEL "$COW_PARENT_DISK" | cow_select_device)" \
-    || { echo "the new $COW_LABEL partition is not visible after partprobe" >&2; exit 7; }
-  # Stale signatures from an earlier install in the carved range (a provider reinstall need not zero the disk):
-  # refuse and give the range back unless the operator allows wiping.
-  stale="$(wipefs -n -p "$COW_DEVICE" | awk '!/^#/ && NF')"
-  if test -n "$stale"; then
-    if test "${COW_WIPE_STALE:-0}" = 1; then
-      wipefs -a "$COW_DEVICE"
-    else
-      echo "stale signature(s) inside the new cow partition $COW_DEVICE: $stale" >&2
-      parted -s "$COW_PARENT_DISK" rm "$(cat "/sys/class/block/$(basename "$COW_DEVICE")/partition")"
-      echo "partition removed again; re-run with COW_WIPE_STALE=1 after checking the old data is disposable" >&2
-      exit 4
-    fi
-  fi
+  echo "the install plan has no PARTLABEL=MDT_COW partition on $COW_PARENT_DISK" >&2
+  exit 4
 fi
-test -b "$COW_DEVICE"
-fs_type="$(blkid -s TYPE -o value "$COW_DEVICE" 2>/dev/null || true)"
+test -b "$cow_found"
+fs_type="$(blkid -s TYPE -o value "$cow_found" 2>/dev/null || true)"
 if test -z "$fs_type"; then
-  mkfs.btrfs -L MDT_COW "$COW_DEVICE"
-elif test "$fs_type" = btrfs && test "$(blkid -s LABEL -o value "$COW_DEVICE")" = MDT_COW; then
+  mkfs.btrfs -L MDT_COW "$cow_found"
+elif test "$fs_type" = btrfs && test "$(blkid -s PARTLABEL -o value "$cow_found")" = MDT_COW; then
   :
 else
-  echo "refusing to overwrite $COW_DEVICE with existing filesystem type '${fs_type:-unknown}'" >&2
+  echo "refusing to overwrite $cow_found with existing filesystem type '${fs_type:-unknown}'" >&2
   exit 4
 fi
 
 identity_check
 install -d -m 0755 "$COW_MOUNT"
-uuid="$(blkid -s UUID -o value "$COW_DEVICE")"
+uuid="$(blkid -s UUID -o value "$cow_found")"
 expected="UUID=$uuid $COW_MOUNT btrfs noatime,user_subvol_rm_allowed 0 0"
 existing="$(awk -v mp="$COW_MOUNT" '$2 == mp && $1 !~ /^#/ {print}' /etc/fstab)"
 if test -n "$existing"; then
-  # an installer-created cow (debian-install-v2 data_area) already has its own fstab line for this volume
-  cow_fstab_entry_ok "$existing" "$expected" "$uuid" "$COW_DEVICE"
+  # debian-install-v2 may already have written the same planned partition to fstab.
+  cow_fstab_entry_ok "$existing" "$expected" "$uuid" "$cow_found"
 else
   printf '%s\n' "$expected" >> /etc/fstab
 fi
@@ -199,5 +159,5 @@ runuser -u "$RUNNER_USER" -- env UV_PYTHON_INSTALL_DIR="$RUNNER_HOME/.local/shar
 
 identity_check
 printf 'PROVISIONING_OK_UTC=%s\n' "$(date -u +%FT%TZ)"
-printf 'COW_DEVICE=%s COW_UUID=%s COW_BYTES=%s\n' "$COW_DEVICE" "$uuid" "$(blockdev --getsize64 "$COW_DEVICE")"
+printf 'COW_PARTITION=%s COW_UUID=%s COW_BYTES=%s\n' "$cow_found" "$uuid" "$(blockdev --getsize64 "$cow_found")"
 printf 'RUNNER_UID=%s DOCKER_GROUP=%s PYTHON_TOOL=%s\n' "$(id -u "$RUNNER_USER")" "$(id -nG "$RUNNER_USER" | tr ' ' ',')" "$("$RUNNER_HOME/venvs/tools/bin/uv" --version)"

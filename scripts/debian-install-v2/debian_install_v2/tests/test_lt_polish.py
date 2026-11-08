@@ -26,7 +26,7 @@ from debian_install_v2.state import StateStore
 from debian_install_v2.templates import APT_CUSTOM
 
 from .test_gstammtisch_incorporation import install_dry
-from .test_io_benchmark import LINUX, SECTORS_PER_GIB, make, step
+from .test_io_benchmark import make, step
 
 BOOTSTRAP_PATH = Path(__file__).resolve().parents[2] / "bootstrap-remote.py"
 
@@ -173,50 +173,31 @@ def test_status_lists_the_real_install_logs(tmp_path, monkeypatch):
     assert not (tmp_path / "absent-logs").exists()
 
 
-# --- io_benchmark_cleanup step ---------------------------------------------------------
+# --- planned raw benchmark partition --------------------------------------------------
 
-def test_io_benchmark_cleanup_success_is_recorded(tmp_path):
-    installer, _disk = make(tmp_path)
-    installer._stage2()
-    cleanup = step(installer, "io_benchmark_cleanup")
-    assert cleanup["status"] == "success" and "vda12" in cleanup["detail"]
-
-
-def test_io_benchmark_cleanup_failure_is_recorded_as_warned(tmp_path):
+def test_raw_benchmark_partition_remains_after_measurement(tmp_path):
     installer, disk = make(tmp_path)
-    disk.fail["umount"] = "target is busy"
-    with pytest.raises(InstallerError, match="cleanup failed"):
-        installer._stage2()
-    cleanup = step(installer, "io_benchmark_cleanup")
-    assert cleanup["status"] == "warned" and "busy" in cleanup["detail"]
+    raw_number = next(number for number, entry in disk.table.items() if entry.get("name") == "iobench-raw")
+    installer._run_io_benchmark()
+    assert disk.table[raw_number]["name"] == "iobench-raw"
+    assert step(installer, "io_benchmark")["status"] == "success"
+    assert step(installer, "io_benchmark_cleanup") == {}
 
 
-def test_leftover_partition_removal_records_its_own_cleanup_success(tmp_path):
-    # The normal-path teardown later overwrites the step with its own success, so
-    # the leftover-removal mark is only visible through a spy on _mark_step.
+def test_failed_benchmark_keeps_the_raw_partition_and_records_warning(tmp_path):
     installer, disk = make(tmp_path)
-    disk.table[12] = {"start": str(80 * SECTORS_PER_GIB), "size": str(10 * SECTORS_PER_GIB), "type": LINUX.upper(),
-                      "uuid": "LEFT", "name": "vbpub-iobench"}
-    disk.kernel.add(12)
-    disk.mounts["/dev/vda12"] = "/tmp/vbpub-iobench-old"
-    marks = []
-    original = installer._mark_step
-
-    def spy(name, status, detail=""):
-        marks.append((name, status, detail))
-        original(name, status, detail)
-
-    installer._mark_step = spy
-    installer._stage2()
-    leftover = [m for m in marks if m[0] == "io_benchmark_cleanup" and "leftover" in m[2]]
-    assert leftover and leftover[0][1] == "success"
-    assert step(installer, "io_benchmark_cleanup")["status"] == "success"
+    raw_number = next(number for number, entry in disk.table.items() if entry.get("name") == "iobench-raw")
+    disk.fail["iobench-install-runner"] = "simulated refusal"
+    installer._run_io_benchmark()
+    assert disk.table[raw_number]["name"] == "iobench-raw"
+    assert step(installer, "io_benchmark")["status"] == "warned"
+    assert step(installer, "io_benchmark_cleanup") == {}
 
 
 def test_io_benchmark_cleanup_step_absent_when_the_benchmark_is_off(tmp_path):
     installer, _disk = make(tmp_path)
     installer.config = dataclasses.replace(installer.config, run_io_benchmark=False)
-    installer._stage2()
+    installer._run_io_benchmark()
     assert step(installer, "io_benchmark_cleanup") == {}
 
 
