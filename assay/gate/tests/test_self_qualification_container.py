@@ -82,6 +82,8 @@ os.execv(os.environ["REAL_GIT"], [os.environ["REAL_GIT"], *args])
 FAKE_TIMEOUT = r'''#!/usr/bin/env python3
 import json
 import os
+import signal
+import subprocess
 import sys
 from pathlib import Path
 
@@ -90,7 +92,35 @@ with Path(os.environ["TIMEOUT_TRACE"]).open("a", encoding="utf-8") as stream:
     stream.write(json.dumps(args) + "\n")
 if os.environ.get("FAST_DOCKER_TIMEOUT") == "1" and "docker" in args:
     index = args.index("docker")
-    args = ["--signal=TERM", "--kill-after=1s", "0.25s", *args[index:]]
+    docker_argv = args[index:]
+    docker_command = docker_argv[1] if len(docker_argv) > 1 else ""
+    docker_target = docker_argv[2] if len(docker_argv) > 2 else ""
+    mode = os.environ.get("DOCKER_MODE")
+    container_id = os.environ.get("DOCKER_CONTAINER_ID")
+    is_hung_target = (
+        (mode == "hang-inspect" and docker_command == "inspect" and docker_target == container_id)
+        or (mode == "hang-logs" and docker_command == "logs" and docker_target == container_id)
+    )
+    if is_hung_target:
+        ready_read, ready_write = os.pipe()
+        child_env = os.environ.copy()
+        child_env["DOCKER_TIMEOUT_READY_FD"] = str(ready_write)
+        child = subprocess.Popen(
+            docker_argv,
+            env=child_env,
+            pass_fds=(ready_write,),
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            start_new_session=True,
+        )
+        os.close(ready_write)
+        ready = os.read(ready_read, 1)
+        os.close(ready_read)
+        if ready == b"R":
+            os.killpg(child.pid, signal.SIGTERM)
+            child.wait()
+            raise SystemExit(124)
+        raise SystemExit(child.wait())
 os.execv(os.environ["REAL_TIMEOUT"], [os.environ["REAL_TIMEOUT"], *args])
 '''
 
@@ -317,7 +347,10 @@ if args and args[0] == "inspect":
         raise SystemExit(0)
     state = read_state()
     if mode == "hang-inspect":
-        time.sleep(5)
+        ready_fd = os.environ.get("DOCKER_TIMEOUT_READY_FD")
+        if ready_fd is not None and args[1] == os.environ.get("DOCKER_CONTAINER_ID"):
+            os.write(int(ready_fd), b"R")
+            signal.pause()
     if fmt == "{{.Id}}":
         print(state["id"])
     elif ".State.Running" in fmt:
@@ -377,8 +410,15 @@ if args and args[0] == "logs":
                 print("IOWeight=100")
             print(f"ASSAY_UNIT_END={unit}")
         raise SystemExit(0)
-    if mode == "hang-logs" and "--follow" not in args:
-        time.sleep(5)
+    if (
+        mode == "hang-logs"
+        and args[1] == os.environ.get("DOCKER_CONTAINER_ID")
+        and "--follow" not in args
+    ):
+        ready_fd = os.environ.get("DOCKER_TIMEOUT_READY_FD")
+        if ready_fd is not None:
+            os.write(int(ready_fd), b"R")
+            signal.pause()
     state = read_state()
     lane = state["inner"][-1]
     if lane == "self-qualification":
@@ -654,8 +694,14 @@ def _remove_short_observer_fixtures():
         _SHORT_OBSERVER_FIXTURE_DIRS.discard(path)
 
 
-def _prepare_observer_fixture(tmp_path: Path, fake_bin: Path, env: dict[str, str]) -> None:
-    """Provide the canonical host socket only inside the launcher's mount namespace."""
+def _prepare_observer_fixture(
+    tmp_path: Path,
+    fake_bin: Path,
+    env: dict[str, str],
+    *,
+    use_temporary_socket_path: bool = False,
+) -> None:
+    """Provide a canonical socket or a local fake for mount-free cases."""
     observer_dir = tmp_path / "observer-fixture"
     observer_socket = observer_dir / "cgprofile.sock"
     if len(os.fsencode(observer_socket)) >= 108:
@@ -687,7 +733,9 @@ def _prepare_observer_fixture(tmp_path: Path, fake_bin: Path, env: dict[str, str
     )
     fake_stat.chmod(0o755)
     env["ASSAY_TEST_OBSERVER_DIRECTORY"] = str(observer_dir)
-    env["CGPROFILE_OBSERVER_SOCKET"] = OBSERVER_SOURCE
+    env["CGPROFILE_OBSERVER_SOCKET"] = (
+        str(observer_socket) if use_temporary_socket_path else OBSERVER_SOURCE
+    )
     env.pop("ASSAY_GATE_RESOURCE_OBSERVER_SOURCE", None)
 
 
@@ -792,6 +840,8 @@ def run_launcher(
     status_delay_at: int | None = None,
     status_delay_seconds: float = 0,
     inner_pilot_log: Path | None = None,
+    use_temporary_socket_path: bool = False,
+    fake_workspace_mount: bool = False,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -920,6 +970,7 @@ if '--archive-prior-snapshot' in sys.argv:
         "HOSTNAME": "deliberately-not-the-parent-container-name",
         "DOCKER_TRACE": str(trace),
         "DOCKER_STATE": str(state),
+        "DOCKER_CONTAINER_ID": CONTAINER_ID,
         "DOCKER_UNIT_PROBE_STATE": str(tmp_path / "docker-unit-probe-state.json"),
         "DOCKER_MODE": mode,
         "DOCKER_WAIT_STATUS": wait_status,
@@ -967,10 +1018,37 @@ if '--archive-prior-snapshot' in sys.argv:
         stat_link = minimal_bin / "stat"
         if not stat_link.is_symlink():
             stat_link.symlink_to(fake_bin / "stat")
-    _prepare_observer_fixture(tmp_path, fake_bin, env)
+    if fake_workspace_mount:
+        workspace_source = tmp_path / "workspace-source"
+        workspace_source.mkdir(exist_ok=True)
+        findmnt = fake_bin / "findmnt"
+        findmnt.write_text(
+            "#!/bin/sh\n"
+            "for arg do output=$arg; done\n"
+            'case "$output" in\n'
+            '  TARGET) printf "/workspaces/vbpub\\n" ;;\n'
+            '  FSROOT) printf "%s\\n" "$ASSAY_TEST_WORKSPACE_FSROOT" ;;\n'
+            '  *) exit 2 ;;\n'
+            "esac\n",
+            encoding="utf-8",
+        )
+        findmnt.chmod(0o755)
+        env["ASSAY_TEST_WORKSPACE_FSROOT"] = str(workspace_source)
+    _prepare_observer_fixture(
+        tmp_path,
+        fake_bin,
+        env,
+        use_temporary_socket_path=use_temporary_socket_path,
+    )
     started = time.monotonic()
+    launcher_argv = [str(SCRIPT), str(worktree), lane]
+    command = (
+        ["/bin/bash", *launcher_argv]
+        if use_temporary_socket_path
+        else _isolated_launcher_command(env, *launcher_argv)
+    )
     proc = subprocess.run(
-        _isolated_launcher_command(env, str(SCRIPT), str(worktree), lane),
+        command,
         env=env,
         capture_output=True,
         text=True,
@@ -4401,13 +4479,17 @@ def test_all_wrapper_docker_calls_have_client_deadlines(
 def test_hung_docker_client_is_bounded_and_cleanup_is_conservative(
     tmp_path: Path, committed_worktree: Path, mode: str, message: str, removed: bool
 ):
-    proc, calls, elapsed = run_launcher(
+    proc, calls, _elapsed = run_launcher(
         tmp_path, committed_worktree, lane="self-qualification-preflight",
-        mode=mode, fast_docker_timeout=True,
+        mode=mode,
+        fast_docker_timeout=True,
+        use_temporary_socket_path=True,
+        fake_workspace_mount=True,
     )
     assert proc.returncode != 0
     assert message in proc.stderr
-    assert elapsed < 5
+    target_command = "inspect" if mode == "hang-inspect" else "logs"
+    assert any(call[:2] == [target_command, CONTAINER_ID] for call in calls)
     assert any(call[:2] == ["rm", CONTAINER_ID] for call in calls) is removed
     if not removed:
         assert "preserving ownership evidence at" in proc.stderr

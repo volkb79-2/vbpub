@@ -1593,6 +1593,13 @@ you're changing assay itself:
   [design guide](docs/DESIGN-GUIDE.md#unprivileged-host-slice-preflight-for-tester-unified),
   with the operator-facing gate sequence in the
   [consumer guide](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
+  For scoped tooling-test review, `run-gate tooling-tests` runs three tooling
+  test modules in tester-unified and accepts additional pytest selectors after
+  `--`. It is diagnostic only; see the
+  [design rationale](docs/DESIGN-GUIDE.md#scoped-tooling-test-lanes) and
+  [consumer instructions](docs/CONSUMERS.md#scoped-tooling-test-review).
+  `run-gate hang-test-contention` repeats the hung-Docker fixture test 20 times
+  alongside a CPU burner in the same tester-unified container.
   The separately invoked `run-gate self-qualification` requires that receipt for
   its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; exit 3 means incomplete or infrastructure evidence and must be retried), then runs full-source
   R0-R3 qualification in `tester-unified`. During the currently authorized

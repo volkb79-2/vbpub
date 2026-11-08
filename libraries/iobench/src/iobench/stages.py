@@ -267,7 +267,7 @@ class Runner:
         try:
             fn()
         except Aborted as exc:
-            self.mark(name, f"aborted: {exc}")
+            self.mark(name, str(exc))
             raise
         except S.IntegrityError as exc:
             self.mark(name, f"failed: {exc}")

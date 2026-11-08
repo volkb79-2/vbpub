@@ -47,6 +47,57 @@ clean_tree = false
 # further 20m for clone/startup/cleanup; test_self_lane.py derives these bounds.
 budget = "5h"
 
+# Scoped review verification for tooling-test changes. This is a tester-unified
+# command lane, not an Assay qualification or release receipt.
+[lanes.tooling-tests]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/assay
+export PYTHONPATH="src:analysis/src:{worktree}/libraries/cowtree/src"
+export PYTHONDONTWRITEBYTECODE=1
+exec /opt/tester-venv/bin/python3 -m pytest -q -p no:cacheprovider \
+  gate/tests/test_distribution_gate.py \
+  gate/tests/test_release_gate.py \
+  gate/tests/test_self_qualification_container.py "$@"''',
+  "tooling-tests",
+]
+accepts_args = true
+clean_tree = false
+budget = "30m"
+
+[lanes.tooling-tests.resources]
+memory = "1g"
+
+# Re-run only the contention-sensitive hung Docker client test while a sibling
+# CPU burner runs in the same tester-unified container. This measures the test
+# fixture's handshake, not Assay qualification.
+[lanes.hang-test-contention]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/assay
+export PYTHONPATH="src:analysis/src:{worktree}/libraries/cowtree/src"
+export PYTHONDONTWRITEBYTECODE=1
+/usr/bin/yes >/dev/null &
+burner=$!
+trap 'kill "$burner" 2>/dev/null || true; wait "$burner" 2>/dev/null || true' EXIT
+for iteration in {1..20}; do
+  printf '%s\n' "hung Docker fixture run $iteration/20"
+  nice -n 10 /opt/tester-venv/bin/python3 -m pytest -q -p no:cacheprovider \
+    gate/tests/test_self_qualification_container.py::test_hung_docker_client_is_bounded_and_cleanup_is_conservative
+done''',
+]
+clean_tree = false
+budget = "10m"
+
+[lanes.hang-test-contention.resources]
+memory = "1g"
+
 [lanes.self-qualification]
 kind = "command"
 environment = "bare-host"

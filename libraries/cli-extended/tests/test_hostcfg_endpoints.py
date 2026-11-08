@@ -4,6 +4,7 @@ import errno
 import fcntl
 import io
 import json
+import logging
 import os
 import runpy
 import stat
@@ -244,6 +245,17 @@ def test_reserved_environment_keys_are_rejected_by_plan_and_publish(tmp_path, ke
     with pytest.raises(CliFailure, match="reserved environment key"):
         endpoints.publish("svc", {key: "safe"}, writer="svc install 1.0", root=root)
     assert not (root / "etc" / "host-endpoints.d").exists()
+
+
+@pytest.mark.parametrize("key", ["LDAP_SOCKET", "PYTHIA_SOCKET", "BASHFUL", "LCD_X"])
+def test_near_miss_reserved_prefix_keys_remain_valid(tmp_path, key):
+    root = fake_root(tmp_path)
+
+    assert endpoints.plan("svc", {key: "safe"}, root=root) == []
+    endpoints.publish("svc", {key: "safe"}, writer="svc install 1.0", root=root)
+
+    assert f"{key}=safe" in (root / "etc" / "host-endpoints.env").read_text()
+    assert endpoints.check(root=root) == []
 
 
 def test_entry_shapes_duplicates_empty_values_and_metadata_are_validated(tmp_path):
@@ -666,14 +678,21 @@ def test_publish_and_withdraw_sweep_stale_temporary_files(tmp_path):
     assert all(not path.exists() for path in temporary_paths)
 
 
-def test_damaged_fragment_does_not_block_other_owner_publish_or_withdraw(tmp_path):
+def test_damaged_fragment_does_not_block_other_owner_publish_or_withdraw(tmp_path, caplog):
     root = fake_root(tmp_path)
     directory = root / "etc" / "host-endpoints.d"
     directory.mkdir(mode=0o755)
     (directory / "broken.env").write_bytes(b"not a fragment\n")
     (directory / "broken.env").chmod(0o644)
 
-    endpoints.publish("good", {"GOOD_SOCKET": "/run/good.sock"}, writer="good install 1.0", root=root)
+    with caplog.at_level(logging.WARNING, logger="cli_extended.hostcfg.endpoints"):
+        endpoints.publish("good", {"GOOD_SOCKET": "/run/good.sock"}, writer="good install 1.0", root=root)
+    assert any(
+        record.levelname == "WARNING"
+        and "broken" in record.getMessage()
+        and "skipped" in record.getMessage()
+        for record in caplog.records
+    )
     assert (directory / "good.env").is_file()
     assert any("broken" in problem for problem in endpoints.check(root=root))
     assert endpoints.withdraw("good", root=root) is True
@@ -1629,16 +1648,19 @@ def test_check_without_environment_file_reports_nothing_for_the_environment(tmp_
     assert "missing managed path: /etc/environment" in messages
 
 
-def test_check_reports_reserved_key_inside_a_fragment(tmp_path):
+@pytest.mark.parametrize(("key", "value"), [("PATH", "/evil"), ("LD_AUDIT", "/evil")])
+def test_check_reports_exact_or_prefixed_reserved_key_inside_a_fragment(tmp_path, key, value):
     root = fake_root(tmp_path)
     directory = root / "etc" / "host-endpoints.d"
     directory.mkdir(mode=0o755)
     fragment = directory / "svc.env"
-    fragment.write_bytes(b"# host-endpoints v1\n# owner=svc\n# writer=svc install 1.0\nPATH=/evil\n")
+    fragment.write_bytes(
+        f"# host-endpoints v1\n# owner=svc\n# writer=svc install 1.0\n{key}={value}\n".encode()
+    )
     fragment.chmod(0o644)
-    problem = next(problem for problem in endpoints.check(root=root) if problem.key == "PATH")
+    problem = next(problem for problem in endpoints.check(root=root) if problem.key == key)
     assert problem.code == "endpoint.fragment.invalid"
-    assert "reserved environment key PATH" in problem.message
+    assert f"reserved environment key {key}" in problem.message
 
 
 def test_check_reports_symlinked_profile_directory_after_publish(tmp_path):
@@ -1785,6 +1807,21 @@ def test_environment_without_final_newline_round_trips_through_two_blocks(tmp_pa
     endpoints.withdraw("svc", root=root)
     endpoints.withdraw("other", root=root)
     assert environment.read_bytes() == b"KEEP=1"
+
+
+def test_withdraw_keeps_the_required_separator_before_a_later_foreign_block(tmp_path):
+    root = fake_root(tmp_path, b"KEEP=1")
+    environment = root / "etc" / "environment"
+    publish(root)
+    foreign_block = b"# BEGIN foreign\nFOREIGN=1\n# END foreign\n"
+    environment.write_bytes(environment.read_bytes() + foreign_block)
+
+    endpoints.withdraw("svc", root=root)
+
+    # The first newline was synthesized between the unterminated original
+    # line and our block. It must remain here or the foreign BEGIN marker
+    # would be joined to KEEP=1; only our block and its trailing separator go.
+    assert environment.read_bytes() == b"KEEP=1\n" + foreign_block
 
 
 def test_environment_with_newline_keeps_it_and_text_after_a_block_survives(tmp_path):
@@ -1972,13 +2009,36 @@ def test_glued_end_marker_is_refused_with_a_specific_repair_hint(tmp_path):
     rendered = environment.read_bytes()
     environment.write_bytes(rendered[:-1] + b"NEW=1\n")  # editor stripped the newline, then appended
     messages = [str(problem) for problem in endpoints.check(root=root)]
-    assert any("glued after it" in message and "put the marker alone on its line" in message for message in messages)
+    assert any(
+        "line 7 starts with the END marker" in message
+        and "glued after it" in message
+        and "put the marker alone on its line" in message
+        for message in messages
+    )
     with pytest.raises(CliFailure, match="glued after it"):
         publish(root)
     with pytest.raises(CliFailure, match="glued after it"):
         endpoints.withdraw("svc", root=root)
     environment.write_bytes(rendered)
     assert endpoints.check(root=root) == []
+
+
+def test_glued_no_final_newline_end_marker_gets_the_same_repair_hint(tmp_path):
+    root = fake_root(tmp_path, b"A=1")
+    environment = root / "etc" / "environment"
+    publish(root)
+    rendered = environment.read_bytes()
+    assert b"# END host-endpoints (no final newline)\n" in rendered
+
+    environment.write_bytes(rendered[:-1] + b"NEW=1\n")
+
+    messages = [str(problem) for problem in endpoints.check(root=root)]
+    assert any(
+        "line 7 starts with the END marker" in message
+        and "glued after it" in message
+        and "put the marker alone on its line" in message
+        for message in messages
+    )
 
 
 def test_publish_writes_fragment_then_aggregate_then_environment_then_profile(tmp_path, monkeypatch):
@@ -2037,11 +2097,14 @@ def test_atomic_write_repairs_ownership_even_when_bytes_and_mode_match(tmp_path,
     monkeypatch.setattr(_fs, "_fchown", lambda descriptor, uid, gid: chowned.append((uid, gid)))
     assert _fs.atomic_write(root, target, b"same\n", 0o644, temp_prefix="t-", owner=(info.st_uid, info.st_gid)) is False
     assert chowned == []
-    wrong = (info.st_uid + 1, info.st_gid)
-    assert _fs.atomic_write(root, target, b"same\n", 0o644, temp_prefix="t-", owner=wrong) is True
-    assert chowned == [wrong]
+    wrong_gid = (info.st_uid, info.st_gid + 1)
+    assert _fs.atomic_write(root, target, b"same\n", 0o644, temp_prefix="t-", owner=wrong_gid) is True
+    assert chowned == [wrong_gid]
+    wrong_uid = (info.st_uid + 1, info.st_gid)
+    assert _fs.atomic_write(root, target, b"same\n", 0o644, temp_prefix="t-", owner=wrong_uid) is True
+    assert chowned == [wrong_gid, wrong_uid]
     assert _fs.atomic_write(root, target, b"same\n", 0o644, temp_prefix="t-") is False
-    assert chowned == [wrong]
+    assert chowned == [wrong_gid, wrong_uid]
 
 
 def test_apply_plan_requests_root_ownership_only_on_the_real_root(tmp_path, monkeypatch):
