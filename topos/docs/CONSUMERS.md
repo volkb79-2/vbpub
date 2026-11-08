@@ -35,24 +35,31 @@ group:
 
 ```bash
 sudo toposd install --dry-run \
-  --wheel 0.7.3@sha256:<topos-wheel-sha256> \
-  --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
-  --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
+  --wheel 0.8.0@sha256:<topos-wheel-sha256> \
+  --cli-extended-wheel 0.5.3@sha256:<cli-extended-wheel-sha256> \
+  --augeaswrap-wheel 0.1.0@sha256:<augeaswrap-wheel-sha256> \
+  --daemon-lock 0.8.0@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
   --add-user observe=alice --add-user observe=bob --enable
 sudo toposd install --yes \
-  --wheel 0.7.3@sha256:<topos-wheel-sha256> \
-  --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
-  --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
+  --wheel 0.8.0@sha256:<topos-wheel-sha256> \
+  --cli-extended-wheel 0.5.3@sha256:<cli-extended-wheel-sha256> \
+  --augeaswrap-wheel 0.1.0@sha256:<augeaswrap-wheel-sha256> \
+  --daemon-lock 0.8.0@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
   --add-user observe=alice --add-user observe=bob --enable
 sudo toposd doctor --json
+set -a
+. /etc/host-endpoints.env
+set +a
 topos daemon status
 ```
 
 The release base resolves assets under the `topos-v<version>` tag. A local
-`--wheel-source` directory may be used instead; it must contain both pinned
-wheels, the pinned lock, and all third-party wheels used by the lock. The
+`--wheel-source` directory may be used instead; it must contain the three explicitly
+pinned wheels (topos, cli-extended, augeaswrap), the pinned lock, and every
+additional runtime wheel named by the lock. `augeaswrap` is on no package index,
+so it is never in the lock. The
 installer writes `/etc/topos/install.toml` with those pins, the source, observe
 group, requested users, enable choice, and the groups it created. A mapped
 group must already exist, and `docker` is refused (also in `toposd.toml`).
@@ -88,7 +95,19 @@ systemd-passed `observe` descriptor.
 
 ## Connect a client
 
-The clients use `/run/topos/observe/topos.sock` by default. For example:
+`toposd install` publishes the configured observe socket and group ID through
+`augeaswrap.endpoints` as `/etc/host-endpoints.d/topos.env`. The aggregate
+`/etc/host-endpoints.env` is loaded into login sessions. A process launched
+outside a login session can load it explicitly:
+
+```bash
+set -a
+. /etc/host-endpoints.env
+set +a
+```
+
+Clients require `TOPOS_OBSERVE_SOCKET`; they do not guess a socket path. With
+the endpoint environment available, use:
 
 ```bash
 topos --attach --once --json
@@ -96,12 +115,16 @@ topos daemon current --pretty-json
 topos mcp serve
 ```
 
-The client account needs permission to connect to the socket through its
-configured group. Use `toposd doctor --check NAME` for a focused host check and
-`topos daemon status` for client-side socket and protocol status. Inside a
-container it accepts any socket group, because the host's group names usually do
-not resolve there; `--group topos-observe` also requires that group on the host. Uninstall
-without removing group memberships by default:
+An unset `TOPOS_OBSERVE_SOCKET` is a usage error naming the missing variable
+and exits with code 2. For explicit overrides, use `--socket PATH` with a
+daemon command or `topos mcp serve`, `--daemon-socket PATH` with
+`topos gateway serve`, or `--attach PATH` with `topos`. The client
+account needs permission to connect to the configured socket through its
+group. Use `toposd doctor --check endpoint-record` to verify the published
+record and `topos daemon status` for client-side socket and protocol status.
+Inside a container it accepts any socket group, because the host's group names
+usually do not resolve there; `--group NAME` also requires that group on the
+host. Uninstall without removing group memberships by default:
 
 ```bash
 toposd uninstall --dry-run

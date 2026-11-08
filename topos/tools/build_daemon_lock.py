@@ -18,6 +18,13 @@ from typing import Callable, Sequence
 NAME_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9_.-]*)")
 
 
+#: First-party distributions installed from digest-pinned wheels (`toposd install --wheel`,
+#: `--cli-extended-wheel`, `--augeaswrap-wheel`). They never reach pip's index resolver:
+#: augeaswrap is published only as a GitHub Release asset, so an index lookup finds nothing
+#: (or, worse, a foreign project of the same name whose hash would be locked).
+FIRST_PARTY_WHEEL_PINNED = frozenset({"cli-extended", "augeaswrap"})
+
+
 class LockBuildError(ValueError):
     """The wheel metadata or resolved dependency set cannot form a safe lock."""
 
@@ -70,7 +77,7 @@ def _dependency_requirements(metadata_values: Sequence[str]) -> list[str]:
         match = NAME_RE.match(value)
         if match is None:
             raise LockBuildError(f"cannot read dependency name from METADATA requirement {value!r}")
-        if _canonical_name(match.group(1)) != "cli-extended":
+        if _canonical_name(match.group(1)) not in FIRST_PARTY_WHEEL_PINNED:
             requirements.append(value)
     return requirements
 
@@ -131,7 +138,7 @@ def build_daemon_lock(
         for wheel in sorted(destination.glob("*.whl")):
             package, package_version, _ = _wheel_metadata(wheel)
             canonical = _canonical_name(package)
-            if canonical in {"topos", "cli-extended"}:
+            if canonical == "topos" or canonical in FIRST_PARTY_WHEEL_PINNED:
                 continue
             digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
             prior = rows.get(canonical)

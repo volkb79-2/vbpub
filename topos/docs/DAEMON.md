@@ -62,18 +62,29 @@ installation must be removed manually before installing this layout.
 
 Every asset is pinned by its release version and lowercase SHA-256 digest:
 `<version>@sha256:<64 hex>`. The daemon lock pin must use the same version as
-the topos wheel. The lock itself contains the fully hashed third-party runtime
-dependency wheels. Release assets use tag `topos-v<version>`; a local
-`--wheel-source` directory must contain the two wheels, the daemon lock, and
-the dependency wheels used by pip's `--find-links` resolver.
+the topos wheel. The lock contains the fully hashed third-party runtime
+dependency wheels only. The first-party `cli-extended` and `augeaswrap` wheels
+are never in the lock: `augeaswrap` (the endpoint helper) is published only as a
+GitHub Release asset, on no package index, so each is a digest-pinned wheel
+(`--cli-extended-wheel`, and `--augeaswrap-wheel`, required for topos 0.8.0 and
+later) installed `--no-deps` from the wheel source, never resolved by pip's
+index. Release assets use tags `topos-v<version>`, `cli-extended-v<version>`
+and `augeaswrap-v<version>`; a local `--wheel-source` directory must contain
+the three explicitly pinned wheels, the daemon lock, and every additional wheel
+named by that lock for pip's `--find-links` resolver.
+When the installer itself runs from the downloaded wheels before any venv exists
+(`PYTHONPATH=<topos.whl>:<cli_extended.whl>:<augeaswrap.whl> python3 -m
+topos.service.cli install ...`), all three wheels must be on `PYTHONPATH`: the
+installer imports `augeaswrap.endpoints` to preflight and publish the endpoint.
 
 Preview the exact inputs and resources first:
 
 ```bash
 sudo toposd install --dry-run \
-  --wheel 0.7.3@sha256:<topos-wheel-sha256> \
-  --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
-  --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
+  --wheel 0.8.0@sha256:<topos-wheel-sha256> \
+  --cli-extended-wheel 0.5.3@sha256:<cli-extended-wheel-sha256> \
+  --augeaswrap-wheel 0.1.0@sha256:<augeaswrap-wheel-sha256> \
+  --daemon-lock 0.8.0@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
   --add-user observe=alice --add-user observe=bob --enable
 ```
@@ -136,12 +147,26 @@ record, version manifests, and interrupted-install markers before changing
 anything. It refuses an old or unknown installation and prints the manual
 removal commands. It never migrates, repairs, or chmods old state.
 
+After the final install-record write, the installer publishes the configured
+socket path, its directory, and the resolved observe-group GID through
+`augeaswrap.endpoints` as `/etc/host-endpoints.d/topos.env`. The dry-run reports
+that fragment and `toposd doctor --check endpoint-record` verifies it. Uninstall
+withdraws the fragment before stopping the service or removing files.
+
+If publication fails (for example a full disk or a colliding key owned by
+another service), `toposd install` exits with
+`cannot publish topos host endpoint record: ...`. The version tree, units and
+install record are already written and `PENDING` stays, but no fragment exists.
+Fix the cause and rerun the same `toposd install` command: it re-applies and
+publishes, then clears `PENDING`. To abandon the install instead, run
+`toposd uninstall`; it withdraws whatever was published and removes the rest.
+
 `/opt/topos/PENDING` marks an install in progress. A failed download, pin check
 or venv build removes its version tree and the marker, so a retry starts clean.
 A failure after that point, while units, links and services change, leaves
 `PENDING` in place (see below for how a rerun treats it).
 
-`toposd doctor [--check NAME] [--json]` runs `config-valid`, `units-current`,
+`toposd doctor [--check NAME] [--json]` runs `config-valid`, `endpoint-record`, `units-current`,
 `groups`, `socket-units`, `socket-nodes`, `socket-dirs`, `state-dir`,
 `service`, `connect`, `foreign-rules`, and `caller-access`. The `groups` check
 fails when the observe group is missing, has GID 0 or the docker GID, and lists
@@ -172,8 +197,8 @@ rerun: run `groupdel` for the kept group once it is free, then delete
 `/opt/topos` and the install record by hand.
 
 Uninstall acts only on a host where `toposd install` left its record
-(`/etc/topos/install.toml`) or its `PENDING` marker; otherwise it reports that
-nothing is installed. It checks everything before the first change and refuses,
+(`/etc/topos/install.toml`), its `PENDING` marker, or its endpoint fragment;
+otherwise it reports that nothing is installed. It checks everything before the first change and refuses,
 with the manual removal steps, when it finds old-layout or unknown paths under
 `/run/topos` or `/opt/topos`. It removes the socket and service units (socket
 first), the slice, the sysusers file, its own `/usr/local/bin` links, the runtime
@@ -419,7 +444,11 @@ versioned-envelope health read with a legacy one.
 
 `topos mcp serve` is the stdio-only, read-only MCP frontend for local AI CLI
 agents. Install it with `pip install 'topos[mcp]'`, then register for example
-with `claude mcp add topos -- topos mcp serve`. It consumes the versioned API
+with `claude mcp add topos -- topos mcp serve`. The server resolves the socket
+from `TOPOS_OBSERVE_SOCKET`, so the shell that registers and launches it must
+carry that variable (`set -a; . /etc/host-endpoints.env`), or register with an
+explicit path: `claude mcp add topos -- topos mcp serve --socket /absolute/path`.
+Without either it exits 2 naming the variable. It consumes the versioned API
 only through P63's typed `DaemonClient`; no MCP code implements daemon socket
 or envelope handling.
 
@@ -487,12 +516,11 @@ browser or use this header as a browser-controlled credential. A non-loopback
 listener is useful only when direct clients remain unauthenticated and a local
 TLS/auth proxy performs the private-hop connection.
 
-Example local deployment, with the daemon already listening at its normal
-group-protected socket:
+Example local deployment, with `TOPOS_OBSERVE_SOCKET` loaded from the host
+endpoint environment and the daemon listening at its configured socket:
 
 ```bash
 topos gateway serve \
-  --daemon-socket /run/topos/observe/topos.sock \
   --principal dashboard:operational
 ```
 
@@ -558,18 +586,20 @@ from history.
 live collection. The attach client is read-only and only speaks the P16 broker
 protocol.
 
-When no explicit socket path is given, `--attach` defaults to the packaged
-default daemon socket (`/run/topos/observe/topos.sock`).
+When no explicit socket path is given, `--attach` requires
+`TOPOS_OBSERVE_SOCKET` in the process environment. If it is unset, topos exits
+with code 2 and a usage error naming the variable and explaining how to load
+the host endpoint record.
 
 Common forms:
 
 ```bash
-topos --attach                              # default socket, interactive UI
-topos --attach --once --json                # default socket, one canonical frame
-topos --attach --ui-smoke                   # default socket, UI smoke test
-topos --attach /run/topos/observe/topos.sock        # explicit socket, interactive UI
-topos --attach /run/topos/observe/topos.sock --once --json
-topos --attach /run/topos/observe/topos.sock --ui-smoke
+topos --attach                              # TOPOS_OBSERVE_SOCKET, interactive UI
+topos --attach --once --json                # environment socket, one canonical frame
+topos --attach --ui-smoke                   # environment socket, UI smoke test
+topos --attach /custom/path.sock            # explicit socket, interactive UI
+topos --attach /custom/path.sock --once --json
+topos --attach /custom/path.sock --ui-smoke
 ```
 
 `--attach --once --json` prints one canonical frame JSON payload and is the
@@ -583,7 +613,7 @@ from the daemon socket as JSON. It is a read-only, scriptable one-shot
 alternative to `--attach --once --json`.
 
 ```bash
-topos daemon current --json                       # default socket, compact JSON
+topos daemon current --json                       # TOPOS_OBSERVE_SOCKET, compact JSON
 topos daemon current --socket /custom/path.sock   # custom socket
 topos daemon current --pretty-json                # indented JSON
 ```
@@ -602,7 +632,7 @@ usually cannot resolve the host's group names. Use `toposd doctor` for host-wide
 install checks.
 
 ```bash
-topos daemon status                              # default socket, any group
+topos daemon status                              # TOPOS_OBSERVE_SOCKET, any group
 topos daemon status --json                       # JSON output
 topos daemon status --pretty-json                # indented JSON
 topos daemon status --group topos-observe        # also require the socket group
@@ -687,14 +717,18 @@ version and service resources without fetching assets or changing host state.
 When `topos --attach ...` or `topos daemon current ...` fails, the CLI prints
 the original error followed by actionable guidance:
 
-### Default socket (`/run/topos/observe/topos.sock`)
+### Missing or incorrect endpoint
 
 ```
-cannot connect to /run/topos/observe/topos.sock: No such file or directory
+cannot connect to /custom/path.sock: No such file or directory
 
-Try: toposd doctor --check connect
-If the daemon is not installed: see toposd install --help (docs/DAEMON.md)
+Try: topos daemon status --socket /custom/path.sock
 ```
+
+If the usage error says `TOPOS_OBSERVE_SOCKET is unset`, log in again or run
+`set -a; . /etc/host-endpoints.env; set +a`. If the variable names the wrong
+socket, rerun `toposd doctor --check endpoint-record` and inspect the installed
+service config.
 
 ### Custom socket
 
@@ -707,7 +741,7 @@ Try: topos daemon status --socket /tmp/custom.sock
 ### Protocol/response errors
 
 ```
-daemon at /run/topos/observe/topos.sock returned malformed JSON on line 1
+daemon at /custom/path.sock returned malformed JSON on line 1
 
 Check that the process at the socket is a compatible topos daemon
 and review the daemon logs for errors.

@@ -548,6 +548,36 @@ method set to: global", updated to 2.1.302, and wrote only `/opt/mdt/npm/lib/nod
 native installer, has no install-location setting. The background updater is the same npm path
 and was not exercised separately.
 
+**Codex is an npm package whose native payload lives inside it.** `npm install -g @openai/codex`
+puts a Node launcher at `/opt/mdt/npm/bin/codex` (`bin/codex.js`), and the launcher `execve`s the
+native binary from the platform package it selects as an optional dependency
+(`@openai/codex/node_modules/@openai/codex-<os>-<cpu>/vendor/<target-triple>/`): `bin/codex` plus
+`bin/codex-code-mode-host`, the companion that serves code mode (Codex spawns it; it is not on
+`PATH`), a `codex-path/` and a `codex-resources/` directory, and a `codex-package.json` describing
+the layout (`layoutVersion`, `version`, `target`). The installer verifies that tree in place
+(`verify_codex_install()` in `scripts/install_ai_cli_tools.py`): the package version equals the
+staged `CODEX_VER`, the platform package for the build host exists, its single vendor directory's
+manifest agrees with the directory name, both executables are executable regular files, and the
+installed launcher (`$NPM_CONFIG_PREFIX/bin/codex --version`) runs and reports the pinned version
+(running it is what proves the launcher can select a vendor target for the host: a tree whose
+files all agree but name a target the launcher does not pick fails there). It
+deliberately **copies nothing out of it**. `codex update` runs `npm install -g @openai/codex`, which
+replaces the whole tree; a companion copied to `/opt/mdt/bin` or `/usr/local/bin` would then be a
+different version than the `codex` beside it, and nothing would notice (the old MDT-P01 handoff report
+described such a copy flow; it no longer exists). The same optional-dependency
+mechanism makes `npm install --omit=optional` a broken Codex, which is why the installer's check
+exists rather than only a runtime probe.
+
+**Code mode is a per-model catalog field, and a provider that cannot serve it must set it to null.**
+`tool_mode` is not a `config.toml` key: it is a per-model entry in the model catalog
+(`model_catalog_json`). Codex's own catalog for the OpenAI route sets
+`tool_mode = "code_mode_only"` for every model, where the companion is mandatory. A custom provider
+reached through a gateway may not be able to serve it: measured on Codex 0.167.0 against the Open
+Design gateway, every `code_mode_only` call failed (the model's `exec` call arrived with a payload
+Codex rejects, "incompatible payload"), so that route's catalog sets `tool_mode: null` and runs
+plain `unified_exec` shell plus freeform `apply_patch` instead. Set `tool_mode` to null for any
+provider that cannot serve code mode; do not assume the OpenAI catalog's value is portable.
+
 Measured 2026-10-18 on the VS Code image with network, same uid and an empty home volume, each
 tool's own update command run once. Unless noted a tool was already at its latest release, so a
 *download* was not observed - only what the command writes and where it points.
@@ -557,7 +587,7 @@ tool's own update command run once. Unless noted a tool was already at its lates
 | claude | `/opt/mdt/npm` (`@anthropic-ai/claude-code`) | `claude update` | **updated 2.1.286 to 2.1.302:** `/opt/mdt/npm/lib/node_modules` (11 files), `/opt/mdt/npm/bin/claude`, `~/.npm`, `~/.claude.json`, `~/.claude/` | yes | `/opt/mdt/npm/bin/claude` (the only `claude` on `PATH`) |
 | codex | `/opt/mdt/npm` | `codex update` (runs `npm install -g @openai/codex`) | `/opt/mdt/npm/lib` (48 files), `/opt/mdt/npm/bin`, `~/.npm` cache | yes | `/opt/mdt/npm/bin/codex` |
 | copilot | `/opt/mdt/npm` | `copilot update` | `~/.cache/copilot/pkg`, `~/.local/state/gh`, `~/.copilot/logs` | its self-update downloads into the home cache, not `/opt/mdt` | `/opt/mdt/npm/bin/copilot` |
-| opencode | `/opt/mdt/npm` (platform package `opencode-linux-x64-baseline`) | `npm install -g opencode-linux-x64-baseline@latest` (use the `opencode-linux-*` package `opencode_platform_package()` selects for your architecture) | `/opt/mdt/npm/lib` | yes (1.19.3 to 1.19.2 and back, measured). **Not** `opencode upgrade`: it cannot tell how it was installed, asks "Install anyways?" and waits for a terminal; `opencode upgrade -m npm` installs the `opencode-ai` meta-package and failed with "Upgrade failed for npm (exit code 1)" | `/opt/mdt/npm/bin/opencode` |
+| opencode | `/opt/mdt/npm` (platform package `@opencode/cli-linux-x64-baseline`) | `npm install -g @opencode/cli-linux-x64-baseline@latest` (use the `@opencode/cli-linux-*` package `opencode_platform_package()` selects for your architecture) | `/opt/mdt/npm/lib` | yes (1.19.3 to 1.19.2 and back, measured). **Not** `opencode upgrade`: it cannot tell how it was installed, asks "Install anyways?" and waits for a terminal; `opencode upgrade --major` stops at "can't be installed automatically with unknown" | `/opt/mdt/npm/bin/opencode` |
 | pi | `/opt/mdt/npm` | `pi update self` | with `--force`: `/opt/mdt/npm/lib` (15033 files, `npm --prefix /opt/mdt/npm install -g`), `~/.npm` | yes (forced reinstall, 36 s) | `/opt/mdt/npm/bin/pi` |
 | reasonix | `/opt/mdt/npm` | `npm install -g reasonix@latest` (`reasonix upgrade` only checks: with `--force` it refuses, "installed through a package manager ... npm install -g reasonix@latest") | `~/.reasonix/locks/` from the check | yes | `/opt/mdt/npm/bin/reasonix` |
 | openclaw | `/opt/mdt/npm` | `openclaw update --yes --no-restart` | `~/.openclaw/update-reports/`, `~/.openclaw/state/openclaw.sqlite`, `~/.openclaw.update-captures/`, `~/.npm` | update mode `npm` (global prefix `/opt/mdt/npm`); already current | `/opt/mdt/npm/bin/openclaw` |
@@ -781,42 +811,45 @@ reconcile command when they intend to apply the current formula or pin. The
 describes the behavior, and the [consumer steps](CONSUMERS.md#run-gate-admission-cap)
 show the command to paste.
 
-## Narrow cgprofile observer provisioning
+## Host service endpoint ownership
 
-The resource observer uses a read-only Unix socket whose group is deliberately
-separate from `docker`. A normal MDT host install creates its group and runtime
-directory as part of the complete host policy workflow. Contract-2 adoption on
-an already configured host also needs a small additive path that prepares the
-socket directory without re-running unrelated host policy, Docker, or BuildKit
-steps. `install.sh --observer-only` provides that path: it verifies the
-existing `/run/cgprofile` control directory and refuses a pre-existing
-observer group that aliases Docker's GID or an observer path with the wrong
-type, owner, group, or mode before it writes units or applies tmpfiles. It
-refuses drift rather than letting tmpfiles silently re-own a live path. It
-creates the observer group, applies only the observer tmpfiles rule, and
-validates the resulting owner, group, and mode before returning.
+Host setup owns the dev cgroup tiers, Docker API socket configuration, and its
+managed BuildKit worker. cgprofile and topos own their service directories,
+units, groups, and doctor checks through `cgprofiled install` and `toposd
+install`. Keeping those resources in host-setup created two owners for service
+state and made host upgrades depend on service-specific keys and lifecycle
+rules.
 
-The dedicated tmpfiles rule is separate from the control-socket rule so the
-narrow path cannot rewrite the Docker-accessible parent directory. The full
-installer uses the same provisioning helper, keeping both host workflows on
-one implementation. `mdt-host-check.sh` verifies the live observer group,
-directory metadata, and the complete active sysusers/tmpfiles rule sets. It
-ignores blank lines and comments but rejects extra active directives, so a
-missing or widened rule is reported before a consumer lane tries to mount the socket. See the
-[pasteable consumer command](CONSUMERS.md#cgprofile-resource-observer-host-setup).
+Each service publishes its own endpoint fragment through `augeaswrap`; the
+helper serializes updates and regenerates the shared aggregate, `/etc/environment`
+block, and login-shell loader. Host-setup publishes `mdt-host-setup` only after
+the Docker and BuildKit facts are applied and ready. Its paths and GIDs come
+from the host-owned unit configuration, group database, and live socket. The
+endpoint check reports the record and the aggregate through augeaswrap. The
+installer resolves the writer from `PATH` or the optional `AUGEASWRAP_BIN`
+command/path override; keeping a filesystem path out of the installer avoids
+coupling the consumer to one wheel-install location.
 
-## cgprofile 2.x host-setup installer boundary
+The Buildx shim derives the Unix endpoint from `MDT_BUILDKIT_SOCKET` and
+refuses a missing value (exit 2) instead of guessing a path.
 
-`mdt-cgprofile-install.sh` renders the host config and units through `cgpd`,
-queries sessions with `cgpctl`, and installs `cgpd.service`. cgprofile 3.0.0
-uses the renamed `cgprofiled` and `cgprofilectl` entry points and its own
-`cgprofiled install` service workflow. The mdt host-setup installer therefore
-accepts only cgprofile 2.x pins (`<3.0.0`) and refuses outside that range before
-fetching a wheel. Its protected-unit defaults name both `cgpd.service` and
-`cgprofiled.service` while 2.x host-setup installs and 3.x service installs
-coexist across hosts. The [host guide](../host-setup/README.md#install-pin-and-upgrade-the-cgprofile-service)
-states the supported range; the [consumer procedure](CONSUMERS.md#cgprofile-resource-observer-host-setup)
-shows the install command.
+Moving the consumers (the devcontainer templates and `.devcontainer`, the
+`cmru.orchestration.toml` `BUILDX_BUILDER`/`BUILDKIT_HOST` expansions, the
+release builder script and finalizer, and the `required_env` of the
+image-runtime run-gate lanes) onto the published facts is a separate, later
+phase-2 cutover, because it changes the environment every consumer must have.
+Until then the consumers keep their literal defaults. Sessions that started
+before the cutover keep the old environment and need a fresh login (see
+[host-setup README](../host-setup/README.md#after-the-cutover-log-in-again)).
+
+During migration, host-setup refuses if its retired cgprofile/topos files, the
+old `/etc/profile.d/mdt-buildkit.sh`, or the old marked `/etc/environment`
+block remains. The operator removes those named artifacts by hand so a new
+publisher cannot silently compete with stale ownership. Its documented manual
+uninstall withdraws the `mdt-host-setup` fragment before removing units and
+files, which lets augeaswrap re-render only the facts that remain owned by
+other services. See the [pasteable host service commands](CONSUMERS.md#host-service-endpoints)
+and [host endpoint guide](../host-setup/README.md#host-endpoint-facts-and-upgrade-refusal).
 
 ## BuildKit guard policy
 

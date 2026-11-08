@@ -17,9 +17,9 @@ from topos.daemon.client import (
     DaemonResponseError,
 )
 from topos.service.config import DEFAULTS
+from topos.daemon.socket_path import resolve_observe_socket
 
 
-DEFAULT_DAEMON_SOCKET = DEFAULTS.sockets.observe.path
 DEFAULT_DAEMON_GROUP = DEFAULTS.sockets.observe.group
 DEFAULT_SOCKET_MODE = DEFAULTS.sockets.observe.mode
 
@@ -147,9 +147,7 @@ def _check_protocol(socket_path: Path, *, now: Callable[[], float] = time.time) 
         hello = client.request_hello()
         frame = client.current_frame()
     except DaemonConnectError as exc:
-        guidance = " Try: toposd doctor --check connect."
-        if socket_path != DEFAULT_DAEMON_SOCKET:
-            guidance = f" Check the mounted socket path {socket_path} and its observe-group access."
+        guidance = f" Check the mounted socket path {socket_path} and its observe-group access."
         return ProtocolStatus(False, f"Cannot connect: {exc}{guidance}")
     except (DaemonProtocolError, DaemonResponseError) as exc:
         return ProtocolStatus(
@@ -181,12 +179,12 @@ def _check_protocol(socket_path: Path, *, now: Callable[[], float] = time.time) 
 
 
 def build_daemon_status(
-    socket_path: Path = DEFAULT_DAEMON_SOCKET,
+    socket_path: Path | str | None = None,
     *,
     group_name: str | None = None,
 ) -> DaemonStatusReport:
     """Read socket metadata and exercise the same hello used by service doctor."""
-    path = Path(socket_path)
+    path = resolve_observe_socket(socket_path)
     return DaemonStatusReport(
         socket_path=path,
         group_name=group_name,
@@ -196,6 +194,6 @@ def build_daemon_status(
 
 
 __all__ = [
-    "DEFAULT_DAEMON_GROUP", "DEFAULT_DAEMON_SOCKET", "DaemonStatusReport", "ProtocolStatus",
+    "DEFAULT_DAEMON_GROUP", "DaemonStatusReport", "ProtocolStatus",
     "SocketNodeStatus", "build_daemon_status",
 ]

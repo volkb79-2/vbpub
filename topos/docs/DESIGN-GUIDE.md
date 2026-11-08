@@ -91,6 +91,24 @@ an interrupted first install. A failed `groupdel` does not block service and
 file cleanup; the record stays, and the operator runs `groupdel` and removes the
 record by hand, because the `toposd` that ran is removed with its version tree.
 
+## Host endpoint record and client resolution
+
+The installer owns the configured observe socket and its group, so it
+publishes those facts through `augeaswrap.endpoints` after writing the install
+record. The shared endpoint writer handles collision checks, atomic fragments,
+and login-shell export without duplicating that machinery in topos. A dry-run
+shows the fragment plan; `toposd doctor --check endpoint-record` compares the
+published values with the active service config. Uninstall withdraws topos's
+fragment before stopping or removing the service.
+
+Clients read `TOPOS_OBSERVE_SOCKET` from their process environment. The
+login-session environment is populated from the aggregate endpoint file; a
+non-login caller can source that file or pass an explicit socket path. Client
+modules have no default socket path: a missing variable is an actionable
+usage error, and an explicitly wrong path remains visible as a connection
+failure. This keeps service configuration as the single source of the path and
+lets host-setup change it without a topos client release.
+
 The topos-specific differences from cgprofiled are listed in the
 [daemon operator guide](DAEMON.md#differences-from-cgprofiled). They follow from
 topos's single read-only observe socket, volatile-only daemon state, and its

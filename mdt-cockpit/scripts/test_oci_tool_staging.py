@@ -358,7 +358,7 @@ def test_the_five_user_updatable_tools_are_recorded_by_their_exact_resolved_vers
 
     assert {k: resolved[k] for k in ("CODEX_VER", "CLAUDE_CODE_VER", "REASONIX_VER", "OPENCODE_VER", "PI_VER")} == {
         "CODEX_VER": "codex-x", "CLAUDE_CODE_VER": "2.1.302", "REASONIX_VER": "npm-reasonix",
-        "OPENCODE_VER": "npm-opencode-ai", "PI_VER": "npm-@earendil-works/pi-coding-agent",
+        "OPENCODE_VER": "npm-@opencode/cli", "PI_VER": "npm-@earendil-works/pi-coding-agent",
     }
     display = dict(resolver.TOOL_VERSION_DISPLAY_ORDER)
     for tool, key in (("codex", "CODEX_VER"), ("claude", "CLAUDE_CODE_VER"), ("reasonix", "REASONIX_VER"),
@@ -375,7 +375,7 @@ def test_claude_is_no_longer_staged_as_a_native_binary() -> None:
 
 @pytest.mark.parametrize("variable,package", [
     ("REASONIX_VERSION", "reasonix"),
-    ("OPENCODE_VERSION", "opencode-ai"),
+    ("OPENCODE_VERSION", "@opencode/cli"),
     ("PI_VERSION", "@earendil-works/pi-coding-agent"),
 ])
 def test_an_explicit_npm_pin_must_be_published(monkeypatch: pytest.MonkeyPatch, variable: str, package: str) -> None:
@@ -626,6 +626,7 @@ def test_gdu_dust_ov_dry_and_yazi_versions_resolve_through_the_aged_resolver(mon
     monkeypatch.setattr(staging, "_resolve_pypi_version", lambda requested, package: "0.0.1")
     monkeypatch.setattr(staging, "_resolve_codex_version", lambda requested: "0.0.1")
     monkeypatch.setattr(staging, "_resolve_pinned_npm_version", lambda requested, package, variable: "0.0.1")
+    monkeypatch.setattr(staging, "_resolve_npm_version", lambda requested, package: "0.0.1")
     monkeypatch.setattr(staging, "_vetted_ai_cli_versions", lambda: {})
     monkeypatch.setattr(staging, "install_enabled", lambda name: False)
     resolved = staging._resolve_versions()
@@ -1076,7 +1077,23 @@ BANNER_BINARIES = {"antigravity": "agy", "ripgrep": "rg", "awscli": "aws"}
 def _manifest_commands() -> dict[str, str]:
     """`tool` -> the `$( ... )` command the manifest RUN records it with (parenthesis-free commands only)."""
     layer = _manifest_run_layer()
-    return {m.group(1): m.group(2) for m in re.finditer(r'echo "([A-Za-z0-9-]+)=\$\(([^()]*)\)"', layer)}
+    commands = {m.group(1): m.group(2) for m in re.finditer(r'echo "([A-Za-z0-9-]+)=\$\(([^()]*)\)"', layer)}
+    # Probes that must FAIL the build when the CLI is broken (claude, codex): the whole guarded
+    # statement list runs, not just the probe, so the abort behaviour is what is tested.
+    guarded = re.finditer(
+        r'(v="\$\(([A-Za-z0-9-]+) --version 2>&1\)" \|\| \{[^}]*\}; \\?\s*test -n "\$\{v\}" \|\| \{[^}]*\}; \\?\s*echo "\2=\$\{v%%\$\'\\n\'\*\}")',
+        layer,
+    )
+    for m in guarded:
+        commands[m.group(2)] = re.sub(r"\\\n\s*", "", m.group(1))
+    return commands
+
+
+def _manifest_binary(command: str) -> str:
+    """The executable a manifest command probes (the guarded form starts with the `v=` assignment)."""
+    if command.startswith('v="$('):
+        return command.removeprefix('v="$(').split()[0]
+    return command.split()[0]
 
 
 def test_every_recorded_banner_normalises_to_its_bare_version() -> None:
@@ -1104,8 +1121,8 @@ def test_the_dockerfile_extraction_commands_record_one_bare_version_per_tool(tmp
         if tool not in VERSION_BANNERS:
             continue
         banner, expected = VERSION_BANNERS[tool]
-        binary = BANNER_BINARIES.get(tool, command.split()[0])
-        assert command.split()[0] == binary, (tool, command)
+        binary = BANNER_BINARIES.get(tool, _manifest_binary(command))
+        assert _manifest_binary(command) == binary, (tool, command)
         shim = bindir / binary
         shim.write_text("#!/bin/sh\ncat <<'MDT_BANNER'\n" + banner + "\nMDT_BANNER\n", encoding="utf-8")
         shim.chmod(0o755)
@@ -1117,3 +1134,62 @@ def test_the_dockerfile_extraction_commands_record_one_bare_version_per_tool(tmp
         assert manifest_sections.normalise_version(tool, recorded) == expected, (tool, recorded)
         checked.append(tool)
     assert len(checked) >= 25, checked
+
+
+@pytest.mark.parametrize("tool", ["claude", "codex"])
+@pytest.mark.parametrize(
+    ("shim_body", "stderr_text"),
+    [("exit 3", "--version failed"), ("exit 0", "printed nothing")],
+    ids=["non-zero-exit", "empty-output"],
+)
+def test_a_broken_agent_cli_fails_the_manifest_step(tmp_path: Path, tool: str, shim_body: str, stderr_text: str) -> None:
+    """The manifest used to record `$(tool --version | head -1)`, which succeeded whatever the tool did:
+    a broken Codex shipped an error string as its version. The guarded probe must abort the build."""
+    command = _manifest_commands()[tool]
+    shim = tmp_path / tool
+    shim.write_text(f"#!/bin/sh\n{shim_body}\n", encoding="utf-8")
+    shim.chmod(0o755)
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", command], capture_output=True, text=True, env=env)
+    assert result.returncode != 0, (tool, result.stdout)
+    assert stderr_text in result.stderr
+    assert f"{tool}=" not in result.stdout
+
+# ── OpenCode moved npm packages once (opencode-ai 1.x -> @opencode/cli 2.x); never again unnoticed ──
+
+def _opencode_registry(monkeypatch: pytest.MonkeyPatch, latest: dict[str, str]) -> None:
+    def fake(requested: str | None, package: str) -> str:
+        if package not in latest:
+            raise staging.StageError(f"registry unreachable for {package}")
+        return latest[package]
+
+    monkeypatch.setattr(staging, "_resolve_npm_version", fake)
+
+
+def test_opencode_follows_the_v2_package_latest(monkeypatch: pytest.MonkeyPatch) -> None:
+    _opencode_registry(monkeypatch, {"@opencode/cli": "2.2.6", "opencode-ai": "1.19.5"})
+
+    assert staging._resolve_opencode_version(None) == "2.2.6"
+    assert staging._resolve_opencode_version("latest") == "2.2.6"
+
+
+def test_opencode_staging_fails_when_the_old_package_gets_ahead(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Upstream moved the package again: refuse to ship an old major rather than record it as latest."""
+    _opencode_registry(monkeypatch, {"@opencode/cli": "2.2.6", "opencode-ai": "3.0.0"})
+
+    with pytest.raises(staging.StageError, match="moved OpenCode to another npm package"):
+        staging._resolve_opencode_version(None)
+
+
+def test_opencode_package_move_check_is_not_a_hard_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+    _opencode_registry(monkeypatch, {"@opencode/cli": "2.2.6"})  # legacy package unreadable
+
+    assert staging._resolve_opencode_version(None) == "2.2.6"
+
+
+def test_the_installer_and_staging_name_one_opencode_package() -> None:
+    """The in-image installer cannot import staging; this is the only link between the two names."""
+    import install_ai_cli_tools as installer
+
+    assert installer.OPENCODE_PLATFORM_SCOPE == staging.OPENCODE_NPM_PACKAGE.split("/")[0]
+    assert installer.opencode_platform_package().startswith(staging.OPENCODE_NPM_PACKAGE + "-")

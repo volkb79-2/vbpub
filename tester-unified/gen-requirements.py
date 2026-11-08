@@ -81,10 +81,14 @@ PROJECTS = (
 #: image must not carry it. ``cli-extended`` is installed by the Dockerfile in every case.
 TEST_EXTRAS_ONLY = frozenset({"pwmcp-client"})
 
-# cgprofile's fake-root gate imports the same-repository endpoint helper from
-# its bind-mounted checkout. Never hand this first-party requirement to pip;
-# cgprofile/tools/gate.sh supplies augeaswrap/src on that gate's PYTHONPATH.
-SOURCE_BACKED_RUNTIME = {"cgprofile": frozenset({"augeaswrap"})}
+# cgprofile's and topos' fake-root gates import the same-repository endpoint helper
+# from their bind-mounted checkouts. Never hand this first-party requirement to pip
+# (augeaswrap is on no index); cgprofile/tools/gate.sh and topos/run-gate.toml's
+# topos-suite lane supply augeaswrap/src on that gate's PYTHONPATH.
+SOURCE_BACKED_RUNTIME = {
+    "cgprofile": frozenset({"augeaswrap"}),
+    "topos": frozenset({"augeaswrap"}),
+}
 
 #: Source-backed Assay lanes install the selected assay tree into the tester
 #: venv; the Run-Gate wheel is built offline from the copied source tree. Their
