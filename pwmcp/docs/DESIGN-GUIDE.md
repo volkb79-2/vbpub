@@ -332,3 +332,101 @@ two-day default age window to npm and PyPI publication timestamps. This lets
 the common 1.64.0 release pass once its latest required package upload is two
 days old, while keeping newly published packages out of routine selections.
 The threshold remains an explicit resolver option for deliberate exceptions.
+
+## Competitors and alternatives
+
+Each entry records what a comparable project does, where it differs from
+PWMCP, and what PWMCP takes from it. An entry carries the date it was checked.
+Figures and feature claims are as the project published them on that date
+unless the entry says they were verified. Re-check an entry before relying on
+it.
+
+### Scrapling (checked 2026-11-08)
+
+**What it is.** A Python scraping library (`scrapling` on PyPI, BSD-3-Clause,
+0.5.1 released 2026-11-04, classified "4 - Beta", Python 3.10+). It is a
+library, not a service. The parser core depends on `lxml`, `cssselect`,
+`orjson`, `tld` and `w3lib`. The `fetchers` extra adds `curl_cffi` (HTTP with
+browser TLS impersonation), `patchright` (a patched Playwright), and
+`browserforge` and `apify-fingerprint-datapoints` (fingerprint data);
+`scrapling install` then downloads browsers onto the caller's machine. The `ai`
+extra adds an MCP server and `shell` an IPython shell.
+
+**Features relevant to PWMCP.**
+
+- Fetchers: `Fetcher` (HTTP with TLS and header impersonation, HTTP/3) and
+  `StealthyFetcher` (browser). Since 0.5 the plain Playwright backend is
+  removed, so every browser fetch uses the Patchright-based stealth backend.
+  `RemoteSession` attaches to a running Chromium through a CDP URL.
+- Adaptive element tracking: `css(sel, auto_save=True)` stores an element's
+  tag, text, attributes, sibling and path tag names, and parent properties in
+  SQLite, keyed by domain and identifier. When the selector later finds
+  nothing, `css(sel, adaptive=True)` returns the most similar element. The
+  parser also offers `find_similar()`, text and regex search, and selector
+  generation.
+- Spiders: Scrapy-style async spiders with per-domain concurrency,
+  AutoThrottle, optional robots.txt obedience, pause and resume (`crawldir`), a
+  development response cache, sitemap, feed and Shopify templates, and
+  JSON/JSONL/CSV/XML export.
+- Sessions and proxies: persistent HTTP and browser sessions, `save_state` and
+  `load_state` in Playwright storage-state format, a `ProxyRotator`, and
+  spider-level retry of blocked responses (401, 403, 407, 429, 444 and 5xx by
+  default) that can switch session or proxy.
+- AI: an MCP server with 17 tools (HTTP and browser fetch, sessions, actions,
+  screenshots, frame sequences, network history, evaluation, state save and
+  load) over stdio or Streamable HTTP, where HTTP requires a bearer token. It
+  also ships an agent skill. `scrapling extract ... --ai-targeted` removes
+  hidden elements, zero-width characters and comments that could carry prompt
+  injection. Browser tools block about 3,500 ad and tracker domains by default.
+- Network history: a browser session records completed responses with bounded
+  text bodies, so a caller can read the JSON behind a page.
+
+**Bot protection.** This is the main difference. Scrapling's documentation
+states that `StealthyFetcher` bypasses Cloudflare Turnstile and interstitial
+challenges (`solve_cloudflare=True`), patches headless and CDP detection, and
+adds canvas noise; the README's sponsors include proxy and CAPTCHA-solving
+services. PWMCP recognizes such pages and reports them (exit 4), and its only
+route past a protection is a session a human exported (see README "Bot
+protection"). Those Scrapling features fall under PWMCP's stated non-goals.
+PWMCP does not adopt them or depend on the `fetchers` extra, which in 0.5
+always installs the stealth backend. The bypass claims were not tested.
+
+**Where PWMCP differs.** PWMCP is a managed, shared browser service. Consumers
+hold no browser and reach it through leases. It ships a pinned, versioned
+image (official Playwright base, pinned npm and Python packages, an upstream
+age window). The CLI has a closed exit-code table and one JSON envelope. PWMCP
+also reports bot protection, runs an OCR sidecar for canvas consoles, deploys
+through ciu, and releases through an R1/R2 gate with branch coverage and
+mutation judgment. Scrapling runs the browser inside each caller. Its
+dependencies are `>=` floors with no lock file, and its Docker `latest` tag is
+built from `main` with an unpinned `uv:latest` stage. CI collects coverage
+without a threshold; the README's "92% test coverage" was not verified. PyPI
+uploads use Trusted Publishing with provenance attestations (verified for
+0.5.1). `RemoteSession` needs a CDP endpoint, which PWMCP keeps inside its
+container ([CDP never leaves the container](SECURITY.md#cdp-never-leaves-the-container)),
+so the two do not connect as designed.
+
+**Maturity (GitHub API, 2026-11-08).** About 99.7k stars and 10.4k forks; 3
+open and 180 closed issues; 55 PyPI releases, 15 of them between 2026-03-30
+and 2026-11-04. The owner has 1,709 commits in GitHub's contributor count (the
+next contributor has 17) and wrote 78 of the 100 commits since 2026-08-08, so
+the project depends on one maintainer. The README parser benchmarks (for
+example 1.99 ms against Parsel's 2.06 ms on 5,000 nested elements) are the
+project's own and were not reproduced.
+
+**What PWMCP takes.** Ideas only, with no dependency: hidden-content filtering
+for agent-facing output (PWMCP-50) and a network-response format (PWMCP-51).
+If a consumer needs them, a bounded crawl that obeys robots.txt (PWMCP-52)
+and opt-in selector relocation (PWMCP-53). Re-check this entry after
+Scrapling's next minor release, mainly for its MCP tool design and extraction
+behavior.
+
+**Sources.** <https://github.com/D4Vinci/Scrapling> (README, `pyproject.toml`,
+`.github/workflows/` and `Dockerfile` at commit `30cadb56a`);
+<https://github.com/D4Vinci/Scrapling/releases/tag/v0.5.1>;
+<https://pypi.org/project/scrapling/0.5.1/>; and the documentation pages
+<https://scrapling.readthedocs.io/en/latest/parsing/adaptive.html>,
+<https://scrapling.readthedocs.io/en/latest/fetching/stealthy.html>,
+<https://scrapling.readthedocs.io/en/latest/ai/mcp-server.html>,
+<https://scrapling.readthedocs.io/en/latest/spiders/proxy-blocking.html> and
+<https://scrapling.readthedocs.io/en/latest/migrating-to-v0.5.html>.
