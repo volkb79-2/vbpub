@@ -13,6 +13,7 @@ import pytest
 RUNNER = Path(__file__).resolve().parents[1] / "runner"
 START = RUNNER / "start-cockpit-runner.sh"
 LIB = RUNNER / "lib.sh"
+PROVISION = RUNNER / "provision-runner.sh"
 
 # Deliberately differ from the historical defaults so a literal substituted into
 # the launcher cannot accidentally produce the same argv as the record.
@@ -171,6 +172,70 @@ def _run_start(
     return proc, argv_log, endpoint_file
 
 
+def test_provision_requires_the_complete_endpoint_record_when_one_exists(tmp_path: Path):
+    fake_bin = _fake_tools(tmp_path)
+    server_id = tmp_path / "etc" / "vbpub" / "server-id"
+    server_id.parent.mkdir(parents=True)
+    server_id.write_text("7\n")
+    endpoints_file = tmp_path / "host-endpoints.env"
+    endpoints_file.write_text("MDT_HOST_DOCKER_GID=1221\n")
+    endpoints_file.chmod(0o644)
+    runner_env = tmp_path / "runner.env"
+    runner_env.write_text(_runner_env())
+    runner_env.chmod(0o600)
+
+    test_runner = tmp_path / "provision-runner"
+    test_runner.mkdir()
+    shutil.copy2(LIB, test_runner / "lib.sh")
+    (test_runner / "lib.sh").write_text(
+        (test_runner / "lib.sh").read_text().replace("/etc/vbpub/server-id", str(server_id))
+    )
+    source = PROVISION.read_text()
+    source = source.replace("/etc/vbpub/server-id", str(server_id))
+    source = source.replace(
+        "/etc/host-endpoints.env", shlex.quote(str(endpoints_file))
+    )
+    provision_copy = test_runner / "provision-runner.sh"
+    provision_copy.write_text(source)
+    provision_copy.chmod(0o755)
+
+    for name, body in {
+        "hostname": "#!/bin/sh\nprintf 'host.example.org\\n'\n",
+        "hostnamectl": "#!/bin/sh\nprintf 'host\\n'\n",
+        "cat": f"#!/bin/sh\nif [ \"$1\" = {shlex.quote(str(server_id))} ]; then printf '7\\n'; else exec /bin/cat \"$@\"; fi\n",
+        "getent": "#!/bin/sh\nif [ \"$1\" = group ] && [ \"$2\" = docker ]; then printf 'docker:x:1221:runner\\n'; exit 0; fi\nexit 2\n",
+        "apt-get": "#!/bin/sh\nexit 0\n",
+        "useradd": "#!/bin/sh\nexit 0\n",
+        "usermod": "#!/bin/sh\nprintf 'usermod called\\n' >>\"$PROVISION_CALLS\"\nexit 0\n",
+    }.items():
+        path = fake_bin / name
+        path.write_text(body)
+        path.chmod(0o755)
+
+    calls = tmp_path / "provision-calls.log"
+    env = os.environ.copy()
+    env.update(
+        {
+            "RUNNER_ENV": str(runner_env),
+            "TEST_ENDPOINTS_UID": "0",
+            "PROVISION_CALLS": str(calls),
+            "PATH": f"{fake_bin}:/usr/bin:/bin",
+        }
+    )
+    proc = subprocess.run(
+        ["/bin/bash", str(provision_copy)],
+        cwd=RUNNER,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 2
+    assert "host endpoints: MDT_DOCKER_API_SOCKET is not set" in proc.stderr
+    assert not calls.exists() or "usermod called" not in calls.read_text()
+
+
 def _run_loader_batch(tmp_path: Path, records: dict[str, Path]):
     fake_bin = _fake_tools(tmp_path)
     runner_env_file = tmp_path / "runner.env"
@@ -191,6 +256,9 @@ def _run_loader_batch(tmp_path: Path, records: dict[str, Path]):
         "    status=0\n"
         "  else\n"
         "    status=$?\n"
+        '    for name in MDT_HOST_DOCKER_GID MDT_DOCKER_API_SOCKET MDT_BUILDKIT_GID; do\n'
+        '      if [[ ${!name+x} ]]; then printf "PARTIAL=%s\\n" "$name" >>"$result_base.stdout"; fi\n'
+        '    done\n'
         "  fi\n"
         '  printf "%s\\n" "$status" >"$result_base.status"\n'
         "done\n"
@@ -299,6 +367,7 @@ def loader_results(tmp_path_factory: pytest.TempPathFactory):
             "MDT_HOST_DOCKER_GID=1221 value",
             'MDT_HOST_DOCKER_GID="1221"',
             "MDT_BUILDKIT_SOCKET_DIR=/var/ep/buildkit,readonly=false",
+            "MDT_BUILDKIT_SOCKET_DIR=/var/ep/buildkit#comment",
         )
     ):
         name = f"malicious_{index}"
@@ -317,6 +386,7 @@ def loader_results(tmp_path_factory: pytest.TempPathFactory):
     )
     add("wrong_owner", _endpoint_text(), owner_uid="1000")
     add("group_writable", _endpoint_text(), mode=0o664)
+    add("other_writable", _endpoint_text(), mode=0o646)
     add("world_writable", _endpoint_text(), mode=0o666)
     add("unreadable", _endpoint_text(), mode=0o000)
     add("symlink", _endpoint_text(), symlink=True)
@@ -391,7 +461,7 @@ def test_missing_endpoint_refuses_before_docker_runs(tmp_path: Path):
     assert _docker_calls(argv_log) == []
 
 
-@pytest.mark.parametrize("index", range(6))
+@pytest.mark.parametrize("index", range(7))
 def test_record_parser_refuses_shell_syntax_and_mount_option_injection(loader_results, index: int):
     results, markers = loader_results
     result = results[f"malicious_{index}"]
@@ -399,6 +469,14 @@ def test_record_parser_refuses_shell_syntax_and_mount_option_injection(loader_re
     assert f"{result['record']}:16" in result["stderr"]
     assert "invalid record" in result["stderr"]
     assert not markers[f"malicious_{index}"].exists(), "record content was executed"
+
+
+def test_record_parser_does_not_export_entries_before_the_entire_record_is_valid(loader_results):
+    results, _ = loader_results
+    result = results["malicious_0"]
+
+    assert result["status"] == 2
+    assert "PARTIAL=" not in result["stdout"]
 
 
 def test_record_parser_ignores_comments_and_exports_only_runner_keys(loader_results):
@@ -415,6 +493,7 @@ def test_record_parser_ignores_comments_and_exports_only_runner_keys(loader_resu
     (
         ("wrong_owner", "not owned by root"),
         ("group_writable", "group/other writable"),
+        ("other_writable", "group/other writable"),
         ("world_writable", "group/other writable"),
         ("unreadable", "is not readable"),
         ("symlink", "must not be a symlink"),
