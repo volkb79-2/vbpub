@@ -11,10 +11,11 @@ publishes only the fragment for that service; consumers read the resulting
 process environment.
 
 The module lives in the `augeaswrap` package, which carries what
-every host-configuration resource shares: the owner validator
-(`validate_owner`, alphabet `^[a-z][a-z0-9-]{0,62}$`), the structured
-`Problem` record, and `augeaswrap/_fs.py` (symlink-safe paths, atomic writes,
-directory `fsync`, and a lock whose path is a parameter).
+every host-configuration resource shares: the structured `Problem` record
+and `augeaswrap/_fs.py` (symlink-safe paths, atomic writes, directory
+`fsync`, and a lock whose path is a parameter). Endpoint fragment names are
+validated by `augeaswrap.endpoints.validate_owner` with the alphabet
+`^[a-z][a-z0-9-]{0,62}$`.
 
 ### API
 
@@ -197,3 +198,53 @@ then prints `no endpoints published`), and `1` when drift is found.
 where `problems` are the message strings and `records` the structured
 `Problem` dictionaries. `withdraw` of an owner without a fragment exits `0`
 and says so. Publishing refusals and invalid arguments exit `2`.
+
+## Guarded applier protocol (HC-1a')
+
+The core applier accepts strict TOML requests and Python `Request` values. Its
+state is limited to transaction journals and exact pre-images. A request has a
+one-line `writer` and an ordered tuple of resources; it has no owner or prune
+field. Callers remove resources with explicit `state = "absent"` requests.
+There is no ownership registry, takeover, tool-level uninstall, or automatic
+rollback. `revert` is an explicit operation and refuses when a later
+transaction changed an address in the transaction being reverted.
+
+Every resource implements this frozen protocol. HC-1b-u and HC-1b-s resource
+work, including the endpoint adapter, uses it without changing its signatures:
+
+```python
+class Resource(Protocol):
+    kind: str
+    def addresses(self) -> tuple[str, ...]: ...
+    def observe(self, ctx) -> Mapping[str, object]: ...
+    def diff(self, ctx, observed) -> list[Change]: ...
+    def stage(self, ctx, change: Change) -> object: ...
+    def commit(self, ctx, staged: object) -> object: ...
+    def post_actions(self, changes: list[Change]) -> list[PostAction]: ...
+    def verify(self, ctx) -> list[Problem]: ...
+```
+
+`observe` is read-only and returns one JSON-safe value per address. Each value
+must represent every file, path, and external fact the resource read; the
+engine fingerprints the complete observation and rechecks it under the
+exclusive lock before apply. `diff` returns one `Change` or `noop` per
+address. `stage` prepares and validates without changing the managed root; it
+may write only below the private `ctx.stage_dir`. `commit` applies one staged
+change and returns its post-image for the journal. `post_actions` returns
+argv-only `PostAction` values. `verify` reads committed state and compares it
+with the staged images in `ctx.expected`.
+
+The stable context fields are `root`, `writer`, `txn_id`, `txn_dir`,
+`stage_dir`, `pre_dir`, and `expected`. `root` is the selected real or fake
+root. During planning, transaction fields may be `None` and `stage_dir` is a
+private temporary directory; during apply it is transaction-local. There is
+no state-file or ownership field. The protocol docstring in
+[`src/augeaswrap/__init__.py`](src/augeaswrap/__init__.py) is the source
+contract for parallel resource work.
+
+The request schema starts with `augeaswrap = 1` and requires `writer`. Unknown
+keys and missing required fields refuse during load. The core kinds are `file`
+and `check`: file requests write or delete a whole allowed file, while check
+requests run a read-only argv or assert path metadata. See the
+[consumer examples](docs/CONSUMERS.md#guarded-applier) and the
+[design rationale](docs/DESIGN-GUIDE.md#guarded-applier).

@@ -22,3 +22,20 @@ its fragment. Symlink refusal prevents a managed target from redirecting writes
 to an unrelated file. The API and operational examples are in the
 [consumer guide](CONSUMERS.md#host-endpoint-records); the normative contract is
 in [`SPEC.md`](../SPEC.md#endpoint-records).
+
+## Guarded applier
+
+The applier keeps transaction journals and exact pre-images so a caller can
+inspect a partial apply and choose an explicit revert. It does not keep an
+owner registry or infer who should win when two callers name the same file.
+That avoids turning a simple file applier into a hidden package manager: a
+caller states the desired present or absent value, and the journal records
+what the transaction changed. A revert checks that no later transaction
+changed the same address before restoring the pre-image.
+
+Resource kinds share one frozen protocol so independent kinds can be built
+without engine-specific hooks. `observe` supplies the complete precondition,
+`diff` describes the requested transition, `stage` validates a private image,
+`commit` writes it, `post_actions` declares argv-only follow-up commands, and
+`verify` compares the host with the staged image. The protocol and context
+contract are defined in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).

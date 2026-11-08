@@ -23,7 +23,8 @@ import pytest
 
 from cli_extended.identity import CliIdentity, VersionLookupError
 from cli_extended.parser import CliFailure
-from augeaswrap import Problem, _fs, endpoints, validate_owner
+from augeaswrap import Problem, _fs, endpoints
+from augeaswrap.endpoints import validate_owner
 
 SOURCE = Path(__file__).resolve().parents[1] / "src"
 CLI_EXTENDED_SOURCE = SOURCE.parent.parent / "libraries/cli-extended/src"

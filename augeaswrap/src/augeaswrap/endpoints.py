@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from . import Problem, _fs, validate_owner
+from . import Problem, _fs
 from cli_extended.identity import CliIdentity, VersionLookupError
 from cli_extended.parser import CliFailure, CliRegistry, CliRuntime, OptionSpec, VerbSpec
 
@@ -86,6 +86,14 @@ _RESERVED_KEYS = frozenset(
         "SSH_AUTH_SOCK",
     }
 )
+
+
+def validate_owner(owner: object) -> str:
+    """Return one canonical endpoint fragment name or raise ``ValueError``."""
+
+    if not isinstance(owner, str) or _MARKER_RE.fullmatch(owner) is None:
+        raise ValueError("owner must match ^[a-z][a-z0-9-]{0,62}$")
+    return owner
 # Whole families: the dynamic loader (LD_PRELOAD, LD_AUDIT, ...), the Python
 # interpreter (PYTHONPATH, PYTHONSTARTUP, ...), bash's own variables
 # (BASH_ENV, BASH_XTRACEFD, ...) and the locale (LC_*).
