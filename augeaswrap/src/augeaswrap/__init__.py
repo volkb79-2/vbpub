@@ -162,12 +162,16 @@ class PostAction:
     ``pending`` records an intended runtime action without executing it. This is
     for installers that must leave live services alone and hand the action to a
     later maintenance step.
+
+    ``phase`` selects the shared post-action phase. When omitted, the engine
+    derives the phase from known argv forms and refuses unknown commands.
     """
 
     name: str
     argv: tuple[str, ...]
     timeout: float
     pending: bool = False
+    phase: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -185,6 +189,19 @@ class PostAction:
             raise ValueError("post-action timeout must be positive and finite")
         if type(self.pending) is not bool:
             raise ValueError("post-action pending flag must be a boolean")
+        if self.phase is not None and self.phase not in {
+            "before_commit",
+            "sysusers",
+            "tmpfiles",
+            "daemon_reload",
+            "sysctl",
+            "runtime",
+            "gpasswd",
+            "endpoint",
+        }:
+            raise ValueError("post-action phase is not a registered Augeaswrap phase")
+        if self.pending and self.phase == "before_commit":
+            raise ValueError("a before-commit action cannot be pending")
 
 
 @dataclass(frozen=True)

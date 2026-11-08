@@ -120,7 +120,7 @@ def test_plan_refuses_duplicate_resource_addresses(tmp_path):
         plan(req, root=root)
 
 
-def test_multi_address_resource_is_reobserved_once_and_observations_must_be_json_safe(tmp_path):
+def test_multi_address_resource_is_reobserved_for_preconditions_and_postimages_and_requires_json_safe_observations(tmp_path):
     root = fake_root(tmp_path)
 
     class MultiAddressResource:
@@ -157,7 +157,7 @@ def test_multi_address_resource_is_reobserved_once_and_observations_must_be_json
     resource = MultiAddressResource()
     result = apply(plan(Request("multi address", (resource,)), root=root))
     assert result.txn
-    assert resource.observe_calls == 2
+    assert resource.observe_calls == 3
 
     class NonJsonResource(MultiAddressResource):
         def addresses(self):
@@ -413,7 +413,7 @@ class ActionResource:
         return staged
 
     def post_actions(self, changes):
-        return [PostAction("reload", ("reload-command",), 1.0)] if changes else []
+        return [PostAction("reload", ("reload-command",), 1.0, phase="runtime")] if changes else []
 
     def verify(self, _ctx):
         return []
@@ -429,7 +429,7 @@ def test_post_action_is_skipped_for_fake_root_and_failure_is_journaled(tmp_path,
 
     class DuplicateActions(ActionResource):
         def post_actions(self, changes):
-            action = PostAction("reload", ("reload-command",), 1.0)
+            action = PostAction("reload", ("reload-command",), 1.0, phase="runtime")
             return [action, action] if changes else []
 
     duplicate = plan(Request("duplicate actions", (DuplicateActions(),)), root=root)
@@ -438,8 +438,8 @@ def test_post_action_is_skipped_for_fake_root_and_failure_is_journaled(tmp_path,
     class ConflictingActions(ActionResource):
         def post_actions(self, changes):
             return [
-                PostAction("reload", ("reload-command",), 1.0),
-                PostAction("reload", ("reload-command",), 2.0),
+                PostAction("reload", ("reload-command",), 1.0, phase="runtime"),
+                PostAction("reload", ("reload-command",), 2.0, phase="runtime"),
             ] if changes else []
 
     with pytest.raises(PlanRefused, match="conflicting timeouts"):
@@ -460,7 +460,7 @@ def test_post_action_is_skipped_for_fake_root_and_failure_is_journaled(tmp_path,
 def test_live_post_action_success_nonzero_timeout_and_oserror(monkeypatch):
     import subprocess
 
-    action = PostAction("reload", ("reload-tool",), 2.0)
+    action = PostAction("reload", ("reload-tool",), 2.0, phase="runtime")
     monkeypatch.setattr(engine.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
     assert engine._run_post_action(Path("/"), action) == "reload: done"
     for result, message in (
@@ -558,7 +558,7 @@ def test_transaction_allocator_advances_after_sequence_exhaustion_and_rejects_ba
 def test_revert_replays_recorded_post_actions_for_restored_addresses(tmp_path):
     class FileWithReload(File):
         def post_actions(self, changes):
-            return [PostAction("reload", ("reload-command",), 1.0)] if changes else []
+            return [PostAction("reload", ("reload-command",), 1.0, phase="runtime")] if changes else []
 
     root = fake_root(tmp_path)
     resource = FileWithReload("/etc/service.conf", "present", "managed", "0644")

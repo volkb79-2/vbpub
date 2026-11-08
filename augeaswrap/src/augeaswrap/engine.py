@@ -22,6 +22,16 @@ from . import _fs
 from .kinds import is_revertible, kind_spec, registered_kinds, require_keys, resource_tables
 
 _LOCK_RELATIVE = Path("run/lock/augeaswrap.lock")
+_ACTION_PHASE_ORDER = (
+    "before_commit",
+    "sysusers",
+    "tmpfiles",
+    "daemon_reload",
+    "sysctl",
+    "runtime",
+    "gpasswd",
+    "endpoint",
+)
 
 
 @dataclass
@@ -120,6 +130,42 @@ def _unique_resources(changes: Sequence[Change]) -> list[Resource]:
     return resources
 
 
+def _action_phase(action: PostAction) -> str:
+    """Return an explicit or mechanically-derived phase for an action."""
+
+    if action.phase is not None:
+        return action.phase
+    argv = action.argv
+    if argv[0] == "systemd-sysusers" or argv[0] == "groupdel":
+        return "sysusers"
+    if argv[0] == "systemd-tmpfiles":
+        return "tmpfiles"
+    if argv[0] == "sysctl":
+        return "sysctl"
+    if argv[0] == "gpasswd":
+        return "gpasswd"
+    if argv[0] == "systemctl" and len(argv) > 1:
+        if argv[1] == "daemon-reload":
+            return "daemon_reload"
+        if argv[1] in {"disable", "enable", "reload", "restart", "reset-failed", "start", "stop"}:
+            return "runtime"
+    if argv[0] == "augeaswrap" and len(argv) > 1 and argv[1] == "endpoints":
+        return "endpoint"
+    raise ValueError(f"post-action {action.name!r} needs an explicit phase for argv {argv!r}")
+
+
+def _ordered_post_action_bindings(
+    bindings: Sequence[tuple[PostAction, tuple[str, ...]]],
+) -> list[tuple[PostAction, tuple[str, ...]]]:
+    """Apply the rev3 phases, preserving declaration order within each phase."""
+
+    phase_order = {phase: index for index, phase in enumerate(_ACTION_PHASE_ORDER)}
+    indexed = list(enumerate(bindings))
+    post = [(index, binding) for index, binding in indexed if _action_phase(binding[0]) != "before_commit"]
+    post.sort(key=lambda item: (phase_order[_action_phase(item[1][0])], item[0]))
+    return [binding for _index, binding in post]
+
+
 def _post_action_bindings(changes: Sequence[Change]) -> list[tuple[PostAction, tuple[str, ...]]]:
     grouped: dict[int, tuple[Resource, list[Change]]] = {}
     for change in changes:
@@ -128,21 +174,24 @@ def _post_action_bindings(changes: Sequence[Change]) -> list[tuple[PostAction, t
             raise ValueError(f"change {change.address} has no resource")
         grouped.setdefault(id(resource), (resource, []))[1].append(change)
     actions: list[tuple[PostAction, list[str]]] = []
-    seen: dict[tuple[str, tuple[str, ...]], tuple[float, bool, int]] = {}
+    seen: dict[tuple[str, tuple[str, ...]], tuple[float, bool, str, int]] = {}
     for resource, resource_changes in grouped.values():
         declared = resource.post_actions(resource_changes)
         if not isinstance(declared, list) or any(not isinstance(action, PostAction) for action in declared):
             raise ValueError(f"{resource.kind}.post_actions must return list[PostAction]")
         for action in declared:
             key = (action.name, action.argv)
+            phase = _action_phase(action)
             if key in seen and seen[key][0] != action.timeout:
                 raise ValueError(f"conflicting timeouts for post-action {action.name}")
             if key in seen and seen[key][1] != action.pending:
                 raise ValueError(f"conflicting pending declarations for post-action {action.name}")
+            if key in seen and seen[key][2] != phase:
+                raise ValueError(f"conflicting phases for post-action {action.name}")
             if key not in seen:
-                seen[key] = (action.timeout, action.pending, len(actions))
+                seen[key] = (action.timeout, action.pending, phase, len(actions))
                 actions.append((action, []))
-            addresses = actions[seen[key][2]][1]
+            addresses = actions[seen[key][3]][1]
             for change in resource_changes:
                 if change.address not in addresses:
                     addresses.append(change.address)
@@ -150,7 +199,9 @@ def _post_action_bindings(changes: Sequence[Change]) -> list[tuple[PostAction, t
 
 
 def _post_actions(changes: Sequence[Change]) -> list[PostAction]:
-    return [action for action, _addresses in _post_action_bindings(changes)]
+    bindings = _post_action_bindings(changes)
+    before = [binding for binding in bindings if _action_phase(binding[0]) == "before_commit"]
+    return [action for action, _addresses in (*before, *_ordered_post_action_bindings(bindings))]
 
 
 def _plan_locked(req: Request, root: Path) -> Plan:
@@ -186,6 +237,13 @@ def _plan_locked(req: Request, root: Path) -> Plan:
                 returned = [item.address for item in resource_changes]
                 if len(returned) != len(addresses) or set(returned) != set(addresses):
                     raise ValueError(f"{resource.kind}.diff must return one change or noop per address")
+                spec = kind_spec(resource.kind)
+                if spec is not None and spec.shadow_check is not None:
+                    problems = spec.shadow_check(resource, root)
+                    if not isinstance(problems, list) or any(not isinstance(problem, Problem) for problem in problems):
+                        raise ValueError(f"{resource.kind}.shadow_check must return list[Problem]")
+                    if problems:
+                        raise PlanRefused(problems)
                 for item in resource_changes:
                     if item.kind != resource.kind:
                         raise ValueError(f"{resource.kind}.diff returned a mismatched change kind")
@@ -305,6 +363,7 @@ def plan_action_dicts(plan_value: Plan) -> list[dict[str, Any]]:
             "argv": list(action.argv),
             "timeout": action.timeout,
             "pending": action.pending,
+            "phase": _action_phase(action),
             "status": "pending" if action.pending else "skipped(root)" if skipped else "pending",
         }
         for action in _post_actions(_resource_changes(plan_value, action="change"))
@@ -329,7 +388,8 @@ def render_plan(plan_value: Plan) -> str:
                 lines.extend("         " + row for row in spec.render(change, plan_value))
     for action in _post_actions(_resource_changes(plan_value, action="change")):
         suffix = "pending(recorded)" if action.pending else "skipped(root)" if Path(plan_value.root) != Path("/") else "pending"
-        lines.append(f"  post-action {action.name}: {action.argv!r} ({suffix})")
+        label = "pre-commit action" if _action_phase(action) == "before_commit" else "post-action"
+        lines.append(f"  {label} {action.name}: {action.argv!r} phase={_action_phase(action)} ({suffix})")
     lines.append("changes are pending" if plan_value.has_changes else "no changes")
     return "\n".join(lines) + "\n"
 

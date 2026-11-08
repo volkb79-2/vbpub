@@ -17,14 +17,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import ApplyFailed, Change, Plan, PlanRefused, PostAction, Problem, Request, Result, StalePlan
+from . import ApplyFailed, Change, Plan, PlanRefused, PostAction, Problem, Request, Resource, Result, StalePlan
 from . import _fs
 from .kinds import kind_spec
 from .engine import (
     _Context,
     _check_preconditions,
+    _action_phase,
     _locked,
     _observation_fingerprint,
+    _ordered_post_action_bindings,
     _plan_locked,
     _post_action_bindings,
     plan,
@@ -295,11 +297,35 @@ def _execute_plan(
     prune: bool = True,
 ) -> Result:
     changes = _resource_changes(plan_value, action="change")
-    action_bindings = _post_action_bindings(changes)
+    declared_action_bindings = _post_action_bindings(changes)
+    binding_index = {
+        (action.name, action.argv): index
+        for index, (action, _addresses) in enumerate(declared_action_bindings)
+    }
+    operations: list[tuple[str, object]] = []
+    action_order: list[int] = []
+    pre_by_address: dict[str, list[int]] = {}
+    for index, (action, addresses) in enumerate(declared_action_bindings):
+        if _action_phase(action) == "before_commit":
+            if len(addresses) != 1:
+                raise ValueError(f"before-commit action {action.name} must apply to one address")
+            pre_by_address.setdefault(addresses[0], []).append(index)
+    for change in changes:
+        for index in pre_by_address.get(change.address, ()):
+            operations.append(("action", index))
+            action_order.append(index)
+        operations.append(("commit", change))
+    for action, _addresses in _ordered_post_action_bindings(declared_action_bindings):
+        index = binding_index[(action.name, action.argv)]
+        operations.append(("action", index))
+        action_order.append(index)
+    action_bindings = [declared_action_bindings[index] for index in action_order]
     actions = [action for action, _addresses in action_bindings]
     verify_resources = _unique_resources(
         [*changes, *(change for change in plan_value.changes if change.kind == "check")]
     )
+    for index, resource in enumerate(verify_resources, start=1):
+        operations.append(("verify", resource))
     txn_id, txn_dir = _allocate_txn(root)
     stage_dir = txn_dir / "stage"
     pre_dir = txn_dir / "pre"
@@ -324,9 +350,23 @@ def _execute_plan(
         _discard_txn(root, txn_dir)
         raise PlanRefused([Problem("preimage.write.failed", f"cannot save transaction pre-images: {exc}")]) from exc
 
-    step_names = [f"commit {change.address}" for change in changes]
-    step_names.extend(f"post-action {action.name}" for action in actions)
-    step_names.extend(f"verify {resource.kind} #{index}" for index, resource in enumerate(verify_resources, start=1))
+    step_names: list[str] = []
+    verify_number = 0
+    action_number = 0
+    for operation, value in operations:
+        if operation == "commit":
+            assert isinstance(value, Change)
+            step_names.append(f"commit {value.address}")
+        elif operation == "action":
+            action = actions[action_number]
+            phase = _action_phase(action)
+            step_names.append(f"pre-action {action.name}" if phase == "before_commit" else f"post-action {action.name}")
+            action_number += 1
+        else:
+            assert operation == "verify"
+            verify_number += 1
+            assert isinstance(value, Resource)
+            step_names.append(f"verify {value.kind} #{verify_number}")
     steps = [{"name": name, "status": "not-run"} for name in step_names]
     journal_value: dict[str, Any] = {
         "schema": 1,
@@ -363,6 +403,7 @@ def _execute_plan(
                 "argv": list(action.argv),
                 "timeout": action.timeout,
                 "pending": action.pending,
+                "phase": _action_phase(action),
                 "addresses": list(addresses),
                 "status": "not-run",
             }
@@ -375,7 +416,9 @@ def _execute_plan(
     completed: list[str] = []
     action_results: list[str] = []
     pending_results: list[str] = []
+    committed_changes: list[Change] = []
     step_index = 0
+    action_record_index = {original: position for position, original in enumerate(action_order)}
     ctx.expected.update(staged)
 
     def finish_step(result: str | None = None) -> None:
@@ -390,19 +433,41 @@ def _execute_plan(
         _write_journal(root, txn_dir, journal_value)
         step_index += 1
 
+    def record_post_images(changes_to_record: list[Change], *, only_if_changed: set[str] | None = None) -> None:
+        grouped: dict[int, tuple[Resource, list[Change]]] = {}
+        for changed in changes_to_record:
+            grouped.setdefault(id(changed.resource), (changed.resource, []))[1].append(changed)
+        for resource, resource_changes in grouped.values():
+            try:
+                observed = resource.observe(ctx)
+            except Exception:
+                observed = {}
+            for changed in resource_changes:
+                actual = observed.get(changed.address) if isinstance(observed, Mapping) else None
+                if actual is None:
+                    if changed.address not in journal_value["unknown_post_images"]:
+                        journal_value["unknown_post_images"].append(changed.address)
+                    journal_value["post_images"].pop(changed.address, None)
+                    continue
+                before = plan_value.observed.get(changed.address) if isinstance(plan_value.observed, Mapping) else None
+                if (
+                    only_if_changed is not None
+                    and changed.address in only_if_changed
+                    and _observation_fingerprint(actual) == _observation_fingerprint(before)
+                ):
+                    journal_value["post_images"].pop(changed.address, None)
+                    continue
+                journal_value["unknown_post_images"] = [
+                    address for address in journal_value["unknown_post_images"] if address != changed.address
+                ]
+                journal_value["post_images"][changed.address] = _observation_fingerprint(actual)
+
     def fail(exc: BaseException, change: Change | None = None, status: str = "failed") -> ApplyFailed:
         step = steps[step_index]
-        if change is not None:
-            try:
-                current = change.resource.observe(ctx)
-                actual = current.get(change.address) if isinstance(current, Mapping) else None
-                before = plan_value.observed.get(change.address) if isinstance(plan_value.observed, Mapping) else None
-                if actual is None:
-                    journal_value["unknown_post_images"].append(change.address)
-                elif _observation_fingerprint(actual) != _observation_fingerprint(before):
-                    journal_value["post_images"][change.address] = _observation_fingerprint(actual)
-            except Exception:
-                journal_value["unknown_post_images"].append(change.address)
+        record_post_images(
+            ([change] if change is not None else []) + committed_changes,
+            only_if_changed={change.address} if change is not None else set(),
+        )
         step["status"] = "failed"
         step["error"] = str(exc)
         for entry in steps[step_index + 1 :]:
@@ -418,47 +483,54 @@ def _execute_plan(
         return ApplyFailed(txn_id, completed, f"{step['name']}: {exc}", len(steps))
 
     def run_steps() -> None:
-        for change in changes:
-            try:
-                _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
-                post_image = change.resource.commit(ctx, staged[change.address])
-                journal_value["post_images"][change.address] = _observation_fingerprint(post_image)
-                finish_step()
-            except Exception as exc:
-                raise fail(exc, change) from exc
-
-        for action, action_record in zip(actions, journal_value["actions"], strict=True):
-            try:
-                action_record["status"] = "pending" if action.pending else "running"
-                _write_journal(root, txn_dir, journal_value)
-                _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
-                if action.pending:
-                    result = f"{action.name}: recorded pending"
-                    pending_results.append(action.name)
-                    action_status = "pending"
-                else:
-                    result = _run_post_action(root, action)
-                    action_results.append(result)
-                    action_status = "skipped(root)" if result.endswith("skipped(root)") else "done"
-                action_record["status"] = action_status
-                action_record["result"] = result
-                finish_step(result)
-            except Exception as exc:
-                action_record["status"] = "failed"
-                action_record["error"] = str(exc)
-                raise fail(exc) from exc
-
-        for resource in verify_resources:
-            try:
-                _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
-                problems = resource.verify(ctx)
-                if not isinstance(problems, list) or any(not isinstance(problem, Problem) for problem in problems):
-                    raise ValueError(f"{resource.kind}.verify must return list[Problem]")
-                if problems:
-                    raise RuntimeError("; ".join(str(problem) for problem in problems))
-                finish_step()
-            except Exception as exc:
-                raise fail(exc) from exc
+        for operation, value in operations:
+            if operation == "commit":
+                assert isinstance(value, Change)
+                change = value
+                try:
+                    _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
+                    post_image = change.resource.commit(ctx, staged[change.address])
+                    journal_value["post_images"][change.address] = _observation_fingerprint(post_image)
+                    finish_step()
+                    committed_changes.append(change)
+                except Exception as exc:
+                    raise fail(exc, change) from exc
+            elif operation == "action":
+                original_index = int(value)
+                action, _addresses = declared_action_bindings[original_index]
+                action_record = journal_value["actions"][action_record_index[original_index]]
+                try:
+                    action_record["status"] = "pending" if action.pending else "running"
+                    _write_journal(root, txn_dir, journal_value)
+                    _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
+                    if action.pending:
+                        result = f"{action.name}: recorded pending"
+                        pending_results.append(action.name)
+                        action_status = "pending"
+                    else:
+                        result = _run_post_action(root, action)
+                        action_results.append(result)
+                        action_status = "skipped(root)" if result.endswith("skipped(root)") else "done"
+                    action_record["status"] = action_status
+                    action_record["result"] = result
+                    finish_step(result)
+                except Exception as exc:
+                    action_record["status"] = "failed"
+                    action_record["error"] = str(exc)
+                    raise fail(exc) from exc
+            else:
+                assert operation == "verify" and isinstance(value, Resource)
+                resource = value
+                try:
+                    _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
+                    problems = resource.verify(ctx)
+                    if not isinstance(problems, list) or any(not isinstance(problem, Problem) for problem in problems):
+                        raise ValueError(f"{resource.kind}.verify must return list[Problem]")
+                    if problems:
+                        raise RuntimeError("; ".join(str(problem) for problem in problems))
+                    finish_step()
+                except Exception as exc:
+                    raise fail(exc) from exc
 
     try:
         with _sigterm_as_exit():
@@ -471,6 +543,8 @@ def _execute_plan(
         interrupted = RuntimeError(f"interrupted by {type(exc).__name__}")
         fail(interrupted, changes[step_index] if step_index < len(changes) else None, status="interrupted")
         raise
+
+    record_post_images(committed_changes)
 
     journal_value["status"] = "done"
     journal_value["not_run"] = []
@@ -639,6 +713,7 @@ def _prepare_revert(root: Path, txn_id: str) -> tuple[Plan, dict[str, Any], Path
         if not isinstance(item, Mapping):
             raise PlanRefused([Problem("txn.journal.invalid", f"transaction {txn_id} has invalid actions")])
         name, argv, timeout = item.get("name"), item.get("argv"), item.get("timeout")
+        phase = item.get("phase")
         addresses, status = item.get("addresses"), item.get("status")
         if (
             not isinstance(name, str)
@@ -647,16 +722,21 @@ def _prepare_revert(root: Path, txn_id: str) -> tuple[Plan, dict[str, Any], Path
             or any(not isinstance(address, str) for address in addresses)
             or not isinstance(status, str)
             or status not in {"not-run", "pending", "done", "failed", "skipped(root)"}
+            or (phase is not None and not isinstance(phase, str))
         ):
             raise PlanRefused([Problem("txn.journal.invalid", f"transaction {txn_id} has invalid actions")])
         pending = item.get("pending", status == "pending")
         if type(pending) is not bool or pending != (status == "pending") and status != "not-run" and status != "failed":
             raise PlanRefused([Problem("txn.journal.invalid", f"transaction {txn_id} has invalid pending action state")])
+        if phase is None:
+            # Journals written before phase metadata preserve their recorded
+            # action order in the runtime phase during an explicit revert.
+            phase = "runtime"
         try:
-            action = PostAction(name, tuple(argv), timeout, pending=pending)
+            action = PostAction(name, tuple(argv), timeout, pending=pending, phase=phase)
         except (TypeError, ValueError) as exc:
             raise PlanRefused([Problem("txn.journal.invalid", f"transaction {txn_id} has invalid actions: {exc}")]) from exc
-        if status in {"pending", "done", "failed", "skipped(root)"}:
+        if status in {"pending", "done", "failed", "skipped(root)"} and _action_phase(action) != "before_commit":
             for address in addresses:
                 if address in post_images:
                     replay.setdefault(address, []).append(action)

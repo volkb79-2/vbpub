@@ -252,15 +252,57 @@ def test_two_resources_cannot_claim_the_same_address(tmp_path):
 
 def test_conflicting_post_action_timeouts_are_refused_and_bindings_need_resources(tmp_path):
     def first(self, changes):
-        return [PostAction("reload", ("true",), 5.0)]
+        return [PostAction("reload", ("true",), 5.0, phase="runtime")]
 
     def second(self, changes):
-        return [PostAction("reload", ("true",), 6.0)]
+        return [PostAction("reload", ("true",), 6.0, phase="runtime")]
 
     with pytest.raises(PlanRefused, match="conflicting timeouts"):
         plan(req(Fake(addrs=("fake:a",), post_actions=first), Fake(addrs=("fake:b",), post_actions=second)), root=fake_root(tmp_path))
     with pytest.raises(ValueError, match="has no resource"):
         engine._post_action_bindings([Change("fake", "fake:a", "change", {}, {})])
+
+
+def test_post_actions_follow_rev3_phases_and_keep_runtime_request_order(tmp_path):
+    specs = [
+        ("endpoint", ("augeaswrap", "endpoints", "publish")),
+        ("member", ("gpasswd", "-a", "runner", "service")),
+        ("restart one", ("systemctl", "restart", "--", "one.service")),
+        ("sysctl", ("sysctl", "-p", "60-example.conf")),
+        ("daemon reload", ("systemctl", "daemon-reload")),
+        ("tmpfiles", ("systemd-tmpfiles", "--create", "60-example.conf")),
+        ("sysusers", ("systemd-sysusers", "60-example.conf")),
+        ("restart two", ("systemctl", "restart", "--", "two.service")),
+    ]
+    resources = [
+        Fake(
+            addrs=(f"fake:{name}",),
+            post_actions=lambda self, changes, name=name, argv=argv: [PostAction(name, argv, 5.0)],
+        )
+        for name, argv in specs
+    ]
+    planned = plan(req(*resources), root=fake_root(tmp_path))
+
+    assert [item["name"] for item in planned.as_dict()["post_actions"]] == [
+        "sysusers",
+        "tmpfiles",
+        "daemon reload",
+        "sysctl",
+        "restart one",
+        "restart two",
+        "member",
+        "endpoint",
+    ]
+    assert [item["phase"] for item in planned.as_dict()["post_actions"]] == [
+        "sysusers",
+        "tmpfiles",
+        "daemon_reload",
+        "sysctl",
+        "runtime",
+        "runtime",
+        "gpasswd",
+        "endpoint",
+    ]
 
 
 def test_plan_renders_empty_noop_details_and_post_actions(tmp_path):
