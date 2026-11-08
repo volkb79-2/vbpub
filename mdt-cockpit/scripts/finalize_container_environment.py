@@ -73,7 +73,6 @@ try:
     from mdt_buildkit_builder import (
         BuilderError,
         MANAGED_BUILDER,
-        MANAGED_ENDPOINT,
         ensure_managed_builder,
     )
 except ImportError:
@@ -82,7 +81,6 @@ except ImportError:
     from scripts.mdt_buildkit_builder import (  # type: ignore
         BuilderError,
         MANAGED_BUILDER,
-        MANAGED_ENDPOINT,
         ensure_managed_builder,
     )
 
@@ -212,22 +210,25 @@ def setup_vscode_settings(env_type: str) -> None:
 def setup_buildkit_builder(*, required: bool = False) -> bool:
     """Validate and reuse the one host-managed remote builder.
 
-    A devcontainer must carry both variables explicitly. Any partial or
-    different configuration is an error; generic finalization never falls
-    back to Docker's embedded builder or creates a per-container worker.
+    A devcontainer receives endpoint facts from the host endpoint publisher.
+    The socket path and BUILDKIT_HOST must agree; generic finalization never
+    guesses a host path or creates a per-container worker.
     """
     builder = os.environ.get("BUILDX_BUILDER", "").strip()
     endpoint = os.environ.get("BUILDKIT_HOST", "").strip()
-    if not builder and not endpoint:
+    socket_path = os.environ.get("MDT_BUILDKIT_SOCKET", "").strip()
+    if not builder and not endpoint and not socket_path:
         if required:
-            err("devcontainer must set BUILDX_BUILDER=mdt-managed and BUILDKIT_HOST=" + MANAGED_ENDPOINT)
+            err("devcontainer is missing host endpoint facts BUILDX_BUILDER, BUILDKIT_HOST, and MDT_BUILDKIT_SOCKET")
             return False
         return True
-    if builder != MANAGED_BUILDER or endpoint != MANAGED_ENDPOINT:
+    expected_endpoint = f"unix://{socket_path}" if socket_path.startswith("/") else ""
+    if builder != MANAGED_BUILDER or not expected_endpoint or endpoint != expected_endpoint:
         err(
             "inconsistent managed BuildKit environment: expected "
-            f"BUILDX_BUILDER={MANAGED_BUILDER} and BUILDKIT_HOST={MANAGED_ENDPOINT}, "
-            f"got BUILDX_BUILDER={builder or '<empty>'} BUILDKIT_HOST={endpoint or '<empty>'}"
+            f"BUILDX_BUILDER={MANAGED_BUILDER} and BUILDKIT_HOST=unix://MDT_BUILDKIT_SOCKET "
+            f"with an absolute MDT_BUILDKIT_SOCKET, got BUILDX_BUILDER={builder or '<empty>'} "
+            f"BUILDKIT_HOST={endpoint or '<empty>'} MDT_BUILDKIT_SOCKET={socket_path or '<empty>'}"
         )
         return False
     docker = shutil.which("docker")
@@ -235,8 +236,8 @@ def setup_buildkit_builder(*, required: bool = False) -> bool:
         err("BUILDX_BUILDER is configured but docker is not on PATH; install Docker/Buildx or fix the devcontainer")
         return False
     try:
-        info(f"verifying remote builder {MANAGED_BUILDER} at {MANAGED_ENDPOINT}")
-        ensure_managed_builder(docker, MANAGED_ENDPOINT, create_if_missing=True)
+        info(f"verifying remote builder {builder} at {endpoint}")
+        ensure_managed_builder(docker, endpoint, create_if_missing=True)
     except (BuilderError, OSError) as exc:
         err(str(exc))
         return False

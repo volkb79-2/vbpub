@@ -72,33 +72,18 @@
     // `systemctl restart docker.socket docker.service` (see install.sh's own
     // end-of-run reminder — disruptive, restarts every container, batch it
     // with any other pending daemon.json change).
-    "source=/run/docker-api,target=/run/docker-api,type=bind",
+    "source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind",
 
-    // Cgroup-profiler daemon control socket (RG-55 A2/D-30, run-gate-project/
-    // nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md).
-    // PURPOSE: `/run/cgprofile/ctl.sock` is the socket carrier of the RG55
-    // contract, one protocol shared with the `docker exec` carrier — run-gate's
-    // `transport = auto` prefers the socket when it is present and answering,
-    // else falls back to exec. Nothing breaks on a devcontainer that predates
-    // this mount: `auto` simply resolves to exec forever for it, no rebuild
-    // required to keep working.
-    // GROUP ACCESS: needs no new gid plumbing — the socket ships root:docker
-    // 0660, and the `--group-add ${localEnv:DOCKER_GID}` runArg below already
-    // puts this container in that same group (the same principals who can
-    // `docker exec` can reach the socket).
-    // HOST PREREQUISITE: host-setup >= the version that ships this mount
-    // (host-setup/units/mdt-cgprofile.conf, applied by install.sh) —
-    // `mounts` entries are Docker `--mount`, which REFUSES to start the
-    // container at all if the bind SOURCE does not exist (unlike `-v`, which
-    // would silently create one owned by the wrong user). Upgrade the host
-    // before rebuilding a devcontainer against this template, or delete this
-    // line to opt out.
+    // Cgroup-profiler daemon control socket. The service owns this runtime
+    // directory and publishes its endpoint through augeaswrap; install it
+    // with `cgprofiled install` before creating a container that needs the
+    // socket. The `mounts` entry fails closed while its source is absent.
     "source=/run/cgprofile,target=/run/cgprofile,type=bind",
 
     // Host-managed BuildKit is mandatory for this MDT-derived container. The
     // host installer creates the socket before a rebuild; Docker --mount then
     // fails closed if the host prerequisite is absent.
-    "source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind",
+    "source=${localEnv:MDT_BUILDKIT_SOCKET_DIR},target=${localEnv:MDT_BUILDKIT_SOCKET_DIR},type=bind",
 
     // Host letsencrypt certs (readonly). Consider security implications.
     // "source=/etc/letsencrypt,target=/etc/letsencrypt,type=bind,consistency=cached,readonly",
@@ -153,7 +138,7 @@
   "containerEnv": {
     // Points at the directory-mounted socket above, not the default
     // /var/run/docker.sock path — see that mount's own comment.
-    "DOCKER_HOST": "unix:///run/docker-api/docker.sock",
+    "DOCKER_HOST": "unix://${localEnv:MDT_DOCKER_API_SOCKET}",
 
     // Host dev-tier cgroup governance (see AGENTS.md "Host cgroup placement
     // for spawned containers" and mdt's host-setup/README.md "Tiering model").
@@ -192,9 +177,10 @@
     "BUILDX_CONFIG": "/home/vscode/.config/docker/buildx",
 
     // Explicitly select the durable host-managed remote for all builds.
-    "BUILDX_BUILDER": "mdt-managed",
+    "BUILDX_BUILDER": "${localEnv:BUILDX_BUILDER}",
 
-    "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock",
+    "BUILDKIT_HOST": "${localEnv:BUILDKIT_HOST}",
+    "MDT_BUILDKIT_SOCKET": "${localEnv:MDT_BUILDKIT_SOCKET}",
 
     // Share Codex's SQLite session database across the dual-profile setup.
     "CODEX_SQLITE_HOME": "/home/vscode/.codex/sqlite-shared"
@@ -216,29 +202,13 @@
 
     "--name", "mdt-cockpit-${localEnv:USER}-${localWorkspaceFolderBasename}",
 
-    // DOCKER_GID must be exported in the host shell before launch:
-    //   export DOCKER_GID=$(getent group docker | cut -d: -f3)
-    // (docs/CONSUMERS.md "Host cgroup preflight" and host-setup/README.md explain why).
-    "--group-add", "${localEnv:DOCKER_GID}",
+    // augeaswrap publishes this numeric host fact with the other endpoint values.
+    "--group-add", "${localEnv:MDT_HOST_DOCKER_GID}",
 
-    // topos daemon socket (host service; zero-argument `topos` attaches to it).
-    // PURPOSE: a devcontainer's own cgroup namespace shows only itself, so
-    // `topos` here needs the HOST daemon's `/run/topos/topos.sock`. The whole
-    // directory is bound read-only (not the socket file) so a daemon restart,
-    // which re-creates the socket, never leaves a stale inode behind.
-    // WHY runArgs AND NOT `mounts`: `mounts` entries are Docker `--mount`,
-    // which REFUSES to start the container when the source is missing, and a
-    // host whose host-setup predates mdt-topos.conf has no /run/topos. `-v`
-    // instead auto-creates a missing source as a directory (Docker bind-mount
-    // docs), so such a host still starts its devcontainer. Until
-    // host-setup/units/mdt-topos.conf is applied (install.sh) that
-    // auto-created directory is root:root 0755 and empty: the container
-    // simply sees no socket and `topos` reports the daemon as unreachable;
-    // tmpfiles later corrects it to root:docker 0750 in place. Nothing is
-    // lost, and nothing here needs a rebuild once the host is current.
-    // GROUP ACCESS: as for /run/cgprofile, the socket must be group docker
-    // (the `--group-add` above puts this container in that group). On mdt
-    // hosts the daemon's Group= has to be docker.
+    // topos daemon socket. `toposd install` owns the runtime directory and
+    // publishes the observe endpoint through augeaswrap. This `-v` bind can
+    // start when the service is absent, but the container sees an empty
+    // directory and `topos` cannot connect until the host service is installed.
     "-v", "/run/topos:/run/topos:ro",
 
     // sshfs / mount(2) inside container

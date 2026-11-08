@@ -71,9 +71,11 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("attest+=type=sbom", wrapper)
 
     def test_release_uses_the_host_managed_remote_builder(self) -> None:
-        # declared once for the estate as an environment-overridable default (cmru.orchestration.toml)
-        self.assertEqual(self.env["BUILDX_BUILDER"], "${BUILDX_BUILDER:-mdt-managed}")
-        self.assertEqual(self.env["BUILDKIT_HOST"], "${BUILDKIT_HOST:-unix:///run/mdt-buildkitd/buildkitd.sock}")
+        # Endpoint facts are required from the host publisher; no estate or project default invents them.
+        self.assertEqual(self.env["BUILDX_BUILDER"], "${BUILDX_BUILDER}")
+        self.assertEqual(self.env["BUILDKIT_HOST"], "${BUILDKIT_HOST}")
+        orchestration = (ROOT.parent / "cmru.orchestration.toml").read_text()
+        self.assertNotIn("unix:///run/mdt-buildkitd/buildkitd.sock", orchestration)
         for key in (
             "REPACK_JOBS",
             "REPACK_CONCURRENCY",
@@ -84,6 +86,7 @@ class ReleaseFlowTests(unittest.TestCase):
 
         builder = (ROOT / "scripts/ensure-release-builder.sh").read_text()
         self.assertIn('BUILDX_BUILDER" != mdt-managed', builder)
+        self.assertIn('MDT_BUILDKIT_SOCKET', builder)
         self.assertIn('mdt_buildkit_builder.py" verify', builder)
         self.assertNotIn("buildx create", builder)
         self.assertNotIn("buildx rm", builder)

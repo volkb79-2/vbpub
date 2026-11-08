@@ -64,7 +64,7 @@ also explains why the classic store cannot load a complete manifest list even
 though a separate Buildx builder can publish one directly to a registry.
 
 For MDT, the canonical build worker is the host-managed `mdt-managed` remote at
-`unix:///run/mdt-buildkitd/buildkitd.sock`, with its service container in
+the endpoint published through `BUILDKIT_HOST`, with its service container in
 `dev-buildkitd.slice`. Its persistent BuildKit cache remains separate from the
 Docker daemon image store; the containerd store does not replace or migrate
 that remote cache. The containerd store would make the daemon itself a better

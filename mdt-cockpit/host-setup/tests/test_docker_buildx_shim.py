@@ -2,9 +2,9 @@
 
 The shim (scripts/docker-buildx-shim.sh) is a Docker CLI plugin wrapper. These tests run it for
 real under /bin/sh against a FAKE packaged plugin that records its argv and environment, so no
-Docker daemon is needed. Three constants are redirected into a temp tree by rewriting their
-assignment lines in a copy (the shipped script has no override environment variables, so an
-ambient variable can never change which binary or socket production uses).
+Docker daemon is needed. The plugin lookup and shared-config path are redirected into a temp
+tree by rewriting their assignment lines in a copy. Socket facts arrive through the same
+environment variables the host endpoint record publishes.
 """
 from __future__ import annotations
 
@@ -59,7 +59,6 @@ class ShimTest(unittest.TestCase):
         text = SHIM.read_text()
         for name, value in (
             ("REAL_DIRS", real_dirs),
-            ("MDT_SOCKET", str(self.socket)),
             ("MDT_SHARED_CONFIG", str(self.shared)),
         ):
             text, count = re.subn(rf'^{name}=.*$', f'{name}="{value}"', text, flags=re.MULTILINE)
@@ -70,7 +69,13 @@ class ShimTest(unittest.TestCase):
     def run_shim(self, *args: str, env: dict[str, str] | None = None, socket: bool = True):
         if socket:
             self.socket.touch()  # only the test for the missing socket removes it; -S is checked below
-        environment = {"PATH": os.environ["PATH"], "HOME": str(self.home), "FAKE_LOG": str(self.log)}
+        environment = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(self.home),
+            "FAKE_LOG": str(self.log),
+            "MDT_BUILDKIT_SOCKET": str(self.socket),
+            "BUILDKIT_HOST": f"unix://{self.socket}",
+        }
         environment.update(env or {})
         # -S needs a real socket node; a unix socket bound in the temp dir stands in for the service
         return subprocess.run(
@@ -154,7 +159,7 @@ class ShimTest(unittest.TestCase):
         create, build = self.calls()
         self.assertEqual(
             create["argv"],
-            f"create --name mdt-managed --driver remote --driver-opt default-load=true unix:///run/mdt-buildkitd/buildkitd.sock",
+            f"create --name mdt-managed --driver remote --driver-opt default-load=true unix://{self.socket}",
         )
         # `create --name X` reads an exported BUILDX_BUILDER=X as an existing instance, and the
         # DOCKER_CLI_PLUGIN_* variables make the binary expect the `buildx` plugin argv form.
@@ -193,6 +198,30 @@ class ShimTest(unittest.TestCase):
         self.assertIn("does NOT fall back", result.stderr)
         self.assertEqual([c["argv"] for c in self.calls()], ["build"])
         self.assertEqual(self.calls()[-1]["env"]["BUILDX_BUILDER"], "mdt-managed")
+
+    def test_missing_endpoint_fact_refuses_without_a_default_socket_path(self) -> None:
+        result = self.run_shim("build", env={"MDT_BUILDKIT_SOCKET": "", "BUILDKIT_HOST": ""})
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("MDT_BUILDKIT_SOCKET is unset", result.stderr)
+        self.assertEqual(self.calls(), [])
+
+    def test_published_socket_value_selects_the_remote_endpoint(self) -> None:
+        self.make_socket()
+        socket_path = self.tmp / "buildkit-from-endpoint-record.sock"
+        import socket as socketlib
+
+        server = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
+        server.bind(str(socket_path))
+        self.addCleanup(server.close)
+        endpoint = f"unix://{socket_path}"
+        result = self.run_shim(
+            "build", env={"MDT_BUILDKIT_SOCKET": str(socket_path), "BUILDKIT_HOST": endpoint}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.calls()[0]["argv"],
+            f"create --name mdt-managed --driver remote --driver-opt default-load=true {endpoint}",
+        )
 
     def _with_fake_getent(self, home_line: str) -> dict[str, str]:
         """An environment with no HOME whose `getent` (first on PATH) answers with the given passwd home."""
@@ -256,12 +285,12 @@ class ShimTest(unittest.TestCase):
         text = SHIM.read_text()
         self.assertTrue(stat.S_IMODE(SHIM.stat().st_mode) & 0o111)
         self.assertTrue(text.startswith("#!/bin/sh\n"))
-        # the only environment inputs are the documented ones; nothing selects the real plugin or socket
+        # The socket comes from the endpoint record; only plugin/config test fixtures are rewritten.
         for forbidden in ("MDT_BUILDX_REAL", "MDT_BUILDKITD_SOCKET"):
             self.assertNotIn(forbidden, text)
-        self.assertEqual(
-            json.loads(json.dumps(re.findall(r'MDT_SOCKET=(\S+)', text))), ["/run/mdt-buildkitd/buildkitd.sock"]
-        )
+        self.assertNotRegex(text, r"/run/mdt-buildkitd/buildkitd\.sock")
+        self.assertIn("MDT_BUILDKIT_SOCKET", text)
+        self.assertIn("BUILDKIT_HOST", text)
         self.assertIn(
             'REAL_DIRS="/usr/local/libexec/docker/cli-plugins /usr/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins"',
             text,
@@ -271,8 +300,9 @@ class ShimTest(unittest.TestCase):
         install = (SHIM.parents[1] / "install.sh").read_text()
         self.assertIn("BUILDX_SHIM_TARGET=/usr/local/lib/docker/cli-plugins/docker-buildx", install)
         self.assertIn('"$HERE/scripts/docker-buildx-shim.sh" "$BUILDX_SHIM_TARGET"', install)
-        self.assertIn("_mdt_install_environment_block", install)
-        self.assertIn("env -i PATH=", install, "the end-to-end probe must run with an empty environment")
+        self.assertNotIn("_mdt_install_environment_block", install)
+        self.assertIn('BUILDKIT_HOST="$BUILDKIT_HOST"', install)
+        self.assertIn('MDT_BUILDKIT_SOCKET="$MDT_BUILDKIT_SOCKET"', install)
 
 
 if __name__ == "__main__":

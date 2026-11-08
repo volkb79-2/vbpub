@@ -4,12 +4,17 @@
 # release must fail rather than create an ungoverned worker.
 set -euo pipefail
 
-: "${BUILDX_BUILDER:?BUILDX_BUILDER must be mdt-managed (set by host setup/devcontainer)}"
+: "${BUILDX_BUILDER:?BUILDX_BUILDER must come from the host endpoint record}"
 if [[ "$BUILDX_BUILDER" != mdt-managed ]]; then
   echo "[ERROR] release builds require BUILDX_BUILDER=mdt-managed; got ${BUILDX_BUILDER}" >&2
   exit 2
 fi
-: "${BUILDKIT_HOST:?BUILDKIT_HOST must point at the host-managed BuildKit socket}"
+: "${BUILDKIT_HOST:?BUILDKIT_HOST must come from the host endpoint record}"
+: "${MDT_BUILDKIT_SOCKET:?MDT_BUILDKIT_SOCKET must come from the host endpoint record}"
+if [[ "$MDT_BUILDKIT_SOCKET" != /* || "$BUILDKIT_HOST" != "unix://$MDT_BUILDKIT_SOCKET" ]]; then
+  echo "[ERROR] BUILDKIT_HOST must equal unix://MDT_BUILDKIT_SOCKET, got BUILDKIT_HOST=${BUILDKIT_HOST} MDT_BUILDKIT_SOCKET=${MDT_BUILDKIT_SOCKET}" >&2
+  exit 2
+fi
 
 docker_bin="$(command -v docker || true)"
 if [[ -z "$docker_bin" ]]; then
@@ -20,4 +25,4 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 python3 "$script_dir/mdt_buildkit_builder.py" verify \
   --docker "$docker_bin" --endpoint "$BUILDKIT_HOST"
-echo "[INFO] release builder mdt-managed verified at $BUILDKIT_HOST"
+echo "[INFO] release builder $BUILDX_BUILDER verified at $BUILDKIT_HOST"

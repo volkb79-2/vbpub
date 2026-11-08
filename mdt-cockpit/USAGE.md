@@ -53,11 +53,12 @@ controls the slice size used by the repack flow.
 
 ### Builder governance (`BUILDX_BUILDER`)
 
-Every MDT devcontainer build and release build requires
-`BUILDX_BUILDER=mdt-managed` with
-`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`. The host installer
-maintains the rootless `mdt-buildkitd.service` in `dev-buildkitd.slice` and
-creates the durable Buildx `remote` node after the service socket is ready.
+Every MDT devcontainer build and release build reads `BUILDX_BUILDER`,
+`BUILDKIT_HOST`, and `MDT_BUILDKIT_SOCKET` from the host's
+`mdt-host-setup` endpoint record. Host-setup publishes them after the
+rootless `mdt-buildkitd.service` socket is ready and creates the durable
+Buildx `remote` node. Templates and consumers use these values directly; the
+socket path is not duplicated in their configuration.
 `scripts/ensure-release-builder.sh` only verifies that contract; it cannot
 create or repair an ungoverned worker.
 

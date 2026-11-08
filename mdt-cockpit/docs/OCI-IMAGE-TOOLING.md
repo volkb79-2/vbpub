@@ -36,9 +36,9 @@ Every MDT and dstdns image stored in a conforming registry already has an OCI or
 Docker-distribution manifest; there is nothing extra to opt into. What should be
 adopted is explicit digest evidence:
 
-MDT's canonical build backend is the host-managed `mdt-managed` remote at
-`unix:///run/mdt-buildkitd/buildkitd.sock`; its persistent cache is the cache to
-measure for MDT builds. The host service is `mdt-buildkitd` in
+MDT's canonical build backend is the host-managed `mdt-managed` remote at the
+endpoint published through `BUILDKIT_HOST`; its persistent cache is the cache
+to measure for MDT builds. The host service is `mdt-buildkitd` in
 `dev-buildkitd.slice`, not a generated Buildx worker.
 
 - record the published index digest and per-platform manifest digest after the

@@ -13,6 +13,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+BUILDKIT_SOCKET_FIXTURE = "/run/buildkit-fixture/buildkitd.sock"
+BUILDKIT_ENDPOINT_FIXTURE = f"unix://{BUILDKIT_SOCKET_FIXTURE}"
+
 from hypothesis import given, strategies as st
 
 
@@ -1470,31 +1473,29 @@ done
                 if argv[1:4] == ["buildx", "inspect", BUILDER.MANAGED_BUILDER] and "--bootstrap" not in argv:
                     if not self.exists:
                         return subprocess.CompletedProcess(argv, 1, "", "missing")
-                    return subprocess.CompletedProcess(argv, 0, "Driver: remote\nEndpoint: unix:///run/mdt-buildkitd/buildkitd.sock\n", "")
+                    return subprocess.CompletedProcess(argv, 0, f"Driver: remote\nEndpoint: {BUILDKIT_ENDPOINT_FIXTURE}\n", "")
                 if argv[1:3] == ["buildx", "create"]:
                     self.exists = True
                 return subprocess.CompletedProcess(argv, 0, "", "")
 
         fake = FakeDocker()
-        BUILDER.ensure_managed_builder("docker", buildx_config="/etc/mdt/buildx", runner=fake)
-        BUILDER.ensure_managed_builder("docker", buildx_config="/etc/mdt/buildx", runner=fake)
+        BUILDER.ensure_managed_builder("docker", BUILDKIT_ENDPOINT_FIXTURE, buildx_config="/etc/mdt/buildx", runner=fake)
+        BUILDER.ensure_managed_builder("docker", BUILDKIT_ENDPOINT_FIXTURE, buildx_config="/etc/mdt/buildx", runner=fake)
         creates = [call for call, _ in fake.calls if call[1:3] == ["buildx", "create"]]
         self.assertEqual(len(creates), 1)
         self.assertIn("--driver", creates[0])
         self.assertIn("remote", creates[0])
-        self.assertIn("unix:///run/mdt-buildkitd/buildkitd.sock", creates[0])
+        self.assertIn(BUILDKIT_ENDPOINT_FIXTURE, creates[0])
         self.assertNotIn("docker-container", " ".join(creates[0]))
         for _, kwargs in fake.calls:
             self.assertEqual(kwargs["env"]["BUILDX_CONFIG"], "/etc/mdt/buildx")
             # explicit builder management must bypass the host's docker-buildx shim
             self.assertEqual(kwargs["env"]["MDT_BUILDX_PASSTHROUGH"], "1")
         self.assertIn("default-load=true", creates[0])
-        profile = (ROOT / "etc/profile.d/mdt-buildkit.sh").read_text()
-        # The shared, root-owned /etc/mdt/buildx cannot serve non-root users (Buildx writes build refs
-        # and a last-activity stamp into its state directory), so no profile may export it any more.
-        self.assertNotIn("export BUILDX_CONFIG", profile)
-        self.assertIn("export BUILDX_BUILDER=mdt-managed", profile)
-        self.assertIn("export BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock", profile)
+        self.assertFalse((ROOT / "etc/profile.d/mdt-buildkit.sh").exists())
+        endpoint_writer = (ROOT / "scripts/mdt-host-endpoints.sh").read_text()
+        self.assertIn("BUILDX_BUILDER=mdt-managed", endpoint_writer)
+        self.assertIn('"BUILDKIT_HOST=unix://${buildkit_socket}"', endpoint_writer)
         install = (ROOT / "install.sh").read_text()
         self.assertIn('--buildx-config "$BUILDX_CONFIG_DIR"', install)
 
@@ -1503,7 +1504,8 @@ done
             FINALIZE.os.environ,
             {
                 "BUILDX_BUILDER": "wrong-builder",
-                "BUILDKIT_HOST": BUILDER.MANAGED_ENDPOINT,
+                "BUILDKIT_HOST": BUILDKIT_ENDPOINT_FIXTURE,
+                "MDT_BUILDKIT_SOCKET": BUILDKIT_SOCKET_FIXTURE,
             },
             clear=True,
         ), mock.patch.object(FINALIZE, "shutil") as shutil_mock:
@@ -1515,7 +1517,8 @@ done
             {
                 "BUILDX_CONFIG": "/home/vscode/.config/docker/buildx",
                 "BUILDX_BUILDER": BUILDER.MANAGED_BUILDER,
-                "BUILDKIT_HOST": BUILDER.MANAGED_ENDPOINT,
+                "BUILDKIT_HOST": BUILDKIT_ENDPOINT_FIXTURE,
+                "MDT_BUILDKIT_SOCKET": BUILDKIT_SOCKET_FIXTURE,
             },
             clear=True,
         ), mock.patch.object(FINALIZE, "shutil") as shutil_mock, mock.patch.object(
@@ -1524,7 +1527,7 @@ done
             shutil_mock.which.return_value = "docker"
             self.assertTrue(FINALIZE.setup_buildkit_builder(required=True))
             ensure.assert_called_once_with(
-                "docker", BUILDER.MANAGED_ENDPOINT, create_if_missing=True
+                "docker", BUILDKIT_ENDPOINT_FIXTURE, create_if_missing=True
             )
 
     def test_wizard_enforces_memory_order_without_live_availability_budget(self) -> None:
@@ -1684,14 +1687,18 @@ done
             self.assertIn(f"@{key}@", templates)
         template = (ROOT / "../templates/devcontainer.json").resolve().read_text()
         self.assertIn('"BUILDX_CONFIG": "/home/vscode/.config/docker/buildx"', template)
-        self.assertIn('"BUILDX_BUILDER": "mdt-managed"', template)
-        self.assertIn('source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind', template)
+        self.assertIn('"BUILDX_BUILDER": "${localEnv:BUILDX_BUILDER}"', template)
+        self.assertIn('"MDT_BUILDKIT_SOCKET": "${localEnv:MDT_BUILDKIT_SOCKET}"', template)
+        self.assertIn('source=${localEnv:MDT_BUILDKIT_SOCKET_DIR},target=${localEnv:MDT_BUILDKIT_SOCKET_DIR},type=bind', template)
         self.assertNotIn("host-buildkitd", template)
         # a devcontainer feature makes the Dev Containers CLI build FROM a local-only tag through the remote builder
         for path in (ROOT.parent / "templates/devcontainer.json", ROOT.parent / "templates/host-folder/devcontainer.json"):
             self.assertNotRegex(path.read_text(), r'(?m)^\s*"features"\s*:', f"{path.name} declares devcontainer features")
         self.assertNotIn("OPTIONAL and commented out", template)
-        self.assertIn('BUILDX_BUILDER:-mdt-managed', (ROOT.parent.parent / "cmru.orchestration.toml").read_text())
+        orchestration = (ROOT.parent.parent / "cmru.orchestration.toml").read_text()
+        self.assertIn('BUILDX_BUILDER = "${BUILDX_BUILDER}"', orchestration)
+        self.assertIn('BUILDKIT_HOST = "${BUILDKIT_HOST}"', orchestration)
+        self.assertNotIn("unix:///run/mdt-buildkitd/buildkitd.sock", orchestration)
         release = (ROOT.parent / "scripts/ensure-release-builder.sh").read_text()
         self.assertNotIn("docker-container", release)
         self.assertNotIn("buildx rm", release)

@@ -14,6 +14,7 @@ is parsed from templates/devcontainer.json and run as `vscode`.
 """
 from __future__ import annotations
 
+import os
 import re
 import unittest
 from contextlib import contextmanager
@@ -127,7 +128,8 @@ class Contract:
         ".config/docker/buildx/instances", ".config/docker/buildx/instances/mdt-managed",
     }
     BUILDER_REFUSAL = (
-        "managed BuildKit builder 'mdt-managed' is not reachable at 'unix:///run/mdt-buildkitd/buildkitd.sock'"
+        "managed BuildKit builder 'mdt-managed' is not reachable at "
+        f"'{os.environ.get('BUILDKIT_HOST', '<missing BUILDKIT_HOST>')}'"
     )
 
     def finalize_in_the_template_environment(self, home: str, workspace: str) -> harness.Completed:

@@ -1,13 +1,7 @@
-"""Oracles for three host-setup code paths that had none (review of 2026-10-27):
+"""Isolated oracles for host-setup runtime checks and render-time decisions.
 
-* install.sh `_mdt_environment_block_structure` / `_mdt_install_environment_block`: the marked
-  block in /etc/environment is validated (orphan BEGIN, END first, duplicates, trailing
-  whitespace) and the validation runs in the pre-flight, before the COMMIT POINT;
-* install.sh `_mdt_docker_restart_pending`: the end-of-run docker restart reminder;
-* check.sh's inotify-budget block: the policy minimum, not the installed file, is the threshold.
-
-The shell functions are extracted from the scripts by name and run in bash with PATH shims, the
-same technique as test_guard_events.py. Nothing here touches the host.
+The shell functions are extracted from the scripts by name and run in bash with PATH shims.
+Nothing here touches the host.
 """
 from __future__ import annotations
 
@@ -22,7 +16,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = (ROOT / "install.sh").read_text(encoding="utf-8")
 CHECK_SH = (ROOT / "scripts" / "check.sh").read_text(encoding="utf-8")
-BLOCK_FILE = ROOT / "etc" / "environment.mdt-buildkit"
 
 
 def shell_function(source: str, name: str) -> str:
@@ -33,88 +26,6 @@ def shell_function(source: str, name: str) -> str:
 
 def run_bash(script: str, *, env: dict[str, str] | None = None, cwd: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env or dict(os.environ), cwd=cwd)
-
-
-class EnvironmentBlockStructure(unittest.TestCase):
-    FUNCTIONS = shell_function(INSTALL_SH, "_mdt_environment_block_structure") + shell_function(
-        INSTALL_SH, "_mdt_install_environment_block"
-    )
-
-    def _structure(self, content: str) -> subprocess.CompletedProcess:
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "environment"
-            target.write_text(content, encoding="utf-8")
-            return run_bash(f'set -euo pipefail; {self.FUNCTIONS}\n_mdt_environment_block_structure "{target}"')
-
-    def _install(self, content: str | None) -> tuple[subprocess.CompletedProcess, str | None]:
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "environment"
-            if content is not None:
-                target.write_text(content, encoding="utf-8")
-            result = run_bash(
-                f'set -euo pipefail; {self.FUNCTIONS}\n_mdt_install_environment_block "{BLOCK_FILE}" "{target}"'
-            )
-            after = target.read_text(encoding="utf-8") if target.exists() else None
-            leftovers = [p.name for p in Path(tmp).iterdir() if p.name != "environment"]
-            self.assertEqual(leftovers, [], "no temp file is left next to the target")
-            return result, after
-
-    def test_sound_structures_pass(self) -> None:
-        for content in (
-            "",
-            "PATH=/usr/bin\n",
-            "PATH=/usr/bin\n# BEGIN mdt-buildkit (x)\nA=1\n# END mdt-buildkit\nZ=9\n",
-            "# BEGIN mdt-buildkit (x)\nA=1\n# END mdt-buildkit   \n",  # trailing whitespace tolerated
-        ):
-            with self.subTest(content=content):
-                result = self._structure(content)
-                self.assertEqual((result.returncode, result.stdout), (0, ""), result.stderr)
-
-    def test_defective_structures_are_named_and_refused(self) -> None:
-        cases = {
-            "PATH=/usr/bin\n# BEGIN mdt-buildkit (x)\nA=1\nZ=9\n": "BEGIN marker without END",
-            "# END mdt-buildkit\n# BEGIN mdt-buildkit (x)\nA=1\n": "END marker before its BEGIN",
-            "# BEGIN mdt-buildkit (x)\n# BEGIN mdt-buildkit (y)\nA=1\n# END mdt-buildkit\n": "more than one BEGIN marker",
-            "# BEGIN mdt-buildkit (x)\nA=1\n# END mdt-buildkit\n# END mdt-buildkit\n": "more than one END marker",
-        }
-        for content, defect in cases.items():
-            with self.subTest(defect=defect):
-                result = self._structure(content)
-                self.assertEqual(result.returncode, 2, result.stderr)
-                self.assertEqual(result.stdout.strip(), defect)
-
-    def test_install_refuses_a_defective_file_and_leaves_it_byte_for_byte(self) -> None:
-        for content in (
-            "PATH=/usr/bin\n# BEGIN mdt-buildkit (x)\nA=1\nZ=9\n",  # orphan BEGIN: the old awk dropped Z=9
-            "# END mdt-buildkit\nPATH=/usr/bin\n# BEGIN mdt-buildkit (x)\nA=1\n",  # END first: the old code truncated, rc 0
-        ):
-            with self.subTest(content=content[:20]):
-                result, after = self._install(content)
-                self.assertEqual(result.returncode, 2)
-                self.assertIn("Recovering a damaged /etc/environment block", result.stderr)
-                self.assertEqual(after, content)
-
-    def test_install_replaces_the_block_in_place_keeps_other_lines_and_is_idempotent(self) -> None:
-        before = "PATH=/usr/bin\n# BEGIN mdt-buildkit (old)\nBUILDX_BUILDER=stale\n# END mdt-buildkit  \nZ=9\n"
-        result, after = self._install(before)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        block = BLOCK_FILE.read_text(encoding="utf-8")
-        self.assertEqual(after, "PATH=/usr/bin\nZ=9\n" + block)
-        self.assertNotIn("stale", after)
-        result, again = self._install(after)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(again, after)
-
-    def test_a_missing_target_is_created_with_the_block(self) -> None:
-        result, after = self._install(None)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(after, BLOCK_FILE.read_text(encoding="utf-8"))
-
-    def test_the_validation_runs_in_the_pre_flight_before_the_commit_point(self) -> None:
-        commit = INSTALL_SH.index("# === COMMIT POINT")
-        preflight_call = INSTALL_SH.index('_mdt_environment_block_structure /etc/environment')
-        self.assertLess(preflight_call, commit, "the structure check must precede the first host mutation")
-        self.assertGreater(INSTALL_SH.index("_mdt_install_environment_block \"$HERE/etc/environment.mdt-buildkit\""), commit)
 
 
 class DockerRestartReminder(unittest.TestCase):
@@ -329,29 +240,39 @@ class InotifyInstallNeverLowers(unittest.TestCase):
         self.assertNotIn("MDT-038", out)
 
 
-class ObserverPreflightAndOptionMatrix(unittest.TestCase):
-    """MDT-039: synopsis, observer-only option matrix, drift refusals before the COMMIT POINT."""
+class EndpointInstallPreflight(unittest.TestCase):
+    """The endpoint publisher is required before the install commit point."""
 
-    def test_the_header_synopsis_lists_every_option(self) -> None:
-        header = INSTALL_SH[:INSTALL_SH.index("# Idempotent.")]
-        for flag in ("--restart-buildkitd", "--require-damon-disable", "--confirm-no-disk-swap", "--apply-protection"):
-            self.assertIn(flag, header)
+    def test_retired_options_and_cgprofile_service_wiring_are_gone(self) -> None:
+        self.assertNotIn("--observer-only", INSTALL_SH)
+        self.assertNotIn("--cgprofile-only", INSTALL_SH)
+        self.assertNotIn("provision_cgprofile_observer", INSTALL_SH)
+        self.assertNotIn("mdt-cgprofile-install.sh", INSTALL_SH)
 
-    def test_observer_only_rejects_every_other_option(self) -> None:
-        block = INSTALL_SH[INSTALL_SH.index('if [ "$OBSERVER_ONLY" = 1 ]; then'):]
-        block = block[:block.index("provision_cgprofile_observer /")]
-        for var in ("WIZARD", "WITH_BASELINE", "RESET", "AUTO_RESTART_DOCKER", "RESTART_BUILDKITD",
-                    "REQUIRE_DAMON", "CONFIRM_NO_DISK_SWAP", "APPLY_PROTECTION"):
-            self.assertIn(f'"${var}" = 1', block)
-
-    def test_the_observer_drift_checks_run_before_the_commit_point(self) -> None:
-        pre = INSTALL_SH.index("provision_cgprofile_observer / preflight")
+    def test_legacy_file_refusal_precedes_all_install_mutation(self) -> None:
+        refusal = INSTALL_SH.index("refuse_legacy_host_setup_files / || exit")
         commit = INSTALL_SH.index("# === COMMIT POINT")
-        self.assertLess(pre, commit)
-        helper = shell_function(INSTALL_SH, "provision_cgprofile_observer")
-        # nothing that mutates the host sits before the preflight return
-        self.assertLess(helper.index('[ "$mode" = preflight ] && return 0'), helper.index("install -D"))
-        self.assertLess(helper.index('[ "$mode" = preflight ] && return 0'), helper.index("systemd-sysusers"))
+        self.assertLess(refusal, commit)
+
+    def test_augeaswrap_requirement_precedes_the_commit_point(self) -> None:
+        requirement = INSTALL_SH.index("require_augeaswrap || exit")
+        first_optional_package_install = INSTALL_SH.index('apt-get install -y --no-install-recommends fio pv')
+        commit = INSTALL_SH.index("# === COMMIT POINT")
+        self.assertLess(requirement, first_optional_package_install)
+        self.assertLess(requirement, commit)
+
+    def test_endpoint_publication_follows_buildkit_readiness_and_probe(self) -> None:
+        ready = INSTALL_SH.index('if [ ! -S "$BUILDKITD_SOCKET" ]; then')
+        probe = INSTALL_SH.index('echo "ok: fresh user resolves mdt-managed')
+        publish = INSTALL_SH.index('publish_host_setup_endpoints "$HERE" publish /')
+        self.assertLess(ready, probe)
+        self.assertLess(probe, publish)
+        self.assertIn('MDT_BUILDKIT_SOCKET="$MDT_BUILDKIT_SOCKET"', INSTALL_SH)
+
+    def test_wizard_no_longer_accepts_retired_cgprofile_keys(self) -> None:
+        wizard = (ROOT / "mdt-host-setup-wizard.py").read_text(encoding="utf-8")
+        self.assertNotIn("validate_cgprofile", wizard)
+        self.assertNotIn('"CGPROFILE_ENABLE"', wizard)
 
 
 class ReconcileKeepsCapsOnTransientDeviceLoss(unittest.TestCase):

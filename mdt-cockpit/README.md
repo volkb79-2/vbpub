@@ -64,8 +64,8 @@ the runtime integration around it:
 
 The Docker tools are **clients only** — neither image runs a daemon. In the native image
 `docker version` needs an explicitly configured remote `DOCKER_HOST` or a mounted socket.
-The VSC template uses a directory-level `/run/docker-api` mount so replacing
-the socket entry does not invalidate the mount; host setup keeps that directory
+The VSC template uses a directory-level mount from `MDT_DOCKER_API_SOCKET_DIR`
+so replacing the socket entry does not invalidate the mount; host setup keeps that directory
 in place. A mounted directory remains attached to its old inode if its host
 path is removed and recreated, so the host must preserve that directory
 identity. See the [directory bind-mount design](docs/DESIGN-GUIDE.md#directory-bind-mount-identity).
@@ -531,21 +531,16 @@ sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — qu
 sudo mdt-host-check.sh
 ```
 
-On a host that already has `/run/cgprofile` configured, provision only
-cgprofile's read-only resource-observer directory with
-`sudo host-setup/install.sh --observer-only`. It creates the dedicated
-`cgprofile-observer` group and applies `/run/cgprofile/observer` permissions;
-the host checker verifies the group is distinct from `docker`, the directory
-is `root:<observer-gid> 0751`, and both required sysusers/tmpfiles rules are
-installed as the complete active rule sets (blank lines and comments are
-ignored; extra active directives fail the check):
-
-```bash
-sudo mdt-host-check.sh
-```
-
-see the [observer design](docs/DESIGN-GUIDE.md#narrow-cgprofile-observer-provisioning)
-and [consumer steps](docs/CONSUMERS.md#cgprofile-resource-observer-host-setup).
+`host-setup/install.sh` no longer provisions cgprofile or topos service files.
+Install those services through `cgprofiled install` and `toposd install`; each
+publishes its own endpoint through `augeaswrap`. Host-setup publishes its own
+Docker, BuildKit and Docker API facts as the `mdt-host-setup` endpoint record
+after the BuildKit socket is ready. It resolves `augeaswrap` from `PATH`, with
+`AUGEASWRAP_BIN` available when its command name or location differs. The
+installer refuses old cgprofile/topos files and the retired BuildKit environment
+block before changing host state.
+See the [endpoint ownership design](docs/DESIGN-GUIDE.md#host-service-endpoint-ownership)
+and [pasteable service commands](docs/CONSUMERS.md#host-service-endpoints).
 
 For host inspection from an MDT devcontainer, `host-escape -- <command>` runs
 the command in the host's namespaces with host-root authority; `host-escape`
@@ -561,9 +556,10 @@ in the [host cgroup preflight design](docs/DESIGN-GUIDE.md#host-cgroup-preflight
 fundamentally cannot express — and the BFQ caveats, where `IOWeight` does not mean what it
 says. Read it before changing any weight.
 
-All MDT devcontainer and release builds use the host-managed `mdt-managed`
-Buildx remote backed by `mdt-buildkitd.service`; the template supplies
-`BUILDX_BUILDER` and `BUILDKIT_HOST` explicitly. The accidental-worker guard
+All MDT devcontainer and release builds use the host-managed Buildx remote
+published by host-setup after `mdt-buildkitd.service` is ready. The template
+passes `BUILDX_BUILDER`, `BUILDKIT_HOST`, and `MDT_BUILDKIT_SOCKET` from the
+host endpoint record; it does not carry a socket path. The accidental-worker guard
 defaults to report-only; termination is an explicit opt-in. Per-container
 leaf caps from the inotify watcher default off while parent slice limits
 remain active. The host wizard asks whether that optional memory watcher is
@@ -597,9 +593,8 @@ file contents.
 
 Step and environment configuration is [`cmru.toml`](cmru.toml); the build
 matrix is [`docker-bake.hcl`](docker-bake.hcl). Release builds require the
-host-managed remote selected by `BUILDX_BUILDER=mdt-managed`; `cmru.toml` also
-records its `BUILDKIT_HOST` endpoint, and the host slice owns its resource
-limits. The configured CMRU release flow is `load`: build and manifest
+host-published Buildx builder and endpoint; CMRU fails to load if either host
+fact is absent, and the host slice owns its resource limits. The configured CMRU release flow is `load`: build and manifest
 extraction run first, then the gate and source promotion, then the post-gate
 layout publication. The alternate `push` and `repack` flows publish during the
 build and therefore do not provide source-first publication ordering.
@@ -877,7 +872,7 @@ production-quality. Support windows as of June 2026:
 | [USAGE.md](USAGE.md) | Consuming the image day to day |
 | [docs/DEVCONTAINER-MECHANISMS.md](docs/DEVCONTAINER-MECHANISMS.md) | **Start here.** Every devcontainer mechanism end to end: host prerequisites, bootstrap, create-time mounts and env, finalizer, filesystem split, shell selection and startup files, troubleshooting |
 | [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) | Build → create → start ordering, what runs when, host resource governance |
-| [host-setup/README.md](host-setup/README.md) | Installing host cgroup tiers, publishing the gates admission cap, narrow cgprofile observer setup, and the 2.x-only `cgpd.service` installer |
+| [host-setup/README.md](host-setup/README.md) | Installing host cgroup tiers, publishing the gates admission cap and `mdt-host-setup` endpoint facts, and upgrading from retired service provisioning |
 | [host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md) | What slice units can't express; BFQ caveats |
 | [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) | Which concerns belong to the image, the orchestration, and the host |
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |

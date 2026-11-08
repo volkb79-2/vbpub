@@ -580,7 +580,7 @@ file, so a host that set 1048576 elsewhere is lowered at the next boot (the READ
 
 ## MDT-039 - install.sh usage drift and a post-commit-point refusal (2026-10-27)
 
-**Status:** FIXED 2026-11-04 (fix-mdt-3): synopsis and `--observer-only` matrix complete; observer drift runs as `provision_cgprofile_observer / preflight` before the commit point (the control-directory check stays after it, since tmpfiles creates that directory).
+**Status:** SUPERSEDED 2026-11-08 (H1g'): the `--observer-only` mode and `provision_cgprofile_observer` were removed with host-setup's cgprofile ownership. The details below are historical; keep the remaining `install.sh` usage and option matrix current.
 
 The header's one-line synopsis omits `--restart-buildkitd` and `--require-damon-disable` (which `usage()`
 lists); `--observer-only` rejects `--wizard`/`--reset`/`--with-baseline`/`--restart-docker` but silently accepts
@@ -1116,7 +1116,9 @@ fallback): the devcontainer, both templates, the r1002 runner start script and i
 
 ## MDT-055 - host-setup installs and pins the cgprofile host service from the released wheel (2026-11-04)
 
-**Status:** IMPLEMENTED 2026-11-04 on branch `mdt-cgp-native-20261104` (fake-root tests in `host-setup/tests/test_cgprofile_install.py`;
+**Status:** SUPERSEDED 2026-11-08 (H1g'): cgprofile lifecycle moved to `cgprofiled install`; host-setup's installer, config keys, and check sections were removed. The implementation record below is historical. Use cgprofile's native deployment guide for current install behavior.
+
+Historical implementation, completed 2026-11-04 on branch `mdt-cgp-native-20261104` (fake-root tests in `host-setup/tests/test_cgprofile_install.py`;
 smoke and release lanes in the package report); the live installs are the ops package (NC-05, r1002 first, then the shared host).
 Built against cgprofile 2.0.0 (`cgpd unit print|check`, `cgpd config check`, `cgpctl sessions|status|doctor --json`), not the
 `cgprofile host-unit --print` command named in the design below, which became `cgpd unit print`. Deviations from the design text
@@ -1236,7 +1238,7 @@ the provisioning script no longer hardcodes 1003.
 
 ## MDT-062 - cgprofile cutover from the 1.x container: the installer cannot drain it and does not stop it (2026-11-05)
 
-**Status:** OPEN. Found by the first live rollout (v1001, r1002; `reports/cgpd-rollout-REPORT.md`).
+**Status:** SUPERSEDED 2026-11-08 (H1g'). `mdt-cockpit/host-setup` no longer owns or ships the cgprofile installer or `--cgprofile-only`; service migration and any remaining old-daemon cutover belong to cgprofile's installer. The observed rollout details below are historical context, not a current host-setup work item.
 
 **Observed.** (1) On a host whose 1.x `cgprofile-host-daemon` container still serves `/run/cgprofile/ctl.sock`, `cgpd` 2.0.0 refuses to start
 ("another daemon already serves"), so `install.sh --cgprofile-only` only works after the container was stopped by hand; the stop, `docker update

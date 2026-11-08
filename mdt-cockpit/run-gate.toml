@@ -34,7 +34,7 @@ memory_swap = "2g"
 [lanes.host-setup-admission]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && /opt/tester-venv/bin/pytest -p no:cacheprovider host-setup/tests/test_admission.py host-setup/tests/test_hs02.py host-setup/tests/test_env_example_allowed_values.py host-setup/tests/test_wizard_flow.py host-setup/tests/test_install_runtime_blocks.py host-setup/tests/test_excluded_capacity.py -q"]
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && /opt/tester-venv/bin/pytest -p no:cacheprovider host-setup/tests/test_admission.py host-setup/tests/test_hs02.py host-setup/tests/test_env_example_allowed_values.py host-setup/tests/test_wizard_flow.py host-setup/tests/test_install_runtime_blocks.py host-setup/tests/test_cgprofile_install.py host-setup/tests/test_excluded_capacity.py -q"]
 budget = "4m"
 
 [lanes.host-setup-admission.resources]
@@ -115,7 +115,7 @@ kind = "command"
 environment = "bare-host"
 argv = ["python3", "scripts/run_image_runtime_lane.py", "--native", "trixie-py314-php85", "--vsc", "trixie-py314-php85-vsc"]
 clean_tree = true
-required_env = ["CGROUP_PARENT_DEV_GATES"]
+required_env = ["CGROUP_PARENT_DEV_GATES", "BUILDX_BUILDER", "BUILDKIT_HOST", "MDT_BUILDKIT_SOCKET", "MDT_DOCKER_API_SOCKET"]
 budget = "75m"
 
 [lanes.image-runtime]
@@ -123,5 +123,5 @@ kind = "command"
 environment = "bare-host"
 argv = ["python3", "-m", "unittest", "discover", "-s", "tests/runtime", "-p", "test_*.py", "-v"]
 clean_tree = true
-required_env = ["CGROUP_PARENT_DEV_GATES", "MDT_RUNTIME_IMAGE_NATIVE", "MDT_RUNTIME_IMAGE_VSC"]
+required_env = ["CGROUP_PARENT_DEV_GATES", "MDT_RUNTIME_IMAGE_NATIVE", "MDT_RUNTIME_IMAGE_VSC", "BUILDX_BUILDER", "BUILDKIT_HOST", "MDT_BUILDKIT_SOCKET", "MDT_DOCKER_API_SOCKET"]
 budget = "60m"

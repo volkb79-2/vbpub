@@ -781,42 +781,39 @@ reconcile command when they intend to apply the current formula or pin. The
 describes the behavior, and the [consumer steps](CONSUMERS.md#run-gate-admission-cap)
 show the command to paste.
 
-## Narrow cgprofile observer provisioning
+## Host service endpoint ownership
 
-The resource observer uses a read-only Unix socket whose group is deliberately
-separate from `docker`. A normal MDT host install creates its group and runtime
-directory as part of the complete host policy workflow. Contract-2 adoption on
-an already configured host also needs a small additive path that prepares the
-socket directory without re-running unrelated host policy, Docker, or BuildKit
-steps. `install.sh --observer-only` provides that path: it verifies the
-existing `/run/cgprofile` control directory and refuses a pre-existing
-observer group that aliases Docker's GID or an observer path with the wrong
-type, owner, group, or mode before it writes units or applies tmpfiles. It
-refuses drift rather than letting tmpfiles silently re-own a live path. It
-creates the observer group, applies only the observer tmpfiles rule, and
-validates the resulting owner, group, and mode before returning.
+Host setup owns the dev cgroup tiers, Docker API socket configuration, and its
+managed BuildKit worker. cgprofile and topos own their service directories,
+units, groups, and doctor checks through `cgprofiled install` and `toposd
+install`. Keeping those resources in host-setup created two owners for service
+state and made host upgrades depend on service-specific keys and lifecycle
+rules.
 
-The dedicated tmpfiles rule is separate from the control-socket rule so the
-narrow path cannot rewrite the Docker-accessible parent directory. The full
-installer uses the same provisioning helper, keeping both host workflows on
-one implementation. `mdt-host-check.sh` verifies the live observer group,
-directory metadata, and the complete active sysusers/tmpfiles rule sets. It
-ignores blank lines and comments but rejects extra active directives, so a
-missing or widened rule is reported before a consumer lane tries to mount the socket. See the
-[pasteable consumer command](CONSUMERS.md#cgprofile-resource-observer-host-setup).
+Each service publishes its own endpoint fragment through `augeaswrap`; the
+helper serializes updates and regenerates the shared aggregate, `/etc/environment`
+block, and login-shell loader. Host-setup publishes `mdt-host-setup` only after
+the Docker and BuildKit facts are applied and ready. Its paths and GIDs come
+from the host-owned unit configuration, group database, and live socket. The
+endpoint check reports the record and the aggregate through augeaswrap. The
+installer resolves the writer from `PATH` or the optional `AUGEASWRAP_BIN`
+command/path override; keeping a filesystem path out of the installer avoids
+coupling the consumer to one wheel-install location.
 
-## cgprofile 2.x host-setup installer boundary
+The devcontainer template and release configuration read BuildKit, Docker API,
+and GID facts from the published environment. CMRU requires the host-provided
+builder and endpoint with no invented socket fallback. The Buildx shim and
+container finalizer derive the Unix endpoint from `MDT_BUILDKIT_SOCKET` and
+refuse missing or inconsistent values.
 
-`mdt-cgprofile-install.sh` renders the host config and units through `cgpd`,
-queries sessions with `cgpctl`, and installs `cgpd.service`. cgprofile 3.0.0
-uses the renamed `cgprofiled` and `cgprofilectl` entry points and its own
-`cgprofiled install` service workflow. The mdt host-setup installer therefore
-accepts only cgprofile 2.x pins (`<3.0.0`) and refuses outside that range before
-fetching a wheel. Its protected-unit defaults name both `cgpd.service` and
-`cgprofiled.service` while 2.x host-setup installs and 3.x service installs
-coexist across hosts. The [host guide](../host-setup/README.md#install-pin-and-upgrade-the-cgprofile-service)
-states the supported range; the [consumer procedure](CONSUMERS.md#cgprofile-resource-observer-host-setup)
-shows the install command.
+During migration, host-setup refuses if its retired cgprofile/topos files, the
+old `/etc/profile.d/mdt-buildkit.sh`, or the old marked `/etc/environment`
+block remains. The operator removes those named artifacts by hand so a new
+publisher cannot silently compete with stale ownership. Its documented manual
+uninstall withdraws the `mdt-host-setup` fragment before removing units and
+files, which lets augeaswrap re-render only the facts that remain owned by
+other services. See the [pasteable host service commands](CONSUMERS.md#host-service-endpoints)
+and [host endpoint guide](../host-setup/README.md#host-endpoint-facts-and-upgrade-refusal).
 
 ## BuildKit guard policy
 

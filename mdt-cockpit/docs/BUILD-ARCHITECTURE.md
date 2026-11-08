@@ -8,15 +8,15 @@ shell history.
 
 ## Managed BuildKit backend
 
-Decision (2026-09-14): `BUILDX_BUILDER=mdt-managed` is canonical for every
-MDT devcontainer build and every release build. `BUILDKIT_HOST` is the matching
-authoritative endpoint, `unix:///run/mdt-buildkitd/buildkitd.sock`. Host setup
+Decision (2026-09-14): `mdt-managed` is canonical for every MDT devcontainer
+build and release build. Host setup publishes `BUILDX_BUILDER`,
+`BUILDKIT_HOST`, and `MDT_BUILDKIT_SOCKET` from the live service facts. Host setup
 renders and maintains a rootless `mdt-buildkitd.service` in
 `dev-buildkitd.slice`, labels and verifies that service container, waits for
 its socket, then creates or verifies exactly one durable Buildx node:
 
 ```text
-mdt-managed  --driver remote-->  unix:///run/mdt-buildkitd/buildkitd.sock
+mdt-managed  --driver remote-->  unix://$MDT_BUILDKIT_SOCKET
                                       |
                                       +-- mdt-buildkitd.service
                                           docker run --cgroup-parent=dev-buildkitd.slice
@@ -37,7 +37,8 @@ CPU/memory/I/O limits. Local release repack has separate controls,
 `REPACK_JOBS` and `REPACK_CONCURRENCY`, because repack runs in the caller
 outside the BuildKit worker.
 
-Host shells receive the same exports from `/etc/profile.d/mdt-buildkit.sh`, and the
+Host shells receive the same exports from the `augeaswrap`-managed endpoint
+environment (`/etc/environment` and `/etc/profile.d/host-endpoints.sh`), and the
 `docker-buildx` shim makes the choice for callers that read no profile at all; see
 [Making every build use mdt-managed](#making-every-build-use-mdt-managed).
 The MDT template and derived dstdns container explicitly carry both exports
@@ -131,10 +132,10 @@ Diagnosis, in the order it was established:
 3. `mdt-buildkit-guard.service` removed that container within seconds, by design (it
    terminates any `buildx_buildkit_*` worker that is not the inspected managed service).
    The client saw only "No such container"; the explanation existed only in the host's journal.
-4. The host's `BUILDX_BUILDER=mdt-managed` came from `/etc/profile.d/mdt-buildkit.sh`, which
-   only bash/sh **login** shells read. `vb` uses zsh (Debian's zsh does not read
-   `/etc/profile`) and VS Code's SSH server is not a login shell at all. Its process had no
-   `BUILDX_*` variable, so Buildx fell back to the per-user state.
+4. The host's old `BUILDX_BUILDER=mdt-managed` came from
+   `/etc/profile.d/mdt-buildkit.sh`, which only bash/sh **login** shells read.
+   That legacy file and its marked `/etc/environment` block are retired; the
+   endpoint publisher now supplies the facts through pam_env and its login-shell loader.
 
 The stated design, "a missing registration is an error rather than a fallback", only held
 where the variable was set. Everywhere else the fallback was silent and wrong.
@@ -195,12 +196,13 @@ cannot be bypassed outward:
    - drops a stale `BUILDX_CONFIG=/etc/mdt/buildx` that the caller cannot write (shells opened before
      the upgrade still carry it).
    `--builder default` still reaches the built-in builder deliberately: a flag outranks the environment.
-2. **`/etc/environment`** gets a marked block (`BUILDX_BUILDER`, `BUILDKIT_HOST`). `pam_env` reads
-   it for ssh (including VS Code's server), sudo, su, login and cron, so tools that read the variable
-   directly (`buildctl`, scripts) agree with the shim. `install.sh` replaces only its own block and warns
-   about a conflicting assignment elsewhere in the file instead of editing it.
-3. **`/etc/profile.d/mdt-buildkit.sh`** keeps the explicit export for bash/sh login shells but no
-   longer exports `BUILDX_CONFIG`.
+2. **Host endpoint publishing** puts `BUILDX_BUILDER` and `BUILDKIT_HOST` in
+   `/etc/host-endpoints.d/mdt-host-setup.env` through `augeaswrap endpoints publish`.
+   `augeaswrap` checks for collisions and owns the aggregate, `/etc/environment`
+   block and `/etc/profile.d/host-endpoints.sh` loader.
+3. **Host setup preflight** refuses if the old `/etc/environment` block or
+   `/etc/profile.d/mdt-buildkit.sh` remains, so two writers cannot silently
+   compete. The installer publishes only after the live BuildKit socket is ready.
 
 Why the shim and not something simpler (all considered, rejected):
 
@@ -230,10 +232,12 @@ another slice, registered under another builder name and selected with `BUILDX_B
 
 The guard's journal line now names the stale builder (derived from the container name, labelled as
 such) and the fix (`docker buildx rm <builder>`, then build normally or with `--builder mdt-managed`).
-`mdt-host-check.sh` reports whether Docker resolves the buildx plugin to the shim, whether the
-`/etc/environment` block exists, and whether a fresh user with an **empty environment** resolves
-`mdt-managed` with the remote driver. `install.sh` runs that last probe itself and exits non-zero if it
-fails, so an install that did not take effect is not reported as done.
+`mdt-host-check.sh` reports whether Docker resolves the buildx plugin to the shim,
+whether the `mdt-host-setup` endpoint record and aggregate pass `augeaswrap
+endpoints check --json`, and whether a fresh user with an **empty environment**
+resolves `mdt-managed` with the remote driver. `install.sh` runs that last probe
+itself and exits non-zero if it fails, so an install that did not take effect is
+not reported as done.
 
 ### What is not covered
 
@@ -248,8 +252,8 @@ fails, so an install that did not take effect is not reported as done.
 ### Operating it
 
 ```bash
-sudo ./install.sh                      # installs the shim, the /etc/environment block, probes a fresh user
-mdt-host-check.sh                      # shim / environment block / fresh-user probe
+sudo ./install.sh                      # installs the shim, publishes the endpoint fragment, probes a fresh user
+mdt-host-check.sh                      # shim / endpoint record / fresh-user probe
 docker buildx ls                       # per user: mdt-managed (remote) appears after the first build
 docker buildx rm <stale-builder>       # remove a leftover container-driver builder named in the guard log
 MDT_BUILDX_PASSTHROUGH=1 docker ...    # bypass the shim for one command
@@ -257,7 +261,7 @@ MDT_BUILDX_PASSTHROUGH=1 docker ...    # bypass the shim for one command
 
 Oracles: `host-setup/tests/test_docker_buildx_shim.py` (the shim under `/bin/sh` with a fake plugin;
 selection, registration, pass-through, failure, stale-config cases), `test_buildkit_governance.py`
-(profile contract, builder module passthrough, guard remedy), and `scripts/test_docs_in_sync.py`.
+(endpoint publisher, builder module passthrough, guard remedy), and `scripts/test_docs_in_sync.py`.
 
 ## Canonical release path
 
@@ -721,8 +725,8 @@ lane; `repack` changes layer topology and therefore remains gated separately.
 The governed defaults are in the `[env]` table of
 [`cmru.toml`](../cmru.toml):
 
-- `BUILDX_BUILDER=mdt-managed` and `BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`
-  select the host-managed remote; host-setup's slice config controls its
+- `BUILDX_BUILDER` and `BUILDKIT_HOST` come from host-setup's endpoint record
+  and select the host-managed remote; host-setup's slice config controls its
   resources. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` defaults to `report-only`;
   `terminate` removes unapproved Buildx workers and requires explicit opt-in.
 - `REPACK_WORK_DIR`, `REPACK_TARGET_SIZE`, `REPACK_JOBS`,

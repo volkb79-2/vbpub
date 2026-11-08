@@ -294,7 +294,7 @@ Why each row exists:
 
 The installer owns one rootless `mdt-buildkitd.service` in
 `dev-buildkitd.slice` and registers one durable Buildx remote builder named
-`mdt-managed` at `unix:///run/mdt-buildkitd/buildkitd.sock`. This is the only
+`mdt-managed` at the endpoint published in the host endpoint record. This is the only
 normal backend for MDT builds, including release builds. The service is a
 plain `docker run --cgroup-parent=dev-buildkitd.slice`; it does not rely on a
 Buildx container-driver cgroup option.
@@ -319,15 +319,18 @@ the service socket, verifies the service container's image/cgroup/labels, then
 creates or verifies the remote builder (the root-owned reference in `/etc/mdt/buildx`). Users
 do not build with that directory: Buildx writes build state into its config directory on every
 build, so each user gets the same `remote` node in their own `~/.docker/buildx`, registered by the
-`docker-buildx` shim on first use. The installer installs that shim to
-`/usr/local/lib/docker/cli-plugins/docker-buildx`, a marked `BUILDX_BUILDER`/`BUILDKIT_HOST`
-block in `/etc/environment`, and `/etc/profile.d/mdt-buildkit.sh`, then proves a fresh user with an
-empty environment resolves `mdt-managed` (exit 2 otherwise); the reasoning is in
-[docs/BUILD-ARCHITECTURE.md](../docs/BUILD-ARCHITECTURE.md#making-every-build-use-mdt-managed).
-The devcontainer template repeats the builder and endpoint,
-sets its own persistent `BUILDX_CONFIG` below the already-mounted
-`/home/vscode/.config`, and bind-mounts `/run/mdt-buildkitd`; the mount is
-mandatory, so a missing host prerequisite fails container start.
+`docker-buildx` shim on first use from the published BuildKit endpoint facts. The installer installs that shim to
+`/usr/local/lib/docker/cli-plugins/docker-buildx`, then checks a fresh user with no Buildx or Docker overrides
+against the derived endpoint facts (exit 2 otherwise). After the BuildKit
+socket is ready, it publishes its host facts in
+`/etc/host-endpoints.d/mdt-host-setup.env` with `augeaswrap endpoints publish`;
+augeaswrap maintains the aggregate environment files and login-shell loader.
+The reasoning is in [docs/BUILD-ARCHITECTURE.md](../docs/BUILD-ARCHITECTURE.md#making-every-build-use-mdt-managed).
+The devcontainer template reads `BUILDX_BUILDER`, `BUILDKIT_HOST`,
+`MDT_BUILDKIT_SOCKET`, and its directory from that endpoint record, sets its
+own persistent `BUILDX_CONFIG` below the already-mounted `/home/vscode/.config`,
+and bind-mounts the published directory. The mount is mandatory, so missing
+endpoint facts fail container start.
 
 The accidental-worker guard is an event-driven systemd service. It inspects
 reserved `buildx_buildkit_*` and `buildkit_buildkit_*` candidates, approves only
@@ -410,19 +413,35 @@ zswap choices. See [`../docs/BUILD-ARCHITECTURE.md`](../docs/BUILD-ARCHITECTURE.
 for the design decisions and [`../docs/CONSUMERS.md`](../docs/CONSUMERS.md) for
 pasteable consumer configuration.
 
-### Recovering a damaged `/etc/environment` block
+### Host endpoint facts and upgrade refusal
 
-install.sh keeps `BUILDX_BUILDER`/`BUILDKIT_HOST` for PAM sessions in a marked block of
-`/etc/environment` (`# BEGIN mdt-buildkit ...` to `# END mdt-buildkit`, from
-`etc/environment.mdt-buildkit`), replaced in place on every run. Before anything is installed (the
-pre-flight, ahead of the commit point) it checks that the file has either no marker or exactly one
-BEGIN followed by one END; an orphan BEGIN, an END before its BEGIN or duplicate markers refuse the
-whole run with `ERROR: /etc/environment: <defect> in the '# BEGIN mdt-buildkit' block`, because the
-replace would otherwise drop every line after the orphan marker (`PATH` included). Recovery: open
-`/etc/environment` as root, delete every line from the first `# BEGIN mdt-buildkit` to the last
-`# END mdt-buildkit` (and any stray marker), keep the rest, then re-run install.sh, which appends a
-fresh block. A trailing-whitespace END line is accepted as is. `mdt-host-check.sh` does not inspect
-this file; the oracle is `host-setup/tests/test_install_runtime_blocks.py`.
+The `mdt-host-setup` endpoint fragment carries the Docker group GID, the live
+BuildKit socket path and GID, the Docker API socket path, and the
+`BUILDX_BUILDER`/`BUILDKIT_HOST` defaults. Install requires the released
+`augeaswrap` 0.1.0 command on `PATH`; `--dry-run-endpoints` prints the exact
+fragment derived from the host facts without publishing it. Check the endpoint
+records with `sudo augeaswrap endpoints check --json`.
+
+Before changing host state, install refuses if files from the retired
+cgprofile/topos provisioning remain, if `/etc/profile.d/mdt-buildkit.sh`
+remains, or if `/etc/environment` still has the old `# BEGIN mdt-buildkit`
+block. Remove only the listed legacy artifacts manually, then rerun install:
+
+```bash
+sudo sed -i '/^# BEGIN mdt-buildkit[[:space:]].*$/,/^# END mdt-buildkit[[:space:]]*$/d' /etc/environment
+sudo rm -f /etc/profile.d/mdt-buildkit.sh \
+  /etc/tmpfiles.d/mdt-cgprofile.conf \
+  /etc/tmpfiles.d/mdt-cgprofile-observer.conf \
+  /etc/tmpfiles.d/mdt-topos.conf \
+  /etc/sysusers.d/mdt-cgprofile.conf \
+  /etc/systemd/system/topos.service.d/50-mdt-socket-group.conf \
+  /usr/local/sbin/mdt-cgprofile-install.sh
+```
+
+The aggregate `/etc/environment` block and `/etc/profile.d/host-endpoints.sh`
+are owned by augeaswrap. To remove host-setup, withdraw its fragment before
+disabling services or removing their files; the complete manual sequence is in
+[Uninstall](#uninstall).
 
 ## dev-gates: why
 
@@ -549,69 +568,20 @@ then remains in its background tier. Missing gate placement is a hard error,
 so no consumer silently returns to `dev-background.slice` or Docker's
 unbounded default.
 
-**The socket carrier's mount (RW-31/A2, D-30, M5).** `templates/
-devcontainer.json` bind-mounts `/run/cgprofile` (the profiler daemon's
-control-socket directory, `ctl.sock`) into the devcontainer; run-gate's
-`transport = auto` prefers it when present and answering, else falls back
-to `docker exec` — nothing breaks on a devcontainer that predates the
-mount, `auto` simply resolves to exec forever for it. Group access needs no
-new plumbing: the existing `--group-add ${localEnv:DOCKER_GID}` runArg is
-exactly the socket's own group (`root:docker`, mode `0660`). Host
-prerequisite: `mounts` entries are Docker `--mount`, which refuses a
-missing bind source, so host-setup ships and applies a `tmpfiles.d` entry
-that creates `/run/cgprofile` (mode `0770`, owner `root:docker`) — see
-"Quick start"/"Upgrading a host that already runs mdt host-setup" below;
-`mdt-host-check.sh` reports the
-directory's own mode/owner and separately whether the daemon's socket is
-present (`INFO daemon socket available`) or not yet (`INFO daemon socket
-absent` — no daemon installed or started yet is fine; the control socket is
-the only carrier). The daemon re-asserts the directory's own
-owner/mode at its own start as belt-and-braces; this package only creates
-it and gets out of the way. Opt out by deleting the `mounts` line.
-
-The observer uses a separate host-owned directory at
-`/run/cgprofile/observer`, created as `0751 root:cgprofile-observer`. Other
-users can traverse the known socket path for preflight, but cannot list or
-write in the directory; only the dedicated group can connect to the `0660`
-socket. The
-install script creates the `cgprofile-observer` group with
-`systemd-sysusers` before applying the tmpfiles entry. Tester containers that
-need R2 counters receive only this dedicated GID; they do not inherit Docker
-group access through the observer. The daemon binds only
-`resource-observer.sock` inside this stable directory, so a daemon restart
-does not strand a gate container on a socket-file bind mount.
-Host setup fails if `systemd-tmpfiles` cannot apply the entry or if the
-resulting directory is not exactly root-owned, assigned to the resolved
-`cgprofile-observer` GID, and mode `0751`.
+The devcontainer template consumes host service endpoints published through
+augeaswrap. `mdt-cockpit/host-setup` no longer creates cgprofile or topos
+directories, groups, tmpfiles entries, or service drop-ins. Install those
+services through `cgprofiled install` and `toposd install`; each service owns
+its socket contract, endpoint fragment, and doctor. See [Host service
+installation and endpoint publication](#host-service-installation-and-endpoint-publication)
+and the [pasteable service commands](../docs/CONSUMERS.md#host-service-endpoints).
 
 ## Changes
 
-**2026-09-12 (RG-55 P8, round-1 repairs + M5):** `dev-gates.slice` shipped
-(this section); round-1 review B1-B6 fixed (cap-watcher coverage,
-renderer-test host-mutation guard, unbounded-upgrade detection in
-`install.sh`/`check.sh`, corrected upgrade sequence below, a withdrawn-
-design residue, renderer-test coverage of `install.sh`'s own wiring);
-`ManagedOOMSwap=kill` dropped from `dev-gates.slice.in` (D2); M5 lands the
-`/run/cgprofile` devcontainer mount + host-setup's `tmpfiles.d` entry
-(D-30/A2). `TODO.md` is NOT edited by this package (dirty in the shared
-checkout, see round-1 review S13/RW-32 D5) — the operator paste-in line is
-in this package's own REPORT
-(`run-gate-project/nyxloom-trove/reports/run-gate-WAVE-RG55-P8-REPORT.md`,
-"Operator: add to TODO.md"). Round-2 review B7/B8 fixed: `check.sh`'s
-byte-size parser now handles half-GiB and percentage values without a
-bash syntax error or a false FAIL; the D-24 fallback note's substitute
-claim about `docker run` was corrected to the verified fail-open
-behavior. The tmpfiles entry is now `/etc/tmpfiles.d/mdt-cgprofile.conf`
-(mdt-prefixed, matching every other drop-in this host ships).
-
-**Ordering constraint (round-2 review S19, made explicit):** install this
-version of host-setup on the host **BEFORE** anyone rebuilds a
-devcontainer from `templates/devcontainer.json` — the new `/run/cgprofile`
-mount is Docker `--mount`, which refuses to start a container at all when
-the bind source directory does not exist, and that directory only exists
-once this package's `install.sh` has run. Rebuilding a devcontainer from
-an updated template against a host that has not yet been upgraded will
-fail to start, not merely run with a missing feature.
+**Historical change:** the 2026-09-12 RG-55 rollout added cgprofile socket
+mounting and host-setup-owned tmpfiles/group provisioning. H1g' removes that
+duplicate ownership. Current service requirements and installation order are
+documented in [Host service installation and endpoint publication](#host-service-installation-and-endpoint-publication).
 
 **Fresh host, never ran mdt host-setup before:** run `install.sh --wizard`.
 The wizard writes a host-sized candidate in temporary storage, validates it,
@@ -643,7 +613,7 @@ sudo ./install.sh                  # ONE render/install/activate pass --
 sudo mdt-host-check.sh             # verify: dev-gates.slice's effective
                                     # memory.max/high now FAIL loudly (not
                                     # print unbounded silently) if a key is
-                                    # still missing; /run/cgprofile exists
+                                    # still missing; endpoint facts are checked
 ```
 Then rebuild/recreate your devcontainer (above).
 
@@ -677,115 +647,21 @@ sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~12 min 
 sudo mdt-host-check.sh             # verify
 ```
 
-### Provision the cgprofile observer directory
+### Host service installation and endpoint publication
 
-An existing MDT host can prepare cgroup-profiler's read-only observer socket
-directory without rerunning the host policy workflow:
+`mdt-cockpit/host-setup` no longer provisions cgprofile or topos runtime files,
+service settings, or doctor checks. Those services own their lifecycle and
+endpoint facts: install them through `cgprofiled install` and `toposd install`;
+each service publishes its own fragment through `augeaswrap`. The host-setup
+installer publishes only the `mdt-host-setup` fragment after its BuildKit and
+Docker API facts are ready. See the
+[service endpoint design](../docs/DESIGN-GUIDE.md#host-service-endpoint-ownership)
+and [pasteable host service commands](../docs/CONSUMERS.md#host-service-endpoints).
 
-```bash
-sudo ./install.sh --observer-only
-stat -c '%u:%g %a %n' /run/cgprofile/observer
-getent group cgprofile-observer
-sudo mdt-host-check.sh
-```
-
-The focused mode requires `/run/cgprofile` to exist as a real `root:docker`
-directory with mode `0770`. It first refuses an existing
-`cgprofile-observer` group that shares Docker's GID, before writing units or
-creating the observer directory. It then creates the dedicated system group,
-installs and applies only the observer tmpfiles rule, and verifies the
-directory is `root:<observer-gid>` with mode `0751`. Full host installs use the
-same helper. The mode refuses if the control directory's identity or mode is
-unexpected, or if a pre-existing observer path is not a real directory with
-the expected root, group, and mode; it never asks tmpfiles to silently repair
-that drift. `mdt-host-check.sh` verifies the observer group, live directory,
-and the complete active sysusers/tmpfiles rule sets after setup; it ignores
-comments and blank lines but rejects additional active directives. The
-[design rationale](../docs/DESIGN-GUIDE.md#narrow-cgprofile-observer-provisioning)
-and [consumer procedure](../docs/CONSUMERS.md#cgprofile-resource-observer-host-setup)
-cover the daemon deployment that follows.
-
-### Install, pin and upgrade the cgprofile service
-
-host-setup installs and pins the cgprofile 2.x daemon `cgpd` from the RELEASED wheel as a native systemd service
-(`cgpd.service` in `cgprofile.slice`); this installer accepts 2.x releases only (`<3.0.0`). cgprofile 3.x
-uses `cgprofiled install` and is described in the [native deployment guide](../../cgprofile/docs/NATIVE-DEPLOYMENT.md).
-The ciu container deployment is retired after one release (MDT-055). Nothing runs from a checkout and nothing is
-installed into a system interpreter. The keys are section 8 of `host-setup.env.example` and are optional
-in an older `/etc/mdt/host-setup.env` (absent means "not managed"):
-
-| Key | Meaning |
-|---|---|
-| `CGPROFILE_ENABLE` | `1` installs and updates the service; `0` leaves an existing install alone (`mdt-host-check.sh` reports it) |
-| `CGPROFILE_WHEEL` | A 2.x (`<3.0.0`) `<version>@sha256:<hex>` pin for `cgprofile-<version>-py3-none-any.whl`; refused outside that range or when empty while enabled |
-| `CGPROFILE_CLI_EXTENDED_WHEEL` | the same pin for the only dependency, `cli_extended-<version>-py3-none-any.whl` (the venv is built with `pip --no-index`) |
-| `CGPROFILE_WHEEL_SOURCE` | empty = the vbpub GitHub release downloads, an `https://` base laid out like them, or an absolute directory holding both files (air-gapped) |
-| `CGPROFILE_DRAIN_TIMEOUT` | upgrade drain deadline, default `10m` |
-| `CGPROFILE_GATES_SLICE`, `CGPROFILE_OBSERVE_SLICES`, `CGPROFILE_ALLOW_UIDS` | rendered into `/etc/cgprofile/cgpd.toml` as `gates_slice`, `observe_slices`, `allow_uids` |
-
-```bash
-sudo ./install.sh --cgprofile-only                 # just this step (needs an installed, valid host-setup.env)
-sudo ./install.sh --cgprofile-only --force-cgprofile-restart
-sudo mdt-host-check.sh
-```
-
-What a run does, in order:
-
-1. Verifies the pins' sha256 of both wheels BEFORE anything is unpacked, builds
-   `/opt/cgprofile/<version>/venv` (`pip --no-index`), checks `cgpd --version` against the pin and writes `MANIFEST`
-   (wheel names, sha256, time). A version directory is immutable: the same version with another digest is refused.
-2. Renders `/etc/cgprofile/cgpd.toml` from the keys above (only keys the pinned version supports; the
-   version-to-keys table is in the installer) and validates it with the new venv's `cgpd config check`; renders
-   `cgprofile.slice` and `cgpd.service` with `cgpd unit print`. A refusal here changes nothing live.
-3. Computes drift (version, config, units). No drift: nothing is restarted. A config-only change is
-   `systemctl reload cgpd` and keeps `/var/lib/cgprofile/overrides.toml` (host-setup never writes it).
-4. Version or service-unit drift on a RUNNING daemon: waits up to `CGPROFILE_DRAIN_TIMEOUT` for
-   `cgpctl sessions --state live` to be empty (read-only; no session is stopped). Still busy at the deadline:
-   the old daemon and `current` stay, the live sessions are printed, `/opt/cgprofile/PENDING` records the
-   version, and the run exits non-zero (the rest of a full install still completes). `--force-cgprofile-restart`
-   proceeds and names the sessions it aborts.
-5. Flips `/opt/cgprofile/current` atomically, installs the units, `daemon-reload`, enables and
-   starts/restarts, then waits (30 s) until `cgpctl status --json` reports the pinned version and a null
-   `config.last_reload_error`. `/usr/local/bin/cgpctl` links to the current venv's client. The two newest
-   version directories and `current` are kept.
-
-Rollback is an upgrade to the previous pin: the old directory is still there, so no download happens and the same
-drain and restart path runs. `mdt-host-check.sh` asserts, when `CGPROFILE_ENABLE=1`: `current` and `MANIFEST` equal
-the pin, `cgpd --version`, no config drift (re-rendered from `host-setup.env`), `cgpd config check`, no unit
-drift (`cgpd unit check`), `systemd-analyze verify`, both units active, `ctl.sock` in the control directory's
-group, the observer socket, `cgpctl doctor --json` without a `fail` (an `overrides` warning is shown, not
-asserted against) and the daemon's reported version. The group of the control directory is still `docker` until
-the `mdt-docker` regroup (MDT-053) lands; the check follows whatever group the directory has.
-
-Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks nine numbered steps, each printed as
-`-- [n/9] title --` (the same grouping as the sections of `host-setup.env.example`, with the IO caps last because
-they wait for the optional benchmark):
-
-| Step | Asks about |
-|---|---|
-| 1 Host facts | the Docker data device (`IO_DEV_PATH`) and the DAMON_STAT policy |
-| 2 IO benchmark | the results file and target paths; optionally starts the benchmark in the background |
-| 3 Governed slices | `dev.slice`, the guaranteed memory floor and the four tiers: memory controls, CPU, swap, zswap, weights, OOM, BuildKit image and parallelism |
-| 4 Buildx and devcontainer policies | the accidental-Buildx policy and its out-of-tree name pattern; the devcontainer bind-source policy |
-| 5 Reconcile sweep and watchers | the sweep interval, the cgroup2 mount policy and the opt-in per-container memory watcher |
-| 6 Docker defaults and backstop | the `daemon.json` cgroup-parent and the docker-scope backstop |
-| 7 IO caps | static fallbacks, operator pins, the cap percentages and the gates/BuildKit IOPS sub-ceiling (after the benchmark) |
-| 8 Writeback and root queue | the four host-global writeback and queue keys |
-| 9 IO scheduler and io.cost | the scheduler, the io.cost model and QoS |
-
-Before writing, the wizard prints a summary of every value that differs from the starting values (the existing
-file, else the example). It proposes starting numbers scaled off THIS host's own live `/proc/meminfo`
-instead of the shipped example's fixed figures — Enter accepts the shown
-default at every step, and it falls through into the same render/apply logic
-after candidate validation. Existing values are shown as `existing:` defaults,
-host-derived values as `derived:`, and template values as `example:`. Type
-`-` to clear any optional memory directive;
-type `-` for derived CPUQuota or MemorySwapMax. Enter always accepts the shown
-value, including an existing explicit CPU/swap value, so it does not silently
-change an upgrade. An empty resulting CPUQuota/MemorySwapMax is auto-detected
-at install time. All four memory controls may be omitted. The manual path requires a
-complete valid config; the wizard writes its candidate only after the prompts
-complete and the installer backs up any existing config only after validation.
+The old `CGPROFILE_*` host-setup keys and the `--observer-only` and
+`--cgprofile-only` options have been removed. Old managed files are refused
+before host changes; follow the cleanup commands in
+[Host endpoint facts and upgrade refusal](#host-endpoint-facts-and-upgrade-refusal).
 
 ### run-gate gates admission cap (MDT-077)
 
@@ -1029,9 +905,8 @@ the test stacks.
 | `buildkitd.toml.in` | `/etc/mdt/buildkitd.toml` | managed BuildKit daemon configuration, including `DEV_BUILDKITD_MAX_PARALLELISM` |
 | `units/mdt-buildkit-guard.service`, `scripts/mdt-buildkit-guard.py` | systemd (enabled) + `/usr/local/sbin/` | Docker-events guard for unapproved Buildx/BuildKit workers |
 | `scripts/mdt_buildkit_builder.py` | `/usr/local/sbin/mdt-buildkit-builder.py` | idempotent `mdt-managed` remote registration/verification; never creates a container-driver worker |
-| `etc/profile.d/mdt-buildkit.sh` | `/etc/profile.d/` | host-shell `BUILDX_BUILDER` and `BUILDKIT_HOST` exports |
 | `scripts/docker-buildx-shim.sh` | `/usr/local/lib/docker/cli-plugins/docker-buildx` | Docker CLI plugin shim: `mdt-managed` is the default builder for every caller, registered per user on first use |
-| `etc/environment.mdt-buildkit` | marked block in `/etc/environment` | `BUILDX_BUILDER`/`BUILDKIT_HOST` for PAM sessions (ssh, sudo, su, login, cron) |
+| `scripts/mdt-host-endpoints.sh` | `/etc/host-endpoints.d/mdt-host-setup.env`, through `augeaswrap endpoints publish` | Docker, BuildKit, Docker API, and managed-builder endpoint facts |
 | `units/docker-scope-default-limits.conf.in` | `/etc/systemd/system/docker-.scope.d/50-default-limits.conf` | D-G8 backstop — a generous "never truly unbounded" floor for EVERY container's transient scope, regardless of which slice (or none) it named |
 | `units/mdt-dev-governance-reconcile.service` | systemd (enabled) | boot-time reconciliation of measured IO, zswap, transient IO caps, mount flags, and the memory min/low audit |
 | `units/mdt-dev-governance-reconcile.timer.in` | systemd (enabled) | periodic reconciliation (default 5min) — the event watchers are immediate paths; this is the backstop |
@@ -1162,11 +1037,11 @@ systemd cgroup driver. Those paths are not the normal MDT backend anymore.
 
 **Use `mdt-buildkitd` for MDT builds.** It is a rootless host-managed
 `buildkitd` service created with `--cgroup-parent=dev-buildkitd.slice`, and the
-`mdt-managed` Buildx remote points at its Unix socket. `templates/devcontainer.json`
-ships the socket bind mount plus the explicit `BUILDX_CONFIG`,
-`BUILDX_BUILDER=mdt-managed`, and
-`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock` settings. The
-in-container finalizer validates and reuses that remote on every start. A missing or
+`mdt-managed` Buildx remote points at the endpoint published by host-setup.
+`templates/devcontainer.json` consumes `BUILDX_BUILDER`, `BUILDKIT_HOST`,
+`MDT_BUILDKIT_SOCKET`, and its directory from that record; it keeps only the
+container-specific `BUILDX_CONFIG` setting. The in-container finalizer validates
+and reuses that remote on every start. A missing or
 inconsistent variable, endpoint, builder, or host service is an error; MDT does
 not fall through to embedded BuildKit or create a per-container worker.
 
@@ -1487,7 +1362,12 @@ set. See [CGROUP-NOTES.md §5](CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-un
 
 ## Uninstall
 
+Withdraw the endpoint fragment first so augeaswrap removes only the facts owned by
+mdt-host-setup and re-renders the shared environment files. Then remove host-setup's
+units and files:
+
 ```bash
+sudo augeaswrap endpoints withdraw --owner mdt-host-setup
 sudo systemctl disable --now mdt-dev-governance-reconcile.timer mdt-dev-governance-reconcile.service mdt-buildkitd.service \
         mdt-container-io-events-watcher.service mdt-container-memory-inotify-watcher.service
 sudo docker volume rm mdt-buildkitd-cache 2>/dev/null || true
