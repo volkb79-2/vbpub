@@ -15,6 +15,13 @@ COMPOSE_TEMPLATE = Path(__file__).resolve().parents[1] / "ciu.compose.yml.j2"
 PROJECT_ROOT = COMPOSE_TEMPLATE.parent
 
 
+def test_coverage_partial_lane_imports_the_checkout_augeaswrap_source():
+    config = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    argv = config["lanes"]["coverage-partial"]["argv"]
+
+    assert "{worktree}/augeaswrap/src" in argv[2]
+
+
 def _git(cwd: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(cwd), *args],

@@ -73,7 +73,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/cgprofile && export PYTHONPATH={worktree}/cgprofile/src:{worktree}/cgprofile:{worktree}/libraries/cli-extended/src COVERAGE_FILE=/tmp/.coverage && mkdir -p /tmp/pt && /opt/tester-venv/bin/python -m coverage run -m pytest tests/ -q -p no:cacheprovider --basetemp=/tmp/pt --cli-case-partial -k 'not test_package_contract_mirrors_canonical_contract_byte_for_byte' && /opt/tester-venv/bin/python -m coverage report --fail-under=100",
+    "cd {worktree}/cgprofile && export PYTHONPATH={worktree}/cgprofile/src:{worktree}/cgprofile:{worktree}/libraries/cli-extended/src:{worktree}/augeaswrap/src COVERAGE_FILE=/tmp/.coverage && mkdir -p /tmp/pt && /opt/tester-venv/bin/python -m coverage run -m pytest tests/ -q -p no:cacheprovider --basetemp=/tmp/pt --cli-case-partial -k 'not test_package_contract_mirrors_canonical_contract_byte_for_byte' && /opt/tester-venv/bin/python -m coverage report --fail-under=100",
 ]
 clean_tree = false
 budget = "20m"
