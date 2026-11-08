@@ -453,6 +453,7 @@ def _real_estate_layout(tmp_path):
     for name in ("ciu", "cmru", "assay", "topos", "nyxloom"):
         (tmp_path / name).symlink_to(REPO_ROOT / name)
     (tmp_path / "cgprofile").symlink_to(REPO_ROOT / "cgprofile")
+    (tmp_path / "augeaswrap").symlink_to(REPO_ROOT / "augeaswrap")
     (tmp_path / "pwmcp").mkdir()
     (tmp_path / "pwmcp" / "client").symlink_to(REPO_ROOT / "pwmcp" / "client")
     (tmp_path / "libraries").mkdir()
@@ -4447,6 +4448,70 @@ def test_every_dockerfile_copy_source_is_admitted_by_the_dockerignore():
         source = spec[0]
         assert _copy_source_context_entries(spec), source
         assert not _copy_source_overlaps_cli_extended(source), source
+
+
+def _copy_sources_hidden_by_dockerignore(
+    dockerfile: Path, rules: list[str] | None = None
+) -> list[str]:
+    """COPY sources of a root-context Dockerfile that the .dockerignore hides from the build."""
+    text = dockerfile.read_text(encoding="utf-8")
+    if rules is None:
+        rules = _dockerignore_rules(dockerfile)
+    return [
+        str(spec[0])
+        for spec in _dockerfile_copy_specs(text)
+        if not _copy_source_context_entries(spec, rules=rules)
+    ]
+
+
+def test_no_root_context_copy_source_is_hidden_by_the_dockerignore():
+    """General guard (the 2026-11-08 `augeaswrap/pyproject.toml: not found` build failure): every
+    COPY source must be visible under the repo-root .dockerignore whitelist."""
+    assert _copy_sources_hidden_by_dockerignore(DOCKERFILE) == []
+
+
+def test_wheel_builder_copies_nothing_from_the_root_context_today():
+    """wheel-builder is stateless: no COPY from the context (a future one is guarded above)."""
+    assert _dockerfile_copy_specs(WHEEL_BUILDER.read_text(encoding="utf-8")) == []
+
+
+def test_copy_source_guard_fails_when_the_augeaswrap_whitelist_is_removed():
+    """Mutation proof: the pre-fix .dockerignore (no `!augeaswrap` block) is caught by the guard."""
+    rules = _dockerignore_rules(DOCKERFILE)
+    mutated = [rule for rule in rules
+               if rule not in ("!augeaswrap", "augeaswrap/*", "!augeaswrap/pyproject.toml")]
+    assert len(mutated) == len(rules) - 3
+    assert _copy_sources_hidden_by_dockerignore(DOCKERFILE, mutated) == ["augeaswrap/pyproject.toml"]
+
+
+def test_dockerignore_admits_only_the_augeaswrap_pyproject_for_the_closure_generator():
+    assert _dockerignore_included("augeaswrap/pyproject.toml")
+    for hidden in ("augeaswrap/src/augeaswrap/endpoints.py", "augeaswrap/README.md",
+                   "augeaswrap/tests/test_x.py", "augeaswrap/CHANGES.md"):
+        assert not _dockerignore_included(hidden), hidden
+
+
+def test_cgprofile_augeaswrap_dependency_is_never_forwarded_to_pip(tmp_path):
+    """augeaswrap is estate-internal (GitHub Releases only, never PyPI): dependency-confusion hole if
+    it reached the PyPI-bound closure. cgprofile's own requirement is skipped (source-backed) and any
+    other project requiring it is refused."""
+    _real_estate_layout(tmp_path)
+    declared = tomllib.loads((REPO_ROOT / "cgprofile" / "pyproject.toml").read_text("utf-8"))
+    assert any(gen.requirement_name(item) == "augeaswrap" for item in declared["project"]["dependencies"])
+    closure = list(gen.requirements(tmp_path))
+    assert "augeaswrap" in gen.ESTATE_INTERNAL
+    assert "augeaswrap" not in {gen.requirement_name(item) for item in closure}
+    assert not any("augeaswrap" in item.lower() for item in closure)
+    assert "augeaswrap" in gen.derive_internal(tmp_path)
+    with pytest.raises(SystemExit):
+        gen.refuse_internal("augeaswrap>=0.1.0", "ciu/pyproject.toml [project]", gen.derive_internal(tmp_path))
+
+
+def test_augeaswrap_requirement_from_a_non_cgprofile_project_is_refused(tmp_path):
+    _all_projects(tmp_path, ciu='[project]\nname = "ciu"\ndependencies = ["augeaswrap>=0.1.0"]\n'
+                               '[project.optional-dependencies]\nssh = []\ntest = []\n')
+    with pytest.raises(SystemExit):
+        list(gen.requirements(tmp_path))
 
 
 # --- MDTC-02: the image is built FROM tester-base, not the MDT cockpit image ------------------

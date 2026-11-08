@@ -15,6 +15,11 @@
 run-gate-project/*
 !run-gate-project/pyproject.toml
 !wheel-builder
+# tester-unified reads augeaswrap's pyproject for the dependency closure generator
+# (cgprofile depends on it); only that one file is copied, the source stays out.
+!augeaswrap
+augeaswrap/*
+!augeaswrap/pyproject.toml
 # Nyxloom's image now builds with the repository root as context. Expose only
 # what its cli-extended WHEEL build copies (pyproject.toml + README.md + src;
 # NYX-CLIX: the wheel is built and installed first, not vendored into nyxloom's);
