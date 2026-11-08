@@ -26,7 +26,7 @@ A FIXED entry means code, tests, and docs landed together.
 **Priority:** should-fix. Source: `reports/mounttrace-REVIEW.md` S2.
 
 **Finding.** `main()` sets only `errors='backslashreplace'` (`mounttrace.py:1054-1057`), which handles surrogates, not control characters.
-mountinfo octal-escapes ESC/BEL, but `unescape()` (`mounttrace.py:22`) turns them back into raw bytes and every `print` emits them. Reproduced: a mount
+mountinfo octal-escapes ESC/BEL, but `unescape()` (`mounttrace.py:71`) turns them back into raw bytes and every `print` emits them. Reproduced: a mount
 named `evil<ESC>]0;PWNED<BEL>x` created inside a user namespace came out of `mounttrace --submounts` byte for byte. The tool is meant to run as root on a host
 against game containers whose tenants control mount names (with CAP_SYS_ADMIN) and symlink targets (the `resolved -> ...` line).
 
@@ -108,7 +108,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 1. N1: `3.2.0` exists only as `VERSION` in `mounttrace.py:57`; siblings (`netcup`, `truenas`) carry a `VERSION` file and CHANGES. Add them or document the single source.
 2. N2: the commit trailer is `Co-Authored-By: Claude Opus 5.5`; the estate convention is the Sonnet trailer. Not worth rewriting a merged commit; use the convention from here on.
 3. N4: the `--watch` loop catches only `FileNotFoundError` for a vanished PID (line 1088); a just-dead process can raise `ProcessLookupError` (ESRCH), giving `mounttrace: [Errno 3] No such process`. Catch both.
-4. N6: `audit_state_file` canonicalizes state-file targets with symlink resolution even under `--no-resolve` (line ~800, `canonicalize(t, None)`), unlike the other paths.
+4. N6: `audit_state_file` canonicalizes state-file targets with symlink resolution even under `--no-resolve` (line 817, `canonicalize(t, None)`), unlike the other paths.
 5. N8: the harness comment at `scripts/debian-install-v2/testing/vm/run-vm-harness.sh:352-354` ("tracked placeholder folders") is now true only for the default project.
 6. N9: `scripts/README.md` does not list the project.
 7. The `Python >= 3.9` claim has no 3.10+ syntax by grep but was not run on a 3.9 interpreter.

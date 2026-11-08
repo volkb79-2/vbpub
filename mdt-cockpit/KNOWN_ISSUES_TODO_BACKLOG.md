@@ -1407,10 +1407,11 @@ with no score, not a parse of the challenge HTML.
 **Open items:**
 1. Build-check nyxloomd against the new `mdt-cockpit` base image.
 2. Existing GHCR packages under the retired name remain in place by operator decision.
+
 ## MDT-079 - OpenCode staging checks the launcher package only; the installer needs the platform package, and nothing verifies the installed result (2026-11-08)
 
 **Status:** OPEN; priority should-fix. Source: `reports/opencode2-REVIEW.md` N1 (review of `53e191341`, merged in `1b5a212f5`).
-**Finding.** `stage_tool_artifacts.py:_resolve_opencode_version` (line 623) checks that `@opencode/cli@X` exists on the registry, but `install_ai_cli_tools.py:321-346` installs `@opencode/cli-linux-<x64-baseline|arm64>[-musl]@X`. Registry timestamps show the platform packages land 1-5 minutes after the launcher (2.2.4: launcher 16:53:18, baseline 16:55:37; 2.2.6: launcher 23:33:40, baseline 23:35:14), and the launcher's own postinstall documents the race. A staging run in that window records X and the image build fails with ETARGET (loud, retry works, a flaky red build). After the install nothing checks that the installed package is X, and `require_file` (line 346) does not check the exec bit.
+**Finding.** `stage_tool_artifacts.py:_resolve_opencode_version` (line 623) checks that `@opencode/cli@X` exists on the registry, but `install_ai_cli_tools.py:461-487` installs `@opencode/cli-linux-<x64-baseline|arm64>[-musl]@X`. Registry timestamps show the platform packages land 1-5 minutes after the launcher (2.2.4: launcher 16:53:18, baseline 16:55:37; 2.2.6: launcher 23:33:40, baseline 23:35:14), and the launcher's own postinstall documents the race. A staging run in that window records X and the image build fails with ETARGET (loud, retry works, a flaky red build). After the install nothing checks that the installed package is X, and `require_file` (line 346) does not check the exec bit.
 **Fix.** In `_resolve_opencode_version` also require `@opencode/cli-linux-x64-baseline@X` and `@opencode/cli-linux-arm64@X` (via `_fetch_json(registry/<pkg>/<ver>)`, as `_resolve_pinned_npm_version` does) and raise a StageError saying "platform package not published yet". Add `verify_opencode_install(prefix, version)` beside `verify_codex_install`: read `<prefix>/lib/node_modules/<pkg>/package.json`, require `version == OPENCODE_VER`, and use `require_executable_binary` instead of `require_file`.
 **Close when.** A test with the launcher published and a platform package missing fails staging with the new message, and a fake tree with a wrong installed version or a non-executable binary fails the verifier.
 
@@ -1424,14 +1425,14 @@ with no score, not a parse of the challenge HTML.
 ## MDT-081 - musl detection uses `platform.libc_ver()`, which is likely empty on musl hosts (2026-11-08)
 
 **Status:** OPEN; priority nit (the image is Debian trixie, so latent). Source: `reports/opencode2-REVIEW.md` N3.
-**Finding.** `install_ai_cli_tools.py:470` selects the musl platform package from `platform.libc_ver()[0]`; on Alpine CPython's `libc_ver()` most likely returns `('', '')`, so the glibc package would be selected and install "successfully". The musl packages carry no `libc` field, so npm cannot catch it. Mutation M5 (musl suffix dropped, line 334) survived: no musl test exists.
+**Finding.** `install_ai_cli_tools.py:470-472` selects the musl platform package from `platform.libc_ver()[0]`; on Alpine CPython's `libc_ver()` most likely returns `('', '')`, so the glibc package would be selected and install "successfully". The musl packages carry no `libc` field, so npm cannot catch it. Mutation M5 (musl suffix dropped, line 334) survived: no musl test exists.
 **Fix.** Detect musl with `Path("/etc/alpine-release").exists()` or the `ldd --version` text (as OpenCode's own postinstall does) and add a musl case to `TestInstallOpencode`.
 **Close when.** The musl test passes and M5 re-applied fails it.
 
 ## MDT-082 - docs for OpenCode 2: stale 1.x claims in DESIGN-GUIDE and no CHANGES entry for the 1.x to 2.x jump (2026-11-08)
 
 **Status:** OPEN; priority nit. Source: `reports/opencode2-REVIEW.md` N4 and N6.
-**Finding.** `docs/DESIGN-GUIDE.md:560` keeps "yes (1.19.3 to 1.19.2 and back, measured)", a measurement of the retired 1.x package, for a row that now describes 2.x, and cites `opencode upgrade --major`, which is not in the 2.2.6 `upgrade --help` (only `--method/-m`). The docstring "measured on 1.19.5 and 2.2.6 alike" in `tests/runtime/test_ai_cli_update.py` was not reproducible without running `upgrade`. `CHANGES.md` has no entry for the user-visible 1.x to 2.x jump (v2 reads `opencode.jsonc` with a `providers` schema and keeps sessions in `opencode.db`; persisted 1.x config and data may need migration).
+**Finding.** `docs/DESIGN-GUIDE.md:590` keeps "yes (1.19.3 to 1.19.2 and back, measured)", a measurement of the retired 1.x package, for a row that now describes 2.x, and cites `opencode upgrade --major`, which is not in the 2.2.6 `upgrade --help` (only `--method/-m`). The docstring "measured on 1.19.5 and 2.2.6 alike" in `tests/runtime/test_ai_cli_update.py` was not reproducible without running `upgrade`. `CHANGES.md` has no entry for the user-visible 1.x to 2.x jump (v2 reads `opencode.jsonc` with a `providers` schema and keeps sessions in `opencode.db`; persisted 1.x config and data may need migration).
 **Fix.** Re-measure the update on the 2.x image with the runtime test and update the sentence, or mark the cell "1.x measurement; 2.x covered by tests/runtime/test_ai_cli_update.py". Add the CHANGES entry naming the config schema and data-file change.
 **Close when.** The DESIGN-GUIDE row names no flag absent from `opencode upgrade --help`, and CHANGES carries the entry.
 

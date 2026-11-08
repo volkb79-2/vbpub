@@ -13,7 +13,7 @@ filed_date: "2026-11-08"
 
 ## Observed mechanism
 
-`nyxloom/infra/agent-cli/Dockerfile:60-62` pins `ARG CODEX_VERSION=0.145.0` and `ARG OPENCODE_VERSION=1.18.1` and runs one
+`nyxloom/infra/agent-cli/Dockerfile:56-62` pins `ARG CODEX_VERSION=0.145.0` and `ARG OPENCODE_VERSION=1.18.1` and runs one
 `npm install -g "@openai/codex@${CODEX_VERSION}" "reasonix@..." "opencode-ai@${OPENCODE_VERSION}"`. The README (`infra/agent-cli/README.md:97`) repeats
 the pins (`codex 0.145.0`, `opencode-ai 1.18.1`). Nothing after the install runs the tools.
 

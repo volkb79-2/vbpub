@@ -61,9 +61,10 @@ are `AW-BL-NN`, allocated in this file.
 - **AW-BL-04 (design, from the HC-1b-s review, not blocking): two preferences for a
   later design pass.** The reviewer prefers making the revert image projection hooks
   mandatory for every revertible kind, and running the endpoint publication as an
-  in-process post-action instead of a child process. Also confirm that the
-  acceptance check for native fixed-GID collision handling (a fixed-GID `sysusers`
-  resource against an existing group) is recorded on the HC-1b-s branch backlog; the
-  job report says it is, the branch file at the time of filing carries only the
-  live-trixie probe item. Source: `reports/hc-1b-s-REPORT.md`. Close when each is
+  in-process post-action instead of a child process. Also open: add an acceptance
+  check for native fixed-GID collision handling (a fixed-GID `sysusers` resource
+  against an existing group) to the HC-1b-s branch backlog, which currently carries
+  only the live-trixie probe item; and the hc-1a2 review-2 R1 item (kind-name
+  validation in `register_kind`) is delegated to the HC-1b-s brief, so re-check it
+  there. Source: `reports/hc-1b-s-REPORT.md`, `reports/hc-1a2-REVIEW2.md`. Close when each is
   decided and recorded in SPEC, or struck out with a reason.
