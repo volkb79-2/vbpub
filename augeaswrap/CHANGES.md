@@ -5,11 +5,14 @@
 - Harden the HC-1b-u `unit` resource: enforce normalized selected-root ExecStart
   checks, safe ownership and modes through the managed directory chain, reject
   leading-dash names and NUL/oversize unit text, stage systemd search paths and
-  existing dependency units, and report every verify skip in the plan. Require
-  `intent`, wire the documented shadow-check hook, reconcile declared
-  enablement, run post-actions in rev3 phases, and journal absent-unit
-  stop/disable/delete steps separately. Revert of a new whole unit now derives
-  actions from its absent pre-image.
+  existing dependency units, stub staged Exec targets, and report every verify
+  skip in the plan. Require `intent`, wire the documented shadow-check hook,
+  reconcile declared enablement, run post-actions in rev3 phases, and journal
+  absent-unit stop/disable/delete steps separately. Revert of a new whole unit
+  now derives actions from its absent pre-image.
+- Require an explicit `PostAction.phase` for unrecognized third-party argv
+  forms; custom action callers need to provide a phase. This is a breaking
+  validation requirement.
 - Add the guarded applier core with strict TOML requests, `file` and `check`
   resources, plan/apply/revert/journal commands, pre-image journals, stale-plan
   checks, and explicit revert.

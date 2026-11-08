@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,7 +51,7 @@ def test_apply_is_journaled_idempotent_and_explicit_revert_restores_preimage(tmp
     assert result.txn
     assert target.read_text(encoding="utf-8") == "after\n"
     txn = txn_root(root) / result.txn
-    assert (txn / "stage").is_dir()
+    assert not (txn / "stage").exists()
     assert (txn / "pre").is_dir()
     pre_metadata = next((txn / "pre").glob("*.json"))
     metadata = json.loads(pre_metadata.read_text(encoding="utf-8"))
@@ -75,6 +76,48 @@ def test_apply_is_journaled_idempotent_and_explicit_revert_restores_preimage(tmp
     assert target.stat().st_mode & 0o7777 == 0o600
     assert json.loads((txn / "journal.json").read_text(encoding="utf-8"))["reverted_by"] == restored.txn
     assert journal(restored.txn, root=root)["type"] == "revert"
+
+
+def test_interrupt_after_last_step_is_journaled_and_revertible(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    target = root / "etc/service.conf"
+    interrupt = True
+
+    @contextmanager
+    def interrupt_after_steps():
+        nonlocal interrupt
+        yield
+        if interrupt:
+            interrupt = False
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(transactions, "_sigterm_as_exit", interrupt_after_steps)
+    with pytest.raises(KeyboardInterrupt):
+        apply(plan(request(), root=root))
+
+    record = journal(root=root)[0]
+    assert record["status"] == "interrupted"
+    assert record["steps"][-1]["status"] == "failed"
+    assert "file:/etc/service.conf" in record["post_images"]
+    assert not (txn_root(root) / record["id"] / "stage").exists()
+    assert revert(record["id"], root=root).txn
+    assert not target.exists()
+
+
+def test_stage_cleanup_failure_warns_and_keeps_the_transaction(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    original_rmtree = transactions.shutil.rmtree
+
+    def fail_stage_cleanup(path, *args, **kwargs):
+        if Path(path).name == "stage":
+            raise OSError("stage is busy")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(transactions.shutil, "rmtree", fail_stage_cleanup)
+    with pytest.warns(RuntimeWarning, match="could not remove transaction staging tree"):
+        result = apply(plan(request(), root=root))
+    assert result.txn
+    assert (txn_root(root) / result.txn / "stage").is_dir()
 
 
 def test_absent_file_reverts_to_exact_original_metadata_and_bytes(tmp_path):

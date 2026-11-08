@@ -336,8 +336,10 @@ contains existing valid unit files and resolvable aliases from the static
 `/usr/local/lib` and `/usr/lib` trees, plus the requested file, same-unit
 drop-ins, and referenced dependency units from every selected search
 directory. Source fingerprints are part of the observation and are rechecked
-while staging. The
-resource runs `systemd-analyze --root=<staged-root> verify
+while staging. Every executable path named by the requested unit is represented
+in the staged root by an empty mode-0755 stub, so verification checks unit
+syntax without requiring host executables to exist inside the selected root.
+The resource runs `systemd-analyze --root=<staged-root> verify
 /etc/systemd/system/<name>` before any managed write.
 
 If `systemd-analyze` is unavailable in `PATH`, the plan says
@@ -347,15 +349,20 @@ base unit is not present in any selected-root search directory states that its
 verify step is skipped for that reason; its Exec and preflight checks still
 run. A present base unit is staged with its discovered dependencies and
 verified. A verify refusal aborts the plan before a managed write.
+Fake-analyzer tests assert staged tree construction. The real-analyzer acceptance
+smoke is deferred to the R2/VM lane note in `BACKLOG.md` and uses only a
+disposable scratch root.
 
 Every path named by a physical `Exec*=` line is checked against the selected
 root: optional leading `-@:+!` prefixes are stripped, the executable token
 must be absolute, and `%` specifiers or `$` environment references are
 refused rather than expanded. The normalized path is resolved inside the
 selected root before checking the forbidden `/tmp`, `/var/tmp`, and `/home`
-prefixes; raw `..` components and symlink components are refused. The final
-path must be a regular executable owned by uid 0, and every path component
-must be owned by uid 0 and free of group/other-write permission. The optional
+prefixes; normalization gives it one leading slash, and raw `..` components
+and symlink components are refused. Use `/usr` paths on merged-usr systems:
+`/bin`, `/sbin`, and `/lib` may be symlinks and are rejected by the component
+check. The final path and every parent component must be owned by uid 0,
+including under a fake root, and free of group/other-write permission. The optional
 preflight argv runs last and must exit zero within 30 seconds. Exec or
 preflight refusal aborts the plan before a managed write. The scanner checks
 physical lines and does not join backslash continuations; systemd's complete
@@ -368,7 +375,11 @@ field is declared state: on the live root Augeaswrap observes
 the observed state differs, even if the unit file is unchanged. It declares
 no enablement action when state already matches. Fake roots have no live
 manager state; they report enablement as unknown and cannot reconcile an
-unchanged file's manager state. Every systemctl unit operand is preceded by
+unchanged file's manager state. A non-zero `is-enabled` result with no output
+means a not-yet-created unit is disabled; empty output with a successful exit
+is refused as unrecognized. Do not request `enable = true` for static,
+indirect, generated, or transient units: systemd cannot enable those states,
+so the request will not converge. Every systemctl unit operand is preceded by
 `--`. `on_change` is required:
 
 | Value | Action after a change |
@@ -410,7 +421,10 @@ The state directory is `/var/lib/augeaswrap/txn`; the exclusive host lock is
 fingerprint for each resource observation. Apply takes the exclusive lock,
 re-observes every address, and raises `StalePlan` if any observation differs.
 It creates `txn/<id>/stage` and stages and validates every changed resource
-before writing `txn/<id>/pre` or changing the host. A file pre-image contains
+before writing `txn/<id>/pre` or changing the host. After commit, post-action,
+and verification steps finish or fail, the temporary stage tree is deleted;
+retained transactions keep journals and pre-images, not duplicate vendor unit
+trees. A file pre-image contains
 its exact bytes and prior mode, uid, and gid, or an explicit absent record.
 
 Each committed file, post-action, and verification step updates
@@ -517,7 +531,9 @@ actions as pending declarations as well. This does not provide journal query
 or maintenance commands; those remain HC-2 work.
 
 **Post-action phases.** Each `PostAction` has an optional `phase`; known argv
-forms receive a phase from the engine, while unknown forms must specify one.
+forms receive a phase from the engine, while unknown third-party forms must
+specify one. This is a breaking validation requirement for callers that create
+custom post-actions without a recognized argv form.
 Except for `before_commit` actions, the engine orders work in rev3 phases:
 `sysusers`, `tmpfiles`, `daemon_reload`, `sysctl`, `runtime`, `gpasswd`, then
 `endpoint`. Runtime actions retain declaration order; actions within other

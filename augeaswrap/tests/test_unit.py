@@ -274,7 +274,7 @@ def test_missing_systemd_analyze_is_reported_and_only_verify_is_skipped(world, m
     assert commands.calls == [("/usr/bin/preflight",)]
 
 
-def test_staged_verify_includes_existing_dependency_units(world):
+def test_staged_verify_includes_existing_dependency_units(world, tmp_path):
     root, _executable, commands = world
     dependency = root / "run/systemd/system/network.target"
     dependency.parent.mkdir(parents=True)
@@ -294,13 +294,83 @@ def test_staged_verify_includes_existing_dependency_units(world):
         enable=False,
         on_change="none",
     )
-    result = apply(Request("dependency staging", (resource,)), root=root)
-    assert result.txn
+    planned = plan(Request("dependency staging", (resource,)), root=root)
+    resource.stage(SimpleNamespace(root=root, stage_dir=tmp_path / "staging"), planned.changes[0])
     verify = next(command for command in reversed(commands.calls) if command[0] == "systemd-analyze")
     stage_root = Path(verify[1].removeprefix("--root="))
     assert (stage_root / "run/systemd/system/network.target").read_text(encoding="utf-8") == "[Unit]\nDescription=Network\nAfter=basic.target\n"
     assert (stage_root / "etc/systemd/system/basic.target").read_text(encoding="utf-8") == "[Unit]\nDescription=Basic\n"
     assert (stage_root / "usr/lib/systemd/system/other.target").read_text(encoding="utf-8") == "[Unit]\nDescription=Other vendor target\n"
+
+
+def test_staged_verify_creates_executable_stubs_for_exec_targets(world, tmp_path, monkeypatch):
+    root, _executable, commands = world
+    helper = make_executable(root, "/usr/bin/helper")
+    root_owned(monkeypatch, helper)
+    text = "[Service]\nExecStartPre=/usr/bin/helper\nExecStart=/usr/bin/example\n"
+    resource = Unit(
+        name="example.service",
+        state="present",
+        text=text,
+        mode="0644",
+        intent="authoritative",
+        enable=False,
+        on_change="none",
+    )
+    monkeypatch.setattr(unit_module.shutil, "which", lambda _name: "/usr/bin/systemd-analyze")
+    planned = plan(Request("stub exec targets", (resource,)), root=root)
+    original_copy = unit_module._copy_sources
+    original_command = commands.__call__
+    checked: list[str] = []
+
+    def copy_with_existing_exec_target(selected_root, stage_root, sources):
+        original_copy(selected_root, stage_root, sources)
+        existing = stage_root / "usr/bin/example"
+        existing.parent.mkdir(parents=True, exist_ok=True)
+        existing.write_bytes(b"old staged content")
+        existing.chmod(0o644)
+
+    def fake_analyzer(argv, timeout):
+        command = tuple(argv)
+        if command[0] == "systemd-analyze":
+            stage_root = Path(command[1].removeprefix("--root="))
+            for executable in ("usr/bin/helper", "usr/bin/example"):
+                target = stage_root / executable
+                assert target.is_file()
+                assert target.read_bytes() == b""
+                assert target.stat().st_mode & 0o777 == 0o755
+                checked.append(executable)
+        return original_command(command, timeout)
+
+    monkeypatch.setattr(unit_module, "_copy_sources", copy_with_existing_exec_target)
+    monkeypatch.setattr(unit_module, "_run_command", fake_analyzer)
+    resource.stage(SimpleNamespace(root=root, stage_dir=tmp_path / "staging"), planned.changes[0])
+    assert set(checked) == {"usr/bin/example", "usr/bin/helper"}
+
+
+@pytest.mark.parametrize(
+    ("command", "prefix"),
+    [
+        ("//home/a/p", "/home"),
+        ("//tmp/p", "/tmp"),
+        ("///var/tmp/p", "/var/tmp"),
+    ],
+)
+def test_double_leading_slash_cannot_bypass_exec_forbidden_prefix(world, monkeypatch, command, prefix):
+    root, _executable, _commands = world
+    target = make_executable(root, "/" + command.lstrip("/"))
+    root_owned(monkeypatch, target)
+    resource = Unit(
+        name="example.service",
+        state="present",
+        text=service_text(command),
+        mode="0644",
+        intent="authoritative",
+        enable=False,
+        on_change="none",
+    )
+    with pytest.raises(PlanRefused, match=f"refusing executable below {prefix}"):
+        plan(Request("double slash", (resource,)), root=root)
 
 
 def test_changed_dependency_sources_verify_and_revert_as_one_transaction(world):
@@ -346,7 +416,7 @@ def test_changed_dependency_sources_verify_and_revert_as_one_transaction(world):
     assert dependency_path.read_text(encoding="utf-8") == dependency_before
 
 
-def test_staged_verify_preserves_masking_dropin_symlinks(world):
+def test_staged_verify_preserves_masking_dropin_symlinks(world, tmp_path):
     root, _executable, commands = world
     base = root / "usr/lib/systemd/system/example.service"
     base.parent.mkdir(parents=True)
@@ -363,8 +433,8 @@ def test_staged_verify_preserves_masking_dropin_symlinks(world):
         intent="fallback",
         on_change="none",
     )
-    result = apply(Request("masked source", (resource,)), root=root)
-    assert result.txn
+    planned = plan(Request("masked source", (resource,)), root=root)
+    resource.stage(SimpleNamespace(root=root, stage_dir=tmp_path / "staging"), planned.changes[0])
     verify = next(command for command in reversed(commands.calls) if command[0] == "systemd-analyze")
     stage_root = Path(verify[1].removeprefix("--root="))
     staged_mask = stage_root / "usr/lib/systemd/system/example.service.d/30-mask.conf"
@@ -485,6 +555,33 @@ def test_verify_failure_aborts_before_a_managed_write(world, monkeypatch):
     with pytest.raises(Exception, match="systemd-analyze verify failed"):
         plan(Request("bad unit", (resource,)), root=root)
     assert not (root / "etc/systemd/system/example.service").exists()
+
+
+def test_commit_rechecks_managed_unit_path_after_staging(world, tmp_path, monkeypatch):
+    root, _executable, _commands = world
+    resource = Unit(
+        name="example.service",
+        state="present",
+        text="[Unit]\nDescription=Example\n",
+        mode="0644",
+        intent="authoritative",
+        enable=False,
+        on_change="none",
+    )
+    planned = plan(Request("recheck unit path", (resource,)), root=root)
+    context = SimpleNamespace(root=root, stage_dir=tmp_path / "staging")
+    staged = resource.stage(context, planned.changes[0])
+    calls: list[tuple[Path, str]] = []
+
+    def refuse_recheck(selected_root, path):
+        calls.append((selected_root, path))
+        raise PlanRefused([Problem("unit.path.changed", "managed path became unsafe", path=path)])
+
+    monkeypatch.setattr(unit_module, "_validate_unit_path", refuse_recheck)
+    with pytest.raises(PlanRefused, match="managed path became unsafe"):
+        resource.commit(context, staged)
+    assert calls == [(root, resource.path)]
+    assert not (root / resource.path.lstrip("/")).exists()
 
 
 @pytest.mark.parametrize("mode", ["failure", "timeout"])
@@ -626,6 +723,65 @@ def test_absent_unit_substeps_are_journaled_before_failure(world, monkeypatch):
     assert target.exists()
 
 
+def test_interrupted_absent_unit_commit_records_postimage_and_reverts(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    target = root / "etc/systemd/system/example.service"
+    first_target = root / "etc/systemd/system/first.service"
+    target.parent.mkdir(parents=True)
+    target.write_text(service_text(), encoding="utf-8")
+    target.chmod(0o644)
+    executable = make_executable(root, "/usr/bin/example")
+    root_owned(monkeypatch, executable)
+    monkeypatch.setattr(unit_module.shutil, "which", lambda _name: None)
+    original_observe = Unit.observe
+    interrupted = False
+
+    def interrupt_after_unlink(resource, context):
+        nonlocal interrupted
+        observed = original_observe(resource, context)
+        if resource.name == "example.service" and resource.state == "absent" and not target.exists() and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt
+        return observed
+
+    monkeypatch.setattr(Unit, "observe", interrupt_after_unlink)
+
+    def mutate_first_during_stop(_root, action):
+        if action.argv[1] == "stop":
+            first_target.write_text("[Unit]\nDescription=Updated by stop\n", encoding="utf-8")
+        return f"{action.name}: done"
+
+    monkeypatch.setattr(transactions_module, "_run_post_action", mutate_first_during_stop)
+    request = Request(
+        "interrupt during removal",
+        (
+            Unit(
+                name="first.service",
+                state="present",
+                text="[Unit]\nDescription=First\n",
+                mode="0644",
+                intent="authoritative",
+                enable=False,
+                on_change="none",
+            ),
+            Unit(name="example.service", state="absent"),
+        ),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        apply(request, root=root)
+
+    record = journal(root=root)[0]
+    assert record["status"] == "interrupted"
+    assert record["post_images"]["unit:/etc/systemd/system/example.service"]
+    assert record["post_images"]["unit:/etc/systemd/system/first.service"]
+    assert "Updated by stop" in first_target.read_text(encoding="utf-8")
+    assert not target.exists()
+    reverted = revert(record["id"], root=root)
+    assert reverted.txn
+    assert target.read_text(encoding="utf-8") == service_text()
+    assert not first_target.exists()
+
+
 def test_unit_stale_revert_and_later_transaction_refusals(world):
     root, _executable, commands = world
     resource = Unit(name="example.service", state="present", text=service_text(description="One"), mode="0644", intent="authoritative", enable=False, on_change="none")
@@ -697,10 +853,12 @@ def test_loader_round_trip_and_strict_shape_validation(world):
         ({"name": "x.service", "state": "present", "text": "x", "mode": "0644", "intent": "authoritative", "enable": 1, "on_change": "none"}, "enable"),
         ({"name": "x.service", "state": "present", "dropin": "50-x.conf", "text": "x", "mode": "0644", "on_change": "none"}, "intent is required"),
         ({"name": "x.service", "state": "absent", "text": "x"}, "must not specify"),
+        ({"name": "x.service", "state": "absent", "intent": "authoritative"}, "must not specify intent"),
         ({"name": "x.service", "state": "present", "dropin": "../x.conf", "text": "x", "mode": "0644", "intent": "authoritative", "on_change": "none"}, "path separator"),
         ({"name": "x.service", "state": "present", "dropin": "x", "text": "x", "mode": "0644", "intent": "authoritative", "on_change": "none"}, "conf basename"),
         ({"name": "x.service", "state": "present", "dropin": "50-x.conf", "text": "x", "mode": "0644", "intent": "authoritative", "enable": True, "on_change": "none"}, "enable"),
         ({"name": "x.service", "state": "absent", "dropin": "50-x.conf"}, "requires on_change"),
+        ({"name": "x.service", "state": "absent", "dropin": "50-x.conf", "on_change": "none", "intent": "fallback"}, "forbids intent"),
         ({"name": "x.service", "state": "present", "text": "x", "mode": "0644", "intent": "authoritative", "enable": False, "on_change": "bad"}, "on_change"),
         ({"name": "x.service", "state": "present", "text": "x", "mode": "0644", "intent": "unknown", "enable": False, "on_change": "none"}, "intent"),
     ],
@@ -1109,6 +1267,92 @@ def test_unit_enabled_refuses_unexpected_and_inconsistent_statuses(world, monkey
     commands.outcomes[argv] = subprocess.CompletedProcess(argv, 1, "enabled\n", "")
     with pytest.raises(_UnitCommandError, match="inconsistent systemctl is-enabled result"):
         unit_module._unit_enabled(Path("/"), "example.service")
+    commands.outcomes[argv] = subprocess.CompletedProcess(argv, 0, "", "")
+    with pytest.raises(_UnitCommandError, match="unexpected systemctl is-enabled result"):
+        unit_module._unit_enabled(Path("/"), "example.service")
+
+
+def test_missing_live_unit_with_empty_is_enabled_output_plans_enable(world, monkeypatch):
+    root, _executable, commands = world
+    monkeypatch.setattr(unit_module, "_is_live_root", lambda _root: True)
+    is_enabled = ("systemctl", "is-enabled", "--", "new.service")
+    original_command = commands.__call__
+
+    def command(argv, timeout):
+        if tuple(argv) == is_enabled:
+            raise _UnitCommandError("exit 4: no diagnostic", returncode=4, stdout="")
+        return original_command(argv, timeout)
+
+    monkeypatch.setattr(unit_module, "_run_command", command)
+    resource = Unit(
+        name="new.service",
+        state="present",
+        text="[Unit]\nDescription=New unit\n",
+        mode="0644",
+        intent="authoritative",
+        enable=True,
+        on_change="none",
+    )
+    actions = plan(Request("new live unit", (resource,)), root=root).as_dict()["post_actions"]
+    assert [item["argv"] for item in actions if item["name"] == "unit enable new.service"] == [
+        ["systemctl", "enable", "--", "new.service"]
+    ]
+
+
+def test_absent_unit_desired_enablement_is_false_on_a_live_root(monkeypatch):
+    monkeypatch.setattr(unit_module, "_is_live_root", lambda _root: True)
+    resource = Unit(name="old.service", state="absent")
+    desired = resource._desired(
+        SimpleNamespace(root=Path("/")),
+        {"target": {"exists": False, "fingerprint": "absent"}, "enabled": None, "sources": []},
+    )
+    assert desired["enabled"] is False
+
+
+def test_live_enablement_reconcile_action_has_option_terminator(world, monkeypatch):
+    root, _executable, commands = world
+    monkeypatch.setattr(unit_module, "_is_live_root", lambda _root: True)
+    is_enabled = ("systemctl", "is-enabled", "--", "example.service")
+    commands.outcomes[is_enabled] = subprocess.CompletedProcess(is_enabled, 1, "disabled\n", "")
+    resource = Unit(
+        name="example.service",
+        state="present",
+        text=service_text(),
+        mode="0644",
+        intent="authoritative",
+        enable=True,
+        on_change="none",
+    )
+    actions = plan(Request("enable argv", (resource,)), root=root).as_dict()["post_actions"]
+    assert [item["argv"] for item in actions if item["name"] == "unit enable example.service"] == [
+        ["systemctl", "enable", "--", "example.service"]
+    ]
+
+
+def test_unit_verification_compares_post_commit_enablement(monkeypatch):
+    resource = Unit(
+        name="example.service",
+        state="present",
+        text="[Unit]\n",
+        mode="0644",
+        intent="authoritative",
+        enable=True,
+        on_change="none",
+    )
+    address = resource.addresses()[0]
+    target = {"exists": True, "sha256": "same", "mode": 0o644, "uid": 0, "gid": 0}
+    expected = {
+        "path": resource.path,
+        "target": target,
+        "enabled": True,
+        "exec_paths": [],
+        "sources": [],
+    }
+    actual = {**expected, "enabled": False}
+    staged = unit_module._StagedUnit(True, b"", 0o644, 0, 0, expected, True, resource.name, resource.path, None)
+    monkeypatch.setattr(Unit, "observe", lambda _self, _ctx: {address: actual})
+    problems = resource.verify(SimpleNamespace(expected={address: staged}))
+    assert [problem.code for problem in problems] == ["unit.verify.failed"]
 
 
 def test_all_systemctl_unit_arguments_are_option_terminated(world):
@@ -1554,6 +1798,68 @@ def test_unit_search_inventory_handles_alias_cycles_and_missing_dependencies(tmp
         )
 
 
+def test_local_lib_static_unit_tree_is_staged(tmp_path):
+    root = fake_root(tmp_path)
+    local = root / "usr/local/lib/systemd/system"
+    local.mkdir(parents=True)
+    (local / "local-helper.service").write_text("[Unit]\nDescription=Local helper\n", encoding="utf-8")
+    sources = unit_module._source_inventory(
+        root,
+        "requested.service",
+        "/etc/systemd/system/requested.service",
+        None,
+    )
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    unit_module._copy_sources(root, stage, sources)
+    assert (stage / "usr/local/lib/systemd/system/local-helper.service").read_text(encoding="utf-8") == (
+        "[Unit]\nDescription=Local helper\n"
+    )
+
+
+def test_dropin_text_references_add_dependency_unit_to_verify_tree(tmp_path):
+    root = fake_root(tmp_path)
+    vendor = root / "usr/lib/systemd/system"
+    vendor.mkdir(parents=True)
+    (vendor / "requested.service").write_text("[Unit]\nDescription=Requested\n", encoding="utf-8")
+    runtime = root / "run/systemd/system"
+    runtime.mkdir(parents=True)
+    (runtime / "dependency.service").write_text("[Unit]\nDescription=Dependency\n", encoding="utf-8")
+
+    sources = unit_module._source_inventory(
+        root,
+        "requested.service",
+        "/etc/systemd/system/requested.service.d/50-local.conf",
+        "50-local.conf",
+        "[Unit]\nRequires=dependency.service\n",
+    )
+    assert "/run/systemd/system/dependency.service" in {source["path"] for source in sources}
+
+
+def test_dropins_of_referenced_dependency_units_are_discovered(tmp_path):
+    root = fake_root(tmp_path)
+    vendor = root / "usr/lib/systemd/system"
+    vendor.mkdir(parents=True)
+    (vendor / "requested.service").write_text("[Unit]\nRequires=dependency.service\n", encoding="utf-8")
+    (vendor / "dependency.service").write_text("[Unit]\nDescription=Dependency\n", encoding="utf-8")
+    dropins = root / "etc/systemd/system/dependency.service.d"
+    dropins.mkdir(parents=True)
+    (dropins / "20-local.conf").write_text("[Unit]\nRequires=extra.target\n", encoding="utf-8")
+    local = root / "usr/local/lib/systemd/system"
+    local.mkdir(parents=True)
+    (local / "extra.target").write_text("[Unit]\nDescription=Extra\n", encoding="utf-8")
+
+    sources = unit_module._source_inventory(
+        root,
+        "requested.service",
+        "/etc/systemd/system/requested.service",
+        None,
+    )
+    staged_paths = {source["path"] for source in sources}
+    assert "/etc/systemd/system/dependency.service.d/20-local.conf" in staged_paths
+    assert "/usr/local/lib/systemd/system/extra.target" in staged_paths
+
+
 def test_unit_search_inventory_skips_entries_removed_after_listing(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
     vendor = root / "usr/lib/systemd/system"
@@ -1648,6 +1954,49 @@ def test_runtime_action_ignores_unchanged_target_and_restore_handles_no_changes(
     )
     actions = restored.post_actions([no_file_change])
     assert [action.argv[1] for action in actions] == ["stop", "disable"]
+
+
+def test_restore_systemctl_argv_terminates_every_unit_operand():
+    name = "example.service"
+    path = f"/etc/systemd/system/{name}"
+    before = {
+        "target": {"exists": True, "sha256": "current"},
+        "enabled": False,
+    }
+    after_absent = {"target": {"exists": False, "sha256": None}, "enabled": False}
+    absent = unit_module._RestoredUnit(
+        path,
+        {"exists": False, "enabled": False, "fingerprint": "absent"},
+        name,
+        None,
+    )
+    absent_change = unit_module.Change("unit", absent.addresses()[0], "change", before, after_absent, absent)
+    assert [action.argv for action in absent.post_actions([absent_change])] == [
+        ("systemctl", "stop", "--", name),
+        ("systemctl", "disable", "--", name),
+        ("systemctl", "daemon-reload"),
+    ]
+
+    original_actions = tuple(
+        PostAction(f"recorded {verb}", ("systemctl", verb, "--", name), 30.0, phase="runtime")
+        for verb in ("restart", "reload", "reset-failed")
+    )
+    present = unit_module._RestoredUnit(
+        path,
+        {"exists": True, "enabled": True, "sha256": "saved", "data_b64": "W1VuaXRdCg==", "mode": 0o644, "uid": 0, "gid": 0},
+        name,
+        None,
+        original_actions,
+    )
+    after_present = {"target": {"exists": True, "sha256": "saved"}, "enabled": False}
+    present_change = unit_module.Change("unit", present.addresses()[0], "change", before, after_present, present)
+    assert [action.argv for action in present.post_actions([present_change])] == [
+        ("systemctl", "daemon-reload"),
+        ("systemctl", "enable", "--", name),
+        ("systemctl", "restart", "--", name),
+        ("systemctl", "reload", "--", name),
+        ("systemctl", "reset-failed", "--", name),
+    ]
 
 
 def test_dropin_with_no_runtime_policy_only_reloads(world):

@@ -425,6 +425,7 @@ def _execute_plan(
     action_results: list[str] = []
     pending_results: list[str] = []
     committed_changes: list[Change] = []
+    in_flight_change: Change | None = None
     step_index = 0
     action_record_index = {original: position for position, original in enumerate(action_order)}
     ctx.expected.update(staged)
@@ -469,7 +470,7 @@ def _execute_plan(
                 journal_value["post_images"][changed.address] = _observation_fingerprint(actual)
 
     def fail(exc: BaseException, change: Change | None = None, status: str = "failed") -> ApplyFailed:
-        step = steps[step_index]
+        step = steps[min(step_index, len(steps) - 1)]
         record_post_images(
             ([change] if change is not None else []) + committed_changes,
             only_if_changed={change.address} if change is not None else set(),
@@ -489,16 +490,19 @@ def _execute_plan(
         return ApplyFailed(txn_id, completed, f"{step['name']}: {exc}", len(steps))
 
     def run_steps() -> None:
+        nonlocal in_flight_change
         for operation, value in operations:
             if operation == "commit":
                 assert isinstance(value, Change)
                 change = value
+                in_flight_change = change
                 try:
                     _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
                     post_image = change.resource.commit(ctx, staged[change.address])
                     journal_value["post_images"][change.address] = _observation_fingerprint(post_image)
                     finish_step()
                     committed_changes.append(change)
+                    in_flight_change = None
                 except Exception as exc:
                     raise fail(exc, change) from exc
             elif operation == "action":
@@ -547,8 +551,17 @@ def _execute_plan(
         # KeyboardInterrupt, SystemExit or SIGTERM after the journal exists: record it,
         # keep what was committed revertible, and let the interruption continue.
         interrupted = RuntimeError(f"interrupted by {type(exc).__name__}")
-        fail(interrupted, changes[step_index] if step_index < len(changes) else None, status="interrupted")
+        fail(interrupted, in_flight_change, status="interrupted")
         raise
+    finally:
+        try:
+            shutil.rmtree(stage_dir)
+        except OSError as exc:
+            warnings.warn(
+                f"could not remove transaction staging tree {stage_dir}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     record_post_images(committed_changes)
 

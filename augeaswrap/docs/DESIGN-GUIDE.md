@@ -46,6 +46,14 @@ contract are defined in the [specification](../SPEC.md#guarded-applier-protocol-
 Each JSON invocation emits one document so automation can consume the reviewed
 plan and its outcome as a single record.
 
+Post-actions use shared phases so independently registered kinds can
+coordinate system-wide ordering. The engine recognizes a small set of argv
+forms; an unknown third-party command must declare its phase explicitly. This
+fails closed when a kind author adds a command without deciding where it
+belongs. Callers that construct `PostAction` values for unrecognized argv must
+therefore pass `phase`, a breaking validation requirement recorded in the
+[consumer guide](CONSUMERS.md#post-action-phases).
+
 ## Systemd units
 
 A unit is one whole file, or one drop-in on somebody else's unit. The address
@@ -76,15 +84,24 @@ absolute; systemd specifiers and environment-variable references are not
 expanded. The path is normalized and resolved inside the selected root before
 the `/tmp`, `/var/tmp`, and `/home` refusal is applied. `..`, symlink
 components, non-root-owned components, and group/other-writable components
-are refused. This protects both the selected root boundary and the privilege
-boundary of a service that runs as root.
+are refused. Every executable path component must be owned by uid 0, including
+under a fake root. Use `/usr` paths on merged-usr systems because `/bin`,
+`/sbin`, and `/lib` are symlinks and this policy refuses symlink components.
+This protects both the selected root boundary and the privilege boundary of a
+service that runs as root.
 
 Staged verification copies existing valid unit files and resolvable aliases
 from the static `/usr/local/lib` and `/usr/lib` trees, the requested file,
 same-unit drop-ins, and referenced dependency units from every selected search
 directory. Sources are fingerprinted in the observation and checked again
-while staging. `systemd-analyze verify` runs against that staged
-root. A plan states `verify: skipped` with a reason when the analyzer is not
+while staging. Each `Exec*=` target gets an empty mode-0755 stub in the staged
+root: the selected-root checker validates the real target separately, while
+the stub lets `systemd-analyze` parse the unit without importing binaries from
+the cockpit or host filesystem. The staged vendor tree is temporary and is
+removed after transaction steps complete. A real-analyzer acceptance smoke
+uses a disposable VM root, as recorded in the backlog; it does not inspect the
+cockpit's live root. `systemd-analyze verify` runs against that staged root. A
+plan states `verify: skipped` with a reason when the analyzer is not
 available or when a host-only drop-in has no base unit in the selected root;
 in either case executable and configured preflight checks still run. A
 drop-in with an available base unit is verified together with the staged base
@@ -108,8 +125,11 @@ the state already matches, no systemctl action is declared. Fake roots have
 no live systemd manager, so their preview can show enable on a changed unit
 when `enable=true`, but cannot observe or reconcile a pre-existing manager
 state. Successful transaction post-images are captured after actions and
-verification, so later revert checks see the final manager state. Every unit
-operand is preceded by `--` in systemctl argv. Preflight
+verification, so later revert checks see the final manager state. A non-zero
+`is-enabled` command with no output means a new unit is not enabled; empty
+output with exit zero stays an error. Static, indirect, generated, and
+transient units cannot become enabled, so `enable=true` for one will not
+converge. Every unit operand is preceded by `--` in systemctl argv. Preflight
 commands have a 30-second timeout on the direct child; a command that spawns
 descendants must manage their lifetime.
 

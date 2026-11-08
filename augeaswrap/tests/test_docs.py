@@ -93,6 +93,7 @@ def test_unit_docs_are_linked_consistent_and_consumer_toml_loads():
     design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
     consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
     changes = (PROJECT_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    backlog = (PROJECT_ROOT / "BACKLOG.md").read_text(encoding="utf-8")
 
     assert "docs/DESIGN-GUIDE.md#systemd-units" in readme
     assert "### Unit and drop-in behavior" in spec
@@ -102,6 +103,15 @@ def test_unit_docs_are_linked_consistent_and_consumer_toml_loads():
     assert "## Systemd units" in design and "static `/usr/local/lib` and `/usr/lib` trees" in design
     assert "1 MiB" in consumers and "systemctl is-enabled -- <name>" in consumers
     assert "HC-1b-u `unit` resource" in changes
+    assert "empty mode-0755 stub" in spec and "disposable scratch root" in spec
+    assert "uid 0,\nincluding under a fake root" in spec
+    assert "Use `/usr` paths on merged-usr systems" in design
+    assert "`/bin`, `/sbin`, and `/lib` are symlinks" in consumers
+    assert "even under a\nfake root" in consumers
+    assert "static, indirect, generated, or" in consumers and "transient units" in consumers
+    assert "unrecognized argv must declare a phase" in readme
+    assert "Unknown argv" in consumers and "breaking\n  validation requirement" in changes
+    assert "AW-BL-05 (acceptance, R2/VM)" in backlog
 
     section = consumers.split("### Systemd units and drop-ins", 1)[1].split("\n### ", 1)[0]
     examples = re.findall(r"```toml\s*\n(.*?)\n```", section, flags=re.DOTALL)

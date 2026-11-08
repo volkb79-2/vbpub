@@ -229,6 +229,10 @@ def _unit_enabled(root: Path, name: str) -> bool | None:
             raise
         returncode, output = exc.returncode, exc.stdout
     status = output.strip()
+    if not status and returncode in {1, 4}:
+        # systemctl may print no status for a unit that does not exist yet.
+        # An absent unit cannot currently be enabled, so treat that as disabled.
+        return False
     known = {
         "enabled",
         "enabled-runtime",
@@ -406,7 +410,7 @@ def _resolve_below_root(root: Path, absolute: str) -> Path:
 
 def _inspect_exec(root: Path, command: str, unit_path: str) -> dict[str, Any]:
     raw = PurePosixPath(command)
-    normalized = posixpath.normpath(command)
+    normalized = "/" + posixpath.normpath(command).lstrip("/")
     virtual_path = PurePosixPath(normalized)
     try:
         resolved_candidate = _resolve_below_root(root, normalized)
@@ -797,6 +801,20 @@ def _copy_sources(root: Path, stage_root: Path, sources: list[dict[str, Any]]) -
         target.symlink_to(os.path.relpath(null_target, target.parent))
 
 
+def _stage_exec_stubs(stage_root: Path, text: str, unit_path: str) -> None:
+    """Make syntax-only executable targets available inside the verify root."""
+
+    for command in _exec_paths(text, unit_path):
+        target = stage_root / command.lstrip("/")
+        _ensure_stage_directory(stage_root, target.parent, 0o755)
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+        target.write_bytes(b"")
+        os.chmod(target, 0o755)
+
+
 def _command_failure(code: str, label: str, exc: BaseException, path: str) -> PlanRefused:
     return PlanRefused([Problem(code, f"{label} failed for {path}: {exc}", path=path)])
 
@@ -818,6 +836,7 @@ def _verify_staged_tree(
     base_absolute = f"{_SYSTEMD_UNIT_DIR}/{name}"
     sources = _source_inventory(root, name, path, dropin, data.decode("utf-8", errors="replace"))
     _copy_sources(root, stage_root, sources)
+    _stage_exec_stubs(stage_root, data.decode("utf-8", errors="replace"), path)
     _stage_write(stage_root, stage_root / path.lstrip("/"), data, mode)
 
     if verify_skip_reason is None:
@@ -906,7 +925,7 @@ class Unit:
                 if any(value is not None for value in (self.text, self.mode, self.owner, self.group)):
                     raise ValueError("absent drop-in must not specify text, mode, owner, or group")
                 if self.intent is not None or self.on_change is None or preflight is not None:
-                    raise ValueError("absent drop-in requires on_change and takes no preflight")
+                    raise ValueError("absent drop-in requires on_change, takes no preflight, and forbids intent")
 
     @property
     def path(self) -> str:

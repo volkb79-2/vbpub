@@ -195,6 +195,28 @@ caller. If the journal says a post-image is unknown, revert refuses because
 the current state cannot be compared safely. The frozen resource and context
 contract is in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).
 
+### Post-action phases
+
+The engine assigns phases to recognized argv forms. When a third-party
+resource kind declares a command the engine does not recognize, provide its
+phase explicitly or planning refuses it:
+
+```python
+from augeaswrap import PostAction
+
+refresh = PostAction(
+    "refresh example index",
+    ("example-index", "refresh"),
+    30.0,
+    phase="runtime",
+)
+```
+
+The shared phases are `before_commit`, `sysusers`, `tmpfiles`,
+`daemon_reload`, `sysctl`, `runtime`, `gpasswd`, and `endpoint`. Unknown argv
+forms without an explicit phase are a breaking validation error for custom
+`PostAction` callers.
+
 ### Systemd units and drop-ins
 
 Use `unit` for a whole unit or one drop-in. `state`, `text`, and `mode` are
@@ -202,7 +224,7 @@ explicit. Every present resource states `intent = "authoritative"` or
 `intent = "fallback"` for the layer it contributes; current directive-level
 shadow enforcement is provided by the shared HC-1b-s work. A whole present unit
 also states its desired enablement and what to do after a change; a drop-in
-never enables the unit.
+never enables the unit. `intent` is invalid on an absent unit or drop-in.
 
 ```toml
 augeaswrap = 1
@@ -252,7 +274,12 @@ final manager state.
 The staged tree contains existing valid unit files and resolvable aliases from
 the static `/usr/local/lib` and `/usr/lib` unit trees, the requested unit, its
 same-name drop-ins, and referenced dependency units from every selected search
-directory. The plan says when
+directory. Each `Exec*=` target is a temporary empty mode-0755 stub during
+`systemd-analyze verify`; the selected-root executable check still inspects the
+real target separately. Use `/usr` executable paths on merged-usr hosts because
+`/bin`, `/sbin`, and `/lib` are symlinks and symlink components are refused.
+Each executable and its parent components must be owned by uid 0 even under a
+fake root. The plan says when
 syntax verification is skipped:
 either `systemd-analyze` is missing, or a drop-in has no base unit anywhere in
 the selected root. In both cases Exec checks and any configured preflight
@@ -265,7 +292,11 @@ inside the selected root before `/tmp`, `/var/tmp`, and `/home` are refused;
 raw `..`, symlink components, non-root-owned components, and group/other-write
 components are refused. Live unit files default to owner/group `root:root`;
 existing managed files and their parent directories must have safe ownership
-and modes. `preflight` is argv-only with a 30-second timeout. The socket
+and modes. Do not request `enable = true` for static, indirect, generated, or
+transient units, which systemd cannot enable. When `systemctl is-enabled`
+returns non-zero with no output for a not-yet-created unit, Augeaswrap treats it
+as disabled and can plan the requested enablement; empty output with a
+successful exit remains an error. `preflight` is argv-only with a 30-second timeout. The socket
 drop-in records a pending restart in the journal instead of restarting the
 live socket.
 

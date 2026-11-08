@@ -9,7 +9,11 @@ root-owned, non-writable paths, normalized executable checks, a staged view of
 systemd search paths and discovered dependencies, and optional preflight
 commands. Present units declare `intent` and the desired `enable` state; live
 enablement is reconciled even when the file is unchanged. Unit text is limited
-to 1 MiB of UTF-8 and cannot contain NUL. See the
+to 1 MiB of UTF-8 and cannot contain NUL. Staged verification creates empty
+executable stubs for checked `Exec*=` targets; use `/usr` paths on merged-usr
+hosts because symlink components such as `/bin` are refused. Static, indirect,
+generated, and transient units cannot be enabled. Third-party post-actions with
+unrecognized argv must declare a phase. See the
 [systemd unit design](docs/DESIGN-GUIDE.md#systemd-units) for the staged verify
 and action-order choices. The read-only `check` resource runs an argv check or
 asserts path metadata. Use `--root` to exercise the full flow against a fake
