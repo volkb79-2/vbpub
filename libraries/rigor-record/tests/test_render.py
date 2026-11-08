@@ -58,13 +58,13 @@ def test_every_golden_record_renders_to_its_own_bytes(path):
 
 
 def test_golden_project_views_are_byte_identical_to_a_regeneration(chain, at):
-    views = render_views(chain, "cgroup-profiler", at)
+    views = render_views(chain, "cgprofile", at)
     assert views["rigor/index.json"] == (PROJECT / "rigor" / "index.json").read_text()
     assert views["RIGOR.md"] == (PROJECT / "RIGOR.md").read_text()
 
 
 def test_views_do_not_depend_on_record_order(chain, at):
-    assert render_views(list(reversed(chain)), "cgroup-profiler", at) == render_views(chain, "cgroup-profiler", at)
+    assert render_views(list(reversed(chain)), "cgprofile", at) == render_views(chain, "cgprofile", at)
 
 
 def test_golden_index_is_schema_valid():
@@ -87,7 +87,7 @@ def test_render_record_refuses_an_invalid_record_and_a_privacy_hit():
     with pytest.raises(RenderError):
         render_record({"schema": "urn:vbpub:rigor-record:1"})
     with pytest.raises(RenderError):
-        render_record(rec("r2-pass"), hosts=("cgroup",))
+        render_record(rec("r2-pass"), hosts=("cgprofile",))
 
 
 # -- status text ------------------------------------------------------------------------------------------------
@@ -139,7 +139,7 @@ def test_tools_text_merges_lanes_and_dashes_when_empty():
 
 # -- the body ---------------------------------------------------------------------------------------------------
 def test_body_rows_and_refusals():
-    body = render_body(rec("r2-pass"), "cgroup-profiler")
+    body = render_body(rec("r2-pass"), "cgprofile")
     assert body.count("\n| ") == 5 and "| R2 | pending: runs after release on the latest release only |" in body
     assert "R1-R3 count only when assay judged them; command lanes are declared, not judged." in body
     assert "| R1 | pass (line 100.0 %, branch 100.0 %) |" in body
@@ -302,7 +302,7 @@ def test_a_command_lane_is_declared_not_judged_in_the_lanes_table(chain, at):
 
 def test_no_valid_r2_result_is_listed_as_none():
     record = copy.deepcopy(rec("r2-pass"))
-    text = render_project_md([record], lambda commit: {"cgroup-profiler": "9" * 40})
+    text = render_project_md([record], lambda commit: {"cgprofile": "9" * 40})
     assert "- none valid at this commit" in text
 
 
@@ -332,5 +332,5 @@ def test_rendered_views_pass_the_privacy_lint_and_the_record_validator(chain, at
     for line in render_project_md(chain, at).splitlines():
         assert lint_string(line) == [], line
     assert all(validate_record(r) == [] for r in chain)
-    index = render_index(chain, "cgroup-profiler", at)
+    index = render_index(chain, "cgprofile", at)
     assert canonical_json(json.loads(index)) == index

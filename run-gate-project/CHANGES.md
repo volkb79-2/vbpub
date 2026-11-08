@@ -18,7 +18,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   environment. `[profile].socket_path` is refused; observer mounts use an
   identity read-only bind and pass the same path through
   `ASSAY_RESOURCE_OBSERVER_SOCKET`. Missing required variables name
-  `cgpd doctor` and the host endpoints record as the remedy. `RUN_GATE_PROFILE=off`
+  `cgprofiled doctor` and the host endpoints record as the remedy. `RUN_GATE_PROFILE=off`
   explicitly opts out of profiling; observer lanes still require both endpoints.
   Endpoint values are shape-validated (absolute path over `[A-Za-z0-9_./:@+-]`,
   no `..`/empty/`.` components, no trailing `/`, observer directory never `/`)

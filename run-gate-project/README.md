@@ -2,7 +2,7 @@
 
 **Status:** released as a wheel (`run-gate-vX.Y.Z` tags; see `CHANGES.md`),
 adopted by every internal project's gate (cmru's release gate, assay, ciu,
-nyxloom, cgroup-profiler, ...). This README describes the current user-facing surface; **`SPEC.md` is the
+nyxloom, cgprofile, ...). This README describes the current user-facing surface; **`SPEC.md` is the
 normative implementation contract**. The installed wheel's SemVer is the
 public tool identity. Build-and-adopt handoff: `HANDOFF-P01-build-and-adopt-ciu.md`;
 chronological build log incl. every failure:
@@ -72,7 +72,7 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    host record file or supply a socket path default. Control is required when
    profiling is enabled and for every observer lane; the observer endpoint is
    required only for observer lanes. A missing value is an infrastructure error
-   naming the variable and pointing to `cgpd doctor` and the host endpoints
+   naming the variable and pointing to `cgprofiled doctor` and the host endpoints
    record. `RUN_GATE_PROFILE=off` explicitly opts out of profiling, while an
    observer lane still needs both endpoints for its version preflight and mount.
    Before launch, Run-Gate requires the daemon to advertise observer contract 2
@@ -825,7 +825,7 @@ the tool's reason to exist and MUST be implemented + tested:
   names the tree it describes. run-gate MEASURES; the
   rigor/defer policy built on the numbers belongs to whoever reads them
   (CONSUMERS.md "What each lane costs"; SPEC `R-36`).
-- **Lane cost is PROFILED too, when a cgroup-profiler daemon is reachable
+- **Lane cost is PROFILED too, when a cgprofile daemon is reachable
   (RG-55):** peak memory, +baseline, hot-set p90 (DAMON), CPU cores, and
   memory-full stall join `history`'s own duration series (schema 2, SPEC
   `R-36j`) — precisely from the daemon (over its control socket), or a coarser in-lane profile when it is

@@ -52,8 +52,8 @@ The `contract` lane describes tester-base only. The consumer layer `tester-unifi
 Dockerfile and with its own tests: `zsh` and Node.js (MDTC-02 skip-diff), the **real `systemctl` client**
 (Debian's `systemd` package; D-001 still forbids a stub) and Docker's own `docker-compose-plugin` at an
 exact, sha256-checked version (tester-unified's suites drive real `docker compose` and T2 keeps the plugin
-out of this base; see tester-unified's DESIGN-GUIDE for the pin evidence). The `systemctl` client exists for the cgroup-profiler placement probe
-(`scripts/cgroup-profiler/tools/gate.sh`, `lib/access.py` `_PLACEMENT_PROBE`), which runs
+out of this base; see tester-unified's DESIGN-GUIDE for the pin evidence). The `systemctl` client exists for the cgprofile placement probe
+(`cgprofile/tools/gate.sh`, `lib/access.py` `_PLACEMENT_PROBE`), which runs
 `systemctl show <slice>` inside the image against the HOST system bus mounted read-only: with the bus
 socket and `/run/systemd/system` present it answers for the host; in a plain container it exits 1
 (`Failed to connect to system scope bus`, or `System has not been booted with systemd` when

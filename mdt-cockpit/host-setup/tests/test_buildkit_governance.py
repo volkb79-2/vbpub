@@ -1726,7 +1726,7 @@ done
         self.assertIn("no valid /etc/mdt/host-setup.env exists; the shipped example is incomplete", install)
         self.assertIn("--reset requires --wizard", install)
         prereqs = install.index('if [ "$WITH_BASELINE" = 1 ] && [ "$WIZARD" = 1 ]')
-        wizard = install.index('python3 "$HERE/mdt-host-setup-wizard.py"')
+        wizard = install.index('python3 "$HERE/mdt-host-setup-wizard.py"', prereqs)
         self.assertLess(prereqs, wizard)
         self.assertIn("apt-get install -y --no-install-recommends fio pv", install[prereqs:wizard])
         self.assertIn("DEV_INTERACTIVE_MEMORY_MIN DEV_INTERACTIVE_MEMORY_LOW", install)

@@ -75,9 +75,9 @@ def test_pushes_a_commit_with_prefix_trailer_and_views_and_cleans_up(w):
     assert w.remote_log()[0] == f"chore(rigor): {TAG} release synced"
     message = git(w.bare, "log", "-1", "--format=%B", "main")
     assert message.startswith("chore(rigor): ")
-    assert f"Rigor-Record: cgroup-profiler@{w.commit} rev=1 fragments={sha12(digest(w))}" in message
+    assert f"Rigor-Record: cgprofile@{w.commit} rev=1 fragments={sha12(digest(w))}" in message
     assert w.remote_files(record_path(w)) == w.record_text
-    assert "cgroup-profiler" in w.remote_files(f"{LANE_DIR}/rigor/index.json")
+    assert "cgprofile" in w.remote_files(f"{LANE_DIR}/rigor/index.json")
     assert TAG in w.remote_files(f"{LANE_DIR}/RIGOR.md")
     assert git(w.clone, "worktree", "list").count("\n") == 0
     assert git(w.clone, "status", "--porcelain") == before

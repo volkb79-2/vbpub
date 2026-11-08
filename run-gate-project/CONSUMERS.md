@@ -74,9 +74,9 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    in bytes, with no cgroup/pressure/DAMON/events data, RG-57) when no daemon
    answers, every time, unless
    `[profile] enabled = false` or `RUN_GATE_PROFILE=off`. For the PRECISE
-   path (exact `memory.peak`, DAMON hot-set), the **cgroup-profiler daemon
-   is host infrastructure**, installed through its `cgpd install` verb or
-   the host-setup consumer; see the [native deployment guide](../scripts/cgroup-profiler/docs/NATIVE-DEPLOYMENT.md).
+   path (exact `memory.peak`, DAMON hot-set), the **cgprofile daemon
+   is host infrastructure**, installed through its `cgprofiled install` verb or
+   the host-setup consumer; see the [native deployment guide](../cgprofile/docs/NATIVE-DEPLOYMENT.md).
    It is never per-project, and never something a consumer's own gate config
    starts or stops. A runner
    without access to the daemon's control endpoint (a locked-down CI box, a
@@ -86,7 +86,7 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    path default). `CGPROFILE_OBSERVER_SOCKET` is read only by observer lanes.
    The host launcher provides these values and the corresponding socket access.
    When a required value is absent or empty, Run-Gate fails with that variable
-   named; run `cgpd doctor`, repair the host endpoints record, then start a
+   named; run `cgprofiled doctor`, repair the host endpoints record, then start a
    process that has received the updated environment. There is no old-layout
    or config-file fallback.
    `doctor`'s "profiler" check reports
@@ -503,7 +503,7 @@ paths or fallback. `CGPROFILE_CONTROL_SOCKET` is required while profiling is
 enabled and for every observer lane, whose version preflight uses the control
 endpoint. `CGPROFILE_OBSERVER_SOCKET` is required only for observer lanes.
 An unset or empty value is an infrastructure error naming the variable and
-the `cgpd doctor` / host endpoints record remedy. `RUN_GATE_PROFILE=off` is the
+the `cgprofiled doctor` / host endpoints record remedy. `RUN_GATE_PROFILE=off` is the
 explicit profiling opt-out; an observer lane still needs both endpoint
 variables. These variables are supplied by the host launcher, not declared as
 Run-Gate config keys.

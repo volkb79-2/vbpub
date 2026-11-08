@@ -131,7 +131,7 @@
       "window": "this-run"
     }
   ],
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "qualifications": {
     "promotion": {
       "judged_commit": "3333333333333333333333333333333333333333",
@@ -146,7 +146,7 @@
           },
           "note": "declared, not judged",
           "targets": {
-            "cgroup-profiler": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
+            "cgprofile": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
           },
           "toolset": "t1",
           "verdict_sha256": null
@@ -165,7 +165,7 @@
       },
       "note": "declared, not judged",
       "targets": {
-        "cgroup-profiler": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
+        "cgprofile": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
       },
       "toolset": "t1",
       "verdict_sha256": null
@@ -189,7 +189,7 @@
         "R1": "pass"
       },
       "targets": {
-        "cgroup-profiler": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+        "cgprofile": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
         "node_modules": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
       },
       "toolset": "t2",
@@ -212,7 +212,7 @@
         "R3": "pass"
       },
       "targets": {
-        "cgroup-profiler": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
+        "cgprofile": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
       },
       "toolset": "t2",
       "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888"
@@ -302,7 +302,7 @@
         "sidecar_sha256": null
       },
       "targets": {
-        "cgroup-profiler": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
+        "cgprofile": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
       },
       "toolset": "t2",
       "verdict_sha256": "1111111111111111111111111111111111111111111111111111111111111111",

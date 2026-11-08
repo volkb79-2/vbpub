@@ -18,7 +18,7 @@ from rigor_record.update import (
 )
 
 TAG = "cgprofile-v2.0.0"
-DIR = "cgroup-profiler"
+DIR = "cgprofile"
 LANE = "r2"
 OTHER = "c" * 40
 TREE2 = "d" * 40
@@ -114,7 +114,7 @@ def test_an_r2_campaign_lands_in_the_record_of_the_commit_it_judged():
     assert result["attributed_from"] is None and result["survivors"]["open"] == 31
     assert record["inventory"]["r2_lanes"] == [LANE] and [r["lane"] for r in record["results"]][-1] == "release"
     assert plan.subject == "chore(rigor): cgprofile-v2.0.0 R2 survivors"
-    assert plan.trailers == (f"Rigor-Record: cgroup-profiler@{COMMIT} rev=2 fragments={plan.key}",)
+    assert plan.trailers == (f"Rigor-Record: cgprofile@{COMMIT} rev=2 fragments={plan.key}",)
 
 
 def test_the_key_depends_on_the_fragments_and_the_attribution():
@@ -276,7 +276,7 @@ def test_a_later_clean_campaign_resolves_older_open_survivors():
     resolved = lane_result(plan.changed[COMMIT])
     assert resolved["levels"]["R2"] == "pass" and resolved["survivors"]["resolved"] == 31
     assert {s["resolved_by"] for s in resolved["survivors"]["listed"]} == {newer_commit}
-    assert len(plan.trailers) == 2 and plan.trailers[0].startswith(f"Rigor-Record: cgroup-profiler@{newer_commit}")
+    assert len(plan.trailers) == 2 and plan.trailers[0].startswith(f"Rigor-Record: cgprofile@{newer_commit}")
 
 
 def test_many_survivors_collapse_to_per_file_counts():

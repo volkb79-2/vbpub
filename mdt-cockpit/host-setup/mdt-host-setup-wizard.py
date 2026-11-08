@@ -1483,7 +1483,7 @@ def validate_cgprofile_uids(value: str) -> str | None:
 
 
 def cgprofile_relation_errors(values: dict[str, str]) -> list[str]:
-    """The pin rules that need more than one key: enabled means both wheels are pinned and cgprofile is 2.x+."""
+    """The pin rules that need more than one key; host-setup's installer supports cgprofile 2.x only."""
     if values.get("CGPROFILE_ENABLE", "0") != "1":
         return []
     errors = []
@@ -1491,8 +1491,11 @@ def cgprofile_relation_errors(values: dict[str, str]) -> list[str]:
         if not values.get(key, ""):
             errors.append(f"{key} is empty while CGPROFILE_ENABLE=1; pin <version>@sha256:<hex> of the released wheel")
     match = _CGPROFILE_PIN_RE.fullmatch(values.get("CGPROFILE_WHEEL", ""))
-    if match and int(match.group("version").split(".")[0]) < 2:
-        errors.append("CGPROFILE_WHEEL must be a 2.x or newer cgprofile release (1.x is the ciu container deployment)")
+    if match and int(match.group("version").split(".")[0]) != 2:
+        errors.append(
+            "CGPROFILE_WHEEL must be a 2.x cgprofile release (<3.0.0) for mdt host-setup; "
+            "3.x uses cgprofiled install"
+        )
     return errors
 
 

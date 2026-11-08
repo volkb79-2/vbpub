@@ -44,7 +44,7 @@ ESTATE_INTERNAL = frozenset(
         "ciu",
         "nyxloom",
         "topos",
-        "cgroup-profiler",
+        "cgprofile",
         "run-gate",
         "pwmcp",
         "pwmcp-client",
@@ -69,7 +69,7 @@ PROJECTS = (
     ("assay/pyproject.toml", ("test",)),
     ("topos/pyproject.toml", ("dev",)),
     ("nyxloom/pyproject.toml", ("test",)),
-    ("cgroup-profiler/pyproject.toml", ("test",)),
+    ("cgprofile/pyproject.toml", ("test",)),
     ("libraries/patchseries/pyproject.toml", ("test",)),
     ("pwmcp/client/pyproject.toml", ("test",)),
 )
@@ -157,7 +157,7 @@ def admit(
 def own_extra_requirements(project: dict, extras) -> Iterator[str]:
     """Expand only this project's composite extras.
 
-    ``topos[dev]`` and ``cgroup-profiler[test]`` deliberately reuse their own
+    ``topos[dev]`` and ``cgprofile[test]`` deliberately reuse their own
     ``zstandard``/``report`` extras.  Handing those self-references to pip would
     make it look for an unrelated package index project instead of reading the
     copied pyproject that is the closure's source of truth.

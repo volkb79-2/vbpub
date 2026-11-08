@@ -235,8 +235,8 @@ class TestRealEstate:
         report = self._report()
         assert report.ok, report.errors
         assert report.levels["cli-extended"] == 0
-        # cgroup-profiler's wheel requires cli-extended (cgprofile 2.0 package 1): a real wheel edge, so L1.
-        assert report.levels["cgroup-profiler"] == 1
+        # cgprofile's wheel requires cli-extended (cgprofile 2.0 package 1): a real wheel edge, so L1.
+        assert report.levels["cgprofile"] == 1
         assert report.levels["run-gate-project"] == 2
         assert report.levels["cmru"] == 3
         assert report.levels["nyxloom"] == 1
@@ -259,7 +259,7 @@ class TestRealEstate:
         # this checkout's source, so it must not force them after the CMRU
         # release.
         for project in (
-            "ciu", "assay", "topos", "run-gate-project", "cgroup-profiler",
+            "ciu", "assay", "topos", "run-gate-project", "cgprofile",
             "pwmcp", "tls-edge", "tester-base",
         ):
             assert "cmru" not in dependencies[project], project
@@ -267,9 +267,9 @@ class TestRealEstate:
         # artifact and tester image, so it must follow Run-Gate in a fresh
         # release sequence.
         assert set(dependencies["cmru"]) == {"cli-extended", "run-gate-project"}
-        assert set(dependencies["run-gate-project"]) == {"cgroup-profiler"}
+        assert set(dependencies["run-gate-project"]) == {"cgprofile"}
         order = list(forge.orchestration.project_order)
-        assert order.index("cgroup-profiler") < order.index("run-gate-project")
+        assert order.index("cgprofile") < order.index("run-gate-project")
         assert order.index("run-gate-project") < order.index("cmru")
 
     def test_removing_the_cmru_to_cli_extended_edge_fails_the_preflight(self):

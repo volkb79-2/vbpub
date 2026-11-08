@@ -5,7 +5,7 @@
 # has to go red on incorrect code. Each canary below breaks exactly one
 # contract some test claims to assert, and that named test must fail. A
 # canary that survives is a hollow oracle, and this script fails when one
-# does. Pattern matches scripts/cgroup-profiler/tools/canary-run.sh.
+# does. Pattern matches cgprofile/tools/canary-run.sh.
 #
 #   tools/canary-run.sh            run every canary
 #   tools/canary-run.sh <name>     run one

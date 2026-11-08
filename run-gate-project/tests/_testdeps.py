@@ -22,10 +22,12 @@ the condition is structural rather than a missing dependency:
   ``RUN_GATE_REQUIRE_CONTAINER_SMOKE=1`` (set it where Docker is reachable: a developer host).
 * ``test_an_unreadable_record_is_reported`` cannot run as root (root reads a 0o000 file).
 
-* ``TestUserDocumentationOracles.test_cgroup_profiler_contract_mirror_when_monorepo_is_present``
-  checks the cgroup-profiler contract copy when Run-Gate is checked out in the
-  vbpub monorepo. It skips when that sibling file is absent because standalone
-  Run-Gate wheel consumers do not carry the monorepo layout.
+* ``TestUserDocumentationOracles.test_cgprofile_contract_mirror_when_monorepo_is_present``
+  checks the cgprofile contract copy when Run-Gate is checked out in the
+  vbpub monorepo. It skips only when the monorepo root marker
+  (``cmru.orchestration.toml``) is absent, because standalone Run-Gate wheel
+  consumers do not carry the monorepo layout; inside the monorepo a missing
+  ``cgprofile/docs/RG55-INTERFACE-CONTRACT.md`` fails the test.
 
 ``tests/test_testdeps_policy.py`` forbids any other bare ``pytest.importorskip`` /
 ``skipif(... is None)`` / dependency ``pytest.skip`` in this suite, and the selftest lane runs

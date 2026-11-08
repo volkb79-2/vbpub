@@ -1,0 +1,52 @@
+# cgprofiled.service: the native cgprofile daemon unit.
+# Template shipped inside the cgprofile wheel; `cgprofiled unit print` renders it.
+# The wheel venv path (ExecStart) is the only substituted value (default
+# /opt/cgprofile/current/venv; `--install-root` / `--wheel-venv` change it).
+# Values are the NATIVE-DEPLOYMENT.md section 4.2 proposals. OOMScoreAdjust is
+# deliberately unset (section 4.4) and no environment is set: the daemon
+# reads its configuration from the file only (CGPROFILECTL-SPEC.md section 3.4).
+[Unit]
+Description=cgprofile resource-profiling daemon
+Requires=cgprofile-control.socket cgprofile-observer.socket
+After=local-fs.target cgprofile-control.socket cgprofile-observer.socket
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStartPre=/opt/cgprofile/current/venv/bin/cgprofiled -t
+ExecStart=/opt/cgprofile/current/venv/bin/cgprofiled run
+ExecReload=/bin/kill -HUP $MAINPID
+Slice=cgprofile.slice
+User=root
+MemoryHigh=512M
+MemoryMax=768M
+MemorySwapMax=0
+CPUQuota=50%
+TasksMax=256
+IOWeight=50
+LimitNOFILE=4096
+Restart=on-failure
+RestartPreventExitStatus=2
+RestartSec=2s
+RestartSteps=5
+RestartMaxDelaySec=60
+TimeoutStopSec=20s
+KillMode=mixed
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+Sockets=cgprofile-control.socket cgprofile-observer.socket
+RuntimeDirectory=cgprofile/state
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=/run/cgprofile/state /var/lib/cgprofile /sys/fs/cgroup /sys/kernel/mm/damon
+StateDirectory=cgprofile
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=multi-user.target

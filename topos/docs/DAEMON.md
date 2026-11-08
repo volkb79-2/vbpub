@@ -220,7 +220,7 @@ sudo rm -rf /run/topos
 # Recreate containers that bind-mount /run/topos.
 ```
 
-## Differences from cgpd
+## Differences from cgprofiled
 
 - topos has one read-only `observe` socket. It has no control level, slices, or
   `allow_uids` access list.

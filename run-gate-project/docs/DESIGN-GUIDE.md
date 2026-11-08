@@ -360,7 +360,7 @@ environment only; it does not parse the endpoint record, embed a path, or
 fall back to another source. The control endpoint is required when profiling
 is enabled and for observer lanes, because the observer version preflight uses
 it. The observer endpoint is required only for observer lanes. An unset or
-empty value names the variable and directs the operator to `cgpd doctor` and
+empty value names the variable and directs the operator to `cgprofiled doctor` and
 the host endpoints record. `RUN_GATE_PROFILE=off` explicitly disables
 profiling, but an observer lane still requires both endpoint variables for
 its capability checks.

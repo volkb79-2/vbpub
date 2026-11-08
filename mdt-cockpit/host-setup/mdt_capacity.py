@@ -347,7 +347,7 @@ def tier_swap_bytes(swap_mdt: int, cascade_pct: int) -> int:
 #
 # Not named *_RESERVE_*: every such key is refused by the 2026-11 rename guard above.
 # Plain 1G, not derived from the host at install time: the two test hosts measured 1.0-1.1 GB of
-# system.slice memory.current (dockerd, containerd, journald, cgpd, page cache), so 1G covers that working
+# system.slice memory.current (dockerd, containerd, journald, cgprofiled, page cache), so 1G covers that working
 # set. A host whose system.slice is larger must raise DEV_HOST_MEMORY_KEEP; mdt-host-check.sh warns when
 # the measured system.slice memory.current exceeds the keep.
 DEDICATED_MEMORY_KEEP_DEFAULT = "1G"
@@ -358,7 +358,7 @@ DEDICATED_MEMORY_PIN_MIN = 256 * 1024 * 1024
 # PSI guard's pressure signals).  docker/containerd are protected too, so a dev-tier OOM victim is
 # never the daemon that supervises the containers.
 DEDICATED_PROTECTED_UNITS_DEFAULT = (
-    "docker.service containerd.service cgpd.service mdt-psi-guard.service "
+    "docker.service containerd.service cgpd.service cgprofiled.service mdt-psi-guard.service "
     "systemd-journald.service systemd-oomd.service"
 )
 # NEVER in the list: sshd restores the OOM score it started with into every login session it forks, so an

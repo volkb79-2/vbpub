@@ -526,7 +526,7 @@ mode and event-file availability across the candidate window. The
 hidden-ancestor observer must implement
 resource-observer contract 2 and return both scopes. Assay refuses contract 1
 rather than treating hierarchical counters as local. The minimum supported
-daemon release is cgroup-profiler 1.0.0. See B155 in the
+daemon release is cgprofile 1.0.0. See B155 in the
 [Assay backlog](../nyxloom-trove/4-backlog.md) and the
 [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 for the hierarchy and event-counter semantics.

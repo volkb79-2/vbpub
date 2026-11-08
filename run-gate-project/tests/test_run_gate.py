@@ -10381,7 +10381,7 @@ class TestResourceObserverLane:
                 monkeypatch.setenv(variable, value)
             with pytest.raises(
                     run_gate.GateInfraError,
-                    match=rf"{variable}.*cgpd doctor.*host endpoints record"):
+                    match=rf"{variable}.*cgprofiled doctor.*host endpoints record"):
                 resolver()
 
     @pytest.mark.parametrize(("variable", "resolver"), [
@@ -10426,13 +10426,13 @@ class TestResourceObserverLane:
         run_gate.preflight_profile_endpoints({}, False)
 
         with pytest.raises(run_gate.GateInfraError,
-                           match="CGPROFILE_CONTROL_SOCKET.*cgpd doctor"):
+                           match="CGPROFILE_CONTROL_SOCKET.*cgprofiled doctor"):
             run_gate.preflight_profile_endpoints({}, True)
 
         monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "/host/control.sock")
         run_gate.preflight_profile_endpoints({}, True)
         with pytest.raises(run_gate.GateInfraError,
-                           match="CGPROFILE_OBSERVER_SOCKET.*cgpd doctor"):
+                           match="CGPROFILE_OBSERVER_SOCKET.*cgprofiled doctor"):
             run_gate.preflight_profile_endpoints(
                 {"resource_observer": "cgprofile"}, False)
 
@@ -10441,7 +10441,7 @@ class TestResourceObserverLane:
             {"resource_observer": "cgprofile"}, False)
         monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET")
         with pytest.raises(run_gate.GateInfraError,
-                           match="CGPROFILE_CONTROL_SOCKET.*cgpd doctor"):
+                           match="CGPROFILE_CONTROL_SOCKET.*cgprofiled doctor"):
             run_gate.preflight_profile_endpoints(
                 {"resource_observer": "cgprofile"}, False)
 
@@ -11105,7 +11105,7 @@ class TestResourceObserverLane:
         self._patch_socket_metadata(monkeypatch, socket_path)
         monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "")
         with pytest.raises(run_gate.GateInfraError,
-                           match="CGPROFILE_CONTROL_SOCKET.*cgpd doctor"):
+                           match="CGPROFILE_CONTROL_SOCKET.*cgprofiled doctor"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
@@ -14283,6 +14283,14 @@ def _budget_seconds(value: str) -> int:
     return int(value[:-1]) * _BUDGET_UNITS[value[-1]]
 
 
+# project dir name -> why its gates pair with no run-gate lane (see
+# TestEstateBudgetTimeoutPairing.HELPER_GATE_TROVES).
+_HELPER_GATE_TROVES = {
+    "cgprofile": "gates run tools/gate.sh and tools/canary-run.sh "
+                 "helper scripts, never a run-gate lane",
+}
+
+
 class TestEstateBudgetTimeoutPairing:
     """Every consumer gate that runs a project's lane must give it at least
     the lane's declared budget: run-gate enforces a hard wall-clock limit,
@@ -14300,9 +14308,20 @@ class TestEstateBudgetTimeoutPairing:
     # run-gate.toml (ciu8, the shelved v8 subproject) is not a case at all,
     # so it is filtered here rather than collected and skipped — a skip in
     # the gate log must mean something is missing, never "not applicable".
+    #
+    # HELPER_GATE_TROVES: projects whose EVERY consumer gate calls a helper
+    # script (tools/gate.sh, canary-run.sh) that itself launches the checks,
+    # so no gate argv names a run-gate lane and "no pairing found" is the
+    # correct state, not rot. They are excluded here with the reason stated;
+    # test_helper_gate_troves_still_pair_with_nothing keeps the exclusion
+    # honest (it fails the moment such a trove names a lane, so the trove
+    # must then leave this table and be swept like every other).
+    # (Module-level table: a class-body generator cannot see class names.)
+    HELPER_GATE_TROVES = _HELPER_GATE_TROVES
     TROVES = sorted(trove for trove
                     in RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml")
-                    if (trove.parent.parent / "run-gate.toml").is_file())
+                    if (trove.parent.parent / "run-gate.toml").is_file()
+                    and trove.parent.parent.name not in _HELPER_GATE_TROVES)
 
     @staticmethod
     def _pair(trove):
@@ -14359,6 +14378,20 @@ class TestEstateBudgetTimeoutPairing:
         assert paired, (
             f"{trove}: no gate↔lane pairing found — either the trove stopped "
             f"pointing at run-gate lanes or the pairing regex rotted")
+
+    @pytest.mark.parametrize("name", sorted(HELPER_GATE_TROVES))
+    def test_helper_gate_troves_still_pair_with_nothing(self, name):
+        """The exclusion above is only honest while the trove's gates really
+        name no run-gate lane: a trove that starts pairing must be swept."""
+        trove = RUN_GATE_DIR.parent / name / "nyxloom-trove" / "nyxloom.toml"
+        assert trove.is_file(), (
+            f"HELPER_GATE_TROVES lists {name!r} but {trove} is gone — "
+            f"drop the stale exclusion")
+        paired = self._pair(trove)
+        assert paired == [], (
+            f"{name} is excluded as a helper-script-gate trove but now "
+            f"pairs {paired} — remove it from HELPER_GATE_TROVES so the "
+            f"timeout check covers it")
 
     def test_estate_pairing_sweep_is_alive(self):
         """Rot-guard (review fix): the per-trove tests each prove their own
@@ -22464,7 +22497,7 @@ class TestRG55FixtureByteIdentity:
 class TestProfileParsers:
     """Contract Sec 4.3's ported parsers, string variants (run-gate reads
     via `docker exec ... cat`, never a path directly) -- attributed to
-    scripts/cgroup-profiler/lib/util.py in run_gate.py's own docstrings."""
+    cgprofile/src/cgprofile/util.py in run_gate.py's own docstrings."""
 
     def test_parse_int_reads_a_plain_integer(self):
         assert run_gate._profile_parse_int("524288000\n") == 524288000
@@ -23430,7 +23463,7 @@ class TestProfilerClient:
         doc, reason = client.version()
         assert doc is None
         assert f"(cause: {cause}:" in reason
-        assert ("check $CGPROFILE_CONTROL_SOCKET, run 'cgpd doctor', and "
+        assert ("check $CGPROFILE_CONTROL_SOCKET, run 'cgprofiled doctor', and "
                 "repair the host endpoints record") in reason
         assert "cutover" not in reason
         assert "old layout" not in reason
@@ -29626,7 +29659,7 @@ class TestPlacementBarrier:
         plan = {"enabled": True, "interval": "1s", "damon": False,
                 "source": "test", "token": "profile-token"}
         with pytest.raises(run_gate.GateInfraError,
-                           match="CGPROFILE_CONTROL_SOCKET.*cgpd doctor"):
+                           match="CGPROFILE_CONTROL_SOCKET.*cgprofiled doctor"):
             run_gate.run_bare_host_lane(
                 lane, "suite", project, repo, repo, run_record=None,
                 profile_plan=plan)
@@ -33539,12 +33572,16 @@ class TestUserDocumentationOracles:
         RUN_GATE_DIR.parent / "libraries" / "iobench" / "docs" / "DESIGN-GUIDE.md",
     )
 
-    def test_cgroup_profiler_contract_mirror_when_monorepo_is_present(self):
-        cgp_copy = (RUN_GATE_DIR.parent / "scripts" / "cgroup-profiler" /
+    def test_cgprofile_contract_mirror_when_monorepo_is_present(self):
+        if not (RUN_GATE_DIR.parent / "cmru.orchestration.toml").is_file():
+            # testdeps-exception: standalone Run-Gate has no monorepo, so no sibling contract.
+            pytest.skip("not the vbpub monorepo layout (standalone Run-Gate)")
+        # In the monorepo the sibling MUST exist: when this test built the old
+        # scripts/cgroup-profiler path and skipped on its absence, the project
+        # move silently disabled the mirror check.
+        cgp_copy = (RUN_GATE_DIR.parent / "cgprofile" /
                     "docs" / "RG55-INTERFACE-CONTRACT.md")
-        if not cgp_copy.is_file():
-            # testdeps-exception: the sibling contract is monorepo-only.
-            pytest.skip("cgroup-profiler sibling is absent outside the monorepo")
+        assert cgp_copy.is_file(), f"monorepo layout without {cgp_copy}"
         run_gate_copy = (RUN_GATE_DIR / "nyxloom-trove" /
                          "RG55-INTERFACE-CONTRACT.md")
         assert cgp_copy.read_bytes() == run_gate_copy.read_bytes()

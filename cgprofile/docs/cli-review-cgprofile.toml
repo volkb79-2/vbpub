@@ -1,0 +1,1016 @@
+schema_version = 1
+cli_id = "cgprofile"
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/analyze/argument-shape/argument:route:entrypoint:cgprofile/analyze/run_dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b8971a71058102e6680f5cf2e9cfaaafac33612d6586f37ee719e9b1ffec04be"
+rationale = "The positional argument shape of `analyze`."
+invocation = ["analyze", "{TMP}/run"]
+expected_exit_status = 0
+expected_stdout_contains = "no proposals"
+expected_stderr_contains = ""
+effects = ["Read-only: analyses the run directory locally (needs the report extra; here a stand-in) and prints its proposals; no daemon is contacted and nothing is written"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[analyze.argument-shape.analyze.run_dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/analyze/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:66dfc98854400a68d0c0a167366e62e7abe1b1fd3fc0c6cbabb827107fc4b73e"
+rationale = "The smallest valid `analyze` invocation: only the required inputs."
+invocation = ["analyze", "{TMP}/run"]
+expected_exit_status = 0
+expected_stdout_contains = "no proposals"
+expected_stderr_contains = ""
+effects = ["Read-only: analyses the run directory locally (needs the report extra; here a stand-in) and prints its proposals; no daemon is contacted and nothing is written"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[analyze.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/analyze/option-spelling/option:route:entrypoint:cgprofile/analyze/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a05f76e5660d5ef7ce848b90488cbaa6636fdae46030a5dc92206d171130ffbf"
+rationale = "The spelling of an option of `analyze` is accepted where it is declared."
+invocation = ["analyze", "{TMP}/run", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "no proposals"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Read-only: analyses the run directory locally (needs the report extra; here a stand-in) and prints its proposals; no daemon is contacted and nothing is written"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[analyze.option-spelling.analyze.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/analyze/option-spelling/option:route:entrypoint:cgprofile/analyze/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c1b178805307c177d63476c7827d932e27fa04bb44dd6bc51c53ed41d9a34d7d"
+rationale = "The spelling of an option of `analyze` is accepted where it is declared."
+invocation = ["analyze", "{TMP}/run", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\": 1"
+expected_stderr_contains = ""
+effects = ["Read-only: analyses the run directory locally (needs the report extra; here a stand-in) and prints its proposals; no daemon is contacted and nothing is written"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[analyze.option-spelling.analyze.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/mark/argument-shape/argument:route:entrypoint:cgprofile/mark/name"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1908d6c3c2d920251ebf2b853747b29929aa36b52f360f57f65133b30aef3fdc"
+rationale = "The positional argument shape of `mark`."
+invocation = ["mark", "restoring-database"]
+expected_exit_status = 0
+expected_stdout_contains = "mark phase:restoring-database"
+expected_stderr_contains = ""
+effects = ["Appends one phase or event mark to the run directory named by $CGPROFILE_RUN_DIR; no daemon is contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[mark.argument-shape.mark.name]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/mark/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a3ddb5b43fe3ff1ed09f91f8b33a03ddbc51a5e00762f7746e9f6273e9f6ba84"
+rationale = "The smallest valid `mark` invocation: only the required inputs."
+invocation = ["mark", "restoring-database"]
+expected_exit_status = 0
+expected_stdout_contains = "mark phase:restoring-database"
+expected_stderr_contains = ""
+effects = ["Appends one phase or event mark to the run directory named by $CGPROFILE_RUN_DIR; no daemon is contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[mark.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/mark/option-choice/option:route:entrypoint:cgprofile/mark/--kind/8f6e29cfb2"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:09d0fbf54a5e554768e33037f94fb2a1472d0a8d754c98590e3d0d75d31c3a42"
+rationale = "A closed choice of an option of `mark` is accepted."
+invocation = ["mark", "restoring-database", "--kind", "event"]
+expected_exit_status = 0
+expected_stdout_contains = "mark event:restoring-database"
+expected_stderr_contains = ""
+effects = ["Appends one phase or event mark to the run directory named by $CGPROFILE_RUN_DIR; no daemon is contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[mark.option-choice.mark.--kind.8f6e29cfb2]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/mark/option-choice/option:route:entrypoint:cgprofile/mark/--kind/a283707905"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:80ec91e9860e9aaffecb357e90813331185c5c2c2717c06a486a3364778de51c"
+rationale = "A closed choice of an option of `mark` is accepted."
+invocation = ["mark", "restoring-database", "--kind", "phase"]
+expected_exit_status = 0
+expected_stdout_contains = "mark phase:restoring-database"
+expected_stderr_contains = ""
+effects = ["Appends one phase or event mark to the run directory named by $CGPROFILE_RUN_DIR; no daemon is contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[mark.option-choice.mark.--kind.a283707905]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/mark/option-spelling/option:route:entrypoint:cgprofile/mark/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e5981c3b45b513767bde8704eb1811124fef355a2a3422f486f3ecc0f0c2621d"
+rationale = "The spelling of an option of `mark` is accepted where it is declared."
+invocation = ["mark", "restoring-database", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "mark phase:restoring-database"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Appends one phase or event mark to the run directory named by $CGPROFILE_RUN_DIR; no daemon is contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[mark.option-spelling.mark.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/mark/option-spelling/option:route:entrypoint:cgprofile/mark/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c8df298d99d0112e5f08da010ab09a27a90371ef925430949bf40ec1aed7851e"
+rationale = "The spelling of an option of `mark` is accepted where it is declared."
+invocation = ["mark", "restoring-database", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\": 1"
+expected_stderr_contains = ""
+effects = ["Appends one phase or event mark to the run directory named by $CGPROFILE_RUN_DIR; no daemon is contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[mark.option-spelling.mark.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/mark/option-spelling/option:route:entrypoint:cgprofile/mark/--kind/--kind"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:272c8fe3c9c404c2be7aa8e113cbd69dc5dc393cabbdcfd767c044da0c983f79"
+rationale = "The spelling of an option of `mark` is accepted where it is declared."
+invocation = ["mark", "restoring-database", "--kind", "event"]
+expected_exit_status = 0
+expected_stdout_contains = "mark event:restoring-database"
+expected_stderr_contains = ""
+effects = ["Appends one phase or event mark to the run directory named by $CGPROFILE_RUN_DIR; no daemon is contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[mark.option-spelling.mark.--kind.--kind]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/mark/option-spelling/option:route:entrypoint:cgprofile/mark/--meta/--meta"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0d10b52d9c7d4dd516bc668aff5c144be9481b7f1e28058220b3ebd90d1d5783"
+rationale = "The spelling of an option of `mark` is accepted where it is declared."
+invocation = ["mark", "restoring-database", "--meta", "{\"lane\": \"r0\"}"]
+expected_exit_status = 0
+expected_stdout_contains = "mark phase:restoring-database"
+expected_stderr_contains = ""
+effects = ["Appends one phase or event mark to the run directory named by $CGPROFILE_RUN_DIR; no daemon is contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[mark.option-spelling.mark.--meta.--meta]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/argument-shape/argument:route:entrypoint:cgprofile/report/session"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e9d37e909b0957ff36bad9cb99a0fa5fa00d907c08556701f08b1a6333a51e05"
+rationale = "The positional argument shape of `report`."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}"]
+expected_exit_status = 0
+expected_stdout_contains = "report."
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.argument-shape.report.session]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/exclusive-conflict/format/option:route:entrypoint:cgprofile/report/--html-only/option:route:entrypoint:cgprofile/report/--md-only"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9e653e99eba50cf47ad5181dc5e139b8c08944206bf5a61f44e5647a0b8b9d9e"
+rationale = "Both members of a mutually exclusive group of `report` together are refused with a usage error (exit 2) before anything runs."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}", "--html-only", "--md-only"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with"
+effects = ["None: refused by the parser (exit 2) before any handler runs; nothing is read, written or contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.exclusive-conflict.format.report.--html-only.report.--md-only]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/exclusive-member/format/option:route:entrypoint:cgprofile/report/--html-only"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ac186d52f19fe76661bd45fbab446253367b2ee9d89db798650631764b6f2a6c"
+rationale = "One member of a mutually exclusive group of `report` is accepted alone."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}", "--html-only"]
+expected_exit_status = 0
+expected_stdout_contains = "report.html"
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.exclusive-member.format.report.--html-only]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/exclusive-member/format/option:route:entrypoint:cgprofile/report/--md-only"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:de2e4ea09279e1e424a3e9d6ea47094ffa945b35a4149a76a0637286c09bc5eb"
+rationale = "One member of a mutually exclusive group of `report` is accepted alone."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}", "--md-only"]
+expected_exit_status = 0
+expected_stdout_contains = "report.md"
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.exclusive-member.format.report.--md-only]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fc5055a12ce5462961d813af1d363a27e8b1b7694f8655c3408cf42e81895286"
+rationale = "The smallest valid `report` invocation: only the required inputs."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}"]
+expected_exit_status = 0
+expected_stdout_contains = "report."
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c1cde76e448c50ed0c1d3b717e87b69718870205b4226d560f1ce8e6fbc9d7fa"
+rationale = "The spelling of an option of `report` is accepted where it is declared."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "report."
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.option-spelling.report.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--export-only/--export-only"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dd2e4e631d81af942791827e50dc425f2bee290f3e24faaa6ee7416f75c8daf6"
+rationale = "The spelling of an option of `report` is accepted where it is declared."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}", "--export-only", "{TMP}/exp"]
+expected_exit_status = 0
+expected_stdout_contains = "host.jsonl"
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.option-spelling.report.--export-only.--export-only]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--html-only/--html-only"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2b956f4600efd2fb0cac4ab0a5985d7c2d96e3450c45f946d4b889abfab36e3a"
+rationale = "The spelling of an option of `report` is accepted where it is declared."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}", "--html-only"]
+expected_exit_status = 0
+expected_stdout_contains = "report.html"
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.option-spelling.report.--html-only.--html-only]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c9504fd5166c93d41d769e02b5e641eb19afc9b9bc049c3f3fba12c731c35ead"
+rationale = "The spelling of an option of `report` is accepted where it is declared."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\": 1"
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.option-spelling.report.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--md-only/--md-only"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5d28f2c2e561138ef24df923fcc0a144b63687eea9d7026f4fd63ca2cc969d34"
+rationale = "The spelling of an option of `report` is accepted where it is declared."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}", "--md-only"]
+expected_exit_status = 0
+expected_stdout_contains = "report.md"
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.option-spelling.report.--md-only.--md-only]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--out/--out"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a62514a08b292391ab6b69f65741a9b9bb1a12d783cda7512cc8bc67af9f0b4e"
+rationale = "The spelling of an option of `report` is accepted where it is declared."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}", "--out", "{TMP}/o"]
+expected_exit_status = 0
+expected_stdout_contains = "report."
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.option-spelling.report.--out.--out]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--run-dir/--run-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ed0383f2f431012c4620f8dfafa831f42c9ec496da4e4acd44cbdc7e87d48dc8"
+rationale = "The spelling of an option of `report` is accepted where it is declared."
+invocation = ["report", "--run-dir", "{TMP}/run", "--socket", "{SOCK}"]
+expected_exit_status = 0
+expected_stdout_contains = "report."
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.option-spelling.report.--run-dir.--run-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/report/option-spelling/option:route:entrypoint:cgprofile/report/--socket/--socket"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:38bda8c1f9b0cef3c158bb6b607c33bd1e83c7bb4adc114fe3ef91503bfb7e82"
+rationale = "The spelling of an option of `report` is accepted where it is declared."
+invocation = ["report", "s-20261103T100000Z-bbbb", "--socket", "{SOCK}"]
+expected_exit_status = 0
+expected_stdout_contains = "report."
+expected_stderr_contains = ""
+effects = ["Fetches and verifies the stored parts of a finished session through contract 2 `export`, then renders report.html and/or report.md locally into the output directory; --export-only writes the raw parts and renders nothing; --run-dir renders a standalone run directory without a daemon"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[report.option-spelling.report.--socket.--socket]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/run/argument-shape/argument:route:entrypoint:cgprofile/run/command"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e681e9f9d6ff5b1b56cf9e9190fa05336599c549a89cd386dd6dd1afeb2c2e05"
+rationale = "The positional argument shape of `run`."
+invocation = ["run", "--", "true"]
+expected_exit_status = 0
+expected_stdout_contains = "run-1"
+expected_stderr_contains = ""
+effects = ["Profiles one command locally in direct mode (needs cgroupfs; here the runner is a stand-in) and prints the run directory; exit 0 unless --propagate-exit"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[run.argument-shape.run.command]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/run/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:26934812fac2a453f77c01806eac18f3c114c9ff66a61ed01c98547cdfc7a1da"
+rationale = "The smallest valid `run` invocation: only the required inputs."
+invocation = ["run", "--", "true"]
+expected_exit_status = 0
+expected_stdout_contains = "run-1"
+expected_stderr_contains = ""
+effects = ["Profiles one command locally in direct mode (needs cgroupfs; here the runner is a stand-in) and prints the run directory; exit 0 unless --propagate-exit"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[run.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/run/option-spelling/option:route:entrypoint:cgprofile/run/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e2902685bbb3ec800f093a636176709b64bb25ea4f3d138f076e54c14bdf6c79"
+rationale = "The spelling of an option of `run` is accepted where it is declared."
+invocation = ["run", "--debug-raw", "--", "true"]
+expected_exit_status = 0
+expected_stdout_contains = "run-1"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Profiles one command locally in direct mode (needs cgroupfs; here the runner is a stand-in) and prints the run directory; exit 0 unless --propagate-exit"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[run.option-spelling.run.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/run/option-spelling/option:route:entrypoint:cgprofile/run/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:65a00ce1bdf54911b366f6ccc0b69bad92e8e0c3cec88fd98fd42b6ad91b89a6"
+rationale = "The spelling of an option of `run` is accepted where it is declared."
+invocation = ["run", "--json", "--", "true"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\": 1"
+expected_stderr_contains = ""
+effects = ["Profiles one command locally in direct mode (needs cgroupfs; here the runner is a stand-in) and prints the run directory; exit 0 unless --propagate-exit"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[run.option-spelling.run.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/run/option-spelling/option:route:entrypoint:cgprofile/run/--out-dir/--out-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2d3c4f445b4536c475a9f8f1505bd830981a94c2d01256520a80468af706d1d3"
+rationale = "The spelling of an option of `run` is accepted where it is declared."
+invocation = ["run", "--out-dir", "{TMP}/runs", "--", "true"]
+expected_exit_status = 0
+expected_stdout_contains = "runs/run-1"
+expected_stderr_contains = ""
+effects = ["Profiles one command locally in direct mode (needs cgroupfs; here the runner is a stand-in) and prints the run directory; exit 0 unless --propagate-exit"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[run.option-spelling.run.--out-dir.--out-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/run/option-spelling/option:route:entrypoint:cgprofile/run/--phase/--phase"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b4d0994940171aab212f0d67dc4115a647eba485f2ae21acd6bc1575449d0ad1"
+rationale = "The spelling of an option of `run` is accepted where it is declared."
+invocation = ["run", "--phase", "build", "--", "true"]
+expected_exit_status = 0
+expected_stdout_contains = "run-1"
+expected_stderr_contains = ""
+effects = ["Profiles one command locally in direct mode (needs cgroupfs; here the runner is a stand-in) and prints the run directory; exit 0 unless --propagate-exit"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[run.option-spelling.run.--phase.--phase]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/run/option-spelling/option:route:entrypoint:cgprofile/run/--propagate-exit/--propagate-exit"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:69f0b9e43de2f5317cfc68b4228a36e5156c4b61ec082f9d0c3ecfe45e0da119"
+rationale = "The spelling of an option of `run` is accepted where it is declared."
+invocation = ["run", "--propagate-exit", "--", "true"]
+expected_exit_status = 0
+expected_stdout_contains = "run-1"
+expected_stderr_contains = ""
+effects = ["Profiles one command locally in direct mode (needs cgroupfs; here the runner is a stand-in) and prints the run directory; exit 0 unless --propagate-exit"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[run.option-spelling.run.--propagate-exit.--propagate-exit]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/exclusive-conflict/target/option:route:entrypoint:cgprofile/skills/check/--dest/option:route:entrypoint:cgprofile/skills/check/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:89fdbe0e299f350ff0b8db65a11a1a61e662f3d595e8244c181dfc0c7f0aeee0"
+rationale = "Both members of a mutually exclusive group of `skills check` together are refused with a usage error (exit 2) before anything runs."
+invocation = ["skills", "check", "--dest", "{TMP}/skills", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with"
+effects = ["None: refused by the parser (exit 2) before any handler runs; nothing is read, written or contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.exclusive-conflict.target.skills.check.--dest.skills.check.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/exclusive-member/target/option:route:entrypoint:cgprofile/skills/check/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:69267ad07cfd7106b4bee958881b6e98016f1a0c7e82a9468071d1c0573cb6ba"
+rationale = "One member of a mutually exclusive group of `skills check` is accepted alone."
+invocation = ["skills", "check", "--dest", "{TMP}/skills"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: compares the packaged agent skill with the installed copy; exit 1 unless every skill is current"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.exclusive-member.target.skills.check.--dest]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/exclusive-member/target/option:route:entrypoint:cgprofile/skills/check/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:71dd22c1081c2b8e9908ee278bd43508bb1d9977b9f5f70304bb6460df3d7da9"
+rationale = "One member of a mutually exclusive group of `skills check` is accepted alone."
+invocation = ["skills", "check", "--harness", "claude"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: compares the packaged agent skill with the installed copy; exit 1 unless every skill is current"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.exclusive-member.target.skills.check.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:baf7439733e525e08cf5574ff159c214f40aa2a4141eac5a4b83f9649ca79adb"
+rationale = "The smallest valid `skills check` invocation: only the required inputs."
+invocation = ["skills", "check"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: compares the packaged agent skill with the installed copy; exit 1 unless every skill is current"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/option-choice/option:route:entrypoint:cgprofile/skills/check/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1a3cf99e7507065ebb6b92383f9cd478d661425be51448b2ef4b3620abd26317"
+rationale = "A closed choice of an option of `skills check` is accepted."
+invocation = ["skills", "check", "--harness", "claude"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: compares the packaged agent skill with the installed copy; exit 1 unless every skill is current"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.option-choice.skills.check.--harness.389432cbf8]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/option-choice/option:route:entrypoint:cgprofile/skills/check/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dc01b5c5bef64985d1d94a67bfdfbb1ba3ad36ca62fe01b49f2dc2f42693520e"
+rationale = "A closed choice of an option of `skills check` is accepted."
+invocation = ["skills", "check", "--harness", "all"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: compares the packaged agent skill with the installed copy; exit 1 unless every skill is current"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.option-choice.skills.check.--harness.5cf7504d97]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/option-choice/option:route:entrypoint:cgprofile/skills/check/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6ffb570e129e2d80ce68a2e0be8f0a255cd1000a9677f13387663778c312964a"
+rationale = "A closed choice of an option of `skills check` is accepted."
+invocation = ["skills", "check", "--harness", "agents"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: compares the packaged agent skill with the installed copy; exit 1 unless every skill is current"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.option-choice.skills.check.--harness.bc42532430]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/option-spelling/option:route:entrypoint:cgprofile/skills/check/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:90a8487a1353031d3f39ac3b6a10cb156d8ec7efcd1b64dff67d4cd4f64f754b"
+rationale = "The spelling of an option of `skills check` is accepted where it is declared."
+invocation = ["skills", "check", "--debug-raw"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Read-only: compares the packaged agent skill with the installed copy; exit 1 unless every skill is current"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.option-spelling.skills.check.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/option-spelling/option:route:entrypoint:cgprofile/skills/check/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4d6d7683058b44873bd559b1b24ebbd86012c2bc5b132edd5c3669fe4aa7931e"
+rationale = "The spelling of an option of `skills check` is accepted where it is declared."
+invocation = ["skills", "check", "--dest", "{TMP}/skills"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: compares the packaged agent skill with the installed copy; exit 1 unless every skill is current"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.option-spelling.skills.check.--dest.--dest]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/option-spelling/option:route:entrypoint:cgprofile/skills/check/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:957df001cfe40aaa827536341428a38ebe0b7862e7c9eedc25eae4b95f0dac3d"
+rationale = "The spelling of an option of `skills check` is accepted where it is declared."
+invocation = ["skills", "check", "--harness", "claude"]
+expected_exit_status = 1
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: compares the packaged agent skill with the installed copy; exit 1 unless every skill is current"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.option-spelling.skills.check.--harness.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/check/option-spelling/option:route:entrypoint:cgprofile/skills/check/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:aad86210e3bba36a093e4f83729a82163bdf71405159982032ccd05fb82e7589"
+rationale = "The spelling of an option of `skills check` is accepted where it is declared."
+invocation = ["skills", "check", "--json"]
+expected_exit_status = 1
+expected_stdout_contains = "\"skills\""
+expected_stderr_contains = ""
+effects = ["Read-only: compares the packaged agent skill with the installed copy; exit 1 unless every skill is current"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.check.option-spelling.skills.check.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/exclusive-conflict/target/option:route:entrypoint:cgprofile/skills/install/--dest/option:route:entrypoint:cgprofile/skills/install/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6f0463d41c0ed7ce98935cc450863a14e61dd6845d8e566c2115915c2dee1777"
+rationale = "Both members of a mutually exclusive group of `skills install` together are refused with a usage error (exit 2) before anything runs."
+invocation = ["skills", "install", "--dest", "{TMP}/skills", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with"
+effects = ["None: refused by the parser (exit 2) before any handler runs; nothing is read, written or contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.exclusive-conflict.target.skills.install.--dest.skills.install.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/exclusive-member/target/option:route:entrypoint:cgprofile/skills/install/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5a614b9e9dcc7967859b661d80282c859c76ba1318be25558e177db1765f2955"
+rationale = "One member of a mutually exclusive group of `skills install` is accepted alone."
+invocation = ["skills", "install", "--dest", "{TMP}/skills"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cgprofile"
+expected_stderr_contains = ""
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.exclusive-member.target.skills.install.--dest]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/exclusive-member/target/option:route:entrypoint:cgprofile/skills/install/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:671016f92878861b041c8004760836f8951bea8c577fd7228c105434612c8645"
+rationale = "One member of a mutually exclusive group of `skills install` is accepted alone."
+invocation = ["skills", "install", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cgprofile"
+expected_stderr_contains = ""
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.exclusive-member.target.skills.install.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3dce462e8eab5bcd2c81126a8652f7057d6fd9faa83df0b7cf25ab6f371f0e90"
+rationale = "The smallest valid `skills install` invocation: only the required inputs."
+invocation = ["skills", "install"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cgprofile"
+expected_stderr_contains = ""
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/option-choice/option:route:entrypoint:cgprofile/skills/install/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9dc81441c1a15841e7b4a1da983aeca30221f2224f2bceb5476656c18ecfb6d7"
+rationale = "A closed choice of an option of `skills install` is accepted."
+invocation = ["skills", "install", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cgprofile"
+expected_stderr_contains = ""
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.option-choice.skills.install.--harness.389432cbf8]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/option-choice/option:route:entrypoint:cgprofile/skills/install/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3fbd5c8d17a14cebb796584a986ea48cb7bbd3a5c63cc983ee1fae7753fb0482"
+rationale = "A closed choice of an option of `skills install` is accepted."
+invocation = ["skills", "install", "--harness", "all"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cgprofile"
+expected_stderr_contains = ""
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.option-choice.skills.install.--harness.5cf7504d97]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/option-choice/option:route:entrypoint:cgprofile/skills/install/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3ffe344cd8b18172f8036c187647e924feeb46790eb662102d2e2c29e94feb3f"
+rationale = "A closed choice of an option of `skills install` is accepted."
+invocation = ["skills", "install", "--harness", "agents"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cgprofile"
+expected_stderr_contains = ""
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.option-choice.skills.install.--harness.bc42532430]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/option-spelling/option:route:entrypoint:cgprofile/skills/install/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c3a35b7f615fa21f1ac9104bcf900d186dce1d0169824e5c7d82a959c571a433"
+rationale = "The spelling of an option of `skills install` is accepted where it is declared."
+invocation = ["skills", "install", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cgprofile"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.option-spelling.skills.install.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/option-spelling/option:route:entrypoint:cgprofile/skills/install/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e2109650969b314fec3d0ef99d7ab5a4a8e9387a08db84264eea985b3c1331e1"
+rationale = "The spelling of an option of `skills install` is accepted where it is declared."
+invocation = ["skills", "install", "--dest", "{TMP}/skills"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cgprofile"
+expected_stderr_contains = ""
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.option-spelling.skills.install.--dest.--dest]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/option-spelling/option:route:entrypoint:cgprofile/skills/install/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:af1981ea9fbf7435aed12b2be1ef5a979cec7af62c04dfd19c14d04e4d7bb062"
+rationale = "The spelling of an option of `skills install` is accepted where it is declared."
+invocation = ["skills", "install", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "would install"
+expected_stderr_contains = "Dry run: no changes made."
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.option-spelling.skills.install.--dry-run.--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/option-spelling/option:route:entrypoint:cgprofile/skills/install/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:55fc46f1fce2341e5e3006c9b4d7a248168246ae7c88e879e2f504704b5740c6"
+rationale = "The spelling of an option of `skills install` is accepted where it is declared."
+invocation = ["skills", "install", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cgprofile"
+expected_stderr_contains = ""
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.option-spelling.skills.install.--harness.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/install/option-spelling/option:route:entrypoint:cgprofile/skills/install/--overwrite-modified/--overwrite-modified"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bb57f8bbb71ba839dee2dc3197fd5678a3a08f657c68cf6276914e90b9efce68"
+rationale = "The spelling of an option of `skills install` is accepted where it is declared."
+invocation = ["skills", "install", "--overwrite-modified"]
+expected_exit_status = 0
+expected_stdout_contains = "installed cgprofile"
+expected_stderr_contains = ""
+effects = ["Copies the packaged agent skill into the chosen harness directory (or --dest); --dry-run only reports; --overwrite-modified replaces a locally modified copy"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.install.option-spelling.skills.install.--overwrite-modified.--overwrite-modified]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/exclusive-conflict/target/option:route:entrypoint:cgprofile/skills/list/--dest/option:route:entrypoint:cgprofile/skills/list/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1b201fd13f07b51a7c661b37f89ab4a8a8172a38408a913d8089c31b13499d7b"
+rationale = "Both members of a mutually exclusive group of `skills list` together are refused with a usage error (exit 2) before anything runs."
+invocation = ["skills", "list", "--dest", "{TMP}/skills", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with"
+effects = ["None: refused by the parser (exit 2) before any handler runs; nothing is read, written or contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.exclusive-conflict.target.skills.list.--dest.skills.list.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/exclusive-member/target/option:route:entrypoint:cgprofile/skills/list/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d9b7e34e3adefe53ea7185819aa1b80e75b58d9ac1ceee745e15eb5365002bc0"
+rationale = "One member of a mutually exclusive group of `skills list` is accepted alone."
+invocation = ["skills", "list", "--dest", "{TMP}/skills"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: lists the packaged skills and whether each is installed at the chosen destination"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.exclusive-member.target.skills.list.--dest]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/exclusive-member/target/option:route:entrypoint:cgprofile/skills/list/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:42b8f95a9c20304b179729dd6e5039e81ac85c108d1e69030392d78c6f55a362"
+rationale = "One member of a mutually exclusive group of `skills list` is accepted alone."
+invocation = ["skills", "list", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: lists the packaged skills and whether each is installed at the chosen destination"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.exclusive-member.target.skills.list.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c89037eec5b9bd0eb60397ffbf33a4fe978df1b807de0376a6b8e138bc36cdc9"
+rationale = "The smallest valid `skills list` invocation: only the required inputs."
+invocation = ["skills", "list"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: lists the packaged skills and whether each is installed at the chosen destination"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/option-choice/option:route:entrypoint:cgprofile/skills/list/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1410231edb2bd2e564e037cd766349653bcf0875c035547c407395f0e6896647"
+rationale = "A closed choice of an option of `skills list` is accepted."
+invocation = ["skills", "list", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: lists the packaged skills and whether each is installed at the chosen destination"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.option-choice.skills.list.--harness.389432cbf8]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/option-choice/option:route:entrypoint:cgprofile/skills/list/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3824c28ea4eb57db9faa4991a054ed84818dda4de80b6b59cd6e5e336c4ca0df"
+rationale = "A closed choice of an option of `skills list` is accepted."
+invocation = ["skills", "list", "--harness", "all"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: lists the packaged skills and whether each is installed at the chosen destination"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.option-choice.skills.list.--harness.5cf7504d97]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/option-choice/option:route:entrypoint:cgprofile/skills/list/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0d511ed869edd12baf6c188e5ee1a403adad9ff9f0a47fd3a77462496f157d25"
+rationale = "A closed choice of an option of `skills list` is accepted."
+invocation = ["skills", "list", "--harness", "agents"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: lists the packaged skills and whether each is installed at the chosen destination"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.option-choice.skills.list.--harness.bc42532430]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/option-spelling/option:route:entrypoint:cgprofile/skills/list/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:258a7ec4fc5cd5e6d62531723c4bf1e7112129dd28605fca3087173e9bdbb6da"
+rationale = "The spelling of an option of `skills list` is accepted where it is declared."
+invocation = ["skills", "list", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Read-only: lists the packaged skills and whether each is installed at the chosen destination"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.option-spelling.skills.list.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/option-spelling/option:route:entrypoint:cgprofile/skills/list/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f9adc0569c1b983b815c3ad07795630f0ae3faff2f7e59c106fd44421ac9262f"
+rationale = "The spelling of an option of `skills list` is accepted where it is declared."
+invocation = ["skills", "list", "--dest", "{TMP}/skills"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: lists the packaged skills and whether each is installed at the chosen destination"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.option-spelling.skills.list.--dest.--dest]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/option-spelling/option:route:entrypoint:cgprofile/skills/list/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1e0d5351b723e88ddd1803c4c2ac73c59a05bae388860f9e33000116e0efc7de"
+rationale = "The spelling of an option of `skills list` is accepted where it is declared."
+invocation = ["skills", "list", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "absent"
+expected_stderr_contains = ""
+effects = ["Read-only: lists the packaged skills and whether each is installed at the chosen destination"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.option-spelling.skills.list.--harness.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/list/option-spelling/option:route:entrypoint:cgprofile/skills/list/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0be8fd70ededacd13f98efda3619feb4fc8e9661e48d37a7e275cee0d5a4f58e"
+rationale = "The spelling of an option of `skills list` is accepted where it is declared."
+invocation = ["skills", "list", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"skills\""
+expected_stderr_contains = ""
+effects = ["Read-only: lists the packaged skills and whether each is installed at the chosen destination"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.list.option-spelling.skills.list.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/exclusive-conflict/target/option:route:entrypoint:cgprofile/skills/uninstall/--dest/option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:36b3c09c941f0dbd7e980787a4e0ec14c7caabf3cd83e0f245b22b0dda2da033"
+rationale = "Both members of a mutually exclusive group of `skills uninstall` together are refused with a usage error (exit 2) before anything runs."
+invocation = ["skills", "uninstall", "--dest", "{TMP}/skills", "--harness", "claude"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "not allowed with"
+effects = ["None: refused by the parser (exit 2) before any handler runs; nothing is read, written or contacted"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.exclusive-conflict.target.skills.uninstall.--dest.skills.uninstall.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/exclusive-member/target/option:route:entrypoint:cgprofile/skills/uninstall/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2ede8ef4ba6b86095711b9a563c2b22e653fe6089f365dcc1eb11d65908996c8"
+rationale = "One member of a mutually exclusive group of `skills uninstall` is accepted alone."
+invocation = ["skills", "uninstall", "--dest", "{TMP}/skills"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cgprofile"
+expected_stderr_contains = ""
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.exclusive-member.target.skills.uninstall.--dest]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/exclusive-member/target/option:route:entrypoint:cgprofile/skills/uninstall/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ae53cd98eaaba508b4f4f351aaebc39878055cef8fcbfc8e5ff5e52064537590"
+rationale = "One member of a mutually exclusive group of `skills uninstall` is accepted alone."
+invocation = ["skills", "uninstall", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cgprofile"
+expected_stderr_contains = ""
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.exclusive-member.target.skills.uninstall.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:55872f0a4aa946ae8d4fbecdb15513c8aaf900743f8d70c1312e4814d5d8e921"
+rationale = "The smallest valid `skills uninstall` invocation: only the required inputs."
+invocation = ["skills", "uninstall"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cgprofile"
+expected_stderr_contains = ""
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/option-choice/option:route:entrypoint:cgprofile/skills/uninstall/--harness/389432cbf8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8a33f6ec3004a04281245edb151e5adc4407c9f87d61b7fbf940c6f73c9d47ed"
+rationale = "A closed choice of an option of `skills uninstall` is accepted."
+invocation = ["skills", "uninstall", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cgprofile"
+expected_stderr_contains = ""
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.option-choice.skills.uninstall.--harness.389432cbf8]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/option-choice/option:route:entrypoint:cgprofile/skills/uninstall/--harness/5cf7504d97"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8296eefd815e54d67dc1fd78505880b33dd92d2fb3e8f7ad05ca6b3609ed769e"
+rationale = "A closed choice of an option of `skills uninstall` is accepted."
+invocation = ["skills", "uninstall", "--harness", "all"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cgprofile"
+expected_stderr_contains = ""
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.option-choice.skills.uninstall.--harness.5cf7504d97]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/option-choice/option:route:entrypoint:cgprofile/skills/uninstall/--harness/bc42532430"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:718ad79c019f72484c7e76d8ac7804bac14b15dbc0c08eba3a41f066f60dc1b7"
+rationale = "A closed choice of an option of `skills uninstall` is accepted."
+invocation = ["skills", "uninstall", "--harness", "agents"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cgprofile"
+expected_stderr_contains = ""
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.option-choice.skills.uninstall.--harness.bc42532430]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/option-spelling/option:route:entrypoint:cgprofile/skills/uninstall/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:01b9c1f5688ab04f6bb87b594a657a85903a46ccdfee2ebc4b60574c55bd552e"
+rationale = "The spelling of an option of `skills uninstall` is accepted where it is declared."
+invocation = ["skills", "uninstall", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cgprofile"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.option-spelling.skills.uninstall.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/option-spelling/option:route:entrypoint:cgprofile/skills/uninstall/--dest/--dest"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:54b1097f658d5d684a7815c1eaaac911867831686b6b86ce0e0f6b8d65d98321"
+rationale = "The spelling of an option of `skills uninstall` is accepted where it is declared."
+invocation = ["skills", "uninstall", "--dest", "{TMP}/skills"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cgprofile"
+expected_stderr_contains = ""
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.option-spelling.skills.uninstall.--dest.--dest]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/option-spelling/option:route:entrypoint:cgprofile/skills/uninstall/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:eb6c981ac9bbe9ff3c32527813d7d6653023067c0af984235c737ebd87821647"
+rationale = "The spelling of an option of `skills uninstall` is accepted where it is declared."
+invocation = ["skills", "uninstall", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "would skip"
+expected_stderr_contains = "Dry run: no changes made."
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.option-spelling.skills.uninstall.--dry-run.--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/option-spelling/option:route:entrypoint:cgprofile/skills/uninstall/--harness/--harness"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:48c21cfbae841118c855f7790eb388c390ab48ab09312aeadc222981fdae2d50"
+rationale = "The spelling of an option of `skills uninstall` is accepted where it is declared."
+invocation = ["skills", "uninstall", "--harness", "claude"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cgprofile"
+expected_stderr_contains = ""
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.option-spelling.skills.uninstall.--harness.--harness]"]
+
+[[cases]]
+id = "case:route:entrypoint:cgprofile/skills/uninstall/option-spelling/option:route:entrypoint:cgprofile/skills/uninstall/--overwrite-modified/--overwrite-modified"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4673fd17a916f26dc5e2ddf1ccd9fce1907ee5420639e2d8efee06b461813b8b"
+rationale = "The spelling of an option of `skills uninstall` is accepted where it is declared."
+invocation = ["skills", "uninstall", "--overwrite-modified"]
+expected_exit_status = 0
+expected_stdout_contains = "skipped cgprofile"
+expected_stderr_contains = ""
+effects = ["Removes the installed packaged skill from the chosen harness directory (or --dest); --dry-run only reports"]
+test_ids = ["tests/test_cli_review_cases_client.py::test_reviewed_case[skills.uninstall.option-spelling.skills.uninstall.--overwrite-modified.--overwrite-modified]"]

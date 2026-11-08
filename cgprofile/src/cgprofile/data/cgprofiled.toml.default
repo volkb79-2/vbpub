@@ -1,0 +1,31 @@
+# /etc/cgprofile/cgprofiled.toml: cgprofiled configuration (CGPROFILECTL-SPEC.md section 3.2).
+# Shipped inside the cgprofile wheel as the documented default; every key is
+# commented out because an absent file means exactly these defaults.
+#
+# Fixed (restart required):
+# sessions_dir = "/var/lib/cgprofile/sessions"
+# [sockets.control]
+# path = "/run/cgprofile/control/cgprofile.sock"
+# group = "cgprofile-control"
+# mode = "0660"
+# [sockets.observer]
+# path = "/run/cgprofile/observer/cgprofile.sock"
+# group = "cgprofile-observer"
+# mode = "0660"
+# damon_lock       = "/run/cgprofile/state/damon.lock"
+# proc_root        = "/proc"
+# busctl           = "busctl"
+#
+# Reloadable (systemctl reload cgprofiled); the ones marked [tunable] can also be
+# changed live by uid 0 with `cgprofilectl config set` (section 3.5):
+# export_max_bytes = 268435456   # [tunable]
+# max_exports      = 4           # [tunable]
+# max_watchers     = 32          # [tunable]
+# interval         = 1.0         # [tunable]
+# damon_default    = "on"        # [tunable]
+# keep_sessions    = 200         # [tunable]
+# keep_days        = 14          # [tunable]
+# max_sessions     = 16          # [tunable]
+# observe_slices   = []
+# gates_slice      = "dev-gates.slice"
+# allow_uids       = []          # [tunable]

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:vbpub:rigor-machine:1",
-  "$comment": "VENDORED COPY. Owner: cgroup-profiler (cgprofile). Normative text: scripts/cgroup-profiler/docs/PROTOCOL.md section 11 (machine/1); producer: scripts/cgroup-profiler/src/cgprofile/machine.py. Copied from vbpub@215f4518a (rigor-evidence CP-1). Do not edit here: change it in cgprofile and re-vendor with its golden fixtures (golden/machine/).",
-  "title": "machine/1 as emitted by cgpd (cgprofile PROTOCOL section 11)",
+  "$comment": "VENDORED COPY. Owner: cgprofile. Normative text: cgprofile/docs/PROTOCOL.md section 11 (machine/1); producer: cgprofile/src/cgprofile/machine.py. Copied from vbpub@215f4518a (rigor-evidence CP-1). Do not edit here: change it in cgprofile and re-vendor with its golden fixtures (golden/machine/).",
+  "title": "machine/1 as emitted by cgprofiled (cgprofile PROTOCOL section 11)",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "cpu_model", "cpus_online", "cpus_available", "hypervisor", "smt", "speed", "speed_reason"],

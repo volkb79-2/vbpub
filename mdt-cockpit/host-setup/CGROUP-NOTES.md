@@ -878,7 +878,7 @@ drift this design depends on not happening.
 DESIGN-2026-09-12-liveness-placement-admission.md`) is the admission capacity
 object for every gate/lane container AND every placed lane leaf a future
 host-level daemon creates under it (D-20/D-25 there — the daemon package,
-`scripts/cgroup-profiler/`, is a separate package from this one; this section
+`cgprofile/`, is a separate package from this one; this section
 records the two cgroup v2 facts that placement design depends on, since they
 belong in this directory's "what a slice unit can/cannot express" catalogue
 regardless of which package implements the daemon side).

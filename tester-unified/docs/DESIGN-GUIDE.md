@@ -101,7 +101,7 @@ required build argument, records it as an image label, and verifies that label
 after loading. The Wings gate does not start a nested Go container or mount the
 host Docker socket for integration tests.
 
-Why `systemctl`: the cgroup-profiler placement probe (`scripts/cgroup-profiler/tools/gate.sh`,
+Why `systemctl`: the cgprofile placement probe (`cgprofile/tools/gate.sh`,
 `lib/access.py` `_PLACEMENT_PROBE`, "placement verifier image must provide systemctl") starts a probe
 container from this image and runs `systemctl show <slice> --property=LoadState,FragmentPath,ControlGroup`
 inside it against the HOST system bus (`/run/dbus/system_bus_socket` and `/run/systemd/system` bind-mounted
