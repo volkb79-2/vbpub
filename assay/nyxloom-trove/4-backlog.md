@@ -14322,3 +14322,63 @@ R2-waiver decision required for any further extension and directs the caller to
 full self-qualification. `README.md`, `docs/DESIGN-GUIDE.md`,
 `docs/CONSUMERS.md`, and `CHANGES.md` describe the endpoint contract, host
 selection, and current waiver window.
+
+## B236 — `_check_v15_r2` lane environment policy has no refusal-direction tests
+
+**Status:** OPEN (filed 2026-11-09); severity: test strength. Found at the 12.1.0 release attempt of 2026-11-08 (`reports/assay-release-attempt-b-lane.log`, `reports/assay-release-attempt-b-failures.txt` under `/home/vscode/vbpub-release-program-20261027/`).
+
+**Finding.** `tools/b105_report_check.py` `_check_v15_r2` (line 652) enforces the E4 lane environment policy in one condition (about lines 713-719): the committed lane must have `env == {}`, `env_passthrough == ["PATH"]` and `infrastructure == {"ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"}`, else `ValueError("committed qualification lane environment policy differs")`. `gate/tests/test_b105_report_check.py` builds the accepted shape (the fixtures set `env_passthrough` at lines 136, 852, 878) but no test drives a deviation, so each of the three disjuncts could be dropped or weakened without a failing test.
+
+**Fix.** Add refusal tests in `gate/tests/test_b105_report_check.py`, each asserting the exact message: (1) an extra `env_passthrough` variable (`["PATH", "HOME"]`); (2) `infrastructure` missing and `infrastructure = {}`; (3) the right key with a wrong value (for example `"required-env:OTHER"` and a literal path); (4) an extra `infrastructure` key; (5) a non-empty `env`; (6) `env_passthrough` reordered or empty.
+
+**Close when.** Each deviation above has a test that fails against the unguarded checker, and a hand mutation of each of the three comparisons (`!=` to `==`, dropping a disjunct) is killed.
+
+**Source.** `reports/assay-release-attempt-b-lane.log`.
+
+## B237 — `tools/release-gate.sh` uses a bare `$HOME` under `set -u`, so the HOME-less delegated lane dies with an unbound-variable error
+
+**Status:** OPEN (filed 2026-11-09); severity: minor (misleading failure, not a wrong verdict). The delegated release lane scrubs the environment (`env_passthrough = ["PATH"]`), so `HOME` is unset there.
+
+**Finding.** `tools/release-gate.sh:63` builds the remote-gate base environment with `"HOME=$HOME"` under `set -u`. With `HOME` unset the script aborts with bash's `HOME: unbound variable`, which names neither the cause nor the remedy; the remote-gate client genuinely needs `~/.config/remote-gate/hosts.json` and `~/.ssh`. The merged test fix (`gate/tests/test_release_gate.py:167-170`) only supplies a HOME to the test; the script itself is unchanged.
+
+**Fix.** Before the array at line 56, add an explicit guard: `[[ -n ${HOME:-} ]] || die 'HOME is unset; remote-gate needs ~/.config/remote-gate/hosts.json and ~/.ssh'` (the `die` helper already exists in the script and is used for `REMOTE_GATE_OUT`). Add a test in `gate/tests/test_release_gate.py` that runs the script with `HOME` unset and with `HOME=""` in remote mode and asserts the refusal text and a non-zero exit before any remote call; local mode (`ASSAY_RELEASE_GATE_HOST=local`) must stay unaffected, so decide whether the guard sits in the remote branch only.
+
+**Close when.** The test passes with the guard and fails without it.
+
+**Source.** `reports/assay-release-attempt-b-lane.log`.
+
+## B238 — the docs test binds the R2 waiver window only in `docs/CONSUMERS.md`; `README.md` and `docs/DESIGN-GUIDE.md` carry it unbound
+
+**Status:** OPEN (filed 2026-11-09); severity: minor (docs drift guard).
+
+**Finding.** `tests/core/test_docs_examples_and_vocabulary.py::test_provisional_self_qualification_is_documented_across_the_public_docs` (line 1020) derives the window from `WINDOW` in `tools/self-qualification-gate.sh:823` but asserts it only against `consumer_text`. The same window is stated in `README.md:1606` (`assay >=10.0.0, <12.2.0`) and `docs/DESIGN-GUIDE.md:3020` and `:3025` (`10.0.0 <= version < 12.2.0`, `must be below 12.2.0`), in different spellings. The next window extension can update `WINDOW` and CONSUMERS and leave the other two stale without a failing test.
+
+**Fix.** Derive both spellings from `WINDOW` (the script already has `WINDOW_TEXT`, line 824-825, in the `assay >= X, < Y` form; the docs also use `X <= version < Y` and a bare upper bound) and assert the matching spelling in README and DESIGN-GUIDE as well. Prefer one canonical spelling per document family so the test does not carry three regexes.
+
+**Close when.** Changing `WINDOW` alone fails the docs test in all three documents.
+
+**Source.** Merge `2f7f386cc` (the docs test already derives the window for CONSUMERS only); `reports/assay-release-attempt-b-lane.log`.
+
+## B239 — the registered release gate had not run green since the E4 env-only commits: 34 stale expectations surfaced only at the 12.1.0 release attempt
+
+**Status:** OPEN (filed 2026-11-09); severity: process gap. On 2026-11-08 the first registered release-gate run after the E4 env-only commits (B522, `531c57e9e`, `7ad24b884`) failed with 34 stale test expectations (`gate/tests/test_b105_report_check.py`, 34 `FAILED` lines in `reports/assay-release-attempt-b-failures.txt`), found only at the 12.1.0 release attempt; fixed by `8e4b5acc7`.
+
+**Finding.** The pre-merge gate set for changes under `assay/tools/` and `assay/gate/` did not include the group that tests them, so the E4 commits merged with a red release gate that nobody ran.
+
+**Fix.** Add the full release lane, or at least the failing groups (`gate/tests/` for the b105 checker and release-gate script, the docs test for the waiver window), to the pre-merge gate set whenever a change touches `assay/tools/**`, `assay/gate/**`, `assay/assay.toml` lane tables or the docs that carry the waiver window. Record the rule where the merge checklist lives (WORKFLOW.md or the merge skill) with the path trigger. Cheapest first step: a path-triggered run of `gate/tests/` and `tests/core/test_docs_examples_and_vocabulary.py`.
+
+**Close when.** A change touching only `assay/tools/b105_report_check.py` is blocked in the pre-merge gate by a deliberately broken expectation.
+
+**Source.** `reports/assay-release-attempt-b-failures.txt`.
+
+## B240 — phases after R0 of the registered release gate were never exercised at the E4 commits; the container `git config --global` calls assume a writable HOME
+
+**Status:** OPEN (filed 2026-11-09); severity: risk record. The 2026-11-08 release attempt reached R0 only. The phases behind it were not exercised against the E4 env-only commits: the independent self-hosting witness, the analysis lane, the SQL qualification Docker-socket probe and the registered-gate receipt.
+
+**Finding.** Three container-side launcher steps run `git config --global ... safe.directory "*"`, which writes `$HOME/.gitconfig` and so assumes a writable HOME inside the container, while the delegated lane scrubs HOME: `tools/self-qualification-container.sh:560`, `tools/tester-unified-gate.sh:1096` and `:1179` (probe containers), and `tools/tester-unified-gate.sh:1358` (`assay_git config --global --replace-all`). If the container user has no writable HOME the step fails for a reason unrelated to the product. Nothing proves either way, because those phases did not run after E4.
+
+**Fix.** Run the full lane once on the delegated host and record the result; if any of the four calls fail without a HOME, set `HOME` to a tmpfs path for the container (`-e HOME=/tmp/home`, `--tmpfs`) or use `git -c safe.directory='*'` per invocation instead of `config --global`. Add a launcher test that starts the same argv with an unset HOME.
+
+**Close when.** A full delegated release gate (all phases, receipt written) passes at a post-E4 commit, and the HOME assumption is either removed or documented with a test.
+
+**Source.** `reports/assay-release-attempt-b-lane.log`.
