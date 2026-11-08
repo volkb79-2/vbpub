@@ -88,3 +88,109 @@ for a publish in flight, and on a host where nothing was published it passes
 with `no endpoints published`. The exact header and marker format is in
 [`SPEC.md` Endpoint records](../SPEC.md#endpoint-records) and the
 [endpoint CLI specification](CLI-SPEC.md).
+
+## Guarded applier
+
+Use the applier when a caller has already decided the desired host
+configuration. A request names every file and state explicitly; Augeaswrap
+does not keep an owner registry, infer an uninstall set, or roll back a failed
+apply. Keep a copy of the request with the caller's installation record when
+the caller needs to remove its own files later.
+
+This request creates a validated JSON configuration and checks that an
+executable accepts the expected argv. The file's state and mode are explicit:
+
+```toml
+augeaswrap = 1
+writer = "example-service install 2.1.0"
+
+[[file]]
+path = "/etc/example-service/settings.json"
+state = "present"
+text = "{\"listen\": \"/run/example-service.sock\"}\n"
+mode = "0640"
+validate = "json"
+
+[[check]]
+state = "present"
+exec = ["/usr/bin/example-service", "--check-config", "/etc/example-service/settings.json"]
+expect_exit = 0
+timeout = 10.0
+```
+
+Preview the plan against a disposable root, then apply it. `apply` prompts on a
+terminal; with non-interactive stdin, pass `--yes` after reviewing the plan.
+Each path shown in the request is interpreted below the selected root.
+
+```bash
+augeaswrap plan request.toml --root ./fake-root
+augeaswrap apply request.toml --root ./fake-root --yes
+augeaswrap journal list --root ./fake-root
+augeaswrap journal show 20261108T120000Z-a1b2 --root ./fake-root --json
+```
+
+With `--json`, each command emits one document. Apply and revert include both
+the reviewed plan and the resulting transaction data, so a caller can parse
+one response instead of combining separate plan and result streams.
+
+To remove a file, submit an `absent` request for that exact path. The original
+bytes and metadata remain in the transaction pre-image and can be restored by
+an explicit revert while no later transaction has touched the path:
+
+```toml
+augeaswrap = 1
+writer = "example-service uninstall 2.1.0"
+
+[[file]]
+path = "/etc/example-service/settings.json"
+state = "absent"
+```
+
+```bash
+augeaswrap plan remove-settings.toml --root ./fake-root
+augeaswrap apply remove-settings.toml --root ./fake-root --yes
+augeaswrap revert 20261108T120000Z-a1b2 --root ./fake-root --yes
+```
+
+The revert is recorded as a new transaction. It restores the saved bytes and
+metadata, then reruns any recorded post-actions associated with the restored
+path. A transaction journal is only readable under the same `--root` where it
+was created.
+
+Python callers use the same resource objects and do not prompt. The library
+call to `apply(plan)` is the caller's acceptance of that plan:
+
+```python
+import augeaswrap as aw
+
+request = aw.Request(
+    writer="example-service install 2.1.0",
+    resources=(
+        aw.File(
+            path="/etc/example-service/settings.json",
+            state="present",
+            text='{"listen": "/run/example-service.sock"}\n',
+            mode="0640",
+            validate="json",
+        ),
+        aw.Check(
+            state="present",
+            exec=("/usr/bin/example-service", "--check-config", "/etc/example-service/settings.json"),
+            expect_exit=0,
+            timeout=10.0,
+        ),
+    ),
+)
+plan = aw.plan(request, root="./fake-root")
+result = aw.apply(plan)
+if result.txn:
+    print(aw.journal(result.txn, root="./fake-root"))
+```
+
+`Request.to_toml()` renders the same strict schema for a saved handoff. A
+second plan after a successful apply contains only noops and creates no
+transaction. If apply fails after committing files, inspect its journal; the
+tool stops at the first failure and leaves the explicit revert decision to the
+caller. If the journal says a post-image is unknown, revert refuses because
+the current state cannot be compared safely. The frozen resource and context
+contract is in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).

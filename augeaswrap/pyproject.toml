@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "augeaswrap"
-description = "Generic host configuration utility for Linux hosts"
+description = "Guarded host configuration applier and endpoint publisher"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

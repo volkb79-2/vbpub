@@ -53,7 +53,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 from cli_extended.parser import CliFailure
 
@@ -142,7 +142,7 @@ class Change:
             raise ValueError("change kind is required")
         if not isinstance(self.address, str) or not self.address:
             raise ValueError("change address is required")
-        if self.action not in {"change", "noop"}:
+        if not isinstance(self.action, str) or self.action not in {"change", "noop"}:
             raise ValueError("change action must be 'change' or 'noop'")
         if not isinstance(self.details, tuple) or any(not isinstance(item, str) for item in self.details):
             raise ValueError("change details must be a tuple of strings")
@@ -174,7 +174,7 @@ class PostAction:
 
 @dataclass(frozen=True)
 class Request:
-    """Normalized request shared by Python callers and the strict TOML loader."""
+    """Normalized request with a non-empty, single-line, NUL-free writer."""
 
     writer: str
     resources: tuple[Resource, ...] = ()
@@ -185,8 +185,9 @@ class Request:
             or not self.writer.strip()
             or "\n" in self.writer
             or "\r" in self.writer
+            or "\x00" in self.writer
         ):
-            raise ValueError("writer is required and must be a single line")
+            raise ValueError("writer is required and must be a single line without NUL")
         if not isinstance(self.resources, tuple):
             raise ValueError("resources must be a tuple")
         for resource in self.resources:
@@ -293,15 +294,28 @@ class ApplyFailed(CliFailure):
         )
 
 
+from .check import Check, PathMode
+from .engine import apply, journal, load_request, plan, preview_revert, revert
+from .file import File
+
 __all__ = [
     "ApplyFailed",
+    "Check",
     "Change",
+    "File",
     "Plan",
     "PlanRefused",
     "PostAction",
     "Problem",
+    "PathMode",
     "Request",
     "Resource",
     "Result",
     "StalePlan",
+    "apply",
+    "journal",
+    "load_request",
+    "plan",
+    "preview_revert",
+    "revert",
 ]

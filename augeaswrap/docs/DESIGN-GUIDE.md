@@ -31,7 +31,11 @@ owner registry or infer who should win when two callers name the same file.
 That avoids turning a simple file applier into a hidden package manager: a
 caller states the desired present or absent value, and the journal records
 what the transaction changed. A revert checks that no later transaction
-changed the same address before restoring the pre-image.
+changed the same address before restoring the pre-image. It then reruns the
+recorded post-actions for the restored addresses so dependent services can
+reload the restored configuration. Transaction IDs preserve allocation order
+using retained transaction directories, so the revert check does not mistake
+two transactions from the same second for unrelated history.
 
 Resource kinds share one frozen protocol so independent kinds can be built
 without engine-specific hooks. `observe` supplies the complete precondition,
@@ -39,3 +43,5 @@ without engine-specific hooks. `observe` supplies the complete precondition,
 `commit` writes it, `post_actions` declares argv-only follow-up commands, and
 `verify` compares the host with the staged image. The protocol and context
 contract are defined in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).
+Each JSON invocation emits one document so automation can consume the reviewed
+plan and its outcome as a single record.
