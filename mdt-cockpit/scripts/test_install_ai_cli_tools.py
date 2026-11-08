@@ -82,8 +82,18 @@ def _fake_codex_tree(
     platform_name: str = CODEX_PLATFORM,
     platform_os: list[str] | None = None,
     platform_cpu: list[str] | None = None,
+    native_version: str | None = None,
+    launcher_triple: str = CODEX_TRIPLE,
+    launcher: str | None = "mimic",
 ) -> Path:
-    """Write the layout the Codex npm package installs under *prefix*; returns the vendor dir."""
+    """Write the layout the Codex npm package installs under *prefix*; returns the vendor dir.
+
+    `launcher` is the body of `prefix/bin/codex`: "mimic" (default) is a stand-in for `codex.js` that
+    selects the vendor directory named by *launcher_triple* (the target the real launcher derives from
+    the host) and runs that native binary, a failure like the real "Missing optional dependency" when
+    the platform package has no such directory; `None` writes no launcher; any other string is a
+    verbatim script body.
+    """
     os_name = platform_os if platform_os is not None else ["linux"]
     cpu_name = platform_cpu if platform_cpu is not None else ["x64"]
     package = prefix / "lib" / "node_modules" / "@openai" / "codex"
@@ -114,17 +124,37 @@ def _fake_codex_tree(
     for binary in ("codex", "codex-code-mode-host"):
         path = vendor / "bin" / binary
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        if binary == "codex":
+            shown = native_version if native_version is not None else version
+            path.write_text(f'#!/bin/sh\necho "codex-cli {shown}"\n', encoding="utf-8")
+        else:
+            path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         path.chmod(0o755)
+    if launcher is not None:
+        body = launcher
+        if launcher == "mimic":
+            root = package
+            body = (
+                f'for native in "{root}"/node_modules/@openai/codex-*/vendor/{launcher_triple}/bin/codex '
+                f'"{root.parent}"/codex-*/vendor/{launcher_triple}/bin/codex; do\n'
+                '  [ -x "$native" ] && exec "$native" "$@"\n'
+                "done\n"
+                f'echo "Error: Missing optional dependency for {launcher_triple}" >&2\n'
+                "exit 1\n"
+            )
+        entry = prefix / "bin" / "codex"
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        entry.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+        entry.chmod(0o755)
     return vendor
 
 
-def _pin_codex_to_the_test_host(monkeypatch: pytest.MonkeyPatch) -> None:
+def _pin_codex_to_the_test_host(monkeypatch: pytest.MonkeyPatch, machine: str = "x86_64") -> None:
     """The derivation reads the running platform; a test states which host it simulates."""
     import install_ai_cli_tools as mod
 
     monkeypatch.setattr(mod.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(mod.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(mod.platform, "machine", lambda: machine)
 
 
 # install_codex
@@ -272,6 +302,124 @@ class TestVerifyCodexInstall:
         with pytest.raises(InstallerError, match="layoutVersion 2"):
             verify_codex_install(prefix, "0.144.0")
 
+    def test_a_self_consistent_but_wrong_linux_target_fails_at_the_launcher(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A gnu tree whose directory, manifest target and files all agree passes every file check; the
+        launcher (which selects the musl target on this host) is what refuses it."""
+        prefix = tmp_path / "npm-prefix"
+        gnu = "x86_64-unknown-linux-gnu"
+        _fake_codex_tree(prefix, target=gnu, vendor_dir_name=gnu)
+        _pin_codex_to_the_test_host(monkeypatch)
+        with pytest.raises(InstallerError, match=r"bin/codex --version exited 1: .*Missing optional dependency"):
+            verify_codex_install(prefix, "0.144.0")
+
+    def test_arm64_host_with_the_arm64_target_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        prefix = tmp_path / "npm-prefix"
+        triple = "aarch64-unknown-linux-musl"
+        _fake_codex_tree(
+            prefix,
+            target=triple,
+            vendor_dir_name=triple,
+            platform_name="codex-linux-arm64",
+            platform_cpu=["arm64"],
+            launcher_triple=triple,
+        )
+        _pin_codex_to_the_test_host(monkeypatch, machine="aarch64")
+        verify_codex_install(prefix, "0.144.0")  # should not raise
+
+    def test_arm64_host_with_an_x64_tree_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        prefix = tmp_path / "npm-prefix"
+        _fake_codex_tree(prefix)
+        _pin_codex_to_the_test_host(monkeypatch, machine="aarch64")
+        with pytest.raises(InstallerError, match="installed no platform package for linux/arm64"):
+            verify_codex_install(prefix, "0.144.0")
+
+    def test_x64_host_with_an_arm64_target_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The platform package matches the host (x64) but ships the arm64 target the launcher won't pick."""
+        prefix = tmp_path / "npm-prefix"
+        triple = "aarch64-unknown-linux-musl"
+        _fake_codex_tree(prefix, target=triple, vendor_dir_name=triple)
+        _pin_codex_to_the_test_host(monkeypatch)
+        with pytest.raises(InstallerError, match="Missing optional dependency"):
+            verify_codex_install(prefix, "0.144.0")
+
+    def test_missing_launcher_fails_and_names_the_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        prefix = tmp_path / "npm-prefix"
+        _fake_codex_tree(prefix, launcher=None)
+        _pin_codex_to_the_test_host(monkeypatch)
+        with pytest.raises(InstallerError, match=r"Missing Codex launcher: .*/npm-prefix/bin/codex"):
+            verify_codex_install(prefix, "0.144.0")
+
+    def test_launcher_reporting_another_version_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Metadata can all say 0.144.0 while the binary that runs is another release."""
+        prefix = tmp_path / "npm-prefix"
+        _fake_codex_tree(prefix, native_version="0.143.0")
+        _pin_codex_to_the_test_host(monkeypatch)
+        with pytest.raises(InstallerError, match=r"--version reported 'codex-cli 0\.143\.0', but CODEX_VER pins '0\.144\.0'"):
+            verify_codex_install(prefix, "0.144.0")
+
+    @pytest.mark.parametrize("reported", ["codex-cli 0.144.0-alpha.1", "codex-cli 10.144.0", "codex-cli 0.144.01"])
+    def test_launcher_version_must_be_the_whole_pinned_token(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reported: str
+    ) -> None:
+        prefix = tmp_path / "npm-prefix"
+        _fake_codex_tree(prefix, launcher=f'echo "{reported}"\n')
+        _pin_codex_to_the_test_host(monkeypatch)
+        with pytest.raises(InstallerError, match="but CODEX_VER pins '0.144.0'"):
+            verify_codex_install(prefix, "0.144.0")
+
+    def test_launcher_printing_nothing_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        prefix = tmp_path / "npm-prefix"
+        _fake_codex_tree(prefix, launcher="exit 0\n")
+        _pin_codex_to_the_test_host(monkeypatch)
+        with pytest.raises(InstallerError, match="--version printed nothing"):
+            verify_codex_install(prefix, "0.144.0")
+
+    def test_launcher_failing_with_the_right_version_text_still_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        prefix = tmp_path / "npm-prefix"
+        _fake_codex_tree(prefix, launcher='echo "codex-cli 0.144.0"\nexit 7\n')
+        _pin_codex_to_the_test_host(monkeypatch)
+        with pytest.raises(InstallerError, match="--version exited 7"):
+            verify_codex_install(prefix, "0.144.0")
+
+    def test_non_executable_launcher_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        prefix = tmp_path / "npm-prefix"
+        _fake_codex_tree(prefix)
+        (prefix / "bin" / "codex").chmod(0o644)
+        _pin_codex_to_the_test_host(monkeypatch)
+        with pytest.raises(InstallerError, match="Codex launcher is not executable"):
+            verify_codex_install(prefix, "0.144.0")
+
+    def test_launcher_that_cannot_be_executed_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An executable file with a missing interpreter raises OSError at exec, not a non-zero exit."""
+        prefix = tmp_path / "npm-prefix"
+        _fake_codex_tree(prefix)
+        (prefix / "bin" / "codex").write_text("#!/nonexistent/interpreter\n", encoding="utf-8")
+        _pin_codex_to_the_test_host(monkeypatch)
+        with pytest.raises(InstallerError, match="Could not run .*--version"):
+            verify_codex_install(prefix, "0.144.0")
+
+    def test_launcher_that_hangs_is_cut_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import install_ai_cli_tools as mod
+
+        prefix = tmp_path / "npm-prefix"
+        _fake_codex_tree(prefix, launcher="exec sleep 30\n")
+        _pin_codex_to_the_test_host(monkeypatch)
+        monkeypatch.setattr(mod, "CODEX_LAUNCHER_TIMEOUT_SECONDS", 1)
+        with pytest.raises(InstallerError, match="Could not run .*timed out"):
+            verify_codex_install(prefix, "0.144.0")
+
     def test_wrong_platform_triple_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         prefix = tmp_path / "npm-prefix"
         _fake_codex_tree(prefix, vendor_dir_name="aarch64-unknown-linux-musl")
@@ -286,7 +434,7 @@ class TestVerifyCodexInstall:
         _fake_codex_tree(prefix, version="0.143.0")
         _pin_codex_to_the_test_host(monkeypatch)
         with pytest.raises(
-            InstallerError, match="Codex installed version '0.143.0', but CODEX_VER pins '0.144.0'"
+            InstallerError, match=r"package\.json records Codex version '0\.143\.0', but CODEX_VER pins '0\.144\.0'"
         ):
             verify_codex_install(prefix, "0.144.0")
 

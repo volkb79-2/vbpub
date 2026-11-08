@@ -16,7 +16,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   from the `os`/`cpu` values the packages themselves declare (`@openai/codex/node_modules/@openai/codex-<os>-<cpu>`),
   finds its single vendor directory, and requires the package and vendor-manifest versions to equal the pinned
   `CODEX_VER`, the manifest's `target` to match the directory, and `bin/codex` plus the code-mode companion
-  `bin/codex-code-mode-host` to be executable regular files. A partial tree (for example `npm install
+  `bin/codex-code-mode-host` to be executable regular files; it then runs the installed
+  `$NPM_CONFIG_PREFIX/bin/codex --version` and requires exit 0 and the pinned version in the output (which also
+  proves the launcher selects a vendor target for the host). A partial tree (for example `npm install
   --omit=optional`, which omits the platform package) now fails the installer instead of shipping a Codex that
   errors "Missing optional dependency" at run time. Nothing is copied out of the npm tree: `codex update`
   rewrites it, so a copy would silently drift. The dead archive-installer path (`install_binaries_from_archive`

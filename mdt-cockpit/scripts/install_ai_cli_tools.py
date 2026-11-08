@@ -183,6 +183,7 @@ def install_codex(ctx: InstallerContext) -> None:
 
 # Node names the platform package after these values in its package.json `os`/`cpu` arrays.
 CODEX_OS_NAMES = {"Linux": "linux", "Darwin": "darwin", "Windows": "win32"}
+CODEX_LAUNCHER_TIMEOUT_SECONDS = 60
 CODEX_CPU_NAMES = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
 
 
@@ -268,7 +269,8 @@ def verify_codex_install(prefix: Path, version: str) -> None:
         raise InstallerError(f"Cannot read {platform_package / 'package.json'}: {exc}") from exc
     if installed.get("version") != version:
         raise InstallerError(
-            f"Codex installed version {installed.get('version')!r}, but CODEX_VER pins {version!r}"
+            f"{platform_package / 'package.json'} records Codex version {installed.get('version')!r}, "
+            f"but CODEX_VER pins {version!r}"
         )
 
     platform_name = codex_platform_package_dir(platform_package)
@@ -287,6 +289,37 @@ def verify_codex_install(prefix: Path, version: str) -> None:
     require_executable_binary(
         vendor_dir / "bin" / "codex-code-mode-host", "Codex code-mode host companion"
     )
+    verify_codex_launcher(prefix / "bin" / "codex", version)
+
+
+def verify_codex_launcher(launcher: Path, version: str) -> None:
+    """Run the installed `codex --version` and require the pinned version in its output.
+
+    The metadata checks above prove the files are present and agree with each other; only running the
+    launcher proves it can select a vendor target for this host (a self-consistent but wrong target
+    directory passes every file check and fails here) and that the version it reports is the pin.
+    """
+    require_executable_binary(launcher, "Codex launcher")
+    try:
+        result = subprocess.run(
+            [str(launcher), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=CODEX_LAUNCHER_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise InstallerError(f"Could not run {launcher} --version: {exc}") from exc
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        raise InstallerError(f"{launcher} --version exited {result.returncode}: {output or 'no output'}")
+    if not output:
+        raise InstallerError(f"{launcher} --version printed nothing")
+    # A whole version token: 0.144.0 must not be satisfied by 0.144.0-alpha or 10.144.0.
+    if not re.search(rf"(?<![\w.+-]){re.escape(version)}(?![\w.+-])", output):
+        raise InstallerError(
+            f"{launcher} --version reported {output.splitlines()[0]!r}, but CODEX_VER pins {version!r}"
+        )
 
 
 def install_claude(ctx: InstallerContext) -> None:

@@ -710,14 +710,15 @@ companion that sits beside it:
       codex-package.json                         # layoutVersion, version, target
 ```
 
-Both executables are looked up there by Codex itself; do not copy either one out to
+The package ships both executables there and code mode needs the companion; do not copy either one out to
 `/opt/mdt/bin`, `/usr/local/bin` or `~/.local/bin`. `codex update` (and
 `npm install -g @openai/codex@latest`) replaces the entire tree, so a copy would keep the old
 version while the `codex` command runs the new one, and nothing would report the skew. The
 installer checks this tree in place (`verify_codex_install()`): the package version must equal the
 staged `CODEX_VER`, the platform package for the host must exist (an `npm install
---omit=optional` leaves Codex broken), and both executables must be executable files. The image
-build additionally fails when `codex --version` exits non-zero or prints nothing.
+--omit=optional` leaves Codex broken), both executables must be executable files, and the installed
+`bin/codex --version` must run and report that version. The image build additionally fails when
+`codex --version` exits non-zero or prints nothing.
 
 Code mode itself is a per-model field in the model catalog (`model_catalog_json`), not a
 `config.toml` key: `tool_mode: "code_mode_only"` makes the companion mandatory, and a provider

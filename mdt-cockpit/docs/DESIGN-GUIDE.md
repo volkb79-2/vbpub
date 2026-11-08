@@ -557,7 +557,10 @@ native binary from the platform package it selects as an optional dependency
 the layout (`layoutVersion`, `version`, `target`). The installer verifies that tree in place
 (`verify_codex_install()` in `scripts/install_ai_cli_tools.py`): the package version equals the
 staged `CODEX_VER`, the platform package for the build host exists, its single vendor directory's
-manifest agrees with the directory name, and both executables are executable regular files. It
+manifest agrees with the directory name, both executables are executable regular files, and the
+installed launcher (`$NPM_CONFIG_PREFIX/bin/codex --version`) runs and reports the pinned version
+(running it is what proves the launcher can select a vendor target for the host: a tree whose
+files all agree but name a target the launcher does not pick fails there). It
 deliberately **copies nothing out of it**. `codex update` runs `npm install -g @openai/codex`, which
 replaces the whole tree; a companion copied to `/opt/mdt/bin` or `/usr/local/bin` would then be a
 different version than the `codex` beside it, and nothing would notice (the old MDT-P01 handoff report
