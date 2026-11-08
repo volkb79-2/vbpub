@@ -350,8 +350,8 @@ verify step is skipped for that reason; its Exec and preflight checks still
 run. A present base unit is staged with its discovered dependencies and
 verified. A verify refusal aborts the plan before a managed write.
 Fake-analyzer tests assert staged tree construction. The real-analyzer acceptance
-smoke is deferred to the R2/VM lane note in `BACKLOG.md` and uses only a
-disposable scratch root.
+smoke is deferred to the R2/VM lane note (AW-BL-11) in `BACKLOG.md` and uses only
+a disposable scratch root.
 
 Every path named by a physical `Exec*=` line is checked against the selected
 root: optional leading `-@:+!` prefixes are stripped, the executable token

@@ -805,14 +805,46 @@ def _stage_exec_stubs(stage_root: Path, text: str, unit_path: str) -> None:
     """Make syntax-only executable targets available inside the verify root."""
 
     for command in _exec_paths(text, unit_path):
-        target = stage_root / command.lstrip("/")
-        _ensure_stage_directory(stage_root, target.parent, 0o755)
+        _write_exec_stub(stage_root, command)
+
+
+def _write_exec_stub(stage_root: Path, command: str) -> None:
+    target = stage_root / command.lstrip("/")
+    _ensure_stage_directory(stage_root, target.parent, 0o755)
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        pass
+    target.write_bytes(b"")
+    os.chmod(target, 0o755)
+
+
+def _stage_source_exec_stubs(stage_root: Path, sources: list[dict[str, Any]]) -> None:
+    """Stub parseable Exec paths from staged source units without policing vendor text."""
+
+    for source in sources:
+        if source.get("link_target") is not None:
+            continue
+        absolute = source.get("path")
+        if not isinstance(absolute, str):
+            continue
+        staged = stage_root / absolute.lstrip("/")
         try:
-            target.unlink()
-        except FileNotFoundError:
-            pass
-        target.write_bytes(b"")
-        os.chmod(target, 0o755)
+            text = staged.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            try:
+                command = _exec_command(line, absolute)
+            except PlanRefused:
+                # Vendor and other discovered source files are syntax input for
+                # systemd-analyze, not requests subject to our stricter scanner.
+                continue
+            if command is not None:
+                parsed = PurePosixPath(command)
+                if "\x00" in command or ".." in parsed.parts or not parsed.name:
+                    continue
+                _write_exec_stub(stage_root, command)
 
 
 def _command_failure(code: str, label: str, exc: BaseException, path: str) -> PlanRefused:
@@ -836,6 +868,7 @@ def _verify_staged_tree(
     base_absolute = f"{_SYSTEMD_UNIT_DIR}/{name}"
     sources = _source_inventory(root, name, path, dropin, data.decode("utf-8", errors="replace"))
     _copy_sources(root, stage_root, sources)
+    _stage_source_exec_stubs(stage_root, sources)
     _stage_exec_stubs(stage_root, data.decode("utf-8", errors="replace"), path)
     _stage_write(stage_root, stage_root / path.lstrip("/"), data, mode)
 

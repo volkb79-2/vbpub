@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -346,6 +347,94 @@ def test_staged_verify_creates_executable_stubs_for_exec_targets(world, tmp_path
     monkeypatch.setattr(unit_module, "_run_command", fake_analyzer)
     resource.stage(SimpleNamespace(root=root, stage_dir=tmp_path / "staging"), planned.changes[0])
     assert set(checked) == {"usr/bin/example", "usr/bin/helper"}
+
+
+def test_staged_verify_stubs_exec_targets_from_base_unit_for_dropin(world, monkeypatch):
+    root, _executable, commands = world
+    base = root / "usr/lib/systemd/system/example.service"
+    base.parent.mkdir(parents=True)
+    # The malformed second line is deliberately best-effort scanner input:
+    # systemd-analyze owns validation of discovered vendor source text.
+    base.write_text(
+        "[Unit]\nDescription=Vendor example\n[Service]\n"
+        "ExecStart=/usr/bin/example\nExecStart=relative\n"
+        "ExecStop=/../../tmp/escape\n",
+        encoding="utf-8",
+    )
+    resource = Unit(
+        name="example.service",
+        state="present",
+        dropin="50-extra.conf",
+        text="[Service]\nEnvironment=EXAMPLE=1\n",
+        mode="0644",
+        intent="authoritative",
+        on_change="none",
+    )
+    monkeypatch.setattr(unit_module.shutil, "which", lambda _name: "/usr/bin/systemd-analyze")
+    original_command = commands.__call__
+    observed: list[Path] = []
+
+    def fake_analyzer(argv, timeout):
+        command = tuple(argv)
+        if command[0] == "systemd-analyze":
+            stage_root = Path(command[1].removeprefix("--root="))
+            executable = stage_root / "usr/bin/example"
+            assert executable.is_file()
+            assert executable.read_bytes() == b""
+            assert executable.stat().st_mode & 0o777 == 0o755
+            assert not (stage_root.parent.parent / "tmp/escape").exists()
+            observed.append(executable)
+        return original_command(command, timeout)
+
+    monkeypatch.setattr(unit_module, "_run_command", fake_analyzer)
+    planned = plan(Request("drop-in over vendor unit", (resource,)), root=root)
+    assert planned.has_changes
+    assert len(observed) == 1
+
+
+@pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
+def test_real_analyzer_verifies_dropin_over_vendor_unit_in_scratch_root(world, monkeypatch):
+    root, _executable, _commands = world
+    base = root / "usr/lib/systemd/system/example.service"
+    base.parent.mkdir(parents=True)
+    base.write_text(
+        "[Unit]\nDescription=Vendor example\nDefaultDependencies=no\n"
+        "[Service]\nType=oneshot\n"
+        "ExecStart=/usr/bin/example\n",
+        encoding="utf-8",
+    )
+    resource = Unit(
+        name="example.service",
+        state="present",
+        dropin="50-extra.conf",
+        text="[Service]\nEnvironment=EXAMPLE=1\n",
+        mode="0644",
+        intent="authoritative",
+        on_change="none",
+    )
+
+    def run_real_analyzer(argv, timeout):
+        result = subprocess.run(
+            list(argv),
+            check=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode:
+            diagnostic = (result.stderr or result.stdout).strip()
+            raise _UnitCommandError(
+                f"exit {result.returncode}: {diagnostic or 'no diagnostic'}",
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        return result
+
+    monkeypatch.setattr(unit_module, "_run_command", run_real_analyzer)
+    planned = plan(Request("real vendor drop-in verify", (resource,)), root=root)
+    assert planned.has_changes
 
 
 @pytest.mark.parametrize(
@@ -1272,7 +1361,8 @@ def test_unit_enabled_refuses_unexpected_and_inconsistent_statuses(world, monkey
         unit_module._unit_enabled(Path("/"), "example.service")
 
 
-def test_missing_live_unit_with_empty_is_enabled_output_plans_enable(world, monkeypatch):
+@pytest.mark.parametrize("returncode", [1, 4])
+def test_missing_live_unit_with_empty_is_enabled_output_plans_enable(world, monkeypatch, returncode):
     root, _executable, commands = world
     monkeypatch.setattr(unit_module, "_is_live_root", lambda _root: True)
     is_enabled = ("systemctl", "is-enabled", "--", "new.service")
@@ -1280,7 +1370,7 @@ def test_missing_live_unit_with_empty_is_enabled_output_plans_enable(world, monk
 
     def command(argv, timeout):
         if tuple(argv) == is_enabled:
-            raise _UnitCommandError("exit 4: no diagnostic", returncode=4, stdout="")
+            raise _UnitCommandError(f"exit {returncode}: no diagnostic", returncode=returncode, stdout="")
         return original_command(argv, timeout)
 
     monkeypatch.setattr(unit_module, "_run_command", command)
@@ -1682,6 +1772,20 @@ def test_public_unit_signatures_cover_non_mapping_observations():
     assert unit_module._target_signature(None) == (False,)
     assert unit_module._verification_signature(None) == (False,)
     assert unit_module._verification_signature({"fingerprint": "opaque"}) == ("fingerprint", "opaque")
+
+
+def test_unit_verification_signature_includes_exec_observations():
+    value = {
+        "path": "/etc/systemd/system/example.service",
+        "target": {"exists": True, "sha256": "unit", "mode": 0o644, "uid": 0, "gid": 0},
+        "enabled": False,
+        "exec_paths": [{"path": "/usr/bin/example", "mode": 0o755, "uid": 0, "gid": 0}],
+    }
+    changed_exec = {**value, "exec_paths": [{"path": "/usr/bin/example", "mode": 0o700, "uid": 0, "gid": 0}]}
+
+    # Exec observations are managed verification state; source inventories are
+    # validation-only inputs and deliberately do not participate here.
+    assert unit_module._verification_signature(value) != unit_module._verification_signature(changed_exec)
 
 
 def test_virtual_path_resolution_handles_dots_parent_and_symlink_limits(tmp_path):

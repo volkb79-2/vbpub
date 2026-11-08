@@ -111,7 +111,7 @@ def test_unit_docs_are_linked_consistent_and_consumer_toml_loads():
     assert "static, indirect, generated, or" in consumers and "transient units" in consumers
     assert "unrecognized argv must declare a phase" in readme
     assert "Unknown argv" in consumers and "breaking\n  validation requirement" in changes
-    assert "AW-BL-05 (acceptance, R2/VM)" in backlog
+    assert "AW-BL-11 (acceptance, R2/VM)" in backlog
 
     section = consumers.split("### Systemd units and drop-ins", 1)[1].split("\n### ", 1)[0]
     examples = re.findall(r"```toml\s*\n(.*?)\n```", section, flags=re.DOTALL)

@@ -33,15 +33,16 @@ Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
 
 ## HC-1b-u follow-ups (2026-11-08)
 
-- **AW-BL-05 (acceptance, R2/VM): real systemd smoke.** The fake-analyzer unit
-  test asserts that staged `Exec*=` paths are empty mode-0755 files, but it
-  does not exercise systemd's real parser. On the R2/VM lane, run
-  `systemd-analyze --root=<scratch-root> verify` against a disposable staged
-  tree with an Exec target stub, and confirm an `is-enabled` probe for a
-  not-yet-created unit returns the expected empty-output/non-zero form. Never
-  point the analyzer at the cockpit's live root. This acceptance smoke was
-  documented but not run in the HC-1b-u fix round.
-- **AW-BL-06 (compatibility): full systemd directive parsing.** Exec scanning is
+- **AW-BL-11 (acceptance, R2/VM): real systemd smoke.** The fake-analyzer unit
+  tests assert that staged `Exec*=` paths from both the requested resource and
+  existing source units are empty mode-0755 files. The local scratch-root test
+  exercises a drop-in over a vendor unit, but the R2/VM lane must also confirm
+  real `systemd-analyze --root=<scratch-root> verify` behavior for the broader
+  staged tree and an `is-enabled` probe for a not-yet-created unit with the
+  expected empty-output/non-zero form. Never point the analyzer at the
+  cockpit's live root. This acceptance smoke was documented but not run in the
+  HC-1b-u fix round.
+- **AW-BL-12 (compatibility): full systemd directive parsing.** Exec scanning is
   physical-line based and does not join backslash continuations or model reset
   directives. The limitation is documented in SPEC; add parser-compatibility
   fixtures if the scanner's contract is expanded beyond physical lines.
