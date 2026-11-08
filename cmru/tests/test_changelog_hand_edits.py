@@ -168,6 +168,45 @@ def test_ki131_only_a_genuine_hand_edit_in_a_tagged_section_is_reported(tmp_path
     assert "advance `<!-- cmru: source-end" not in message
 
 
+@pytest.mark.parametrize(
+    "merge_subject",
+    [
+        "Merge branch 'topic'",
+        "feat(demo): integrate the topic with another subject",
+    ],
+)
+def test_a_stale_old_section_ignores_its_historical_generated_merge_line(
+    tmp_path, merge_subject,
+):
+    _init_demo(tmp_path)
+    _git(tmp_path, "switch", "-c", "topic")
+    _commit(tmp_path, "feat(demo): topic feature", "demo/topic.py", "TOPIC = True\n")
+    _git(tmp_path, "switch", "main")
+    _commit(tmp_path, "fix(demo): main-only fix", "demo/main.py", "MAIN = True\n")
+    _git(tmp_path, "merge", "--no-ff", "topic", "-m", merge_subject)
+
+    project = _project()
+    assert generate_release_changelog(tmp_path, project) is True
+    path = tmp_path / "demo" / "CHANGES.md"
+    merge_sha = _git(tmp_path, "rev-parse", "--short", "HEAD")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "### Added\n", f"### Added\n- {merge_subject} ({merge_sha})\n",
+        ),
+        encoding="utf-8",
+    )
+    assert merge_subject in path.read_text(encoding="utf-8")
+    _git(tmp_path, "add", "demo/CHANGES.md")
+    _git(tmp_path, "commit", "-m", "chore(release): changelog")
+    _commit(tmp_path, "fix(demo): stale the section", "demo/core.py", "A = 2\n")
+
+    assert generate_release_changelog(tmp_path, project) is True
+
+    history = path.read_text(encoding="utf-8")
+    assert merge_subject not in history
+    assert "stale the section" in history
+
+
 def test_ki68_a_section_without_a_cursor_or_with_an_unlistable_range_yields_no_evidence(
     tmp_path, monkeypatch,
 ):

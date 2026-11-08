@@ -94,6 +94,42 @@ def test_generates_pending_version_from_the_project_scoped_range(tmp_path):
     assert generate_release_changelog(tmp_path, project) is False
 
 
+def test_generator_omits_a_merge_subject_even_with_one_parent(tmp_path):
+    _init_demo(tmp_path)
+    _commit(
+        tmp_path,
+        "Merge branch 'legacy-topic'",
+        "demo/legacy.py",
+        "LEGACY = True\n",
+    )
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert "Merge branch 'legacy-topic'" not in history
+
+
+def test_generator_omits_a_two_parent_commit_with_a_non_merge_subject(tmp_path):
+    _init_demo(tmp_path)
+    _git(tmp_path, "switch", "-c", "topic")
+    _commit(tmp_path, "feat(demo): topic feature", "demo/topic.py", "TOPIC = True\n")
+    _git(tmp_path, "switch", "main")
+    _commit(tmp_path, "fix(demo): main-only fix", "demo/main.py", "MAIN = True\n")
+    _git(
+        tmp_path,
+        "merge", "--no-ff", "topic",
+        "-m", "feat(demo): integrate the topic without a Merge subject",
+    )
+    assert len(_git(tmp_path, "rev-list", "--parents", "-n", "1", "HEAD").split()) == 3
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert "integrate the topic without a Merge subject" not in history
+    assert "topic feature" in history
+    assert "main-only fix" in history
+
+
 def _first_release_repo(tmp_path, changelog: str | None):
     _git(tmp_path, "init", "-b", "main")
     _git(tmp_path, "config", "user.email", "test@cmru.test")

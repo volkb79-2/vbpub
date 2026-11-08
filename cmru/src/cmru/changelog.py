@@ -272,7 +272,7 @@ def _subject_groups(
     exclusions = [pathspec_exclude(path) for path in exclude_paths]
     output = _git(
         repo_root,
-        "log", revision_range, "--format=%h%x1f%s", "--", *paths,
+        "log", "--no-merges", revision_range, "--format=%h%x1f%s", "--", *paths,
         *_RELEASE_CONTROL_EXCLUDES, *exclusions,
     )
     groups: dict[str, list[str]] = {
@@ -282,6 +282,8 @@ def _subject_groups(
         short_sha, separator, subject = line.partition("\x1f")
         if not separator or not short_sha or not subject:
             raise RuntimeError("cmru changelog: malformed git log record")
+        if subject.startswith("Merge "):
+            continue
         match = _CONVENTIONAL_TYPE_RE.match(subject)
         kind = match.group(1).lower() if match else ""
         section = {
@@ -525,7 +527,7 @@ def _generated_outputs_changed(repo_root: Path, project: Any) -> bool:
     return bool(result.stdout.strip())
 
 
-def _comparable_lines(text: str) -> list[str]:
+def _comparable_lines(text: str, *, merge_repo_root: Path | None = None) -> list[str]:
     """Section lines normalised for a generated-vs-hand-written comparison.
 
     Blank lines, cmru's own HTML-comment markers and the abbreviated trailing
@@ -534,11 +536,32 @@ def _comparable_lines(text: str) -> list[str]:
     """
     lines = []
     for raw in text.splitlines():
-        line = _ENTRY_HASH_RE.sub("", raw.rstrip())
+        source_line = raw.rstrip()
+        if (
+            merge_repo_root is not None
+            and _entry_is_merge_commit(merge_repo_root, source_line)
+        ):
+            continue
+        line = _ENTRY_HASH_RE.sub("", source_line)
         if not line.strip() or line.lstrip().startswith("<!--"):
             continue
         lines.append(line)
     return lines
+
+
+def _entry_is_merge_commit(repo_root: Path, line: str) -> bool:
+    """Whether an old generated bullet came from a merge commit."""
+    if line.startswith("- Merge "):
+        return True
+    match = _ENTRY_HASH_RE.search(line)
+    if match is None:
+        return False
+    short = match.group(0).strip()[1:-1]
+    try:
+        revision = _git(repo_root, "rev-list", "--parents", "-n", "1", short).split()
+    except RuntimeError:
+        return False
+    return len(revision) > 2
 
 
 def _folded_notes_block_or_refuse(project: Any, path: Path, section: str):
@@ -591,7 +614,11 @@ def _dropped_hand_edits(
         section if folded is None else section[:folded[0]] + section[folded[1]:]
     )
     body = section_without_pending.split("\n", 1)[1] if "\n" in section_without_pending else ""
-    return [line for line in _comparable_lines(body) if line not in produced]
+    return [
+        line
+        for line in _comparable_lines(body, merge_repo_root=repo_root)
+        if line not in produced
+    ]
 
 
 def _render_section(
