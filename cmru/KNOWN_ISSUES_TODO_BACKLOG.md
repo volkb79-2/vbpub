@@ -3025,3 +3025,23 @@ uses the pwmcp-r5 shape and proves clean regeneration. `::test_ki131_only_a_genu
 proves the refusal lists the hand note rather than generator-produced lines and omits the
 harmful source-end remedy. The range correction was hand-mutated back to `previous_ref`; the
 clean-section oracle failed before restoration.
+
+## KI-132 - no read-only `cmru changelog check` structural lint for project docs tests
+
+**Status:** OPEN (deferred from the 2026-11-08 CHANGES.md friction patch); severity: low
+(format slips surface at release time); effort: medium.
+
+**Observed:** CMRU validates changelog structure only while generating a release section. Project
+docs tests cannot cheaply assert that the history marker occurs exactly once, that exactly one
+canonical `## [Unreleased]` heading appears above it, that release sections are not duplicated,
+and that pending notes stay above the marker. The friction analysis classified this lint as
+medium effort because it requires a new read-only CLI surface, project selection/output
+semantics, and adoption in each project's docs lane.
+
+**Required:** Add `cmru changelog check <project>` as a read-only command. It must report every
+structural violation without modifying the document, exit non-zero on findings, and be small
+enough to call from a project's existing R0 docs test. It must not fold notes, regenerate
+sections, repair structure, or replace the release-time KI-68 refusal.
+
+**Why deferred:** This patch keeps the focused correctness fixes small; the optional lint was
+not implementable as the brief's "small" follow-on.
