@@ -439,6 +439,13 @@ def test_closed_details_with_no_body_does_not_report_a_removal() -> None:
     assert result.hidden_removed == 0
 
 
+def test_closed_details_whitespace_only_body_does_not_report_a_removal() -> None:
+    result = _extraction("<details><summary>Summary</summary>  \n \t</details>", fmt="text")
+
+    assert result.content == "Summary"
+    assert result.hidden_removed == 0
+
+
 def test_closed_details_remove_each_top_level_body_element_as_one_region() -> None:
     result = _extraction(
         "<details><summary>Summary</summary><p>first body</p><p>second body</p></details>", fmt="text"
