@@ -741,6 +741,36 @@ def test_preflight_manifest_digest_mismatch_and_unreadable_manifest(tmp_path):
         _installer(tmp_path)._preflight(values, paths.config, dry_run=True)
 
 
+def test_preflight_requires_the_pinned_augeaswrap_digest_for_an_immutable_3x_version(tmp_path):
+    paths = _paths(tmp_path)
+    version = Path(paths.opt) / "3.0.0"
+    version.mkdir(parents=True)
+    manifest = version / "MANIFEST"
+    manifest.write_text(
+        f"installer=cgprofiled install 3.0.0\n"
+        f"cgprofile_sha256={CGPROFILE_SHA}\n"
+        f"cli_extended_sha256={CLI_EXTENDED_SHA}\n",
+        encoding="utf-8",
+    )
+    values = {
+        "version": "3.0.0",
+        "wheel_sha": CGPROFILE_SHA,
+        "cli_extended_sha": CLI_EXTENDED_SHA,
+        "install_augeaswrap": True,
+        "augeaswrap_sha": AUGEASWRAP_SHA,
+        "config_values": {},
+        "allow_downgrade": False,
+    }
+    with pytest.raises(installer.InstallError, match="immutable and its wheel digest differs"):
+        _installer(tmp_path)._preflight(values, paths.config, dry_run=True)
+
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8") + f"augeaswrap_sha256={AUGEASWRAP_SHA}\n",
+        encoding="utf-8",
+    )
+    assert _installer(tmp_path)._preflight(values, paths.config, dry_run=True) == (False, True)
+
+
 def test_current_pointer_must_be_a_complete_relative_version(tmp_path):
     paths = _paths(tmp_path)
     opt = Path(paths.opt)

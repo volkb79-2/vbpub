@@ -207,6 +207,14 @@ def test_unset_socket_env_is_a_usage_error(cli):
     assert code == 2 and "CGPROFILE_CONTROL_SOCKET" in err
 
 
+def test_socket_doctor_reports_an_unset_endpoint(monkeypatch):
+    monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+    result = _check("socket", argparse.Namespace(socket=None))
+    assert result.status == "fail"
+    assert "CGPROFILE_CONTROL_SOCKET is unset" in result.summary
+    assert "endpoint-unset" in result.summary
+
+
 def test_ownership_refusal_is_exit_2_and_other_peer_refusal_is_exit_3(cli, daemon):
     refuse = {"ok": False, "error": {"code": "peer-refused", "message": "not yours"}}
     d = daemon(handlers(stop=lambda a, c: refuse, host=lambda a, c: refuse))

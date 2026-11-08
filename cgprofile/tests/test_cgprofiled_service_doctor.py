@@ -215,7 +215,8 @@ def test_units_current_accepts_all_resources_and_reports_drift(monkeypatch, tmp_
 
 def test_checks_that_need_the_config_skip_when_it_cannot_load(tmp_path):
     _broken_config(tmp_path)
-    for check in (service_doctor._check_units_current, service_doctor._check_groups,
+    for check in (service_doctor._check_endpoint_record, service_doctor._check_units_current,
+                  service_doctor._check_groups,
                   service_doctor._check_socket_nodes, service_doctor._check_socket_dirs,
                   service_doctor._check_connect, service_doctor._check_caller_access):
         result = check(_runtime(), _args(tmp_path))
