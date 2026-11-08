@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Validate registered kind names before using them as TOML table names, journal
+  finalization safely after the last step, and refuse a restore resource that
+  omits its address with a clear error. Document the revert effect of a
+  hard-killed `applying` transaction.
 - Add the guarded applier core with strict TOML requests, `file` and `check`
   resources, plan/apply/revert/journal commands, pre-image journals, stale-plan
   checks, and explicit revert.

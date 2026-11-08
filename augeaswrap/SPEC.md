@@ -333,6 +333,10 @@ register_kind(KindSpec(
 ))
 ```
 
+Kind names must match `[a-z][a-z0-9_]{0,31}` and may not be the reserved
+request keys `augeaswrap` or `writer`. They are emitted as TOML table names,
+so registration refuses anything outside this grammar.
+
 `parse` and `to_toml` must round-trip: `load_request(request.to_toml())`
 equals the request. `kinds.require_keys` and `kinds.resource_tables` give
 parsers the same strict unknown/missing-key errors the core kinds use.
@@ -395,7 +399,10 @@ that needs that order lists its resources in it; an optional `phase` on
   reverted, because the revert counts as a later transaction.
 - An apply stopped by `KeyboardInterrupt`, `SystemExit` or `SIGTERM` is
   journaled with status `interrupted`; it is revertible like a failed one.
-  A hard kill leaves status `applying`, which `revert` refuses.
+  A hard kill leaves status `applying`, which cannot itself be reverted. Its
+  journal still lists every requested address, so it blocks reverts of earlier
+  transactions that touched those same addresses until the applying journal is
+  pruned.
 - A transaction directory without `journal.json` (a crash before its first
   journal write) changed nothing: `journal list` skips it with a warning and it
   never blocks the revert of earlier transactions.

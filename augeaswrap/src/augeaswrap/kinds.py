@@ -6,6 +6,7 @@ has no per-kind code. SPEC, "Adding a resource kind", is the contract.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 from . import Change, PostAction, Resource
 
 _RESERVED_KEYS = frozenset({"augeaswrap", "writer"})
+_KIND_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -51,7 +53,11 @@ _REGISTRY: dict[str, KindSpec] = {}
 def register_kind(spec: KindSpec) -> KindSpec:
     """Register a kind once; a second registration of the same name is an error."""
 
-    if not isinstance(spec.kind, str) or not spec.kind or spec.kind in _RESERVED_KEYS:
+    if (
+        not isinstance(spec.kind, str)
+        or _KIND_NAME_RE.fullmatch(spec.kind) is None
+        or spec.kind in _RESERVED_KEYS
+    ):
         raise ValueError(f"invalid resource kind name {spec.kind!r}")
     if spec.kind in _REGISTRY:
         raise ValueError(f"resource kind {spec.kind!r} is already registered")

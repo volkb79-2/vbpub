@@ -428,6 +428,31 @@ def test_fail_step_hook_accepts_callables_indexes_and_names(tmp_path, fail_step,
     assert journal(failure.value.txn, root=root)["status"] == "failed"
 
 
+def test_interrupt_after_last_step_is_journaled_without_index_error(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    planned = plan(req(Fake()), root=root)
+
+    class InterruptAfterSteps:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _type, error, _traceback):
+            if error is None:
+                raise KeyboardInterrupt
+            return False
+
+    def transaction_scope():
+        return InterruptAfterSteps()
+
+    monkeypatch.setattr(transactions, "_sigterm_as_exit", transaction_scope)
+    with pytest.raises(KeyboardInterrupt):
+        apply(planned)
+    saved = journal(root=root)[0]
+    assert saved["status"] == "interrupted"
+    assert saved["failed"]["step"] == "finalize"
+    assert saved["not_run"] == []
+
+
 def test_unobservable_post_image_after_a_failed_commit_blocks_revert(tmp_path):
     root = fake_root(tmp_path)
     state = {"committed": False}
