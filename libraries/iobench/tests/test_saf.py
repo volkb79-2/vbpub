@@ -400,7 +400,7 @@ def test_saf_02_stage_records_the_aborted_mark_before_propagating():
 
     with pytest.raises(Aborted, match="signal SIGTERM"):
         run.stage("S6", abort, required=True)
-    assert run.stages["S6"].startswith("aborted:") and "signal SIGTERM" in run.stages["S6"]
+    assert run.stages["S6"] == "aborted: signal SIGTERM"
 
 
 def test_saf_07_aborted_run_keeps_good_result_in_a_run():
