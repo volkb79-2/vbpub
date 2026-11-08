@@ -14,6 +14,26 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Upgrade note (cutover): after removing the retired files and running `install.sh`, log in again and restart long-lived sessions (the VS Code Remote-SSH server, systemd units and services, which never read `/etc/environment`): builds from processes that started earlier still carry the old `BUILDX_BUILDER`/`BUILDKIT_HOST` without `MDT_BUILDKIT_SOCKET` and exit 2 with "MDT_BUILDKIT_SOCKET is unset". The refusal message gives the safe removal order, `systemctl daemon-reload`, and the caveat that removing the tmpfiles rules stops `/run/cgprofile` and `/run/topos` being recreated at boot until `cgprofiled install` / `toposd install` run, so do not reboot in between.
 
 ### Fixed
+- Codex installs are now verified in place instead of trusted to have worked. `scripts/install_ai_cli_tools.py`
+  gains `verify_codex_install()`: after `npm install -g @openai/codex@<staged>`, it derives the platform package
+  from the `os`/`cpu` values the packages themselves declare (`@openai/codex/node_modules/@openai/codex-<os>-<cpu>`),
+  finds its single vendor directory, and requires the package and vendor-manifest versions to equal the pinned
+  `CODEX_VER`, the manifest's `target` to match the directory, and `bin/codex` plus the code-mode companion
+  `bin/codex-code-mode-host` to be executable regular files; it then runs the installed
+  `$NPM_CONFIG_PREFIX/bin/codex --version` and requires exit 0 and the pinned version in the output (which also
+  proves the launcher selects a vendor target for the host). A partial tree (for example `npm install
+  --omit=optional`, which omits the platform package) now fails the installer instead of shipping a Codex that
+  errors "Missing optional dependency" at run time. Nothing is copied out of the npm tree: `codex update`
+  rewrites it, so a copy would silently drift. The dead archive-installer path (`install_binaries_from_archive`
+  and its tests) is deleted; `find_binary`/`install_binary_from_archive` stay for Antigravity.
+- The Dockerfile manifest step no longer records whatever a broken CLI printed: `claude --version` and
+  `codex --version` must exit zero and print something, or the build aborts (the old
+  `$(... | head -1)` succeeded whatever happened, so an image with a broken Codex shipped an error string as
+  its version). `scripts/test_install_ai_cli_tools.py` pins both probes.
+- host-setup smoke tests `test_hs02.py` and `test_excluded_capacity.py` now anchor on the main flow's
+  `--validate-config "$CANDIDATE_PATH"` call instead of the first occurrence of the bare string. The first
+  occurrence is the `admission_only()` helper, which precedes everything, so the two order assertions passed
+  whatever the main flow did (removing the main-flow call kept them green; they now fail).
 - Devcontainer templates and vbpub's `.devcontainer/devcontainer.json`: `files.watcherExclude`, `search.exclude` and `git.repositoryScanIgnoredFolders`
   also cover `.assay` (assay's ignored isolation and scratch trees, which hold throwaway repositories), and `search.followSymlinks` is `false`. Python
   Environments 1.42.0 re-runs `rg --files --follow --no-ignore` (one result wanted, up to a whole-workspace walk) on every marker-file create/delete it sees; under gate churn the walks
@@ -30,6 +50,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `~/.nanorc` still overrides per setting. Runtime test `test_system_defaults.py` updated.
 
 ### Added
+- Codex's npm layout is documented where an adopter looks: `README.md` (the `codex` bullet), `docs/CONSUMERS.md`
+  ("The Codex layout inside `/opt/mdt/npm`: launcher, platform package, vendor `bin`, do not copy the binary or
+  the companion out), and `docs/DESIGN-GUIDE.md` (why the tree is verified in place, and why a custom-provider
+  model catalog must set `tool_mode` to null when the provider cannot serve code mode - measured with Codex
+  0.167.0 against the Open Design gateway, where `code_mode_only` fails with "incompatible payload").
+  `handoff/MDT-P01-REPORT.md` is replaced by a superseded note: Codex has been an npm install since this tree's
+  first commit, and the archive flow it described no longer exists.
 - Host-setup publishes `/etc/host-endpoints.d/mdt-host-setup.env` through `augeaswrap endpoints publish` after the managed BuildKit socket is ready. The fragment carries the managed builder, Docker group GID, BuildKit socket/path/GID, and Docker API socket/path; augeaswrap renders the shared aggregate, `/etc/environment` block and profile loader. The `docker-buildx` shim no longer carries a socket default: it needs the published `MDT_BUILDKIT_SOCKET` and exits 2 without it. Moving the consumers (devcontainer templates and `.devcontainer`, `cmru.orchestration.toml`, the release builder script and finalizer, run-gate lane `required_env`) onto the published facts is a separate phase-2 cutover and is NOT part of this change. Missing augeaswrap is a preflight refusal. `install.sh --dry-run-endpoints` prints the derived fragment, `check.sh` reports one endpoint-record line and runs its fresh-user builder probe with the facts read from that record (as `install.sh` does with the facts it derived), and manual uninstall withdraws the fragment before removing host-setup files.
 - host-setup publishes the run-gate gates admission cap (MDT-077). A reinstalled host has a new Docker daemon and so no `ciu-admission-<g>` object, and every lane of a project with `[admission] enabled` ended `NOT_RUN no-headroom` while the host idled. `mdt_admission.py` derives the cap from the effective minimum of the parent `DEV_CPU_QUOTA` and gates-tier `DEV_GATES_CPU_QUOTA` limits (auto shares come from `mdt_capacity`) and the gates `MemoryHigh`, then publishes idempotently through run-gate on the host or in the cockpit container. A full install with default `ADMISSION_PUBLISH=auto` creates a cap only when no readable cap exists and preserves a differing readable cap; explicit `install.sh --admission-only` reconciles it. `missing` never replaces, `replace` lets full installs reconcile too, and `off` disables management. `ADMISSION_MAX_CONCURRENT` always pins the desired value. The checker warns on a difference unless pinned, fails on a pinned mismatch or a missing cap, and distinguishes an unreachable Docker daemon from an absent ticket image. `--admission-only` can repair an unparseable published limit using the unchanged run-gate `set --replace` path. Nine optional `ADMISSION_*` keys are validated by the wizard's strict validator. After reinstall, operators must run `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist. The focused `host-setup-admission` Run-Gate lane covers the unit, wizard, installer, and capacity subset; `host-setup/tests/test_admission.py` includes a fake-run-gate installer behavior test.
 - Devcontainers bind the host topos socket directory read-only via `runArgs -v`; `toposd install` owns that directory and publishes the endpoint. Host-setup no longer ships a topos tmpfiles rule or drop-in.

@@ -187,7 +187,7 @@ def test_the_r16_tools_are_unaffected(monkeypatch: pytest.MonkeyPatch) -> None:
     resolved = stage._resolve_versions()
 
     assert (resolved["CLAUDE_CODE_VER"], resolved["CODEX_VER"], resolved["REASONIX_VER"], resolved["OPENCODE_VER"], resolved["PI_VER"]) == (
-        "2.1.302", "codex-x", "npm-reasonix", "npm-opencode-ai", "npm-@earendil-works/pi-coding-agent")
+        "2.1.302", "codex-x", "npm-reasonix", "npm-@opencode/cli", "npm-@earendil-works/pi-coding-agent")
     for r16 in ("CODEX_VER", "CLAUDE_CODE_VER", "REASONIX_VER", "OPENCODE_VER", "PI_VER"):
         assert r16 not in {env for env in ENV_KEYS}
 

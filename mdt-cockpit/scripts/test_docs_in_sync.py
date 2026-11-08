@@ -95,7 +95,7 @@ def test_every_closed_vocabulary_value_a_consumer_types_is_documented() -> None:
         "~/.config/mdt-cockpit", "/usr/local/share/mdt-cockpit",
         "/opt/mdt/bin", "/opt/mdt/npm", "/opt/mdt/venv", "/srv/pwmcp-instance",
         "NPM_CONFIG_PREFIX", "UV_PYTHON_INSTALL_DIR", "/usr/local/share/mdt-cockpit/path-entries", "/etc/zsh/zprofile", "scripts/patch_etc_profile.py",
-        "@anthropic-ai/claude-code", "npm install -g reasonix@latest", "npm install -g opencode-linux-x64-baseline@latest",
+        "@anthropic-ai/claude-code", "npm install -g reasonix@latest", "npm install -g @opencode/cli-linux-x64-baseline@latest",
         "rebuilding the image is the durable way", "first-party-wheels.json",
         "aider-main-pin.toml", "cmru versions resolve", "docker login docker.io", "until an aider release supports Python 3.14",
         "AIDER_COMMIT", "COPILOT_VERSION",

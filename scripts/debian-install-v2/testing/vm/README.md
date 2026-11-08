@@ -198,11 +198,17 @@ and per worktree**: staged base images (`images/`), each run's qcow2 overlay,
 cloud-init seed, QMP socket, pidfile and serial log (`runs/<name>/`), and the
 test-only SSH key (`ssh/`, generated under `flock`). The path is fixed: the
 wrapper and `vmctl` derive `<project>/artifacts/vm-lab` by fixed depth from the
-script location, so a worktree uses its own. There are no environment overrides
-(using `artifacts/vm-lab` and `downloads/` is a repo decision); a test that needs
-another location runs a copy of the scripts, and `vmctl` accepts the global
-options `--state-dir DIR` and `--downloads-dir DIR` before the subcommand (the
-wrapper passes its mount points `/vm-lab` and `/downloads` this way).
+script location, so a worktree uses its own. Using `artifacts/vm-lab` and
+`downloads/` is a repo decision; the one selector is **`MDT_VM_PROJECT_DIR`**:
+another project of the same checkout (`<repo>/scripts/<name>`, e.g.
+`scripts/mounttrace`) reuses this harness with **its own** `artifacts/vm-lab`
+and, unless `MDT_VM_SOURCE_DIR` says otherwise, its own directory at `/source`.
+Its runner gets its own name (the project is part of the fingerprint); unset,
+nothing changes. A `vm-lab` that is an ignored symlink into the CoW area
+(mdt-cockpit `docs/BTRFS-COW.md` 6.2) is bound by its physical target. `vmctl`
+accepts the global options `--state-dir DIR` and `--downloads-dir DIR` before the
+subcommand (the wrapper passes its mount points `/vm-lab` and `/downloads` this
+way).
 
 Big shared downloads (the cloud image) go to `<repo root>/downloads/` of the
 checkout that runs (also fixed depth); the download script's optional argument

@@ -709,6 +709,40 @@ Such changes live in the container filesystem; recreating the container restores
 version. Put your own CLIs in `~/.local/bin` - it is last on `PATH`, so an image tool of the same
 name wins.
 
+### The Codex layout inside `/opt/mdt/npm`
+
+`codex` at `/opt/mdt/npm/bin/codex` is a Node launcher, not the native program. It runs the native
+binary from the platform package npm installs as an optional dependency, and code mode spawns the
+companion that sits beside it:
+
+```text
+/opt/mdt/npm/lib/node_modules/@openai/codex/
+  bin/codex.js                                   # the `codex` command on PATH
+  node_modules/@openai/codex-linux-x64/          # the platform package for this host (os+cpu)
+    vendor/x86_64-unknown-linux-musl/
+      bin/codex                                  # the native binary
+      bin/codex-code-mode-host                   # the code-mode companion (not on PATH)
+      codex-package.json                         # layoutVersion, version, target
+```
+
+The package ships both executables there and code mode needs the companion; do not copy either one out to
+`/opt/mdt/bin`, `/usr/local/bin` or `~/.local/bin`. `codex update` (and
+`npm install -g @openai/codex@latest`) replaces the entire tree, so a copy would keep the old
+version while the `codex` command runs the new one, and nothing would report the skew. The
+installer checks this tree in place (`verify_codex_install()`): the package version must equal the
+staged `CODEX_VER`, the platform package for the host must exist (an `npm install
+--omit=optional` leaves Codex broken), both executables must be executable files, and the installed
+`bin/codex --version` must run and report that version. The image build additionally fails when
+`codex --version` exits non-zero or prints nothing.
+
+Code mode itself is a per-model field in the model catalog (`model_catalog_json`), not a
+`config.toml` key: `tool_mode: "code_mode_only"` makes the companion mandatory, and a provider
+that cannot serve code mode must use `tool_mode: null`. Measured on Codex 0.167.0 against the Open
+Design gateway, `code_mode_only` fails (the model's `exec` call arrives with a payload Codex
+rejects, "incompatible payload"); that route's catalog sets `tool_mode` to null and uses the
+plain shell plus `apply_patch` toolset instead. Do not copy the OpenAI catalog's
+`code_mode_only` into a custom provider without measuring it there.
+
 ### Codex profile state and container lifetime
 
 The shipped template sets `CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`, placing the

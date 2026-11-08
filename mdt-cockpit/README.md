@@ -212,13 +212,19 @@ Enabled by default, each controlled by an `INSTALL_*` build arg:
 - `reasonix`, `openclaw`, `opencode`, `copilot`, `claudelink`, `pi` — npm-based, installed
   into the `mdt`-group prefix `/opt/mdt/npm` (the image's `NPM_CONFIG_PREFIX`) on the image's
   Node 26 toolchain; the runtime user updates them in place without `sudo`. OpenCode
-  uses its resolved platform package directly, because the `opencode-ai` meta-package can
-  select mutually incompatible glibc and musl optional packages under npm 11. `claudelink`
+  uses its resolved platform package (`@opencode/cli-linux-*`, OpenCode 2) directly, because the
+  `@opencode/cli` launcher chooses baseline-vs-AVX2 from the installing host's CPU at install time
+  and needs npm script approval; the pre-2 `opencode-ai` package is not used (staging fails if it ever gets
+  ahead of `@opencode/cli`, which means upstream moved the package again). `claudelink`
   (npm package `claudelink`) is an MCP server that coordinates multiple already-installed
   agent CLIs (Claude Code, Codex, etc.) as one mesh; `pi` (npm package
   `@earendil-works/pi-coding-agent`) is the Pi coding-agent CLI.
 - `codex` — the official `@openai/codex` npm package under `/opt/mdt/npm`; its user data remains
-  under `~/.codex`.
+  under `~/.codex`. The native `codex` binary and its code-mode companion `codex-code-mode-host`
+  live inside that package (the platform package's vendor directory); they are not copied out to
+  `PATH`, because `codex update` rewrites the package and a copy would drift. The installer
+  verifies the tree in place, and the image build fails when `codex --version` fails or prints
+  nothing ([why](docs/DESIGN-GUIDE.md#how-the-ai-clis-update-themselves)).
 - `claude` — the official `@anthropic-ai/claude-code` npm package under `/opt/mdt/npm` (staged as the exact registry `latest`, or an explicit pin, and recorded in the manifest; user-updatable tools follow upstream and the image pins what it shipped); `claude update` and its background updater run `npm install -g` into that prefix, so an update is the `claude` on `PATH`. `antigravity` (`agy`) — an image-owned binary in `/opt/mdt/bin`.
 
 Image-managed tools live in the `mdt` group tree (`/opt/mdt`, `/srv`): group-writable, so the
@@ -226,7 +232,7 @@ runtime user (a member of `mdt`) can `npm install -g @openai/codex@latest` or `p
 into the primary venv without `sudo`, even though Dev Containers re-numbers the `vscode` uid.
 Such in-place updates under `/opt/mdt` last for the life of the container only: a recreate
 restores the image's version, so **rebuilding the image is the durable way to change a tool**.
-OpenCode is updated with `npm install -g opencode-linux-x64-baseline@latest` (its own `upgrade`
+OpenCode is updated with `npm install -g @opencode/cli-linux-x64-baseline@latest` (its own `upgrade`
 command cannot be used, see the [update table](docs/DESIGN-GUIDE.md#how-the-ai-clis-update-themselves));
 Reasonix with `npm install -g reasonix@latest`. `PATH` is one definition ([One PATH order](docs/DESIGN-GUIDE.md#one-path-order)):
 `/opt/mdt/bin`, the primary venv, `/opt/mdt/npm/bin`, PWMCP, the base image's own entries, and

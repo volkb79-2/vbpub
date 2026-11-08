@@ -1,48 +1,31 @@
-# MDT-P01: Codex companion host and OpenCode integration
+# MDT-P01: SUPERSEDED
 
-## Contract Status
+**This report is a historical record and no longer describes the image.** It is kept
+only so an old link does not dangle.
 
-Complete after controller review.
+The original body's Codex statements do not describe this tree: since its first commit
+Codex has been installed from the `@openai/codex` npm package (with the exact staged
+version), not from a release archive. The archive flow this report describes - extract
+once, copy `codex` and `codex-code-mode-host` to `/usr/local/bin`, verify a package
+checksum - no longer exists; its leftover helper has been deleted from
+`scripts/install_ai_cli_tools.py` together with its dead tests.
 
-| Requirement | Result |
-|---|---|
-| Stage and install `codex` plus `codex-code-mode-host` | Pass |
-| Preserve upstream Codex checksum verification | Pass |
-| Fail clearly for corrupt or incomplete Codex packages | Pass |
-| Resolve and install pinned `opencode-ai` npm package | Pass |
-| Expose and verify the `opencode` command | Pass |
-| Thread OpenCode controls through Docker, bake, and CMRU | Pass |
-| Include OpenCode in image inventory and documentation | Pass |
-| Persist correct OpenCode Linux config and data paths | Pass |
-| Focused offline regression tests | 21 passed |
-| Python, TOML, HCL/bake, and whitespace checks | Pass |
+What is true now:
 
-## Key Design
+- `codex` is the npm launcher in `/opt/mdt/npm/bin`; the native binary and
+  `codex-code-mode-host` ship inside the platform package's vendor directory and are
+  **not** copied anywhere. `codex update` rewrites that tree, so a copy would drift.
+- `verify_codex_install()` in `scripts/install_ai_cli_tools.py` checks the installed tree
+  in place: staged version equality, the platform package for the host, the vendor
+  manifest's target, and both executables being executable regular files. A partial tree
+  (for example `npm install --omit=optional`) fails the installer.
+- The Dockerfile manifest step fails the build when `codex --version` exits non-zero or
+  prints nothing, so a broken install cannot be recorded as a version string.
+- OpenCode is installed from its own platform package (`opencode-linux-*`) by
+  `install_opencode()`; the `opencode-ai` meta-package is not used.
 
-Codex continues to use the checksum-verified upstream package archive. The
-installer extracts it once and copies both runtime executables to
-`/usr/local/bin` with mode 0755. Staging and installation independently reject
-a package that omits the companion host.
-
-OpenCode follows MDT's existing npm-tool convention: staging resolves the
-exact `opencode-ai` version, the resolved value enters `tool-versions.env`, and
-the image installs that exact version globally. `INSTALL_OPENCODE=false`
-disables it consistently with the other optional AI tools.
-
-The template persists user configuration under `~/.config/opencode` through
-the existing `.config` mount. Auth, sessions, logs, and runtime data under
-`~/.local/share/opencode` use a dedicated bind mount. Project-local
-`.opencode/` content remains in the workspace and needs no home mount.
-
-## Evidence
-
-- Focused pytest: 21 passed.
-- Python compilation: passed.
-- CMRU TOML parse: passed.
-- Docker bake HCL rendering and JSON parse: passed.
-- Diff whitespace check: passed.
-- Official npm metadata exposes the `opencode` command.
-
-No full image build was run during this package; source-level bake rendering,
-installer behavior, archive inspection against the staged Codex package, and
-npm metadata were validated before merge.
+Why the old layout was rejected, and the per-provider `tool_mode` rule that goes with
+code mode, are in `docs/DESIGN-GUIDE.md` ("How the AI CLIs update themselves") and
+`docs/CONSUMERS.md` ("The Codex layout inside `/opt/mdt/npm`"). The read-only analysis
+behind this change lives outside the repository, in the operator's release-program
+directory, so it is described here rather than linked.
