@@ -38,7 +38,7 @@ Cause tags for exit 3 (the CP-31 set, plus one):
 
 | Tag | Meaning | Remedy printed by `doctor` and in the error line |
 |---|---|---|
-| `socket-not-mounted` | the socket's directory does not exist (a devcontainer without the `/run/cgprofile` bind) | add the bind mount; name the template line |
+| `socket-not-mounted` | the directory containing `CGPROFILE_CONTROL_SOCKET` does not exist in this environment | bind-mount the directory named by `CGPROFILE_CONTROL_SOCKET_DIR` |
 | `socket-missing` | directory exists, no socket (daemon not running) | `systemctl status cgprofiled`; start it |
 | `daemon-refusing` | socket exists, connection refused or the daemon answers `busy` persistently | `journalctl -u cgprofiled`; report if it loops |
 | `socket-permission` | the socket exists but the caller is not in its group, or `peer-refused` for the caller's uid | name the socket's group (derived by `stat`), the caller's groups, and the `allow_uids` key |
@@ -197,7 +197,7 @@ with a `pass|warn|fail|skip` status and a remedy on non-pass:
 | `caller-group` | the caller's gid or supplementary gids include the socket's group (derived by `stat`); `skip` when the socket is absent |
 | `daemon-version` | the daemon answers `version`; warns on client/daemon skew |
 | `contracts` | the ctl contract sets overlap; the observer contract set contains 2 and 3 |
-| `observer-dir` | `/run/cgprofile/observer` is `root:root` mode 0755 and its socket is mode 0660 with a group distinct from control and docker |
+| `observer-dir` | the directory containing `CGPROFILE_OBSERVER_SOCKET` is `root:root` mode 0755 and its socket is mode 0660 with a group distinct from control and docker |
 | `slice` | `cgprofile.slice` exists and is bounded (reads `memory.max` / `memory.high`) |
 | `damon` | the daemon reports DAMON available and the lock free |
 | `sessions-dir` | reported from the daemon's `status`, not tested from the client |

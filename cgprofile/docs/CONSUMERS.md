@@ -493,7 +493,8 @@ line on stderr (exit 3) ends in a `[cause: ...]` that names which situation
 applies, using only what the calling process can see:
 
 - `socket-not-mounted`: the socket's directory does not exist in this
-  environment (a nested or sandboxed lane without the `/run/cgprofile` bind).
+  environment (a nested or sandboxed lane without the bind for the directory
+  named by `CGPROFILE_CONTROL_SOCKET_DIR`).
 - `socket-missing`: the directory exists but the socket node is gone (the
   service is not running, or the node was removed).
 - `daemon-refusing`: the node exists and nothing listens (the service exited or is
