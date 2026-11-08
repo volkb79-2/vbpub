@@ -13158,28 +13158,39 @@ R2 pass is claimed. The CHANGES release notes say so.
 The provisional-release exception is bounded by the first dated release
 heading after `Unreleased`, which must match CMRU's protected transaction
 version, not only by tags that exist before the gate: B169 is valid for release
-versions `>=10.0.0,<12.1.0`; the operator extended the original waiver on
-2026-10-31 (10.2.0 extension: CW8/CW9/IO2 ship under it; 11.0.0 extension: verdict v17 and --jobs ship under it). The gate also requires at least one listable stable
-`assay-vX.Y.Z` tag and refuses if the latest visible tag is 12.1.0 or newer.
-Thus a prepared 12.1.0 release is refused before its tag is created, and
+versions `>=10.0.0,<12.2.0`; the operator extended the original waiver on
+2026-10-31 (10.2.0 extension: CW8/CW9/IO2 ship under it; 11.0.0 extension:
+verdict v17 and --jobs ship under it), 2026-11-04, and 2026-11-08. The latest
+decision covers the release carrying the E4 env-only launchers and delegated
+release-gate changes; R2 is to run later on the latest release. The gate also
+requires at least one listable stable `assay-vX.Y.Z` tag and refuses if the
+latest visible tag is 12.2.0 or newer. Thus a prepared 12.2.0 release is refused
+before its tag is created, and
 missing or unreadable tag state cannot authorize the waiver.
 
-**Decision record D1 (operator, 2026-11-04):** the window is extended to
-versions below 12.1.0 so assay 12.0.0 can pass `self-qualification-provisional`.
+**Decision record D1 (operator, 2026-11-04):** the window was extended to
+versions below 12.1.0 so assay 12.0.0 could pass `self-qualification-provisional`.
 Reason: the R2 campaign is to run later with `--jobs` on the scratch host
 (r1002) rather than serially on the shared host; same standing policy as for
 10.x and 11.0. The window is a single constant (`WINDOW` in
 `tools/self-qualification-gate.sh`); the marker text and refusal messages derive
-from it. Anything at or above 12.1.0 (prepared heading or an existing tag)
-stays refused and needs the full `self-qualification` lane. It closes with the
-R2 obligation below, or by the next window decision; it does not close by
-passing the provisional lane.
+from it. At that decision, anything at or above 12.1.0 (prepared heading or an
+existing tag) stayed refused and needed the full `self-qualification` lane.
+Passing the provisional lane does not close the R2 obligation below.
+
+**Operator decision (2026-11-08):** the provisional window is extended to
+versions below 12.2.0 for the release carrying the E4 env-only launchers and
+delegated release-gate changes. Assay 12.1.0 is inside the window; 12.2.0 and
+later require a new operator waiver decision or the full `self-qualification`
+lane. R2 is to run later on the latest release.
 
 **Close when:** one full `self-qualification` run and one `analysis-r2` run are
-completed against the exact `assay-v10.0.0` tag through the registered
+completed against the latest released Assay version through the registered
 Run-Gate lanes, survivors are triaged and fixed or backported, and the report
-is retained. Deadline: before the next assay release judged worth R2 (the
-same obligation as cmru KI-99 and the other wave members).
+is retained. Start the asynchronous campaign when an R2 host slot frees and
+target the newest release then available; older waived releases are never
+retro-run, consistent with the current release policy and the same obligation
+as cmru KI-99 and the other wave members.
 
 **B108 note (2026-10-27 integration):** phase 1 (`assay analyze campaign`)
 is shipped in this release under integration hashes; the leftover truncated-list
@@ -13199,8 +13210,9 @@ qualification rigor runs. `self-qualification-provisional` (`assay.toml`,
 R0, R1 (whole-target 100% line and branch over `src/assay`) and the R3 canary.
 After the lane is verified it records `.assay/mutation-postponed-assay.json`
 (`result: provisional`, tracking id B169, valid only for a prepared release
-version `>= 10.0.0` and `< 12.1.0`; extended by operator on 2026-10-31 and
-2026-11-04; a newer `assay-v12.1.0` or later tag also refuses it). The full lane is unchanged
+version `>= 10.0.0` and `< 12.2.0`; extended by operator on 2026-10-31,
+2026-11-04, and 2026-11-08; a newer `assay-v12.2.0` or later tag also refuses
+it). The full lane is unchanged
 and deletes the marker; the marker
 cannot satisfy an R2 request.
 
@@ -14302,4 +14314,11 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 All six observer-enabled lanes declare `ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"` under `[lanes.<lane>.infrastructure]`; `src/assay` already consumes the endpoint through the environment and contains no socket-path default. `tools/release-gate.sh` requires `ASSAY_RELEASE_GATE_HOST` (`local`, `v1001`, or `r1002`). Local mode runs the previous lane command; remote mode uses attached `remote-gate.py` with the candidate worktree and accepts only a matching `meta.json` SHA plus a `PASS` in `result.json`, returning a failed lane's exit code. CMRU's release transaction, build, tag, publish and credentials stay on the controller.
 
-The provisional waiver remains `assay >=10.0.0, <12.1.0`. Its code bound is unchanged; refusal now says that extending it needs a new operator R2-waiver decision and directs the caller to full self-qualification. `README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and `CHANGES.md` describe the endpoint contract, host selection, and fixed waiver window.
+The provisional waiver is extended to `assay >=10.0.0, <12.2.0` by the
+2026-11-08 operator decision for the release carrying the E4 env-only launchers
+and delegated release-gate changes; R2 will run later on the latest release.
+Its code bound remains decision-controlled; refusal names the new operator
+R2-waiver decision required for any further extension and directs the caller to
+full self-qualification. `README.md`, `docs/DESIGN-GUIDE.md`,
+`docs/CONSUMERS.md`, and `CHANGES.md` describe the endpoint contract, host
+selection, and current waiver window.

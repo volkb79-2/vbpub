@@ -226,12 +226,13 @@ The gate reads the first H2 release heading after `## [Unreleased]` in
 refuses that heading if it is malformed or unsupported, even when an older
 heading is valid. CMRU passes the transaction's planned version as a protected
 gate input; the heading must match it. The currently authorized target
-interval is `10.0.0 <= version < 12.1.0`; at least one stable `assay-vX.Y.Z`
-tag must be listable, and its latest version must be below 12.1.0. A release
-at 9.9.9, 12.1.0 or later, an unreadable tag list, or no visible stable tag
-refuses the waiver. The interval is frozen by the existing operator decision.
-Extending it requires a new operator R2-waiver decision; do not change the
-bound as part of ordinary Assay release work. The refusal names this decision
+interval is `10.0.0 <= version < 12.2.0`; at least one stable `assay-vX.Y.Z`
+tag must be listable, and its latest version must be below 12.2.0. The
+2026-11-08 operator decision extends the waiver for the release carrying the
+E4 env-only launchers and delegated release-gate changes; R2 will run later on
+the latest release. A release at 9.9.9, 12.2.0 or later, an unreadable tag
+list, or no visible stable tag refuses the waiver. Any further extension
+requires a new operator R2-waiver decision. The refusal names this decision
 and recommends the full self-qualification lane when the waiver no longer
 applies.
 
