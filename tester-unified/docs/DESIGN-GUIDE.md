@@ -91,7 +91,7 @@ Dockerfile oracle that forbids a later layer rewriting that wheel still holds): 
 login-hook tests exercise it), Node.js with npm and npx copied from a digest-pinned official node image
 stage (it is only a `FROM <image>@sha256:` stage, which the oracle asserts), Go from the toolchain image
 selected by `wings-patchstack/stack.conf`, and the **real `systemctl` client** from Debian's `systemd`
-package.
+package, plus `augtool` and `augparse` from Debian's `augeas-tools` package.
 
 Go is copied into this image because Wings is a Go project and its gate must
 run inside tester-unified under the same Run-Gate cgroup placement, identity,
@@ -100,6 +100,14 @@ and resource limits as the Python suites. The builder reads
 required build argument, records it as an image label, and verifies that label
 after loading. The Wings gate does not start a nested Go container or mount the
 host Docker socket for integration tests.
+
+The image installs Debian trixie's `augeas-tools` package for `augeaswrap`'s
+registered gate. `augparse` checks every overlay lens and its test, while
+`augtool` powers tests against real Augeas behavior. The Dockerfile verifies
+that both executables are present and owned by `augeas-tools` during the apt
+layer. The package adds about 1 MB plus its `libxml2` dependency; keeping the
+layer before the project and dependency `COPY` instructions preserves their
+existing source-input boundary.
 
 Why `systemctl`: the cgprofile placement probe (`cgprofile/tools/gate.sh`,
 `lib/access.py` `_PLACEMENT_PROBE`, "placement verifier image must provide systemctl") starts a probe

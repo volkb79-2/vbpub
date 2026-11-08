@@ -138,6 +138,18 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && test "$(dpkg -S /usr/bin/systemctl | cut -d: -f1)" = systemd \
  && /bin/systemctl --version
+#  * Augeas (`augeas-tools`, TU-AUG): augeaswrap's registered lane runs lens
+#    checks with augparse and real edit tests with augtool. This is about 1 MB
+#    plus libxml2. Keep this apt layer before project/dependency COPY layers;
+#    their source inputs and the later source-built CMRU wheel ordering stay
+#    unchanged.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends augeas-tools \
+ && test -x /usr/bin/augtool \
+ && test "$(dpkg -S /usr/bin/augtool | cut -d: -f1)" = augeas-tools \
+ && test -x /usr/bin/augparse \
+ && test "$(dpkg -S /usr/bin/augparse | cut -d: -f1)" = augeas-tools \
+ && rm -rf /var/lib/apt/lists/*
 #  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
 #    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
 #    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.

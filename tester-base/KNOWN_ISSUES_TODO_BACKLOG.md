@@ -205,3 +205,7 @@ pinned by digest: `--build-context <ref>=oci-layout://<dir>@sha256:<digest>`. Th
 
 **Dependencies and order.** Package 1 of MDT-056 (tester-chain pilot), then wheel-builder, then srdm and cmru.
 
+## TB-15 - tester-unified lacks Augeas tools for the augeaswrap gate (TU-AUG)
+
+**Status: FIXED 2026-11-08.** `tester-unified/Dockerfile` installs Debian's `augeas-tools` in a dedicated apt layer and checks that both `augtool` and `augparse` are present and owned by that package. `cmru/tests/test_tester_unified_image.py` guards the package, executable ownership, and layer order. The image now has the tools required by augeaswrap's lens-check and real-augtool lanes; the operator controls when it is rebuilt.
+
